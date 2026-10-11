@@ -295,6 +295,19 @@ mod tests {
         }
     }
     #[test]
+    fn a_one_pixel_transparent_picture_stays_transparent() {
+        // Morphology's `transparent.png` is a single (0, 0, 0, 0) pixel.
+        let mut bytes = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut bytes, 1, 1);
+            e.set_color(png::ColorType::Rgba);
+            e.set_depth(png::BitDepth::Eight);
+            e.write_header().unwrap().write_image_data(&[0, 0, 0, 0]).unwrap();
+        }
+        let image = png(&bytes, Default::default(), 0, [1, 1], None, || false).unwrap();
+        assert_eq!(image.rgba.as_ref(), [0, 0, 0, 0]);
+    }
+    #[test]
     fn editor_memory_webp_rgb_expansion_stays_below_nine_bytes_per_pixel() {
         let side = 512;
         let pixels = side as usize * side as usize;

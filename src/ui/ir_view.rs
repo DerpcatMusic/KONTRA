@@ -612,6 +612,14 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
         let Some(w) = face.widgets.get_mut(n) else {
             continue;
         };
+        // A label's text keeps its authored bounds even when its background is one pixel.
+        let label_bounds = if matches!(w.kind, Kind::Label)
+            && (!w.auto_size || w.default_axes != [false; 2])
+        {
+            [!w.default_axes[0] && w.rect.width > 0, !w.default_axes[1] && w.rect.height > 0]
+        } else {
+            [false; 2]
+        };
         if let ir::Placement::Grid { column, row } = w.placement {
             w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
             w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
@@ -645,10 +653,10 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
                 ir::AssetKind::BitmapFont | ir::AssetKind::TrueTypeFont => None,
             });
         if let Some((size, stretch)) = meta {
-            if !stretch[0] {
+            if !stretch[0] && !label_bounds[0] {
                 w.rect.width = size.width;
             }
-            if !stretch[1] {
+            if !stretch[1] && !label_bounds[1] {
                 w.rect.height = size.height;
             }
         }

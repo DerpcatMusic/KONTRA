@@ -187,6 +187,105 @@ fn picture(frames: Vec<Arc<Image>>) -> Arc<Picture> {
     Arc::new(Picture::new(frames))
 }
 
+/// A label with a fully transparent picture (Morphology's value readout) still shows its text,
+/// through the same prepare-then-paint loop the scanner and the editor use.
+#[test]
+fn label_text_shows_over_a_transparent_background_picture() {
+    use ir::{AssetKind, ImageMeta, ImageUse, Kind, PageRef, Rect, Widget};
+    let png = |w: u32, h: u32, rgba: [u8; 4]| {
+        let mut bytes = Vec::new();
+        let mut e = png::Encoder::new(&mut bytes, w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()
+            .unwrap()
+            .write_image_data(&rgba.repeat((w * h) as usize))
+            .unwrap();
+        bytes
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let pictures = dir.path().join("Resources/pictures");
+    std::fs::create_dir_all(&pictures).unwrap();
+    std::fs::create_dir_all(dir.path().join("Instruments")).unwrap();
+    std::fs::write(pictures.join("transparent.png"), png(1, 1, [0, 0, 0, 0])).unwrap();
+    std::fs::write(pictures.join("wall.png"), png(160, 40, [29, 29, 30, 255])).unwrap();
+    let path = dir.path().join("Instruments/x.nki");
+    let mut label = Widget::new("$readout", PageRef(0), Rect::new(10, 10, 112, 20), Kind::Label);
+    label.text = "VALUE READOUT".into();
+    label.style = Some(ir::StyleRef(0));
+    label.images.push(ImageUse::new(ir::AssetRef(0), ir::Role::Background));
+    let image = |path: &str| ir::Asset {
+        path: path.into(),
+        kind: AssetKind::Image(ImageMeta {
+            size: Some(if path.ends_with("transparent.png") {
+                ir::Size { width: 1, height: 1 }
+            } else {
+                ir::Size { width: 160, height: 40 }
+            }),
+            ..Default::default()
+        }),
+    };
+    let face = ir::Interface {
+        pages: vec![ir::Page {
+            size: ir::Size { width: 160, height: 40 },
+            background: ir::Background {
+                image: Some(ir::AssetRef(1)),
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        widgets: vec![label],
+        styles: vec![ir::TextStyle {
+            font: ir::Font::Stock(17),
+            size: Some(13.),
+            color: ir::Rgba::rgb(0xfefefe),
+            align: ir::Align::Center,
+        }],
+        assets: vec![image("Resources/pictures/transparent.png"), image("Resources/pictures/wall.png")],
+        ..Default::default()
+    };
+    let mut natural = face.clone();
+    natural.widgets[0].auto_size = true;
+    natural.widgets[0].default_axes = [true; 2];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    natural.widgets[0].rect.width = 112;
+    natural.widgets[0].default_axes = [false, true];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 112, 1));
+    natural.widgets[0].kind = Kind::Switch;
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    let face = ir_view::resolved(&face);
+    assert_eq!(face.widgets[0].rect, Rect::new(10, 10, 112, 20));
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let mut ui = theme::ui();
+    let mut settled = 0;
+    for _ in 0..2000 {
+        assets.prepare(&path, &face, PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let root = col![ir_view::view(
+            &mut ui,
+            &face,
+            PageRef(0),
+            &assets,
+            ir::Presentation::Bitmap,
+            1.,
+            &mut values
+        )]
+        .w(160.)
+        .h(40.)
+        .fill(Role::Background);
+        ui.frame(root, Some(Size::new(160., 40.)), Input::default(), 1. / 60.)
+            .unwrap();
+        settled = if assets.pending() == 0 { settled + 1 } else { 0 };
+        if settled >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let shot = pixels(&ui, 160, 40);
+    let bright = shot.chunks(4).filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+    assert!(bright > 50, "label text vanished: {bright} bright pixels");
+}
+
 /// A wallpaper, a background panel picture, a 64-frame knob strip and a
 /// two-frame switch: vector mode keeps the first two only.
 #[test]
