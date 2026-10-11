@@ -164,6 +164,7 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
     LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
@@ -191,10 +192,18 @@ pub enum Processor {
     LadderLP4(LadderSettings),
     /// Native adaptive-resonance filter (FilterDJ), saved types 100..=108.
     Ar(ArSettings),
+    /// Native three-parallel-bandpass Formant I (Talk, Sharp, Size).
+    Formant([f32; 3]),
+    /// Kontakt native four-stage Phaser filter.
+    Phaser([f32; 2]),
+    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
     Saturation(f32),
+    /// NI Saturator Shape / KSP ENGINE_PAR_SHAPE; direct template copy 0x1408378f0.
+    LiveSaturation(Parameter),
+    LiveDistortion { transistor: bool, drive: Parameter, damping: Parameter },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Formant Crusher decimation; per-voice scalar path.
@@ -243,15 +252,21 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
+            Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
+            Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
+            Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
+            Processor::LiveSaturation(shape) => shape.valid() && !matches!(shape, Parameter::Expression { .. }) && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v)),
+            Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| p.valid() && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. })) && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))),
             Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
             Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Gainer { dry, gain } => {
@@ -265,10 +280,13 @@ impl Processor {
 mod ar;
 mod ar_kernel;
 mod compressor;
+mod enhanced_compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
 mod distortion;
+mod formant;
+mod phaser;
 pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
@@ -317,8 +335,14 @@ pub(super) enum PreparedProcessor {
         offset: usize,
     },
     Compressor(compressor::Compressor),
+    KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
     Rectify(Rectifier),
     Saturation(f32),
+    LiveSaturation(control::PreparedParameter),
+    LiveDistortion(distortion::LiveDistortion),
+    Formant(formant::Formant),
+    Phaser(phaser::Phaser),
+    LegacyPhaser(phaser::LegacyPhaser),
     Distortion(distortion::Distortion),
     Gainer {
         dry: f64,
@@ -485,6 +509,7 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
                 }
+                Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate, bindings))
                 }
@@ -524,6 +549,11 @@ pub(super) fn compile_processors(
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
+                Processor::LiveSaturation(shape) => PreparedProcessor::LiveSaturation(shape.compile(bindings)),
+                Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
+                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
+                Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
+            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
                 Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
@@ -885,6 +915,11 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
+                        | PreparedProcessor::LegacyPhaser(_)
+                        | PreparedProcessor::KontaktEnhancedCompressor(_)
+                        | PreparedProcessor::Phaser(_)
+                        | PreparedProcessor::Formant(_)
+                        | PreparedProcessor::LiveDistortion(_)
                         | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
@@ -1157,12 +1192,25 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                 );
             }
+            PreparedProcessor::KontaktEnhancedCompressor(c) => c.process(state, block, len),
             PreparedProcessor::Compressor(compressor) => {
                 compressor.process(state, parameters, block, len, at)
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
+            PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
+            PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
+            PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
+            PreparedProcessor::LiveSaturation(shape) => {
+                for i in 0..len {
+                    let value = shape.value(parameters, at + i as u64, None) as f32;
+                    for channel in block.iter_mut() {
+                        channel[i] = shaping::saturation(channel[i], value);
+                    }
+                }
+            }
             PreparedProcessor::Daft(daft) => daft.process(
                 state,
                 parameters,
@@ -1621,6 +1669,7 @@ mod tests {
                         0,
                         &mut [],
                         &mut svf::FilterContext {
+                            tempo: 120.0,
                             bank: &mut filters,
                             reverbs: &mut [],
                             convolutions: &mut [],
@@ -1701,6 +1750,7 @@ mod tests {
                                     0,
                                     &mut [],
                                     &mut svf::FilterContext {
+                                        tempo: 120.0,
                                         bank: &mut filters,
                                         reverbs: &mut [],
                                         convolutions: &mut [],

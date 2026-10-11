@@ -57,7 +57,7 @@ const ANTI_DENORMAL: f32 = 1e-20;
 
 /// Native steady-state Distortion damping pole. The normalized cutoff uses
 /// an exponential polynomial followed by a sine-ratio bilinear transform.
-/// shortcut: fixed saved Damping only; add its control clock when live FX controls are wired.
+/// Script updates use the template-copy law; internal modulation is separate.
 fn distortion_damping(damping: f32, rate: f32) -> f32 {
     let p = (1.0 - 0.4 * damping.clamp(0.0, 1.0)).clamp(0.0, 1.0);
     let x = (f64::from(p) * 6.15) as f32;
@@ -132,8 +132,15 @@ pub(crate) struct Distortion {
 
 impl Distortion {
     pub(super) fn compile(transistor: bool, drive: f32, damping: f32, rate: u32) -> Self {
+        Self {
+            curve: Self::curve(transistor, drive, damping, rate),
+            dc: distortion_dc(rate as f32),
+        }
+    }
+
+    fn curve(transistor: bool, drive: f32, damping: f32, rate: u32) -> [f32; 6] {
         let pole = distortion_damping(damping, rate as f32);
-        let curve = if transistor {
+        if transistor {
             let threshold = f64::from(8. * drive - 12.).exp2() as f32;
             [
                 drive,
@@ -155,10 +162,6 @@ impl Distortion {
                 (0.5625 - (1. - drive).powi(2)) * (16. / 9.)
             };
             [1. + 1.5 * drive, 1., pole, 0., negative, positive]
-        };
-        Self {
-            curve,
-            dc: distortion_dc(rate as f32),
         }
     }
 
@@ -265,5 +268,58 @@ mod tests {
         }
         assert_eq!(output, whole[0][..32]);
         assert_eq!(split_state.aux, full_state.aux);
+    }
+}
+
+/// NI Distortion: template copy 0x1408373c0 and embedded LP copy 0x140837e40
+/// replace Drive/current Damping directly when no internal modulator is attached.
+/// shortcut: internal modulation has a separate 32-frame clock; wire it when admitted.
+pub(crate) struct LiveDistortion {
+    pub(crate) drive: super::control::PreparedParameter,
+    pub(crate) damping: super::control::PreparedParameter,
+    transistor: bool,
+    rate: u32,
+    dc: [f32; 5],
+}
+impl LiveDistortion {
+    pub(super) fn compile(
+        transistor: bool,
+        drive: super::control::PreparedParameter,
+        damping: super::control::PreparedParameter,
+        rate: u32,
+    ) -> Self {
+        Self {
+            transistor,
+            drive,
+            damping,
+            rate,
+            dc: distortion_dc(rate as f32),
+        }
+    }
+    pub(super) fn process(
+        &self,
+        state: &mut ProcessorState,
+        block: &mut Planar,
+        len: usize,
+        parameters: &[super::ControlRamp],
+        at: u64,
+    ) {
+        let drive = self.drive.value(parameters, at, None) as f32;
+        let damping = self.damping.value(parameters, at, None) as f32;
+        // These event-rate lanes are constant within a render fragment. Retain
+        // coefficients and audio histories independently across parameter edits.
+        if state.z[1][0] == 0. || state.z[0] != [f64::from(drive), f64::from(damping)] {
+            let curve = Distortion::curve(self.transistor, drive, damping, self.rate);
+            for (out, value) in state.aux[10..16].iter_mut().zip(curve) {
+                *out = f64::from(value);
+            }
+            state.z[0] = [f64::from(drive), f64::from(damping)];
+            state.z[1][0] = 1.;
+        }
+        Distortion {
+            curve: std::array::from_fn(|i| state.aux[10 + i] as f32),
+            dc: self.dc,
+        }
+        .process(state, block, len);
     }
 }
