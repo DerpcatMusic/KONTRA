@@ -45,6 +45,7 @@ mod native_ui;
 mod picture_decode;
 mod picture_worker;
 mod pictures;
+mod prof;
 mod render_art;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
@@ -1752,3 +1753,5 @@ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
 }
 #[cfg(all(test, feature = "library-access"))]
 mod uvi_audit;
+#[cfg(all(test, feature = "library-access"))]
+mod uvi_bench;
