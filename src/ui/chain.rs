@@ -248,8 +248,8 @@ fn detail(p: ir::Processor) -> String {
             "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
         ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
-        ir::Processor::Saturation(shape) => format!("Saturation · shape {shape:+.2}"),
-        ir::Processor::Distortion { transistor, drive, damping } => format!(
+        ir::Processor::Saturation(shape) | ir::Processor::LiveSaturation { shape, .. } => format!("Saturation · shape {shape:+.2}"),
+        ir::Processor::Distortion { transistor, drive, damping } | ir::Processor::LiveDistortion { transistor, drive, damping, .. } => format!(
             "{} distortion · drive {:.0}% · damping {:.0}%",
             if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
         ),
@@ -309,7 +309,11 @@ fn detail(p: ir::Processor) -> String {
             d.cutoff * 100.,
             d.resonance * 100.
         ),
-        ir::Processor::LadderLP4(d) => format!("Ladder low-pass · {} poles", d.taps),
+        ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
+        ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
+        ir::Processor::Phaser(_) => "Phaser filter".into(),
+        ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
+        ir::Processor::Formant(_) => "Formant I".into(),
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
             ["2", "4", "2/4"][usize::from(d.mode / 3)],

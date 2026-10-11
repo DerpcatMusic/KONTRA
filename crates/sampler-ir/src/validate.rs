@@ -229,8 +229,8 @@ impl Check<'_> {
                     }
                 }
                 Processor::Rectify(_) => {}
-                Processor::Saturation(shape) => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
-                Processor::Distortion { drive, damping, .. } => {
+                Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+                Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
                     self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
                     self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
                 }
@@ -241,6 +241,16 @@ impl Check<'_> {
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
                 }
+                Processor::Formant(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => {
+                    for knob in [depth, feedback, phase] { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
+                    self.within(f64::from(speed), 0.0..=f64::MAX, "phaser speed")?;
+                    if let Some(unit) = period_unit { self.within(f64::from(unit), f64::MIN_POSITIVE..=f64::MAX, "phaser period")?; }
+                }
+                Processor::Phaser(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
+                }
                 Processor::Ar(d) => {
                     self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
                     self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;
@@ -250,7 +260,7 @@ impl Check<'_> {
                     self.within(d.gain, -1.0..=1.0, "ladder gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
-                    self.within(f64::from(d.taps), 1.0..=4.0, "ladder taps")?;
+                    self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [
@@ -266,6 +276,12 @@ impl Check<'_> {
                     ] {
                         self.finite(v, field)?;
                     }
+                }
+                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
+                    self.finite(f64::from(threshold), "compressor threshold")?;
+                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
+                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
+                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
                 }
                 Processor::Compressor(c) => {
                     self.finite(c.threshold_db, "compressor threshold")?;

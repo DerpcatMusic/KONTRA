@@ -30,46 +30,41 @@ pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLoo
         .collect()
 }
 
-/// Defaults, lawful service conversions and DSP identities for native LP4 lanes.
-fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
-    let Some(slot) = d.address else {
-        return Vec::new();
+/// Defaults, lawful service conversions and DSP identities for native physical effect lanes.
+fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+    use crate::EngineParameterLaw::{Linear, SignedNormalized};
+    let unit = Linear { low: 0., high: 1. };
+    let (slot, lanes) = match p {
+        ir::Processor::LadderLP4(d) => {
+            let Some(slot) = d.address else { return Vec::new() };
+            (slot, vec![("ENGINE_PAR_CUTOFF", d.cutoff, unit),
+                ("ENGINE_PAR_RESONANCE", d.resonance, unit),
+                ("ENGINE_PAR_GAIN", d.gain, SignedNormalized)])
+        }
+        ir::Processor::LiveSaturation { shape, address } => (address,
+            vec![("ENGINE_PAR_SHAPE", f64::from(shape), Linear { low: -1., high: 1. })]),
+        ir::Processor::LiveDistortion { drive, damping, address, .. } => (address,
+            vec![("ENGINE_PAR_DRIVE", f64::from(drive), unit),
+                ("ENGINE_PAR_DAMPING", f64::from(damping), unit)]),
+        _ => return Vec::new(),
     };
-    [
-        ("ENGINE_PAR_CUTOFF", d.cutoff, false),
-        ("ENGINE_PAR_RESONANCE", d.resonance, false),
-        ("ENGINE_PAR_GAIN", d.gain, true),
-    ]
-    .into_iter()
-    .map(|(name, value, signed)| {
+    lanes.into_iter().map(|(name, value, law)| {
         let address = crate::EngineParameterAddress {
             parameter: crate::engine_parameter_id(name).unwrap(),
-            group: slot.group,
-            slot: slot.slot,
-            generic: slot.generic,
+            group: slot.group, slot: slot.slot, generic: slot.generic,
         };
         let id = crate::engine_parameter_control(address);
-        (
-            ControlDefinition {
-                id,
-                domain: ControlDomain::Real {
-                    min: if signed { -1. } else { 0. },
-                    max: 1.,
-                },
-                default: ControlValue::Real(value),
-            },
-            crate::EngineParameterBinding {
-                address,
-                control: id,
-                law: if signed {
-                    crate::EngineParameterLaw::SignedNormalized
-                } else {
-                    crate::EngineParameterLaw::Linear { low: 0., high: 1. }
-                },
-            },
-        )
-    })
-    .collect()
+        let low = if matches!(law, SignedNormalized | Linear { low: -1., .. }) { -1. } else { 0. };
+        (ControlDefinition { id, domain: ControlDomain::Real { min: low, max: 1. },
+            default: ControlValue::Real(value) },
+            crate::EngineParameterBinding { address, control: id, law })
+    }).collect()
+}
+
+fn native_parameter(lanes: &[(ControlDefinition, crate::EngineParameterBinding)], index: usize) -> Parameter {
+    let c = lanes[index].0;
+    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
+    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
 }
 
 /// Seed for random sequences; fixed so renders are reproducible.
@@ -644,10 +639,8 @@ pub fn lower_with(
     let mut native = std::collections::BTreeMap::new();
     for chain in &instrument.chains {
         for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-            if let ir::Processor::LadderLP4(d) = p {
-                for (_, binding) in ladder_lanes(*d) {
-                    native.insert(binding.address, binding);
-                }
+            for (_, binding) in native_lanes(*p) {
+                native.insert(binding.address, binding);
             }
         }
     }
@@ -1753,10 +1746,8 @@ impl Lowering<'_> {
         let mut all = std::collections::BTreeMap::new();
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-                if let ir::Processor::LadderLP4(d) = *p {
-                    for (control, _) in ladder_lanes(d) {
-                        all.entry(control.id).or_insert(control);
-                    }
+                for (control, _) in native_lanes(*p) {
+                    all.entry(control.id).or_insert(control);
                 }
                 let ir::Processor::Mix {
                     address,
@@ -1954,7 +1945,7 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
             }),
             ir::Processor::LadderLP4(d) => {
-                let lanes = ladder_lanes(d);
+                let lanes = native_lanes(ir::Processor::LadderLP4(d));
                 let parameter = |index: usize, value: f64| {
                     lanes
                         .get(index)
@@ -1994,6 +1985,18 @@ impl Lowering<'_> {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             ir::Processor::Saturation(shape) => Processor::Saturation(shape),
+            ir::Processor::LiveSaturation { .. } => {
+                Processor::LiveSaturation(native_parameter(&native_lanes(processor), 0))
+            }
+            ir::Processor::LiveDistortion { transistor, .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveDistortion { transistor, drive: native_parameter(&lanes, 0),
+                    damping: native_parameter(&lanes, 1) }
+            }
+            ir::Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit },
+            ir::Processor::KontaktEnhancedCompressor { knobs, link } => Processor::KontaktEnhancedCompressor { knobs, link },
+            ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
+            ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
@@ -2158,6 +2161,7 @@ impl Lowering<'_> {
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
                     | Processor::Saturation(_)
+                    | Processor::LiveSaturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
