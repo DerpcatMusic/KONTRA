@@ -73,7 +73,7 @@ impl ParameterRegistry {
             || !high.is_finite()
             || low > high
             || !(high - low).is_finite()
-            || descriptor.address.parameter >= u32::MAX - 14
+            || descriptor.address.parameter >= u32::MAX - 16
             || matches!(descriptor.law, ParameterLaw::Native(law) if !law.valid())
             || !(low..=high).contains(&descriptor.default)
             || self.addresses.contains_key(&descriptor.address)
@@ -159,6 +159,8 @@ impl ParameterAddress {
     pub const Resonance: Self = Self::legacy(0, 5);
     pub const Tone: Self = Self::legacy(0, 11);
     pub const SampleStart: Self = Self::legacy(0, 12);
+    pub const LoopStart: Self = Self::legacy(0, 15);
+    pub const LoopLength: Self = Self::legacy(0, 16);
     /// Start phase of a program-local LFO, read once at voice onset.
     pub const fn SourcePhase(node: u32) -> Self {
         Self::legacy(node, 14)

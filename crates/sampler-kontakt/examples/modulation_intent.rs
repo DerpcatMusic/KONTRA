@@ -3,7 +3,7 @@ use ni_file::kontakt::objects::{
     ExternalModArray32, GroupList, InternalModArray16, Modulator, Program,
 };
 use std::{collections::BTreeMap, path::Path};
-fn main() {
+pub fn main() {
     for path in [
         "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
         "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
@@ -107,6 +107,27 @@ fn main() {
             ));
         }
         let library = sampler_kontakt::read(path).unwrap();
+        for zone in &library.instrument.zones {
+            if zone.routes.iter().any(|r| {
+                matches!(
+                    library.instrument.routes[r.0].target,
+                    sampler_ir::Target::LoopStart | sampler_ir::Target::LoopLength
+                )
+            }) {
+                if let sampler_ir::Looping::Slots(slots) = &zone.playback.looping {
+                    for slot in slots.iter().flatten() {
+                        count(format!(
+                            "controlled zone start_zero={} loop_start_zero={} crossfade_zero={} loop_count={} tuning_unity={}",
+                            zone.playback.start == 0,
+                            slot.range.start == 0,
+                            slot.range.crossfade == sampler_ir::Span::Frames(0),
+                            slot.count,
+                            slot.tuning == 1.
+                        ));
+                    }
+                }
+            }
+        }
         for b in &library.instrument.behaviors {
             // Read every authored script in RAM; retain only documented engine identifiers.
             for token in b

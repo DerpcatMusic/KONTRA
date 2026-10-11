@@ -552,6 +552,12 @@ impl Runtime {
                 tempo: self.tempo,
                 now: at,
             };
+            if let Some(offsets) =
+                plan.modulation
+                    .loop_offsets(&plan.prepared.voice_modulation, i, inputs.controls)
+            {
+                v.cursor = v.cursor.with_loop_offsets(offsets);
+            }
             let ramp = plan
                 .modulation
                 .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
