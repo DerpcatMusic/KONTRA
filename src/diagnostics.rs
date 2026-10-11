@@ -1891,6 +1891,10 @@ impl LoadTrace {
             impact = "compiled with this warning; inspect the reported script slot and line";
         }
         let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        if missing.feature == "setter_type_mismatch" {
+            message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
+            impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
+        }
         // Engine-raised lua findings carry the fault text (error, widget, index, range); other
         // values are authored and stay out.
         if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
@@ -2680,6 +2684,22 @@ mod tests {
         assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
         assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
         assert!(!text.contains("\"0.5\""), "authored values stay out");
+    }
+
+    #[test]
+    fn setter_type_mismatch_at_load_explains_the_ignored_write() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("setter.uvip"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        trace.missing(&Missing {
+            location: "script".into(), feature: "setter_type_mismatch".into(),
+            value: String::new(), reason: MissingReason::NotModeled,
+        }, None);
+        let report = trace.finish("loaded");
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("setParameter"));
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("UVI ignores the write"));
+        assert!(report["issues"][0]["impact"].as_str().unwrap().contains("supplied and expected types"));
     }
 
     #[test]
