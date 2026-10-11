@@ -19,7 +19,7 @@ pub fn parity_reports(instrument: &sampler_ir::Instrument) -> Vec<ScriptReport> 
             );
             sampler_ksp::parity_report_with(
                 &b.source,
-                &format!("ksp:{prefix}slot{slot}"),
+                &format!("ksp:slot{slot}"),
                 &b.name,
                 sampler_ksp::Limits::LIBRARY,
                 &environment,
