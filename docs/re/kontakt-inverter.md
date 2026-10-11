@@ -1,6 +1,6 @@
 # Inverter: flag-order evidence still incomplete
 
-Status: implementation blocked at the [MCP evidence gate](kontakt-fx-2-evidence.md).
+Status (round 3): saved flag order proved end to end; existing mapping confirmed.
 
 Docs first: Kontakt 8 [Effect Reference, Inverter](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference),
 Phase Invert and L/R Swap; KSP [Engine Parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters).
@@ -23,3 +23,21 @@ Confirmation: cached reader and audio function inspected; no end-to-end
 flag-order vector, MCP function output, or production regression test.
 The existing flag-order diagnostic remains because the missing assignment
 would make its removal an unsupported claim.
+
+## Round 3: assignment resolved
+
+Same-SHA cache `complete-export/pseudocode.c`: `FUN_1409619b0`, case 4,
+uses `FUN_1407cb4f0` to obtain BParFXInverter and assigns BPar+8 to
+wrapper+0x1c0 and BPar+9 to wrapper+0x1c1. radare2 MCP disassembly
+`0x140961f91..0x140961fac` confirms both source/destination pairs.
+Reader `0x140d01db0..0x140d01de7` confirms first/second saved byte.
+Audio `FUN_140908e60` tests +0x1c1 for swap (only if two channels),
++0x1c0 for sign inversion; radare2 confirms the branch and sign mask
+`0x144714ba0` = four copies of `0x80000000`.
+
+The importer already used this order; only its now-proven false
+UnknownLaw diagnostic was removed. `inverter_saved_flags_match_native_assignment_and_audio`
+failed first on that diagnostic, then passed for the three nonidentity flag
+combinations, using input (.25,-.5). Expected outputs: (-.25,.5),
+(-.5,.25), (.5,-.25). Existing chain-boundary expectation updated.
+No Kontakt reference recording or timing/performance claim.
