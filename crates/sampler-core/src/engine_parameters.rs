@@ -70,6 +70,8 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 pub enum EngineParameterLaw {
     /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
     SignedNormalized,
+    /// A native switch: zero is off, a nonzero write is on; readback is 0/1.
+    Switch,
     Linear {
         low: f64,
         high: f64,
@@ -124,7 +126,7 @@ impl EngineParameterLaw {
 
     pub(crate) fn valid(self) -> bool {
         match self {
-            Self::SignedNormalized => true,
+            Self::SignedNormalized | Self::Switch => true,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high >= low
@@ -178,10 +180,20 @@ impl EngineParameterLaw {
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
             Self::SignedNormalized => unreachable!(),
+            Self::Switch => f64::from(value != 0),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
-            Self::Exponential { low, high } => (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp(),
+            Self::Exponential { low, high } => {
+                // Declared endpoints must not shrink or widen through log/exp roundoff.
+                if v == 0. {
+                    low
+                } else if v == 1e6 {
+                    high
+                } else {
+                    (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp()
+                }
+            }
             Self::ShiftedExponential { low, high, offset } => {
-                (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp().max(low) - offset
+                Self::Exponential { low, high }.decode(value).max(low) - offset
             }
             Self::AhdsrCurve => {
                 let c = v / 500000. - 1.;
@@ -206,6 +218,7 @@ impl EngineParameterLaw {
         }
         (match self {
             Self::SignedNormalized => unreachable!(),
+            Self::Switch => f64::from(value != 0.),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
@@ -444,6 +457,80 @@ fn slot_parameter(name: &str) -> Option<SlotKind> {
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors() {
+        for (law, low, high) in [
+            (
+                EngineParameterLaw::Exponential {
+                    low: 20.,
+                    high: 20_000.,
+                },
+                20.,
+                20_000.,
+            ),
+            (
+                EngineParameterLaw::Exponential {
+                    low: 20.,
+                    high: 20.,
+                },
+                20.,
+                20.,
+            ),
+            (
+                EngineParameterLaw::ShiftedExponential {
+                    low: 2.,
+                    high: 15_002.,
+                    offset: 2.,
+                },
+                0.,
+                15_000.,
+            ),
+            (
+                EngineParameterLaw::ShiftedExponential {
+                    low: 2.,
+                    high: 25_002.,
+                    offset: 2.,
+                },
+                0.,
+                25_000.,
+            ),
+        ] {
+            assert_eq!(law.decode(0), low, "{law:?}");
+            assert_eq!(law.decode(1_000_000), high, "{law:?}");
+            assert_eq!(law.decode(i32::MIN), low, "{law:?}");
+            assert_eq!(law.decode(i32::MAX), high, "{law:?}");
+            assert_eq!(law.normalized_value(low), Ok(0), "{law:?}");
+            assert_eq!(
+                law.normalized_value(high),
+                Ok(if low == high { 0 } else { 1_000_000 }),
+                "{law:?}"
+            );
+            for value in [
+                low.next_down(),
+                high.next_up(),
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                assert_eq!(
+                    law.normalized_value(value),
+                    Err(Error::InvalidInput),
+                    "{law:?}: {value}"
+                );
+            }
+            if low != high {
+                for value in [low.next_up(), high.next_down()] {
+                    assert!(law.normalized_value(value).is_ok(), "{law:?}: {value}");
+                }
+                assert_eq!(
+                    law.normalized_value(law.decode(500_000)),
+                    Ok(500_000),
+                    "{law:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn native_parameter_laws_are_invertible_and_reject_invalid_ranges() {
         let laws = [

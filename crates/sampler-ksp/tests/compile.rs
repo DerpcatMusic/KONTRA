@@ -125,6 +125,58 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 }
 
 #[test]
+fn fade_curve_signatures_accept_documented_forms_and_reject_missing_stop_or_extra_args() {
+    for call in [
+        "fade_in($EVENT_ID,1000)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_EQUAL_POWER)",
+        "fade_out($EVENT_ID,1000,0)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LOGARITHMIC)",
+    ] {
+        let source = format!("on note {call} end on");
+        let script = compile(&source, 48000, Limits::LIBRARY).unwrap();
+        assert!(script.warnings().is_empty(), "{call}");
+    }
+    for call in [
+        "fade_in($EVENT_ID)",
+        "fade_in($EVENT_ID,1000,$NI_FADE_LINEAR,1)",
+        "fade_out($EVENT_ID,1000)",
+        "fade_out($EVENT_ID,1000,1,$NI_FADE_LINEAR,1)",
+    ] {
+        let source = format!("on note {call} end on");
+        assert!(compile(&source, 48000, Limits::LIBRARY).is_err(), "{call}");
+    }
+}
+
+#[test]
+fn pgs_callback_alias_and_canonical_name_share_duplicate_detection() {
+    for (first, second) in [
+        ("pgs_changed", "_pgs_changed"),
+        ("_pgs_changed", "pgs_changed"),
+        ("_pgs_changed", "_pgs_changed"),
+        ("pgs_changed", "pgs_changed"),
+    ] {
+        let source = format!("on {first}\nend on\non {second}\nend on");
+        let error = match compile(&source, 48000, limits()) {
+            Err(error) => error,
+            Ok(_) => panic!("duplicate PGS callbacks accepted: {first}, {second}"),
+        };
+        assert_eq!(error.message, "duplicate callback", "{first}, {second}");
+        assert_eq!(error.line, 3, "{first}, {second}");
+    }
+}
+
+#[test]
+fn pgs_callback_alias_does_not_accept_a_ui_control_argument() {
+    let source = "on init\ndeclare ui_button $button\nend on\non _pgs_changed($button)\nend on";
+    let error = match compile(source, 48000, limits()) {
+        Err(error) => error,
+        Ok(_) => panic!("PGS alias with a UI control argument accepted"),
+    };
+    assert_eq!(error.message, "unsupported callback");
+    assert_eq!(error.line, 4);
+}
+
+#[test]
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",
@@ -1209,4 +1261,143 @@ fn ui_callbacks_emit_reachable_functions_once_per_context() {
     let many = compile(&source(6), 48000, limits).unwrap();
     assert_eq!(many.controls().len(), 6);
     assert!(many.usage().instructions <= one.usage().instructions + 20);
+}
+
+fn real_sgn_note_runtime(source: &str) -> Runtime {
+    let script = compile(
+        source,
+        48000,
+        Limits {
+            instructions: 128,
+            ..limits()
+        },
+    )
+    .unwrap();
+    assert!(script.warnings().is_empty(), "{:?}", script.warnings());
+    let prepared = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    Runtime::new(
+        prepared,
+        CoreLimits {
+            notes: 1,
+            channels: 0,
+            performances: 1,
+            families: 0,
+            expressions: 1,
+            voices: 0,
+            decisions: 0,
+            commands: 0,
+            behaviors: 1,
+            behavior_fuel: 128,
+            behavior_cells: 16,
+            note_cells: 0,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn real_sgn_note_evaluates_operand_once_and_preserves_following_rng_draw() {
+    // Own xorshift seed, not a Kontakt seed/order assertion. Its first small
+    // draw is -1; the second draw over 0..=i32::MAX is 1912511847.
+    for (functions, body, expected) in [
+        ("", "$result := sgn(real(random(-1, 1)))", -1),
+        (
+            "",
+            "$result := 7 + sgn(real(sgn(real(random(-1, 1)))))",
+            6,
+        ),
+        (
+            "function sample $result := 7 + sgn(real(random(-1, 1)) * 1.0) end function",
+            "call sample",
+            6,
+        ),
+    ] {
+        let source = format!(
+            "on init declare $result declare $following end on
+             {functions}
+             on note {body} $following := random(0, 2147483647) end on"
+        );
+        let mut rt = real_sgn_note_runtime(&source);
+        rt.seed_random(0x9e37_79b9_7f4a_7c15);
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            let instance = sampler_core::ScriptInstanceId(0);
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), instance, 0),
+                Ok(expected),
+                "{body}"
+            );
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), instance, 1),
+                Ok(1912511847),
+                "following draw after {body}"
+            );
+            rt.key_up(note, None).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+            assert_eq!(rt.pending_commands(), 0);
+        });
+    }
+}
+
+#[test]
+fn real_sgn_note_reuses_full_operand_bits_and_preserves_comparison_policy() {
+    for (value, expected) in [
+        ("-7.5", -1),
+        ("7.5", 1),
+        ("0.0", 0),
+        ("-0.0", 0),
+        ("1.0e300", 1),
+        ("-1.0e300", -1),
+        ("5.0e-324", 1),
+        ("-5.0e-324", -1),
+        // Preserve the existing own unordered-comparison behavior, not a
+        // claim about Kontakt's NaN/domain policy.
+        ("sqrt(-1.0)", 0),
+    ] {
+        // Loading ~input forces the runtime branch instead of literal folding;
+        // nesting under addition exercises a nonzero destination register.
+        let source = format!(
+            "on init declare $result declare ~input end on
+             on note ~input := {value} $result := 5 + sgn(~input) end on"
+        );
+        let mut rt = real_sgn_note_runtime(&source);
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), 0),
+                Ok(5 + expected),
+                "sgn({value})"
+            );
+            rt.key_up(note, None).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
 }

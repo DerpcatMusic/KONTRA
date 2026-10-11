@@ -46,7 +46,11 @@ use super::{
     Loaded, MAX_BLOCK, Progress, RACK_SLOTS, Rendered, ScriptUi, Stream, Voices,
 };
 
+mod array_file;
 mod effect_controls;
+mod host_transport;
+#[cfg(test)]
+mod host_transport_tests;
 mod persistence;
 #[cfg(test)]
 mod pressed_tests;
@@ -289,6 +293,7 @@ impl Part {
                 captures,
                 capturing: false,
                 midi_requests: Default::default(),
+                array_worker: None,
                 revision,
                 pending_widgets: Default::default(),
                 pending: Default::default(),
@@ -478,6 +483,7 @@ pub struct V2Core {
     parts: Vec<Option<Box<Part>>>,
     performance: Option<[f64; 3]>,
     align: crate::timing::Align,
+    transport: host_transport::State,
     holding: bool,
     aligned_buses: Box<[Block; BUSES]>,
     aligned_tap: Box<[f32; MAX_BLOCK]>,
@@ -515,6 +521,7 @@ pub(crate) struct ControlIngress {
     captures: std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing: bool,
     midi_requests: std::collections::VecDeque<sampler_core::ControlRequest>,
+    array_worker: Option<array_file::Worker>,
     revision: u64,
     persistence: Option<Arc<persistence::Snapshot>>,
 }
@@ -524,6 +531,21 @@ impl ControlIngress {
         self.persistence.as_ref().map(|state| state.save())
     }
     pub(crate) fn service_midi(&mut self, effect: &sampler_core::Effect) -> bool {
+        if effect.plan != self.plan {
+            return false;
+        }
+        if effect.service == sampler_core::ARRAY_FILE_SERVICE {
+            let Ok(output) = sampler_core::ArrayFileCompletion::from_effect(effect) else {
+                return false;
+            };
+            self.midi_requests.push_back(sampler_core::ControlRequest {
+                plan: effect.plan,
+                expected_revision: None,
+                operation: sampler_core::ControlOperation::ArrayFileCapture(output),
+            });
+            self.flush_midi();
+            return true;
+        }
         if effect.service != sampler_core::MIDI_SERVICE {
             return false;
         }
@@ -786,6 +808,40 @@ impl ControlIngress {
         while let Some(reply) = self.client.reply() {
             if matches!(
                 &reply.command.operation,
+                sampler_core::ControlOperation::ArrayFileCapture(_)
+                    | sampler_core::ControlOperation::ArrayFileComplete(_)
+            ) {
+                if reply.result == Err(sampler_core::Error::Capacity) {
+                    self.midi_requests.push_back(reply.command);
+                    continue;
+                }
+                if let sampler_core::ControlOperation::ArrayFileCapture(output) =
+                    reply.command.operation
+                {
+                    if reply.result.is_ok() {
+                        if self.array_worker.is_none() {
+                            self.array_worker = array_file::Worker::new().ok();
+                        }
+                        if let Some(worker) = &mut self.array_worker {
+                            worker.submit(reply.command.plan, output);
+                        } else {
+                            // A failed thread start still completes this admitted job with status 0.
+                            self.midi_requests.push_back(sampler_core::ControlRequest {
+                                plan: reply.command.plan,
+                                expected_revision: None,
+                                operation: sampler_core::ControlOperation::ArrayFileComplete(
+                                    output,
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    changed |= reply.result.is_ok();
+                }
+                continue;
+            }
+            if matches!(
+                &reply.command.operation,
                 sampler_core::ControlOperation::MidiCapture(_)
                     | sampler_core::ControlOperation::MidiComplete(_)
             ) {
@@ -866,6 +922,15 @@ impl ControlIngress {
                     "control_rejected",
                     serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}),
                 );
+            }
+        }
+        if let Some(worker) = &mut self.array_worker {
+            while let Some((plan, output)) = worker.poll() {
+                self.midi_requests.push_back(sampler_core::ControlRequest {
+                    plan,
+                    expected_revision: None,
+                    operation: sampler_core::ControlOperation::ArrayFileComplete(output),
+                });
             }
         }
         self.flush_midi();
@@ -1568,6 +1633,7 @@ impl V2Core {
             onset_audit: None,
             performance: None,
             align: crate::timing::Align::with_slots(parts, mix.timing.clone()),
+            transport: host_transport::State::default(),
             holding: false,
             aligned_buses: Box::new([[[0.; MAX_BLOCK]; 2]; BUSES]),
             aligned_tap: Box::new([0.; MAX_BLOCK]),
@@ -2087,14 +2153,22 @@ impl Core for V2Core {
     }
 
     fn begin_block(&mut self, block: &BlockInfo) {
+        self.transport
+            .update(block.transport, self.align.clock, self.rate);
+        let values = self.transport.values();
+        for part in self.parts.iter_mut().flatten() {
+            part.runtime.set_offline(block.offline);
+            let _ = part.runtime.set_tempo(self.transport.tempo());
+            // sampler-ksp::lower::host_slot: documented duration/position/signature/running ABI.
+            for (slot, value) in values.into_iter().enumerate() {
+                let _ = part.runtime.set_host_value(8 + slot, value);
+            }
+        }
         let holding = self.align.holding(block.transport.playing);
         if self.holding && !holding {
             self.flush_aligned();
         }
         self.holding = holding;
-        for part in self.parts.iter_mut().flatten() {
-            part.runtime.set_offline(block.offline);
-        }
     }
 
     fn event(&mut self, port: u8, event: Event) {
@@ -5191,6 +5265,137 @@ mod tests {
         assert!(
             !core.set_control(0, sampler_ui_ir::ControlId(7), 1.0),
             "no such control"
+        );
+    }
+
+    #[test]
+    fn nka_service_uses_actual_worker_control_capture_and_exact_async_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("own-array.nka");
+        std::fs::write(&path, "%data\n31\n32\n").unwrap();
+        let saved = dir.path().join("saved-array.nka");
+        let source = format!(
+            r#"on init declare %data[2] := (1,2) declare $job declare $seen declare $status declare $count end on
+            on pgs_changed
+                if ($count = 0) $job := load_array_str(%data,"{}")
+                else $job := save_array_str(%data,"{}") %data[0] := 99 end if
+            end on
+            on async_complete $seen := $NI_ASYNC_ID $status := $NI_ASYNC_EXIT_STATUS inc($count) end on"#,
+            path.to_str().unwrap().replace('\\', "/"),
+            saved.to_str().unwrap().replace('\\', "/")
+        );
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let entry = script
+            .entries()
+            .iter()
+            .find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged)
+            .unwrap()
+            .program;
+        let plan = script
+            .bind(Prepared::new(48000, vec![], vec![], 1).unwrap())
+            .unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let mut ingress = part.ui_controls.take().unwrap();
+        let plan = part.runtime.active_plan();
+        let heap = crate::plugin::tests::allocations(|| {
+            part.runtime.start_plan_behavior(plan, entry).unwrap();
+        });
+        assert_eq!(heap, 0);
+        let mut effects = Vec::with_capacity(1);
+        part.runtime.drain_effects(|e| {
+            effects.push(*e);
+            true
+        });
+        assert_eq!(effects.len(), 1);
+        assert!(ingress.service_midi(&effects[0]));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while part
+            .runtime
+            .script_cell(plan, sampler_core::ScriptInstanceId(0), 5)
+            == Ok(0)
+        {
+            let heap = crate::plugin::tests::allocations(|| {
+                while part.runtime.poll_control_update().unwrap().is_some() {}
+            });
+            assert_eq!(
+                heap, 0,
+                "capture/application/async callback must not allocate or free on audio"
+            );
+            ingress.settle();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "NKA worker did not complete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        ingress.settle();
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 0),
+            Ok(31)
+        );
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 4),
+            Ok(1)
+        );
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 5),
+            Ok(1)
+        );
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 3),
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 2)
+        );
+        assert!(ingress.array_worker.is_some());
+        effects.clear();
+        part.runtime.start_plan_behavior(plan, entry).unwrap();
+        part.runtime.drain_effects(|e| {
+            effects.push(*e);
+            true
+        });
+        assert!(ingress.service_midi(&effects[0]));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while part
+            .runtime
+            .script_cell(plan, sampler_core::ScriptInstanceId(0), 5)
+            == Ok(1)
+        {
+            let heap = crate::plugin::tests::allocations(|| {
+                while part.runtime.poll_control_update().unwrap().is_some() {}
+            });
+            assert_eq!(heap, 0);
+            ingress.settle();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "NKA save worker did not complete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        ingress.settle();
+        assert_eq!(
+            std::fs::read_to_string(saved).unwrap(),
+            "%data\n31\n32\n",
+            "request-time snapshot survives later writes"
+        );
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 5),
+            Ok(2)
+        );
+        assert_eq!(
+            part.runtime
+                .script_cell(plan, sampler_core::ScriptInstanceId(0), 4),
+            Ok(1)
         );
     }
 

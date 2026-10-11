@@ -1,0 +1,84 @@
+{
+  "revision": "dffbafabba75d26451515ec2ee86576462a6e858",
+  "base": "429e7dff3ecb0f53aef32c43201ab796ccc8c28c",
+  "scope": "KSP production block-start transport consumer",
+  "checks": {
+    "document_digests": "PASS",
+    "document_units_and_undocumented_tempo_alias_exclusion": "PASS",
+    "production_publication_before_alignment_flush": "PASS",
+    "existing_slots_8_through_18_match": "PASS",
+    "baseline_consumer_gap": "PASS",
+    "no_heap_or_clock_io_tokens_in_boundary_helper": "PASS_SOURCE_ONLY",
+    "independent_rational_vectors_and_previous_tempo_ppq_oracle": "PASS",
+    "duration_integer_intermediate_overflow_bounds": "PASS",
+    "rust_runtime_tests": "UNRUN",
+    "native_execution_parity": "UNKNOWN",
+    "CPU_and_RAM_vs_v1_and_Kontakt": "UNACHIEVED_UNMEASURED"
+  },
+  "documents": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-callbacks.html",
+      "sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "retrieved_utc": "2026-10-10T02:13:00.174116+00:00",
+      "authority": "immutable vendor specification, not native execution"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-time.html",
+      "sha256": "aafd0e71a266571cc5a6adb9dbfb15bb31f4c4819e9748427634d171b34fa2f9",
+      "retrieved_utc": "2026-10-10T02:13:00.544939+00:00",
+      "authority": "immutable vendor specification, not native execution"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants",
+      "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-variables.html",
+      "sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "retrieved_utc": "2026-10-10T02:46:27.918489+00:00",
+      "authority": "immutable vendor specification, not native execution"
+    }
+  ],
+  "sections": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants#time-and-transport",
+      "section": "Time and Transport",
+      "document_sha256": "9a5ab14188022767684a1dea13a0ca0e060e0838a788073b7a26b50b0030247e",
+      "retrieved_utc": "2026-10-10T02:46:27.918489+00:00",
+      "applicability": "Official unversioned Kontakt/KSP documentation retrieved 2026-10-10; NI KSP includes 8.12 additions. Native reference8.13.1 has NOT been executed for this item.",
+      "excerpt": "Time and Transport Date And Time Variables These variables return the current date and time as set by the operating system, in form of integer values. $NI_DATE_YEAR $NI_DATE_MONTH ( 1 ... 12 ) $NI_DATE_DAY ( 1 ... 31 ) $NI_TIME_HOUR ( 0 ... 23 ) $NI_TIME_MINUTE ( 0 ... 59 ) $NI_TIME_SECOND ( 0 ... 59 ) $DISTANCE_BAR_START This variable returns the time of a MIDI Note On message in microseconds from the beginning of the current bar, with respect to the current tempo. $DURATION_BAR This variable returns the duration in microseconds of one bar with respect to the current tempo. It only works if the clock is running, otherwise it will return 0 . You can also retrieve the duration of one bar by using $SIGNATURE_NUM and $SIGNATURE_DENOM in combination with various $DURATION_ constants. $DURATION_QUARTER This variable returns the duration of a quarter note in microseconds, with respect to the current tempo. Also available: $DURATION_EIGHTH $DURATION_SIXTEENTH $DURATION_QUARTER_TRIPLET $DURATION_EIGHTH_TRIPLET $DURATION_SIXTEENTH_TRIPLET $ENGINE_UPTIME This variable returns the time period in milliseconds (not microseconds!) that has passed since the instantiation of Kontakt. The engine uptime is calculated from the sample rate and can thus be used in musical contexts, (eg. building arpeggiators or sequencers) as it remains in sync, even in an offline bounce. $KSP_TIMER This variable returns the time period in microseconds that has passed since Kontakt was instantiated. It can be reset with reset_ksp_timer . The KSP timer is based on the CPU clock and thus runs at a constant rate, regardless of whether or not Kontakt is being used in real time. As such, it should be used to test the efficiency of scripts and not to make musical calculations. $NI_SONG_POSITION This variable returns the host’s current song position at 960 PPQ (pulses per quarter note). $NI_TRANSPORT_RUNNING This variable contains 1 if the host's transport is running, 0 otherwise. $SIGNATURE_NUM This variable contains the numerator of the current time signature, i.e. 4 /4. $SIGNATURE_DENOM This variable contains the denominator of the current time signature, i.e. 4/ 4 . Tempo Unit Constants These constants are used to control the unit parameter of time-related controls (e.g. Delay Time, Envelope Attack etc.) with engine parameter variables like $ENGINE_PAR_DL_TIME_UNIT . $NI_SYNC_UNIT_ABS (not synchronized to tempo) $NI_SYNC_UNIT_WHOLE $NI_SYNC_UNIT_WHOLE_TRIPLET $NI_SYNC_UNIT_HALF $NI_SYNC_UNIT_HALF_TRIPLET $NI_SYNC_UNIT_QUARTER $NI_SYNC_UNIT_QUARTER_TRIPLET $NI_SYNC_UNIT_8TH $NI_SYNC_UNIT_8TH_TRIPLET $NI_SYNC_UNIT_16TH $NI_SYNC_UNIT_16TH_TRIPLET $NI_SYNC_UNIT_32ND $NI_SYNC_UNIT_32ND_TRIPLET $NI_SYNC_UNIT_64TH $NI_SYNC_UNIT_64TH_TRIPLET $NI_SYNC_UNIT_256TH $NI_SYNC_UNIT_ZONE (only applies to the Speed parameter in certain Source module sampler modes) %NOTE_DURATION[<note-number>] This variable array contains the duration since note start in microseconds for each key. Mostly only makes sense in on release callback. $NI_BAR_START_POSITION This variable returns the start of current bar in ticks (at 960 PPQ) from the start of the host project. Note: Since the AAX plugin format doesn't provide this information, this variable will return -1 in ProTools!",
+      "authority": "Vendor documentation, NOT native execution"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#set_listener--",
+      "section": "set_listener()",
+      "document_sha256": "aafd0e71a266571cc5a6adb9dbfb15bb31f4c4819e9748427634d171b34fa2f9",
+      "retrieved_utc": "2026-10-10T02:13:00.544939+00:00",
+      "applicability": "Official unversioned Kontakt/KSP documentation retrieved 2026-10-10; NI KSP includes 8.12 additions. Native reference8.13.1 has NOT been executed for this item.",
+      "excerpt": "set_listener() set_listener(<signal-type>, <parameter>) Sets the signals on which the listener callback should react to. Can only be used in the on init callback. <signal-type> The event on which the listener callback should react. The following types are available: $NI_SIGNAL_TRANSP_STOP $NI_SIGNAL_TRANSP_START $NI_SIGNAL_TIMER_MS $NI_SIGNAL_TIMER_BEAT <parameter> User defined parameter, dependant on the specified signal type: $NI_SIGNAL_TIMER_MS : Time interval in microseconds (minimum value is 1000 , which equals one millisecond) $NI_SIGNAL_TIMER_BEAT : Time interval in fractions of a beat/quarter note ( 1 ... 24 ) $NI_SIGNAL_TRANSP_START : Set to 1 if the listener callback should react to the host's transport start command $NI_SIGNAL_TRANSP_STOP : Set to 1 if the listener callback should react to the host's transport stop command Remarks When using $NI_SIGNAL_TIMER_BEAT , the maximum resolution is 24 ticks per beat/quarter note. Examples on init\n    set_listener($NI_SIGNAL_TIMER_BEAT, 1)\nend on\n\non listener\n    if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_BEAT)\n        message($ENGINE_UPTIME)\n    end if\nend on Triggering the listener callback every beat. Triggering will occur even when transport is stopped. See Also change_listener_par() Callbacks and UI : $NI_SIGNAL_TYPE",
+      "authority": "Vendor documentation, NOT native execution"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks#on-listener",
+      "section": "on listener",
+      "document_sha256": "f91a2a1411c18e84e15f4e89e74499c3ae74dec75f230bb8c99df65e316267ba",
+      "retrieved_utc": "2026-10-10T02:13:00.174116+00:00",
+      "applicability": "Official unversioned Kontakt/KSP documentation retrieved 2026-10-10; NI KSP includes 8.12 additions. Native reference8.13.1 has NOT been executed for this item.",
+      "excerpt": "on listener on listener Listener callback, executed at definable time intervals or whenever a transport command is received. Remarks The listener callback is executed at time intervals defined with the set_listener() command. It can also react to the host's transport start and stop commands. This makes it the ideal callback for anything tempo-synced, like sequencers, arpeggiators, MIDI file players etc. In some situations (like tempo changes within the host), ticks can be occasionally left out. Examples on init\n    declare ui_knob $Test (0, 99, 1)\n    declare $direction\n    declare $tick_counter\n\n    set_listener($NI_SIGNAL_TIMER_MS, 10000)\nend on\n\non listener\n    if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)\n        if ($direction = 0)\n            inc($tick_counter)\n        else\n            dec($tick_counter)\n        end if\n\n        $Test := $tick_counter\n\n        if ($tick_counter = 99)\n            $direction := 1\n        end if\n\n        if ($tick_counter = 0)\n            $direction := 0\n        end if\n    end if\nend on Not useful as such, but nice to look at. See Also set_listener() change_listener_par() Callbacks and UI : $NI_SIGNAL_TYPE , $NI_SONG_POSITION",
+      "authority": "Vendor documentation, NOT native execution"
+    }
+  ],
+  "test_names": [
+    "host_block_publishes_microseconds_960_ppq_and_raw_signature_to_every_part",
+    "stopped_block_zeroes_only_bar_and_running_not_tempo_or_host_position",
+    "missing_tempo_and_signature_use_defaults_then_retain_last_valid_pair",
+    "positive_signature_pair_is_raw_not_restricted_to_power_of_two_denominators",
+    "stopped_block_state_is_visible_to_midi_flushed_from_alignment",
+    "missing_position_advances_rendered_time_then_stop_holds_and_seek_overrides",
+    "block_growth_and_part_replacement_preserve_missing_host_state",
+    "host_tempo_changes_affect_new_waits_not_an_already_scheduled_wait",
+    "existing_beat_listener_consumes_each_block_tempo_even_when_stopped_offline",
+    "extreme_finite_inputs_saturate_ksp_integer_values_without_faults",
+    "host_block_updates_and_script_consumption_make_no_audio_heap_calls"
+  ],
+  "safety": "No cargo/rustc/clippy/build/native host/reader/Wine/generic gate/schedule/install/publication/frozen-reference mutation."
+}

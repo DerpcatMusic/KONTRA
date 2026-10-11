@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "scope": "Observed no-host Python checks; this is not a host measurement or build attestation",
+  "source_sha": "d2881195d2d432420a89e7019dc40f0e0b37295c",
+  "base_sha": "38322e9589d2c88da11eaff3e28d2a5a585d3cea",
+  "files": {
+    "tools/cpu-audit-native.py": "4c42def6fbe7fde22003acabf60d405397b672d1092934606fa9edf037802e28",
+    "tools/check-cpu-audit-receipts.py": "d867b8d9901bb72c169f1276b1f192d637a36bbb16fba5d0c7d8b5cfcd3769cb",
+    "tools/kontra-gate/live_host.py": "6b25305beb08b102fe83f744c6a61967c3a54b0c8dd376126838763e7b8816c9",
+    "vendor/moose-clap/tests/live_performance.cpp": "76c617e404794084ee08ca7a8497c58f1810a684718efd5f2595ce5cf0d16a85"
+  },
+  "red": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tools/check-cpu-audit-receipts.py Admission.test_v2_rejects_nonrelease_profile_before_state_export",
+    "product_source": "ff64b10024aeef6f0b6c755ff56d6e2ec7af575e (new test only in working tree)",
+    "exit_code": 1,
+    "failures": 2,
+    "subcases": ["profile=ci extra=[]", "profile=ci extra=['--profile']"],
+    "reason": "AssertionError not raised: mocked observation reached MEASURED",
+    "isolation": "Fresh output path per attempt; no previous metrics receipt could mask rejection"
+  },
+  "green": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 tools/check-cpu-audit-receipts.py",
+      "exit_code": 0,
+      "tests": 7,
+      "passed": 7,
+      "coverage": "selected source, plugin/CLI/host identity, exact host-source digest, release profile with/without profiling, malformed/residual cold pages, successful checked receipt retention"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 tools/cpu-audit-native.py --check",
+      "exit_code": 0,
+      "result": "PASS original audit notes/CC/pedals/order/block-start dispatch"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 tools/kontra-gate/check-live-host.py",
+      "exit_code": 0,
+      "result": "PASS existing no-host identity/admission/native keyed state/load contracts"
+    },
+    {"command": "git diff --check", "exit_code": 0}
+  ],
+  "limitations": [
+    "All subprocess and audition calls in the CPU regression fixtures are mocked; fixtures do not open a plugin or library",
+    "No cargo/rustc/compiler/test binary, live host, source-cold measurement or performance job ran in this lane",
+    "Current429e executed Rust results belong to integration's separately pinned combined receipt, not this source SHA",
+    "Frozen v1 CLAP build/profile provenance and same-host/workload parity must still be admitted by integration",
+    "Existing NI DFD/static receipts are scoped native evidence, not Kontakt CPU/RAM measurement",
+    "Lower CPU AND RAM than BOTH v1 and Kontakt remains UNACHIEVED"
+  ],
+  "next": "Integration alone selects exact comparable already-built release artifacts or includes their missing release/profile prerequisite in the next combined batch; no standalone compile cycle requested"
+}

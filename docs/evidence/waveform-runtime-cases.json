@@ -1,0 +1,40 @@
+{
+  "kind": "Independent transaction-model cases, not Rust/native execution",
+  "policy": {
+    "physical_sources": [27, 91],
+    "waveform_ui_ids": [32768, 32769],
+    "table_index_limit": 65536,
+    "scalar_index": 0,
+    "highlight_clear_index": -1,
+    "midi_clamp": [0, 127],
+    "runtime_extra_store_keys": 4096,
+    "outbox_limit": 256,
+    "reattach": "reset only this widget: cursor0/flags supplied/midi60/highlight-1/sparse table cleared",
+    "highlight": "retain indexed slice; fourth-operand toggle law UNKNOWN",
+    "invalid_init": "warning and ignored operation",
+    "invalid_runtime": "per-operation InvalidInput fault before mutation/effect",
+    "capacity_runtime": "per-operation Capacity fault before mutation/effect; earlier accepted callback operations are not rolled back",
+    "coalescing": "only immediately consecutive setter effects with same plan/instance/ui/property/index"
+  },
+  "cases": [
+    {"name":"documented-table-order", "headroom":2, "operations":[["set",32768,"Table",3,77],["get",32768,"Table",3],["get",32768,"Table",77]], "results":["accepted",77,0], "table":{"32768:3":77}, "effects":1},
+    {"name":"scalar-units-and-midi-owned-clamp", "headroom":0, "operations":[["set",32768,"Cursor",0,12000],["set",32768,"Flags",0,11],["set",32768,"MidiStart",0,200],["get",32768,"Cursor",0],["get",32768,"Flags",0],["get",32768,"MidiStart",0]], "results":["accepted","accepted","accepted",12000,11,127], "effects":3},
+    {"name":"invalid-index-property-source-ui", "headroom":2, "operations":[["set",32768,"Table",-1,99],["set",32768,"Table",65536,99],["set",32768,"Cursor",1,99],["set",32768,"Unknown",0,99],["attach",32768,1,0],["attach",0,91,0]], "results":["InvalidInput","InvalidInput","InvalidInput","InvalidInput","InvalidInput","InvalidInput"], "table":{}, "effects":0},
+    {"name":"sparse-capacity-atomic", "headroom":1, "operations":[["set",32768,"Table",3,77],["set",32768,"Table",4,99],["get",32768,"Table",3],["get",32768,"Table",4]], "results":["accepted","Capacity",77,0], "table":{"32768:3":77}, "effects":1},
+    {"name":"full-store-reset-accepted", "headroom":1, "operations":[["set",32768,"Table",3,77],["attach",32768,91,11],["get",32768,"Table",3],["get",32768,"Flags",0],["get",32768,"MidiStart",0]], "results":["accepted","accepted",0,11,60], "table":{}, "effects":2},
+    {"name":"outbox-full-reset-atomic", "headroom":2, "initial_table":{"32768:3":77}, "initial_cursor":12000, "fill_outbox":256, "operations":[["attach",32768,91,0]], "results":["Capacity"], "table":{"32768:3":77}, "cursor":12000, "zone":27, "effects":256},
+    {"name":"tail-coalesce", "headroom":0, "operations":[["set",32768,"Cursor",0,1],["set",32768,"Cursor",0,2],["get",32768,"Cursor",0]], "results":["accepted","accepted",2], "effects":1},
+    {"name":"unrelated-command-boundary", "headroom":0, "operations":[["set",32768,"Cursor",0,1],["other"],["set",32768,"Cursor",0,2]], "results":["accepted","accepted","accepted"], "effects":3},
+    {"name":"attach-boundary", "headroom":2, "operations":[["set",32768,"Table",3,88],["attach",32768,91,11],["set",32768,"Table",3,99]], "results":["accepted","accepted","accepted"], "table":{"32768:3":99}, "effects":3},
+    {"name":"widget-identity-isolation", "headroom":2, "operations":[["set",32769,"Table",3,99],["set",32768,"Table",3,77],["get",32769,"Table",3],["get",32768,"Table",3]], "results":["accepted","accepted",99,77], "table":{"32768:3":77,"32769:3":99}, "effects":2}
+  ],
+  "projection_cases": [
+    {"expected":[2,0],"actual":[1,0],"accepted":false,"meaning":"old plan rejected by new plan qualification"},
+    {"expected":[2,0],"actual":[2,1],"accepted":false,"meaning":"wrong instance rejected"},
+    {"expected":[2,0],"actual":[2,0],"accepted":true,"meaning":"matching qualification only; caller still owns real part/epoch admission"}
+  ],
+  "native_runtime":"UNKNOWN",
+  "rust_tests":"NOT_RUN",
+  "typechecks":"NOT_RUN",
+  "cpu_and_ram_below_both_v1_and_kontakt":"UNACHIEVED"
+}

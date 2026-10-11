@@ -1,0 +1,41 @@
+{
+  "authority": "Cached NI specification; own snapshot policies are not native-certified",
+  "native_runtime": "UNKNOWN",
+  "rust_tests": "NOT_RUN",
+  "runtime_state": "UNIMPLEMENTED",
+  "cases": [
+    {"property":"PLAY_CURSOR", "index":0, "value":12000, "expected":12000},
+    {"property":"FLAGS", "index":0, "value":11, "expected":11},
+    {"property":"TABLE_VAL", "index":3, "value":77, "expected":{"index":3,"value":77}},
+    {"property":"TABLE_VAL", "index":0, "value":2147483647, "expected":{"index":0,"value":2147483647}},
+    {"property":"TABLE_VAL", "index":-1, "value":9, "expected":null},
+    {"property":"TABLE_VAL", "index":65536, "value":8, "expected":null},
+    {"property":"TABLE_IDX_HIGHLIGHT", "index":3, "value":1, "expected":3},
+    {"property":"MIDI_DRAG_START_NOTE", "index":0, "value":65, "expected":65}
+  ],
+  "native_unknowns": [
+    "highlight value toggle/range/getter law",
+    "slice table value range and source slice-count bounds",
+    "cursor negative/bounds/clamp law",
+    "reattach reset and getter visibility timing",
+    "MIDI drag content/timing/channel and interaction"
+  ],
+  "owned_policies_retained": [
+    "cursor initial 0; MIDI start initial 60",
+    "table index range 0..65536 exclusive",
+    "MIDI start clamp 0..127",
+    "highlight retains indexed slice; negative index clears selection",
+    "reattach resets initial snapshot fields; not native certified"
+  ],
+  "future_runtime_requirements": [
+    "validated per-instance property/index state seeded from init, independent of GUI or effect drain",
+    "synchronous same-callback set/get visibility, numeric UI ID and symbolic property retained",
+    "TABLE_VAL(3,77) getter at3=77 and no alias at77",
+    "multiple scripts with identical local UI IDs must not share waveform state",
+    "plan replacement and epoch fences must reject stale setters/attachments/projection",
+    "bounded storage: invalid property/index/widget and full capacity do not partially mutate state",
+    "typed validated runtime attachment: preserve source zone identity, no dense playback-region alias",
+    "bounded/coalesced projection publication must not become the script state owner",
+    "exact highlight value/getter law and reattach resets remain native-gated"
+  ]
+}

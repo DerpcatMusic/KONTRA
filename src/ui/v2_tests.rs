@@ -5564,6 +5564,172 @@ fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
     );
 }
 
+/// KONTRA keyboard navigation follows real source identities, not page ordinals.
+#[test]
+fn mapping_overlap_keyboard_walks_filtered_sources_across_pages() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument {
+        name: "Synthetic interleaved overlap list".into(),
+        ..Default::default()
+    };
+    inst.groups.resize_with(2, Default::default);
+    for n in 0..193 {
+        let mut z = sir::Zone::new(sir::AssetRef(0));
+        z.group = Some(sir::GroupRef(n % 2));
+        inst.zones.push(z);
+    }
+    let source = Arc::new(inst);
+    let before = (*source).clone();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/x/Synthetic overlap list.nki".into(),
+            ..Default::default()
+        });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        v.parts.resize_with(1, Default::default);
+        v.parts[0].active = source.name.clone();
+        v.parts[0].instrument = Some(source.clone());
+    }
+    for (w, h) in [(1180, 780), (900, 640)] {
+        let mut ui = Harness::new(&p, w as f64, h as f64);
+        ui.press("view-0-Mapping");
+        ui.press("map-group-0-0");
+        let at = super::tests::center(&ui.ui, "map-zone-0-0");
+        for down in [true, false] {
+            ui.tick(Input {
+                pointer: PointerInput {
+                    pos: Some(at),
+                    buttons: if down {
+                        Buttons::PRIMARY
+                    } else {
+                        Buttons::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        ui.idle(3);
+        assert_eq!(ui.ui.focus_key(), Some("map-zone-0-0"));
+        for (key, source_zone) in [
+            (Key::Down, 2),
+            (Key::Up, 0),
+            (Key::End, 192),
+            (Key::Down, 192),
+            (Key::Up, 190),
+            (Key::Home, 0),
+            (Key::Up, 0),
+            (Key::PageDown, if h < 700 { 2 } else { 4 }),
+            (Key::PageUp, 0),
+        ] {
+            ui.tick(Input {
+                keys: vec![KeyPress {
+                    key,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            });
+            ui.idle(3);
+            let id = format!("map-zone-0-{source_zone}");
+            assert_eq!(ui.ui.focus_key(), Some(id.as_str()), "{key:?} at {w}×{h}");
+            assert!(ui.ui.focus_visible(id.as_str()));
+            let scene = ui.ui.scene().unwrap();
+            assert!(
+                scene
+                    .surface(&format!("map-inspector-0-{source_zone}"))
+                    .is_some()
+            );
+            let rail = scene.surface("map-stack-0").unwrap().frame;
+            let row = scene.surface(&id).unwrap().frame;
+            assert!(
+                row.y >= rail.y - 0.5 && row.y + row.size.height <= rail.y + rail.size.height + 0.5,
+                "{key:?} reveals {id} inside the overlap rail at {w}×{h}"
+            );
+        }
+        for mods in [
+            Mods {
+                ctrl: true,
+                ..Default::default()
+            },
+            Mods {
+                alt: true,
+                ..Default::default()
+            },
+            Mods {
+                cmd: true,
+                ..Default::default()
+            },
+            Mods {
+                shift: true,
+                ..Default::default()
+            },
+        ] {
+            ui.tick(Input {
+                keys: vec![KeyPress {
+                    key: Key::End,
+                    mods,
+                }],
+                ..Default::default()
+            });
+            ui.idle(2);
+            assert_eq!(
+                ui.ui.focus_key(),
+                Some("map-zone-0-0"),
+                "modified key is not list navigation"
+            );
+        }
+        ui.press("map-zone-0-0");
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-0")
+                .is_some(),
+            "Enter retains source activation"
+        );
+        ui.ui.focus("map-search-0");
+        ui.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::End,
+                mods: Mods::default(),
+            }],
+            ..Default::default()
+        });
+        ui.idle(3);
+        assert_eq!(
+            ui.ui.focus_key(),
+            Some("map-search-0"),
+            "search owns its cursor keys"
+        );
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-0")
+                .is_some()
+        );
+        assert_eq!(
+            p.shared.keyboard.pop(),
+            None,
+            "list navigation does not audition"
+        );
+        if let Some(dir) = std::env::var_os("KONTAKTO_MAPPING_SHOTS") {
+            let path = std::path::PathBuf::from(dir).join(format!("mapping-keyboard-{w}x{h}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            moose::core::screenshot::save_png(&path, &pixels(&ui.ui, w, h), w as u32, h as u32);
+        }
+    }
+    assert_eq!(
+        *source, before,
+        "keyboard navigation leaves authored zones unchanged"
+    );
+}
+
 #[test]
 fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     use moose::prelude::BackgroundTask;

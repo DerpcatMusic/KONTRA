@@ -279,6 +279,8 @@ pub struct InputState {
     xy_drags: HashMap<WidgetRef, (usize, [f64; 2], Point)>,
     table_drags: HashMap<WidgetRef, (usize, f64)>,
     files: HashMap<WidgetRef, (std::path::PathBuf, Vec<std::path::PathBuf>)>,
+    // One current pure generated descriptor; never owns widget values or an El.
+    pub(super) generated: Option<Arc<super::generated::Layout>>,
 }
 
 pub struct Edit {
@@ -424,6 +426,56 @@ fn art(
     super::render_art::sliced(image, meta, w, h, scale)
 }
 
+/// Retain only sliced background art, never the widget transaction around it.
+#[allow(clippy::too_many_arguments)]
+fn retained_art(
+    ui: &mut Ui,
+    namespace: &str,
+    face: &Interface,
+    n: WidgetRef,
+    asset: ir::AssetRef,
+    p: &Picture,
+    frame: usize,
+    presentation: Presentation,
+    scale: f64,
+    w: f64,
+    h: f64,
+    enabled: bool,
+    opacity: f32,
+) -> El {
+    let Some(image) = p.at(frame) else {
+        return block(w, h);
+    };
+    let meta = match face.assets[asset.0].kind {
+        ir::AssetKind::Image(m) => m,
+        _ => ir::ImageMeta::default(),
+    };
+    let r = face.page_rect(n);
+    // The retained fill owns the image Arc, so this pointer cannot be reused
+    // while that tree is live. Parent placement/clipping is rebuilt outside it;
+    // MUI also checks inherited scene style/transform before copying paint.
+    let deps = (
+        Arc::as_ptr(image) as usize,
+        asset.0,
+        frame,
+        (r.x, r.y, r.width, r.height),
+        (w.to_bits(), h.to_bits(), scale.to_bits()),
+        presentation == Presentation::Bitmap,
+        (enabled, opacity.to_bits()),
+        meta.size.map(|s| (s.width, s.height)),
+        meta.stretch,
+        (
+            meta.margins.top,
+            meta.margins.bottom,
+            meta.margins.left,
+            meta.margins.right,
+        ),
+    );
+    ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
+        art(face, asset, p, frame, w, h, scale)
+    })
+}
+
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
 /// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
 const GRID: (i32, i32, i32, i32) = (92, 21, 66, 2);
@@ -551,27 +603,56 @@ pub fn view_state(
         f64::from(height(face, page)) * scale,
     );
     let mut layers = Vec::new();
-    let ground = block(w, h).radius(0).fill(
-        p.background
-            .color
-            .map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))),
-    );
-    layers.push(ground.at(0., 0.));
+    // Scene paint-copy guards do not cover the full palette. Keep the role
+    // in the tree, but invalidate when its effective fill changes.
+    let field_color = p.background.color.is_none().then(|| {
+        let c = ui.theme().palette.field();
+        [c.lightness(), c.chroma(), c.hue(), c.alpha()].map(f32::to_bits)
+    });
+    layers.push(ui.memo(
+        format!("{namespace}-ir-ground"),
+        (
+            w.to_bits(),
+            h.to_bits(),
+            scale.to_bits(),
+            p.background.color,
+            field_color,
+            presentation == Presentation::Bitmap,
+        ),
+        |_| {
+            block(w, h)
+                .radius(0)
+                .fill(
+                    p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))),
+                )
+                .at(0., 0.)
+        },
+    ));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
     if let Some(pic) = p.background.image.and_then(|a| assets.get(a))
         && let Some(img) = pic.at(p.background.frame as usize)
     {
         let [x, y, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
-        layers.push(
-            block(sw as f64 * scale, sh as f64 * scale)
-                .radius(0)
-                .fill(Fill::Image(img.clone(), Fit::Fill))
-                .at(
-                    x as f64 * scale,
-                    (y as f64 - p.background.origin_y as f64 - p.background.offset_y.max(0) as f64)
-                        * scale,
-                ),
-        );
+        layers.push(ui.memo(
+            format!("{namespace}-ir-wallpaper"),
+            (
+                Arc::as_ptr(img) as usize,
+                (x, y, sw, sh),
+                (p.background.origin_y, p.background.offset_y, p.background.frame),
+                (w.to_bits(), h.to_bits(), scale.to_bits()),
+                presentation == Presentation::Bitmap,
+            ),
+            |_| {
+                block(sw as f64 * scale, sh as f64 * scale)
+                    .radius(0)
+                    .fill(Fill::Image(img.clone(), Fit::Fill))
+                    .at(
+                        x as f64 * scale,
+                        (y as f64 - p.background.origin_y as f64 - p.background.offset_y.max(0) as f64)
+                            * scale,
+                    )
+            },
+        ));
     }
     for n in face.draw_order(page) {
         if !face.visible(n) {
@@ -1737,7 +1818,21 @@ pub(super) fn widget_state(
             let i = bg.unwrap();
             let p = assets.get(i.asset).unwrap();
             stack![
-                art(face, i.asset, p, i.frame.unwrap_or(0) as usize, w, h, scale),
+                retained_art(
+                    ui,
+                    namespace,
+                    face,
+                    n,
+                    i.asset,
+                    p,
+                    i.frame.unwrap_or(0) as usize,
+                    presentation,
+                    scale,
+                    w,
+                    h,
+                    enabled,
+                    opacity,
+                ),
                 el
             ]
             .w(w)
@@ -2111,6 +2206,216 @@ mod page_layout_tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    fn image(rgba: [u8; 4]) -> Arc<Image> {
+        let mut pixels = rgba.repeat(16);
+        for (n, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+            pixel[0] = pixel[0].saturating_add((n % 4) as u8 * 16);
+            pixel[1] = pixel[1].saturating_add((n / 4) as u8 * 16);
+        }
+        Arc::new(Image::rgba(4, 4, pixels).unwrap())
+    }
+
+    fn photo_face() -> (Interface, Assets) {
+        let mut face = face(ir::Source::FalconLua);
+        face.pages[0].background.image = Some(ir::AssetRef(0));
+        let mut panel = ir::Widget::new("panel", PageRef(0), ir::Rect::new(5, 5, 90, 50), Kind::Panel);
+        panel.viewport = Some([0, 0]);
+        let mut photo = ir::Widget::new("photo", PageRef(0), ir::Rect::new(4, 4, 32, 24), Kind::Image);
+        photo.parent = Some(WidgetRef(0));
+        photo.images.push(ir::ImageUse::new(ir::AssetRef(1), Use::Background));
+        let mut knob = ir::Widget::new("gain", PageRef(0), ir::Rect::new(44, 4, 32, 40), Kind::Knob {
+            range: ir::Range { max: 100., default: 50., step: Some(1.), ..Default::default() },
+            display: Default::default(),
+        });
+        knob.parent = Some(WidgetRef(0));
+        knob.binding = Binding::Control(ControlId(1));
+        face.widgets = vec![panel, photo, knob];
+        face.assets = (0..2).map(|n| ir::Asset {
+            path: format!("synthetic-{n}"),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                frames: 2,
+                size: Some(ir::Size { width: 4, height: 4 }),
+                stretch: [true; 2],
+                margins: ir::Margins { left: 1, right: 1, top: 1, bottom: 1 },
+                ..Default::default()
+            }),
+        }).collect();
+        let mut assets = Assets::default();
+        for n in 0..2 {
+            assets.loaded.insert(n, Some(Arc::new(Picture::new(vec![
+                image([40, 60, 80, 255]), image([100, 80, 60, 255]),
+            ]))));
+        }
+        (face, assets)
+    }
+
+    fn memo_misses(el: &El) -> usize {
+        usize::from(el.payload().extras().memo.is_some_and(|m| !m.reused))
+            + el.children().iter().map(memo_misses).sum::<usize>()
+    }
+
+    // An eager oracle: remove markers on newly constructed trees, so neither
+    // application construction nor scene paint can reuse a memo in this Ui.
+    fn eager(el: &mut El) {
+        el.payload_mut().extras_mut().memo = None;
+        for child in el.children_mut() {
+            eager(child);
+        }
+    }
+
+    #[test]
+    fn ground_palette_step_only_change_matches_eager_pixels() {
+        for color in [None, Some(ir::Rgba::rgb(0x404040))] {
+            let mut face = face(ir::Source::Ksp { slot: 0 });
+            face.widgets.clear();
+            face.pages[0].background.color = color;
+            let assets = Assets::default();
+            let mut ui = super::super::theme::ui();
+            let mut input = InputState::default();
+            let mut values = Values::default();
+            let initial = ui.theme().clone();
+            let mut before = None;
+            for (tick, step) in [0.035, 0.035, 0.07, 0.07, 0.035].into_iter().enumerate() {
+                // Keep background, geometry, input and namespace fixed: only Field changes.
+                let mut theme = initial.clone();
+                theme.palette.step = step;
+                assert_eq!(theme.palette.background(), initial.palette.background());
+                if step != initial.palette.step {
+                    assert_ne!(theme.palette.field(), initial.palette.field());
+                }
+                ui.set_theme(theme.clone());
+                let root = view_state(&mut ui, "ground", &face, PageRef(0), &assets, Presentation::Vector, 1., &mut values, &mut input);
+                let changed = tick == 0 || color.is_none() && (tick == 2 || tick == 4);
+                assert_eq!(memo_misses(&root), usize::from(changed));
+
+                // Fresh Ui plus stripped memo markers: no retained construction or paint.
+                let mut plain = super::super::theme::ui();
+                plain.set_theme(theme);
+                let mut baseline = view_state(&mut plain, "ground", &face, PageRef(0), &assets, Presentation::Vector, 1., &mut Values::default(), &mut InputState::default());
+                eager(&mut baseline);
+                for (ui, root) in [(&mut ui, root), (&mut plain, baseline)] {
+                    ui.frame(root, Some(Size::new(100., 60.)), Input::default(), 1. / 60.).unwrap();
+                }
+                let pixels = super::super::tests::pixels(&ui, 100, 60);
+                assert_eq!(pixels, super::super::tests::pixels(&plain, 100, 60));
+                if tick == 0 {
+                    before = Some(pixels);
+                } else if (tick == 2 || tick == 3) && color.is_none() {
+                    assert_ne!(pixels, *before.as_ref().unwrap());
+                } else {
+                    assert_eq!(pixels, *before.as_ref().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forced_shell_builds_reuse_decoration_and_match_eager_pixels_and_geometry() {
+        let (mut face, mut assets) = photo_face();
+        let (mut ui, mut plain) = (super::super::theme::ui(), super::super::theme::ui());
+        let (mut input, mut other) = (InputState::default(), InputState::default());
+        let (mut values, mut other_values) = (Values::default(), Values::default());
+        let mut tick = |face: &Interface, assets: &Assets, scale, presentation, shell| {
+            let root = view_state(&mut ui, "photo", face, PageRef(0), assets, presentation, scale, &mut values, &mut input);
+            let misses = memo_misses(&root);
+            let mut baseline = view_state(&mut plain, "photo", face, PageRef(0), assets, presentation, scale, &mut other_values, &mut other);
+            eager(&mut baseline);
+            for (ui, root) in [(&mut ui, root), (&mut plain, baseline)] {
+                ui.frame(col![caption(format!("Shell {shell}")), root], Some(Size::new(220., 160.)), Input::default(), 1. / 60.).unwrap();
+            }
+            assert_eq!(super::super::tests::pixels(&ui, 220, 160), super::super::tests::pixels(&plain, 220, 160));
+            assert_eq!(ui.scene().unwrap().surface("photo-ir-2").unwrap().frame, plain.scene().unwrap().surface("photo-ir-2").unwrap().frame);
+            misses
+        };
+        assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, 0), 3);
+        for shell in 1..5 {
+            assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, shell), 0);
+        }
+        // Preparation may replace Picture wrappers while keeping live pixels.
+        for n in 0..2 {
+            let frames = assets.loaded[&n].as_ref().unwrap().frames.clone();
+            assets.loaded.insert(n, Some(Arc::new(Picture::new(frames))));
+        }
+        assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, 4), 0);
+        assert_eq!(tick(&face, &assets, 2., Presentation::Bitmap, 5), 3);
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 6), 3);
+        face.pages[0].background.frame = 1;
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 7), 1);
+        face.widgets[1].images[0].frame = Some(1);
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 8), 1);
+        face.widgets[0].rect.x += 3;
+        face.widgets[0].viewport = Some([1, 2]);
+        face.widgets[0].opacity = 0.5;
+        face.widgets[0].enabled = false;
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 9), 1);
+        if let ir::AssetKind::Image(ref mut meta) = face.assets[1].kind {
+            meta.margins.left = 0;
+        }
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 10), 1);
+        assets.loaded.insert(1, Some(Arc::new(Picture::new(vec![image([20, 100, 40, 255])]))));
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 11), 1);
+        assets.loaded.clear();
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 12), 0);
+        assets.loaded.insert(0, Some(Arc::new(Picture::new(vec![image([80, 40, 20, 255])]))));
+        assets.loaded.insert(1, Some(Arc::new(Picture::new(vec![image([20, 40, 80, 255])]))));
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 13), 2);
+        face.pages[0].background.color = Some(ir::Rgba::rgb(0x404040));
+        face.pages[0].background.offset_y = 1;
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 14), 2);
+        let img = assets.loaded[&0].as_ref().unwrap().at(1).unwrap().clone();
+        assets.loaded.insert(0, Some(Arc::new(Picture::prepared(img, 1, 2, Some([1, 0, 3, 4])))));
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 15), 1);
+        face.pages[0].size.width += 1;
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 16), 2);
+    }
+
+    #[test]
+    fn retained_photo_does_not_skip_knob_menu_or_live_meter_reads() {
+        let (mut face, mut assets) = photo_face();
+        face.pages[0].size = ir::Size { width: 240, height: 140 };
+        face.widgets.push(ir::Widget::new("menu", PageRef(0), ir::Rect::new(110, 10, 100, 24), Kind::Menu {
+            items: vec![
+                ir::MenuItem { text: "First".into(), value: 10, visible: true },
+                ir::MenuItem { text: "Second".into(), value: 30, visible: true },
+            ],
+        }));
+        face.widgets[3].binding = Binding::Control(ControlId(2));
+        face.widgets.push(ir::Widget::new("meter", PageRef(0), ir::Rect::new(110, 50, 100, 8), Kind::LevelMeter { orientation: ir::Orientation::Horizontal }));
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = reads.clone();
+        assets.meter = Some(Arc::new(move |_, _| [counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f32 / 20., 0.]));
+        let mut ui = super::super::theme::ui();
+        let mut input = InputState::default();
+        let mut values = Values::from([(ControlId(1), 50.), (ControlId(2), 10.)]);
+        let mut ticks = 0;
+        let mut tick = |ui: &mut Ui, input: &mut InputState, values: &mut Values, event| {
+            let root = view_state(ui, "live", &face, PageRef(0), &assets, Presentation::Vector, 1., values, input);
+            ui.frame(root, Some(Size::new(240., 140.)), event, 1. / 60.).unwrap();
+            ticks += 1;
+        };
+        let key = |key| Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() };
+        for _ in 0..3 { tick(&mut ui, &mut input, &mut values, Input::default()); }
+        let before = super::super::tests::pixels(&ui, 240, 140);
+        tick(&mut ui, &mut input, &mut values, Input::default());
+        assert_ne!(before, super::super::tests::pixels(&ui, 240, 140));
+        ui.focus("live-ir-2");
+        tick(&mut ui, &mut input, &mut values, key(Key::Up));
+        for _ in 0..3 { tick(&mut ui, &mut input, &mut values, Input::default()); }
+        assert!(values[&ControlId(1)] > 50.);
+        assert!(input.edits.iter().any(|e| e.widget == WidgetRef(2)));
+        ui.focus("live-ir-3");
+        tick(&mut ui, &mut input, &mut values, key(Key::Enter));
+        for _ in 0..3 { tick(&mut ui, &mut input, &mut values, Input::default()); }
+        assert!(ui.scene().unwrap().surface("live-ir-3-popup").is_some());
+        ui.focus("live-ir-3-item-1");
+        tick(&mut ui, &mut input, &mut values, key(Key::Enter));
+        for _ in 0..3 { tick(&mut ui, &mut input, &mut values, Input::default()); }
+        assert_eq!(values[&ControlId(2)], 30.);
+        assert!(ui.scene().unwrap().surface("live-ir-3-popup").is_none());
+        drop(tick);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), ticks);
     }
 
     #[test]

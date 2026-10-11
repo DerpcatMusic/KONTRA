@@ -6,6 +6,26 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.439
+
+Library search now matches library names and vendors independently of the lower preset/folder search. Clearing the library search keeps the selected library visible and preserves its folder hierarchy.
+
+KSP fixes preserve function-local exit, single evaluation of real sgn operands, supplied extended-display values, documented array equality admission and bounded search, listener registration/ranges, highest physical event-zone IDs, and init-only EQ band gain writes. The NKA snapshot pool sizes its job count to the admitted payload so legal large arrays fit without oversized preallocation.
+
+Retained authored-UI projection and decoration reuse remain enabled. Removing an expensive native primitive proof prepass reduced headless Conflux frame construction from 52.1 to 40.3 ms and total software rendering from 81.0 to 68.8 ms. Fresh script graphs and callbacks still execute; this is not a DAW/GPU or 60 FPS claim.
+
+The reviewed 7971dcc4 source passed the combined release build and all 116 selected regression runs: 1,077 pass invocations, zero failures, 79 ignored. All 359 required entries passed (358 distinct test identities). Nine newly accepted logical fixes advance the patch from 430 to 439; follow-up and audit commits are not counted as extra fixes. Publication and local installation require freshly stamped release artifacts.
+
+Known limits: full native instrument/UI/DSP parity and comparative CPU/RAM superiority remain unverified. Older Kontakt XML still needs a translator. This candidate retains its existing MUI pin; the corrected upstream stability update and the five newly authored parity slices remain separate pending work.
+
+## 0.3.430
+
+Source composition since 0.3.429: add typed explicit-path NKA array I/O, bounded RPN/NRPN callback delivery, owned waveform state with validated attachment/readback and bounded UI projection, explicit JSON `loadData` completion, sample-clock fade curves, live modulation depth/bypass controls with schema remapping, dynamic menu getters, and parameter readback guarded by setter-queue admission. Preserve the published website, 0.3.429 release history and release-fix ledger, plus the newer macOS packaging/notarization fixes.
+
+The ff60de20 release source passed a release build and 101 selected regression runs (593 pass invocations, zero failures, 48 ignored); all 293 required tests passed. The exact Linux CLAP, VST3 and standalone artifacts were locally installed with backups. This does not establish native-host or whole-instrument parity.
+
+Conflux now has an opt-in connected UI phase profiler. Removing temporary Lua intrinsic-layout wrappers reduced authored layout work by about 19% and frame construction by about 6% in paired headless measurements, with byte-identical Original captures. Total software rendering did not consistently improve. The larger retained-UI architecture remains separate pending work.
+
 ## 0.3.429
 
 This experimental update restores more authored instrument controls, script callbacks, source modulation and convolution resources.

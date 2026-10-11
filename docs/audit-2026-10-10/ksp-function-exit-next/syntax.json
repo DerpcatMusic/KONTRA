@@ -1,0 +1,68 @@
+{
+  "kind": "SOURCE_SYNTAX_ONLY_NOT_TYPECHECK_OR_EXECUTION",
+  "grammar_sha256": "dc7f9b4d182af6b8332b44cfb8d24c0b25892900b006af5ce7eafdef8c976d5a",
+  "files": [
+    {
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+      "has_error": false,
+      "errors": [],
+      "tests": []
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "has_error": false,
+      "errors": [],
+      "tests": []
+    },
+    {
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "has_error": false,
+      "errors": [],
+      "tests": [
+        {
+          "name": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops",
+          "start_line": 263,
+          "end_line": 289
+        },
+        {
+          "name": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch",
+          "start_line": 292,
+          "end_line": 324
+        },
+        {
+          "name": "function_exit_plan",
+          "start_line": 328,
+          "end_line": 352
+        },
+        {
+          "name": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail",
+          "start_line": 355,
+          "end_line": 400
+        },
+        {
+          "name": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates",
+          "start_line": 403,
+          "end_line": 445
+        },
+        {
+          "name": "function_exit_returns_are_not_deferred_note_flush_barriers",
+          "start_line": 448,
+          "end_line": 469
+        },
+        {
+          "name": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance",
+          "start_line": 472,
+          "end_line": 522
+        },
+        {
+          "name": "function_exit_never_hides_invalid_unreachable_source",
+          "start_line": 525,
+          "end_line": 536
+        }
+      ]
+    }
+  ]
+}

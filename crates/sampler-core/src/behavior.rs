@@ -36,6 +36,32 @@ pub enum WaitLifetime {
     Callback,
 }
 
+/// Script fade shapes. Discriminants are internal selectors, not vendor ABI values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum FadeCurve {
+    #[default]
+    Linear = 0,
+    EqualPower = 1,
+    SCurve = 2,
+    Exponential = 3,
+    Logarithmic = 4,
+}
+
+impl FadeCurve {
+    /// Decode an internal script selector; unknown shapes must not silently change a fade.
+    pub fn from_index(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Linear),
+            1 => Some(Self::EqualPower),
+            2 => Some(Self::SCurve),
+            3 => Some(Self::Exponential),
+            4 => Some(Self::Logarithmic),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
@@ -361,6 +387,8 @@ pub enum Instruction {
         frames: u16,
         out: bool,
         stop: bool,
+        /// Internal shape selector register; omission retains a linear fade.
+        curve: Option<u16>,
     },
     /// Start plan-owned program `program` in this callback's plan and
     /// performance context; it runs before this callback continues. Full
@@ -371,6 +399,19 @@ pub enum Instruction {
     /// Start every program `Prepared::with_signal_programs` binds to `signal`.
     Signal {
         signal: u16,
+    },
+    /// Send a raw 14-bit inter-script parameter to later stages in this plan.
+    /// Invalid operands or insufficient callback capacity fault the sender.
+    SendParameter {
+        kind: super::ParameterKind,
+        address: u16,
+        value: u16,
+    },
+    /// Read this callback's immutable parameter payload (address or value).
+    /// Outside a parameter callback the result is zero, never a global host slot.
+    ReadParameter {
+        local: u16,
+        value: bool,
     },
     /// 1 when an input key equal to `local`'s value is held on a note of
     /// this callback's plan, else 0 (KSP `%KEY_DOWN`).
@@ -581,6 +622,7 @@ impl Program {
                 matches!(
                     op,
                     Instruction::ReadInputController { .. }
+                        | Instruction::SendParameter { .. }
                         | Instruction::WriteController { .. }
                         | Instruction::PlayMidi { .. }
                 )
@@ -657,6 +699,7 @@ impl Program {
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
             | Instruction::ReadKeyHeld { local }
+            | Instruction::ReadParameter { local, .. }
             | Instruction::ReadNoteCell { local, .. }
             | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
@@ -682,6 +725,9 @@ impl Program {
                 if let DurationValue::Frames(frames) = duration {
                     locals = locals.max(usize::from(frames) + 1);
                 }
+            }
+            if let Instruction::SendParameter { address, value, .. } = *op {
+                locals = locals.max(usize::from(address.max(value)) + 1);
             }
             if let Instruction::CompareLocal { lhs, rhs, .. }
             | Instruction::Binary32 { lhs, rhs, .. } = *op
@@ -793,8 +839,14 @@ impl Program {
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
             }
-            if let Instruction::FadeEvent { event, frames, .. } = *op {
-                locals = locals.max(usize::from(event.max(frames)) + 1);
+            if let Instruction::FadeEvent {
+                event,
+                frames,
+                curve,
+                ..
+            } = *op
+            {
+                locals = locals.max(usize::from(event.max(frames).max(curve.unwrap_or(0))) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
@@ -937,6 +989,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
+    /// Callback-owned raw payload; the plan owner and context retain generation/origin.
+    pub parameter: Option<super::plan_programs::ParameterMessage>,
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
 }
@@ -996,6 +1050,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::Bare,
+            parameter: None,
             note_stage,
             program,
             pc: plan.programs[program].entry,
@@ -1091,6 +1146,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Plan(plan),
             context,
+            parameter: None,
             note_stage: None,
             program,
             pc: generation.prepared.programs[program].entry,
@@ -1593,7 +1649,7 @@ impl Runtime {
         steps
     }
 
-    fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
+    pub(super) fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
         let c = self.behaviors.get(id.0)?;
         if c.outcome.is_some() {
             return None;
@@ -2419,6 +2475,27 @@ impl Runtime {
                         });
                 *self.local_cell_mut(id, local)? = i64::from(held);
             }
+            Instruction::SendParameter {
+                kind,
+                address,
+                value,
+            } => {
+                self.send_parameter(
+                    id,
+                    kind,
+                    self.behavior_local(id, address)?,
+                    self.behavior_local(id, value)?,
+                )?;
+            }
+            Instruction::ReadParameter { local, value } => {
+                let payload = self
+                    .behaviors
+                    .get(id.0)
+                    .ok_or(Error::StaleHandle)?
+                    .parameter;
+                let raw = payload.map_or(0, |p| if value { p.value } else { p.address });
+                *self.local_cell_mut(id, local)? = i64::from(raw);
+            }
             Instruction::Signal { signal } => {
                 let plan = self.behavior_plan(owner)?;
                 self.signal_programs(id, plan, signal)?;
@@ -2436,12 +2513,21 @@ impl Runtime {
                 frames,
                 out,
                 stop,
+                curve,
             } => {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
                 let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
                     .map_err(|_| Error::InvalidInput)?;
-                self.fade_event(plan, event, frames, out, stop)?;
+                let curve = match curve {
+                    Some(local) => {
+                        let index = i32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)?;
+                        FadeCurve::from_index(index).ok_or(Error::InvalidInput)?
+                    }
+                    None => FadeCurve::Linear,
+                };
+                self.fade_event(plan, event, frames, out, stop, curve)?;
             }
             Instruction::WriteControl { control, local } => {
                 let plan = self.behavior_plan(owner)?;
@@ -2873,6 +2959,34 @@ impl Runtime {
 #[cfg(test)]
 mod shared_program_tests {
     use super::*;
+
+    #[test]
+    fn fade_curve_selectors_and_operand_cells_are_admitted_explicitly() {
+        for curve in [
+            FadeCurve::Linear,
+            FadeCurve::EqualPower,
+            FadeCurve::SCurve,
+            FadeCurve::Exponential,
+            FadeCurve::Logarithmic,
+        ] {
+            assert_eq!(FadeCurve::from_index(curve as i32), Some(curve));
+        }
+        for unknown in [-1, 5, i32::MIN, i32::MAX] {
+            assert_eq!(FadeCurve::from_index(unknown), None);
+        }
+        let program = Program::new(vec![
+            Instruction::FadeEvent {
+                event: 0,
+                frames: 1,
+                out: false,
+                stop: false,
+                curve: Some(9),
+            },
+            Instruction::End,
+        ])
+        .unwrap();
+        assert_eq!(program.locals, 10);
+    }
 
     #[test]
     fn entries_share_code_and_unpadded_text_but_keep_admission_requirements() {

@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod async_data;
 mod modules;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -444,6 +445,7 @@ struct Shared {
     findings: RefCell<BTreeMap<(String, Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
+    data_loads: RefCell<async_data::DataLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
@@ -651,13 +653,15 @@ impl Shared {
         self.ids.get()
     }
 
-    fn command(&self, command: Command) {
+    fn command(&self, command: Command) -> bool {
         let mut commands = self.commands.borrow_mut();
         if commands.len() < 1 << 16 {
             commands.push(command);
+            true
         } else {
             drop(commands);
             self.find("command queue full, commands dropped", "");
+            false
         }
     }
 }
@@ -665,6 +669,12 @@ impl Shared {
 pub struct ScriptHost {
     lua: Lua,
     shared: Rc<Shared>,
+}
+
+impl Drop for ScriptHost {
+    fn drop(&mut self) {
+        self.shared.data_loads.borrow_mut().stop();
+    }
 }
 
 fn number(value: &Value) -> Option<f64> {
@@ -971,6 +981,7 @@ impl ScriptHost {
             findings: RefCell::new(BTreeMap::new()),
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
+            data_loads: RefCell::new(async_data::DataLoads::default()),
             params: RefCell::new(Vec::new()),
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
@@ -1105,7 +1116,8 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
-        for name in ["loadData", "loadSample", "loadImpulse"] {
+        async_data::install(lua, shared)?;
+        for name in ["loadSample", "loadImpulse"] {
             let s = shared.clone();
             globals.raw_set(
                 name,
@@ -1383,9 +1395,25 @@ impl ScriptHost {
         let s = shared.clone();
         native.set(
             "setParam",
-            lua.create_function(move |_, (id, name, value): (usize, String, f64)| {
+            lua.create_function(move |_, (id, name, value): (usize, String, Value)| {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_set_param");
+                // Retained XML fields have local model identity, not DSP acceptance.
+                let catalogued = parameters::definitions(
+                    s.kinds.borrow().get(id).map_or("", String::as_str),
+                )
+                .iter()
+                .any(|p| p.name == name);
+                if !catalogued {
+                    return Ok(s.params.borrow().get(id).and_then(|params| {
+                        params.iter().any(|(key, _)| *key == name).then_some(false)
+                    }));
+                }
+                let value = match value {
+                    Value::Integer(n) => n as f64,
+                    Value::Number(n) => n,
+                    _ => return Ok(None),
+                };
                 let processor = s
                     .nodes
                     .borrow()
@@ -1401,26 +1429,27 @@ impl ScriptHost {
                     });
                 if let Some(binding) = processor {
                     let Ok(value) = binding.law.normalized_value(value) else {
-                        return Ok(false);
+                        return Ok(None);
                     };
-                    s.command(Command::EngineParameter {
-                        address: binding.address,
-                        value,
-                    });
-                    return Ok(true);
+                    return Ok(s
+                        .command(Command::EngineParameter {
+                            address: binding.address,
+                            value,
+                        })
+                        .then_some(true));
                 }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 let (param, default) = match (scope, name.as_str()) {
                     (_, "Gain") => (Param::Gain, 1.0),
                     (_, "Pan") => (Param::Pan, 0.0),
                     (Scope::Oscillator(_), "Pitch") => (Param::Pitch, 1.0),
                     (Scope::Program, "Polyphony") => (Param::Polyphony, 16.0),
-                    _ => return Ok(false),
+                    _ => return Ok(None),
                 };
                 if !value.is_finite() {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let authored = s
                     .params
@@ -1429,12 +1458,14 @@ impl ScriptHost {
                     .and_then(|p| p.iter().find(|(k, _)| *k == name))
                     .and_then(|(_, v)| v.parse().ok())
                     .unwrap_or(default);
-                s.command(Command::Parameter {
+                if !s.command(Command::Parameter {
                     scope,
                     param,
                     value,
                     authored,
-                });
+                }) {
+                    return Ok(None);
+                }
                 let mut params = s.params.borrow_mut();
                 if let Some(params) = params.get_mut(id) {
                     if let Some((_, v)) = params.iter_mut().find(|(k, _)| *k == name) {
@@ -1443,7 +1474,7 @@ impl ScriptHost {
                         params.push((name, value.to_string()));
                     }
                 }
-                Ok(true)
+                Ok(Some(true))
             })?,
         )?;
         let s = shared.clone();
@@ -2286,6 +2317,8 @@ impl ScriptHost {
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
+        async_data::poll(self);
+        self.cycle();
         #[cfg(feature = "scan")]
         if let Some(progress) = &self.shared.progress {
             progress.clock(self.shared.now.get());

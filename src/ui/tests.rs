@@ -510,8 +510,8 @@ fn a_header_is_one_line_at_any_width() {
 /// A hundred libraries of a hundred presets each, in folders. The filter
 /// (Ctrl+F) narrows the libraries and opens one from the keys; a library
 /// shows its folders, which the arrows fold and walk; Enter loads into the
-/// selected part; libraries reorder by dragging; and a search over all of
-/// them builds only the rows in view, yet brings the cursor into it.
+/// selected part; libraries reorder by dragging; and lower search over all
+/// presets builds only the rows in view, yet brings the cursor into it.
 #[test]
 fn the_browser_finds_by_library_and_folder() {
     let mut files: Vec<PathBuf> = (0..100)
@@ -560,9 +560,9 @@ fn the_browser_finds_by_library_and_folder() {
         Some("search"),
         "Ctrl+F opens the browser on its single search"
     );
-    // 042 alone also matches Patch 042 in other libraries; another preset word disambiguates.
+    // Library search ignores Patch 042 in the other libraries.
     h.tick(Input {
-        text: "lib 042 099".into(),
+        text: "lib 042".into(),
         ..Default::default()
     });
     h.idle(2);
@@ -570,12 +570,9 @@ fn the_browser_finds_by_library_and_folder() {
         shown(&h, "library-42") && !shown(&h, "library-41"),
         "it narrows the libraries"
     );
-    // Search returns flat presets; choosing the card and clearing the query reveals its hierarchy.
-    h.press("library-42");
-    h.ui.focus("search");
-    h.idle(2);
-    tap(&mut h, Key::Escape);
-    h.ui.focus("library-42");
+    // Enter opens the matching library while its upper query stays active.
+    tap(&mut h, Key::Down);
+    assert_eq!(h.ui.focus_key(), Some("library-42"));
     tap(&mut h, Key::Enter);
     assert_eq!(
         h.ui.focus_key(),
@@ -641,6 +638,14 @@ fn the_browser_finds_by_library_and_folder() {
     tap(&mut h, Key::Escape);
     // The list glides back to the chosen library: let it land first.
     h.idle(30);
+    let scene = h.ui.scene().unwrap();
+    let selected = scene.surface("library-42").unwrap().frame;
+    let sources = scene.surface("browser-sources-false").unwrap().frame;
+    assert!(
+        selected.y >= sources.y
+            && selected.y + selected.size.height <= sources.y + sources.size.height + 0.5,
+        "clearing library search keeps the selected card in view"
+    );
     h.drag("library-42", "library-41");
     let settings = p.shared.libraries.settings();
     assert_eq!(settings.sort, crate::library::Sort::Custom);
@@ -657,7 +662,7 @@ fn the_browser_finds_by_library_and_folder() {
     }
     h.idle(2);
     assert!(!shown(&h, "folder-0"), "no library chosen");
-    h.ui.focus("search");
+    h.ui.focus("preset-search");
     let start = Instant::now();
     h.tick(Input {
         text: "patch".into(),
@@ -1223,8 +1228,8 @@ fn favorites_star_from_the_row_or_the_menu_and_lead_the_browser() {
 }
 
 /// The browser's two panes: the arrows walk each, Tab crosses between
-/// them, the search filters the chosen library, and a second click on it
-/// widens the search to every library.
+/// them, library search filters the source list, and preset search filters
+/// the chosen library or widens to every library when no source is selected.
 #[test]
 fn the_split_browser_walks_both_panes() {
     let p = Arc::new(SamplerParams::new());
@@ -1276,7 +1281,7 @@ fn the_split_browser_walks_both_panes() {
     h.tick(key(Key::Up));
     h.idle(2);
     assert!(shown(&h, "instrument-1"), "Keys lists both its presets");
-    h.ui.focus("search");
+    h.ui.focus("preset-search");
     h.tick(Input {
         text: "organ".into(),
         ..Default::default()
@@ -1476,7 +1481,7 @@ fn search_groups_results_by_library() {
         v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
     let mut h = Harness::new(&p, 1180., 760.);
-    h.ui.focus("search");
+    h.ui.focus("preset-search");
     h.tick(Input {
         text: "piano".into(),
         ..Default::default()
@@ -1563,7 +1568,7 @@ fn a_large_library_browser_keeps_scrolling_and_searching() {
         last.y >= viewport.y && last.y + last.size.height <= viewport.y + viewport.size.height + 1.,
         "End reveals the last row"
     );
-    h.ui.focus("search");
+    h.ui.focus("preset-search");
     h.tick(Input {
         text: "0999".into(),
         ..Default::default()

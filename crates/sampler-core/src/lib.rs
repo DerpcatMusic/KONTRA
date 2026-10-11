@@ -57,8 +57,8 @@ pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, Instruction,
-    Outcome, Program, Velocity, WaitLifetime,
+    BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
+    Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
 mod stages;
 pub use stages::Stage;
@@ -106,7 +106,7 @@ pub use parameter_registry::{
     ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry,
 };
 mod voice_mod;
-pub use plan_programs::{PlanProgram, SignalProgram};
+pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
@@ -146,8 +146,14 @@ pub use prepare::{
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
+mod array_file;
+pub use array_file::{
+    ARRAY_FILE_JOBS, ARRAY_FILE_MAX_BYTES, ARRAY_FILE_MAX_CELLS, ARRAY_FILE_SERVICE,
+    ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
+};
 mod midi_object;
 mod ops;
+pub mod waveform;
 pub use midi_object::{
     MIDI_ALL_EVENTS, MIDI_ASYNC_SIGNAL, MIDI_CURRENT_EVENT, MIDI_MARKS_FLAG, MIDI_MAX_EVENTS,
     MIDI_SERVICE, MIDI_TRACK_FLAG, MidiAction, MidiCompletion, MidiExportArea, MidiObject,
@@ -1875,6 +1881,11 @@ impl Runtime {
                     .count(),
             );
             generation.midi_object.jobs.clear();
+            for bank in &mut generation.scripts {
+                generation.callbacks = generation
+                    .callbacks
+                    .saturating_sub(bank.array_files.cancel());
+            }
             generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();

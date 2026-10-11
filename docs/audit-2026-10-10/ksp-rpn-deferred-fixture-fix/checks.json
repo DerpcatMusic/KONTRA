@@ -1,0 +1,167 @@
+{
+  "authority": "SOURCE_CUSTODY_SYNTAX_SCALAR_ONLY",
+  "source_sha": "c6cf5a3da69ed8c72541e5402376430711891501",
+  "script_sha256": "7b2c55f67feae3467e22b5440c6861fbe713565b12fc1bee22438232d7f07cfc",
+  "exclusive_source_diff": [
+    "crates/sampler-ksp/tests/rpn.rs"
+  ],
+  "retained_parent_names": 20,
+  "current_test_count": 21,
+  "byte_identical_parent_bodies": [
+    "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+    "nested_named_callback_constants_reach_pcm_through_public_compiler",
+    "payloads_survive_waits_and_other_messages_not_global_host_slots",
+    "same_kind_overlapping_waits_keep_independent_raw_payloads",
+    "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+    "invalid_address_or_value_faults_sender_without_any_delivery",
+    "insufficient_fanout_capacity_is_explicit_and_atomic",
+    "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+    "initialization_remains_warn_noop_without_runtime_replay",
+    "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+    "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+    "receiver_generated_note_retains_physical_origin_and_performance",
+    "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent",
+    "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+    "compiled_three_module_rotation_requires_clear_and_exact_receiver_rebind",
+    "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+    "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners",
+    "deferred_fanout_pressure_faults_atomically_without_heap_or_partial_second_message",
+    "sparse_physical_slots_nonzero_sender_and_separate_notes_keep_private_payloads"
+  ],
+  "byte_identical_original_bodies": [
+    "compiled_raw_endpoints_and_distinct_symbolic_callbacks_without_heap",
+    "nested_named_callback_constants_reach_pcm_through_public_compiler",
+    "payloads_survive_waits_and_other_messages_not_global_host_slots",
+    "same_kind_overlapping_waits_keep_independent_raw_payloads",
+    "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+    "invalid_address_or_value_faults_sender_without_any_delivery",
+    "insufficient_fanout_capacity_is_explicit_and_atomic",
+    "repeated_messages_fill_waiting_arena_then_fault_without_unbounded_queue",
+    "initialization_remains_warn_noop_without_runtime_replay",
+    "ordinary_controller_and_numeric_pgs_keep_their_existing_routes",
+    "sender_and_receiver_waits_stay_in_retained_generation_and_part",
+    "receiver_generated_note_retains_physical_origin_and_performance",
+    "midi_and_nka_job_ids_wait_completion_and_instances_remain_independent"
+  ],
+  "f1_bodies_unchanged": [
+    "later_stage_order_no_self_echo_and_monotonic_rebroadcast",
+    "parameter_binding_rejects_invalid_stage_and_duplicate_kind_and_resets_with_programs",
+    "receiver_only_stage_setters_preserve_identical_schema_or_require_explicit_rebind",
+    "parameter_binding_rejects_unrelated_ordinary_and_mixed_receiver_owners"
+  ],
+  "full_file_count": 10,
+  "selected_span_count": 18,
+  "primary_archives": 4,
+  "primary_sections": 7,
+  "rustfmt_syntax": {
+    "exit": 0,
+    "stdout_sha256": "c04d4952720af4606bf07f1c191b5962573ae74ba9ee42179b8b4645fb3e4eba",
+    "stderr": "",
+    "source_unchanged": true,
+    "compiled": false,
+    "typechecked": false
+  },
+  "scalar_expected_logs": [
+    345,
+    13425,
+    12
+  ],
+  "scalar_negative_controls": 3,
+  "custody_negative_controls": {
+    "one_byte_source_mutation_rejected": true,
+    "one_byte_excerpt_mutation_rejected": true,
+    "wrong_parent_rejected": true
+  },
+  "inputs": [
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-successor-review.md",
+      "bytes": 16936,
+      "sha256": "82969949190b6837f85acb87fd1add6e9c2dd70eae6e13fef9c9ad1c8f36987c",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-successor-review.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-successor-review.json",
+      "bytes": 115835,
+      "sha256": "885876bba032b2a2cd0dc04fe7379ebefcb74d98b282c4814c48c9ff23e336ac",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-successor-review.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/root-ksp-rpn-lifecycle-successor-review-check.json",
+      "bytes": 465,
+      "sha256": "81b911eebcbbfb8124906b10ffa9277fa152223b291df661f7cb6e22c2ccea5c",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/root-ksp-rpn-lifecycle-successor-review-check.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix.md",
+      "bytes": 12724,
+      "sha256": "dcb765e9e54776857738b4f95afabe13a26906c5e493fc6fcf6c6d097954a433",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-fix.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-lifecycle-fix.json",
+      "bytes": 10015,
+      "sha256": "9e6203166800b3afea011056a3077ca448094e10f22214d38f2cf098e161fcaf",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-lifecycle-fix.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round10-service-requirements.md",
+      "bytes": 35032,
+      "sha256": "fb2230c2c22efea51d9c08a70cbecb85b4c9d9a6f912b209d246bfc1b328f262",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round10-service-requirements.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round10-service-requirements.json",
+      "bytes": 289711,
+      "sha256": "613adb5b09356b7616794e0db90b3b38a4d7ba4f54636f8e805c658c465009c7",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round10-service-requirements.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round8-service-consumer-handoff.md",
+      "bytes": 24555,
+      "sha256": "0191590c938abe9bb86fe6c8e708b5059f0a22e9c268fe5eade1096a41fa3989",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round8-service-consumer-handoff.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round8-service-consumer-handoff.json",
+      "bytes": 48570,
+      "sha256": "744e8f04aba0b70fe112a21c8800f8f16c5db22d0104c766d1ab77a3b0da0776",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/round8-service-consumer-handoff.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/rpn-callback-constants-next.md",
+      "bytes": 1786,
+      "sha256": "6259cb2ef8cec645ad1065a4d0e38efd7479ba78c9caebf7dc38ca1ff6ed6af3",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/rpn-callback-constants-next.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-next.md",
+      "bytes": 12165,
+      "sha256": "23b8915336c2e07fa81950a7d212c9d3646e73098f0c7e19206666a431669ad0",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-next.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-next.json",
+      "bytes": 8926,
+      "sha256": "1f8bf025bea9497db14e5e1bce7a39797708e7cd53308463d254819ee2391151",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-next.json"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-source-review.md",
+      "bytes": 17228,
+      "sha256": "63f9f77c1614397804440d98a95796d9ebd80ccbb1860d8111e126d3681fa779",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-source-review.md"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-consumer-source-review.json",
+      "bytes": 94537,
+      "sha256": "f45d3b9347eb1dfd853a529dd07eee85f74b87bc92d7f13ae6e7ae6671d3c242",
+      "own_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/ksp-rpn-deferred-fixture-fix-snapshot/inputs/ksp-rpn-consumer-source-review.json"
+    }
+  ],
+  "tests": "ALL_21_NOT_RUN_NOT_COMPILED",
+  "heap": "UNOBSERVED",
+  "pcm": "UNOBSERVED",
+  "native": "UNKNOWN",
+  "cpu_and_ram_below_both": "UNACHIEVED",
+  "build_authorized": false
+}

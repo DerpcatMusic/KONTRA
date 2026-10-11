@@ -62,9 +62,7 @@ pkgbuild --root "$stage/payload" --component-plist "$work/components.plist" \
 productsign --sign "$APPLE_DEVELOPER_ID_INSTALLER" --keychain "$APPLE_SIGNING_KEYCHAIN" \
   --timestamp "$work/unsigned.pkg" "$work/KONTRA.pkg"
 pkgutil --check-signature "$work/KONTRA.pkg"
-xcrun notarytool submit "$work/KONTRA.pkg" --apple-id "$APPLE_ID" \
-  --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-  --wait --timeout 30m --output-format json > "$work/notary.json"
+python3 "$(dirname "$0")/notarize.py" "$work/KONTRA.pkg" > "$work/notary.json"
 python3 - "$work/notary.json" <<'PY'
 import json, sys, uuid
 info = json.load(open(sys.argv[1]))
