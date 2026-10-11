@@ -897,6 +897,7 @@ impl TraceGraph {
                 0,
             ),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
+            PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",
                 plan.buses

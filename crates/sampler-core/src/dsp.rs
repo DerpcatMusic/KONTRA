@@ -193,6 +193,8 @@ pub enum Processor {
     Ar(ArSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
+    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
+    Saturation(f32),
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
@@ -248,6 +250,7 @@ impl Processor {
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
+            Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
             Processor::Gainer { dry, gain } => {
                 dry.is_finite() && gain.valid() && !matches!(gain, Parameter::Expression { .. })
             }
@@ -256,12 +259,12 @@ impl Processor {
     }
 }
 
+mod ar;
+mod ar_kernel;
 mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
-mod ar;
-mod ar_kernel;
 pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
@@ -311,6 +314,7 @@ pub(super) enum PreparedProcessor {
     },
     Compressor(compressor::Compressor),
     Rectify(Rectifier),
+    Saturation(f32),
     Gainer {
         dry: f64,
         gain: control::PreparedParameter,
@@ -514,6 +518,7 @@ pub(super) fn compile_processors(
                     PreparedProcessor::Ar { ar, offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
+                Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
                     gain: gain.compile(bindings),
@@ -1193,6 +1198,13 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
+                }
+            }
+            PreparedProcessor::Saturation(shape) => {
+                for channel in block.iter_mut() {
+                    channel[..len]
+                        .iter_mut()
+                        .for_each(|v| *v = shaping::saturation(*v, *shape));
                 }
             }
             PreparedProcessor::Gainer { dry, gain, k } => {
