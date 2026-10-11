@@ -144,6 +144,7 @@ pub struct Unit<'h> {
     pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
+    pub inspection: Option<crate::parity::Inspection>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
     pub modules: Vec<(Context, i32, Option<i32>, Module)>,
@@ -199,6 +200,8 @@ impl<'h> Unit<'h> {
             ends: module.ends,
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal,
         };
@@ -393,6 +396,8 @@ impl<'h> Unit<'h> {
             ends: Vec::new(),
             loops: Vec::new(),
             span,
+            statement_span: None,
+            call_span: None,
             tdepth: 0,
             signal: Some(signal),
         };
@@ -495,6 +500,8 @@ struct Gen<'u, 'h> {
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
+    statement_span: Option<Span>,
+    call_span: Option<Span>,
     tdepth: u32,
     /// The timer signal a listener body program serves.
     signal: Option<i32>,
@@ -530,6 +537,11 @@ impl Gen<'_, '_> {
             );
         }
         self.u.budget -= 1;
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect
+                .ops
+                .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));
+        }
         self.code.push(op);
         Ok(())
     }
@@ -571,6 +583,9 @@ impl Gen<'_, '_> {
         }
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
+        if let Some(inspect) = &mut self.u.inspection {
+            inspect.calls.push((self.call_span.unwrap_or(self.span), builtin, coverage));
+        }
         let count = self
             .u
             .coverage
@@ -579,7 +594,10 @@ impl Gen<'_, '_> {
         *count += 1;
         // The first approximated call site per builtin is enough for the report;
         // `Script::coverage` keeps the totals.
-        if *count == 1 && coverage == Coverage::Approximate {
+        if *count == 1
+            && crate::parity::lowering_status(coverage)
+                .is_some_and(|e| e.status == sampler_parity::Status::Approximate)
+        {
             let message = format!("{} runs with simplified semantics", builtin.name());
             self.report(Some(builtin), crate::diag::Kind::Approximate, message);
         }
@@ -663,7 +681,10 @@ impl Gen<'_, '_> {
     fn block(&mut self, body: &[Stmt]) -> Result<()> {
         for s in body {
             self.span = s.span;
-            self.stmt(s)?;
+            let previous = self.statement_span.replace(s.span);
+            let result = self.stmt(s);
+            self.statement_span = previous;
+            result?;
         }
         Ok(())
     }
@@ -1580,6 +1601,13 @@ impl Gen<'_, '_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
+        let previous = self.call_span.replace(span);
+        let result = self.builtin_inner(builtin, args, dst, span);
+        self.call_span = previous;
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         use Builtin::*;
         self.span = span;
         let t = reg(dst, 1)?;

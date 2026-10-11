@@ -640,6 +640,7 @@ pub(crate) fn script_environment(
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
         evaluation_budget: None,
+        coverage: None,
         groups,
         engine_values: source
             .engine_values
