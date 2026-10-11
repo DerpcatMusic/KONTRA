@@ -1531,6 +1531,7 @@ impl Lowering<'_> {
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
             ir::ModulationSource::Script(id) => ModSource::Script(*id),
+            ir::ModulationSource::ScriptBipolar(id) => ModSource::ScriptBipolar(*id),
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
                 frames: self.frames(*t).max(1),
             },
@@ -1699,6 +1700,8 @@ impl Lowering<'_> {
                 let (shape, gain) = match kind {
                     ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
                     ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
+                    ir::FilterKind::FirstOrderLowShelf { gain } => (S::FirstOrderLowShelf, db(gain)),
+                    ir::FilterKind::FirstOrderHighShelf { gain } => (S::FirstOrderHighShelf, db(gain)),
                     ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
                     ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
                     ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
@@ -2043,6 +2046,12 @@ impl Lowering<'_> {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
             ir::FilterKind::HighShelf { gain } => biquad(FilterKind::HighShelf {
+                gain_db: 20.0 * gain.linear().log10(),
+            }),
+            ir::FilterKind::FirstOrderLowShelf { gain } => biquad(FilterKind::FirstOrderLowShelf {
+                gain_db: 20.0 * gain.linear().log10(),
+            }),
+            ir::FilterKind::FirstOrderHighShelf { gain } => biquad(FilterKind::FirstOrderHighShelf {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
         }
