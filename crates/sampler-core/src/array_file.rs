@@ -1,12 +1,11 @@
 //! Explicit local NKA files. Only `perform` does I/O; owned buffers return to control.
 use crate::{Error, ScriptInstanceId, Text};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 pub const ARRAY_FILE_SERVICE: u16 = u16::MAX - 1;
 pub const ARRAY_FILE_JOBS: usize = 8;
-pub const ARRAY_FILE_MAX_CELLS: usize = 16384;
-pub const ARRAY_FILE_MAX_BYTES: usize = 2 * 1024 * 1024;
-const SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
+// A concurrency target, never an array-size ceiling: one large payload still fits.
+const SNAPSHOT_TARGET_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArrayFileKind {
@@ -31,7 +30,7 @@ impl ArrayFileArray {
             ArrayFileKind::Real => '?',
             ArrayFileKind::Text => '!',
         };
-        if self.len == 0 || self.len as usize > ARRAY_FILE_MAX_CELLS {
+        if self.len == 0 {
             return Err(Error::Capacity);
         }
         if self.name.is_truncated()
@@ -119,14 +118,11 @@ impl ArrayFileState {
                     .and_then(|texts| numbers.checked_add(texts))
             })
             .ok_or(Error::Capacity)?;
-        if bytes > SNAPSHOT_BYTES {
-            return Err(Error::Capacity);
-        }
-        // Reserve fewer jobs for large arrays, never more snapshot payload bytes.
+        // Share the memory target across jobs; arrays larger than it use one slot.
         Ok(if bytes == 0 {
             0
         } else {
-            ARRAY_FILE_JOBS.min(SNAPSHOT_BYTES / bytes)
+            ARRAY_FILE_JOBS.min((SNAPSHOT_TARGET_BYTES / bytes).max(1))
         })
     }
     pub fn dimensions(arrays: &[ArrayFileArray]) -> Result<(usize, usize, usize), Error> {
@@ -173,16 +169,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_jobs_checks_single_payload_budget_and_arithmetic() {
-        // Arithmetic-only inputs: a legal descriptor cannot exceed this budget
-        // with the ordinary Text layout and the existing cell limit.
-        let numbers = SNAPSHOT_BYTES / std::mem::size_of::<i64>();
+    fn snapshot_jobs_scale_concurrency_without_rejecting_large_arrays() {
+        // Large payloads get one reserved slot; only arithmetic overflow fails.
+        let numbers = SNAPSHOT_TARGET_BYTES / std::mem::size_of::<i64>();
         assert_eq!(ArrayFileState::snapshot_jobs(numbers, 0), Ok(1));
-        assert_eq!(
-            ArrayFileState::snapshot_jobs(numbers + 1, 0),
-            Err(Error::Capacity)
-        );
-        assert_eq!(ArrayFileState::snapshot_jobs(numbers, 1), Err(Error::Capacity));
+        assert_eq!(ArrayFileState::snapshot_jobs(numbers + 1, 0), Ok(1));
+        assert_eq!(ArrayFileState::snapshot_jobs(numbers, 1), Ok(1));
         assert_eq!(
             ArrayFileState::snapshot_jobs(usize::MAX, 0),
             Err(Error::Capacity)
@@ -220,8 +212,11 @@ mod tests {
             },
         ];
         let bytes = 16000 * std::mem::size_of::<i64>() + 4000 * std::mem::size_of::<Text>();
-        let slots = ARRAY_FILE_JOBS.min(SNAPSHOT_BYTES / bytes);
-        assert_eq!(ArrayFileState::dimensions(&arrays), Ok((16000, 4000, slots)));
+        let slots = ARRAY_FILE_JOBS.min((SNAPSHOT_TARGET_BYTES / bytes).max(1));
+        assert_eq!(
+            ArrayFileState::dimensions(&arrays),
+            Ok((16000, 4000, slots))
+        );
         let prepared = ArrayFileState::prepared(&arrays);
         assert_eq!(prepared.jobs.len(), slots);
         let reserved: usize = prepared
@@ -238,7 +233,7 @@ mod tests {
             })
             .sum();
         assert_eq!(reserved, slots * bytes);
-        assert!(reserved <= SNAPSHOT_BYTES);
+        assert!(reserved <= SNAPSHOT_TARGET_BYTES);
     }
 }
 
@@ -260,8 +255,8 @@ impl ArrayFileCompletion {
         if effect.service != ARRAY_FILE_SERVICE || effect.count != 4 {
             return Err(Error::InvalidInput);
         }
-        let len = usize::try_from(effect.args[2]).map_err(|_| Error::InvalidInput)?;
-        if len == 0 || len > ARRAY_FILE_MAX_CELLS {
+        let len = u32::try_from(effect.args[2]).map_err(|_| Error::InvalidInput)?;
+        if len == 0 {
             return Err(Error::Capacity);
         }
         let kind = match effect.args[3] {
@@ -283,14 +278,22 @@ impl ArrayFileCompletion {
                 name: Text::default(),
                 kind,
                 offset: 0,
-                len: len as u32,
+                len,
             },
             path: Text::default(),
             write: false,
             captured: false,
             payload: ArrayFilePayload::prepared(
-                if kind != ArrayFileKind::Text { len } else { 0 },
-                if kind == ArrayFileKind::Text { len } else { 0 },
+                if kind != ArrayFileKind::Text {
+                    len as usize
+                } else {
+                    0
+                },
+                if kind == ArrayFileKind::Text {
+                    len as usize
+                } else {
+                    0
+                },
             ),
         })
     }
@@ -337,21 +340,13 @@ impl ArrayFileCompletion {
             if !self.payload.valid(self.array) {
                 return Err(Error::InvalidInput);
             }
-            let bytes = encode(self.array, &self.payload)?;
-            atomic_write(self.path.as_str(), &bytes)?;
+            atomic_write(self.path.as_str(), self.array, &self.payload)?;
         } else {
             let file = std::fs::File::open(self.path.as_str()).map_err(|_| Error::InvalidInput)?;
             if !file.metadata().map_err(|_| Error::InvalidInput)?.is_file() {
                 return Err(Error::InvalidInput);
             }
-            let mut bytes = Vec::new();
-            file.take(ARRAY_FILE_MAX_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| Error::InvalidInput)?;
-            if bytes.len() > ARRAY_FILE_MAX_BYTES {
-                return Err(Error::Capacity);
-            }
-            self.payload = decode(self.array, &bytes)?;
+            self.payload = decode(self.array, BufReader::new(file))?;
         }
         self.success = true;
         Ok(())
@@ -364,25 +359,45 @@ fn validate_path(path: &str) -> Result<(), Error> {
         Ok(())
     }
 }
-fn decode(array: ArrayFileArray, bytes: &[u8]) -> Result<ArrayFilePayload, Error> {
-    let text = std::str::from_utf8(bytes).map_err(|_| Error::InvalidInput)?;
-    let mut lines = text.lines();
-    if lines.next() != Some(array.name.as_str()) {
+fn decode(array: ArrayFileArray, mut reader: impl BufRead) -> Result<ArrayFilePayload, Error> {
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|_| Error::InvalidInput)?;
+    if line.lines().next() != Some(array.name.as_str()) {
         return Err(Error::InvalidInput);
     }
-    let mut payload = ArrayFilePayload::default();
-    for (index, line) in lines.enumerate() {
-        if index >= array.len as usize {
+    let mut payload = ArrayFilePayload::prepared(
+        if array.kind == ArrayFileKind::Text {
+            0
+        } else {
+            array.len as usize
+        },
+        if array.kind == ArrayFileKind::Text {
+            array.len as usize
+        } else {
+            0
+        },
+    );
+    for _ in 0..array.len {
+        line.clear();
+        if reader
+            .read_line(&mut line)
+            .map_err(|_| Error::InvalidInput)?
+            == 0
+        {
             return Err(Error::InvalidInput);
         }
+        let value = line.lines().next().unwrap_or("");
         match array.kind {
             ArrayFileKind::Integer => payload.numbers.push(i64::from(
-                line.trim()
+                value
+                    .trim()
                     .parse::<i32>()
                     .map_err(|_| Error::InvalidInput)?,
             )),
             ArrayFileKind::Real => {
-                let value = line
+                let value = value
                     .trim()
                     .parse::<f64>()
                     .map_err(|_| Error::InvalidInput)?;
@@ -391,38 +406,25 @@ fn decode(array: ArrayFileArray, bytes: &[u8]) -> Result<ArrayFilePayload, Error
                 }
                 payload.numbers.push(crate::real_bits(value));
             }
-            ArrayFileKind::Text => payload.texts.push(Text::try_new(line)?),
+            ArrayFileKind::Text => payload.texts.push(Text::try_new(value)?),
         }
     }
-    if !payload.valid(array) {
+    if !reader
+        .fill_buf()
+        .map_err(|_| Error::InvalidInput)?
+        .is_empty()
+        || !payload.valid(array)
+    {
         return Err(Error::InvalidInput);
     }
     Ok(payload)
 }
-fn encode(array: ArrayFileArray, payload: &ArrayFilePayload) -> Result<Vec<u8>, Error> {
-    use std::fmt::Write as _;
-    let mut text = format!("{}\n", array.name.as_str());
-    for value in &payload.numbers {
-        if array.kind == ArrayFileKind::Real {
-            writeln!(text, "{}", crate::real(*value)).map_err(|_| Error::InvalidInput)?;
-        } else {
-            writeln!(text, "{value}").map_err(|_| Error::InvalidInput)?;
-        }
-        if text.len() > ARRAY_FILE_MAX_BYTES {
-            return Err(Error::Capacity);
-        }
-    }
-    for value in &payload.texts {
-        text.push_str(value.as_str());
-        text.push('\n');
-        if text.len() > ARRAY_FILE_MAX_BYTES {
-            return Err(Error::Capacity);
-        }
-    }
-    Ok(text.into_bytes())
-}
 // Port of our frozen v1 sibling-temporary replacement; no lossy/case-fallback reader.
-fn atomic_write(path: &str, bytes: &[u8]) -> Result<(), Error> {
+fn atomic_write(
+    path: &str,
+    array: ArrayFileArray,
+    payload: &ArrayFilePayload,
+) -> Result<(), Error> {
     use std::{
         path::Path,
         sync::atomic::{AtomicU64, Ordering},
@@ -451,7 +453,21 @@ fn atomic_write(path: &str, bytes: &[u8]) -> Result<(), Error> {
         .open(&temporary)
         .map_err(|_| Error::InvalidInput)?;
     let result = (|| {
-        file.write_all(bytes)?;
+        {
+            let mut writer = BufWriter::new(&mut file);
+            writeln!(writer, "{}", array.name.as_str())?;
+            for value in &payload.numbers {
+                if array.kind == ArrayFileKind::Real {
+                    writeln!(writer, "{}", crate::real(*value))?;
+                } else {
+                    writeln!(writer, "{value}")?;
+                }
+            }
+            for value in &payload.texts {
+                writeln!(writer, "{}", value.as_str())?;
+            }
+            writer.flush()?;
+        }
         file.flush()?;
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
