@@ -54,6 +54,8 @@ pub struct State {
     levels: [bool; 4],
     filtered: Option<(u64, Option<PathBuf>, usize, String, [bool; 4])>,
     matches: Vec<usize>,
+    /// Identical events folded into the newest one: event index -> how many.
+    repeats: std::collections::HashMap<usize, usize>,
     selected: Option<u64>,
     load_selected: Option<usize>,
     load_report: Option<super::load_report::Report>,
@@ -93,6 +95,7 @@ impl Default for State {
             levels: [false, false, true, true],
             filtered: None,
             matches: Vec::new(),
+            repeats: Default::default(),
             selected: None,
             load_selected: None,
             load_report: None,
@@ -306,6 +309,29 @@ impl State {
                 Some(n)
             })
             .collect();
+        // Same level, origin and message repeat (GPU fallback, per-note faults): one row with a count.
+        let mut first = std::collections::HashMap::new();
+        self.repeats.clear();
+        self.matches.retain(|&n| {
+            let e = &snapshot.events[n];
+            let same = (
+                level_index(e.level),
+                &e.module,
+                &e.path,
+                &e.library,
+                e.reason.as_deref().unwrap_or(&e.event),
+            );
+            match first.entry(same) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(n);
+                    true
+                }
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    *self.repeats.entry(*o.get()).or_insert(1) += 1;
+                    false
+                }
+            }
+        });
         self.filtered = Some(key);
         if self.selected.is_some_and(|seq| {
             !self
@@ -1339,11 +1365,14 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .map(filename)
             .or(event.library.as_deref())
             .unwrap_or("Application");
-        let title = format!(
+        let mut title = format!(
             "{} · {patch} · {}",
             level_name(event.level),
             time(event.timestamp_ms)
         );
+        if let Some(n) = state.repeats.get(&state.matches[n - prefix]) {
+            title.push_str(&format!(" · {n} times (latest)"));
+        }
         let header = col![
             row![
                 caption(title)
@@ -1654,6 +1683,27 @@ mod tests {
         let many: Vec<_> = (0..40).map(|n| translate(n, &format!("feature {n}x"))).collect();
         let capped = support_text(&many).unwrap();
         assert!(capped.contains("- +28 more kinds (28 occurrences)"), "{capped}");
+    }
+
+    #[test]
+    fn identical_events_fold_into_one_row_with_a_count() {
+        let gpu = |n: u64| -> LogEvent {
+            serde_json::from_value(json!({
+                "schema_version":1,"sequence":n,"timestamp_ms":n,"monotonic_ms":0,
+                "session_id":"fold","level":"warning","module":"app","event":"log",
+                "reason":"mui-baseview: GPU render failed; using CPU rendering","data":{}
+            })).unwrap()
+        };
+        let snapshot = DiagnosticSnapshot {
+            revision: 1,
+            events: vec![gpu(1), gpu(2), gpu(3)],
+            status: Default::default(),
+            build: serde_json::Value::Null,
+        };
+        let mut state = State::default();
+        state.filter(&snapshot);
+        assert_eq!(state.matches, vec![2]);
+        assert_eq!(state.repeats.get(&2), Some(&3));
     }
 
     #[test]
