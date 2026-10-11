@@ -339,3 +339,31 @@ fn script_thread_state_runs_on_save_after_note_without_ui_revision() {
 fn script_thread_state_survives_command_backpressure() {
     live_thread_note_state(4096);
 }
+
+#[test]
+fn skinned_widgets_caption_only_what_the_script_asks_for() {
+    let face = host(r#"
+      local a=Knob{'Plain',0,0,1,unit=Unit.Percent}
+      local b=Knob{'Skinned',0,0,1,unit=Unit.Percent}; b:setStripImage('k.png',10)
+      local c=Knob{'Asked',0,0,1,showLabel=true,showValue=true}; c:setStripImage('k.png',10)
+      local d=Knob{'Text',0,0,1,displayText='x'}; d:setStripImage('k.png',10)
+    "#).interface();
+    let hidden = |i: usize| (face.widgets[i].hide.title, face.widgets[i].hide.value);
+    assert_eq!(hidden(0), (false, false));
+    assert_eq!(hidden(1), (true, true));
+    assert_eq!(hidden(2), (false, false));
+    assert_eq!(hidden(3), (true, false));
+}
+
+#[test]
+fn snapshot_of_a_large_ui_stays_cheap() {
+    // Absent optional properties used to scan every widget kind in Lua, which
+    // made each snapshot of a 300-widget UI cost several frames.
+    let h = host("for i=1,300 do local k=Knob{'K'..i,0,0,1}; k:setStripImage('k.png',10) end");
+    let start = std::time::Instant::now();
+    for _ in 0..20 {
+        assert_eq!(h.interface().widgets.len(), 300);
+    }
+    let each = start.elapsed() / 20;
+    assert!(each < std::time::Duration::from_millis(40), "{each:?}");
+}

@@ -200,7 +200,12 @@ impl ScriptHost {
             });
             ui::AssetRef(index)
         };
-        for (index, w) in widgets.iter().enumerate() {
+        for (index, proxy) in widgets.iter().enumerate() {
+            // Plain reads of the widget's data table: the proxy's __index is a Lua
+            // call per property, and a snapshot reads ~70 per widget. Only a value
+            // bound to an element is computed (by the proxy).
+            let data = proxy.raw_get::<Table>("__data").unwrap_or_else(|_| proxy.clone());
+            let w = &data;
             let kind = text(w, "kind").unwrap_or_default();
             let name = text(w, "name").unwrap_or_default();
             let (x, y, wd, ht) = (
@@ -209,7 +214,12 @@ impl ScriptHost {
                 num(w, "width").unwrap_or(0.).max(0.),
                 num(w, "height").unwrap_or(0.).max(0.),
             );
-            let value = num(w, "value").unwrap_or(0.);
+            let value = if matches!(w.raw_get::<Value>("element"), Ok(Value::Nil) | Err(_)) {
+                num(w, "value")
+            } else {
+                num(proxy, "value")
+            }
+            .unwrap_or(0.);
             let range = ui::Range {
                 min: num(w, "min").unwrap_or(0.),
                 max: num(w, "max").unwrap_or(1.),
@@ -314,8 +324,6 @@ impl ScriptHost {
                 .or_else(|| text(w, "displayName"))
                 .unwrap_or_default();
             wd.value_text = text(w, "displayText").filter(|t| !t.is_empty());
-            wd.hide.title = !flag(w, "showLabel", true);
-            wd.hide.value = !flag(w, "showValue", true);
             wd.parent = num(w, "parent_id")
                 .filter(|id| *id > 0.)
                 .map(|id| ui::WidgetRef(id as usize - 1));
@@ -422,6 +430,12 @@ impl ScriptHost {
                     ));
                 }
             }
+            // Authored skins carry their own legends and sit under neighbouring
+            // controls: a stripped widget's name and value captions are drawn only
+            // when the script asks for them (showLabel/showValue, or displayText).
+            let skinned = wd.images.iter().any(|i| i.role == ui::Role::Strip);
+            wd.hide.title = !flag(w, "showLabel", !skinned);
+            wd.hide.value = !flag(w, "showValue", !skinned || text(w, "displayText").is_some_and(|t| !t.is_empty()));
             if let Some(font) = text(w, "font").filter(|s| !s.is_empty()) {
                 let a = asset(&font, ui::AssetKind::TrueTypeFont, &mut out);
                 wd.style = Some(ui::StyleRef(out.styles.len()));
@@ -511,7 +525,7 @@ impl ScriptHost {
                 "stereo",
                 "channel",
             ];
-            if let Ok(data) = w.raw_get::<Table>("__data") {
+            {
                 for (key, _) in data.pairs::<String, Value>().flatten() {
                     // Lua scripts freely attach private data/functions to widgets.
                     // Only documented UI properties count as rendering gaps.

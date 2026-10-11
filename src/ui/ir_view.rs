@@ -1091,6 +1091,15 @@ pub(super) fn widget_state(
                         .w(w)
                         .h(h)
                 ],
+                // An authored Lua menu has its own backdrop (often a blank one over
+                // the page art): text only, never the generic tinted box and caret.
+                None if face.source == ir::Source::FalconLua
+                    && wd.image(Use::Background).is_some() =>
+                {
+                    row![words(label).flex(1).min_w(0)]
+                        .align(Align::Center)
+                        .pad((TIGHT * scale, 0.))
+                }
                 None => row![
                     words(label).flex(1).min_w(0),
                     glyph(Icon::Down, TIGHT * 2. * scale, secondary())
