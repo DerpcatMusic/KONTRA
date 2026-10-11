@@ -52,3 +52,52 @@ Next evidence needed: a native/reference gain-path trace for the same CC/note
 state, including multi-channel source routing, plus a full CLAP callback trace
 for the scanner/host onset difference. Do not use a blanket bool-to-float
 conversion or an arbitrary level multiplier as a substitute.
+
+## Round 2: paired CLAP attribution (2026-10-11)
+
+One fresh six-second run per patch/build, 48 kHz / 128 frames, survey note
+plan, CC1=100, CC11=127, five half-second notes. Both use the frozen survey
+CLAPs and the same frozen CLI to export state; private settings start empty.
+Signal tracing is enabled, so timing is contended/instrumented, not acceptance.
+
+| Patch | e9d918e9 peak | 3962616c peak | load average old / new (1 minute) |
+|---|---:|---:|---:|
+| Clarinet A | 0.301440090 | 0.067735381 | 10.65 / 17.68 |
+| Bassoon | 0.513810456 | 0.075200513 | 12.12 / 16.86 |
+| Alto Flute | 0.465053141 | 0.149420917 | 13.17 / 15.74 |
+
+**The large drop starts in convolution.** The 2x2 GainMatrix implementation
+and its live controls are identical at the two revisions; `git diff
+e9d918e9..3962616c -- crates/sampler-uvi/src/inserts.rs` excludes the original
+prime suspect. Clarinet's matrix input is 0.068953156 -> 0.065463036, output
+0.048267213 -> 0.045824129: a small upstream/timing variation, not the
+4.45x output loss. The first active convolution (trace node 158, impulse 7)
+has input 0.048267200 -> 0.045824117 but output 0.058621570 -> 0.007201866.
+Node 183 (impulse 9) changes 0.135900199 -> 0.017369986. Bassoon node 158
+changes 0.095940135 -> 0.014828422; Alto Flute node 158 changes
+0.070618145 -> 0.011468436. Subsequent convolutions amplify the difference.
+
+Commit `de2334ce31fe9ff8ae4b08ce1229354f7307490f` introduced impulse shaping
+(Time/damping/Width/NormalizePower, and the SampledReverb reference gains);
+`402b3fb0` added live rebuilding of those kernels. The old build used raw
+responses. This identifies the changed DSP stage, rather than merely listing
+suspects. Traces contain approximately one million records per patch; the
+plugin shutdown can leave a partial JSON footer, so summaries consume complete
+record lines and make no claim that the final tail is complete.
+
+The old peak is not a native target. V1 `4bffbb18:src/uvi/effects.rs:789-805`
+normalizes mean-channel energy, uses 1.25 for normalized SampledReverb, and
+0.125 for unnormalized SampledReverb. Its authored native basis tests at
+1699-1740 check those numbers. [Falcon Effects, Convolver/IReverb]
+(https://manual.uvi.net/falcon/en/effects/) and the
+[UVI IReverb parameter reference](https://lua.uvi.net/_elements.html)
+document NormalizePower and linear Dry/Wet but do not specify the 0.125
+reference gain. The cached native constructor is `0x14103aa90`; process
+delegates through `0x14103ff00` to `0x141039d50`. The approved SHA-identical
+executable remains packed at those addresses (radare2 confirmation), so raw
+disassembly does not independently validate the unpacked constants.
+No patch gain compensation is justified by these old-vs-new peaks.
+
+Native full-patch parity, frozen-v1 patch A/B and Alto Flute scanner onset are
+still under investigation. The separate multichannel GainMatrix gap remains,
+but did not first appear between these two survey builds.
