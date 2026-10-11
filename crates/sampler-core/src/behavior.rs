@@ -1448,7 +1448,12 @@ impl Runtime {
                     }
                     self.behavior_ready.remove(index);
                 }
-                Ok(false) => {}
+                Ok(false) => {
+                    // Outbox full: the emit rewound its pc; resume next block.
+                    if std::mem::take(&mut self.ops.outbox_full) {
+                        self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                    }
+                }
                 // Kontakt ignores a script's call on a note that already ended
                 // (play_note on a released parent, forwarding a dropped note).
                 Err(Error::ClosedNote) => {}
