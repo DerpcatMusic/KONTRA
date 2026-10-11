@@ -24,6 +24,8 @@ struct Local {
     lifetime: std::sync::Weak<AtomicBool>,
     session: Session,
     graph: Option<Table>,
+    /// The handler-bearing nodes of `graph`, found once per Lua render.
+    targets: Option<(u64, Option<Vec<Target>>)>,
     /// Hovered nodes and the pointer position last reported to each.
     hovered: HashMap<String, Point>,
     drafts: HashMap<String, String>,
@@ -401,6 +403,7 @@ impl State {
                         lifetime: Arc::downgrade(&self.canceled),
                         session,
                         graph: None,
+                        targets: None,
                         hovered: HashMap::new(),
                         drafts: HashMap::new(),
                     },
@@ -414,9 +417,24 @@ impl State {
                 let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
                 session.update_view(face, values, &input.values, &input.meters);
             }
+            let t0 = std::time::Instant::now();
             if let Some(graph) = &local.graph {
-                events(ui, graph, session, slot, scale, &mut local.hovered)?;
+                let generation = session.generation();
+                if local.targets.as_ref().is_none_or(|(g, _)| *g != generation) {
+                    let mut found = Vec::new();
+                    let indexed = event_targets(graph, &mut found)?.map(|()| found);
+                    local.targets = Some((generation, indexed));
+                }
+                match &local.targets {
+                    Some((_, Some(targets))) => {
+                        for target in targets {
+                            node_events(ui, session, slot, scale, &mut local.hovered, &target.path, &target.gestures)?;
+                        }
+                    }
+                    _ => events(ui, graph, session, slot, scale, &mut local.hovered)?,
+                }
             }
+            let t1 = std::time::Instant::now();
             let graph = session.render();
             #[cfg(feature = "shots")]
             {
@@ -427,12 +445,14 @@ impl State {
             {
                 self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
             }
+            let t2 = std::time::Instant::now();
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
             let authored = authored_size(&graph);
             self.size = authored;
             // While the Lua graph is the one lowered last frame, MUI keeps the
             // lowered, laid-out subtree; a hover or press inside it rebuilds.
-            let key = session.lowering_key().map(|key| (key, scale.to_bits(), super::pictures::revision(), authored.width.to_bits(), authored.height.to_bits()));
+            let editing = session.text_fields().iter().any(|path| ui.focused(format!("nui-{slot}-{path}-text").as_str()));
+            let key = session.lowering_key().filter(|_| !editing).map(|key| (key, scale.to_bits(), super::pictures::revision(), authored.width.to_bits(), authored.height.to_bits()));
             let mut error = None;
             let build = |ui: &mut Ui| match draw_live(ui, &graph, package, session, slot, scale, authored, &mut local.drafts) {
                 Ok(el) => el,
@@ -443,6 +463,8 @@ impl State {
                 None => { let mut build = build; build(ui) }
             };
             if let Some(error) = error { return Err(error); }
+            let t3 = std::time::Instant::now();
+            if std::env::var_os("KONTRA_TRACE").is_some() { eprintln!("TRACE events={:.2} render+depth={:.2} authored+lower={:.2} memo={}", (t1-t0).as_secs_f64()*1e3, (t2-t1).as_secs_f64()*1e3, (t3-t2).as_secs_f64()*1e3, key.is_some()); }
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {
@@ -1758,6 +1780,50 @@ fn draw_modifiers(
     }
     Ok(DrawProgress::Complete(el))
 }
+/// A node with pointer handlers: what a frame needs to find out whether any
+/// of them fires, without walking the whole Lua graph.
+struct Target {
+    path: String,
+    gestures: Vec<(String, Table)>,
+}
+fn gestures(node: &Table) -> anyhow::Result<Vec<(String, Table)>> {
+    let mut out = Vec::new();
+    for m in tables(node, "modifiers")? {
+        let name = string(&m, "name");
+        if matches!(name.as_str(), "on_tap_gesture" | "on_drag_gesture" | "on_hover_gesture")
+            && let Value::Table(t) = val(&m, "value")
+        {
+            out.push((name, t));
+        }
+    }
+    Ok(out)
+}
+/// The handler-bearing nodes under `node`, in event order; `None` when a
+/// popover is open (its dismissal needs the full walk).
+fn event_targets(node: &Table, out: &mut Vec<Target>) -> anyhow::Result<Option<()>> {
+    let gestures_here = gestures(node)?;
+    if !gestures_here.is_empty() {
+        out.push(Target { path: string(node, "path"), gestures: gestures_here });
+    }
+    for m in tables(node, "modifiers")? {
+        let name = string(&m, "name");
+        if name == "popover" {
+            return Ok(None);
+        }
+        if (name == "background" || name == "overlay")
+            && let Value::Table(t) = val(&m, "value")
+            && event_targets(&t, out)?.is_none()
+        {
+            return Ok(None);
+        }
+    }
+    for child in tables(node, "children")? {
+        if event_targets(&child, out)?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(()))
+}
 fn events(
     ui: &mut Ui,
     node: &Table,
@@ -1767,24 +1833,57 @@ fn events(
     hovered: &mut HashMap<String, Point>,
 ) -> anyhow::Result<()> {
     let path = string(node, "path");
-    let id = format!("nui-{slot}-{path}");
-    let r = ui.get(id.as_str());
-    let was = hovered.contains_key(&path);
-    // A hover handler hears "update" when the pointer moved over the node,
-    // not on every frame it rests there.
-    let mut moved = false;
-    if r.hovered {
-        let at = ui.local(id.as_str()).unwrap_or(Point::ZERO);
-        moved = hovered.insert(path.clone(), at) != Some(at);
-    } else {
-        hovered.remove(&path);
-    }
-    let mut event = None;
+    node_events(ui, session, slot, s, hovered, &path, &gestures(node)?)?;
     for m in tables(node, "modifiers")? {
         let name = string(&m, "name");
         let Value::Table(t) = val(&m, "value") else {
             continue;
         };
+        if name == "background" || name == "overlay" {
+            events(ui, &t, session, slot, s, hovered)?;
+        }
+        if name == "popover" {
+            let id = format!("nui-{slot}-{path}");
+            let popup_id = format!("{id}-popup");
+            if string(&t, "auto_close_when") != "never"
+                && ui.dismissed(&[id.as_str(), popup_id.as_str()])
+            {
+                if let Ok(close) = t.get::<Function>("on_auto_close") {
+                    session.call(close, ())?;
+                }
+            } else if let Ok(content) = t.get::<Table>("content") {
+                events(ui, &content, session, slot, s, hovered)?;
+            }
+        }
+    }
+    for child in tables(node, "children")? {
+        events(ui, &child, session, slot, s, hovered)?;
+    }
+    Ok(())
+}
+fn node_events(
+    ui: &mut Ui,
+    session: &Session,
+    slot: usize,
+    s: f64,
+    hovered: &mut HashMap<String, Point>,
+    path: &str,
+    gestures: &[(String, Table)],
+) -> anyhow::Result<()> {
+    let id = format!("nui-{slot}-{path}");
+    let r = ui.get(id.as_str());
+    let was = hovered.contains_key(path);
+    // A hover handler hears "update" when the pointer moved over the node,
+    // not on every frame it rests there.
+    let mut moved = false;
+    if r.hovered {
+        let at = ui.local(id.as_str()).unwrap_or(Point::ZERO);
+        moved = hovered.insert(path.to_owned(), at) != Some(at);
+    } else {
+        hovered.remove(path);
+    }
+    let mut event = None;
+    for (name, t) in gestures {
         let triggers: Vec<&str> = match name.as_str() {
             "on_tap_gesture" => [
                 (r.pressed || r.key_activated).then_some("start"),
@@ -1802,7 +1901,7 @@ fn events(
             .into_iter()
             .flatten()
             .collect(),
-            "on_hover_gesture" => [
+            _ => [
                 (!was && r.hovered).then_some("enter"),
                 (was && !r.hovered).then_some("exit"),
                 (r.hovered && moved).then_some("update"),
@@ -1810,7 +1909,6 @@ fn events(
             .into_iter()
             .flatten()
             .collect(),
-            _ => Vec::new(),
         };
         for trigger in triggers {
             if let Ok(f) = t.get::<Function>(trigger) {
@@ -1837,24 +1935,6 @@ fn events(
                 session.call(f, e.clone())?;
             }
         }
-        if name == "background" || name == "overlay" {
-            events(ui, &t, session, slot, s, hovered)?;
-        }
-        if name == "popover" {
-            let popup_id = format!("{id}-popup");
-            if string(&t, "auto_close_when") != "never"
-                && ui.dismissed(&[id.as_str(), popup_id.as_str()])
-            {
-                if let Ok(close) = t.get::<Function>("on_auto_close") {
-                    session.call(close, ())?;
-                }
-            } else if let Ok(content) = t.get::<Table>("content") {
-                events(ui, &content, session, slot, s, hovered)?;
-            }
-        }
-    }
-    for child in tables(node, "children")? {
-        events(ui, &child, session, slot, s, hovered)?;
     }
     Ok(())
 }
@@ -3234,6 +3314,7 @@ mod tests {
                     lifetime: Arc::downgrade(&lifetime),
                     session,
                     graph: Some(graph),
+                    targets: None,
                     hovered: Default::default(),
                     drafts: Default::default(),
                 },
