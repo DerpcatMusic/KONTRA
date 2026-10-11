@@ -3752,7 +3752,8 @@ mod tests {
         });
         let meters: Vec<usize> = face.widgets.iter().enumerate().filter(|(_, w)| w.meter.is_some() || matches!(w.kind, ir::Kind::LevelMeter { .. })).map(|(n, _)| n).collect();
         println!("NATIVE_SCENARIO {scenario} knob={} meters={}", knob.is_some(), meters.len());
-        let (mut view, mut layout, mut paint) = (vec![], vec![], vec![]);
+        let (mut view, mut layout, mut paint, mut gpu_paint) = (vec![], vec![], vec![], vec![]);
+        let mut gpu = moose::mui::mui::vello::host::Host::headless((970, 600)).map_err(|e| println!("NATIVE_GPU unavailable: {e}")).ok();
         let start = Instant::now();
         for n in 0..400 {
             if let Some((c, range)) = knob && scenario == "drag" {
@@ -3778,6 +3779,11 @@ mod tests {
             let t = Instant::now();
             let _ = super::super::tests::pixels(&ui, size.width as u16, size.height as u16);
             let p = t.elapsed();
+            let g = gpu.as_mut().map(|gpu| {
+                let t = Instant::now();
+                gpu.render_offscreen(ui.scene().unwrap(), moose::mui::mui::vello::kurbo::Affine::IDENTITY).map_err(|e| println!("NATIVE_GPU render failed: {e}")).ok();
+                t.elapsed()
+            });
             assert!(!state.failed, "{:?}", state.failure);
             if state.pending() > 0 || n < 20 {
                 assert!(start.elapsed() < Duration::from_secs(90));
@@ -3787,11 +3793,13 @@ mod tests {
             for (vec, x) in [(&mut view, v), (&mut layout, l), (&mut paint, p)] {
                 vec.push(x.as_secs_f64() * 1000.);
             }
+            gpu_paint.extend(g.map(|g| g.as_secs_f64() * 1000.));
         }
         let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
         println!(
-            "NATIVE_FRAME_MS scenario={scenario} frames={} view={:.2} layout={:.2} sw_paint={:.2}",
-            view.len(), med(&mut view), med(&mut layout), med(&mut paint)
+            "NATIVE_FRAME_MS scenario={scenario} frames={} view={:.2} layout={:.2} sw_paint={:.2} gpu_paint={:.2}",
+            view.len(), med(&mut view), med(&mut layout), med(&mut paint),
+            if gpu_paint.is_empty() { f64::NAN } else { med(&mut gpu_paint) }
         );
     }
 
