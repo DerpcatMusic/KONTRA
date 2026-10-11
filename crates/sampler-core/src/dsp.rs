@@ -13,6 +13,9 @@ pub enum FilterKind {
     Peak { gain_db: f64 },
     LowShelf { gain_db: f64 },
     HighShelf { gain_db: f64 },
+    /// First-order (6 dB/octave) shelves; the Q is ignored.
+    FirstOrderLowShelf { gain_db: f64 },
+    FirstOrderHighShelf { gain_db: f64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +106,24 @@ impl Biquad {
                         amplitude * (plus + minus * cos + beta),
                         -2. * amplitude * (minus + plus * cos),
                         amplitude * (plus + minus * cos - beta),
+                    ]
+                }
+            }
+            FilterKind::FirstOrderLowShelf { gain_db } | FilterKind::FirstOrderHighShelf { gain_db } => {
+                if !gain_db.is_finite() {
+                    return Err(Error::InvalidInput);
+                }
+                let amplitude = 10_f64.powf(gain_db / 40.);
+                let g = (omega * 0.5).tan();
+                if matches!(kind, FilterKind::FirstOrderLowShelf { .. }) {
+                    denominator = [1. + g / amplitude, g / amplitude - 1., 0.];
+                    [1. + amplitude * g, amplitude * g - 1., 0.]
+                } else {
+                    denominator = [1. + amplitude * g, amplitude * g - 1., 0.];
+                    [
+                        amplitude * (amplitude + g),
+                        amplitude * (g - amplitude),
+                        0.,
                     ]
                 }
             }
@@ -1475,6 +1496,19 @@ mod tests {
             stages, states, &mut block, 1, parameters, at, delay, filters, None
         ));
         [block[0][0], block[1][0]]
+    }
+
+    #[test]
+    fn first_order_shelves_reach_their_gain_one_band_away() {
+        let gain = 10_f64.powf(0.6);
+        let low = Biquad::new(48000, FilterKind::FirstOrderLowShelf { gain_db: 12. }, 1000., 0.7).unwrap();
+        let high = Biquad::new(48000, FilterKind::FirstOrderHighShelf { gain_db: 12. }, 1000., 0.7).unwrap();
+        assert!((low.magnitude(1.) - gain).abs() < 1e-3, "{}", low.magnitude(1.));
+        assert!((low.magnitude(23999.) - 1.).abs() < 1e-2);
+        assert!((high.magnitude(1.) - 1.).abs() < 1e-3);
+        assert!((high.magnitude(23999.) - gain).abs() < 1e-2, "{}", high.magnitude(23999.));
+        // Six dB per octave: a decade above the corner is within 1 dB of its asymptote.
+        assert!((low.magnitude(10000.) - 1.).abs() < 0.2);
     }
 
     #[test]
