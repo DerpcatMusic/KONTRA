@@ -2176,6 +2176,22 @@ fn widget_menu_passive_value_is_unchanged() {
 }
 
 #[test]
+fn widget_picture_slider_drags_like_the_authored_knob() {
+    // Audio Imperia's vibrato "knob": a ui_slider(0,127) with a knob picture,
+    // 50x50, MOUSE_BEHAVIOUR -300.
+    let script = sampler_ksp::compile(
+        "on init\n make_perfview\n declare ui_slider $k(0,127)\n move_control_px($k,10,10)\n set_control_par(get_ui_id($k),$CONTROL_PAR_WIDTH,50)\n set_control_par(get_ui_id($k),$CONTROL_PAR_HEIGHT,50)\n set_control_par(get_ui_id($k),$CONTROL_PAR_MOUSE_BEHAVIOUR,-300)\n set_control_par_str(get_ui_id($k),$CONTROL_PAR_PICTURE,\"pyramid_knob_small\")\nend on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (delta, captured) = audit_motion(&face, 0, 0., -30.);
+    assert!(captured && delta > 0.);
+}
+
+#[test]
 fn widget_disabled_knob_does_not_edit() {
     let script = sampler_ksp::compile(
         "on init\n declare ui_knob $k(0,100,1)\nend on",
