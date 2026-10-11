@@ -1794,11 +1794,12 @@ impl Lowering<'_> {
             {
                 vec![Processor::PeakingEq(crate::PeakingEq {
                     frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
-                    bandwidth: Parameter::Constant(
-                        ((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7)
-                            .clamp(0., 1.),
+                    bandwidth: Parameter::Constant(crate::PeakingEq::bandwidth_knob(
+                        crate::PeakingEq::octaves_of_q(q),
+                    )),
+                    gain_db: Parameter::Constant(
+                        20. * gain.linear().log10() / crate::PeakingEq::GAIN_SCALE,
                     ),
-                    gain_db: Parameter::Constant(20. * gain.linear().log10()),
                 })]
             } else if let Some(live) = self.live_stage(chain, start + index, p) {
                 vec![live]
