@@ -230,6 +230,11 @@ pub fn missing(feature: &str, reason: &str, value: &str) -> Key {
         .strip_prefix("script ")
         .and_then(|s| s.split_once(": "))
     {
+        if status == "Warning" {
+            // The translator already masks per-site names/numbers in this warning class.
+            let class = blake3::hash(builtin.as_bytes()).to_hex();
+            return Key::new("KspWarning", reason, &format!("Class_{}", &class[..16]));
+        }
         return Key::new(
             "KspBuiltin",
             if status == "Unsupported" {
