@@ -3,7 +3,7 @@ use sampler_parity::{Status, TokenClass};
 
 #[test]
 fn report_classifies_implemented_stub_unsupported_and_tokens_without_source() {
-    let source = "{private comment}\non init\n declare $x := abs(-7)\n set_global_key(1)\n nope(\"private literal\")\nend on";
+    let source = "{private comment}\non {header comment} init\n declare $x := abs(-7)\n set_global_key(1)\n nope(\"private literal\")\nend on";
     let r = parity_report(source, "ksp:slot0", "test");
     let find = |name| r.constructs.iter().find(|c| c.name == name).unwrap();
     assert_eq!(find("abs").status, Status::Implemented);
@@ -112,5 +112,30 @@ fn constants_and_init_function_statements_keep_their_source_spans() {
         r.lowered
             .iter()
             .any(|l| l.span.start as usize == source.find("message").unwrap())
+    );
+}
+
+#[test]
+fn declarations_and_existing_file_selector_properties_are_not_stubs() {
+    let source = "on init declare ui_file_selector $f set_control_par(get_ui_id($f), $CONTROL_PAR_FILE_TYPE, 0) end on";
+    let r = parity_report(source, "ksp:slot0", "test");
+    assert!(
+        r.lowered
+            .iter()
+            .any(|l| l.span.start as usize == source.find("declare").unwrap()
+                && l.ops.iter().any(|op| op.contains("allocate UI")))
+    );
+    let property = r
+        .constructs
+        .iter()
+        .find(|c| c.name == "$CONTROL_PAR_FILE_TYPE")
+        .unwrap();
+    assert_eq!(property.status, Status::Approximate);
+    assert!(
+        property
+            .owner
+            .as_ref()
+            .unwrap()
+            .starts_with("crates/sampler-ksp/src/ui.rs:")
     );
 }
