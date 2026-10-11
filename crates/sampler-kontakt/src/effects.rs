@@ -1577,7 +1577,7 @@ pub(crate) fn instrument_buses_with_recipes(
     // Instrument buses: only the ones a group feeds and that do something.
     // `$NI_BUS_OFFSET` + the bus number.
     let mut instrument = Vec::new();
-    let mut panned = Vec::new();
+    let mut invalid_pan = Vec::new();
     for bus in buses.iter().filter(|b| dynamic || !b.groups.is_empty()) {
         let name = format!("bus {}", bus.index);
         let c = chain_with(
@@ -1589,9 +1589,6 @@ pub(crate) fn instrument_buses_with_recipes(
             &[],
         );
         take(&name, &c);
-        if bus.pan.abs() > 0.01 {
-            panned.push((name, bus.pan));
-        }
         let mut processors = c.processors;
         if dynamic {
             // A script sets the bus volume and routes groups to any bus at run
@@ -1608,22 +1605,26 @@ pub(crate) fn instrument_buses_with_recipes(
                 bypass: false,
             });
             processors.push(sampler_ir::Processor::StereoMatrix(IDENTITY));
-            instrument.push((bus, processors));
-        } else if !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
+        }
+        if bus.pan.is_finite() {
+            if bus.pan != 0. {
+                // NI Bus Insert Effects amplifier: BInsertBus audio 0x140824910
+                // calls 0x140823d70 with channel flags 0/1: independent linear balance.
+                let left = 1. - bus.pan.clamp(0., 1.);
+                let right = (bus.pan + 1.).clamp(0., 1.);
+                processors.push(sampler_ir::Processor::StereoMatrix([
+                    [f64::from(left), 0.], [0., f64::from(right)],
+                ]));
+            }
+        } else {
+            invalid_pan.push((name, (0, "instrument bus pan".into(), bus.pan.to_string(),
+                sampler_ir::Reason::InvalidValue)));
+        }
+        if dynamic || !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
             instrument.push((bus, processors));
         }
     }
-    for (name, pan) in panned {
-        report.push((
-            name,
-            (
-                0,
-                "instrument bus pan".into(),
-                format!("{pan}"),
-                sampler_ir::Reason::NotModeled,
-            ),
-        ));
-    }
+    report.extend(invalid_pan);
     ir.impulses = store;
     let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
     if !chained && instrument.is_empty() {
@@ -1811,6 +1812,26 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instrument_bus_pan_only_uses_native_stereo_balance() {
+        use sampler_ir as ir;
+        for (pan, expected) in [(-1., [1., 0.]), (-0.5, [1., 0.5]),
+            (0., [1., 1.]), (0.5, [0.5, 1.]), (1., [0., 1.])] {
+            let mut instrument = ir::Instrument::default();
+            instrument.groups.push(ir::Group::default());
+            let (notes, _) = super::instrument_buses(&mut instrument, &[],
+                &[super::BusPlan { index: 0, volume: 1., pan,
+                    groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+            assert!(notes.is_empty());
+            if pan == 0. { continue; }
+            assert_eq!(instrument.buses.len(), 1, "pan-only bus must exist");
+            let chain = instrument.buses[0].chain.unwrap();
+            let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(),
+                120., &[[1., 1.]]);
+            assert_eq!(output[0], expected);
+        }
+    }
+
     #[test]
     fn convolution_auto_gain_keeps_native_double_energy_sum() {
         let recipe = super::Convolution {
