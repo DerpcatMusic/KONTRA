@@ -1079,7 +1079,11 @@ fn source_phase_is_sampled_at_onset_and_reused_without_heap() {
                             ModSource::Lfo(if meta {
                                 lfo
                             } else {
-                                Lfo { phase: 0.25, ..lfo }
+                                Lfo {
+                                    phase: 0.25,
+                                    retrigger: true,
+                                    ..lfo
+                                }
                             }),
                             ModSource::Controller(1),
                         ],
