@@ -599,25 +599,8 @@ impl Translation {
             // oscillator group, see `oscillator_group`.)
             let group = ir::GroupRef(self.ir.groups.len().saturating_sub(1));
             // A script's playNote can trigger one oscillator of a keygroup
-            // (oscIndex); scripts do not run, so every oscillator plays.
-            let stacked = layer
-                .descendants()
-                .filter(|n| n.has_tag_name("Keygroup"))
-                .map(|k| {
-                    k.descendants()
-                        .filter(|n| n.has_tag_name("SamplePlayer"))
-                        .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-                        .count()
-                })
-                .filter(|&n| n > 1);
-            let (keygroups, most) = stacked.fold((0, 0), |(k, m), n| (k + 1, m.max(n)));
-            if keygroups > 0 && !self.ir.behaviors.is_empty() {
-                self.unsupported(
-                    &path(layer),
-                    "keygroup oscillators all play (the script may pick one per note)",
-                    format!("{keygroups} keygroups, up to {most} oscillators"),
-                );
-            }
+            // (oscIndex): a scripted layer is split per oscillator above, and
+            // without one every oscillator plays, as in UVI.
             let keys = (midi(layer, "LowKey", 0)?, midi(layer, "HighKey", 127)?);
             for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
                 self.keygroup(keygroup, group, keys, &scoped)?;
@@ -1134,9 +1117,6 @@ impl Translated {
         })?;
         engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
-        if scripted::Script::handles_notes(&thread) {
-            unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
-        }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
         for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
@@ -1619,12 +1599,6 @@ fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String 
 /// modeled is.
 #[cfg(feature = "library-access")]
 fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
-    if host.handles_notes() {
-        // The script picks the oscillators now.
-        instrument
-            .unsupported
-            .retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
-    }
     instrument
         .unsupported
         .retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
