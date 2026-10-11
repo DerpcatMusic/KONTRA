@@ -148,7 +148,7 @@ pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod array_file;
 pub use array_file::{
-    ARRAY_FILE_JOBS, ARRAY_FILE_MAX_BYTES, ARRAY_FILE_MAX_CELLS, ARRAY_FILE_SERVICE,
+    ARRAY_FILE_JOBS, ARRAY_FILE_SERVICE,
     ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
 };
 mod midi_object;
