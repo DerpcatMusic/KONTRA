@@ -2273,6 +2273,11 @@ impl Translation {
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
         let shape = match (lfo.waveform, lfo.trailing_values) {
+            // NI LFO controls / Waveform Mixer; native core 0x140b07290 sums five weights.
+            // Admit zero before sine-only Multi; its unipolar view remains 0.5.
+            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => {
+                ir::LfoShape::Zero
+            }
             // Digital Multi's falling sine retains subunit weights; normalization
             // divides by max(1, sum(abs(weights))), not by the sole weight.
             // ponytail: other waves and nonzero native fades need measured source clocks.
@@ -2293,11 +2298,6 @@ impl Translation {
                     && lfo.records[1].values[0] == -1. =>
             {
                 ir::LfoShape::SineScaled(-f64::from(sine))
-            }
-            // Native core 0x140b07290: the five weighted components sum to zero.
-            // Verified original-byte waveform checks; the bipolar view is still 0.5.
-            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => {
-                ir::LfoShape::Zero
             }
             (0, _) => ir::LfoShape::Sine,
             (1, _) if width == 0.5 => ir::LfoShape::Square,
