@@ -189,8 +189,14 @@ pub enum Processor {
     Daft(DaftSettings),
     /// Pinned v1 native Ladder LP4, with separate preallocated family state.
     LadderLP4(LadderSettings),
+    /// Native adaptive-resonance filter (FilterDJ), saved types 100..=108.
+    Ar(ArSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
+    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
+    Saturation(f32),
+    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
+    Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
@@ -242,9 +248,12 @@ impl Processor {
             Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
+            Processor::Ar(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
+            Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
+            Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Gainer { dry, gain } => {
                 dry.is_finite() && gain.valid() && !matches!(gain, Parameter::Expression { .. })
             }
@@ -253,15 +262,14 @@ impl Processor {
     }
 }
 
+mod ar;
+mod ar_kernel;
 mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
-// Numerical/runtime candidates only; AR playback remains disconnected.
-#[cfg(test)]
-mod ar;
-#[cfg(test)]
-mod ar_kernel;
+mod distortion;
+pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
 mod kernel_tests;
@@ -310,6 +318,8 @@ pub(super) enum PreparedProcessor {
     },
     Compressor(compressor::Compressor),
     Rectify(Rectifier),
+    Saturation(f32),
+    Distortion(distortion::Distortion),
     Gainer {
         dry: f64,
         gain: control::PreparedParameter,
@@ -321,6 +331,10 @@ pub(super) enum PreparedProcessor {
     Daft(daft::Daft),
     LadderLP4 {
         ladder: ladder::Ladder,
+        offset: usize,
+    },
+    Ar {
+        ar: ar::Ar,
         offset: usize,
     },
     StereoModeller {
@@ -500,7 +514,17 @@ pub(super) fn compile_processors(
                     filters.push(svf::PreparedFilter::NativeControl);
                     PreparedProcessor::LadderLP4 { ladder, offset }
                 }
+                Processor::Ar(settings) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ar::CELLS).ok_or(Error::Capacity)?;
+                    let mut ar = settings.compile(rate, bindings);
+                    ar.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::Ar { ar, offset }
+                }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
+                Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
+                Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
                     gain: gain.compile(bindings),
@@ -581,6 +605,9 @@ impl PreparedVoiceChain {
                 }
                 PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => {
                     u32::try_from(ladder.modulation_index).ok()
+                }
+                PreparedProcessor::Ar { ar, .. } if stages.contains(&i) => {
+                    u32::try_from(ar.modulation_index).ok()
                 }
                 _ => None,
             })
@@ -858,8 +885,10 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
+                        | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
+                        | PreparedProcessor::Ar { .. }
                         | PreparedProcessor::Branch { .. }
                         | PreparedProcessor::LiveFilter(_)
                         | PreparedProcessor::ControlMatrix(_)
@@ -1133,6 +1162,7 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(
                 state,
                 parameters,
@@ -1152,6 +1182,17 @@ pub(super) fn process<const TRACE: bool>(
                     filters.bank.native_knobs(ladder.modulation_index),
                 );
             }
+            PreparedProcessor::Ar { ar, offset } => {
+                fault |= ar.process(
+                    state,
+                    &mut delay_samples[*offset..*offset + ar::CELLS],
+                    parameters,
+                    block,
+                    len,
+                    at,
+                    filters.bank.native_knobs(ar.modulation_index),
+                );
+            }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
                     state,
@@ -1165,6 +1206,13 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
+                }
+            }
+            PreparedProcessor::Saturation(shape) => {
+                for channel in block.iter_mut() {
+                    channel[..len]
+                        .iter_mut()
+                        .for_each(|v| *v = shaping::saturation(*v, *shape));
                 }
             }
             PreparedProcessor::Gainer { dry, gain, k } => {
