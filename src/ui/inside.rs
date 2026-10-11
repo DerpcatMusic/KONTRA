@@ -16,15 +16,17 @@ pub enum View {
     Mapping,
     Sound,
     Info,
+    Scripts,
 }
 
 impl View {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Interface,
         Self::Articulations,
         Self::Mapping,
         Self::Sound,
         Self::Info,
+        Self::Scripts,
     ];
 
     fn label(self) -> &'static str {
@@ -33,6 +35,7 @@ impl View {
             Self::Articulations => "Articulations",
             Self::Mapping => "Mapping",
             Self::Sound => "Sound",
+            Self::Scripts => "Scripts",
             Self::Info => "Info",
         }
     }
@@ -86,6 +89,7 @@ pub struct State {
     pub view: Option<View>,
     pub sound_tab: SoundTab,
     pub(super) mapping: super::mapping::State,
+    pub(super) scripts: super::script_view::State,
     /// The articulation playing, following switch keys as they are played.
     pub active: Option<usize>,
     edit: Option<Edit>,
@@ -110,6 +114,7 @@ fn offered(cx: &Cx, slot: usize) -> Vec<View> {
             View::Interface => has_face,
             View::Articulations => inst.is_some_and(|i| !i.articulations.is_empty()),
             View::Mapping | View::Sound => inst.is_some_and(|i| !i.zones.is_empty()),
+            View::Scripts => inst.is_some(),
             View::Info => true,
         })
         .collect()
@@ -147,6 +152,9 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
         })
         .collect();
     cx.state.inside.entry(slot).or_default().view = Some(picked);
+    if picked != View::Scripts {
+        cx.state.inside.entry(slot).or_default().scripts.stop_coverage();
+    }
     if picked == View::Sound && picked != view {
         cx.state.select(slot);
     }
@@ -160,6 +168,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
         (View::Mapping, Some(i)) => super::mapping::view(ui, cx, slot, &i),
         (View::Sound, Some(i)) => sound(ui, cx, slot, &i),
+        (View::Scripts, Some(i)) => super::script_view::view(ui, cx, slot, &i),
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
@@ -299,6 +308,13 @@ pub(super) fn release_learn(cx: &mut Cx) {
     let armed = cx.p.shared.learn_target.load(Ordering::Relaxed) != 0;
     let rack = cx.state.tab == super::Tab::Rack;
     for (&slot, state) in &mut cx.state.inside {
+        if !rack
+            || cx.state.settings
+            || state.view != Some(View::Scripts)
+            || cx.selection.parts.get(slot).is_none_or(|p| p.collapsed)
+        {
+            state.scripts.stop_coverage();
+        }
         if let Some(edit) = state.edit.as_ref().filter(|e| e.learn)
             && (!armed
                 || !rack
