@@ -311,7 +311,8 @@ pub fn parity_report_with(
         modules: Vec::new(),
         inspection: Some(Default::default()),
     };
-    for (i, cb) in hir.callbacks.iter().enumerate() {
+    let mut programs = Vec::new();
+    for cb in &hir.callbacks {
         if cb.kind == hir::CallbackKind::Init {
             init_statements(&cb.body, &span, &mut report.lowered);
             init_functions(
@@ -339,9 +340,13 @@ pub fn parity_report_with(
             hir::CallbackKind::Controller => lower::Context::Controller,
             _ => lower::Context::Plan,
         };
-        if let Err(f) = unit.program(i, &cb.body, cb.span, ctx, cb.kind, None) {
-            fail(&mut report, f);
+        match unit.program(programs.len(), &cb.body, cb.span, ctx, cb.kind, None) {
+            Ok(p) => programs.push(p),
+            Err(f) => fail(&mut report, f),
         }
+    }
+    if let Err(f) = unit.finish(&mut programs) {
+        fail(&mut report, f);
     }
     let inspection = unit.inspection.take().unwrap();
     let mut ops: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
