@@ -1007,13 +1007,13 @@ pub(crate) fn chain_with(
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
-                kind: kind @ 30..=33,
+                kind: kind @ 30..=41,
                 cutoff,
                 resonance,
                 extra,
             }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) => {
-                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto. Types 30..=32
-                // (Ladder LP1..LP3) read the same loop at an earlier stage.
+                // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
+                // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
                 // Gain is signed normalized (12 dB per unit); the native kernel
                 // retains the record-version cutoff clock.
                 let values = [extra[0], *cutoff, *resonance];

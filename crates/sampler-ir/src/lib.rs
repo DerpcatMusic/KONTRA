@@ -1551,7 +1551,7 @@ pub struct LadderLP4 {
     pub cutoff: f64,
     pub resonance: f64,
     pub record_version: u16,
-    /// Output stage: 1..=4 for Ladder LP1..LP4. The loop closes around stage 4.
+    /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
     pub taps: u8,
 }
 

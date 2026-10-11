@@ -250,7 +250,7 @@ impl Check<'_> {
                     self.within(d.gain, -1.0..=1.0, "ladder gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
-                    self.within(f64::from(d.taps), 1.0..=4.0, "ladder taps")?;
+                    self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [
