@@ -70,7 +70,18 @@ impl NIFileContainer {
         Ok(reader.read_bytes(size)?)
     }
 
-    pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+    /// Strict: the file section must be present in full.
+    pub fn read<R: ReadBytesExt>(reader: R) -> Result<Self, Error> {
+        match Self::read_table(reader)? {
+            (container, true) => Ok(container),
+            (_, false) => Err(Error::Static("Truncated NI FileContainer file section")),
+        }
+    }
+
+    /// The member table only. A file section cut short (a NICNT that is only the product
+    /// stub) still lists its members; `read_member` rejects each one that reaches past the file.
+    /// The flag says whether the whole file section follows the table.
+    pub fn read_table<R: ReadBytesExt>(mut reader: R) -> Result<(Self, bool), Error> {
         // NI FC MTD
         // Native Instruments FileContainer MetaData
         let mtd_magic = reader.read_bytes(16)?;
@@ -146,14 +157,18 @@ impl NIFileContainer {
         let _header_chunk = reader.read_bytes(592)?;
 
         let file_section_offset = reader.stream_position()?;
-        if offset != total_size || total_size > length.saturating_sub(file_section_offset) {
+        if offset != total_size {
             return Err(Error::Static("Truncated NI FileContainer file section"));
         }
+        let complete = total_size <= length.saturating_sub(file_section_offset);
 
-        Ok(Self {
-            file_section_offset,
-            items,
-        })
+        Ok((
+            Self {
+                file_section_offset,
+                items,
+            },
+            complete,
+        ))
     }
 }
 

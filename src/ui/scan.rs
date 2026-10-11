@@ -71,6 +71,31 @@ fn observed_font_styles(
         .count()
 }
 
+/// Drain the script effects the way the plugin's `apply_effects` does: interface effects go to
+/// the script views, MIDI / array-file jobs to the part's ingress. A script that emits into a
+/// full queue stalls (back-pressure), so every rendering loop must call this.
+fn pump_effects(core: &mut V2Core, scripts: &mut crate::sound::ScriptUi) -> (bool, bool) {
+    let (mut changed, mut emitted) = (false, false);
+    let mut io = Vec::new();
+    core.take_effects(0, &mut |instance, effect| {
+        if effect.service == sampler_core::MIDI_SERVICE
+            || effect.service == sampler_core::ARRAY_FILE_SERVICE
+        {
+            // Scripts wait on these jobs (`wait` loops on async_complete).
+            io.push(*effect);
+        } else {
+            changed |= scripts.apply(instance, effect);
+        }
+        emitted = true;
+        true
+    });
+    for effect in &io {
+        core.service_script_io(0, effect);
+    }
+    core.settle_script_io(0);
+    (changed, emitted)
+}
+
 fn settle_snapshot(
     core: &mut V2Core,
     scripts: &mut crate::sound::ScriptUi,
@@ -79,10 +104,12 @@ fn settle_snapshot(
     let mut changed = false;
     let mut faults = Vec::new();
     // Frozen v1 processes ten 480-sample ticks before taking the face. A script
-    // that rewrites its interface in one callback needs more: go on while it still emits.
+    // that rewrites its interface in one callback needs more: go on while it still emits
+    // or a callback is still suspended in a `wait` (ANALOG STRINGS only plays once its
+    // `persistence_changed` has finished), up to 400 ticks.
     let mut quiet = 0;
     for tick in 0..400 {
-        if tick >= 10 && quiet >= 3 {
+        if tick >= 10 && quiet >= 3 && !core.scripts_running(0) {
             break;
         }
         let mut emitted = false;
@@ -95,11 +122,9 @@ fn settle_snapshot(
                 ..Default::default()
             });
             core.render(frames);
-            core.take_effects(0, &mut |instance, effect| {
-                changed |= scripts.apply(instance, effect);
-                emitted = true;
-                true
-            });
+            let (applied, any) = pump_effects(core, scripts);
+            changed |= applied;
+            emitted |= any;
             faults.extend(core.scan_runtime_faults(0));
             core.end_block(frames, &mut |_| true);
             remaining -= frames;
@@ -936,6 +961,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                 }) {
                     heard = true;
                 }
+                pump_effects(&mut core, &mut loaded.scripts);
                 runtime_faults.extend(core.scan_runtime_faults(0));
             }
         }
