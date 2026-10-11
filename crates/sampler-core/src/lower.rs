@@ -1975,6 +1975,7 @@ impl Lowering<'_> {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
             }),
+            ir::Processor::Saturation(shape) => Processor::Saturation(shape),
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,

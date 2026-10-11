@@ -249,6 +249,11 @@ pub(crate) enum Params {
         invert: bool,
         swap: bool,
     },
+    /// 0x1d is the Saturation record: signed Shape, then algorithm selector.
+    Saturation {
+        shape: f32,
+        mode: f32,
+    },
     /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
@@ -384,6 +389,10 @@ impl Slot {
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
+            },
+            0x1d => Params::Saturation {
+                shape: r.f32()?,
+                mode: r.f32()?,
             },
             0x17 => Params::SendLevels {
                 sends: r.list()?,
@@ -833,6 +842,21 @@ pub(crate) fn chain_with(
         let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
+            Some(Params::Saturation { shape, mode }) => {
+                if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
+                    flush(&mut combined, &mut filters, &mut out);
+                    out.processors
+                        .push(sampler_ir::Processor::Saturation(*shape));
+                    combined = gain;
+                } else {
+                    notes.push((
+                        "saturation algorithm/shape".into(),
+                        format!("{mode}/{shape}"),
+                        sampler_ir::Reason::UnknownLaw,
+                    ));
+                    modelled = false;
+                }
+            }
             Some(Params::Filter {
                 kind: 90,
                 cutoff,
@@ -2508,6 +2532,19 @@ mod tests {
             let out = chain(&[slot(0x20, payload.clone(), 1.)], scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert!(!out.processors.is_empty(), "Lo-Fi cannot disappear");
+        }
+    }
+
+    #[test]
+    fn classic_saturation_saved_slot_is_admitted_in_both_scopes() {
+        let payload: Vec<_> = [0.30065f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        for scope in [Scope::Voice, Scope::Bus] {
+            let out = chain(&[slot(0x1d, payload.clone(), 0.5)], scope);
+            assert!(out.notes.is_empty(), "{:?}", out.notes);
+            assert_eq!(out.processors.len(), 2, "saturation and slot output");
         }
     }
 

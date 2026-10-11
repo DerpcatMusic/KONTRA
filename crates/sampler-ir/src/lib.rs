@@ -1460,6 +1460,8 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
+    Saturation(f32),
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
     LoFi {
         bits: f32,
