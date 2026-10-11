@@ -13,6 +13,8 @@ pub mod audit;
 mod cache;
 mod cache_zones;
 mod container;
+mod diagnostics;
+pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
 mod coverage;
 mod effects;
