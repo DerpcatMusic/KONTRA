@@ -672,6 +672,7 @@ pub fn view_state(
             },
         ));
     }
+    let mut built = Vec::new();
     for n in face.draw_order(page) {
         if !face.visible(n) {
             continue;
@@ -740,8 +741,15 @@ pub fn view_state(
             }
             parent = face.widgets[p.0].parent;
         }
-        layers.push(el.at(x, y));
+        let el = el.at(x, y);
+        let important = !matches!(
+            face.widgets[n.0].kind,
+            Kind::Panel | Kind::Image | Kind::Label
+        );
+        let nodes = node_count(&el);
+        built.push((el, nodes, important));
     }
+    layers.extend(within_budget(built));
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) {
         layers.push(popup);
     }
@@ -757,6 +765,38 @@ pub fn view_state(
         } else {
             format!("{namespace}-ir-view")
         })
+}
+
+/// Nodes MUI lays out per frame are capped at 4096 for the whole editor tree
+/// (`mui_layout::Limits::default()`, not configurable from here); one failing
+/// frame blanks the entire window. A face keeps its share, and a library with
+/// more widgets than fit loses decoration first, then its last-drawn controls.
+pub(super) const FACE_NODES: usize = 2400;
+
+pub(super) fn node_count(el: &El) -> usize {
+    1 + el.children().iter().map(node_count).sum::<usize>()
+}
+
+/// `built` in draw order as (element, nodes, important), trimmed to [`FACE_NODES`].
+fn within_budget(mut built: Vec<(El, usize, bool)>) -> Vec<El> {
+    let mut total: usize = built.iter().map(|b| b.1).sum();
+    let mut keep = vec![true; built.len()];
+    for important in [false, true] {
+        for i in (0..built.len()).rev() {
+            if total <= FACE_NODES {
+                break;
+            }
+            if keep[i] && built[i].2 == important {
+                keep[i] = false;
+                total -= built[i].1;
+            }
+        }
+    }
+    built
+        .drain(..)
+        .zip(keep)
+        .filter_map(|(b, k)| k.then_some(b.0))
+        .collect()
 }
 
 /// The height declared by the script, after grid rows are resolved.
