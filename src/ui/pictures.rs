@@ -113,7 +113,12 @@ impl Source {
             self.scan.lookups += 1;
             match &result {
                 Ok(Some(_)) => self.scan.lookup_ok += 1,
-                Ok(None) => self.scan.lookup_missing += 1,
+                Ok(None) => {
+                    self.scan.lookup_missing += 1;
+                    if std::env::var_os("KONTRA_RESOURCE_PROBE_NAMES").is_some() {
+                        eprintln!("RESOURCE_MISS path={path:?}");
+                    }
+                }
                 Err(ResourceError::InvalidPath) => self.scan.lookup_invalid += 1,
                 Err(ResourceError::Ambiguous) => self.scan.lookup_ambiguous += 1,
                 Err(ResourceError::Corrupt) => self.scan.lookup_corrupt += 1,
