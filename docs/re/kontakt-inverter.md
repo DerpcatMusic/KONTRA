@@ -1,9 +1,11 @@
-# Inverter: flag-order evidence still incomplete
+# Inverter: saved flag assignment proved
 
 Status (round 3): saved flag order proved end to end; existing mapping confirmed.
 
 Docs first: Kontakt 8 [Effect Reference, Inverter](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/effect-reference),
 Phase Invert and L/R Swap; KSP [Engine Parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters).
+
+## Historical round-2 observations (superseded below)
 
 Historical binary leads: version-0x60 reader `0x140d01db0` stores the
 first byte at BPar+8 and the second at BPar+9. Audio `0x140908e60`
