@@ -2139,6 +2139,7 @@ impl Lowering<'_> {
                     | Processor::ControlMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
+                    | Processor::Saturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
