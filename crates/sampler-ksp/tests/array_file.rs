@@ -918,7 +918,7 @@ fn nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve
     .unwrap();
     assert!(output.perform().is_err());
     assert_eq!(output.numbers(), &[real_bits(2.0)]);
-    let path = fixture.path("oversized.nka");
+    let path = fixture.path("invalid-long-header.nka");
     std::fs::write(&path, vec![b'x'; 2 * 1024 * 1024 + 1]).unwrap();
     let mut output = ArrayFileCompletion::synchronous(
         array(ArrayFileKind::Integer, "%data", 2),
@@ -928,7 +928,7 @@ fn nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve
         vec![],
     )
     .unwrap();
-    assert_eq!(output.perform(), Err(Error::Capacity));
+    assert_eq!(output.perform(), Err(Error::InvalidInput));
     assert_eq!(output.numbers(), &[7, 8]);
 }
 
