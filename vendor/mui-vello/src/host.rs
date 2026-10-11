@@ -233,6 +233,21 @@ fn adapter_rank(info: &wgpu::AdapterInfo) -> (u8, u8) {
     (device, backend)
 }
 
+/// Vello's blend spill and tile buffers grow with scene depth; big libraries
+/// (Conflux) need more than the 128 MiB default storage binding. Ask for what
+/// the adapter really offers, capped so one buffer cannot eat the VRAM.
+fn renderer_limits(supported: &wgpu::Limits) -> wgpu::Limits {
+    const CAP: u64 = 1 << 30;
+    let mut limits = wgpu::Limits::default()
+        .using_resolution(supported.clone())
+        .using_alignment(supported.clone());
+    limits.max_storage_buffer_binding_size = limits
+        .max_storage_buffer_binding_size
+        .max(supported.max_storage_buffer_binding_size.min(CAP));
+    limits.max_buffer_size = limits.max_buffer_size.max(supported.max_buffer_size.min(CAP));
+    limits
+}
+
 fn validate_renderer_requirements(
     info: &wgpu::AdapterInfo,
     flags: wgpu::DownlevelFlags,
@@ -435,9 +450,7 @@ impl OnDevice {
             let supported_limits = adapter.limits();
             // Do not use GPUI's downlevel/GL limits: Vello needs compute,
             // storage buffers, and the full default workgroup limits.
-            let requested_limits = wgpu::Limits::default()
-                .using_resolution(supported_limits.clone())
-                .using_alignment(supported_limits.clone());
+            let requested_limits = renderer_limits(&supported_limits);
             let candidate = AdapterDiagnostic {
                 adapter: adapter.get_info(),
                 supported_limits,
@@ -1099,6 +1112,24 @@ mod tests {
         info.vendor = 0x1002;
         info.device = 1;
         info
+    }
+
+    #[test]
+    fn renderer_requests_large_buffers_the_adapter_offers() {
+        let mut supported = wgpu::Limits::default();
+        supported.max_storage_buffer_binding_size = u64::MAX;
+        supported.max_buffer_size = u64::MAX;
+        let asked = renderer_limits(&supported);
+        // The 154 MB blend spill that forced CPU rendering must fit.
+        assert!(asked.max_storage_buffer_binding_size >= 154_681_344);
+        assert!(asked.max_buffer_size >= 154_681_344);
+        assert!(asked.max_buffer_size <= 1 << 30);
+        // A small adapter is never asked for more than it has.
+        let small = wgpu::Limits::default();
+        let asked = renderer_limits(&small);
+        assert!(validate_renderer_requirements(
+            &adapter_info("a", wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan),
+            wgpu::DownlevelFlags::COMPUTE_SHADERS, &asked, &small).is_ok());
     }
 
     #[test]
