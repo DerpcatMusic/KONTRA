@@ -98,7 +98,7 @@ function methods.setValue(w, v, arg, callChanged)
     v = v < 0 and math.ceil(v) or math.floor(v)
     -- v1/Workstation-observed, Falcon unverified: boundary writes are
     -- ignored; programmatic values are independent of the display range.
-    if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
+    if v < 1 or v > d.length then report('widget_index_out_of_range', string.format('%s: index %s, valid 1..%d', tostring(d.name), tostring(v), d.length)); return end
     if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
     if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
     local old = d.values[v]

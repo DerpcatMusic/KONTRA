@@ -54,6 +54,8 @@ pub struct State {
     levels: [bool; 4],
     filtered: Option<(u64, Option<PathBuf>, usize, String, [bool; 4])>,
     matches: Vec<usize>,
+    /// Identical events folded into the newest one: event index -> how many.
+    repeats: std::collections::HashMap<usize, usize>,
     selected: Option<u64>,
     load_selected: Option<usize>,
     load_report: Option<super::load_report::Report>,
@@ -93,6 +95,7 @@ impl Default for State {
             levels: [false, false, true, true],
             filtered: None,
             matches: Vec::new(),
+            repeats: Default::default(),
             selected: None,
             load_selected: None,
             load_report: None,
@@ -306,6 +309,29 @@ impl State {
                 Some(n)
             })
             .collect();
+        // Same level, origin and message repeat (GPU fallback, per-note faults): one row with a count.
+        let mut first = std::collections::HashMap::new();
+        self.repeats.clear();
+        self.matches.retain(|&n| {
+            let e = &snapshot.events[n];
+            let same = (
+                level_index(e.level),
+                &e.module,
+                &e.path,
+                &e.library,
+                e.reason.as_deref().unwrap_or(&e.event),
+            );
+            match first.entry(same) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(n);
+                    true
+                }
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    *self.repeats.entry(*o.get()).or_insert(1) += 1;
+                    false
+                }
+            }
+        });
         self.filtered = Some(key);
         if self.selected.is_some_and(|seq| {
             !self
@@ -504,13 +530,43 @@ fn details(event: &LogEvent) -> String {
     )
 }
 
-/// Clipboard summaries contain problems and origins, never source excerpts or records.
+const COPY_LINES_PER_INSTRUMENT: usize = 12;
+const COPY_INSTRUMENTS: usize = 10;
+
+#[derive(Default)]
+struct Problem {
+    count: u64,
+    wheres: Vec<String>,
+}
+
+/// Clipboard summaries name every distinct problem once with its count, never source excerpts or records.
 fn support_text(events: &[LogEvent]) -> Result<String, String> {
     use std::fmt::Write;
     let mut safe = serde_json::to_value(events).map_err(|e| e.to_string())?;
     diagnostics::clean(&mut safe, true);
-    let mut groups = std::collections::BTreeMap::<String, usize>::new();
-    for event in safe.as_array().unwrap() {
+    let events = safe.as_array().unwrap();
+    // The load summary knows how many locations each typed group hit; the issue row fires once.
+    let key_of = |event: &serde_json::Value| {
+        let key = &event["data"]["diagnostic_key"];
+        (
+            event["path"].as_str().unwrap_or("").to_owned(),
+            ["kind", "reason", "subject"].map(|k| key[k].as_str().unwrap_or("").to_owned()),
+        )
+    };
+    let mut locations = std::collections::HashMap::new();
+    for event in events {
+        if event["event"] == "diagnostic_summary" {
+            let group = &event["data"]["group"];
+            let key = (
+                event["path"].as_str().unwrap_or("").to_owned(),
+                ["kind", "reason", "subject"].map(|k| group["key"][k].as_str().unwrap_or("").to_owned()),
+            );
+            locations.insert(key, group["locations_total"].as_u64().unwrap_or(0));
+        }
+    }
+    type Rows = std::collections::BTreeMap<(bool, String, String, String), Problem>;
+    let mut subjects = std::collections::BTreeMap::<String, Rows>::new();
+    for event in events {
         if !matches!(event["level"].as_str(), Some("warning" | "error")) {
             continue;
         }
@@ -521,7 +577,8 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
             .unwrap_or("Application");
         let mut reason = event["reason"]
             .as_str()
-            .unwrap_or_else(|| event["event"].as_str().unwrap_or("Unknown error"));
+            .or_else(|| event["event"].as_str())
+            .unwrap_or("Unknown error");
         reason = reason.strip_prefix("load failed: ").unwrap_or(reason);
         let mut origin = event["stage"]
             .as_str()
@@ -548,30 +605,96 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
         if let Some(line) = event["line"].as_u64() {
             let _ = write!(origin, " · line {line}");
         }
-        let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
-        let heading = if event["level"] == "error" {
-            "Error"
-        } else {
-            "Warning"
-        };
-        let subject = subject.split_whitespace().collect::<Vec<_>>().join(" ");
-        let origin = origin.split_whitespace().collect::<Vec<_>>().join(" ");
-        let key = format!("{heading} · {subject}\n{reason}\nFrom: {origin}");
-        *groups.entry(key).or_default() += 1;
+        let data = &event["data"];
+        let mut impact = data["impact"].as_str().unwrap_or("").to_owned();
+        if impact.is_empty() && matches!(data["code"].as_str(), Some("failed" | "initialization_failed")) {
+            impact = "the load stopped here".into();
+        }
+        let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let weight = data["group"]["enabled"].as_u64().unwrap_or(0)
+            + data["group"]["bypassed"].as_u64().unwrap_or(0)
+            + data["group"]["unknown"].as_u64().unwrap_or(0);
+        let count = locations
+            .get(&key_of(event))
+            .copied()
+            .unwrap_or(0)
+            .max(weight)
+            .max(1);
+        let problem = subjects
+            .entry(one_line(subject))
+            .or_default()
+            .entry((
+                event["level"] != "error",
+                one_line(&origin),
+                one_line(reason),
+                one_line(&impact),
+            ))
+            .or_default();
+        problem.count += count;
+        if let Some(place) = data["where"].as_str().map(one_line)
+            && problem.wheres.len() < 2
+            && !problem.wheres.contains(&place)
+        {
+            problem.wheres.push(place);
+        }
     }
     let mut text = format!(
-        "KONTRA diagnostics · {}\n",
-        crate::build_info::BUILD.version
+        "KONTRA diagnostics · v{} · build {}{} · {}\n",
+        crate::build_info::BUILD.version,
+        crate::build_info::BUILD.revision.get(..12).unwrap_or(crate::build_info::BUILD.revision),
+        if crate::build_info::BUILD.dirty == Some(true) { "+dirty" } else { "" },
+        crate::support::host_summary()
     );
-    if groups.is_empty() {
+    if subjects.is_empty() {
         text.push_str("No retained warnings or errors.\n");
     }
-    for (message, count) in groups {
-        let _ = write!(text, "\n{message}");
-        if count > 1 {
-            let _ = write!(text, " · {count} occurrences");
+    // Instruments with errors first, then the most affected.
+    let mut subjects: Vec<_> = subjects.into_iter().collect();
+    subjects.sort_by_key(|(name, rows)| {
+        (
+            rows.keys().all(|key| key.0),
+            std::cmp::Reverse(rows.values().map(|p| p.count).sum::<u64>()),
+            name.clone(),
+        )
+    });
+    let hidden_subjects = subjects.len().saturating_sub(COPY_INSTRUMENTS);
+    for (name, rows) in subjects.into_iter().take(COPY_INSTRUMENTS) {
+        let errors: u64 = rows.iter().filter(|(k, _)| !k.0).map(|(_, p)| p.count).sum();
+        let warnings: u64 = rows.iter().filter(|(k, _)| k.0).map(|(_, p)| p.count).sum();
+        let _ = writeln!(text, "\n{name} · {errors} errors · {warnings} warnings");
+        let mut rows: Vec<_> = rows.into_iter().collect();
+        rows.sort_by_key(|(key, problem)| (key.0, std::cmp::Reverse(problem.count)));
+        let hidden = rows.len().saturating_sub(COPY_LINES_PER_INSTRUMENT);
+        let hidden_count: u64 = rows
+            .iter()
+            .skip(COPY_LINES_PER_INSTRUMENT)
+            .map(|(_, p)| p.count)
+            .sum();
+        for ((warning, origin, reason, impact), problem) in
+            rows.into_iter().take(COPY_LINES_PER_INSTRUMENT)
+        {
+            let _ = write!(
+                text,
+                "- {} · {origin} · {reason}",
+                if warning { "Warning" } else { "Error" }
+            );
+            if !problem.wheres.is_empty() {
+                let _ = write!(text, " · at {}", problem.wheres.join("; "));
+            }
+            if !impact.is_empty() {
+                let _ = write!(text, " · impact: {impact}");
+            }
+            if problem.count > 1 {
+                let _ = write!(text, " · x{}", problem.count);
+            }
+            text.push('\n');
         }
-        text.push('\n');
+        if hidden > 0 {
+            let _ = writeln!(text, "- +{hidden} more kinds ({hidden_count} occurrences)");
+        }
+    }
+    if hidden_subjects > 0 {
+        let _ = writeln!(text, "\n+{hidden_subjects} more instruments not listed");
     }
     Ok(text)
 }
@@ -1242,11 +1365,14 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
             .map(filename)
             .or(event.library.as_deref())
             .unwrap_or("Application");
-        let title = format!(
+        let mut title = format!(
             "{} · {patch} · {}",
             level_name(event.level),
             time(event.timestamp_ms)
         );
+        if let Some(n) = state.repeats.get(&state.matches[n - prefix]) {
+            title.push_str(&format!(" · {n} times (latest)"));
+        }
         let header = col![
             row![
                 caption(title)
@@ -1505,10 +1631,9 @@ mod tests {
             "data":{"source_excerpt":"on init secret syntax end on","private_token":"secret"}
         })).unwrap();
         let text = support_text(&[event.clone(), event.clone()]).unwrap();
-        assert_eq!(text.matches("Error · 5STRNGCharge.nksn").count(), 1);
-        assert!(text.contains("a prepared capacity is exhausted"));
+        assert_eq!(text.matches("5STRNGCharge.nksn · 2 errors").count(), 1);
         assert!(text.contains(
-            "From: Prepare · crates/sampler-kontakt/src/load.rs:420 · KSP · 2 occurrences"
+            "- Error · Prepare · crates/sampler-kontakt/src/load.rs:420 · KSP · a prepared capacity is exhausted · x2"
         ));
         for excluded in [
             "/private/alice",
@@ -1526,6 +1651,59 @@ mod tests {
                 .unwrap()
                 .contains("No retained warnings or errors.")
         );
+    }
+
+    #[test]
+    fn copied_diagnostics_name_what_failed_where_and_how_often() {
+        let row = |sequence: u64, level: &str, event: &str, stage: &str, reason: &str, data: serde_json::Value| -> LogEvent {
+            serde_json::from_value(json!({
+                "schema_version":1,"sequence":sequence,"timestamp_ms":0,"monotonic_ms":0,
+                "session_id":"fixture","level":level,"module":"loader","event":event,
+                "path":"/home/bob/Solo Bass Trombone.nki","stage":stage,"reason":reason,"data":data
+            })).unwrap()
+        };
+        let translate = |n: u64, feature: &str| row(n, "warning", "issue", "translate",
+            &format!("Not translated: {feature} (not modelled yet)"),
+            json!({"code":"unsupported","where":"zone 3 (Bass_C2.wav)","impact":"plays without it"}));
+        let lua = row(9, "error", "issue", "scripts",
+            "script 2 line 14:3 attempt to index a nil value (field 'gain')", json!({"code":"failed"}));
+        let text = support_text(&[
+            translate(1, "lua setParameter GainMatrix.Gain_1_1"),
+            translate(2, "lua setParameter GainMatrix.Gain_1_1"),
+            translate(3, "lua setParameter AuxEffect.Gain"),
+            lua,
+        ]).unwrap();
+        assert!(text.contains(&format!("v{}", crate::build_info::BUILD.version)));
+        assert!(text.contains("Solo Bass Trombone.nki · 1 errors · 3 warnings"));
+        assert!(text.contains("Not translated: lua setParameter GainMatrix.Gain_1_1 (not modelled yet) · at zone 3 (Bass_C2.wav) · impact: plays without it · x2"));
+        assert!(text.contains("Not translated: lua setParameter AuxEffect.Gain"));
+        assert!(text.contains("attempt to index a nil value (field 'gain')"));
+        assert!(text.contains("impact: the load stopped here"));
+        assert!(!text.contains("/home/bob") && !text.contains("\nissue"));
+        let many: Vec<_> = (0..40).map(|n| translate(n, &format!("feature {n}x"))).collect();
+        let capped = support_text(&many).unwrap();
+        assert!(capped.contains("- +28 more kinds (28 occurrences)"), "{capped}");
+    }
+
+    #[test]
+    fn identical_events_fold_into_one_row_with_a_count() {
+        let gpu = |n: u64| -> LogEvent {
+            serde_json::from_value(json!({
+                "schema_version":1,"sequence":n,"timestamp_ms":n,"monotonic_ms":0,
+                "session_id":"fold","level":"warning","module":"app","event":"log",
+                "reason":"mui-baseview: GPU render failed; using CPU rendering","data":{}
+            })).unwrap()
+        };
+        let snapshot = DiagnosticSnapshot {
+            revision: 1,
+            events: vec![gpu(1), gpu(2), gpu(3)],
+            status: Default::default(),
+            build: serde_json::Value::Null,
+        };
+        let mut state = State::default();
+        state.filter(&snapshot);
+        assert_eq!(state.matches, vec![2]);
+        assert_eq!(state.repeats.get(&2), Some(&3));
     }
 
     #[test]
@@ -1999,7 +2177,7 @@ mod tests {
         );
         let copied = support_text(&state.snapshot.as_ref().unwrap().events).unwrap();
         assert!(copied.contains("Marker 1003:") && !copied.contains("Marker 0:"));
-        assert!(copied.contains("Violin.nki") && copied.contains("From: samples"));
+        assert!(copied.contains("Violin.nki") && copied.contains("Warning · samples"));
         for excluded in [
             "private-token",
             "C:\\virtual",
