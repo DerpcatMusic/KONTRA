@@ -1412,6 +1412,7 @@ impl ScriptHost {
                 let value = match value {
                     Value::Integer(n) => n as f64,
                     Value::Number(n) => n,
+                    Value::Boolean(b) => f64::from(b),
                     _ => return Ok(None),
                 };
                 let processor = s
@@ -1435,6 +1436,25 @@ impl ScriptHost {
                         .command(Command::EngineParameter {
                             address: binding.address,
                             value,
+                        })
+                        .then_some(true));
+                }
+                if name == "Bypass" {
+                    let node = s.nodes.borrow().get(id).copied().filter(|(_, i)| *i);
+                    let Some(((node, _), parameter)) = node.zip(sampler_core::engine_parameter_id(
+                        "ENGINE_PAR_EFFECT_BYPASS",
+                    )) else {
+                        return Ok(None);
+                    };
+                    return Ok(s
+                        .command(Command::EngineParameter {
+                            address: sampler_core::EngineParameterAddress {
+                                parameter,
+                                group: -1,
+                                slot: -1,
+                                generic: i32::try_from(node).unwrap_or(-1),
+                            },
+                            value: i32::from(value != 0.0),
                         })
                         .then_some(true));
                 }

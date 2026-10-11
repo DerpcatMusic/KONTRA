@@ -273,6 +273,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             .collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
+        in_rack: false,
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
@@ -405,6 +406,8 @@ struct Translation {
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
+    /// Translating the chains of an EffectRack: their inserts get no Mix.
+    in_rack: bool,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
 }

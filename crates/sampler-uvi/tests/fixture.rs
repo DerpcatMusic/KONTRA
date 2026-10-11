@@ -807,7 +807,7 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
           gain:setParameter('Missing',0.75)
           gain:setParameter(1000000,0.75)
           gain:setParameter('Volume','wrong type')
-          gain:setParameter(gain.parameterDefinitions.Bypass.id,true)
+          gain:setParameter(gain.parameterDefinitions.Volume.id,false)
           assert(gain:getParameter('Volume')==0.25 and gain:getParameter('Bypass')==false)
           assert(not gain:hasParameter('Missing'))
           controlChange(119,42)
@@ -920,6 +920,56 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
         (loud[100][0] / quiet[100][0] - 2.).abs() < 0.01,
         "summed bus gain must change actual PCM"
     );
+    drop(rt);
+    drop(streamed.streamer);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn scripted_insert_bypass_reaches_the_dsp() {
+    use sampler_uvi::{script::Config, scripted::HostInput};
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-bypass-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &vec![16000; 48000])).unwrap();
+    let xml = insert_program(None).replace(
+        "<Layers>",
+        r#"<Inserts><Gain Volume="0.25"/></Inserts><EventProcessors><ScriptProcessor><script>
+      local gain=Program.inserts[1]
+      function onController(e) gain:setParameter('Bypass', e.value > 0) end
+    </script></ScriptProcessor></EventProcessors><Layers>"#,
+    );
+    let path = dir.join("Bypass.uvip");
+    std::fs::write(&path, xml).unwrap();
+    let mut translated = sampler_uvi::translate_path(&path).unwrap();
+    let mut attached = translated.attach_script(48000, Config::default()).unwrap().unwrap();
+    let streamed =
+        sampler_uvi::assemble_translated_streamed(translated, 48000, &Default::default()).unwrap();
+    let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
+    let mut rt = Runtime::new(streamed.loaded.plan, limits)
+        .unwrap()
+        .with_stream_cache(streamed.cache);
+    attached.driver.wake(&mut rt).unwrap();
+    rt.trigger(
+        Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None },
+        60,
+        1.,
+    )
+    .unwrap();
+    let mut quiet = vec![[0.; 2]; 128];
+    rt.render(&mut quiet).unwrap();
+    attached.driver.input(&rt, HostInput::Controller { cc: 1, value: 127, channel: 0 });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let loud = loop {
+        attached.driver.wake(&mut rt).unwrap();
+        let mut block = vec![[0.; 2]; 128];
+        rt.render(&mut block).unwrap();
+        if (block[100][0] / quiet[100][0] - 4.).abs() < 0.1 {
+            break block;
+        }
+        assert!(std::time::Instant::now() < deadline, "bypass never took effect");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(loud[100][0] > 0.01);
     drop(rt);
     drop(streamed.streamer);
     std::fs::remove_dir_all(dir).unwrap();
