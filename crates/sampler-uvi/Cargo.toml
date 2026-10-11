@@ -20,6 +20,10 @@ required-features = ["library-access"]
 name = "ui_health"
 required-features = ["library-access"]
 
+[[example]]
+name = "wp2_dump"
+required-features = ["library-access"]
+
 [dependencies]
 sampler-ir = { path = "../sampler-ir" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
