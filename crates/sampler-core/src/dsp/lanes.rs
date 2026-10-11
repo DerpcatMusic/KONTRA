@@ -267,6 +267,7 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::LoFi(_)
+            | PreparedProcessor::LegacyPhaser(_)
             | PreparedProcessor::Phaser(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::Distortion(_)
@@ -619,6 +620,7 @@ mod tests {
                                             0,
                                             &mut [],
                                             &mut super::super::svf::FilterContext {
+                                                tempo: 120.0,
                                                 bank: &mut bank,
                                                 expression: None,
                                                 reverbs: &mut [],

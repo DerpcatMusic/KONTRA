@@ -212,6 +212,7 @@ impl Runtime {
                 preps,
                 frames,
                 at,
+                tempo: self.tempo,
             };
             let runs = &runs[..];
             pool.run(tasks, &|task, lane| {
@@ -371,6 +372,7 @@ struct View<'a> {
     preps: &'a [Option<Prelude>],
     frames: usize,
     at: u64,
+    tempo: f64,
 }
 
 impl View<'_> {
@@ -430,6 +432,7 @@ impl View<'_> {
             expression: expression.rendered.gains,
             parameters,
             filters: FilterContext {
+                tempo: self.tempo,
                 bank: &mut bank[0],
                 expression: Some((n.expression, expression.value)),
                 reverbs: &mut [],

@@ -231,6 +231,7 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
+    LegacyPhaser { depth: f32, feedback: f32, speed: f32, phase: f32, unit: f32 },
     /// Linear gain.
     Gainer {
         gain: f32,
@@ -350,6 +351,11 @@ impl Slot {
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
+            0x14 => {
+                let [depth, feedback, speed, phase, unit] = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+                match self.version { 0x50 => {}, 0x51 => { r.f32()?; r.f32()?; r.flag()?; }, _ => return None };
+                Params::LegacyPhaser { depth, feedback, speed, phase, unit }
+            }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let first = [r.f32()?, r.f32()?, r.f32()?];
@@ -884,6 +890,18 @@ pub(crate) fn chain_with(
                         sampler_ir::Reason::UnknownLaw,
                     ));
                     modelled = false;
+                }
+            }
+            Some(Params::LegacyPhaser { depth, feedback, speed, phase, unit }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                if [*depth, *feedback, *phase].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && unit.is_finite() {
+                    // NI Legacy Phaser; BParFXPhaser reader FUN_140d01fa0, speed getter FUN_140a736a0.
+                    let period_unit = (*unit > f32::from_bits(0x3089705f)).then_some(*unit);
+                    let speed = if period_unit.is_some() { speed.max(1.) } else { *speed };
+                    out.processors.push(sampler_ir::Processor::LegacyPhaser { depth: *depth, feedback: *feedback, phase: *phase, speed, period_unit });
+                    combined = gain;
+                } else {
+                    notes.push(("Legacy Phaser parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{unit}"), sampler_ir::Reason::InvalidValue)); modelled = false;
                 }
             }
             Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
@@ -2646,15 +2664,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn phaser_filter_native_four_stage_impulse() {
-        let mut payload = 13i32.to_le_bytes().repeat(2);
-        for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
-        let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
-        assert!(built.notes.is_empty(), "{:?}", built.notes);
+    fn phaser_probe(processors: Vec<sampler_ir::Processor>, tempo: f64) -> [[f32; 2]; 4] {
         let mut instrument = sampler_ir::Instrument::default();
         instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
-        instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+        instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
         zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
         zone.chain = Some(sampler_ir::ChainRef(0)); zone.velocity = sampler_ir::VelocityResponse::None;
@@ -2665,7 +2678,35 @@ mod tests {
         let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
         let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
         rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+        rt.set_tempo(tempo).unwrap();
         let mut output = [[0.0; 2]; 4]; rt.render(&mut output).unwrap();
+        output
+    }
+
+    #[test]
+    fn legacy_phaser_free_speed_phase_and_four_stage_vector() {
+        let payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, -1.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let built = chain(&[slot(0x14, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = phaser_probe(built.processors.clone(), 120.);
+        let expected = [[0.857850552f32, -0.476720124], [-0.106721222, -0.0511267483], [-0.290372699, 0.0421471819], [-0.274628252, 0.0595008172]];
+        for (actual, expected) in output.into_iter().zip(expected) {
+            for (a, e) in actual.into_iter().zip(expected) { assert!((a-e).abs() < 2e-7, "{a} vs {e}"); }
+        }
+        // 120 BPM, two beats per cycle gives the same native 1 Hz oscillator.
+        let synced_payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, 2.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let synced = chain(&[slot(0x14, synced_payload, 1.0)], Scope::Voice);
+        assert!(synced.notes.is_empty(), "{:?}", synced.notes);
+        assert_eq!(phaser_probe(synced.processors, 120.), output);
+    }
+
+    #[test]
+    fn phaser_filter_native_four_stage_impulse() {
+        let mut payload = 13i32.to_le_bytes().repeat(2);
+        for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
+        let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = phaser_probe(built.processors, 120.);
         // Cutoff zero: a=(1-.02)/(1+.02); four allpasses, half dry/half wet.
         for (actual, expected) in output.iter().zip([0.926062942f32, -0.136394471, -0.114671811, -0.095316768]) {
             assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}");
