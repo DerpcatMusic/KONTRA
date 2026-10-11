@@ -480,15 +480,14 @@ mod tests {
         let mut log = RuntimeLog::new("test-runtime", "/Libraries/UVI/a.uvip", 0);
         let mut lua = sampler_uvi::script::FaultCounts::default();
         lua.setter_type_mismatches.push(SetterTypeFinding {
-            types: SetterTypes { expected: ParameterType::Float, actual: ParameterType::String },
+            types: SetterTypes { expected: ParameterType::Bool, actual: ParameterType::Float },
             count: 2,
         });
         assert!(log.lua(&lua));
         let key = &log.collector.groups()[0].key;
-        assert_eq!(key.subject, "StringValueToFloatParameter");
-        assert!(setter_subject(SetterTypes { expected: ParameterType::Float, actual: ParameterType::String })
-            .1
-            .contains("UVI ignores the write"));
+        assert_eq!(key.subject, "FloatValueToBoolParameter");
+        assert_eq!(setter_subject(SetterTypes { expected: ParameterType::Bool, actual: ParameterType::Float }).1,
+            "setParameter wrote a float value to a bool parameter; UVI ignores the write and keeps the old value");
     }
 
     #[test]
