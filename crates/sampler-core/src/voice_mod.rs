@@ -144,7 +144,10 @@ pub enum ModSource {
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
+        matches!(
+            self,
+            Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_)
+        )
     }
 }
 
@@ -177,6 +180,7 @@ pub(crate) enum CompiledTarget {
     /// Start offset of depth·u × the region's start range, at voice start only.
     SampleStart,
     Control(usize),
+    SourcePhase(u32),
 }
 
 /// Open, plan-local destination identity. Legacy constructors preserve native laws.
@@ -202,6 +206,7 @@ impl crate::ParameterAddress {
             (i, 10) => T::ProcessorNativeGain(i),
             (0, 11) => T::Tone,
             (0, 12) => T::SampleStart,
+            (i, 14) => T::SourcePhase(i),
             _ => return None,
         })
     }
@@ -258,10 +263,10 @@ impl ModScaleLaw {
         let source = unipolar(source, source_bipolar);
         match self {
             Self::Multiply => base * source,
-            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 =>
-                base * (1. - (1. - source) * depth),
-            Self::KontaktIntensity { depth, .. } =>
-                1. - (1. - base) * (1. - source * depth),
+            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 => {
+                base * (1. - (1. - source) * depth)
+            }
+            Self::KontaktIntensity { depth, .. } => 1. - (1. - base) * (1. - source * depth),
         }
     }
 }
@@ -337,6 +342,9 @@ struct Program {
     targets: Box<[CompiledTarget]>,
     controls: Box<[(usize, [usize; 2])]>,
     filter_indices: Box<[usize]>,
+    /// Prepared source order and incoming phase-route spans; no callback graph scans.
+    source_order: Box<[usize]>,
+    phase_routes: Box<[Box<[usize]>]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -496,7 +504,9 @@ impl VoiceModulation {
                             return Err(Error::InvalidInput);
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => {
+                            Prepared::Script(id)
+                        }
                         ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })
@@ -539,6 +549,35 @@ impl VoiceModulation {
                 {
                     return Err(Error::InvalidInput);
                 }
+            }
+            let mut phase_routes = vec![Vec::new(); sources.len()];
+            for (index, route) in program.routes.iter().enumerate() {
+                if let Some(CompiledTarget::SourcePhase(target)) = route.target.compiled() {
+                    let target = target as usize;
+                    if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
+                        || route.lag != 0
+                        || route.scale.is_some()
+                        || program.controls.iter().any(|b| b.0 == index)
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                    phase_routes[target].push(index);
+                }
+            }
+            let mut source_order = Vec::with_capacity(sources.len());
+            let mut emitted = vec![false; sources.len()];
+            while source_order.len() < sources.len() {
+                let next = (0..sources.len()).find(|&i| {
+                    !emitted[i]
+                        && phase_routes[i]
+                            .iter()
+                            .all(|&r| emitted[program.routes[r].source])
+                });
+                let Some(next) = next else {
+                    return Err(Error::InvalidInput);
+                };
+                emitted[next] = true;
+                source_order.push(next);
             }
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
@@ -592,6 +631,11 @@ impl VoiceModulation {
                     && program.controls.is_empty(),
                 sources,
                 filter_indices: filter_indices.into_boxed_slice(),
+                source_order: source_order.into_boxed_slice(),
+                phase_routes: phase_routes
+                    .into_iter()
+                    .map(Vec::into_boxed_slice)
+                    .collect(),
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
@@ -664,8 +708,9 @@ impl VoiceModulation {
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let depth = route.scale.map_or(route.depth,
-                |s| program.depth(route.depth, s, at_start(s.source)));
+            let depth = route.scale.map_or(route.depth, |s| {
+                program.depth(route.depth, s, at_start(s.source))
+            });
             fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
@@ -707,8 +752,9 @@ impl Program {
         };
         match scale.law {
             ModScaleLaw::Multiply => base * unipolar(source, bipolar),
-            ModScaleLaw::KontaktIntensity { unit, .. } =>
-                scale.law.apply(base / unit, source, bipolar) * unit,
+            ModScaleLaw::KontaktIntensity { unit, .. } => {
+                scale.law.apply(base / unit, source, bipolar) * unit
+            }
         }
     }
 
@@ -1264,8 +1310,19 @@ impl VoiceModState {
         let values = &mut self.values[voice * self.sources..][..p.sources.len()];
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
         let mut changed = onset;
-        for (i, source) in p.sources.iter().enumerate() {
-            let value = match *source {
+        for &i in &p.source_order {
+            let source = p.sources[i];
+            if onset && !p.phase_routes[i].is_empty() {
+                // The native phase lane is read once after reset, never each control cell.
+                let mut phase = 0.0;
+                for &r in &p.phase_routes[i] {
+                    let route = &p.routes[r];
+                    phase += route.depth
+                        * p.transform(route, values[route.source], p.bipolar[route.source]);
+                }
+                phases[i] = phase;
+            }
+            let value = match source {
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
@@ -1286,7 +1343,7 @@ impl VoiceModState {
                         (phases[i], seed ^ i as u64)
                     } else {
                         // ponytail: free cycles read absolute time, so a tempo change jumps phase.
-                        (lfo.phase + hz * clock.now as f64 / clock.rate, i as u64)
+                        (phases[i] + hz * clock.now as f64 / clock.rate, i as u64)
                     };
                     let depth = if age < lfo.delay {
                         0.0
@@ -1362,7 +1419,7 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
-                CompiledTarget::SampleStart => {}
+                CompiledTarget::SampleStart | CompiledTarget::SourcePhase(_) => {}
                 CompiledTarget::ProcessorCutoff(_)
                 | CompiledTarget::ProcessorResonance(_)
                 | CompiledTarget::ProcessorNativeCutoff(_)

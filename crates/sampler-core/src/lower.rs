@@ -1202,6 +1202,29 @@ impl Lowering<'_> {
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
             let mut processor_targets = Vec::new();
+            let mut source_of = |modulator: ir::ModulatorRef,
+                                 program: &mut ModProgram|
+             -> Result<usize, LowerError> {
+                if let Some(&index) = sources.get(&modulator) {
+                    return Ok(index);
+                }
+                let m = &self.ir.modulators[modulator.0];
+                // One instrument-wide LFO: free-running, or restarted by every voice start.
+                let shared = matches!(
+                    (m.scope, &m.source),
+                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
+                );
+                if m.scope != ir::Scope::Voice && !shared {
+                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
+                }
+                let mut source = self.mod_source(&owner, &m.source, program)?;
+                if let ModSource::Lfo(lfo) = &mut source {
+                    lfo.shared = shared;
+                }
+                program.sources.push(source);
+                sources.insert(modulator, program.sources.len() - 1);
+                Ok(program.sources.len() - 1)
+            };
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -1214,6 +1237,10 @@ impl Lowering<'_> {
                 (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
                 (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
                 (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (ir::Target::SourcePhase(target), ir::Depth::Normalized(d)) => (
+                    ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
+                    d,
+                ),
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,
@@ -1339,29 +1366,6 @@ impl Lowering<'_> {
                     }
                 }
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
-            };
-            let mut source_of = |modulator: ir::ModulatorRef,
-                                 program: &mut ModProgram|
-             -> Result<usize, LowerError> {
-                if let Some(&index) = sources.get(&modulator) {
-                    return Ok(index);
-                }
-                let m = &self.ir.modulators[modulator.0];
-                // One instrument-wide LFO: free-running, or restarted by every voice start.
-                let shared = matches!(
-                    (m.scope, &m.source),
-                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
-                );
-                if m.scope != ir::Scope::Voice && !shared {
-                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
-                }
-                let mut source = self.mod_source(&owner, &m.source, program)?;
-                if let ModSource::Lfo(lfo) = &mut source {
-                    lfo.shared = shared;
-                }
-                program.sources.push(source);
-                sources.insert(modulator, program.sources.len() - 1);
-                Ok(program.sources.len() - 1)
             };
             let source = source_of(route.source, &mut program)?;
             let scale = match route.scale {
@@ -1666,7 +1670,12 @@ impl Lowering<'_> {
     /// The control-driven stage for an IR filter, gain or matrix that a
     /// live parameter binds (frequency, quality, decibels, enable or a matrix
     /// cell), seeded with the authored constants.
-    fn live_stage(&self, chain: ir::ChainRef, index: usize, p: &ir::Processor) -> Option<Processor> {
+    fn live_stage(
+        &self,
+        chain: ir::ChainRef,
+        index: usize,
+        p: &ir::Processor,
+    ) -> Option<Processor> {
         let live = self.live_bound(chain, index);
         if !live {
             return None;
@@ -1700,8 +1709,12 @@ impl Lowering<'_> {
                 let (shape, gain) = match kind {
                     ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
                     ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
-                    ir::FilterKind::FirstOrderLowShelf { gain } => (S::FirstOrderLowShelf, db(gain)),
-                    ir::FilterKind::FirstOrderHighShelf { gain } => (S::FirstOrderHighShelf, db(gain)),
+                    ir::FilterKind::FirstOrderLowShelf { gain } => {
+                        (S::FirstOrderLowShelf, db(gain))
+                    }
+                    ir::FilterKind::FirstOrderHighShelf { gain } => {
+                        (S::FirstOrderHighShelf, db(gain))
+                    }
                     ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
                     ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
                     ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
@@ -2051,9 +2064,11 @@ impl Lowering<'_> {
             ir::FilterKind::FirstOrderLowShelf { gain } => biquad(FilterKind::FirstOrderLowShelf {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
-            ir::FilterKind::FirstOrderHighShelf { gain } => biquad(FilterKind::FirstOrderHighShelf {
-                gain_db: 20.0 * gain.linear().log10(),
-            }),
+            ir::FilterKind::FirstOrderHighShelf { gain } => {
+                biquad(FilterKind::FirstOrderHighShelf {
+                    gain_db: 20.0 * gain.linear().log10(),
+                })
+            }
         }
     }
 
