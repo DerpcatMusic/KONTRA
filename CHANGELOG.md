@@ -6,6 +6,20 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.444
+
+Five reviewed compatibility fixes extend 0.3.439:
+
+- Preserve authored step curves when envelope stages are retimed.
+- Sort KSP string arrays consistently during initialization and callbacks, including inclusive subranges.
+- Return nil for absent or unknown UVI parameter connections.
+- Keep the current artwork request pending when an older epoch finishes.
+- Open libraries containing empty saved numeric arrays without allocating storage for those arrays.
+
+The exact source merged in PR57 passed all eight hosted checks, including Linux, Windows, macOS and Vulkan/OpenGL/CPU editor checks; all eight newly authored regressions passed. The package and reviewed fix ledger now identify 0.3.444. Final local stamped build and installation remain pending the shared-machine build window.
+
+Known limits: full native instrument/UI/DSP parity and comparative CPU/RAM superiority remain unverified. The existing MUI pin is unchanged.
+
 ## 0.3.439
 
 Library search now matches library names and vendors independently of the lower preset/folder search. Clearing the library search keeps the selected library visible and preserves its folder hierarchy.
