@@ -307,6 +307,7 @@ pub fn view(
                         .shrink(0);
                     nodes += ir_view::node_count(&built);
                     if nodes > ir_view::FACE_NODES {
+                        ir_view::warn_dropped(1);
                         break;
                     }
                     cells.push(built);

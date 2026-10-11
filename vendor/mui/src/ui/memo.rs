@@ -127,7 +127,7 @@ impl Ui {
         if self.issued == 0 {
             return Ok(());
         }
-        let limits = mui_layout::Limits::default();
+        let limits = self.limits();
         self.expanded_memos.clear();
         TREES.with(|trees| {
             let trees = trees.borrow();

@@ -2192,6 +2192,36 @@ fn widget_picture_slider_drags_like_the_authored_knob() {
 }
 
 #[test]
+fn five_thousand_widgets_are_all_present_and_laid_out() {
+    let mut face = ir::Interface {
+        pages: vec![ir::Page { size: ir::Size { width: 2000, height: 1600 }, ..Default::default() }],
+        ..Default::default()
+    };
+    for n in 0..5000i32 {
+        let kind = if n % 2 == 0 {
+            ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+        } else {
+            ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+        };
+        let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28), kind);
+        w.text = format!("Caption {n}");
+        w.binding = ir::Binding::Control(ir::ControlId(n as u128));
+        face.widgets.push(w);
+    }
+    let assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let start = std::time::Instant::now();
+    let ui = settle(2000., 1600., |ui| {
+        ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+    });
+    println!("FIVE_THOUSAND_WIDGETS 4 frames in {:?}", start.elapsed());
+    let scene = ui.scene().unwrap();
+    for n in [0, 2499, 4999] {
+        assert!(scene.surface(&format!("ir-{n}")).is_some(), "widget {n} missing");
+    }
+}
+
+#[test]
 fn widget_disabled_knob_does_not_edit() {
     let script = sampler_ksp::compile(
         "on init\n declare ui_knob $k(0,100,1)\nend on",
