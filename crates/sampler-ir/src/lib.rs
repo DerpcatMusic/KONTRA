@@ -1683,7 +1683,7 @@ pub enum SendPosition {
 /// Format-neutral binding of one authored control to an actual processor field.
 /// The control's Continuous range is in the field's native units (Hz, linear
 /// gain, dB, Q or normalized knobs). A bound Peak uses dB Gain and 0..1
-/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 0.3 + 2.7*x octaves).
+/// Cutoff/Resonance knobs (20 Hz * 10^(3*x), 1/3 + x/0.375 octaves).
 /// Ramping uses the engine sample clock.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
