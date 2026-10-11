@@ -17,14 +17,30 @@ const STATUSES: [Status; 5] = [
     Status::Fault,
 ];
 
-/// Coordinator seam: obtain reports and their in-memory source from the loaded instrument.
+/// Build reports and source pairs once when the view binds a loaded instrument.
 /// No producer calls belong elsewhere in this view; fixtures are test-only.
-fn script_reports(_instrument: &sampler_ir::Instrument) -> Vec<(ScriptReport, Arc<str>)> {
+fn script_reports(instrument: &sampler_ir::Instrument) -> Vec<(ScriptReport, Arc<str>)> {
     #[cfg(test)]
-    if _instrument.name == "Synthetic script inspector" {
+    if instrument.name == "Synthetic script inspector" {
         return fixtures::reports();
     }
-    Vec::new()
+    let mut reports: Vec<_> = sampler_kontakt::parity_reports(instrument)
+        .into_iter()
+        .zip(
+            instrument
+                .behaviors
+                .iter()
+                .filter(|b| b.language == sampler_ir::Language::Ksp),
+        )
+        .map(|(report, behavior)| (report, Arc::from(behavior.source.as_str())))
+        .collect();
+    if let Some(source) = &instrument.uvi_script_sources {
+        reports.extend(sampler_uvi::parity::report_sources(
+            &source.xml,
+            &sampler_uvi::script::Scripts::from_sources(source.files.clone()),
+        ));
+    }
+    reports
 }
 
 /// Coordinator seam: idempotently enable/disable collection and read the latest snapshot.
@@ -41,6 +57,8 @@ fn script_coverage(
             .find(|(r, _)| r.id == _id)
             .map(|(r, s)| fixtures::coverage(&Script::new(r, s)));
     }
+    // shortcut: KSP's evaluator is not the playback VM and Luau needs recompilation;
+    // add owner-thread/VM observation before enabling coverage without resetting live notes.
     None
 }
 
@@ -1343,6 +1361,76 @@ mod tests {
         );
         tick(ui, state, Input::default());
         tick(ui, state, Input::default());
+    }
+
+    fn loaded_scripts() -> sampler_ir::Instrument {
+        let xml = "<UVI4><Program><EventProcessors><ScriptProcessor Name='Lua'><script>require('helper')</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let mut instrument = sampler_uvi::translate(xml, std::path::Path::new("."))
+            .unwrap()
+            .instrument;
+        instrument.behaviors.push(sampler_ir::Behavior {
+            name: "KSP".into(),
+            language: sampler_ir::Language::Ksp,
+            source: "on init\nend on".into(),
+            slot: Some(3),
+            state: vec![],
+            requires: vec![],
+        });
+        let mut files = sampler_uvi::script::Scripts::default();
+        files.insert("helper.lua", "local helper = 1".into());
+        instrument.uvi_script_sources.as_mut().unwrap().files = files.sources();
+        instrument
+    }
+
+    #[test]
+    fn loaded_instrument_seam_pairs_both_languages_and_required_modules() {
+        let instrument = loaded_scripts();
+        let reports = script_reports(&instrument);
+        let copy = instrument.clone();
+        let sources = instrument.uvi_script_sources.as_ref().unwrap();
+        let copied = copy.uvi_script_sources.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&sources.xml, &copied.xml));
+        assert!(Arc::ptr_eq(&sources.files, &copied.files));
+        assert!(serde_json::to_value(&instrument).unwrap().get("uvi_script_sources").is_none());
+        assert!(!format!("{sources:?}").contains("local helper"));
+        let mut files = sampler_uvi::script::Scripts::from_sources(sources.files.clone());
+        files.insert("other.lua", "".into());
+        assert_eq!(sources.files.len(), 1);
+        assert_eq!(files.sources().len(), 2);
+        assert_eq!(reports.len(), 3);
+        assert!(
+            reports.iter().any(|(r, s)| r.id == "ksp:slot3"
+                && r.lang == Lang::Ksp
+                && &**s == "on init\nend on")
+        );
+        assert!(reports.iter().any(|(r, s)| r.id == "uvi:module:helper"
+            && r.lang == Lang::Luau
+            && &**s == "local helper = 1"));
+        assert!(
+            reports
+                .iter()
+                .any(|(r, s)| r.id.starts_with("uvi:/") && &**s == "require('helper')")
+        );
+        for (report, source) in reports {
+            assert_eq!(report.source_len as usize, source.len());
+            assert!(
+                report
+                    .tokens
+                    .iter()
+                    .all(|t| (t.span.end as usize) <= source.len())
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_toggle_never_reports_unobserved_live_execution_as_zero_hits() {
+        let instrument = loaded_scripts();
+        for (report, _) in script_reports(&instrument) {
+            assert_eq!(script_coverage(&instrument, &report.id, true), None);
+            assert_eq!(script_coverage(&instrument, &report.id, true), None);
+            assert_eq!(script_coverage(&instrument, &report.id, false), None);
+        }
+        assert_eq!(script_coverage(&instrument, "missing", true), None);
     }
 
     #[test]
