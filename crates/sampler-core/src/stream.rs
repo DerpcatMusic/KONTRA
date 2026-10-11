@@ -158,10 +158,7 @@ pub struct StreamWorker {
     pending: Box<[Option<Request>]>,
     ready: BinaryHeap<Reverse<(u64, usize, u64)>>,
     launched: Box<[u64]>,
-    free: Vec<Box<[Frame]>>,
-    /// Page buffers not yet allocated: the worker makes one only when a job
-    /// needs it, so an idle pool holds no RAM (v1's rings were touched on use).
-    unallocated: usize,
+    free: Vec<Vec<Frame>>,
     store: u64,
 }
 impl StreamCache {
@@ -191,6 +188,12 @@ impl StreamCache {
             .ok_or(Error::Capacity)?;
         let mut free = Vec::new();
         free.try_reserve_exact(pages).map_err(|_| Error::Capacity)?;
+        // Reserve on the control thread; only touch sample pages when decoding.
+        for _ in 0..pages {
+            let mut frames = Vec::new();
+            frames.try_reserve_exact(PAGE_FRAMES).map_err(|_| Error::Capacity)?;
+            free.push(frames);
+        }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let store = NEXT_STORE
@@ -226,7 +229,6 @@ impl StreamCache {
                 ready: BinaryHeap::with_capacity(pages * 2),
                 launched: vec![0; pages].into_boxed_slice(),
                 free,
-                unallocated: pages,
                 store,
             },
         ))
@@ -660,7 +662,7 @@ impl StreamWorker {
     /// the earliest deadline. All worker storage is bounded by cache capacity.
     pub fn next_job(&mut self) -> Option<DecodeJob> {
         while let Ok(samples) = self.recycled.pop() {
-            self.free.push(samples);
+            self.free.push(samples.into_vec());
         }
         while let Ok(request) = self.requests.pop() {
             let slot = request.slot;
@@ -682,7 +684,7 @@ impl StreamWorker {
                 }
             }
         }
-        if self.requests.is_abandoned() || (self.free.is_empty() && self.unallocated == 0) {
+        if self.requests.is_abandoned() || self.free.is_empty() {
             return None;
         }
         let slot = loop {
@@ -691,20 +693,9 @@ impl StreamWorker {
                 break slot;
             }
         };
-        let mut samples = match self.free.pop() {
-            Some(samples) => samples,
-            None => {
-                let mut frames = Vec::new();
-                if frames.try_reserve_exact(PAGE_FRAMES).is_err() {
-                    let r = self.pending[slot].unwrap();
-                    self.ready.push(Reverse((r.deadline, slot, r.serial)));
-                    return None;
-                }
-                frames.resize(PAGE_FRAMES, [0.; 2]);
-                self.unallocated -= 1;
-                frames.into_boxed_slice()
-            }
-        };
+        let mut samples = self.free.pop().unwrap();
+        samples.resize(PAGE_FRAMES, [0.; 2]);
+        let mut samples = samples.into_boxed_slice();
         let request = self.pending[slot].take().unwrap();
         self.launched[slot] = request.serial;
         samples[..request.len].fill([0.; 2]);
