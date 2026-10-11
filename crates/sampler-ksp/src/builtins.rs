@@ -217,6 +217,11 @@ builtins! {
     GetVoiceLimit "get_voice_limit" [I] 0 Int;
     SetVoiceLimit "set_voice_limit" [I I] 0 Int;
     OutputChannelName "output_channel_name" [I] 0 Str;
+    GetScale "get_scale" [I A] 0 Void;
+    GetScaleName "get_scale_name" [I I] 0 Str;
+    SubscribeAsync "subscribe_async" [I I I] 0 Void;
+    SetGlobalKey "set_global_key" [I] 0 Void;
+    SetGlobalScale "set_global_scale" [I] 0 Void;
     LoadIrSample "load_ir_sample" [S I I] 0 Int;
     FindZone "find_zone" [S] 0 Int;
     LoadNativeUi "load_native_ui" [S] 0 Void;
@@ -637,6 +642,59 @@ const VALUED: &[(&str, i32)] = &[
     ("$NI_SIGNAL_TRANSP_START", signal::TRANSP_START),
     ("$NI_SIGNAL_TRANSP_STOP", signal::TRANSP_STOP),
 ];
+
+/// Whether `name` is a Kontakt vendor constant (`$ENGINE_PAR_*`, `$NI_*`, ...)
+/// from the KSP reference catalog, which scripts use by identity only. Digit
+/// runs are compared as `#`, so numbered families (`$NI_REVERB1_TYPE_ROOM`,
+/// `$ENGINE_PAR_SENDLEVEL_3`) match their catalog entry.
+/// Kontakt scale table: (index, name, semitones above the root). Indices come from the order of
+/// the names in Kontakt 8 (Chromatic, Lydian, Major, Mixolydian, Dorian, Minor, Phrygian,
+/// Locrian, ...); Major and Minor are not in its string table, so 0-7 are anchored by the Conflux
+/// Midi Player's circle-of-fifths menu list and 42/45/47/62 by pentatonic, Hirajoshi and
+/// Phrygian Dominant landing on those indices. Two unnamed entries sit between 8 and 41, so the
+/// scales after Locrian up to Blues are deliberately absent rather than guessed.
+const SCALES: &[(i32, &str, &[u8])] = &[
+    (0, "Chromatic", &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+    (1, "Lydian", &[0, 2, 4, 6, 7, 9, 11]),
+    (2, "Major", &[0, 2, 4, 5, 7, 9, 11]),
+    (3, "Mixolydian", &[0, 2, 4, 5, 7, 9, 10]),
+    (4, "Dorian", &[0, 2, 3, 5, 7, 9, 10]),
+    (5, "Minor", &[0, 2, 3, 5, 7, 8, 10]),
+    (6, "Phrygian", &[0, 1, 3, 5, 7, 8, 10]),
+    (7, "Locrian", &[0, 1, 3, 5, 6, 8, 10]),
+    (42, "Major Pentatonic", &[0, 2, 4, 7, 9]),
+    (45, "Minor Pentatonic", &[0, 3, 5, 7, 10]),
+    (47, "Hirajoshi", &[0, 2, 3, 7, 8]),
+    (62, "Phrygian Dominant", &[0, 1, 4, 5, 7, 8, 10]),
+];
+/// Scale `index` as (name, semitones above the root); `None` when it is not in the table.
+pub fn scale(index: i32) -> Option<(&'static str, &'static [u8])> {
+    SCALES.iter().find(|s| s.0 == index).map(|s| (s.1, s.2))
+}
+/// Every modelled scale: `(index, semitones)`.
+pub fn scales() -> impl Iterator<Item = (i32, &'static [u8])> {
+    SCALES.iter().map(|s| (s.0, s.2))
+}
+
+/// `$NUM_OUTPUT_CHANNELS`: mono channels of the plugin's 16 stereo output buses (`sound::BUSES`).
+pub const NUM_OUTPUT_CHANNELS: i32 = 32;
+
+pub fn is_vendor_constant(name: &str) -> bool {
+    static CATALOG: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| include_str!("vendor_constants.txt").lines().collect());
+    let mut key = String::with_capacity(name.len());
+    let mut digits = false;
+    for c in name.chars() {
+        if !c.is_ascii_digit() {
+            key.push(c);
+        } else if !digits {
+            key.push('#');
+        }
+        digits = c.is_ascii_digit();
+    }
+    catalog.contains(key.as_str())
+}
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {

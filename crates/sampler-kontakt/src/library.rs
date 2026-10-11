@@ -312,11 +312,9 @@ fn translate(
     ) {
         Ok(records) => {
             for record in records {
-                let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
-                    let rest = tag.strip_prefix("pts_script_slider_")?;
-                    let (slot, ordinal) = rest.split_once('_')?;
-                    Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
-                });
+                let target = std::str::from_utf8(record.tag.data())
+                    .ok()
+                    .and_then(automation_target);
                 let source = match record.mode {
                     1 if record.address < 128 => {
                         Some(ir::ScriptAutomationSource::Controller(record.address as u8))
@@ -324,13 +322,14 @@ fn translate(
                     2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
                     _ => None,
                 };
-                if let (Some((source_slot, slider)), Some(source)) = (target, source)
+                if let (Some((source_slot, slider, switch)), Some(source)) = (target, source)
                     && (0.0..=1.0).contains(&record.low)
                     && (0.0..=1.0).contains(&record.high)
                 {
                     out.ir.script_automation.push(ir::ScriptAutomation {
                         source,
                         source_slot,
+                        switch,
                         slider,
                         low: f64::from(record.low),
                         high: f64::from(record.high),
@@ -341,8 +340,13 @@ fn translate(
                         "program private",
                         "saved automation target",
                         format!(
-                            "record {} mode {} address {}",
-                            record.offset, record.mode, record.address
+                            "{} record {} mode {} address {} id {} {:?}",
+                            String::from_utf8_lossy(record.tag.data()),
+                            record.offset,
+                            record.mode,
+                            record.address,
+                            record.id,
+                            record.secondary_id
                         ),
                         ir::Reason::NotModeled,
                     );
@@ -715,6 +719,26 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
         }
     }
     None
+}
+
+/// Stored (serialized) group source mode of DFD. The menu lists Sampler, DFD,
+/// Wavetable, Tone Machine, Time Machine 1/2/Pro, Beat Machine, S1200 and MP60;
+/// the stored order is Sampler 0, Tone/Time Machine 1-2, DFD 3, Beat Machine 4
+/// (slice fields), Time Machine 2 5, S1200/MP60 6-7, Time Machine Pro 8 (pro
+/// fields), Wavetable 9. Mode 3 has no fields beyond the common record, is the
+/// only non-sampler mode in the 3,906 source groups of the survey's streaming
+/// libraries, and mode 5 (which DFD's streaming fields would occupy) never occurs.
+const SOURCE_MODE_DFD: u32 = 3;
+
+fn source_mode_name(mode: u32) -> &'static str {
+    match mode {
+        1 | 2 => "Tone/Time Machine",
+        4 => "Beat Machine",
+        5 => "Time Machine 2",
+        6 | 7 => "S1200/MP60 Machine",
+        8 => "Time Machine Pro",
+        _ => "unknown",
+    }
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -1250,14 +1274,16 @@ impl Translation {
                     self.unsupported(&at, "wavetable source", source.mode, not_modeled);
                 }
             }
-            // v1 plays every other mode as a sampler, with an explicit limitation.
-            Ok(source) if source.mode != 0 => self.unsupported(
+            // DFD streams the same sampled signal as Sampler; streaming is the
+            // loader's concern, so nothing is lost and nothing is reported.
+            Ok(source) if matches!(source.mode, 0 | SOURCE_MODE_DFD) => {}
+            // The remaining engines are played as a sampler, named in the report.
+            Ok(source) => self.unsupported(
                 &at,
-                "source mode (played as a sampler)",
+                &format!("{} source (played as a sampler)", source_mode_name(source.mode)),
                 source.mode,
                 not_modeled,
             ),
-            Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
         let mut chain = None;
@@ -2278,8 +2304,25 @@ struct RawZone {
     source: ir::kontakt::Zone,
 }
 
+/// A saved automation tag's script slot, widget ordinal and whether it names a `ui_switch`.
+fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
+    let (switch, rest) = match tag.strip_prefix("pts_script_slider_") {
+        Some(rest) => (false, rest),
+        None => (true, tag.strip_prefix("pts_script_switch_")?),
+    };
+    let (slot, ordinal) = rest.split_once('_')?;
+    Some((slot.parse().ok()?, ordinal.parse().ok()?, switch))
+}
+
 #[cfg(test)]
 mod empty_zone_tests {
+    #[test]
+    fn automation_tags_name_sliders_and_switches() {
+        assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));
+        assert_eq!(super::automation_target("pts_script_switch_2_81"), Some((2, 81, true)));
+        assert_eq!(super::automation_target("pts_script_knob_2_1"), None);
+    }
+
     #[test]
     fn tester_sampleless_zone_preserves_native_mapping_without_a_file_reference() {
         use std::io::Cursor;
