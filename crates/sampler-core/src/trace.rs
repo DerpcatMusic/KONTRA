@@ -897,6 +897,8 @@ impl TraceGraph {
                 0,
             ),
             PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
+            PreparedProcessor::LiveSaturation(shape) => ("kontakt_classic_saturation", vec![parameter("shape", *shape)], 0),
+            PreparedProcessor::LiveDistortion(d) => ("kontakt_distortion", vec![parameter("drive", d.drive), parameter("damping", d.damping)], 0),
             PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
             PreparedProcessor::LegacyPhaser(p) => ("kontakt_legacy_phaser", vec![constant("depth", f64::from(p.depth)), constant("feedback", f64::from(p.feedback))], 0),
             PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),

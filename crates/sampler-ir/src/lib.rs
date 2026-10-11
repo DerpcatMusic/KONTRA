@@ -1472,6 +1472,9 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
     Saturation(f32),
+    /// Script-addressed Classic Saturation; the saved static form remains above.
+    LiveSaturation { shape: f32, address: SlotAddress },
+    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.

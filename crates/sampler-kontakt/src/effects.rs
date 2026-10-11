@@ -866,10 +866,15 @@ pub(crate) fn chain_with(
                     && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
                 {
                     flush(&mut combined, &mut filters, &mut out);
-                    out.processors.push(sampler_ir::Processor::Distortion {
-                        transistor: *mode == 1.0,
-                        drive: *drive,
-                        damping: *damping,
+                    out.processors.push(if let Some((group, generic)) = dynamic {
+                        sampler_ir::Processor::LiveDistortion {
+                            transistor: *mode == 1., drive: *drive, damping: *damping,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        }
+                    } else {
+                        sampler_ir::Processor::Distortion {
+                            transistor: *mode == 1., drive: *drive, damping: *damping,
+                        }
                     });
                     combined = gain;
                 } else {
@@ -880,8 +885,12 @@ pub(crate) fn chain_with(
             Some(Params::Saturation { shape, mode }) => {
                 if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
                     flush(&mut combined, &mut filters, &mut out);
-                    out.processors
-                        .push(sampler_ir::Processor::Saturation(*shape));
+                    out.processors.push(if let Some((group, generic)) = dynamic {
+                        sampler_ir::Processor::LiveSaturation { shape: *shape,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic } }
+                    } else {
+                        sampler_ir::Processor::Saturation(*shape)
+                    });
                     combined = gain;
                 } else {
                     notes.push((
@@ -1813,6 +1822,33 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn live_shape_drive_and_damping_reach_only_the_physical_slot() {
+        for (module, payload, parameter, value, expected) in [
+            (0x1d, vec![0.0f32, 0.], "ENGINE_PAR_SHAPE", 750_000, 0.75f32),
+            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DRIVE", 1_000_000, 0.74903756),
+            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DAMPING", 1_000_000, 0.031603266),
+        ] {
+            let bytes = payload.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let fx = slot(module, bytes, 1.);
+            let built = super::chain_with(&[fx], super::Scope::Voice, None,
+                Some((0, -1)), (0, -1), &[]);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut rt = fx_runtime(built.processors, 120., &[[0., 0.], [0.25, -0.25]]);
+            let address = sampler_core::EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(parameter).unwrap(),
+                group: 0, slot: 0, generic: -1,
+            };
+            let mut before = [[0.; 2]; 1]; rt.render(&mut before).unwrap();
+            assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress {
+                slot: 1, ..address }, value).is_err());
+            rt.set_engine_parameter(address, value).unwrap();
+            let mut after = [[0.; 2]; 1]; rt.render(&mut after).unwrap();
+            assert!((after[0][0] - expected).abs() < 2e-6,
+                "{parameter}: {:?} expected {expected}", after[0]);
+        }
+    }
+
+    #[test]
     fn instrument_bus_pan_only_uses_native_stereo_balance() {
         use sampler_ir as ir;
         for (pan, expected) in [(-1., [1., 0.]), (-0.5, [1., 0.5]),
@@ -2710,7 +2746,7 @@ mod tests {
         }
     }
 
-    fn fx_probe(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> [[f32; 2]; 4] {
+    fn fx_runtime(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> sampler_core::Runtime {
         let mut instrument = sampler_ir::Instrument::default();
         instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
         instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
@@ -2725,6 +2761,11 @@ mod tests {
         let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
         rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
         rt.set_tempo(tempo).unwrap();
+        rt
+    }
+
+    fn fx_probe(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> [[f32; 2]; 4] {
+        let mut rt = fx_runtime(processors, tempo, input);
         let mut output = [[0.0; 2]; 4]; rt.render(&mut output).unwrap();
         output
     }
