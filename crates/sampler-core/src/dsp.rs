@@ -195,6 +195,7 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
+    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
@@ -253,6 +254,7 @@ impl Processor {
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
+            Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
@@ -329,6 +331,7 @@ pub(super) enum PreparedProcessor {
     Saturation(f32),
     Formant(formant::Formant),
     Phaser(phaser::Phaser),
+    LegacyPhaser(phaser::LegacyPhaser),
     Distortion(distortion::Distortion),
     Gainer {
         dry: f64,
@@ -534,6 +537,7 @@ pub(super) fn compile_processors(
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
+                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
                 Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
                 Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
@@ -897,6 +901,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
+                        | PreparedProcessor::LegacyPhaser(_)
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::Distortion(_)
@@ -1176,6 +1181,7 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
             PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
@@ -1637,6 +1643,7 @@ mod tests {
                         0,
                         &mut [],
                         &mut svf::FilterContext {
+                            tempo: 120.0,
                             bank: &mut filters,
                             reverbs: &mut [],
                             convolutions: &mut [],
@@ -1717,6 +1724,7 @@ mod tests {
                                     0,
                                     &mut [],
                                     &mut svf::FilterContext {
+                                        tempo: 120.0,
                                         bank: &mut filters,
                                         reverbs: &mut [],
                                         convolutions: &mut [],
