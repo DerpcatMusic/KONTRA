@@ -1616,6 +1616,34 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
 }
 
 impl V2Core {
+    /// Complete the part's MIDI / array-file jobs the way the plugin's effect drain does,
+    /// for hosts (the offline scanner) that have no worker thread of their own.
+    pub(crate) fn service_script_io(&mut self, part: usize, effect: &sampler_core::Effect) -> bool {
+        self.parts
+            .get_mut(part)
+            .and_then(Option::as_mut)
+            .and_then(|p| p.ui_controls.as_mut())
+            .is_some_and(|ingress| ingress.service_midi(effect))
+    }
+
+    /// Whether a plan-owned script callback (`persistence_changed`, a UI callback) is still
+    /// suspended in a `wait`; its next step can change the interface or what a note plays.
+    pub(crate) fn scripts_running(&self, part: usize) -> bool {
+        let mut running = false;
+        if let Some(Some(p)) = self.parts.get(part) {
+            p.runtime.visit_behavior_progress(|c| {
+                running |= c.outcome.is_none() && matches!(c.owner, sampler_core::BehaviorOwner::Plan(_));
+            });
+        }
+        running
+    }
+
+    pub(crate) fn settle_script_io(&mut self, part: usize) {
+        if let Some(ingress) = self.parts.get_mut(part).and_then(Option::as_mut).and_then(|p| p.ui_controls.as_mut()) {
+            ingress.refresh();
+        }
+    }
+
     pub fn with_parts(parts: usize, sample_rate: f64) -> Self {
         let mut mix = Mix::default();
         mix.parts
@@ -5274,6 +5302,42 @@ mod tests {
             !core.set_control(0, sampler_ui_ir::ControlId(7), 1.0),
             "no such control"
         );
+    }
+
+    #[test]
+    fn scripts_running_is_true_only_while_a_plan_callback_is_suspended_in_a_wait() {
+        let script = sampler_ksp::compile(
+            "on init end on on pgs_changed wait(50000) end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let entry = script
+            .entries()
+            .iter()
+            .find(|e| e.kind == sampler_ksp::EntryKind::PgsChanged)
+            .unwrap()
+            .program;
+        let plan = script
+            .bind(Prepared::new(48000, vec![], vec![], 1).unwrap())
+            .unwrap();
+        let runtime_limits = limits(&plan).0;
+        let mut part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let active = part.runtime.active_plan();
+        part.runtime.start_plan_behavior(active, entry).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.render(480);
+        assert!(core.scripts_running(0), "suspended in wait(50 ms)");
+        for _ in 0..40 {
+            core.render(480);
+        }
+        assert!(!core.scripts_running(0), "wait elapsed, callback finished");
     }
 
     #[test]
