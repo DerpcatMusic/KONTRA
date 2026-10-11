@@ -136,13 +136,15 @@ pub enum ModSource {
     /// The note's script value for "from script" modulator `id`
     /// ([`crate::Instruction::WriteModValue`]), `clamp(v / 1e6, -1, 1)`.
     Script(u16),
+    /// [`Self::Script`] read as a bipolar source (-1..=1).
+    ScriptBipolar(u16),
     /// The note's raw pitch bend ([`crate::Expression::bend`]), -1..=1.
     PitchBend,
 }
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend)
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -494,7 +496,7 @@ impl VoiceModulation {
                             return Err(Error::InvalidInput);
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) => Prepared::Script(id),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
                         ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })

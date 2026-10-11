@@ -757,7 +757,11 @@ impl Translation {
                 if let Some(id) = node.attribute("ScriptLive").and_then(|t| t.parse::<u16>().ok()) {
                     // A script writes it: a live source the host drives, not a fold.
                     let polar = number(node, "Bipolar", 0.0)? != 0.0;
-                    let source = ir::ModulationSource::Script(id);
+                    let source = if polar {
+                        ir::ModulationSource::ScriptBipolar(id)
+                    } else {
+                        ir::ModulationSource::Script(id)
+                    };
                     return Ok(Ok(Signal::Live {
                         modulator: self.modulator(format!("{source:?}"), source),
                         curve: if polar { bipolar } else { identity },
@@ -801,20 +805,16 @@ impl Translation {
                         NotModeled,
                     )));
                 };
-                if number(node, "Bipolar", 1.0)? != 0.0 && self.shared_sources.insert(node.id()) {
-                    self.ir.unsupported.push(ir::Unsupported {
-                        location: path(node),
-                        feature: "bipolar ScriptEventModulation (negative script values read as 0)"
-                            .into(),
-                        value: id.to_string(),
-                        reason: NotModeled,
-                    });
-                }
-                let source = ir::ModulationSource::Script(id);
+                let polar = number(node, "Bipolar", 1.0)? != 0.0;
+                let source = if polar {
+                    ir::ModulationSource::ScriptBipolar(id)
+                } else {
+                    ir::ModulationSource::Script(id)
+                };
                 Ok(Ok(Signal::Live {
                     modulator: self.modulator(format!("{source:?}"), source),
-                    curve: identity,
-                    bipolar: false,
+                    curve: if polar { bipolar } else { identity },
+                    bipolar: polar,
                     scale: None,
                     smoothing: 0.0,
                     extra: None,
@@ -1363,6 +1363,20 @@ mod tests {
             (ir::Depth::Normalized(1.0), true)
         );
         assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+    }
+
+    #[test]
+    fn bipolar_script_modulation_keeps_negative_values() {
+        for (bip, expected) in [(1, ir::ModulationSource::ScriptBipolar(3)), (0, ir::ModulationSource::Script(3))] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="ScriptEventModulation 3" Bipolar="{bip}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/ScriptEventModulation 3" Destination="Pitch" Ratio="1"/>"#,
+            );
+            let (_, source) = only_route(&ir);
+            assert_eq!(source, &expected);
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+        }
     }
 
     #[test]
