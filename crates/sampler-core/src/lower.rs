@@ -1995,6 +1995,7 @@ impl Lowering<'_> {
             }),
             ir::Processor::Saturation(shape) => Processor::Saturation(shape),
             ir::Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit },
+            ir::Processor::KontaktEnhancedCompressor { knobs, link } => Processor::KontaktEnhancedCompressor { knobs, link },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },

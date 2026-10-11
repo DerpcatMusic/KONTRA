@@ -262,7 +262,7 @@ pub(crate) enum Params {
         drive: f32,
         damping: f32,
     },
-    /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
+    /// `BParFXCompressor`: integer mode (Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
         mode: f32,
@@ -403,7 +403,7 @@ impl Slot {
                 }))
             }
             0x19 => Params::Compressor {
-                mode: r.f32()?,
+                mode: r.i32()? as f32,
                 threshold_db: r.f32()?,
                 ratio: r.f32()?,
                 attack_ms: r.f32()?,
@@ -1119,6 +1119,14 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Compressor { mode: 1.0, threshold_db, ratio, attack_ms, release_ms, link }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let knobs = [*threshold_db, *ratio, *attack_ms, *release_ms];
+                if knobs.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack_ms > 0. && *release_ms >= 0. {
+                    out.processors.push(sampler_ir::Processor::KontaktEnhancedCompressor { knobs, link: *link });
+                    combined = gain;
+                } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
+            }
             Some(Params::Compressor {
                 mode,
                 threshold_db,
@@ -2664,7 +2672,7 @@ mod tests {
         }
     }
 
-    fn phaser_probe(processors: Vec<sampler_ir::Processor>, tempo: f64) -> [[f32; 2]; 4] {
+    fn fx_probe(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> [[f32; 2]; 4] {
         let mut instrument = sampler_ir::Instrument::default();
         instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
         instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
@@ -2672,7 +2680,7 @@ mod tests {
         zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
         zone.chain = Some(sampler_ir::ChainRef(0)); zone.velocity = sampler_ir::VelocityResponse::None;
         instrument.zones.push(zone);
-        let mut samples = vec![[0.0; 2]; 64]; samples[0] = [1.0, -0.5];
+        let mut samples = vec![[0.0; 2]; 64]; samples[..input.len()].copy_from_slice(input);
         let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
         let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
         let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
@@ -2684,11 +2692,29 @@ mod tests {
     }
 
     #[test]
+    fn enhanced_compressor_uses_native_detector_and_integer_selector() {
+        let mut payload = 1i32.to_le_bytes().to_vec();
+        for value in [-6.0f32, 0.5, 1.0, 100.0] { payload.extend(value.to_le_bytes()); }
+        payload.push(0);
+        let mut fx = slot(0x19, payload.clone(), 1.0); fx.version = 0x70;
+        let built = chain(&[fx], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]; 4]);
+        for (actual, expected) in output.iter().zip([0.999157310f32, 0.997557640, 0.995283782, 0.992414534]) { assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}"); }
+        assert_eq!(output[0][1], -0.5);
+        *payload.last_mut().unwrap() = 1;
+        let mut fx = slot(0x19, payload, 1.0); fx.version = 0x70;
+        let linked = chain(&[fx], Scope::Voice);
+        assert!(linked.notes.is_empty(), "{:?}", linked.notes);
+        assert_eq!(fx_probe(linked.processors, 120., &[[1., -1.]])[0], [1., -1.]);
+    }
+
+    #[test]
     fn legacy_phaser_free_speed_phase_and_four_stage_vector() {
         let payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, -1.0].into_iter().flat_map(f32::to_le_bytes).collect();
         let built = chain(&[slot(0x14, payload, 1.0)], Scope::Voice);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
-        let output = phaser_probe(built.processors.clone(), 120.);
+        let output = fx_probe(built.processors.clone(), 120., &[[1., -0.5]]);
         let expected = [[0.857850552f32, -0.476720124], [-0.106721222, -0.0511267483], [-0.290372699, 0.0421471819], [-0.274628252, 0.0595008172]];
         for (actual, expected) in output.into_iter().zip(expected) {
             for (a, e) in actual.into_iter().zip(expected) { assert!((a-e).abs() < 2e-7, "{a} vs {e}"); }
@@ -2697,7 +2723,7 @@ mod tests {
         let synced_payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, 2.0].into_iter().flat_map(f32::to_le_bytes).collect();
         let synced = chain(&[slot(0x14, synced_payload, 1.0)], Scope::Voice);
         assert!(synced.notes.is_empty(), "{:?}", synced.notes);
-        assert_eq!(phaser_probe(synced.processors, 120.), output);
+        assert_eq!(fx_probe(synced.processors, 120., &[[1., -0.5]]), output);
     }
 
     #[test]
@@ -2706,7 +2732,7 @@ mod tests {
         for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
         let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
-        let output = phaser_probe(built.processors, 120.);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]]);
         // Cutoff zero: a=(1-.02)/(1+.02); four allpasses, half dry/half wet.
         for (actual, expected) in output.iter().zip([0.926062942f32, -0.136394471, -0.114671811, -0.095316768]) {
             assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}");
