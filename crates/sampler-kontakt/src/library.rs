@@ -2948,6 +2948,39 @@ mod saved_tests {
     }
 
     #[test]
+    fn translated_empty_numeric_script_arrays_do_not_fail_library_open() {
+        let path =
+            std::env::temp_dir().join(format!("empty-script-arrays-{}.nki", std::process::id()));
+        std::fs::write(&path, [0; 16]).unwrap();
+        let mut program = menu_program();
+        let script = program.0.children.iter_mut().find(|c| c.id == 6).unwrap();
+        script.data.extend(2u32.to_le_bytes());
+        for entry in [b"%steps ".as_slice(), b"?xy "] {
+            script.data.extend((entry.len() as u32).to_le_bytes());
+            script.data.extend(entry);
+        }
+        let translated = super::translate(
+            path.clone(),
+            program,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            translated.instrument.behaviors[0].state,
+            [
+                ("%steps".into(), sampler_ir::Saved::Ints(vec![])),
+                ("?xy".into(), sampler_ir::Saved::Reals(vec![])),
+            ]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn restored_translation_initializes_once_with_host_menu_values() {
         let path = std::env::temp_dir().join(format!("restored-menu-{}.nki", std::process::id()));
         std::fs::write(&path, [0; 16]).unwrap();

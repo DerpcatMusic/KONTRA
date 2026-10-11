@@ -96,16 +96,43 @@ fn string_payloads_keep_whitespace_encoding_and_empty_array_cells() {
 }
 
 #[test]
+fn empty_saved_numeric_arrays_remain_valid_without_allocating() {
+    support::without_heap(|| {
+        for widget in [None, Some(Widget::Table)] {
+            let SavedValue::Ints { values, .. } =
+                SavedEntry::parse(b"%steps ", widget, LIMITS).unwrap().value
+            else {
+                panic!()
+            };
+            assert!(values.is_empty());
+            assert_eq!(values.iter().next(), None);
+        }
+        for widget in [None, Some(Widget::Xy)] {
+            let SavedValue::Reals { values, .. } =
+                SavedEntry::parse(b"?xy \t\n", widget, LIMITS).unwrap().value
+            else {
+                panic!()
+            };
+            assert!(values.is_empty());
+            assert_eq!(values.iter().next(), None);
+        }
+    });
+}
+
+#[test]
 fn damaged_unknown_and_mismatched_records_are_errors_without_allocating() {
     support::without_heap(|| {
         for b in [
             b"$x".as_slice(),
+            b"$x ",
             b"$ 1",
             b"$x 2147483648",
             b"$x 1 2",
             b"~x rubbish",
-            b"%x ",
+            b"~x ",
+            b"%x",
             b"%x 1 broken",
+            b"?x 1 broken",
             b"$x 1\0",
             b"$bad-name 1",
         ] {
