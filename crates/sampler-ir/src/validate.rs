@@ -277,6 +277,12 @@ impl Check<'_> {
                         self.finite(v, field)?;
                     }
                 }
+                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
+                    self.finite(f64::from(threshold), "compressor threshold")?;
+                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
+                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
+                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
+                }
                 Processor::Compressor(c) => {
                     self.finite(c.threshold_db, "compressor threshold")?;
                     self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;

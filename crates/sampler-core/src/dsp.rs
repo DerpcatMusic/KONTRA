@@ -164,6 +164,7 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
     LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
@@ -248,6 +249,7 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
+            Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::LoFi(settings) => settings.valid(),
@@ -273,6 +275,7 @@ impl Processor {
 mod ar;
 mod ar_kernel;
 mod compressor;
+mod enhanced_compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
@@ -327,6 +330,7 @@ pub(super) enum PreparedProcessor {
         offset: usize,
     },
     Compressor(compressor::Compressor),
+    KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
     Rectify(Rectifier),
     Saturation(f32),
     Formant(formant::Formant),
@@ -498,6 +502,7 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
                 }
+                Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate, bindings))
                 }
@@ -902,6 +907,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::LegacyPhaser(_)
+                        | PreparedProcessor::KontaktEnhancedCompressor(_)
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::Distortion(_)
@@ -1176,6 +1182,7 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                 );
             }
+            PreparedProcessor::KontaktEnhancedCompressor(c) => c.process(state, block, len),
             PreparedProcessor::Compressor(compressor) => {
                 compressor.process(state, parameters, block, len, at)
             }
