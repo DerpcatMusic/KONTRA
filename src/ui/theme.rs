@@ -122,6 +122,7 @@ pub fn ui() -> Ui {
         ..Theme::DEFAULT
     })
     .font(Font::new(NOTO_SANS).expect("bundled Noto Sans"))
+    .fallback_font(super::script_view::mono())
 }
 
 /// State changes land in about a tenth of a second: felt, not watched.
