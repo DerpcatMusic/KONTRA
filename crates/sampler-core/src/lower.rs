@@ -1531,6 +1531,7 @@ impl Lowering<'_> {
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
             ir::ModulationSource::Script(id) => ModSource::Script(*id),
+            ir::ModulationSource::ScriptBipolar(id) => ModSource::ScriptBipolar(*id),
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
                 frames: self.frames(*t).max(1),
             },
