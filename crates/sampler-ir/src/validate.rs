@@ -241,6 +241,9 @@ impl Check<'_> {
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
                 }
+                Processor::Formant(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }
                 Processor::Ar(d) => {
                     self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
                     self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;

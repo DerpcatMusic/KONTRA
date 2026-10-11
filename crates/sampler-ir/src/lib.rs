@@ -1485,6 +1485,8 @@ pub enum Processor {
     LadderLP4(LadderLP4),
     /// Kontakt's adaptive-resonance filter family (saved types 100..=108).
     Ar(Ar),
+    /// Native Formant I: saved Talk, Sharp, Size normalized controls.
+    Formant([f32; 3]),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {

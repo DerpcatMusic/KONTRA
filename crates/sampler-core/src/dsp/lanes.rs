@@ -267,6 +267,7 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::LoFi(_)
+            | PreparedProcessor::Formant(_)
             | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
