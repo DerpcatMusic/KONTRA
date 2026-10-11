@@ -248,7 +248,7 @@ fn waveform_runtime_outbox_pressure_rejects_reset_before_mutating_any_key() {
     let mut count = 0;
     rt.drain_effects(|e| { assert_eq!(view.service(e.service), Some("message")); count += 1; true });
     assert_eq!(count, EFFECT_CAPACITY);
-    assert_eq!(rt.dropped_effects(), 0); // waveform rejection is an explicit fault, not silent drop
+    assert_eq!(rt.stalled_effects(), 0); // waveform rejection is an explicit fault, not silent drop
 }
 
 #[test]
@@ -645,6 +645,6 @@ fn waveform_full_outbox_matching_tail_replacement_remains_admitted() {
         true
     });
     assert_eq!(count, EFFECT_CAPACITY);
-    assert_eq!(rt.dropped_effects(), 0);
+    assert_eq!(rt.stalled_effects(), 0);
     assert_eq!(wave(&view, "$w").cursor_us, 24001);
 }
