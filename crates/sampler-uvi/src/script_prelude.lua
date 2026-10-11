@@ -98,9 +98,9 @@ function methods.setValue(w, v, arg, callChanged)
   if d.kind == "Table" then
     if rawtype(v) ~= 'number' or v ~= v or math.abs(v) == math.huge then error('invalid table index') end
     v = v < 0 and math.ceil(v) or math.floor(v)
-    -- v1/Workstation-observed, Falcon unverified: boundary writes are
-    -- ignored; programmatic values are independent of the display range.
-    if v < 1 or v > d.length then report('widget_index_out_of_range',''); return end
+    -- v1/Workstation-observed, Falcon unverified: boundary writes are ignored
+    -- silently (scripts loop 0..length); values are independent of the display range.
+    if v < 1 or v > d.length then return end
     if rawtype(arg) ~= 'number' or arg ~= arg or math.abs(arg) == math.huge then error('invalid table value') end
     if d.integer then arg = arg < 0 and math.ceil(arg) or math.floor(arg) end
     local old = d.values[v]
