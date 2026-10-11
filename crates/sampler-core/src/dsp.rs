@@ -191,6 +191,8 @@ pub enum Processor {
     LadderLP4(LadderSettings),
     /// Native adaptive-resonance filter (FilterDJ), saved types 100..=108.
     Ar(ArSettings),
+    /// Native three-parallel-bandpass Formant I (Talk, Sharp, Size).
+    Formant([f32; 3]),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
@@ -249,6 +251,7 @@ impl Processor {
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
+            Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -269,6 +272,7 @@ pub(super) mod control;
 mod convolution;
 mod daft;
 mod distortion;
+mod formant;
 pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
@@ -319,6 +323,7 @@ pub(super) enum PreparedProcessor {
     Compressor(compressor::Compressor),
     Rectify(Rectifier),
     Saturation(f32),
+    Formant(formant::Formant),
     Distortion(distortion::Distortion),
     Gainer {
         dry: f64,
@@ -524,6 +529,7 @@ pub(super) fn compile_processors(
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
+                Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
                 Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
@@ -885,6 +891,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
+                        | PreparedProcessor::Formant(_)
                         | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
@@ -1162,6 +1169,7 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
+            PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(
                 state,

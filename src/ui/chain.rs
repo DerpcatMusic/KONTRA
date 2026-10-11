@@ -310,6 +310,7 @@ fn detail(p: ir::Processor) -> String {
             d.resonance * 100.
         ),
         ir::Processor::LadderLP4(d) => format!("Ladder low-pass · {} poles", d.taps),
+        ir::Processor::Formant(_) => "Formant I".into(),
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
             ["2", "4", "2/4"][usize::from(d.mode / 3)],

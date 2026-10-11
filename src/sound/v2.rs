@@ -2857,6 +2857,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4"]
                 [usize::from(d.taps.clamp(1, 4)) - 1],
             ir::Processor::Ar(_) => "AR filter",
+            ir::Processor::Formant(_) => "Formant I",
             ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
