@@ -50,6 +50,17 @@ pub fn parity_reports_with_files(
     xml: &str,
     files: &impl crate::script::Files,
 ) -> Vec<ScriptReport> {
+    report_sources(xml, files)
+        .into_iter()
+        .map(|(r, _)| r)
+        .collect()
+}
+
+/// Reports paired with each processor or required module's exact in-memory source.
+pub fn report_sources(
+    xml: &str,
+    files: &impl crate::script::Files,
+) -> Vec<(ScriptReport, std::sync::Arc<str>)> {
     let Ok(doc) = crate::parse_program_xml(xml) else {
         return Vec::new();
     };
@@ -73,7 +84,7 @@ pub fn parity_reports_with_files(
             lowered.as_ref(),
         );
         required_modules(source, &report.tokens, &mut pending);
-        out.push(report);
+        out.push((report, std::sync::Arc::from(source)));
     }
     while let Some(module) = pending.pop() {
         if !modules.insert(module.clone()) {
@@ -88,7 +99,7 @@ pub fn parity_reports_with_files(
                 lowered.as_ref(),
             );
             required_modules(&source, &report.tokens, &mut pending);
-            out.push(report);
+            out.push((report, std::sync::Arc::from(source)));
         }
     }
     out
