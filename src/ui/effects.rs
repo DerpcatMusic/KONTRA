@@ -208,6 +208,8 @@ fn kind(kernel: FilterKernel) -> (&'static str, u8, f64) {
         FilterKind::Peak { gain_db } => ("Bell", 5, gain_db),
         FilterKind::LowShelf { gain_db } => ("Low shelf", 6, gain_db),
         FilterKind::HighShelf { gain_db } => ("High shelf", 7, gain_db),
+        FilterKind::FirstOrderLowShelf { gain_db } => ("Low shelf (6 dB/oct)", 6, gain_db),
+        FilterKind::FirstOrderHighShelf { gain_db } => ("High shelf (6 dB/oct)", 7, gain_db),
     }
 }
 
