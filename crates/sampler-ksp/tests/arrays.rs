@@ -270,3 +270,17 @@ fn malformed_dynamic_or_overbudget_declarations_fail_before_execution() {
     assert!(compile(&nested, 1).is_err());
     assert!(compile("on init declare %a[1] end on", 0).is_err());
 }
+
+#[test]
+fn get_scale_fills_semitones_at_init_and_in_callbacks() {
+    let mut rt = runtime(
+        "on init declare %a[8] declare %b[8] declare $s := 2 get_scale(5, %a) end on
+        on note get_scale($s, %b) end on",
+        16,
+    );
+    let plan = rt.active_plan();
+    let cells = |rt: &Runtime| (0..16).map(|c| rt.script_cell(plan, ScriptInstanceId(0), c).unwrap()).collect::<Vec<_>>();
+    assert_eq!(cells(&rt), [0, 2, 3, 5, 7, 8, 10, -1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    rt.trigger(input(1, 60), 60, 1.).unwrap();
+    assert_eq!(cells(&rt)[8..], [0, 2, 4, 5, 7, 9, 11, -1]);
+}
