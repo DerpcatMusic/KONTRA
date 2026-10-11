@@ -216,7 +216,14 @@ fn label_text_shows_over_a_transparent_background_picture() {
     label.images.push(ImageUse::new(ir::AssetRef(0), ir::Role::Background));
     let image = |path: &str| ir::Asset {
         path: path.into(),
-        kind: AssetKind::Image(ImageMeta::default()),
+        kind: AssetKind::Image(ImageMeta {
+            size: Some(if path.ends_with("transparent.png") {
+                ir::Size { width: 1, height: 1 }
+            } else {
+                ir::Size { width: 160, height: 40 }
+            }),
+            ..Default::default()
+        }),
     };
     let face = ir::Interface {
         pages: vec![ir::Page {
@@ -237,6 +244,17 @@ fn label_text_shows_over_a_transparent_background_picture() {
         assets: vec![image("Resources/pictures/transparent.png"), image("Resources/pictures/wall.png")],
         ..Default::default()
     };
+    let mut natural = face.clone();
+    natural.widgets[0].auto_size = true;
+    natural.widgets[0].default_axes = [true; 2];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    natural.widgets[0].rect.width = 112;
+    natural.widgets[0].default_axes = [false, true];
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 112, 1));
+    natural.widgets[0].kind = Kind::Switch;
+    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    let face = ir_view::resolved(&face);
+    assert_eq!(face.widgets[0].rect, Rect::new(10, 10, 112, 20));
     let mut assets = ir_view::Assets::default();
     let mut values = ir_view::Values::default();
     let mut ui = theme::ui();
