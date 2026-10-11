@@ -162,6 +162,7 @@ pub fn parity_report_with(
             return report;
         }
     };
+    let mut previous = [None, None];
     for (i, t) in toks.iter().enumerate() {
         let mut use_kind = None;
         let mut name = "";
@@ -169,9 +170,8 @@ pub fn parity_report_with(
             Tok::Comment => Class::Comment,
             Tok::Ident(s) => {
                 name = syms.name(s);
-                if i > 0
-                    && matches!(toks[i-1].tok, Tok::Ident(p) if syms.name(p) == "on")
-                    && !(i > 1 && matches!(toks[i-2].tok, Tok::Ident(p) if syms.name(p)=="end"))
+                if matches!(previous[0], Some(Tok::Ident(p)) if syms.name(p) == "on")
+                    && !matches!(previous[1], Some(Tok::Ident(p)) if syms.name(p) == "end")
                 {
                     use_kind = Some(Kind::Callback);
                     Class::Callback
@@ -183,8 +183,9 @@ pub fn parity_report_with(
                 } else if KEYWORDS.contains(&name) || hir::WidgetKind::from_keyword(name).is_some()
                 {
                     Class::Keyword
-                } else if toks
-                    .get(i + 1)
+                } else if toks[i + 1..]
+                    .iter()
+                    .find(|t| t.tok != Tok::Comment)
                     .is_some_and(|t| t.tok == Tok::Punct(Punct::LParen))
                 {
                     use_kind = Some(Kind::Command);
@@ -229,9 +230,19 @@ pub fn parity_report_with(
             span: span(t.span),
             class,
         });
+        if t.tok != Tok::Comment {
+            previous = [Some(t.tok), previous[0]];
+        }
         if let Some(kind) = use_kind {
             let canonical = if kind == Kind::Callback {
-                format!("on {}", name.trim_start_matches('_'))
+                format!(
+                    "on {}",
+                    if name == "_pgs_changed" {
+                        "pgs_changed"
+                    } else {
+                        name
+                    }
+                )
             } else if let Some(b) = Builtin::from_name(name) {
                 b.name().into()
             } else {
@@ -243,13 +254,20 @@ pub fn parity_report_with(
         }
     }
     toks.retain(|t| t.tok != Tok::Comment);
+    let mut declarations = Vec::new();
     let frontend = (|| {
         lexer::preprocess(&mut toks, &syms, &Default::default())?;
         let ast = crate::parser::parse(&toks, &syms)?;
         report
             .constructs
             .retain(|c| !matches!(c.kind, Kind::Builtin | Kind::Command));
-        ast_calls(&ast, &syms, &span, &mut report.constructs);
+        ast_calls(
+            &ast,
+            &syms,
+            &span,
+            &mut report.constructs,
+            &mut declarations,
+        );
         report.constructs.sort_by_key(|c| c.span.start);
         crate::sema::analyze(
             ast,
@@ -268,6 +286,7 @@ pub fn parity_report_with(
             return report;
         }
     };
+    report.lowered.extend(declarations);
     let constants: std::collections::BTreeSet<_> = hir
         .vars
         .iter()
@@ -380,7 +399,20 @@ pub fn parity_report_with(
             }
         }
     }
-    report.lowered.sort_by_key(|l| l.span.start);
+    let mut statements: BTreeMap<(u32, u32, u32), Vec<String>> = BTreeMap::new();
+    for lowered in std::mem::take(&mut report.lowered) {
+        statements
+            .entry((lowered.span.start, lowered.span.end, lowered.span.line))
+            .or_default()
+            .extend(lowered.ops);
+    }
+    report.lowered = statements
+        .into_iter()
+        .map(|((start, end, line), ops)| Lowered {
+            span: Span { start, end, line },
+            ops,
+        })
+        .collect();
     report
 }
 fn construct(span: Span, kind: Kind, name: &str, e: Option<&LedgerEntry>) -> Construct {
@@ -406,6 +438,7 @@ fn ast_calls(
     syms: &Interner<'_>,
     span: &impl Fn(diag::Span) -> Span,
     out: &mut Vec<Construct>,
+    declarations: &mut Vec<Lowered>,
 ) {
     use crate::ast::{ExprKind as E, Item, StmtKind as S};
     let functions: std::collections::BTreeSet<_> = ast
@@ -421,6 +454,7 @@ fn ast_calls(
         functions: std::collections::BTreeSet<String>,
         span: F,
         out: &'o mut Vec<Construct>,
+        declarations: &'o mut Vec<Lowered>,
     }
     impl<F: Fn(diag::Span) -> Span> Calls<'_, '_, '_, F> {
         fn call(&mut self, name: lexer::Sym, at: diag::Span, explicit: bool) {
@@ -475,6 +509,21 @@ fn ast_calls(
                     }
                     S::Call(n) => self.call(*n, s.span, true),
                     S::Declare(d) => {
+                        let op = if let Some(ui) = d.ui {
+                            format!("declare {}: allocate UI model/control", self.syms.name(ui))
+                        } else {
+                            match d.storage {
+                                crate::ast::Storage::Const => "bind compile-time constant".into(),
+                                crate::ast::Storage::Polyphonic => {
+                                    "allocate note-owned state".into()
+                                }
+                                _ => "allocate typed script state".into(),
+                            }
+                        };
+                        self.declarations.push(Lowered {
+                            span: (self.span)(s.span),
+                            ops: vec![op],
+                        });
                         if let Some(e) = &d.size {
                             self.expr(e);
                         }
@@ -514,6 +563,7 @@ fn ast_calls(
         functions,
         span,
         out,
+        declarations,
     };
     for item in &ast.items {
         match item {
