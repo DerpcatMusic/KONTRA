@@ -1466,6 +1466,8 @@ pub enum Processor {
     Reverb(Reverb),
     /// Feed-forward compressor on the stereo pair.
     Compressor(Compressor),
+    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
+    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
