@@ -108,6 +108,47 @@ pub struct Playback {
 }
 
 impl Playback {
+    /// A forward zone may start inside or past its loop, and a loop crossfade blends toward the
+    /// frames before the loop start in the file, not only after the sample start (v1
+    /// `play_map`). The cursor's view starts early enough to hold both, and playback begins
+    /// `lead` frames into it. Loops the sample start is already past are never entered.
+    fn reach_back(self, end: usize) -> Option<(Playback, u64)> {
+        if self.direction != Direction::Forward || self.wavetable.is_some() || self.start >= end {
+            return None;
+        }
+        let mut shifted = self;
+        let mut origin = self.start;
+        let mut dropped = false;
+        let mut reach = |range: &mut Option<Loop>| {
+            let Some(r) = *range else { return };
+            if r.end <= self.start {
+                *range = None;
+                dropped = true;
+            } else if r.start < r.end && r.end <= end {
+                let fade = match r.shape {
+                    LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } => {
+                        frames
+                    }
+                    _ => 0,
+                };
+                if fade <= r.end - r.start && fade <= r.start {
+                    origin = origin.min(r.start - fade);
+                }
+            }
+        };
+        reach(&mut shifted.loop_range);
+        for slot in &mut shifted.loop_slots {
+            let mut range = slot.map(|slot| slot.range);
+            reach(&mut range);
+            *slot = slot.zip(range).map(|(slot, range)| LoopSlot { range, ..slot });
+        }
+        if origin == self.start && !dropped {
+            return None;
+        }
+        shifted.start = origin;
+        Some((shifted, (self.start - origin) as u64))
+    }
+
     pub(super) fn rate_ratio(self, source_rate: u32, output_rate: u32) -> f64 {
         if self.wavetable.is_some() {
             440. * crate::wavetable::CYCLE as f64 / f64::from(output_rate)
@@ -126,6 +167,12 @@ impl Playback {
         output_rate: u32,
     ) -> Result<Cursor, Error> {
         let end = self.end.unwrap_or(frames);
+        if let Some((shifted, lead)) = self.reach_back(end) {
+            let mut cursor = shifted.cursor(frames, source_rate, output_rate)?;
+            cursor.lead = lead;
+            cursor.position = lead;
+            return Ok(cursor);
+        }
         let step = self.step(source_rate, output_rate);
         if self.start >= end
             || end > frames
@@ -173,6 +220,7 @@ impl Playback {
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
             cold_hold: false,
+            lead: 0,
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -254,6 +302,7 @@ pub(super) struct CursorTemplate {
     step: f64,
     exit: Option<u64>,
     fade_frames: u32,
+    lead: u64,
 }
 
 impl CursorTemplate {
@@ -279,6 +328,7 @@ impl CursorTemplate {
             step: cursor.step,
             exit: cursor.exit,
             fade_frames: cursor.fade_frames,
+            lead: cursor.lead,
         }
     }
 
@@ -292,7 +342,7 @@ impl CursorTemplate {
             direction: self.direction,
             loop_range: self.loop_range,
             loops: extra.filter(|extra| extra.wavetable.is_none()),
-            position: wavetable.map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            position: wavetable.map_or(self.lead, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
             fraction: wavetable.map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
             step: self.step,
             exit: self.exit,
@@ -301,6 +351,7 @@ impl CursorTemplate {
             fade_in: 0,
             fade_frames: self.fade_frames,
             cold_hold: false,
+            lead: self.lead,
         }
     }
 }
@@ -328,6 +379,9 @@ pub(super) struct Cursor {
     fade_frames: u32,
     /// Initial storage hold; lifecycle events still end an unsounded voice.
     cold_hold: bool,
+    /// Frames between this view's start and the zone's sample start, where playback begins:
+    /// the view reaches back to a loop that starts before the sample start.
+    lead: u64,
 }
 
 struct ReadAddress {
@@ -348,7 +402,7 @@ impl Cursor {
             return self;
         }
         let ticks = u64::from(micros) * u64::from(source_rate);
-        self.position = ticks / 1_000_000;
+        self.position = self.lead + ticks / 1_000_000;
         self.fraction = (ticks % 1_000_000) as f64 / 1_000_000.;
         if self.position >= (self.end - self.start) as u64
             || self
@@ -1506,6 +1560,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn forward_zone_may_start_inside_or_past_its_loop_and_crossfade_reaches_before_the_start() {
+        let lp = |start, end, shape| Loop {
+            start,
+            end,
+            shape,
+            mode: LoopMode::Continuous,
+            passes: None,
+        };
+        let physical = |playback: Playback| {
+            let mut cursor = playback.cursor(64, 48000, 48000).unwrap();
+            let mut out = Vec::new();
+            for _ in 0..14 {
+                out.push(cursor.index(i128::from(cursor.position)).unwrap());
+                cursor.advance();
+            }
+            out
+        };
+        // Starts inside the loop 4..12: plays 8..12, then wraps to the loop start before the start.
+        let inside = Playback {
+            start: 8,
+            loop_range: Some(lp(4, 12, LoopShape::Wrap)),
+            ..Playback::default()
+        };
+        assert_eq!(physical(inside), [8, 9, 10, 11, 4, 5, 6, 7, 8, 9, 10, 11, 4, 5]);
+        // Starts past the loop: plays straight through, the loop is never entered.
+        let past = Playback {
+            start: 12,
+            loop_range: Some(lp(4, 12, LoopShape::Wrap)),
+            ..Playback::default()
+        };
+        assert_eq!(physical(past), [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+        // A crossfade longer than the room after the sample start still fits in the file.
+        let fade = Playback {
+            start: 4,
+            loop_range: Some(lp(6, 14, LoopShape::Crossfade { frames: 6 })),
+            ..Playback::default()
+        };
+        assert!(fade.cursor(64, 48000, 48000).is_ok());
     }
 
     #[test]

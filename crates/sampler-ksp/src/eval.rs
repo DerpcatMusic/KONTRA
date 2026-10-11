@@ -33,6 +33,9 @@ pub struct Environment {
     pub performance_view: model::PerformanceView,
     /// The instrument's MIDI object, including earlier slots' init selection.
     pub midi_object: sampler_core::MidiObject,
+    /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
+    /// empty entry is a folder the host does not have.
+    pub folders: [String; 4],
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -719,6 +722,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
+            NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
         }
@@ -770,7 +774,13 @@ impl Eval<'_> {
                 self.st.properties.insert((id, par), v.int());
             }
         }
-        if self.ui_index(id).is_none() && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id) {
+        // The library tab's fields (`$INST_LIB_*_ID`) are instrument metadata
+        // addressed by vendor id; their values are kept above for the interface.
+        let library_info = symbol_in(&self.hir.symbols, id).is_some_and(|n| n.starts_with("$INST_LIB_"));
+        if self.ui_index(id).is_none()
+            && !library_info
+            && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id)
+        {
             self.warn(span, format!("control parameter set on unknown UI id {id}"));
         }
     }
@@ -1731,7 +1741,58 @@ impl Eval<'_> {
                         .map_or(-1, |l| l.index),
                 )
             }
-            OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
+            GetFolder => {
+                let which = self.int(args, 0)?;
+                match usize::try_from(which).ok().and_then(|i| self.env.folders.get(i)) {
+                    Some(folder) => V::S(folder.clone()),
+                    None => {
+                        self.warn(span, format!("get_folder: unknown folder {which}"));
+                        V::S(String::new())
+                    }
+                }
+            }
+            OutputChannelName => {
+                let channel = self.int(args, 0)?;
+                if (0..b::NUM_OUTPUT_CHANNELS).contains(&channel) {
+                    V::S(format!("Output {}", channel + 1))
+                } else {
+                    self.warn(span, "output_channel_name: output channel index out of range");
+                    V::S(String::new())
+                }
+            }
+            FsGetFilename => V::S(String::new()),
+            GetScale => {
+                let scale = self.int(args, 0)?;
+                let var = Self::var(args, 1);
+                let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
+                let notes = b::scale(scale).map(|s| s.1);
+                if notes.is_none() {
+                    self.warn(span, format!("get_scale: scale {scale} is not modelled; array cleared"));
+                }
+                for i in 0..len {
+                    let note = notes.and_then(|n| n.get(i as usize)).map_or(-1, |&n| i32::from(n));
+                    self.write_elem(var, i, V::I(note), span);
+                }
+                V::I(0)
+            }
+            GetScaleName => {
+                let scale = self.int(args, 0)?;
+                match b::scale(scale) {
+                    Some((name, _)) => V::S(name.into()),
+                    None => {
+                        self.warn(span, format!("get_scale_name: scale {scale} is not modelled"));
+                        V::S(String::new())
+                    }
+                }
+            }
+            SetGlobalKey | SetGlobalScale => {
+                self.warn(span, "set_global_key/scale: the plugin has no global key/scale to set");
+                V::I(0)
+            }
+            SubscribeAsync => {
+                self.warn(span, "subscribe_async: the plugin has no global key/scale to deliver");
+                V::I(0)
+            }
             FindZone => V::I(b::NOT_FOUND),
             GetZonePar => {
                 let zone = self.int(args, 0)?;

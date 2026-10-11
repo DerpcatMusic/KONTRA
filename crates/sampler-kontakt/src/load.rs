@@ -577,7 +577,10 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
     }
     if let ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) = &mut playback.looping
     {
-        if range.start < playback.start || range.end > end || range.start >= range.end {
+        // A forward zone may start inside or past its loop (core enters it mid-cycle or plays
+        // straight through, as v1 and Kontakt do); only a reversed one needs the loop inside.
+        let before = playback.reverse && range.start < playback.start;
+        if before || range.end > end || range.start >= range.end {
             report.push((
                 "loop starting before the zone start or past its end, dropped",
                 format!(
@@ -588,19 +591,26 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
             playback.looping = ir::Looping::None;
             return true;
         }
+        // The crossfade blends toward audio before the loop start in the file (forward) or
+        // after its end (reverse); the sample start does not limit it.
         let room = if playback.reverse {
             end - range.end
         } else {
-            range.start - playback.start
+            range.start
         };
         let limit = (range.end - range.start).min(room);
         if let ir::Span::Frames(crossfade) = range.crossfade
             && crossfade > limit
         {
-            report.push((
-                "loop crossfade longer than its room, clamped",
-                format!("{crossfade} > {limit}"),
-            ));
+            // Audio that is not in the file cannot be blended, in Kontakt either (v1 `play_map`
+            // clamped the same way): a loop at the file start has no crossfade. Only a crossfade
+            // longer than the loop itself is an authoring fault worth reporting.
+            if crossfade > range.end - range.start {
+                report.push((
+                    "loop crossfade longer than its loop, clamped",
+                    format!("{crossfade} > {}", range.end - range.start),
+                ));
+            }
             range.crossfade = ir::Span::Frames(limit);
         }
     }
@@ -696,6 +706,7 @@ pub(crate) fn script_environment(
             .collect(),
         performance_view,
         midi_object: Default::default(),
+        folders: Default::default(),
     }
 }
 
@@ -771,6 +782,7 @@ pub(crate) fn initialize_scripts(
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
+            environment.folders = script_folders(library);
             environment.control_values.extend(
                 control_values
                     .iter()
@@ -876,7 +888,7 @@ fn compile_ui_initialized(
                         location: format!("{} line {}", behavior.name, w.line),
                         feature: match w.builtin {
                             Some(builtin) => format!("script {:?}: {builtin}", w.kind),
-                            None => format!("script {:?}", w.kind),
+                            None => format!("script {:?}: {}", w.kind, warning_class(&w.message)),
                         },
                         value: w.message.clone(),
                         reason: ir::Reason::NotModeled,
@@ -971,7 +983,14 @@ fn prepare_inner(
                     .interface
                     .widgets
                     .iter()
-                    .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
+                    .filter(|w| {
+                        w.kind
+                            == if binding.switch {
+                                sampler_ksp::model::WidgetKind::Switch
+                            } else {
+                                sampler_ksp::model::WidgetKind::Slider
+                            }
+                    })
                     .nth(binding.slider as usize)
             });
         if let Some(widget) = target {
@@ -993,7 +1012,12 @@ fn prepare_inner(
         } else {
             instrument.unsupported.push(ir::Unsupported {
                 location: format!("script slot {}", binding.source_slot),
-                feature: "saved automation slider".into(),
+                feature: if binding.switch {
+                    "saved automation switch"
+                } else {
+                    "saved automation slider"
+                }
+                .into(),
                 value: binding.slider.to_string(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -1167,6 +1191,7 @@ mod automation_tests {
         });
         instrument.script_automation.push(ir::ScriptAutomation {
             source: ir::ScriptAutomationSource::Controller(21),
+            switch: false,
             source_slot: 3,
             slider: 1,
             low: 0.,
@@ -1337,4 +1362,71 @@ mod native_lookup_tests {
         assert_eq!(cell(&rt, 3), Ok(12));
         assert_eq!(cell(&rt, 4), Ok(3));
     }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    fn looped(start: u64, loop_start: u64, loop_end: u64, crossfade: u64) -> ir::Playback {
+        ir::Playback {
+            start,
+            looping: ir::Looping::Continuous(ir::LoopRange {
+                start: loop_start,
+                end: loop_end,
+                crossfade: ir::Span::Frames(crossfade),
+                alternating: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_loop_before_the_sample_start_is_kept_and_its_crossfade_uses_the_file() {
+        let mut report = Vec::new();
+        let mut playback = looped(150, 100, 400, 50);
+        assert!(fit(&mut playback, 1000, &mut report));
+        assert_eq!(playback, looped(150, 100, 400, 50));
+        assert!(report.is_empty(), "{report:?}");
+        // Nothing precedes the file start: clamped to no crossfade, as in Kontakt, without a report.
+        let mut at_start = looped(0, 0, 400, 50);
+        assert!(fit(&mut at_start, 1000, &mut report));
+        assert_eq!(at_start, looped(0, 0, 400, 0));
+        assert!(report.is_empty(), "{report:?}");
+    }
+}
+
+/// Message with the per-site parts (`$names`, numbers) masked, so each distinct script warning
+/// is one feature class in diagnostics instead of a single opaque "script Warning".
+fn warning_class(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
+            out.push_str("$name");
+        } else if c.is_ascii_digit() {
+            while chars.next_if(|c| c.is_ascii_digit()).is_some() {}
+            out.push('N');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `get_folder` results (library, install, patch, factory) for an instrument file. The library
+/// folder is the one holding its `Instruments` directory; the factory library is not installed
+/// with the plugin, so factory paths (and the impulse responses under them) stay empty.
+fn script_folders(file: Option<&std::path::Path>) -> [String; 4] {
+    let dir = |path: &std::path::Path| format!("{}/", path.display());
+    let Some(patch) = file.and_then(std::path::Path::parent) else {
+        return Default::default();
+    };
+    let library = patch
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("Instruments")))
+        .and_then(std::path::Path::parent)
+        .map_or_else(String::new, dir);
+    [library.clone(), library, dir(patch), String::new()]
 }
