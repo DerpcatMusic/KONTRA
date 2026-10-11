@@ -263,6 +263,7 @@ pub(crate) fn process(
             | PreparedProcessor::LoFi(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
+            | PreparedProcessor::Ar { .. }
             | PreparedProcessor::LiveFilter(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {

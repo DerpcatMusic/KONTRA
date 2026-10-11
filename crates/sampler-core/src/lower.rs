@@ -1057,7 +1057,7 @@ impl Lowering<'_> {
             .nth(index)?;
         if matches!(
             processor,
-            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
         ) {
             return None;
         }
@@ -1302,7 +1302,9 @@ impl Lowering<'_> {
                         (parameter, ir::Depth::Normalized(d))
                             if matches!(
                                 **processor,
-                                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+                                ir::Processor::LadderLP4(_)
+                                    | ir::Processor::Daft(_)
+                                    | ir::Processor::Ar(_)
                             ) =>
                         {
                             (
@@ -1612,6 +1614,8 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::Ar(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::Ar(filter), Resonance) => filter.resonance = parameter,
             (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
@@ -1925,6 +1929,11 @@ impl Lowering<'_> {
                 cutoff: Parameter::Constant(d.cutoff),
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
+            }),
+            ir::Processor::Ar(d) => Processor::Ar(crate::ArSettings {
+                mode: d.mode,
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
             }),
             ir::Processor::LadderLP4(d) => {
                 let lanes = ladder_lanes(d);
