@@ -132,7 +132,7 @@ pub fn parity_report_with(
         constructs: Vec::new(),
         lowered: Vec::new(),
     };
-    if source.is_empty() {
+    if source.trim().is_empty() {
         return report;
     }
     let fail = |report: &mut ScriptReport, fault: diag::Fault| {
