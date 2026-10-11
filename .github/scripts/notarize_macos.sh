@@ -40,9 +40,7 @@ phase "Native bundle/factory verification" xcrun swift .github/scripts/check_mac
 phase "DMG creation" hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
 phase "DMG signing" codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
 phase "DMG signature verification" codesign --verify --strict "$work/KONTRA.dmg"
-if phase "Apple notarization submission" xcrun notarytool submit "$work/KONTRA.dmg" --apple-id "$APPLE_ID" \
-  --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-  --wait --timeout 30m --output-format json > "$work/notary.json"; then
+if phase "Apple notarization submission" python3 "$(dirname "$0")/notarize.py" "$work/KONTRA.dmg" > "$work/notary.json"; then
   :
 else
   status=$?

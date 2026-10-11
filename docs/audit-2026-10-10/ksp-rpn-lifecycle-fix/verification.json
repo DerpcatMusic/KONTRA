@@ -1,0 +1,24 @@
+{
+  "state": "STATIC_DIGEST_VERIFIED_NOT_PRODUCT_VALIDATION",
+  "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+  "parent_sha": "b557602b540ab2e2b45875d4ec1fec1e38e8e587",
+  "source_files": 20,
+  "versioned_blobs": 40,
+  "symbol_records": 27,
+  "versioned_symbol_spans": 54,
+  "full_test_spans": 20,
+  "tests": "NOT_RUN",
+  "compile": "NOT_COMPILED_NOT_TYPECHECKED",
+  "archives": 4,
+  "sections": 7,
+  "synthetic_custody_corruptions_rejected": [
+    "source_pin",
+    "source_blob_digest",
+    "symbol_span_digest",
+    "false_test_pass_credit",
+    "archive_digest"
+  ],
+  "native": "UNKNOWN",
+  "cpu_and_ram_below_both": "UNACHIEVED",
+  "limit": "Digests and metadata only. Source clear requires fresh independent review; Rust/heap/PCM/native results absent."
+}

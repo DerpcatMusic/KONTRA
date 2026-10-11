@@ -1,0 +1,796 @@
+{
+  "base": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "ordered_source_test_commits": [
+    "360b14f698051d5300de7a8da96bbba746cd4eb3",
+    "c8c0f610ebf8d49cab921d5b235094f032aaa995"
+  ],
+  "test_tree": "4efda6111e4897f3b5e4e8f347168ed799f2fb9b",
+  "status": "SOURCE_READY_FOLLOWING_BATCH_ONLY",
+  "authored_rust_tests": "NOT_RUN_NOT_COMPILED",
+  "syntax": {
+    "kind": "SOURCE_SYNTAX_ONLY_NOT_TYPECHECK_OR_EXECUTION",
+    "grammar_sha256": "dc7f9b4d182af6b8332b44cfb8d24c0b25892900b006af5ce7eafdef8c976d5a",
+    "files": [
+      {
+        "path": "crates/sampler-ksp/src/eval.rs",
+        "sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+        "has_error": false,
+        "errors": [],
+        "tests": []
+      },
+      {
+        "path": "crates/sampler-ksp/src/lower.rs",
+        "sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+        "has_error": false,
+        "errors": [],
+        "tests": []
+      },
+      {
+        "path": "crates/sampler-ksp/tests/functions.rs",
+        "sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+        "has_error": false,
+        "errors": [],
+        "tests": [
+          {
+            "name": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops",
+            "start_line": 263,
+            "end_line": 289
+          },
+          {
+            "name": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch",
+            "start_line": 292,
+            "end_line": 324
+          },
+          {
+            "name": "function_exit_plan",
+            "start_line": 328,
+            "end_line": 352
+          },
+          {
+            "name": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail",
+            "start_line": 355,
+            "end_line": 400
+          },
+          {
+            "name": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates",
+            "start_line": 403,
+            "end_line": 445
+          },
+          {
+            "name": "function_exit_returns_are_not_deferred_note_flush_barriers",
+            "start_line": 448,
+            "end_line": 469
+          },
+          {
+            "name": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance",
+            "start_line": 472,
+            "end_line": 522
+          },
+          {
+            "name": "function_exit_never_hides_invalid_unreachable_source",
+            "start_line": 525,
+            "end_line": 536
+          }
+        ]
+      }
+    ]
+  },
+  "full_original_source_reconstructed": true,
+  "old_test_prefix_preserved_except_explicit_expectation": true,
+  "relevant_callers_method": "NO_CHECKOUT_GRAFT_GRAPH; rg exact base/current Git bytes before edits",
+  "source_spans": [
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "git_blob": "811a9ec6790e4eb3ee7bdbc34a74e038cb46fe1e",
+      "file_sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+      "start_line": 222,
+      "end_line": 240,
+      "span_sha256": "ffeaf11114b59d4218f3a93d34871900cc5a282b4259339657d9040f55e9783a",
+      "role": "Flow and evaluator scope"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "git_blob": "811a9ec6790e4eb3ee7bdbc34a74e038cb46fe1e",
+      "file_sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+      "start_line": 244,
+      "end_line": 339,
+      "span_sha256": "915420e727448a1d2c75ce7f2a49afb4eded469371ee2b97994d3cd924e240f2",
+      "role": "init/persistence block callers"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "git_blob": "811a9ec6790e4eb3ee7bdbc34a74e038cb46fe1e",
+      "file_sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+      "start_line": 382,
+      "end_line": 452,
+      "span_sha256": "6bc729d392ce3338873ec15492f2e1fde6795724417066c51f47adf758c0a2ea",
+      "role": "recursive block/stmt and nearest Call consumer"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "git_blob": "811a9ec6790e4eb3ee7bdbc34a74e038cb46fe1e",
+      "file_sha256": "7f23446d288d6698e48dce74f800404837d9d8d66a6a7c3bfebd94e29041f564",
+      "start_line": 1548,
+      "end_line": 1580,
+      "span_sha256": "75fe2fed42c9b0c9dad4f789be0aa00725425e7fedc5e73bdeb9cf7fbed3642f",
+      "role": "synchronous async-completion block caller"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 150,
+      "end_line": 270,
+      "span_sha256": "0e3146f844269d28df5886f283106003eb71aa3c2186dc0463547d0a5023e3c5",
+      "role": "program caller/function emission and call patching"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 379,
+      "end_line": 450,
+      "span_sha256": "c4054a6e426646b6264699943bd743cb989786b20d3b2ea7861a603b077f8e9c",
+      "role": "listener_driver second Gen initializer"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 481,
+      "end_line": 500,
+      "span_sha256": "9d194921350f0f360972a9eee06dfc37db7863f09f03c6826c5d4f9760e74e03",
+      "role": "private scope metadata"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 587,
+      "end_line": 604,
+      "span_sha256": "8dece3d57a2433ab226f8576da955d7d2da9025325724e2399a739a99026d4f6",
+      "role": "context forwarding"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 663,
+      "end_line": 745,
+      "span_sha256": "afbcdfb288287780a2693a44ddfc077384fa360536392d0375c07016b08abf6d",
+      "role": "full statement validation/lowering and Call placeholder"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 950,
+      "end_line": 975,
+      "span_sha256": "9978d4cb96444a162d34eaebc6616439c467c3169d395c2a067c833b9ed3665c",
+      "role": "expression builtin caller"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 1546,
+      "end_line": 1570,
+      "span_sha256": "61d3d4ef8bfe13dd37b18c1fbcd5165df9407367b7af21abda4b572a2d6884f4",
+      "role": "scoped Exit consumer"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 2008,
+      "end_line": 2026,
+      "span_sha256": "bf29da26a53b29525da3e78effb3b7ab44ebf96252a93e2815fbbf788d5e8db3",
+      "role": "unchanged wait-time forwarding"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 3750,
+      "end_line": 3770,
+      "span_sha256": "f4dd71c1a84775f688d8b29743b2405fbd69915dab8ae14feb2436f1b19c96c8",
+      "role": "menu builtin caller"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "5d257ee138a84716dd2a84b50ce6ae0558f1d461",
+      "file_sha256": "7087f34bc28671223862c2fd4698c69a4f361d6fc9c38c68aff06ce5dd58eda8",
+      "start_line": 3814,
+      "end_line": 3839,
+      "span_sha256": "28abed269cd4dec590e494a643a6bcefc00516bace33fb1cd9089f083e97722b",
+      "role": "menu builtin caller"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "start_line": 998,
+      "end_line": 1058,
+      "span_sha256": "4f0cef538802dee6c177c0422998566c30667618409ee0d8740d11292f04dc1f",
+      "role": "initialize_inner producer"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "start_line": 1165,
+      "end_line": 1262,
+      "span_sha256": "61f983bb3c177316751f951508110524019ada99a99087a7316a71b90896ac58",
+      "role": "Unit/program/listener_driver callers"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "start_line": 614,
+      "end_line": 789,
+      "span_sha256": "7663c309e41d7c6a888876fb6580db85d463bc623b7d093894566d995d2682c0",
+      "role": "public multi-module bind and original instance association"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/sema.rs",
+      "git_blob": "11a867979633a57f72db5badeb62189a149b3e68",
+      "file_sha256": "ebe71cd32cec320df7adffaaa41e06d644c3373705c00b6a4fcd3daa83b9f755",
+      "start_line": 50,
+      "end_line": 180,
+      "span_sha256": "b4c4a473cc26173968f7a65bfba9cff2b4869ad82fac3344f055efd11086f5d0",
+      "role": "full callback/function admission"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/src/sema.rs",
+      "git_blob": "11a867979633a57f72db5badeb62189a149b3e68",
+      "file_sha256": "ebe71cd32cec320df7adffaaa41e06d644c3373705c00b6a4fcd3daa83b9f755",
+      "start_line": 252,
+      "end_line": 261,
+      "span_sha256": "c8a9fb0354dc394f85aa6f4eb88af4c6287943ecab6464e9b7b412b0292870dc",
+      "role": "no unreachable-source skip"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/ops.rs",
+      "git_blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825",
+      "file_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "start_line": 1175,
+      "end_line": 1193,
+      "span_sha256": "aa9a5a26fa5850b7b1d607184c6734333bf57af604f3042109ebb803a199f6d2",
+      "role": "existing Call/Return bounded frames"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 949,
+      "end_line": 973,
+      "span_sha256": "6f4df48cfc900cdc58b9b98ded5a9ba88e13f3a755da1f621d39da074ae9b32c",
+      "role": "continuation program PC frames owner"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 1164,
+      "end_line": 1173,
+      "span_sha256": "3c709df6580e6250ff9f2cbb5c0d640c3460427a31d0a8556d54442006c4f778",
+      "role": "original owner plan resolution"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 1352,
+      "end_line": 1439,
+      "span_sha256": "5a57999559362acd7384b9d108da4db95f18c9d1ca2295baa6955bed6c3fb79e",
+      "role": "deferred flush only wait/end/fault"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 1503,
+      "end_line": 1527,
+      "span_sha256": "326e74772bac05b79195544721dae1e1b0af89190e5470da7ad9f59f1619c9ee",
+      "role": "optimized frame consumer"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 1638,
+      "end_line": 1652,
+      "span_sha256": "0377c93968809324f2f9fa72eff23519bb2aa7c493bfa27c1ae6aa545d5ae993",
+      "role": "preemption retains same continuation"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 2548,
+      "end_line": 2571,
+      "span_sha256": "8bccea8a68402aac715446b8ba5afcb97ae98bab81b483df9e1ed9d6bf41f0c9",
+      "role": "callback End vs wait"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/behavior.rs",
+      "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "start_line": 2748,
+      "end_line": 2765,
+      "span_sha256": "3b50a6af9ac078fa98cf516680015ed0cfacfe1b88cda224de4824b1b12486c4",
+      "role": "intentional wait same id/frames"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/stages.rs",
+      "git_blob": "270fc70090f1655f22bbdd75c7126166350435ca",
+      "file_sha256": "1ffdac1694a74abf52af154838000b1c7adde45eb0b45d445da909343610bc66",
+      "start_line": 94,
+      "end_line": 139,
+      "span_sha256": "ed21af82e685dd958f83704e12c31a7f461def6d258f6a625c56cb597e77065c",
+      "role": "actual note-stage forwarded and attack-pending guards"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/prepare/selection.rs",
+      "git_blob": "786d504a3698be773284c0a6eb0bdd7bb692cda1",
+      "file_sha256": "5c04db0f0458c03813d43cb23858c39901f62143f58199c9c3207af5b949d3d6",
+      "start_line": 358,
+      "end_line": 384,
+      "span_sha256": "1d68891f6e91b6bed7f98f8a2fadbb909b17eb4cdd4a4de1dbd57b07306c491d",
+      "role": "actual attack pending guard"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/release.rs",
+      "git_blob": "c62913b0f2ea09538252353f19e4035ec1c75b79",
+      "file_sha256": "ccaff2867dd835cf7ff7b9f2b1cf88ce49b780812d2b5a1a5d21c6e02ee36c5e",
+      "start_line": 480,
+      "end_line": 496,
+      "span_sha256": "828ef97fa9d2cc252c47fc7dd5b414c2a01dcdbd05c1205b8309d23b239c17bb",
+      "role": "actual release Pending to Forwarded guard"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "git_blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5",
+      "file_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98",
+      "start_line": 306,
+      "end_line": 364,
+      "span_sha256": "e86670576de0df9bbb5eaee17cb93d5612d6f10df8a0ce3b7ac25fd0f4e1962f",
+      "role": "actual controller pending-cleared guard"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/src/script.rs",
+      "git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325",
+      "file_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+      "start_line": 110,
+      "end_line": 145,
+      "span_sha256": "41b0bb36c868a63edca73360a2712f9f9cf1dbab4a452a97f414951ca3bfb574",
+      "role": "plan/program/instance scalar observation"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "git_blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "file_sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "start_line": 1,
+      "end_line": 72,
+      "span_sha256": "23139890cfc067d77da263856fd4de44153ad9ce14a105cc3bf140f091dda6b5",
+      "role": "existing heap guard reused"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 263,
+      "end_line": 289,
+      "span_sha256": "7cc5a506dc135bc271438cc15e381d8ebd57a903cc8430696d96c7727fa8dc2d",
+      "role": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 292,
+      "end_line": 324,
+      "span_sha256": "062b7ab13769c8431e560b950997c45cdeffa0b3d6d86e210c4a68efd70a6faf",
+      "role": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 328,
+      "end_line": 352,
+      "span_sha256": "746755bc633a109d378903138d897b1b5c3f29781d3348159b8d36f1f0b62677",
+      "role": "function_exit_plan"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 355,
+      "end_line": 400,
+      "span_sha256": "4e29f94be2cd525c5a2dc3ae08fb034abb37a039b5ec16fbe6c79dfbd4fb4409",
+      "role": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 403,
+      "end_line": 445,
+      "span_sha256": "1c0f39b625428dbf51d4eaf8168d1c015ab9f66859956b7d33a2fcbda6c48b3b",
+      "role": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 448,
+      "end_line": 469,
+      "span_sha256": "d54dd0f7e49010f24aee58d2ddb15d1e0d30bae495f375bd4aee449d358bb4e5",
+      "role": "function_exit_returns_are_not_deferred_note_flush_barriers"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 472,
+      "end_line": 522,
+      "span_sha256": "ccda462865877986ac2c9ed31cd9786a3569e606559381d663b940ba9cd74330",
+      "role": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 525,
+      "end_line": 536,
+      "span_sha256": "598268ec41d640f358ff0cac362cb32b1c3f5f708636f438f710b8ef7858dcc1",
+      "role": "function_exit_never_hides_invalid_unreachable_source"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "git_blob": "a682e4fee99ee3781a96732002db922aa93c88c6",
+      "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "start_line": 438,
+      "end_line": 445,
+      "span_sha256": "e106ff6e33c825fb6ad53013c3424cad630e1f19840d364e4e9dd6f83cbf2a1e",
+      "role": "reserved base Call"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "754be97cf96c80ab973b0bf5bd411042822c6f0f",
+      "file_sha256": "49321c78b9c639850dc124edce27790c3b32563c3745d6c6a87d3723fad382c1",
+      "start_line": 173,
+      "end_line": 173,
+      "span_sha256": "cef96d761d9a4727ac37a390e223e530878ad34987fda46a56b495517653791e",
+      "role": "old conflicting test expectation"
+    },
+    {
+      "sha": "c8c0f610ebf8d49cab921d5b235094f032aaa995",
+      "path": "crates/sampler-ksp/tests/functions.rs",
+      "git_blob": "21a7dac1481ec7c3da9fdb9d872e82ec41808d49",
+      "file_sha256": "69c144e7de0f6f0cebdcbb7a4934dc18486628e6a876257e63385a3de5406a77",
+      "start_line": 173,
+      "end_line": 173,
+      "span_sha256": "0d46ff75b044f4f285ef6eeec50c4ee050e4877d36b1f509af743206b380d0d6",
+      "role": "corrected expectation"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "start_line": 188,
+      "end_line": 204,
+      "span_sha256": "8e769da97329324f6d0e1d76452b93c1b9ea1776223d7d9e14dd35ad7dd23199",
+      "role": "reserved base span"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "start_line": 218,
+      "end_line": 225,
+      "span_sha256": "c6ab2e4f41a8f4f1b4446d0c815867b8fb67a74aea26ed1bf698eaaabc1d3fcf",
+      "role": "reserved base span"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "start_line": 379,
+      "end_line": 395,
+      "span_sha256": "a5885b6dd4d3dfe62dd8967dedcb8732df7995d6264edae92b109a5fa2e72972",
+      "role": "reserved base span"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "start_line": 477,
+      "end_line": 490,
+      "span_sha256": "8e95fe63aab2c0d56d8beaf81fce02cf6c893d9b8e76ed3032f734bfcdfd4ec2",
+      "role": "reserved base span"
+    },
+    {
+      "sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "start_line": 1545,
+      "end_line": 1550,
+      "span_sha256": "f521a3640c7ea929c8cfce2dc50e7e5f7cdaa8d5a8c2e4ae0fd48c3684c71e69",
+      "role": "reserved base span"
+    }
+  ],
+  "primary": {
+    "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#exit",
+    "section": "exit",
+    "document_sha256": "9d71af86f192abff29804487e0c00d7b7b84b9fa191d04d4477f38b893cff0a2",
+    "excerpt": "exit exit Immediately stops a callback or exits a function. Remarks exit is a very strong command. Be careful when using it, especially when dealing with larger scripts. If used within a function, exit only exits the function, but not the entire callback. Examples on note\n    if (not in_range($EVENT_NOTE, 60, 71))\n        exit\n    end if\n\n    { from here on, only notes between C3 to B3 will be processed }\nend on Useful for quickly setting up key ranges to be affected by the script. See Also wait() stop_wait()",
+    "excerpt_sha256": "b8395df4c13071247dcf0c80d8b644181f9ed246a0e6b77d0f1dbb82f60474e4",
+    "archive": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-general-commands.html",
+    "retrieved_utc": "2026-10-10T05:06:52.052195+00:00",
+    "extraction": "BeautifulSoup html.parser; exact heading nearest section; get_text(space,strip=True); UTF8 SHA256.",
+    "authority": "Primary NI KSP documentation; NOT native execution.",
+    "applicability": "Unversioned cached public primary page; version-bound native behavior UNKNOWN.",
+    "owned_excerpt_file": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round15-selected-sections/ksp-general-commands-exit.txt"
+  },
+  "primary_quote": "If used within a function, exit only exits the function, but not the entire callback.",
+  "primary_only_contract": "function-vs-callback exit; not native recursion/wait/reentrancy/error/frame-limit law",
+  "model_checks": [
+    {
+      "fuel": 1,
+      "wait": false,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        60
+      ],
+      "snapshots": 19,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 1,
+      "wait": true,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        61
+      ],
+      "snapshots": 23,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 2,
+      "wait": false,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        60
+      ],
+      "snapshots": 10,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 2,
+      "wait": true,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        61
+      ],
+      "snapshots": 13,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 3,
+      "wait": false,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        60
+      ],
+      "snapshots": 7,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 3,
+      "wait": true,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        61
+      ],
+      "snapshots": 9,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 1024,
+      "wait": false,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        60
+      ],
+      "snapshots": 1,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    },
+    {
+      "fuel": 1024,
+      "wait": true,
+      "cells": {
+        "leaf": 2,
+        "parent": 2,
+        "caller": 1,
+        "dead": 0
+      },
+      "delivered": [
+        61
+      ],
+      "snapshots": 3,
+      "native": "UNKNOWN",
+      "kind": "ABSTRACT_MODEL_ONLY"
+    }
+  ],
+  "rejected_negative_controls": [
+    "old_callback_stop_eval",
+    "old_callback_stop_lower",
+    "missing_scope_initializer",
+    "missing_scope_enter",
+    "missing_scope_reset",
+    "function_end",
+    "function_forward",
+    "callback_no_forward",
+    "model_callback-stop",
+    "model_function-forward",
+    "model_return-flush"
+  ],
+  "test_filters": [
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_init_resumes_nested_and_repeated_callers_but_callback_exit_stops",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_runtime_resumes_callers_without_forwarding_intermediate_pitch",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan_tail",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_after_wait_preserves_wait_time_stage_delivery_without_duplicates",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_returns_are_not_deferred_note_flush_barriers",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_frames_survive_each_pc_fuel_boundary_wait_and_plan_switch_by_instance",
+      "status": "NOT_RUN_NOT_COMPILED"
+    },
+    {
+      "package": "sampler-ksp",
+      "target": "functions",
+      "top_level_name": "function_exit_never_hides_invalid_unreachable_source",
+      "status": "NOT_RUN_NOT_COMPILED"
+    }
+  ],
+  "preserved_existing_test_filters": [
+    "shared_function_waits_inherit_each_callback_and_return_without_an_extra_forward",
+    "nested_function_branches_loops_and_exit_keep_polyphonic_state_and_caller_targets",
+    "invalid_functions_and_expansion_pressure_fail_during_compilation"
+  ],
+  "input_hashes": {
+    "round15-string-consumer-requirements.md": "e096e106419dca879b01c7d2f653c141ab95f5bf9d90f8dcef4e77655cd89ffa",
+    "round15-string-consumer-requirements.json": "962e472a15eac3bca040afa69486b0c07d9b24695827164791f4237cc0e3dde9",
+    "scout-round15-result.md": "58640ae55b0b241a8788491a923ba159868fb090beee1c8fb944daa4d25e78f0",
+    "root-roadmap-round15-checks.json": "424b2c316654cfeeda29abde2a143a09739616ebec474f45242a095cae5abd8d"
+  },
+  "native": "UNKNOWN",
+  "cpu_and_ram_below_both_v1_and_kontakt": "UNACHIEVED",
+  "limitations": [
+    "WASM grammar parse is not typecheck",
+    "abstract model is not product execution",
+    "Rust tests uncompiled/unrun",
+    "no native receipt for changed behavior",
+    "no measured CPU or RAM comparison"
+  ],
+  "executed": "Python evidence/model assertions and Node WASM grammar parsing only; no Cargo/rustc/clippy/build/test executable/host/native/Wine/reader/protected/scheduler/server/install/publication/nested work"
+}

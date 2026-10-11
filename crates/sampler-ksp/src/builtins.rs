@@ -127,7 +127,7 @@ builtins! {
     ChangeVelo "change_velo" [I I] 0 Void;
     ChangeNote "change_note" [I I] 0 Void;
     FadeIn "fade_in" [I I I] 1 Void;
-    FadeOut "fade_out" [I I I] 1 Void;
+    FadeOut "fade_out" [I I I I] 1 Void;
     SetEventPar "set_event_par" [I I I] 0 Void;
     GetEventPar "get_event_par" [I I] 0 Int;
     SetEventParArr "set_event_par_arr" [I I I I] 0 Void;
@@ -490,6 +490,9 @@ pub mod cb {
     pub const RELEASE: i32 = 2;
     pub const CONTROLLER: i32 = 3;
     pub const POLY_AT: i32 = 4;
+    // Internal callback discriminants; NI documents names, not numeric ABI values.
+    pub const RPN: i32 = 5;
+    pub const NRPN: i32 = 6;
     pub const UI_CONTROL: i32 = 7;
     pub const UI_UPDATE: i32 = 8;
     pub const UI_CONTROLS: i32 = 13;
@@ -620,6 +623,8 @@ const VALUED: &[(&str, i32)] = &[
     ("$NI_CB_TYPE_RELEASE", cb::RELEASE),
     ("$NI_CB_TYPE_CONTROLLER", cb::CONTROLLER),
     ("$NI_CB_TYPE_POLY_AT", cb::POLY_AT),
+    ("$NI_CB_TYPE_RPN", cb::RPN),
+    ("$NI_CB_TYPE_NRPN", cb::NRPN),
     ("$NI_CB_TYPE_UI_CONTROL", cb::UI_CONTROL),
     ("$NI_CB_TYPE_UI_UPDATE", cb::UI_UPDATE),
     ("$NI_CB_TYPE_UI_CONTROLS", cb::UI_CONTROLS),
@@ -636,6 +641,11 @@ const VALUED: &[(&str, i32)] = &[
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
     if let Some(value) = match name {
+        "$NI_FADE_LINEAR" => Some(sampler_core::FadeCurve::Linear as i32),
+        "$NI_FADE_EQUAL_POWER" => Some(sampler_core::FadeCurve::EqualPower as i32),
+        "$NI_FADE_S_CURVE" => Some(sampler_core::FadeCurve::SCurve as i32),
+        "$NI_FADE_EXPONENTIAL" => Some(sampler_core::FadeCurve::Exponential as i32),
+        "$NI_FADE_LOGARITHMIC" => Some(sampler_core::FadeCurve::Logarithmic as i32),
         "$CURRENT_EVENT" => Some(sampler_core::MIDI_CURRENT_EVENT),
         "$EVENT_PAR_MIDI_COMMAND" => Some(sampler_core::midi_par::COMMAND),
         "$EVENT_PAR_MIDI_BYTE_1" => Some(sampler_core::midi_par::BYTE_ONE),

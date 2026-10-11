@@ -112,7 +112,7 @@ pub fn analyze<'a, 's>(
             ("ui_controls", None) => CallbackKind::UiControls,
             ("ui_update", None) => CallbackKind::UiUpdate,
             ("listener", None) => CallbackKind::Listener,
-            ("pgs_changed", None) => CallbackKind::PgsChanged,
+            ("pgs_changed" | "_pgs_changed", None) => CallbackKind::PgsChanged,
             ("persistence_changed", None) => CallbackKind::PersistenceChanged,
             ("async_complete", None) => CallbackKind::AsyncComplete,
             ("rpn", None) => CallbackKind::Rpn,
@@ -1194,6 +1194,19 @@ impl<'a> Sema<'a, '_> {
                 },
             });
         }
+        if matches!(b, Builtin::SetListener | Builtin::ChangeListenerPar)
+            && let Arg::Expr(signal) = &out[0]
+            && let Some(Const::Int(signal)) = fold(&self.hir, signal)
+        {
+            let (lo, hi) = listener_range(b, signal, span)?;
+            if let Arg::Expr(value) = &out[1]
+                && let Some(Const::Int(value)) = fold(&self.hir, value)
+                && !(b == Builtin::ChangeListenerPar && value == 0)
+                && !(lo..=hi).contains(&value)
+            {
+                return fault(span, format!("{} parameter must be {lo}..={hi}", b.name()));
+            }
+        }
         if b == Builtin::GetUiId {
             let Arg::Var(v, s) = out[0] else {
                 unreachable!()
@@ -1205,17 +1218,41 @@ impl<'a> Sema<'a, '_> {
         if matches!(b, Builtin::Search | Builtin::Sort) && args.len() == 3 {
             return fault(span, format!("{} requires both range endpoints", b.name()));
         }
-        if b == Builtin::Search
-            && let Arg::Var(v, _) = out[0]
-            && self.hir.vars[v.0 as usize].ty == Ty::Real
-        {
-            return fault(span, "search does not accept real arrays");
+        if b == Builtin::ArrayEqual {
+            for arg in &out {
+                let Arg::Var(v, _) = arg else {
+                    return fault(span, "array_equal requires declared integer arrays");
+                };
+                match self.hir.vars[v.0 as usize].ty {
+                    Ty::Real => return fault(span, "array_equal does not accept real arrays"),
+                    Ty::Int => {}
+                    _ => return fault(span, "array_equal requires declared integer arrays"),
+                }
+            }
+            if let (Arg::Var(a, _), Arg::Var(b, _)) = (&out[0], &out[1])
+                && self.hir.vars[a.0 as usize].len != self.hir.vars[b.0 as usize].len
+            {
+                return fault(span, "array_equal requires arrays of the same size");
+            }
         }
-        if b == Builtin::Search
-            && let Arg::Var(v, _) = out[0]
-            && num.is_some_and(|n| n != self.hir.vars[v.0 as usize].ty)
-        {
-            return fault(span, "search value type differs from the array");
+        if b == Builtin::Search {
+            let ty = match out[0] {
+                Arg::Var(v, _) => self.hir.vars[v.0 as usize].ty,
+                Arg::SysArray(
+                    SysArray::Cc
+                    | SysArray::KeyDown
+                    | SysArray::CcTouched
+                    | SysArray::EventPar
+                    | SysArray::GroupsAffected,
+                ) => Ty::Int,
+                _ => return fault(span, "search of this array is not available"),
+            };
+            if ty == Ty::Real {
+                return fault(span, "search does not accept real arrays");
+            }
+            if num.is_some_and(|n| n != ty) {
+                return fault(span, "search value type differs from the array");
+            }
         }
         let ty = match sig.ret {
             Ret::Void => Ty::Int,
@@ -1226,6 +1263,18 @@ impl<'a> Sema<'a, '_> {
             Ret::Num => num.unwrap_or(Ty::Int),
         };
         Ok((out, ty))
+    }
+}
+
+/// Documented listener signals and nonzero parameter bounds. Zero disables only
+/// `change_listener_par`; transport registration does not implement dispatch.
+pub(crate) fn listener_range(b: Builtin, signal: i32, span: Span) -> Result<(i32, i32)> {
+    use builtins::signal::*;
+    match signal {
+        TIMER_MS => Ok((1000, i32::MAX)),
+        TIMER_BEAT => Ok((1, 24)),
+        TRANSP_START | TRANSP_STOP if b == Builtin::SetListener => Ok((1, 1)),
+        _ => fault(span, format!("{} does not support this signal", b.name())),
     }
 }
 
@@ -1350,6 +1399,7 @@ fn vendor_name(name: &str) -> bool {
     [
         "NI_",
         "CONTROL_PAR_",
+        "UI_WF_PROP_",
         "EVENT_PAR_",
         "ENGINE_PAR_",
         "ZONE_PAR_",

@@ -815,6 +815,7 @@ fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_col
     let (mut cache, mut worker) = StreamCache::new(4).unwrap();
     load(&mut cache, &mut worker, &asset, &data, 0);
     let program = ModProgram {
+        controls: vec![],
         breakpoints: vec![],
         sources: vec![ModSource::Velocity],
         routes: vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],

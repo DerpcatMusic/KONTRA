@@ -1,0 +1,520 @@
+{
+  "status": "SOURCE_READY_NOT_TYPECHECKED",
+  "base": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "source_commit": "967ea34cf33f4646d873616688311ab4ac9b1bd5",
+  "target": "crates/sampler-kontakt/tests/production_modulation.rs",
+  "original_blob": "2c0b48e834918c806b3b6e42b70bb825733d34a2",
+  "original_sha256": "7414abb4581080c978726e4bd6638e747ae59d9359d29be292c2ce79bda4179f",
+  "successor_blob": "148e7f0c2822b6ce9db08d273e352be84a303d3a",
+  "successor_sha256": "eaba1eac1741f5e07a9365d1f5eeb651b18140573b81d168aebe3c8eec47d16f",
+  "changed_lines": [
+    647,
+    710
+  ],
+  "exact_five_semicolons_only": true,
+  "diff_check": "PASS",
+  "bounded_additional_fix": {
+    "path": "crates/sampler-core/tests/controls.rs",
+    "changed_lines": [
+      1138,
+      1143,
+      1299
+    ],
+    "original_blob": "4d552edb365dccd4eb1d94a79925d9e044605838",
+    "original_sha256": "6ed64b6fad81a4c549d252007fb36cf48f147700aaf3904368f333de03d2a3ff",
+    "successor_blob": "8ab576120c3aea07276ed88ceb2f85bcc93cb006",
+    "successor_sha256": "4b95c4f8809e8ea4c5159f2a600b8ea6f55cb6ded9ef9f66f3d8d9c2a991635b",
+    "closures_before": [
+      {
+        "line": 71,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 114,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 198,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 206,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 1136,
+        "tail": "call_expression",
+        "revision_is_tail": true,
+        "tail_statement_has_semicolon": false
+      },
+      {
+        "line": 1141,
+        "tail": "call_expression",
+        "revision_is_tail": true,
+        "tail_statement_has_semicolon": false
+      },
+      {
+        "line": 1297,
+        "tail": "call_expression",
+        "revision_is_tail": true,
+        "tail_statement_has_semicolon": false
+      }
+    ],
+    "closures_after": [
+      {
+        "line": 71,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 114,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 198,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 206,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 1136,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 1141,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      },
+      {
+        "line": 1297,
+        "tail": "expression_statement",
+        "revision_is_tail": false,
+        "tail_statement_has_semicolon": true
+      }
+    ],
+    "authority": "SOURCE_SIGNATURE_AND_AST_ONLY; not an additional frozen compiler diagnostic"
+  },
+  "syntax_parser": {
+    "parser": "/home/derpcat/.npm-global/lib/node_modules/@nanonets/graft/node_modules/web-tree-sitter/web-tree-sitter.js",
+    "parser_sha256": "0c868236a47296b4ff3c1570f20e0899e4a784ff6e5cd7bfc9c3a55225463e4a",
+    "grammar": "/home/derpcat/.npm-global/lib/node_modules/@nanonets/graft/node_modules/tree-sitter-wasm/out/rust/tree-sitter-rust.wasm",
+    "grammar_sha256": "dc7f9b4d182af6b8332b44cfb8d24c0b25892900b006af5ce7eafdef8c976d5a",
+    "errors_before": 0,
+    "errors_after": 0,
+    "limitation": "Tree-sitter AST is not Rust typechecking or execution"
+  },
+  "closures_before": [
+    {
+      "line": 638,
+      "tail": "call_expression",
+      "revision_is_tail": true,
+      "tail_statement_has_semicolon": false
+    },
+    {
+      "line": 700,
+      "tail": "call_expression",
+      "revision_is_tail": true,
+      "tail_statement_has_semicolon": false
+    }
+  ],
+  "closures_after": [
+    {
+      "line": 638,
+      "tail": "expression_statement",
+      "revision_is_tail": false,
+      "tail_statement_has_semicolon": true
+    },
+    {
+      "line": 700,
+      "tail": "expression_statement",
+      "revision_is_tail": false,
+      "tail_statement_has_semicolon": true
+    }
+  ],
+  "bounded_scan": [
+    {
+      "path": "crates/sampler-core/tests/buses.rs",
+      "matches": [
+        {
+          "line": 1051,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": false
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-core/tests/cold_chain.rs",
+      "matches": []
+    },
+    {
+      "path": "crates/sampler-core/tests/control_dsp.rs",
+      "matches": [
+        {
+          "line": 105,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 193,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 263,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 352,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "matches": [
+        {
+          "line": 71,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 114,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 198,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 206,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 1136,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 1141,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 1297,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-core/tests/gainer.rs",
+      "matches": [
+        {
+          "line": 80,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": false
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-core/tests/lower.rs",
+      "matches": [
+        {
+          "line": 1918,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": false
+        },
+        {
+          "line": 2511,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": false
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "matches": [
+        {
+          "line": 638,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 700,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-ksp/tests/controls.rs",
+      "matches": [
+        {
+          "line": 100,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        },
+        {
+          "line": 309,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        }
+      ]
+    },
+    {
+      "path": "crates/sampler-midi/tests/mpe.rs",
+      "matches": [
+        {
+          "line": 942,
+          "tail": "expression_statement",
+          "revision_is_tail": false,
+          "tail_statement_has_semicolon": true
+        }
+      ]
+    }
+  ],
+  "signature_pins": [
+    {
+      "path": "crates/sampler-core/src/control.rs",
+      "blob": "309747510bd69d140ab96e45a4ea248a36ee6051",
+      "sha256": "848f14c4a42468928b73757c28bd50a1679c9b3b7735a2bdc26bfea0cc3576fd",
+      "first": 479,
+      "last": 487,
+      "span_sha256": "c4a3dea387ac3662fe5367c31ad1385d7be9cc7afd4bb65afd7d3c7010a48271"
+    },
+    {
+      "path": "crates/sampler-core/tests/support/mod.rs",
+      "blob": "556402ece1f85fba69f811b509431c51b9909b37",
+      "sha256": "d4b3a59fb7f2e9b046e1feef38e1dbb3b4261efc8ff40bf5a89eac7d03100d46",
+      "first": 42,
+      "last": 59,
+      "span_sha256": "831dc0be39bcd6f3bce35a7af6c6c91f080b8b7d8e00f397b9622dd977ab0d23"
+    }
+  ],
+  "fixture_pins": [
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "blob": "148e7f0c2822b6ce9db08d273e352be84a303d3a",
+      "sha256": "eaba1eac1741f5e07a9365d1f5eeb651b18140573b81d168aebe3c8eec47d16f",
+      "first": 631,
+      "last": 685,
+      "span_sha256": "06a7120d2ba301cc210f186ddfb58ec8b893d0d0897cc13810c20ccdf3f2b1b2"
+    },
+    {
+      "path": "crates/sampler-kontakt/tests/production_modulation.rs",
+      "blob": "148e7f0c2822b6ce9db08d273e352be84a303d3a",
+      "sha256": "eaba1eac1741f5e07a9365d1f5eeb651b18140573b81d168aebe3c8eec47d16f",
+      "first": 688,
+      "last": 735,
+      "span_sha256": "4de0c72f98d3682cd209914051669088f3c16ac21b403d8f17db7f714f67e729"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "blob": "8ab576120c3aea07276ed88ceb2f85bcc93cb006",
+      "sha256": "4b95c4f8809e8ea4c5159f2a600b8ea6f55cb6ded9ef9f66f3d8d9c2a991635b",
+      "first": 1098,
+      "last": 1158,
+      "span_sha256": "d69d355f4d9b8885348af34f397ee7625268f4e16425b1bc471a7c8eca85d26e"
+    },
+    {
+      "path": "crates/sampler-core/tests/controls.rs",
+      "blob": "8ab576120c3aea07276ed88ceb2f85bcc93cb006",
+      "sha256": "4b95c4f8809e8ea4c5159f2a600b8ea6f55cb6ded9ef9f66f3d8d9c2a991635b",
+      "first": 1210,
+      "last": 1302,
+      "span_sha256": "6c0679721c76fd96f15d4e24155bb541ab36615f54d0c2e8844c9be9e42b212d"
+    }
+  ],
+  "tests": [
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_lfo_live_intensity_bypass_reaches_pcm_without_compacting_slots",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_saved_bypass_stays_neutral_until_live_enable",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_retriggered_ahdsr_routes_have_live_amplitude_and_pan_consumers",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_retrigger_off_ahdsr_live_controls_remain_unbound",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_invert_is_not_replaced_by_positive_or_mp_intensity",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_overlap_release_keeps_other_voice_and_live_control_ownership",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_filtered_routes_cannot_publish_getter_only_live_bindings",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_live_writes_are_independent_of_host_render_partition",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_bypass_masks_routes_without_restarting_the_source_clock",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_pitch_intensity_changes_pcm_cursor_step_not_pan_or_voice_identity",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_scripts_enabled_schema_shift_preserves_depth_bypass_pcm_and_voice_owners",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_scripts_enabled_live_writes_match_unbound_pcm_across_partitions",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-kontakt",
+      "target": "production_modulation",
+      "name": "serialized_scripts_enabled_schema_shift_keeps_pitch_step_and_sibling_pan",
+      "status": "NOT_RUN"
+    }
+  ],
+  "failed_run": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round6-successor-v2",
+  "immutable_failed_receipts": {
+    "FROZEN-SOURCE.json": "f4c465ff191d581684a56d4fee920ef2c22dbac0bd59077923702fbfbb19cf61",
+    "combined-no-run.json": "c555adbcf95063157db2ab83c8bb0123a1b765fbb7e7cf5a40fe901a9682531c",
+    "combined-no-run.log": "6ca7ef6889999b16d2929b9709e405f997dda657f2cf2214948dece53c4c5c0e",
+    "COMPILE-FIRST-RED.json": "d6a7c51757dd3894593f644ca4381b8d7e9dfabbd629681aa4a3ea7f01993bc3",
+    "COMPILE-FIRST-RED.log": "d6059778986b2b007a4c70e3e9767868f838200927e453f21e402bc5d8299136",
+    "COMPILE-RED-SOURCE-PIN.json": "2bdd9c7155d6d83b5c0bfa95c93a2c858473eabba732a9091a22239840cc871e"
+  },
+  "manifest_sha256": "f4c465ff191d581684a56d4fee920ef2c22dbac0bd59077923702fbfbb19cf61",
+  "inherited_manifests": [
+    {
+      "path": "docs/audit-2026-10-10/modulation-control-remap-fix/source-manifest.json",
+      "blob": "6287e83cc3fa4c177f8e087a6fbb76baac86b0e5",
+      "sha256": "0bd92f20894284cfb7e31e4f89d003e9616e8bc21650344565f92f8c312e93e7"
+    },
+    {
+      "path": "docs/audit-2026-10-10/production-modulation-next/source-manifest.json",
+      "blob": "70aa67e6c578e10cf073ee1be7f4fd9a5d8359e3",
+      "sha256": "9cdc896d20757a4fe35f96518edf696af6c48f9f9e6ff2162daa5596d21e3fba"
+    }
+  ],
+  "inherited_archives": [
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-controls.html",
+      "sha256": "c736e2f0a27e8131a8cf8fa2669a8f1b2ad26a27dadcbc916c20ea00f4ed518d",
+      "authority": "SPEC_ONLY; native runtime UNKNOWN"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "authority": "SPEC_ONLY; native runtime UNKNOWN"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/kontakt-modulation.html",
+      "sha256": "ca330e3207a333061ebca4ee28b0545b5e93c223624ff69ca608c7a85d897c9d",
+      "authority": "SPEC_ONLY; native runtime UNKNOWN"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-engine.html",
+      "sha256": "4a15e3b10a9da8993c90ddc7681fee9fd62a7eafc5f3685f47b0c5ab37d1d16d",
+      "authority": "SPEC_ONLY; native runtime UNKNOWN"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-engine-commands.html",
+      "sha256": "df2fe7192f32df7c4a738c713663bafdfec3630c2821fd9afe1887c7d5ed006d",
+      "authority": "SPEC_ONLY; native runtime UNKNOWN"
+    }
+  ],
+  "exact_patch": "diff --git a/crates/sampler-core/tests/controls.rs b/crates/sampler-core/tests/controls.rs\nindex 4d552edb..8ab57612 100644\n--- a/crates/sampler-core/tests/controls.rs\n+++ b/crates/sampler-core/tests/controls.rs\n@@ -1138 +1138 @@ fn modulation_inputs_follow_identity_after_reorder_append_and_real_default_repla\n-                .unwrap()\n+                .unwrap();\n@@ -1143 +1143 @@ fn modulation_inputs_follow_identity_after_reorder_append_and_real_default_repla\n-                .unwrap()\n+                .unwrap();\n@@ -1299 +1299 @@ fn schema_replacement_preserves_native_envelope_and_dsp_identity_consumers() {\n-            .unwrap()\n+            .unwrap();\ndiff --git a/crates/sampler-kontakt/tests/production_modulation.rs b/crates/sampler-kontakt/tests/production_modulation.rs\nindex 2c0b48e8..148e7f0c 100644\n--- a/crates/sampler-kontakt/tests/production_modulation.rs\n+++ b/crates/sampler-kontakt/tests/production_modulation.rs\n@@ -647 +647 @@ fn serialized_scripts_enabled_schema_shift_preserves_depth_bypass_pcm_and_voice_\n-        .unwrap()\n+        .unwrap();\n@@ -710 +710 @@ fn serialized_scripts_enabled_live_writes_match_unbound_pcm_across_partitions()\n-            .unwrap()\n+            .unwrap();\n",
+  "additional_test_filters": [
+    {
+      "package": "sampler-core",
+      "target": "controls",
+      "name": "modulation_inputs_follow_identity_after_reorder_append_and_real_default_replacement",
+      "status": "NOT_RUN"
+    },
+    {
+      "package": "sampler-core",
+      "target": "controls",
+      "name": "schema_replacement_preserves_native_envelope_and_dsp_identity_consumers",
+      "status": "NOT_RUN"
+    }
+  ],
+  "native_runtime": "UNKNOWN",
+  "cpu_ram_goal": "UNACHIEVED",
+  "validation": "Fresh root-owned combined validation required; current frozen aggregate remains RED",
+  "checker_sha256": "0912874464582a837d019f277daf45d08a401a76359586ec1cbd02edea5740d4"
+}

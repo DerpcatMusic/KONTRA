@@ -9,6 +9,8 @@
 
 mod automation;
 mod host_probe;
+pub(crate) mod ui_activity;
+use ui_activity::Count as UiCount;
 pub(crate) use host_probe::export_multi_state;
 pub(crate) mod automation_ids;
 
@@ -526,6 +528,7 @@ impl SamplerParams {
             "keyboard": {"heard": self.shared.heard.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>(),
                 "played": self.shared.played.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>()},
         });
+        context["ui_cpu_phases"] = self.shared.ui_activity.phase_report();
         context["log_flush_error"] =
             serde_json::json!(crate::diagnostics::flush(std::time::Duration::from_secs(2)).err());
         context
@@ -538,6 +541,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 /// prepared Arc vector and never locks the growable registry.
 #[derive(Default)]
 pub(crate) struct PartShared {
+    ui_activity: Option<Arc<ui_activity::Activity>>,
     effect_controls: Mutex<effect_controls::EffectControls>,
     pub(crate) generation: AtomicU64,
     pub(crate) scalar_revision: AtomicU64,
@@ -624,19 +628,28 @@ impl PartShared {
 
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
     pub(crate) fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
+        if let Some(audit) = &self.ui_activity {
+            audit.add(UiCount::ReadbackCalls, 1);
+        }
         if let Ok(cells) = self.controls.try_lock_unpoisoned() {
-            let mut changed = false;
+            let mut changed = 0;
             for cell in cells.iter() {
                 if let Some(v) = value(cell.id) {
                     if cell.value().to_bits() != v.to_bits() {
                         cell.set(v);
-                        changed = true;
+                        changed += 1;
                     }
                 }
             }
-            if changed {
+            if let Some(audit) = &self.ui_activity {
+                audit.add(UiCount::ReadbackCells, cells.len() as u64);
+                audit.add(UiCount::ReadbackChanges, changed);
+            }
+            if changed != 0 {
                 self.scalar_revision.fetch_add(1, Ordering::Release);
             }
+        } else if let Some(audit) = &self.ui_activity {
+            audit.add(UiCount::ReadbackBusy, 1);
         }
     }
 
@@ -653,6 +666,9 @@ impl PartShared {
         face: &sampler_ui_ir::Interface,
         epoch: u64,
     ) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, f64> {
+        if let Some(audit) = &self.ui_activity {
+            audit.add(UiCount::MeterCalls, 1);
+        }
         let mut meters = self.engine_meters.lock_unpoisoned();
         if self.generation.load(Ordering::Acquire) != epoch {
             return Default::default();
@@ -793,6 +809,9 @@ impl PartShared {
         &self,
         face: &sampler_ui_ir::Interface,
     ) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        if let Some(audit) = &self.ui_activity {
+            audit.add(UiCount::TypedCalls, 1);
+        }
         let mut ingress = self.ingress.lock_unpoisoned();
         let Some(ingress) = ingress.as_mut() else {
             return Default::default();
@@ -891,6 +910,7 @@ struct Retired {
 type Ready = (usize, u64, Option<Box<CorePart>>);
 
 pub struct Shared {
+    pub(crate) ui_activity: Arc<ui_activity::Activity>,
     instance_id: u64,
     ready: ArrayQueue<Ready>,
     pending_ready: Mutex<std::collections::VecDeque<Ready>>,
@@ -1050,8 +1070,17 @@ impl Drop for Shared {
 impl Default for Shared {
     fn default() -> Self {
         let crash_session = crate::support::start_plugin_session();
-        let initial_parts: [Arc<PartShared>; RACK_SLOTS] = std::array::from_fn(|_| Arc::default());
+        let ui_activity = Arc::new(ui_activity::Activity::new(
+            std::env::var("KONTRA_NATIVE_UI_TIMING").ok().as_deref() == Some("1"),
+        ));
+        let initial_parts: [Arc<PartShared>; RACK_SLOTS] = std::array::from_fn(|_| {
+            Arc::new(PartShared {
+                ui_activity: ui_activity.enabled.then(|| ui_activity.clone()),
+                ..Default::default()
+            })
+        });
         let shared = Self {
+            ui_activity,
             _crash_session: Mutex::new(crash_session),
             instance_id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             ready: ArrayQueue::new(64),
@@ -1374,7 +1403,10 @@ impl Shared {
     pub(crate) fn ensure_parts(&self, count: usize) {
         let mut parts = self.parts.lock_unpoisoned();
         while parts.len() < count {
-            parts.push(Arc::default());
+            parts.push(Arc::new(PartShared {
+                ui_activity: self.ui_activity.enabled.then(|| self.ui_activity.clone()),
+                ..Default::default()
+            }));
         }
         drop(parts);
         let mut view = self.view.lock_unpoisoned();
@@ -1701,7 +1733,9 @@ impl Shared {
             if part.generation.load(Ordering::Acquire) != epoch {
                 continue;
             }
-            if effect.service == sampler_core::MIDI_SERVICE {
+            if effect.service == sampler_core::MIDI_SERVICE
+                || effect.service == sampler_core::ARRAY_FILE_SERVICE
+            {
                 if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut() {
                     ingress.service_midi(&effect);
                 }
@@ -1752,7 +1786,9 @@ impl Shared {
                 .filter(|v| v.generation == epoch)
             {
                 for interface in interfaces {
-                    v.publish_interface(&interface);
+                    self.ui_activity.add(UiCount::PublicationCalls, 1);
+                    let changed = v.publish_interface(&interface);
+                    self.ui_activity.add(UiCount::PublicationChanges, u64::from(changed));
                 }
                 if v.keys != keys {
                     v.keys = keys;
@@ -1785,7 +1821,9 @@ impl Shared {
             }
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
-                view.publish_interface(&uvi.interface());
+                self.ui_activity.add(UiCount::PublicationCalls, 1);
+                let changed = view.publish_interface(&uvi.interface());
+                self.ui_activity.add(UiCount::PublicationChanges, u64::from(changed));
             }
         }
     }
@@ -2085,8 +2123,12 @@ impl BackgroundTask for Load {
     const SERIALIZED: bool = true;
     fn run(self, params: &SamplerParams) {
         let shared = &params.shared;
+        shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
-        shared.apply_effects();
+        {
+            let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
+            shared.apply_effects();
+        }
         shared.with_parts(|parts| {
             for part in parts {
                 if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
