@@ -3610,6 +3610,62 @@ mod tests {
         }
     }
 
+    /// Per-frame cost of the authored interface: Lua graph render, lowering
+    /// to El, MUI layout and software paint. `KONTRA_AUDIT_WIDGET_PATCH`
+    /// names the library; times are medians over 40 steady frames.
+    #[cfg(feature = "shots")]
+    #[test]
+    #[ignore = "requires locally owned NativeUI program; timings only"]
+    fn native_frame_cost() {
+        use std::time::Instant;
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+        source.retain_zones(|_| false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(
+            source,
+            vec![],
+            &sampler_kontakt::Options { library: Some(path.clone()), ..Default::default() },
+        )
+        .unwrap();
+        let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls = loaded
+            .interfaces
+            .iter()
+            .flat_map(|f| f.widgets.iter().enumerate().map(move |(n, w)| (f.source, n, w.clone())))
+            .collect();
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let mut ui = super::super::theme::ui();
+        let mut drafts = HashMap::new();
+        let (mut render, mut lower, mut layout, mut paint) = (vec![], vec![], vec![], vec![]);
+        for n in 0..48 {
+            let t = Instant::now();
+            let graph = session.render().unwrap();
+            let r = t.elapsed();
+            let t = Instant::now();
+            let authored = authored_size(&graph);
+            let el = draw_live(&mut ui, &graph, &package, &session, 0, 1., authored, &mut drafts).unwrap();
+            let d = t.elapsed();
+            let t = Instant::now();
+            ui.frame(el, Some(authored), Input::default(), 1. / 60.).unwrap();
+            let l = t.elapsed();
+            let t = Instant::now();
+            let _ = super::super::tests::pixels(&ui, authored.width as u16, authored.height as u16);
+            let p = t.elapsed();
+            if n >= 8 {
+                for (v, x) in [(&mut render, r), (&mut lower, d), (&mut layout, l), (&mut paint, p)] {
+                    v.push(x.as_secs_f64() * 1000.);
+                }
+            }
+        }
+        let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
+        println!(
+            "NATIVE_FRAME_MS lua_render={:.2} lower={:.2} layout={:.2} sw_paint={:.2}",
+            med(&mut render), med(&mut lower), med(&mut layout), med(&mut paint)
+        );
+    }
+
     #[cfg(all(target_os = "linux", feature = "shots"))]
     #[test]
     #[ignore = "requires locally owned NativeUI program; graph stays in RAM"]
