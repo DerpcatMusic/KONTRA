@@ -376,6 +376,11 @@ pub enum FaultCategory {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FaultCounts {
     pub first: Option<FaultCategory>,
+    /// First error text per phase (bounded), so a report can say why, not only which category.
+    #[serde(default)]
+    pub init_message: Option<String>,
+    #[serde(default)]
+    pub runtime_message: Option<String>,
     #[serde(default)]
     pub setter_type_mismatches: Vec<SetterTypeFinding>,
     pub init: BTreeMap<FaultCategory, u64>,
@@ -563,6 +568,14 @@ impl Shared {
             };
             let count = counts.entry(category).or_default();
             *count = count.saturating_add(1);
+            let message = if self.initializing.get() {
+                &mut faults.init_message
+            } else {
+                &mut faults.runtime_message
+            };
+            if message.is_none() {
+                *message = Some(value.chars().take(200).collect());
+            }
         }
         #[cfg(feature = "scan")]
         if matches!(feature, "lua error" | "lua UI callback") {
