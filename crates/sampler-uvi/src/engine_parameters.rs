@@ -43,7 +43,7 @@ fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
             match (field, digits.parse::<usize>()) {
                 ("Enabled", Ok(n @ 1..=16)) => vec![(n - 1, P::Enabled)],
                 ("Freq", Ok(n @ 1..=16)) => vec![(n - 1, P::Frequency)],
-                ("Q", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Q" | "Bandwidth", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
                 ("Gain", Ok(n @ 1..=16)) => vec![(n - 1, P::GainDecibels)],
                 _ => Vec::new(),
             }
@@ -54,20 +54,14 @@ fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
 
 /// `lanes` for a concrete element. Kinds with a fixed layout only on a bus
 /// are left static in a keygroup. A OnePole that tracks keys keeps the
-/// translator's folded cutoff, and DigitalEq band gains stay static under a
-/// GainScale other than 1 (a control would bypass the scale).
+/// translator's folded cutoff.
 fn node_lanes(node: roxmltree::Node, name: &str) -> Vec<(usize, P)> {
     let kind = node.tag_name().name();
     if !matches!(kind, "Gain" | "OnePole") && !bus_scope(node) {
         return Vec::new();
     }
     let number = |n: &str, d: f64| node.attribute(n).and_then(|v| v.parse().ok()).unwrap_or(d);
-    if (kind == "OnePole" && number("KeyTracking", 0.) != 0.)
-        || (kind == "DigitalEq"
-            && name != "OverallGain"
-            && name.starts_with("Gain")
-            && number("GainScale", 1.) != 1.)
-    {
+    if kind == "OnePole" && number("KeyTracking", 0.) != 0. {
         return Vec::new();
     }
     lanes(kind, name)
@@ -188,6 +182,7 @@ pub(crate) fn register(
     doc: &roxmltree::Document,
     inserts: &[InsertNode],
 ) {
+    let mut made = std::collections::HashMap::new();
     for insert in inserts.iter().filter(|i| i.count > 0) {
         let Some(node) = u32::try_from(insert.node)
             .ok()
@@ -197,6 +192,10 @@ pub(crate) fn register(
         };
         let kind = node.tag_name().name();
         for p in parameters::definitions(kind) {
+            // Bandwidth is the same band parameter as Q: it writes through Q's control.
+            if p.name.starts_with("Bandwidth") {
+                continue;
+            }
             let lanes: Vec<_> = node_lanes(node, p.name)
                 .into_iter()
                 .filter(|(offset, _)| *offset < insert.count)
@@ -204,10 +203,15 @@ pub(crate) fn register(
             if lanes.is_empty() {
                 continue;
             }
-            let mut default = node
-                .attribute(p.name)
-                .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(p.default);
+            let read = |n: &str| node.attribute(n).and_then(|v| v.parse::<f64>().ok());
+            let mut default = read(p.name).unwrap_or(p.default);
+            if kind == "DigitalEq" {
+                default = match band_field(p.name) {
+                    Some(("Q", band)) => band_q(read, band),
+                    Some(("Gain", _)) => default * read("GainScale").unwrap_or(1.),
+                    _ => default,
+                };
+            }
             // A bypassed rack chain starts silent: its gain is what bypass is.
             if kind == "AuxEffect"
                 && p.name == "Gain"
@@ -219,21 +223,26 @@ pub(crate) fn register(
             if !default.is_finite() || default < p.min || default > p.max {
                 continue;
             }
-            let control = ir::ControlRef(instrument.controls.len());
-            instrument.controls.push(ir::Control {
-                key: key(insert.node, kind, p.name),
-                label: p.name.into(),
-                value: ir::ControlValue::Continuous {
-                    min: p.min,
-                    max: p.max,
-                    default,
-                    unit: if p.unit == "Hz" {
-                        ir::ControlUnit::Hertz
-                    } else {
-                        ir::ControlUnit::None
+            // A node placed on several chains (one per keygroup, say) is one control.
+            let key = key(insert.node, kind, p.name);
+            let control = *made.entry(key.clone()).or_insert_with(|| {
+                let control = ir::ControlRef(instrument.controls.len());
+                instrument.controls.push(ir::Control {
+                    key,
+                    label: p.name.into(),
+                    value: ir::ControlValue::Continuous {
+                        min: p.min,
+                        max: p.max,
+                        default,
+                        unit: if p.unit == "Hz" {
+                            ir::ControlUnit::Hertz
+                        } else {
+                            ir::ControlUnit::None
+                        },
                     },
-                },
-                automation: ir::Automation::None,
+                    automation: ir::Automation::None,
+                });
+                control
             });
             for (offset, parameter) in lanes {
                 instrument.processor_controls.push(ir::ProcessorControl {
@@ -246,6 +255,48 @@ pub(crate) fn register(
             }
         }
     }
+}
+
+/// A DigitalEq band's field name and number: `Gain3` is ("Gain", 3).
+fn band_field(name: &str) -> Option<(&str, usize)> {
+    let digits = name.trim_start_matches(|c: char| !c.is_ascii_digit());
+    Some((&name[..name.len() - digits.len()], digits.parse().ok()?))
+}
+
+/// Q for a band's width in octaves (RBJ), within the catalog's Q range.
+fn q_for_octaves(octaves: f64) -> f64 {
+    (0.5 / (std::f64::consts::LN_2 / 2. * octaves).sinh()).clamp(0.018, 28.284)
+}
+
+/// A DigitalEq band's Q. Q and Bandwidth are one parameter saved twice; a
+/// program whose Q is still the default but whose Bandwidth was edited (the
+/// English Horn formant EQs) was authored by bandwidth.
+pub(crate) fn band_q(read: impl Fn(&str) -> Option<f64>, band: usize) -> f64 {
+    let q = read(&format!("Q{band}")).unwrap_or(std::f64::consts::FRAC_1_SQRT_2);
+    match read(&format!("Bandwidth{band}")) {
+        Some(octaves) if (octaves - 1.).abs() > 1e-6 && (q - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6 => {
+            q_for_octaves(octaves)
+        }
+        _ => q,
+    }
+}
+
+/// The control name and value a script's write of `name` reaches the DSP as:
+/// DigitalEq band gains are scaled by GainScale, and a Bandwidth is Q.
+pub(crate) fn effective(
+    kind: &str,
+    name: &str,
+    value: f64,
+    read: impl Fn(&str) -> Option<f64>,
+) -> (String, f64) {
+    if kind == "DigitalEq" {
+        match band_field(name) {
+            Some(("Gain", _)) => return (name.into(), value * read("GainScale").unwrap_or(1.)),
+            Some(("Bandwidth", band)) => return (format!("Q{band}"), q_for_octaves(value)),
+            _ => {}
+        }
+    }
+    (name.into(), value)
 }
 
 /// Start the program as the scripts left it: control defaults, and a Bypass
@@ -367,4 +418,38 @@ pub(crate) fn promoted_constants(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digital_eq_bandwidth_is_q_and_gain_follows_the_scale() {
+        // One octave is Q 1.414; Q stays inside the catalog range.
+        let (name, q) = effective("DigitalEq", "Bandwidth2", 1., |_| None);
+        assert_eq!(name, "Q2");
+        assert!((q - 1.4142).abs() < 1e-3, "{q}");
+        assert!((0.018..0.04).contains(&q_for_octaves(10.)) && q_for_octaves(0.01) == 28.284);
+        let (name, gain) = effective("DigitalEq", "Gain3", 6., |n| (n == "GainScale").then_some(0.5));
+        assert_eq!((name.as_str(), gain), ("Gain3", 3.));
+        // Q still at its default with an edited Bandwidth: authored by bandwidth.
+        let read = |n: &str| match n {
+            "Q1" => Some(std::f64::consts::FRAC_1_SQRT_2),
+            "Bandwidth1" => Some(0.4),
+            _ => None,
+        };
+        assert!((band_q(read, 1) - q_for_octaves(0.4)).abs() < 1e-9);
+        assert!((band_q(|_| None, 1) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_node_placed_on_several_chains_is_one_control() {
+        let doc = roxmltree::Document::parse(r#"<Gain Volume="0.5"/>"#).unwrap();
+        let node = doc.root_element().id().get_usize();
+        let placed = |chain| InsertNode { node, chain: ir::ChainRef(chain), first: 0, count: 1 };
+        let mut ir = ir::Instrument::default();
+        register(&mut ir, &doc, &[placed(0), placed(1)]);
+        assert_eq!((ir.controls.len(), ir.processor_controls.len()), (1, 2));
+    }
 }
