@@ -504,80 +504,72 @@ fn details(event: &LogEvent) -> String {
     )
 }
 
-fn event_heading(event: &serde_json::Value) -> String {
-    format!(
-        "[{}] {} · {} · {} / {}\n{}\n",
-        event["level"].as_str().unwrap_or("unknown"),
-        time(event["timestamp_ms"].as_u64().unwrap_or(0)),
-        event["path"]
+/// Clipboard summaries contain problems and origins, never source excerpts or records.
+fn support_text(events: &[LogEvent]) -> Result<String, String> {
+    use std::fmt::Write;
+    let mut safe = serde_json::to_value(events).map_err(|e| e.to_string())?;
+    diagnostics::clean(&mut safe, true);
+    let mut groups = std::collections::BTreeMap::<String, usize>::new();
+    for event in safe.as_array().unwrap() {
+        if !matches!(event["level"].as_str(), Some("warning" | "error")) {
+            continue;
+        }
+        let subject = event["path"]
             .as_str()
             .map(filename)
             .or_else(|| event["library"].as_str())
-            .unwrap_or("Application"),
-        event["stage"]
+            .unwrap_or("Application");
+        let mut reason = event["reason"]
+            .as_str()
+            .unwrap_or_else(|| event["event"].as_str().unwrap_or("Unknown error"));
+        reason = reason.strip_prefix("load failed: ").unwrap_or(reason);
+        let mut origin = event["stage"]
             .as_str()
             .or_else(|| event["module"].as_str())
-            .unwrap_or("application"),
-        event["code"]
-            .as_str()
-            .or_else(|| event["event"].as_str())
-            .unwrap_or("event"),
-        event["reason"].as_str().unwrap_or("")
-    )
-}
-
-/// Runs on the support worker; includes every retained row, never the UI filter.
-fn support_text(
-    snapshot: DiagnosticSnapshot,
-    context: serde_json::Value,
-) -> Result<String, String> {
-    let status = &snapshot.status;
+            .unwrap_or("application")
+            .to_owned();
+        if let Some((location, message)) = reason.strip_prefix('[').and_then(|s| s.split_once("] "))
+        {
+            origin = location.replace(" at ", " · ");
+            reason = message;
+        }
+        reason = reason.strip_prefix("lowering: ").unwrap_or(reason);
+        if let Some((module, message)) = reason
+            .strip_prefix("behavior ")
+            .and_then(|s| s.split_once(": "))
+        {
+            origin.push_str(" · ");
+            origin.push_str(module);
+            reason = message;
+        }
+        if let Some(slot) = event["script_slot"].as_u64() {
+            let _ = write!(origin, " · script {}", slot + 1);
+        }
+        if let Some(line) = event["line"].as_u64() {
+            let _ = write!(origin, " · line {line}");
+        }
+        let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+        let heading = if event["level"] == "error" {
+            "Error"
+        } else {
+            "Warning"
+        };
+        let subject = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+        let origin = origin.split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = format!("{heading} · {subject}\n{reason}\nFrom: {origin}");
+        *groups.entry(key).or_default() += 1;
+    }
     let mut text = format!(
-        "KONTRA diagnostics — retained session report\n{}\n\nCoverage: current session retained view and available load summaries; all levels, independent of search.\nRetained {} / {} session events. Session levels: Debug {}, Info {}, Warning {}, Error {}.\nOlder events evicted from view: {}; recorder drops: {}; abbreviated events: {}; write errors: {}; retention errors: {}.\nRuntime/load-summary omission counts and cap notices are separate from recorder loss; a notice without a count has unknown omitted cardinality.\nPrevious sessions and rotated disk history are NOT included in this clipboard report. Export support report includes available retained journal history across sessions.\nPaths are redacted; filenames and diagnostic messages remain. Bounded script excerpts around faults are included. No full scripts, samples or credentials.\n\n",
-        crate::build_info::SUMMARY,
-        snapshot.events.len(),
-        status.total_events,
-        status.level_counts[0],
-        status.level_counts[1],
-        status.level_counts[2],
-        status.level_counts[3],
-        status.history_evicted,
-        status.dropped_events,
-        status.truncated_events,
-        status.write_errors,
-        status.retention_errors
+        "KONTRA diagnostics · {}\n",
+        crate::build_info::BUILD.version
     );
-    let mut safe = json!({"build":snapshot.build,"status":snapshot.status,"context":context,"events":snapshot.events});
-    diagnostics::clean(&mut safe, true);
-    let events = safe.as_object_mut().unwrap().remove("events").unwrap();
-    let mut warnings = events
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|event| matches!(event["level"].as_str(), Some("warning" | "error")))
-        .peekable();
-    text.push_str("WARNING AND ERROR DIGEST (retained events; chronological)\n");
-    if warnings.peek().is_none() {
-        text.push_str("No warnings or errors in the retained session view.\n");
+    if groups.is_empty() {
+        text.push_str("No retained warnings or errors.\n");
     }
-    for event in warnings {
-        text.push('\n');
-        text.push_str(&event_heading(event));
-        text.push_str(&script_context(
-            &event["data"],
-            event["script_slot"].is_number() || event["stage"].as_str() == Some("scripts"),
-        ));
-    }
-    text.push_str("\nCONFIGURATION, STATUS AND LOAD SUMMARIES\n");
-    text.push_str(&serde_json::to_string_pretty(&safe).map_err(|e| e.to_string())?);
-    text.push_str("\n\nALL RETAINED EVENTS (chronological; full warning/error records included)\n");
-    for event in events.as_array().unwrap() {
-        text.push('\n');
-        text.push_str(&event_heading(event));
-        text.push_str(&serde_json::to_string_pretty(event).map_err(|e| e.to_string())?);
-        if let Some(excerpt) = diagnostics::excerpt_text(event) {
-            text.push_str("\nScript source context (numbered lines; > marks the fault)\n");
-            text.push_str(excerpt);
+    for (message, count) in groups {
+        let _ = write!(text, "\n{message}");
+        if count > 1 {
+            let _ = write!(text, " · {count} occurrences");
         }
         text.push('\n');
     }
@@ -587,9 +579,7 @@ fn support_text(
 fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
     if let Some(text) = state.copy_ready.take() {
         ui.set_clipboard(text);
-        state.copy_message = Some(
-            "Copied retained session diagnostics. Export includes older journal history.".into(),
-        );
+        state.copy_message = Some("Copied compact diagnostics.".into());
     }
     let snapshot = state.snapshot.clone();
     if let Some(snapshot) = &snapshot {
@@ -640,20 +630,22 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 .into_owned();
         }
     }
-    let (copy, copy_el) = action(ui, "logs-copy-all", "Copy all", false);
+    let (copy, copy_el) = action(ui, "logs-copy-all", "Copy diagnostics", false);
     if copy && state.copy_thread.is_none() {
         let params = params.clone();
         let answer = state.copy_answer.clone();
         state.copy_error = None;
-        state.copy_message = Some("Preparing retained session diagnostics…".into());
+        state.copy_message = Some("Preparing compact diagnostics…".into());
         match std::thread::Builder::new()
             .name("kontra-copy-diagnostics".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let context = params.diagnostic_report();
-                    support_text(diagnostics::snapshot(), context)
+                    let _keepalive = params;
+                    support_text(&diagnostics::snapshot().events)
                 }))
-                .unwrap_or_else(|_| Err("Could not collect diagnostics. Retry Copy all.".into()));
+                .unwrap_or_else(|_| {
+                    Err("Could not collect diagnostics. Retry Copy diagnostics.".into())
+                });
                 *super::lock(&answer) = Some(result);
                 WAKE.fetch_add(1, Ordering::Release);
             }) {
@@ -1305,9 +1297,12 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
                 state.detail = Some((event.sequence, details(event).into()));
             }
             let full = state.detail.as_ref().unwrap().1.clone();
-            let (copy, copy_el) = action(ui, "logs-copy", "Copy details", false);
+            let (copy, copy_el) = action(ui, "logs-copy", "Copy diagnostics", false);
             if copy {
-                ui.set_clipboard(full.to_string());
+                match support_text(std::slice::from_ref(event)) {
+                    Ok(text) => ui.set_clipboard(text),
+                    Err(error) => state.copy_error = Some(error),
+                }
             }
             let (scope, scope_el) = action(ui, "logs-this-load", "This load", false);
             if scope && let Some(load) = &event.load_id {
@@ -1498,6 +1493,39 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn compact_diagnostics_group_errors_and_keep_only_the_origin() {
+        let event: LogEvent = serde_json::from_value(json!({
+            "schema_version":1,"sequence":1,"timestamp_ms":0,"monotonic_ms":0,
+            "session_id":"fixture","level":"error","module":"loader","event":"issue",
+            "path":"/private/alice/5STRNGCharge.nksn","stage":"prepare",
+            "reason":"load failed: [Prepare at crates/sampler-kontakt/src/load.rs:420] lowering: behavior KSP: a prepared capacity is exhausted",
+            "data":{"source_excerpt":"on init secret syntax end on","private_token":"secret"}
+        })).unwrap();
+        let text = support_text(&[event.clone(), event.clone()]).unwrap();
+        assert_eq!(text.matches("Error · 5STRNGCharge.nksn").count(), 1);
+        assert!(text.contains("a prepared capacity is exhausted"));
+        assert!(text.contains(
+            "From: Prepare · crates/sampler-kontakt/src/load.rs:420 · KSP · 2 occurrences"
+        ));
+        for excluded in [
+            "/private/alice",
+            "secret",
+            "source_excerpt",
+            "load failed:",
+            "behavior KSP:",
+            "{",
+            "}",
+        ] {
+            assert!(!text.contains(excluded), "clipboard contains {excluded}");
+        }
+        assert!(
+            support_text(&[])
+                .unwrap()
+                .contains("No retained warnings or errors.")
+        );
     }
 
     #[test]
@@ -1969,53 +1997,20 @@ mod tests {
             (title.x - row.x - INSET).abs() <= 1. && (reason.x - title.x).abs() <= 1.,
             "row text starts at the left inset: {row:?}, {title:?}, {reason:?}"
         );
-        let copied = support_text(state.snapshot.as_ref().unwrap().as_ref().clone(), json!({
-            "parts":[{"path":"/virtual/private-user/Diagnostic Test.nki","load":{"issues_omitted":7,"notes":["runtime diagnostic cap reached; omitted locations unknown"]}}],
-            "script_source":"private script payload"})).unwrap();
-        assert!(
-            copied.contains("Marker 0:") && copied.contains("Marker 2047:"),
-            "Copy all includes every retained severity, independent of this single-row search"
-        );
-        assert!(
-            copied.contains("7952")
-                && copied.contains("10000")
-                && copied.contains("issues_omitted")
-                && copied.contains("omitted locations unknown"),
-            "recorder coverage and load/runtime omissions remain distinct"
-        );
-        assert!(
-            copied.contains("Diagnostic Test.nki")
-                && !copied.contains("/virtual/private-user")
-                && !copied.contains("private script payload"),
-            "default redaction keeps filenames and removes private payloads"
-        );
-        assert!(copied.contains("Previous sessions and rotated disk history are NOT included"));
-        let digest = copied.find("WARNING AND ERROR DIGEST").unwrap();
-        let configuration = copied
-            .find("CONFIGURATION, STATUS AND LOAD SUMMARIES")
-            .unwrap();
-        assert!(digest < configuration);
-        let digest = &copied[digest..configuration];
-        assert!(
-            digest.contains("Marker 1003:")
-                && digest.contains("Argument: set_key_color · argument 1 · value 128")
-        );
-        assert!(
-            digest.contains("Script source context unavailable") && !digest.contains("Marker 0:"),
-            "digest shows actionable severities and honest source coverage"
-        );
-        assert!(
-            !copied.contains("private-token") && !copied.contains(r"C:\virtual"),
-            "digest uses the same sanitized records as the complete report"
-        );
-        assert!(
-            copied.contains("\"last_action\"") && copied.contains("\"MidiNote\""),
-            "readable context supplements the original structured records"
-        );
-        assert!(
-            copied.contains("\n>     42 | malformed(\"context)\n"),
-            "Copy all includes readable source context alongside its structured record"
-        );
+        let copied = support_text(&state.snapshot.as_ref().unwrap().events).unwrap();
+        assert!(copied.contains("Marker 1003:") && !copied.contains("Marker 0:"));
+        assert!(copied.contains("Violin.nki") && copied.contains("From: samples"));
+        for excluded in [
+            "private-token",
+            "C:\\virtual",
+            "source_excerpt",
+            "last_action",
+            "MidiNote",
+            "malformed(\"context)",
+            "Complete event record",
+        ] {
+            assert!(!copied.contains(excluded), "clipboard contains {excluded}");
+        }
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(
@@ -2092,8 +2087,8 @@ mod tests {
         let copied = super::super::lock(&clipboard).clone();
         assert!(
             copied.starts_with("KONTRA diagnostics")
-                && copied.contains(crate::build_info::SUMMARY)
-                && copied.contains("CONFIGURATION, STATUS AND LOAD SUMMARIES"),
+                && copied.contains(crate::build_info::BUILD.version)
+                && !copied.contains("CONFIGURATION, STATUS AND LOAD SUMMARIES"),
             "the actual Copy all action publishes worker report text to the clipboard"
         );
 
