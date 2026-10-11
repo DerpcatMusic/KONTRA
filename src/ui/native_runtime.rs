@@ -685,6 +685,7 @@ struct CachedGraph {
     state_rev: u64,
     generation: u64,
     live: bool,
+    texts: Vec<String>,
 }
 pub struct Session {
     lua: Lua,
@@ -702,6 +703,9 @@ pub struct Session {
     /// The last graph holds a text field or an open popover: lowering them
     /// has side effects (editing, wheel capture), so it must run each frame.
     live: std::cell::Cell<bool>,
+    /// Paths of the last graph's text fields: only a focused one edits, so
+    /// only then must lowering run each frame.
+    texts: std::cell::RefCell<Vec<String>>,
     #[cfg(test)]
     event_payloads: std::cell::Cell<usize>,
 }
@@ -877,6 +881,7 @@ impl Session {
             calls: Default::default(),
             generation: Default::default(),
             live: Default::default(),
+            texts: Default::default(),
             #[cfg(test)]
             event_payloads: std::cell::Cell::new(0),
         })
@@ -976,6 +981,7 @@ impl Session {
         {
             self.generation.set(c.generation);
             self.live.set(c.live);
+            *self.texts.borrow_mut() = c.texts.clone();
             return Ok(c.graph.clone());
         }
         {
@@ -995,6 +1001,13 @@ impl Session {
         self.generation.set(self.generation.get() + 1);
         let live = self.lua.globals().get::<bool>("__live").unwrap_or(true);
         self.live.set(live);
+        let texts: Vec<String> = self
+            .lua
+            .globals()
+            .get::<Table>("__texts")
+            .map(|t| t.sequence_values::<String>().flatten().collect())
+            .unwrap_or_default();
+        *self.texts.borrow_mut() = texts.clone();
         let stable = self.lua.globals().get::<u64>("__rev").unwrap_or(0) == state_rev
             && bridge.rev == rev
             && self.calls.get() == calls;
@@ -1007,6 +1020,7 @@ impl Session {
             state_rev,
             generation: self.generation.get(),
             live,
+            texts,
         });
         Ok(graph)
     }
@@ -1014,6 +1028,12 @@ impl Session {
     /// lowering must run every frame (text fields and popups have side
     /// effects). Canvas callbacks read meters even when the graph did not, so
     /// the meter revision is part of it.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+    pub(super) fn text_fields(&self) -> Vec<String> {
+        self.texts.borrow().clone()
+    }
     pub(super) fn lowering_key(&self) -> Option<(u64, u64)> {
         (!self.live.get())
             .then(|| (self.generation.get(), self.bridge.lock_unpoisoned().meter_rev))
