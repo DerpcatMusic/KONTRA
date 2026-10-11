@@ -14,6 +14,46 @@ struct PatchReport {
     summary: Vec<Summary>,
 }
 #[derive(Serialize, Deserialize)]
+struct CachedPatch {
+    key: String,
+    report: PatchReport,
+}
+#[derive(Serialize, Deserialize)]
+struct GapUse {
+    construct: Construct,
+    uses: u64,
+    examples: Vec<(String, u32)>,
+}
+#[derive(Serialize, Deserialize)]
+struct CachedGaps {
+    key: String,
+    gaps: Vec<GapUse>,
+}
+fn aggregate_gaps(scripts: Vec<ScriptReport>) -> Vec<GapUse> {
+    let mut gaps: BTreeMap<(String, Status), GapUse> = BTreeMap::new();
+    for script in scripts {
+        for c in script
+            .constructs
+            .into_iter()
+            .filter(|c| c.status != Status::Implemented)
+        {
+            let example = (script.id.clone(), c.span.line);
+            let row = gaps
+                .entry((c.name.clone(), c.status))
+                .or_insert_with(|| GapUse {
+                    construct: c,
+                    uses: 0,
+                    examples: Vec::new(),
+                });
+            row.uses += 1;
+            if row.examples.len() < 5 && !row.examples.contains(&example) {
+                row.examples.push(example);
+            }
+        }
+    }
+    gaps.into_values().collect()
+}
+#[derive(Serialize, Deserialize)]
 struct Summary {
     script_id: String,
     uses: usize,
@@ -124,7 +164,7 @@ pub fn run(args: &[String]) -> Result<()> {
         let mut failures = Vec::new();
         let mut patches = 0;
         for path in paths {
-            let report = match cached_patch(&path) {
+            let rows = match cached_corpus_patch(&path) {
                 Ok(r) => r,
                 Err(_) => {
                     failures.push(path);
@@ -133,37 +173,35 @@ pub fn run(args: &[String]) -> Result<()> {
             };
             patches += 1;
             let library = library_name(&path, &root);
-            for script in report.scripts {
-                for c in script
-                    .constructs
-                    .into_iter()
-                    .filter(|c| c.status != Status::Implemented)
-                {
-                    let gap = by_name
-                        .entry((c.name.clone(), c.status))
-                        .or_insert_with(|| Gap {
-                            name: c.name,
-                            status: c.status,
-                            owner: c.owner,
-                            spec: c.spec,
-                            detail: c.detail,
-                            uses: 0,
-                            libraries: BTreeSet::new(),
-                            score: 0,
-                            examples: Vec::new(),
-                        });
-                    gap.uses += 1;
-                    gap.libraries.insert(library.clone());
+            for row in rows {
+                let c = row.construct;
+                let gap = by_name
+                    .entry((c.name.clone(), c.status))
+                    .or_insert_with(|| Gap {
+                        name: c.name,
+                        status: c.status,
+                        owner: c.owner,
+                        spec: c.spec,
+                        detail: c.detail,
+                        uses: 0,
+                        libraries: BTreeSet::new(),
+                        score: 0,
+                        examples: Vec::new(),
+                    });
+                gap.uses += row.uses;
+                gap.libraries.insert(library.clone());
+                for (script_id, line) in row.examples {
                     if gap.examples.len() < 5
-                        && !gap.examples.iter().any(|e| {
-                            e.patch == path && e.script_id == script.id && e.line == c.span.line
-                        })
+                        && !gap
+                            .examples
+                            .iter()
+                            .any(|e| e.patch == path && e.script_id == script_id && e.line == line)
                     {
                         gap.examples.push(Example {
                             library: library.clone(),
                             patch: path.clone(),
-                            script_id: script.id.clone(),
-                            line: c.span.line,
+                            script_id,
+                            line,
                         });
                     }
                 }
@@ -261,7 +299,7 @@ fn print_construct(c: &Construct) {
         c.detail
     );
 }
-fn cached_patch(path: &Path) -> Result<PatchReport> {
+fn cache_location(path: &Path, mode: &str) -> Result<(PathBuf, String, PathBuf)> {
     let path = path.canonicalize().context("resolve patch")?;
     let metadata = std::fs::metadata(&path)?;
     let mut hasher = blake3::Hasher::new();
@@ -294,28 +332,61 @@ fn cached_patch(path: &Path) -> Result<PatchReport> {
         .context("no user cache directory")?
         .join("kontakto-parity");
     std::fs::create_dir_all(&dir)?;
-    let cache = dir.join(format!("{}.json", hasher.finalize().to_hex()));
-    if let Ok(bytes) = std::fs::read(&cache) {
-        if let Ok(report) = serde_json::from_slice(&bytes) {
-            return Ok(report);
-        }
-    }
-    let scripts = sampler_kontakt::read_parity_reports(&path).map_err(|_| {
-        anyhow::anyhow!("patch could not be inspected (source and diagnostic values omitted)")
-    })?;
-    let summary = scripts.iter().map(summary).collect();
-    let report = PatchReport {
-        patch: path,
-        scripts,
-        summary,
-    };
-    let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
-    serde_json::to_writer(&mut temp, &report)?;
+    let key = hasher.finalize().to_hex().to_string();
+    let identity = blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex();
+    Ok((path, key, dir.join(format!("{mode}-{identity}.json"))))
+}
+fn persist_cache(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut temp = tempfile::NamedTempFile::new_in(path.parent().context("cache parent")?)?;
+    serde_json::to_writer(&mut temp, value)?;
     temp.as_file().sync_all()?;
-    temp.persist(&cache)
+    temp.persist(path)
         .map_err(|e| e.error)
         .context("write parity cache")?;
-    Ok(report)
+    Ok(())
+}
+fn inspect_patch(path: &Path) -> Result<Vec<ScriptReport>> {
+    sampler_kontakt::read_parity_reports(path).map_err(|_| {
+        anyhow::anyhow!("patch could not be inspected (source and diagnostic values omitted)")
+    })
+}
+fn cached_patch(path: &Path) -> Result<PatchReport> {
+    let (path, key, cache) = cache_location(path, "patch")?;
+    if let Ok(bytes) = std::fs::read(&cache) {
+        if let Ok(cached) = serde_json::from_slice::<CachedPatch>(&bytes) {
+            if cached.key == key {
+                return Ok(cached.report);
+            }
+        }
+    }
+    let scripts = inspect_patch(&path)?;
+    let summary = scripts.iter().map(summary).collect();
+    let cached = CachedPatch {
+        key,
+        report: PatchReport {
+            patch: path,
+            scripts,
+            summary,
+        },
+    };
+    persist_cache(&cache, &cached)?;
+    Ok(cached.report)
+}
+fn cached_corpus_patch(path: &Path) -> Result<Vec<GapUse>> {
+    let (path, key, cache) = cache_location(path, "corpus")?;
+    if let Ok(bytes) = std::fs::read(&cache) {
+        if let Ok(cached) = serde_json::from_slice::<CachedGaps>(&bytes) {
+            if cached.key == key {
+                return Ok(cached.gaps);
+            }
+        }
+    }
+    let cached = CachedGaps {
+        key,
+        gaps: aggregate_gaps(inspect_patch(&path)?),
+    };
+    persist_cache(&cache, &cached)?;
+    Ok(cached.gaps)
 }
 fn corpus_paths(root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
@@ -371,4 +442,41 @@ fn is_patch(path: &Path) -> bool {
             .iter()
             .any(|ext| e.eq_ignore_ascii_case(ext))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn corpus_cache_counts_uses_and_keeps_only_gap_examples() {
+        let report = sampler_ksp::parity_report(
+            "on init set_global_key(1) set_global_key(2) end on",
+            "ksp:slot0",
+            "test",
+        );
+        let total = summary(&report);
+        assert_eq!(
+            total.statuses.iter().map(|s| s.uses).sum::<usize>(),
+            total.uses
+        );
+        let gaps = aggregate_gaps(vec![report]);
+        let stub = gaps
+            .iter()
+            .find(|r| r.construct.name == "set_global_key")
+            .unwrap();
+        assert_eq!(stub.uses, 2);
+        assert_eq!(stub.examples, vec![("ksp:slot0".into(), 1)]);
+        let json = serde_json::to_string(&gaps).unwrap();
+        assert!(!json.contains("tokens"));
+        assert!(!json.contains("lowered"));
+    }
+    #[test]
+    fn sharded_lists_deduplicate_patches_and_admit_multis() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("items.tsv");
+        std::fs::write(&path,"kontakt\t/Kontakt/Library/Patch.nki\nkontakt\t/Kontakt/Library/Patch.nki\nkontakt-multi\t/Kontakt/Library/Multi.nkm\nuvi-program\t/Bank.ufs::Program\n").unwrap();
+        let paths = corpus_paths(&path).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(library_name(&paths[0], &path), "Library");
+    }
 }
