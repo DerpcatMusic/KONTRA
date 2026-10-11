@@ -1006,7 +1006,10 @@ impl crate::Runtime {
                 else {
                     continue;
                 };
-                let cursor = demand.cursor;
+                let full = demand.cursor;
+                // Native loop slots reduce to the single-loop law of their
+                // current segment, so they keep the geometric reaches too.
+                let cursor = full.segment_cursor();
                 if let Some((reach, direction, lead)) =
                     cursor.linear_reach(demand.frames.saturating_sub(1))
                 {
@@ -1047,7 +1050,7 @@ impl crate::Runtime {
                     }
                 } else {
                     let complete =
-                        cursor.visit_demand(demand.frames, demand.envelope, |offset, frames| {
+                        full.visit_demand(demand.frames, demand.envelope, |offset, frames| {
                             visit(frames, demand.at + u64::from(offset))
                         });
                     debug_assert!(complete || failure.is_some());
