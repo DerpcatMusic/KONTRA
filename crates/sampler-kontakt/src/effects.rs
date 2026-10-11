@@ -533,19 +533,13 @@ fn product(a: Matrix, b: Matrix) -> Matrix {
 
 /// The stereo matrix of a linear module, and what it leaves out.
 fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
-    use sampler_ir::Reason::{NotModeled, UnknownLaw};
+    use sampler_ir::Reason::NotModeled;
     Some(match *params {
         Params::Gainer { gain } => [[f64::from(gain), 0.0], [0.0, f64::from(gain)]],
         Params::Inverter { invert, swap } => {
-            if invert || swap {
-                // Field order follows the KSP parameter list; not verified
-                // against a rendering.
-                notes.push((
-                    "inverter flag order".into(),
-                    format!("invert {invert} swap {swap}"),
-                    UnknownLaw,
-                ));
-            }
+            // Kontakt 8 Effect Reference: Inverter. Reader FUN_140d01db0,
+            // assignment FUN_1409619b0 at 0x140961f91, audio FUN_140908e60:
+            // saved +8 is phase invert (+0x1c0), saved +9 is swap (+0x1c1).
             let sign = if invert { -1.0 } else { 1.0 };
             if swap {
                 [[0.0, sign], [sign, 0.0]]
@@ -3092,6 +3086,18 @@ mod tests {
     }
 
     #[test]
+    fn inverter_saved_flags_match_native_assignment_and_audio() {
+        // BPar+8/+9 -> wrapper+0x1c0/+0x1c1, FUN_1409619b0 case 4.
+        for (flags, expected) in [(vec![1, 0], [-0.25, 0.5]), (vec![0, 1], [-0.5, 0.25]), (vec![1, 1], [0.5, -0.25])] {
+            let built = chain(&[slot(0x1a, flags, 1.0)], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let [sampler_ir::Processor::StereoMatrix(matrix)] = built.processors.as_slice() else { panic!("{:?}", built.processors) };
+            let actual = matrix.map(|row| row[0] * 0.25 + row[1] * -0.5);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn stateful_inserts_keep_their_boundaries_and_slot_gains() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.dry_level = 0.0;
@@ -3122,7 +3128,7 @@ mod tests {
                 sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]]),
             ]
         );
-        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
         // An EQ: its boosted band, then its slot gain.
         let mut eq = Vec::new();
         for x in [24i32, 24] {
