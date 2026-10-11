@@ -2316,6 +2316,16 @@ fn pending_incident_path() -> PathBuf {
     reports_dir().join("pending.json")
 }
 
+/// Where an incident's local evidence file lives, from the user's data folder down (shown, never sent).
+pub(super) fn evidence_hint(incident_id: &str) -> String {
+    let data = reports_dir()
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("{data}/crash-reports/pending/{incident_id}.json")
+}
+
 fn keyed_pending_incident_path(incident_id: &str) -> Option<PathBuf> {
     (incident_id.len() == 16 && incident_id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| {
         reports_dir()
