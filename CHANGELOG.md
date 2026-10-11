@@ -6,6 +6,13 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## Unreleased
+
+- Copy diagnostics now produces a compact, deduplicated error-and-origin summary without JSON, script syntax, configuration dumps or journal history. The full local export remains available.
+- NKA arrays use storage sized from their authored declarations, without fixed array-cell or file-byte ceilings. Large snapshots use fewer concurrent job slots; worker file I/O streams through buffers while preserving atomic replacement and failed-read rollback.
+
+Validation of these two additional changes is pending; they are not yet accepted into the shipped fix count. The reported 5STRNGCharge capacity failure came from installed 0.3.430 and is covered by the already accepted 16,000-number/4,000-text snapshot-pool regression in 0.3.439 and later.
+
 ## 0.3.444
 
 Five reviewed compatibility fixes extend 0.3.439:
