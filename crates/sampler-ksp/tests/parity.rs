@@ -86,6 +86,11 @@ fn empty_slot_has_no_gap_and_user_commands_use_resolved_functions() {
             .constructs
             .is_empty()
     );
+    assert!(
+        parity_report(" \n\t", "ksp:slot0", "empty")
+            .constructs
+            .is_empty()
+    );
     let source = "on init declare const $c := 2 end on function f message($c) end function on note call f end on";
     let r = parity_report(source, "ksp:slot0", "test");
     assert!(r.constructs.iter().any(|c| c.name == "f"
