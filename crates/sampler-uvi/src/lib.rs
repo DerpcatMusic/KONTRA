@@ -315,6 +315,12 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
+    if !out.ir.behaviors.is_empty() {
+        out.ir.uvi_script_sources = Some(ir::UviScriptSources {
+            xml: text.into(),
+            files: Default::default(),
+        });
+    }
     Ok((out.ir, out.locations, out.osc_groups, out.insert_nodes))
 }
 
@@ -1070,7 +1076,7 @@ pub struct Translated {
     /// Where each insert element sits in the IR chains, for parameter bindings.
     pub inserts: Vec<InsertNode>,
     /// The program's XML and the bank's Lua members, for its scripts.
-    text: String,
+    text: std::sync::Arc<str>,
     lua: script::Scripts,
 }
 
@@ -1136,7 +1142,7 @@ impl Translated {
                 engine_parameters::convolver_slots(&self.instrument, &self.inserts),
             );
         }
-        let (thread, loaded) = scripted::ScriptThread::spawn_with_ui_state(
+        let (thread, loaded) = scripted::ScriptThread::spawn_shared_with_ui_state(
             self.text.clone(),
             lua,
             config,
@@ -1186,9 +1192,13 @@ pub fn translate_program(
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
-        let text = promote(text, &bank.scripts());
-        let (instrument, ..) =
+        let lua = bank.scripts();
+        let text = promote(text, &lua);
+        let (mut instrument, ..) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+        if let Some(sources) = &mut instrument.uvi_script_sources {
+            sources.files = lua.sources();
+        }
         Ok(instrument)
     };
     translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
@@ -1252,15 +1262,20 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         };
         let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
-        let text = promote(text, &bank.scripts());
+        let lua = bank.scripts();
+        let text = promote(text, &lua);
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
-        let (instrument, locations, groups, inserts) =
+        let (mut instrument, locations, groups, inserts) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(&member), e))?;
         drop(span);
-        let span = sampler_kontakt::audit::Span::new("uvi_script_resources");
-        let lua = bank.scripts();
-        drop(span);
+        let text = instrument
+            .uvi_script_sources
+            .as_ref()
+            .map_or_else(|| std::sync::Arc::from(text), |s| s.xml.clone());
+        if let Some(sources) = &mut instrument.uvi_script_sources {
+            sources.files = lua.sources();
+        }
         return Ok(Translated {
             instrument,
             locations,
@@ -1278,6 +1293,10 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
     )
     .map_err(|e| describe(path, e))?;
+    let text = instrument
+        .uvi_script_sources
+        .as_ref()
+        .map_or_else(|| std::sync::Arc::from(text), |s| s.xml.clone());
     Ok(Translated {
         instrument,
         locations,
@@ -1389,8 +1408,11 @@ pub fn load_program_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations) =
+    let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = bank.scripts().sources();
+    }
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
@@ -1517,6 +1539,9 @@ pub fn load_program_with_options(
     let (text, program_path) = bank.program(program)?;
     let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = bank.scripts().sources();
+    }
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
@@ -1556,11 +1581,15 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let text = promote(text, &bank.scripts());
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let lua = bank.scripts();
+    let text = promote(text, &lua);
+    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (mut instrument, locations, groups, inserts) =
         translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = lua.sources();
+    }
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
@@ -1658,11 +1687,15 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let text = promote(text, &bank.scripts());
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let lua = bank.scripts();
+    let text = promote(text, &lua);
+    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
-    let (instrument, locations, groups, inserts) =
+    let (mut instrument, locations, groups, inserts) =
         translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = lua.sources();
+    }
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
