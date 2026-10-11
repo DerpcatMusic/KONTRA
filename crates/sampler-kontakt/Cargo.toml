@@ -19,6 +19,7 @@ name = "ksp_fault_kinds"
 required-features = ["scan"]
 
 [dependencies]
+sampler-parity = { path = "../sampler-parity" }
 anyhow = "1"
 symphonia = { version = "0.5", default-features = false, features = ["aiff", "wav", "pcm"] }
 sampler-ir = { path = "../sampler-ir", features = ["cache"] }
