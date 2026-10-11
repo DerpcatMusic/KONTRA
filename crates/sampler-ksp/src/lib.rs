@@ -1507,7 +1507,7 @@ fn compile_initialized_inner(
         .iter()
         .map(|&v| array_file::array(&hir, v))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| error("NKA typed array exceeds explicit-path service limits"))?;
+        .map_err(|_| error("NKA typed array has an invalid name or storage range"))?;
     if !array_files.is_empty() && texts.iter().any(|s| s.len() > sampler_core::TEXT_CAPACITY) {
         return Err(error("NKA script initial text exceeds runtime capacity"));
     }
