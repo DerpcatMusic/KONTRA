@@ -1113,6 +1113,15 @@ impl Translated {
         }
         config.rate = f64::from(rate);
         let mut lua = self.lua.clone();
+        #[cfg(feature = "library-access")]
+        if let Some((bank, program)) = &self.bank {
+            let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
+            lua = lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+        }
+        if self.bank.is_none() && let Some(dir) = &self.dir {
+            let resources = resources::Resources::of(&dir.join("ui.uvip"));
+            lua = lua.with_images(move |path| resources.read(path));
+        }
         let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
             match (&self.bank, &self.dir) {
                 (Some((bank, program)), _) => {
