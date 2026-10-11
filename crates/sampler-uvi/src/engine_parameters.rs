@@ -1,18 +1,132 @@
-//! Native catalog fields bound to the controls actually read by the DSP.
+//! Catalog fields bound to the controls the DSP reads. A scripted program's
+//! translation gives every insert a fixed processor layout (see `lanes`), so a
+//! script's `setParameter` lands on a control-driven stage.
 use crate::{InsertNode, script::parameters};
+use ir::ProcessorParameter as P;
 use sampler_core::{EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
 use sampler_ir as ir;
 
 const PREFIX: &str = "uvi:insert:";
 
-// Only exact native fields with direct DSP lanes belong here. In particular,
-// ThreeBandShelves' relative-stage approximation is not a native gain control.
-fn field(kind: &str, name: &str) -> Option<(ir::ProcessorParameter, &'static str)> {
+/// Whether `node` sits on a bus (program, layer or aux), not in a keygroup's
+/// per-voice chain. Only bus chains get the control-driven stages.
+pub(crate) fn bus_scope(node: roxmltree::Node) -> bool {
+    !node.ancestors().any(|a| a.has_tag_name("Keygroup"))
+}
+
+/// Processors of the insert (offset from its first) that follow `name`. Pure
+/// in the kind and name; the translator emits the same fixed layouts:
+/// ThreeBandShelves is [level, low shelf, high shelf] with the shelves
+/// relative to the level, DigitalEq is 16 bands then its overall level, a
+/// GainMatrix and an AuxEffect gain are one processor.
+fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
     match (kind, name) {
-        ("OnePole", "Freq") => Some((ir::ProcessorParameter::Cutoff, "ENGINE_PAR_CUTOFF")),
-        ("Gain", "Volume") => Some((ir::ProcessorParameter::Gain, "ENGINE_PAR_VOLUME")),
-        _ => None,
+        ("Gain", "Volume") | ("AuxEffect", "Gain") => vec![(0, P::Gain)],
+        ("OnePole", "Freq") => vec![(0, P::Cutoff)],
+        ("ThreeBandShelves", "GainMid") => vec![
+            (0, P::GainDecibels),
+            (1, P::ReferenceDecibels),
+            (2, P::ReferenceDecibels),
+        ],
+        ("ThreeBandShelves", "GainLow") => vec![(1, P::GainDecibels)],
+        ("ThreeBandShelves", "GainHigh") => vec![(2, P::GainDecibels)],
+        ("ThreeBandShelves", "FreqLowMid") => vec![(1, P::Frequency)],
+        ("ThreeBandShelves", "FreqMidHigh") => vec![(2, P::Frequency)],
+        ("GainMatrix", "Gain_1_1") => vec![(0, P::CellLL)],
+        ("GainMatrix", "Gain_2_1") => vec![(0, P::CellLR)],
+        ("GainMatrix", "Gain_1_2") => vec![(0, P::CellRL)],
+        ("GainMatrix", "Gain_2_2") => vec![(0, P::CellRR)],
+        ("DigitalEq", "OverallGain") => vec![(16, P::GainDecibels)],
+        ("DigitalEq", band) => {
+            let digits = band.trim_start_matches(|c: char| !c.is_ascii_digit());
+            let field = &band[..band.len() - digits.len()];
+            match (field, digits.parse::<usize>()) {
+                ("Enabled", Ok(n @ 1..=16)) => vec![(n - 1, P::Enabled)],
+                ("Freq", Ok(n @ 1..=16)) => vec![(n - 1, P::Frequency)],
+                ("Q", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Gain", Ok(n @ 1..=16)) => vec![(n - 1, P::GainDecibels)],
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
     }
+}
+
+/// `lanes` for a concrete element. Kinds with a fixed layout only on a bus
+/// are left static in a keygroup. A OnePole that tracks keys keeps the
+/// translator's folded cutoff, and DigitalEq band gains stay static under a
+/// GainScale other than 1 (a control would bypass the scale).
+fn node_lanes(node: roxmltree::Node, name: &str) -> Vec<(usize, P)> {
+    let kind = node.tag_name().name();
+    if !matches!(kind, "Gain" | "OnePole") && !bus_scope(node) {
+        return Vec::new();
+    }
+    let number = |n: &str, d: f64| node.attribute(n).and_then(|v| v.parse().ok()).unwrap_or(d);
+    if (kind == "OnePole" && number("KeyTracking", 0.) != 0.)
+        || (kind == "DigitalEq"
+            && name != "OverallGain"
+            && name.starts_with("Gain")
+            && number("GainScale", 1.) != 1.)
+    {
+        return Vec::new();
+    }
+    lanes(kind, name)
+}
+
+/// Whether the translator wraps this element in a Mix of its own, so that
+/// `Bypass` reaches the DSP. Elements it does not model have nothing to bypass.
+pub(crate) fn bypassable(node: roxmltree::Node) -> bool {
+    let number = |n: &str, d: f64| node.attribute(n).and_then(|v| v.parse().ok()).unwrap_or(d);
+    match node.tag_name().name() {
+        "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole"
+        | "TrackDelay" | "EffectRack" => true,
+        "WaveShaper" => matches!(number("Mode", 0.) as i64, 6 | 7),
+        "Convolver" | "SampledReverb" => bus_scope(node),
+        // A program aux wraps its inserts; a rack chain's bypass is its gain.
+        "AuxEffect" => node.parent().is_some_and(|p| p.has_tag_name("Auxs")),
+        _ => false,
+    }
+}
+
+/// The catalog fields of `node` that reach the DSP in a scripted program.
+/// "BypassGain" marks a rack chain, whose bypass is folded into its gain.
+pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
+    let kind = node.tag_name().name();
+    let mut out: Vec<&'static str> = parameters::definitions(kind)
+        .iter()
+        .filter(|p| !node_lanes(node, p.name).is_empty())
+        .map(|p| p.name)
+        .collect();
+    if bypassable(node) {
+        out.push("Bypass");
+    } else if kind == "AuxEffect"
+        && node.parent().is_some_and(|p| p.has_tag_name("Chains"))
+        && bus_scope(node)
+    {
+        out.push("BypassGain");
+    }
+    out
+}
+
+/// The engine parameter id and address slot a field is written through. The
+/// older Gain and OnePole fields keep slot -1; the rest are told apart by
+/// their catalog position. The engine name only has to be a valid id.
+fn address(kind: &str, name: &str) -> Option<(&'static str, i32)> {
+    let first = lanes(kind, name).first().map(|l| l.1)?;
+    let engine = if matches!(first, P::Cutoff | P::Frequency) {
+        "ENGINE_PAR_CUTOFF"
+    } else {
+        "ENGINE_PAR_VOLUME"
+    };
+    let slot = if matches!((kind, name), ("Gain", "Volume") | ("OnePole", "Freq")) {
+        -1
+    } else {
+        parameters::definitions(kind)
+            .iter()
+            .position(|p| p.name == name)
+            .and_then(|i| i32::try_from(i).ok())?
+    };
+    Some((engine, slot))
 }
 
 fn key(node: usize, kind: &str, name: &str) -> String {
@@ -20,7 +134,7 @@ fn key(node: usize, kind: &str, name: &str) -> String {
 }
 
 pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParameterBinding> {
-    let (_, engine) = field(kind, name)?;
+    let (engine, slot) = address(kind, name)?;
     let p = parameters::definitions(kind)
         .iter()
         .find(|p| p.name == name)?;
@@ -28,7 +142,7 @@ pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParam
         address: EngineParameterAddress {
             parameter: sampler_core::engine_parameter_id(engine)?,
             group: -1,
-            slot: -1,
+            slot,
             generic: i32::try_from(node).ok()?,
         },
         control: sampler_core::lower::ir_control_id(&key(node, kind, name)),
@@ -70,7 +184,7 @@ pub(crate) fn register(
     doc: &roxmltree::Document,
     inserts: &[InsertNode],
 ) {
-    for insert in inserts.iter().filter(|i| i.count == 1) {
+    for insert in inserts.iter().filter(|i| i.count > 0) {
         let Some(node) = u32::try_from(insert.node)
             .ok()
             .and_then(|id| doc.get_node(roxmltree::NodeId::new(id)))
@@ -78,23 +192,26 @@ pub(crate) fn register(
             continue;
         };
         let kind = node.tag_name().name();
-        // The translator reports nonzero OnePole key tracking as unmodeled;
-        // do not replace its static approximation with an unrelated raw lane.
-        if kind == "OnePole"
-            && node
-                .attribute("KeyTracking")
-                .is_some_and(|v| v.parse::<f64>().unwrap_or(0.) != 0.)
-        {
-            continue;
-        }
         for p in parameters::definitions(kind) {
-            let Some((parameter, _)) = field(kind, p.name) else {
+            let lanes: Vec<_> = node_lanes(node, p.name)
+                .into_iter()
+                .filter(|(offset, _)| *offset < insert.count)
+                .collect();
+            if lanes.is_empty() {
                 continue;
-            };
-            let default = node
+            }
+            let mut default = node
                 .attribute(p.name)
                 .and_then(|v| v.parse::<f64>().ok())
                 .unwrap_or(p.default);
+            // A bypassed rack chain starts silent: its gain is what bypass is.
+            if kind == "AuxEffect"
+                && p.name == "Gain"
+                && node.attribute("Bypass").is_some_and(|v| v.parse::<f64>().unwrap_or(0.) != 0.)
+                && live_names(node).contains(&"BypassGain")
+            {
+                default = 0.;
+            }
             if !default.is_finite() || default < p.min || default > p.max {
                 continue;
             }
@@ -114,19 +231,50 @@ pub(crate) fn register(
                 },
                 automation: ir::Automation::None,
             });
-            instrument.processor_controls.push(ir::ProcessorControl {
-                control,
-                chain: insert.chain,
-                index: insert.first,
-                parameter,
-                ramp: ir::Time::Seconds(0.),
-            });
+            for (offset, parameter) in lanes {
+                instrument.processor_controls.push(ir::ProcessorControl {
+                    control,
+                    chain: insert.chain,
+                    index: insert.first + offset,
+                    parameter,
+                    ramp: ir::Time::Seconds(0.),
+                });
+            }
         }
     }
 }
 
+/// Start the program as the scripts left it: control defaults, and a Bypass
+/// written while loading (a Mix's bypass, or a rack chain's gain at zero).
 pub(crate) fn initialize(instrument: &mut ir::Instrument, overrides: &[(usize, String, String)]) {
     for (node, name, value) in overrides {
+        if name == "Bypass" {
+            let off = value.parse::<f64>().is_ok_and(|v| v != 0.);
+            let mut mixed = false;
+            for p in instrument.chains.iter_mut().flat_map(|c| {
+                c.pre_amplitude.iter_mut().chain(&mut c.post_amplitude)
+            }) {
+                if let ir::Processor::Mix {
+                    address, bypass, ..
+                } = p
+                    && usize::try_from(address.generic).ok() == Some(*node)
+                {
+                    *bypass = off;
+                    mixed = true;
+                }
+            }
+            if !mixed && off {
+                // A rack chain: bypass is gain zero.
+                for c in &mut instrument.controls {
+                    if c.key == key(*node, "AuxEffect", "Gain")
+                        && let ir::ControlValue::Continuous { default, .. } = &mut c.value
+                    {
+                        *default = 0.;
+                    }
+                }
+            }
+            continue;
+        }
         for c in &mut instrument.controls {
             let Some(mut parts) = c.key.strip_prefix(PREFIX).map(|s| s.split(':')) else {
                 continue;

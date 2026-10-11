@@ -1387,6 +1387,20 @@ pub enum ProcessorParameter {
     Ratio,
     Attack,
     Release,
+    /// Hertz, on a Filter (live: scripted insert effects).
+    Frequency,
+    Quality,
+    /// Decibels: a Filter's boost or a Gain's level.
+    GainDecibels,
+    /// Decibels subtracted from `GainDecibels` (a relative shelf).
+    ReferenceDecibels,
+    /// Nonzero lets the stage act; below 0.5 it passes the signal.
+    Enabled,
+    /// The cells of a StereoMatrix: output (row) by input (column), L or R.
+    CellLL,
+    CellLR,
+    CellRL,
+    CellRR,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
