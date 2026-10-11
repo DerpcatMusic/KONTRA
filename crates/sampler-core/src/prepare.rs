@@ -823,6 +823,19 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             };
             for route in &program.routes {
+                if matches!(
+                    route.target.compiled(),
+                    Some(
+                        super::voice_mod::CompiledTarget::LoopStart
+                            | super::voice_mod::CompiledTarget::LoopLength
+                    )
+                ) && !region
+                    .cursor
+                    .cursor(&self.cursor_loops)
+                    .supports_loop_control(self.pcm[region.sample].frame_count())
+                {
+                    return Err(Error::InvalidInput);
+                }
                 if route.target.compiled().is_some() {
                     continue;
                 }
