@@ -103,7 +103,8 @@ fn callback_folder_lookup_uses_host_paths_and_empty_missing_paths() {
            @path := get_folder($i)
            $a := find_group(@path)
            $b := find_group(get_folder($GET_FOLDER_LIBRARY_DIR))
-           $c := find_group(get_folder(99))
+           $i := 99
+           $c := find_group(get_folder($i))
          end on",
         sampler_ksp::Environment {
             folders: ["/library/", "", "/patch/", ""].map(str::to_owned),
