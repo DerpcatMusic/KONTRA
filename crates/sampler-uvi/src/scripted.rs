@@ -382,6 +382,16 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
+                Command::Impulse { slot, upload } => {
+                    if upload.swap(rt, slot).is_err() {
+                        let category = "convolver impulse without a DSP slot";
+                        if !self.unmodeled.contains(&category)
+                            && self.unmodeled.len() < self.unmodeled.capacity()
+                        {
+                            self.unmodeled.push(category);
+                        }
+                    }
+                }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
                     if let Some(note) = self.notes.get(&id).copied() {
