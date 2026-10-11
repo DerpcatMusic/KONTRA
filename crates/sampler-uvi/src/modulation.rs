@@ -754,6 +754,20 @@ impl Translation {
         }
         match kind {
             "ConstantModulation" => {
+                if let Some(id) = node.attribute("ScriptLive").and_then(|t| t.parse::<u16>().ok()) {
+                    // A script writes it: a live source the host drives, not a fold.
+                    let polar = number(node, "Bipolar", 0.0)? != 0.0;
+                    let source = ir::ModulationSource::Script(id);
+                    return Ok(Ok(Signal::Live {
+                        modulator: self.modulator(format!("{source:?}"), source),
+                        curve: if polar { bipolar } else { identity },
+                        bipolar: polar,
+                        scale: None,
+                        smoothing: 0.0,
+                        extra: None,
+                        shared: None,
+                    }));
+                }
                 let value = number(node, "Value", 0.0)?.clamp(0.0, 1.0);
                 let value = match number(node, "Style", 0.0)? {
                     0.0 => value,
