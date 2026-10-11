@@ -238,6 +238,7 @@ fn check(stages: &[PreparedProcessor], filters: &[PreparedFilter], parameters: &
                             at,
                             &mut [],
                             &mut FilterContext {
+                                tempo: 120.0,
                                 bank: &mut scalar_bank,
                                 expression: None,
                                 reverbs: &mut [],
@@ -408,6 +409,7 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
     let mut block = [[0.125; BLOCK]; 2];
     let mut bank = FilterBank::new(&[], 0).unwrap();
     let mut context = FilterContext {
+        tempo: 120.0,
         bank: &mut bank,
         expression: None,
         reverbs: &mut [],

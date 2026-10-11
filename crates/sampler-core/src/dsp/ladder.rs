@@ -8,7 +8,7 @@ pub struct LadderSettings {
     pub cutoff: Parameter,
     pub resonance: Parameter,
     pub record_version: u16,
-    /// Output stage 1..=4 (Ladder LP1..LP4).
+    /// Output selector: saved Morphology type minus 29 (1..=12).
     pub taps: u8,
 }
 
@@ -26,11 +26,13 @@ impl LadderSettings {
     }
 
     pub(super) fn valid(self) -> bool {
-        (1..=4).contains(&self.taps) && [self.cutoff, self.resonance].iter().all(|p| {
-            p.valid()
-                && !matches!(p, Parameter::Expression { .. })
-                && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
-        }) && self.gain.valid()
+        (1..=12).contains(&self.taps)
+            && [self.cutoff, self.resonance].iter().all(|p| {
+                p.valid()
+                    && !matches!(p, Parameter::Expression { .. })
+                    && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
+            })
+            && self.gain.valid()
             && !matches!(self.gain, Parameter::Expression { .. })
             && self.gain.bounds().iter().all(|v| (-1.0..=1.0).contains(v))
     }

@@ -260,6 +260,7 @@ impl Runtime {
                     start,
                     at,
                     tone_cutoff,
+                    self.tempo,
                     if TRACE {
                         g.dsp
                             .trace
@@ -808,6 +809,7 @@ impl Runtime {
             expression: gains,
             parameters,
             filters: super::dsp::svf::FilterContext {
+                tempo: self.tempo,
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
                 reverbs: &mut [],
