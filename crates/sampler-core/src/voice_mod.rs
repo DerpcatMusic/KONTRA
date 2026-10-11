@@ -1384,7 +1384,8 @@ impl VoiceModState {
                     let (phase, seed) = if lfo.shared && lfo.retrigger {
                         let t = since as f64 / clock.rate;
                         (lfo.phase + hz * t, self.restart.1 ^ i as u64)
-                    } else if lfo.retrigger {
+                    } else if lfo.retrigger || !p.phase_routes[i].is_empty() {
+                        // An absolute onset lane also replaces a private free-cycle phase.
                         phases[i] += hz * f64::from(frames) / clock.rate;
                         (phases[i], seed ^ i as u64)
                     } else {
