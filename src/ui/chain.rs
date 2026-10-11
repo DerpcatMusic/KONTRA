@@ -196,6 +196,9 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ir::Target::Pitch => "Pitch".into(),
         ir::Target::Pan => "Pan".into(),
         ir::Target::SampleStart => "Sample start".into(),
+        ir::Target::SourcePhase(_) => "LFO start phase".into(),
+        ir::Target::LoopStart => "Loop start".into(),
+        ir::Target::LoopLength => "Loop length".into(),
         ir::Target::Control(c) => i
             .controls
             .get(c.0)
