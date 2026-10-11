@@ -12,6 +12,9 @@ pub struct Stage {
 
 impl Prepared {
     /// Install exact module positions with independently validated callback contexts.
+    /// With parameter receivers installed, only the identical stage array is
+    /// accepted. Clear them with `with_parameter_programs(vec![])` before changing
+    /// routing, then explicitly rebind receivers against the new stages.
     pub fn with_stages(mut self, stages: Vec<Stage>) -> Result<Self, Error> {
         for stage in &stages {
             if stage
@@ -36,6 +39,9 @@ impl Prepared {
             .iter()
             .any(|binding| binding.stage >= stages.len())
         {
+            return Err(Error::InvalidInput);
+        }
+        if !self.parameter_programs.is_empty() && self.stages.as_ref() != stages.as_slice() {
             return Err(Error::InvalidInput);
         }
         self.stages = stages.into_boxed_slice();

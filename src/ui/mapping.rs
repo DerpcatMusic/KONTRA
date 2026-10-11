@@ -194,6 +194,53 @@ fn rectangles(inst: &ir::Instrument) -> Arc<[(usize, u8, u8, u8, u8)]> {
     rectangles.into()
 }
 
+const STACK_PAGE: usize = 32;
+const STACK_ROW: f64 = 22.;
+
+fn walk_stack(ui: &mut Ui, slot: usize, state: &mut State, height: f64) {
+    let Some(id) = ui.focus_key() else { return };
+    let Some((part, zone)) = id.strip_prefix("map-zone-").and_then(|s| s.split_once('-')) else {
+        return;
+    };
+    if part.parse::<usize>().ok() != Some(slot) || ui.keys(id).is_empty() {
+        return;
+    }
+    let Some(mut at) = zone
+        .parse()
+        .ok()
+        .and_then(|n| state.stack.binary_search(&n).ok())
+    else {
+        return;
+    };
+    let last = state.stack.len() - 1;
+    let page = (height / STACK_ROW).floor().max(1.) as usize;
+    let mut handled = false;
+    for press in ui.keys(id) {
+        if press.mods.ctrl || press.mods.alt || press.mods.cmd || press.mods.shift {
+            continue;
+        }
+        at = match press.key {
+            Key::Up => at.saturating_sub(1),
+            Key::Down => at.saturating_add(1).min(last),
+            Key::Home => 0,
+            Key::End => last,
+            Key::PageUp => at.saturating_sub(page),
+            Key::PageDown => at.saturating_add(page).min(last),
+            _ => continue,
+        };
+        handled = true;
+    }
+    if handled {
+        state.selected = state.stack[at];
+        ui.focus(format!("map-zone-{slot}-{}", state.selected));
+        // The next build mounts this source's page; MUI clamps against its new content.
+        ui.set_scroll(
+            format!("map-stack-{slot}"),
+            [0., (at % STACK_PAGE) as f64 * STACK_ROW],
+        );
+    }
+}
+
 pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
     let compact = ui
         .scene()
@@ -472,7 +519,10 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             } else {
                 0
             };
-            ui.set_scroll(format!("map-stack-{slot}"), [0., (n % 32) as f64 * 22.]);
+            ui.set_scroll(
+                format!("map-stack-{slot}"),
+                [0., (n % STACK_PAGE) as f64 * STACK_ROW],
+            );
             st.cell = Some((key, vel));
             st.selected = hit[n];
             st.stack = hit;
@@ -485,6 +535,13 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             });
         }
     }
+    let stack_height = if compact { STACK_ROW } else { STACK_ROW * 2. };
+    walk_stack(
+        ui,
+        slot,
+        &mut cx.state.inside.get_mut(&slot).unwrap().mapping,
+        stack_height,
+    );
     let selected = cx.state.inside[&slot].mapping.selected;
     let geometry = cx.state.inside[&slot].mapping.rectangles.clone();
     let selected_zone = inst
@@ -575,24 +632,24 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     let scale = row(ticks).gap(0);
     let mut layers = Vec::new();
     let stack = cx.state.inside[&slot].mapping.stack.clone();
-    let mut page = stack.iter().position(|&n| n == selected).unwrap_or(0) / 32;
+    let mut page = stack.iter().position(|&n| n == selected).unwrap_or(0) / STACK_PAGE;
     let mut pages = Vec::new();
     for (suffix, label, next) in [
         ("prev", "Previous", page.saturating_sub(1)),
         ("next", "Next", page + 1),
     ] {
-        let disabled = next == page || next * 32 >= stack.len();
+        let disabled = next == page || next * STACK_PAGE >= stack.len();
         let (hit, el) =
             super::theme::action(ui, format!("map-stack-{suffix}-{slot}"), label, false);
         if hit && !disabled {
             page = next;
-            cx.state.inside.get_mut(&slot).unwrap().mapping.selected = stack[page * 32];
+            cx.state.inside.get_mut(&slot).unwrap().mapping.selected = stack[page * STACK_PAGE];
             ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         }
         pages.push(el.when(disabled, |e| e.disabled()));
     }
     let selected = cx.state.inside[&slot].mapping.selected;
-    for &n in stack.iter().skip(page * 32).take(32) {
+    for &n in stack.iter().skip(page * STACK_PAGE).take(STACK_PAGE) {
         let z = &inst.zones[n];
         let on = n == selected;
         let id = format!("map-zone-{slot}-{n}");
@@ -615,7 +672,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 .lines(1)
             ]
             .gap(TIGHT)
-            .h(22.)
+            .h(STACK_ROW)
             .pad((0, TIGHT))
             .focusable()
             .a11y(A11y::Toggle { on })
@@ -688,12 +745,18 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     .gap(SPACE)
     .align(Align::Start);
     let stack_head = row![
-        caption(format!("Overlapping zones · {}", stack.len())).fill(secondary()),
+        caption(format!("Overlapping zones · {}", stack.len()))
+            .fill(secondary())
+            .tip("Up/Down selects zones · Home/End jumps · Page Up/Down moves by visible rows"),
         spacer(),
         caption(if stack.is_empty() {
             "0".into()
         } else {
-            format!("{}–{}", page * 32 + 1, ((page + 1) * 32).min(stack.len()))
+            format!(
+                "{}–{}",
+                page * STACK_PAGE + 1,
+                ((page + 1) * STACK_PAGE).min(stack.len())
+            )
         })
         .fill(secondary()),
         row(pages).gap(0)
@@ -707,7 +770,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         stack_head,
         col(layers)
             .gap(0)
-            .h(if compact { 22. } else { 44. })
+            .h(stack_height)
             .scroll()
             .id(format!("map-stack-{slot}")),
         inspector
@@ -1082,6 +1145,57 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapping_overlap_walk_idle_and_foreign_focus_do_not_allocate() {
+        let mut ui = super::super::theme::ui();
+        let mut state = State {
+            stack: vec![0, 2, 4, 6],
+            selected: 2,
+            ..Default::default()
+        };
+        for id in [
+            "map-zone-0-2",
+            "map-zone-1-2",
+            "map-search-0",
+            "map-zone-0-stale",
+        ] {
+            ui.focus(id);
+            let calls = crate::plugin::tests::allocations(|| {
+                for _ in 0..128 {
+                    walk_stack(&mut ui, 0, &mut state, STACK_ROW);
+                }
+            });
+            assert_eq!(calls, 0, "idle navigation must retain storage for {id}");
+            assert_eq!(state.selected, 2);
+            assert_eq!(ui.focus_key(), Some(id));
+            if id != "map-zone-0-2" {
+                ui.frame(
+                    block(100., 50.).focusable().id(id),
+                    Some(Size::new(100., 50.)),
+                    Input {
+                        keys: vec![KeyPress {
+                            key: Key::End,
+                            mods: Mods::default(),
+                        }],
+                        ..Default::default()
+                    },
+                    1. / 60.,
+                )
+                .unwrap();
+                let calls = crate::plugin::tests::allocations(|| {
+                    walk_stack(&mut ui, 0, &mut state, STACK_ROW);
+                });
+                assert_eq!(calls, 0);
+                assert_eq!(
+                    state.selected, 2,
+                    "foreign or stale keys do not select a source"
+                );
+                assert_eq!(ui.focus_key(), Some(id));
+            }
+        }
+    }
+
     #[test]
     fn mapping_sample_markers_match_source_loop_and_reverse_boundaries() {
         let range = ir::LoopRange {

@@ -419,8 +419,18 @@ impl std::convert::TryFrom<&Chunk> for Program {
             }
             .into());
         }
-        let reader = Cursor::new(&chunk.data);
-        Self::read(reader)
+        // Stream readers can leave the next record; a bounded chunk cannot.
+        let mut reader = Cursor::new(&chunk.data);
+        let program = Self::read(&mut reader)?;
+        let at = reader.position();
+        if at != chunk.data.len() as u64 {
+            return Err(Error::Generic(format!(
+                "Kontakt Program chunk 0x0028 version 0x{:04x}: {} trailing bytes at body offset {at}",
+                program.version(),
+                chunk.data.len() as u64 - at
+            )));
+        }
+        Ok(program)
     }
 }
 

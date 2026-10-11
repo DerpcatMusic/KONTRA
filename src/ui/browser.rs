@@ -1,8 +1,7 @@
-//! Independently scrollable Kontakt and Falcon/UVI browsers. One query matches
-//! libraries, vendors, folders and presets; selecting a card narrows the result.
-//! With the query cleared, the selected library shows its collapsible hierarchy.
+//! Independently scrollable Kontakt and Falcon/UVI browsers. The upper query
+//! filters libraries; the lower one filters presets, or shows folders when clear.
 //! Cards preserve drag/reorder and context menus. Arrow keys walk each pane,
-//! Enter loads, Tab crosses panes, and Ctrl+F or / focuses the shared search.
+//! Enter loads, Tab crosses panes, and Ctrl+F or / focuses library search.
 
 use super::{Cx, RackDrag, menu, theme::*};
 use crate::library as import;
@@ -56,9 +55,11 @@ fn work(at: usize, count: usize) {
 #[derive(Default)]
 pub struct Browse {
     positions: [Position; 2],
-    /// The shared query last drawn and its matching libraries, cached by catalog identity.
+    /// The upper query last drawn and its matching libraries, cached by catalog identity.
     filtered: String,
     matching: (Option<u64>, HashSet<String>),
+    /// Independent lower-pane query for each provider.
+    preset_search: [String; 2],
     /// How far each pane is slid.
     sources_y: f64,
     list_y: f64,
@@ -354,29 +355,55 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     // Where the focus goes, moved once every row has read this frame's keys
     // with the focus where it was: a key acts once.
     let mut focus_to: Option<String> = None;
-    // Ctrl+F and / always address the one query; Escape clears it before releasing focus.
+    // Ctrl+F and / address library search; Escape clears the focused query.
     let ctrl_f =
         |k: &KeyPress| matches!(k.key, Key::Char('f' | 'F')) && (k.mods.ctrl || k.mods.cmd);
     let slash = |k: &KeyPress| k.key == Key::Char('/') && !(k.mods.ctrl || k.mods.cmd);
     if std::mem::take(&mut cx.state.browse.find)
         || ui.shortcuts().iter().any(|k| ctrl_f(k) || slash(k))
         || ui.keys("search").iter().any(ctrl_f)
+        || ui.keys("preset-search").iter().any(ctrl_f)
     {
         focus_to = Some("search".into());
     }
-    let escaped = cx.state.browse.typing.take().is_some()
-        && ui.shortcuts().iter().any(|k| k.key == Key::Escape);
-    if escaped && !cx.state.search.is_empty() {
-        cx.state.search.clear();
-        focus_to = Some("search".into());
+    let escaped = cx
+        .state
+        .browse
+        .typing
+        .take()
+        .filter(|_| ui.shortcuts().iter().any(|k| k.key == Key::Escape));
+    match escaped {
+        Some("search") if !cx.state.search.is_empty() => {
+            cx.state.search.clear();
+            focus_to = Some("search".into());
+        }
+        Some("preset-search") if !cx.state.browse.preset_search[uvi as usize].is_empty() => {
+            cx.state.browse.preset_search[uvi as usize].clear();
+            cx.state.cursor = None;
+            cx.state.browse.reveal_row = false;
+            focus_to = Some("preset-search".into());
+        }
+        _ => {}
     }
     let search = search_field(
         ui,
         "search",
         &mut cx.state.search,
         "Search",
-        "Search libraries, vendors, presets and folders",
+        "Search libraries and vendors",
     );
+    let preset_search_before = cx.state.browse.preset_search[uvi as usize].clone();
+    let preset_search = search_field(
+        ui,
+        "preset-search",
+        &mut cx.state.browse.preset_search[uvi as usize],
+        "Search presets and folders",
+        "Search presets and folders",
+    );
+    if preset_search_before != cx.state.browse.preset_search[uvi as usize] {
+        cx.state.cursor = None;
+        cx.state.browse.reveal_row = false;
+    }
     let (sort, sort_el) = icon_button(ui, "browser-filter", Icon::Filter, "Sort and filter", false);
     if sort {
         menu::open_under(ui, cx, menu::Target::LibrarySort, "browser-filter");
@@ -392,14 +419,16 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     .lines(1)
     .tip(format!("Sort: {}", settings.sort.label()))
     .id("browser-sort-label");
-    let needle = cx.state.search.to_lowercase();
-    let words: Vec<&str> = needle.split_whitespace().collect();
+    let library_needle = cx.state.search.to_lowercase();
+    let library_words: Vec<&str> = library_needle.split_whitespace().collect();
+    let preset_needle = cx.state.browse.preset_search[uvi as usize].to_lowercase();
+    let preset_words: Vec<&str> = preset_needle.split_whitespace().collect();
     let mut hash = DefaultHasher::new();
     (
         Arc::as_ptr(&presets) as usize,
         Arc::as_ptr(&catalog) as usize,
         uvi,
-        &needle,
+        &library_needle,
         &settings.names,
     )
         .hash(&mut hash);
@@ -407,18 +436,13 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if cx.state.browse.matching.0 != Some(matching_key) {
         let matching = arranged
             .iter()
-            .filter(|library| {
-                matches_query(library, None, &words, &settings)
-                    || library_paths(&grouped, &library.name)
-                        .into_iter()
-                        .any(|path| matches_query(library, Some(path), &words, &settings))
-            })
+            .filter(|library| matches_library_query(library, &library_words, &settings))
             .map(|library| library.name.clone())
             .collect();
         cx.state.browse.matching = (Some(matching_key), matching);
     }
     let mut sources = Vec::new();
-    if words.is_empty() {
+    if library_words.is_empty() {
         sources.push(("source-favorites".to_owned(), Source::Favorites));
         sources.push(("source-recent".to_owned(), Source::Recent));
     }
@@ -432,15 +456,19 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     // Which folder each row shows, for a picture dropped on one.
     *super::lock(&cx.state.picker.rows) = arranged.iter().map(|l| Some(l.dir.clone())).collect();
-    // Typing a new query searches the entire selected provider. A card can narrow it afterwards.
+    // A library query filters sources; clearing it keeps the selected source in view.
     if cx.state.search != cx.state.browse.filtered {
         cx.state.browse.filtered = cx.state.search.clone();
-        if !words.is_empty() {
+        if !library_words.is_empty() {
             cx.state.source = None;
         }
         cx.state.cursor = None;
         cx.state.browse.sources_y = 0.;
-        cx.state.browse.reveal_source = 0;
+        cx.state.browse.reveal_source = if library_words.is_empty() && cx.state.source.is_some() {
+            2
+        } else {
+            0
+        };
     }
     if cx
         .state
@@ -460,6 +488,29 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         _ => None,
     };
     let mut rows = Vec::new();
+    // The upper field walks its library cards; the lower field walks presets.
+    if ui.focused("search") && !sources.is_empty() {
+        let mut at = sources
+            .iter()
+            .position(|(_, source)| Some(source) == cx.state.source.as_ref());
+        for key in ui.keys("search") {
+            if key.key == Key::Enter {
+                let n = at.unwrap_or(0);
+                cx.state.source = Some(sources[n].1.clone());
+                cx.state.cursor = None;
+                enter = true;
+                cx.state.browse.reveal_source = 2;
+                keep_place(cx);
+            } else if let Some(next) = step(at, key.key, sources.len()) {
+                cx.state.source = Some(sources[next].1.clone());
+                cx.state.cursor = None;
+                cx.state.browse.reveal_source = 2;
+                keep_place(cx);
+                at = Some(next);
+                focus_to = Some(sources[next].0.clone());
+            }
+        }
+    }
     // Where the chosen entry sits in the pane, to bring it into view.
     let (mut top, mut chosen_at) = (TIGHT, None);
     let pinned = |dir: &str| settings.pinned.iter().any(|p| p == dir);
@@ -517,6 +568,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         let needs_access = dir
             .as_deref()
             .is_some_and(|dir| catalog.bank_status.keys().any(|bank| bank.starts_with(dir)));
+        let status = needs_access.then_some("Catalogued · loading limited");
         let (label, count, thumb, height, card) = match source {
             Source::Favorites => (
                 "Favorites".to_owned(),
@@ -564,7 +616,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                         .map_or_else(|| library_label(name), |l| settings.library_name(l)),
                     preset_count(&grouped, name),
                     art,
-                    height + 2. * TIGHT,
+                    height + 2. * TIGHT + status.map_or(0., |_| SOURCE_ROW),
                     true,
                 )
             }
@@ -584,7 +636,6 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             _ => None,
         };
         let edit = dir.as_deref().and_then(|dir| library_name(ui, cx, dir));
-        let status = needs_access.then_some("Catalogued · loading limited");
         let el = source_row(
             id, label, count, thumb, height, card, chosen, progress, about, edit, status,
         );
@@ -669,7 +720,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             }));
         }
     } else if !bank_problem && sources.is_empty() {
-        rows.push(hint("No libraries or presets match that search."));
+        rows.push(hint("No libraries match that search."));
     }
     for (n, root) in settings.roots.iter().enumerate().rev() {
         if let Some(problem) = catalog.root_problem(Path::new(&root.path)) {
@@ -704,7 +755,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.state.browse.reveal_source = cx.state.browse.reveal_source.saturating_sub(1);
     }
 
-    // The lower pane uses the same query over the selected provider or source.
+    // The lower pane query filters presets in the selected provider or source.
     let made_of = {
         let mut h = DefaultHasher::new();
         (
@@ -716,7 +767,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             .hash(&mut h);
         (
             &cx.state.source,
-            &needle,
+            &preset_needle,
             &favorites,
             &recent,
             &dirs,
@@ -727,14 +778,21 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         h.finish()
     };
     if cx.state.browse.rows.0 != Some(made_of) {
-        let rows = list(cx, &arranged, &grouped, &favorites, &recent, &needle);
+        let rows = list(
+            cx,
+            &arranged,
+            &grouped,
+            &favorites,
+            &recent,
+            &preset_needle,
+        );
         cx.state.browse.rows = (Some(made_of), Arc::new(Listed::new(rows)));
     }
     let listed = cx.state.browse.rows.1.clone();
     let listed_rows = &listed.rows;
     let listing = {
         let mut h = DefaultHasher::new();
-        (&cx.state.source, &needle, uvi).hash(&mut h);
+        (&cx.state.source, &preset_needle, uvi).hash(&mut h);
         h.finish()
     };
     let fresh = cx.state.browse.listing != listing;
@@ -746,8 +804,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         Some(Source::Favorites) => "Star a preset to keep it here.",
         Some(Source::Recent) => "Presets you open show up here.",
         Some(Source::Library(_)) => "Nothing here matches that search.",
-        None if !needle.is_empty() => "Nothing matches that search.",
-        None => "Choose a library above, or search them all.",
+        None if !preset_needle.is_empty() => "Nothing matches that search.",
+        None => "Choose a library above, or search presets.",
     };
     let list_id = if uvi {
         "browser-list-uvi"
@@ -797,7 +855,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
             None => {}
         }
     }
-    let mut above = Vec::new();
+    let mut above = vec![preset_search];
     if let Some(Source::Library(name)) = &cx.state.source
         && let Some(library) = catalog.named(name)
     {
@@ -835,7 +893,7 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
                     .id("uvi-bank-statuses"),
             );
         }
-        if needle.is_empty() {
+        if preset_needle.is_empty() {
             above.extend(crumbs(ui, cx, library, &listed));
         }
     }
@@ -875,13 +933,17 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     if let Some(id) = focus_to {
         ui.focus(id);
     }
-    cx.state.browse.typing = ui.focused("search").then_some("search");
+    cx.state.browse.typing = if ui.focused("search") {
+        Some("search")
+    } else {
+        ui.focused("preset-search").then_some("preset-search")
+    };
     cx.state.pane = ui.focus_key().and_then(pane_of);
     // How many presets are listed, folded away or not; all of them before
     // a library is chosen.
     let count = match &cx.state.source {
-        Some(Source::Library(name)) if needle.is_empty() => preset_count(&grouped, name),
-        None if needle.is_empty() => arranged
+        Some(Source::Library(name)) if preset_needle.is_empty() => preset_count(&grouped, name),
+        None if preset_needle.is_empty() => arranged
             .iter()
             .map(|l| preset_count(&grouped, &l.name))
             .sum(),
@@ -954,8 +1016,8 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
     .id("browser")
 }
 
-/// The lower pane's rows: the chosen library's folders as on disk, or flat
-/// matches of the search with their folders under them.
+/// The lower pane's rows: the chosen library's folders when its query is clear,
+/// or flat preset matches with their folders under them.
 fn list(
     cx: &Cx,
     arranged: &[&Library],
@@ -989,7 +1051,7 @@ fn list(
                 let hay = format!("{} {folders}", stem(path)).to_lowercase();
                 words.iter().all(|word| hay.contains(word))
             },
-            |owner| matches_query(owner, Some(path), &words, &cx.settings),
+            |owner| matches_preset_query(owner, path, &words),
         );
         let library = owner.map_or(library, |owner| cx.settings.library_name(owner));
         hit.then(|| {
@@ -1031,24 +1093,28 @@ fn list(
     }
 }
 
-fn matches_query(
+fn matches_library_query(
     library: &Library,
-    path: Option<&Path>,
     words: &[&str],
     settings: &import::Settings,
 ) -> bool {
     #[cfg(test)]
     work(3, 1);
-    let provider = if is_uvi(&library.dir) { "UVI" } else { "" };
     let hay = format!(
-        "{provider} {} {} {} {} {}",
+        "{} {} {}",
         settings.library_name(library),
         library.name,
-        library.vendor,
-        path.map(stem).unwrap_or_default(),
-        path.map(|p| folders(&library.dir, p)).unwrap_or_default()
+        library.vendor
     )
     .to_lowercase();
+    words.iter().all(|word| hay.contains(word))
+}
+
+fn matches_preset_query(library: &Library, path: &Path, words: &[&str]) -> bool {
+    #[cfg(test)]
+    work(3, 1);
+    let provider = if is_uvi(&library.dir) { "UVI" } else { "" };
+    let hay = format!("{provider} {} {}", stem(path), folders(&library.dir, path)).to_lowercase();
     words.iter().all(|word| hay.contains(word))
 }
 
@@ -1281,6 +1347,8 @@ pub enum Pane {
 fn pane_of(id: &str) -> Option<Pane> {
     if id.starts_with("library-") || id.starts_with("source-") {
         Some(Pane::Sources)
+    } else if id == "preset-search" {
+        Some(Pane::Presets)
     } else if id.starts_with("instrument-") || id.starts_with("folder-") || id.starts_with("star-")
     {
         Some(Pane::Presets)
@@ -1352,18 +1420,7 @@ fn source_row(
     edit: Option<El>,
     status: Option<&str>,
 ) -> El {
-    let thumb = if let Some(status) = status {
-        stack![
-            thumb,
-            col![caption(status).text_size(SMALL).id(format!("{id}-status"))]
-                .pad((TIGHT, SPACE))
-                .fill(Role::Raised)
-                .anchor(Align::Start, Align::Start)
-        ]
-        .w(Len::Pct(100.))
-    } else {
-        thumb
-    };
+    let banner_height = height - 2. * TIGHT - status.map_or(0., |_| SOURCE_ROW);
     #[cfg(test)]
     work(5, 1);
     let editing = edit.is_some();
@@ -1396,7 +1453,7 @@ fn source_row(
         .id(format!("{id}-count"))
         .disabled()
         .shrink(0);
-    let mark = block(2, if card { height - 2. * TIGHT } else { THUMB.1 })
+    let mark = block(2, if card { banner_height } else { THUMB.1 })
         .fill(if chosen {
             Fill::from(accent())
         } else {
@@ -1429,14 +1486,30 @@ fn source_row(
                     .anchor(Align::Start, Align::End),
             );
         }
-        col![
+        let mut rows = vec![
             stack(layers)
                 .w(Len::Pct(100.))
-                .h(height - 2. * TIGHT)
+                .h(banner_height)
                 .clip()
-        ]
-        .pad((TIGHT, TIGHT))
-        .h(height)
+                .shrink(0),
+        ];
+        if let Some(status) = status {
+            rows.push(
+                caption(status)
+                    .text_size(SMALL)
+                    .fill(secondary())
+                    .lines(1)
+                    .h(SOURCE_ROW)
+                    .id(format!("{id}-status"))
+                    .disabled()
+                    .shrink(0),
+            );
+        }
+        col(rows)
+            .gap(0)
+            .align(Align::Stretch)
+            .pad((TIGHT, TIGHT))
+            .h(height)
     } else {
         row![mark, thumb, name, count]
             .gap(SPACE)
@@ -1827,12 +1900,12 @@ pub(super) fn search_field(
 /// (Shift+Enter into a new part).
 fn walk(ui: &mut Ui, cx: &mut Cx, listed: &Listed, page: usize, focus_to: &mut Option<String>) {
     let rows = &listed.rows;
-    let from_search = ui.focused("search");
+    let from_search = ui.focused("preset-search");
     let free = ui
         .focus_key()
         .is_none_or(|k| k.starts_with("instrument-") || k.starts_with("folder-"));
     let keys: Vec<KeyPress> = if from_search {
-        ui.keys("search").to_vec()
+        ui.keys("preset-search").to_vec()
     } else if free {
         ui.shortcuts().to_vec()
     } else {

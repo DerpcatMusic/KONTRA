@@ -1,0 +1,1185 @@
+{
+  "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "source_sha": "3cc0f94ea625715028897d4611c0d477ccfed724",
+  "source_tree": "f8e7a7457ddacd63e1c79e8f00d056abf343ce7a",
+  "file_count": 20,
+  "symbol_span_count": 39,
+  "files": [
+    {
+      "path": "crates/sampler-core/src/array_file.rs",
+      "source_git_blob": "c64f1771bb9d0b437fd2e315db1bcd05781aa4ae",
+      "source_sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e",
+      "parent_git_blob": "c64f1771bb9d0b437fd2e315db1bcd05781aa4ae",
+      "parent_sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "source_git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5",
+      "source_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+      "parent_git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "parent_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "source_git_blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5",
+      "source_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98",
+      "parent_git_blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5",
+      "parent_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/lib.rs",
+      "source_git_blob": "a1912cb0a4950d5ef98d6c143515676af2243033",
+      "source_sha256": "c4e4ef4332569e7dbfac8a5b4b6b0811db058d67388e7f559937cea270a70791",
+      "parent_git_blob": "88e746c88be273a32b21f736308da3d1760a8f2d",
+      "parent_sha256": "6621c4be92aa9dbf1a82dc16d7aefbdf60dd2da5f361d8cb76acfbbc13438ad2",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-core/src/midi_object.rs",
+      "source_git_blob": "686997d380c23d7f63e6cffc6eb1430eb9a3b511",
+      "source_sha256": "78cd52927ee9a17fd3a530381ff19db0f0cb0dfba4ec6168679981395b6f8cb3",
+      "parent_git_blob": "686997d380c23d7f63e6cffc6eb1430eb9a3b511",
+      "parent_sha256": "78cd52927ee9a17fd3a530381ff19db0f0cb0dfba4ec6168679981395b6f8cb3",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "source_git_blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825",
+      "source_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "parent_git_blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825",
+      "parent_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "source_git_blob": "69ba349ca86d0165953eacd573f56926983221a9",
+      "source_sha256": "df6435a476aa83a1d00544f694e99254a64a48c1c13d8913432eef4cf81f77c3",
+      "parent_git_blob": "a9c75d1d63cea897ac95a9f687c7d0afbfa8b468",
+      "parent_sha256": "dab2a6aebc9c8e00464a810f04ed4eae054e489139ae0439e07fbceeca02b1b2",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-core/src/plans.rs",
+      "source_git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01",
+      "source_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+      "parent_git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01",
+      "parent_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "source_git_blob": "3f78c2423e76834b3b46f3d63269fb8dd09fc449",
+      "source_sha256": "c6ae627c361dcfc6cb330f892a9462a0ae4b0b60a7d71c77ca7224c69dc42b9f",
+      "parent_git_blob": "0ec2b2d6d08eef080ed4ade0bcdc2ccc0c09c947",
+      "parent_sha256": "c70a1d28185a0c3cd084ad2341ca429856248dfabb94fef919f34707d1550547",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-core/src/script.rs",
+      "source_git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325",
+      "source_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+      "parent_git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325",
+      "parent_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-core/src/stages.rs",
+      "source_git_blob": "6ab492349e9babc5867ba2c29cfd76e9f7bdd36d",
+      "source_sha256": "c444c78e9360a65fc0066c421efc9ae88af531b5ee9fcb7b7eaf2c8859ec1599",
+      "parent_git_blob": "270fc70090f1655f22bbdd75c7126166350435ca",
+      "parent_sha256": "1ffdac1694a74abf52af154838000b1c7adde45eb0b45d445da909343610bc66",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "source_git_blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+      "source_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "parent_git_blob": "cefa61bc0f138d27e437722c5de21f588929195c",
+      "parent_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-ksp/src/builtins.rs",
+      "source_git_blob": "314bd26e762252837b209753a3ff10be5910eaef",
+      "source_sha256": "305885a31b9ab10db8b9ad03a2853ffd033d163b196063f650ea3a8a165db5cf",
+      "parent_git_blob": "6fb45fdd58d634565d3bf4d538cf623a0b119f94",
+      "parent_sha256": "1a276c987f032c33a64f3f9d62431d7f87ce54dfe829e38595790e70a0712003",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "source_git_blob": "a682e4fee99ee3781a96732002db922aa93c88c6",
+      "source_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "parent_git_blob": "a682e4fee99ee3781a96732002db922aa93c88c6",
+      "parent_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+      "changed": false
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "source_git_blob": "2c25451e53b775942929beffbbc39c106caa042e",
+      "source_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+      "parent_git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf",
+      "parent_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "source_git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e",
+      "source_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+      "parent_git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3",
+      "parent_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+      "changed": true
+    },
+    {
+      "path": "crates/sampler-ksp/tests/fixtures/rpn-service-neighbors.ksp",
+      "source_git_blob": "12026b77e7acb9dc05f5486611ed6b55c9f3d819",
+      "source_sha256": "4de38f22c760774339b18d041b60034d1d42779fc7c191c5900ce69d2a6c3506",
+      "parent_git_blob": null,
+      "parent_sha256": null,
+      "changed": true,
+      "parent_status": "NEW_FILE"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/rpn.rs",
+      "source_git_blob": "139b06e254520cf0c2e7d6c9bc99c45c37e079e2",
+      "source_sha256": "d98b485497f31c4cf990786b1d925055071ff132acfea501ac584ca8488e76bb",
+      "parent_git_blob": null,
+      "parent_sha256": null,
+      "changed": true,
+      "parent_status": "NEW_FILE"
+    },
+    {
+      "path": "src/plugin.rs",
+      "source_git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "source_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "parent_git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "parent_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "changed": false
+    },
+    {
+      "path": "src/sound/v2.rs",
+      "source_git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a",
+      "source_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+      "parent_git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a",
+      "parent_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+      "changed": false
+    }
+  ],
+  "spans": [
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "binder/stage/instance owner",
+      "anchor": "pub fn bind_modules(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 614,
+          "end_line": 648,
+          "span_sha256": "3aa6ba481ea81316b2c08559f437d6ae081535d91114cb7371ef40fb87e8dfec",
+          "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+          "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 614,
+          "end_line": 648,
+          "span_sha256": "ae3cd1f0a3e893d11b7a55155c734538f4ccdbcb2702e58faa67d651ffc27d32",
+          "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+          "git_blob": "2c25451e53b775942929beffbbc39c106caa042e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "PGS/async unchanged plus typed receiver binding",
+      "anchor": "        signals.extend(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 742,
+          "end_line": 779,
+          "span_sha256": "b9ef1de51b89ec1929b75c52165e1513fad1718eca5f468e8610055a1b53c115",
+          "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+          "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 743,
+          "end_line": 780,
+          "span_sha256": "95e4e926ea75064bcb643c5d56575bed0226ed53a901dd99e894547fdb688fe4",
+          "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+          "git_blob": "2c25451e53b775942929beffbbc39c106caa042e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "prepared consumer table installation",
+      "anchor": "        .with_signal_programs(signals)?",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 789,
+          "end_line": 797,
+          "span_sha256": "03047c8a6c069274c448d40021812633cc0ff00e41a9aa197b64108b51c841b0",
+          "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+          "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 802,
+          "end_line": 810,
+          "span_sha256": "6e0f4981ecfbd6db243544c26436841c3cfcea6481fb186d6865f95800e06157",
+          "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+          "git_blob": "2c25451e53b775942929beffbbc39c106caa042e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "compiled callback classification",
+      "anchor": "            K::Rpn =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1203,
+          "end_line": 1206,
+          "span_sha256": "901c22aeb8228ff9680033d668234c998643a2cef67c45eae95423a66af36f37",
+          "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+          "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1217,
+          "end_line": 1220,
+          "span_sha256": "901c22aeb8228ff9680033d668234c998643a2cef67c45eae95423a66af36f37",
+          "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+          "git_blob": "2c25451e53b775942929beffbbc39c106caa042e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "symbol": "public source loader compile boundary",
+      "anchor": "pub fn compile_initialized(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1061,
+          "end_line": 1078,
+          "span_sha256": "f66877e7dfcd56a7bb79489d3cc0afc827113337be51b411e96387ce2ebaf960",
+          "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+          "git_blob": "e8a2a2e5475403aaaa9f317172204d8f574d3eaf"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1075,
+          "end_line": 1092,
+          "span_sha256": "f66877e7dfcd56a7bb79489d3cc0afc827113337be51b411e96387ce2ebaf960",
+          "file_sha256": "1b4ab9d7f580443d0e628c8af16d48e69474c5459a67df74042d3cee691d2c8e",
+          "git_blob": "2c25451e53b775942929beffbbc39c106caa042e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "historical global RPN host slot mapping; new sysvar branch bypasses it",
+      "anchor": "pub fn host_slot(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 78,
+          "end_line": 91,
+          "span_sha256": "dce950843df5efc91a161a6f3cbf2ef98895d5ce3aa928d42168ff41ebe66b93",
+          "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+          "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 78,
+          "end_line": 91,
+          "span_sha256": "dce950843df5efc91a161a6f3cbf2ef98895d5ce3aa928d42168ff41ebe66b93",
+          "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+          "git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "internal callback discriminants",
+      "anchor": "fn callback_type(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 458,
+          "end_line": 479,
+          "span_sha256": "c266f3a025274668b02ea627743838db84d77e8f6f8a37d2245203a542794c37",
+          "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+          "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 458,
+          "end_line": 479,
+          "span_sha256": "20fd3201ccea13d9284be1dd35aadd7ae618522fee66d7a4f83440e55330576f",
+          "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+          "git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "callback type and payload reads",
+      "anchor": "            SysVar::CallbackType =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1035,
+          "end_line": 1058,
+          "span_sha256": "230cb2f3902d4fb08877ee491c967a8904ce18484464ca17154bfda872f13eef",
+          "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+          "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1035,
+          "end_line": 1058,
+          "span_sha256": "302eee25feba5114b0a95322b8088f6bb0da598d310308be1da8c1a2459d4fb4",
+          "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+          "git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "typed command emission and Approximate policy",
+      "anchor": "            SetRpn | SetNrpn =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 2737,
+          "end_line": 2760,
+          "span_sha256": "f38f12c57056d632977709e89c8a9ffd39388dd1b845d51dfe32416b5a635fcb",
+          "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+          "git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "symbol": "numeric PGS preservation",
+      "anchor": "            PgsSetKeyVal =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 2687,
+          "end_line": 2708,
+          "span_sha256": "42c354d55942befe1a10ffce827f8e4fbbe9f321e0f4ca6c8cd66318a508d486",
+          "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+          "git_blob": "bf52f48066877fb0b2dbe3b3d007ce779d6222f3"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 2695,
+          "end_line": 2716,
+          "span_sha256": "42c354d55942befe1a10ffce827f8e4fbbe9f321e0f4ca6c8cd66318a508d486",
+          "file_sha256": "ac156263263e009675cd63cad2bce50e1abe36032579a9edcc38ada5cefa0713",
+          "git_blob": "40f26cd990ab88a4dee19856ea9812fb9cff3f4e"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/builtins.rs",
+      "symbol": "callback constants internal namespace",
+      "anchor": "pub mod cb {",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 487,
+          "end_line": 509,
+          "span_sha256": "4b284de2355a8d3abddae71f4a6ba4871b04f5c9b23f92d9f2c118c19a25cd25",
+          "file_sha256": "1a276c987f032c33a64f3f9d62431d7f87ce54dfe829e38595790e70a0712003",
+          "git_blob": "6fb45fdd58d634565d3bf4d538cf623a0b119f94"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 487,
+          "end_line": 509,
+          "span_sha256": "3633e32dfa211abe83fe78f0d56269da77874346fb35c2c8f1c24932f28a8105",
+          "file_sha256": "305885a31b9ab10db8b9ad03a2853ffd033d163b196063f650ea3a8a165db5cf",
+          "git_blob": "314bd26e762252837b209753a3ff10be5910eaef"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/builtins.rs",
+      "symbol": "valued symbolic callback constants",
+      "anchor": "    (\"$NI_CB_TYPE_INIT\",",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 618,
+          "end_line": 635,
+          "span_sha256": "66b7ddfcfac32e43981d0200cc290e6883618f4f01ec9415954a22b1f87b6624",
+          "file_sha256": "1a276c987f032c33a64f3f9d62431d7f87ce54dfe829e38595790e70a0712003",
+          "git_blob": "6fb45fdd58d634565d3bf4d538cf623a0b119f94"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 621,
+          "end_line": 638,
+          "span_sha256": "8b5485a59828b5bc35996fd39a823be2d4eef0674be9781bcf1ccfbb60ab08b0",
+          "file_sha256": "305885a31b9ab10db8b9ad03a2853ffd033d163b196063f650ea3a8a165db5cf",
+          "git_blob": "314bd26e762252837b209753a3ff10be5910eaef"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "symbol": "unchanged initialization unsupported gate",
+      "anchor": "            SetRpn | SetNrpn =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "status": "ABSENT_NEW_SYMBOL"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "typed send/read instructions",
+      "anchor": "    SendParameter {",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 405,
+          "end_line": 415,
+          "span_sha256": "38667aeae81d90a8951f721a292e9563e64ba1ee3b12b43e681a676d71f39d31",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "private callback payload ownership",
+      "anchor": "pub(super) struct Continuation {",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 959,
+          "end_line": 982,
+          "span_sha256": "d095baab16087078b786ddf2da2b2f00e9ea0bf995805de9b2e50023d382173e",
+          "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+          "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 977,
+          "end_line": 1000,
+          "span_sha256": "e6dbfab0dd2fa5dc9841960401a466acf035273920b42cc8f7f8ac7e2abe1e28",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "receiver admission and retained Plan owner",
+      "anchor": "    pub(super) fn admit_plan_context(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1117,
+          "end_line": 1159,
+          "span_sha256": "9318e204b09e4afcbe56f6abd496758d2375cd5ebb05ee53c8aa3254a30f5bf4",
+          "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+          "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1138,
+          "end_line": 1180,
+          "span_sha256": "0da7256f8a2a896d7a4745a988d03f11ea634622c2580e699c719892a8e3b705",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "runtime instruction dispatch",
+      "anchor": "            Instruction::SendParameter {",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 2478,
+          "end_line": 2502,
+          "span_sha256": "e74e40cbe356ef7b8ec104e3a238477450eb3292af2b9997a3cd4d45c554764f",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "bounded arena/refused admission preservation",
+      "anchor": "    pub(super) fn behavior_room(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1288,
+          "end_line": 1328,
+          "span_sha256": "9dc027efc0cb21149d56ff80a5fda7528af078d89f4b653716f06a2ef317439a",
+          "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+          "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1310,
+          "end_line": 1350,
+          "span_sha256": "9dc027efc0cb21149d56ff80a5fda7528af078d89f4b653716f06a2ef317439a",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "symbol": "ready/deferred queue ownership",
+      "anchor": "    pub(super) fn queue_behavior(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1334,
+          "end_line": 1354,
+          "span_sha256": "5b9190ca03818960a51fc74d9fe474ca47fee3123072f6219d032213360821b0",
+          "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca",
+          "git_blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1356,
+          "end_line": 1376,
+          "span_sha256": "5b9190ca03818960a51fc74d9fe474ca47fee3123072f6219d032213360821b0",
+          "file_sha256": "9dc3f5d936d56a0234168c4a75ff992c916497d48880f693593e1c715d9cd678",
+          "git_blob": "a1ff442ba50002d089859623cc2524ad818c48c5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "typed receiving table and payload",
+      "anchor": "pub enum ParameterKind {",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 25,
+          "end_line": 47,
+          "span_sha256": "3c787be3a75de48602308b7d2c38e12cff2788730245a8efc55b648c757e4694",
+          "file_sha256": "df6435a476aa83a1d00544f694e99254a64a48c1c13d8913432eef4cf81f77c3",
+          "git_blob": "69ba349ca86d0165953eacd573f56926983221a9"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "prepared validation and ascending order",
+      "anchor": "    pub fn with_parameter_programs(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 85,
+          "end_line": 110,
+          "span_sha256": "332d203099f53dc101cd49780cd42ded9cdc1c25b0774bb90b8b746b52fc9efa",
+          "file_sha256": "df6435a476aa83a1d00544f694e99254a64a48c1c13d8913432eef4cf81f77c3",
+          "git_blob": "69ba349ca86d0165953eacd573f56926983221a9"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "symbol": "actual plan-scoped runtime consumer",
+      "anchor": "    pub(super) fn send_parameter(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 127,
+          "end_line": 223,
+          "span_sha256": "d8c5317ccc940f71a84d799d722697d041a3f5baaf479b578543ea16c6560fea",
+          "file_sha256": "df6435a476aa83a1d00544f694e99254a64a48c1c13d8913432eef4cf81f77c3",
+          "git_blob": "69ba349ca86d0165953eacd573f56926983221a9"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "prepared table field",
+      "anchor": "    pub(super) parameter_programs:",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 469,
+          "end_line": 469,
+          "span_sha256": "e98a57f2609538f9ffb9109ee803c858f0091a2a7b4d89e275bd10c3c1fda54a",
+          "file_sha256": "c6ae627c361dcfc6cb330f892a9462a0ae4b0b60a7d71c77ca7224c69dc42b9f",
+          "git_blob": "3f78c2423e76834b3b46f3d63269fb8dd09fc449"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "symbol": "table replacement reset",
+      "anchor": "        self.parameter_programs =",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 755,
+          "end_line": 755,
+          "span_sha256": "cb4be378dce55712c01d12ceee81f87cd2ceeb067d69889836f9d040ddd51330",
+          "file_sha256": "c6ae627c361dcfc6cb330f892a9462a0ae4b0b60a7d71c77ca7224c69dc42b9f",
+          "git_blob": "3f78c2423e76834b3b46f3d63269fb8dd09fc449"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/stages.rs",
+      "symbol": "orphan stage rejection",
+      "anchor": "            .parameter_programs",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "status": "ABSENT_NEW_SYMBOL"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 42,
+          "end_line": 48,
+          "span_sha256": "1b7bea8c5e3fff4607e7bef53299ce346fef6e49cb2afefe254e6204848a0b16",
+          "file_sha256": "c444c78e9360a65fc0066c421efc9ae88af531b5ee9fcb7b7eaf2c8859ec1599",
+          "git_blob": "6ab492349e9babc5867ba2c29cfd76e9f7bdd36d"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/lib.rs",
+      "symbol": "public API export",
+      "anchor": "pub use plan_programs::",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 109,
+          "end_line": 109,
+          "span_sha256": "f26ec2922f3752852590852bb7eaa156be8a2dace4867529200f0cd2113891d3",
+          "file_sha256": "6621c4be92aa9dbf1a82dc16d7aefbdf60dd2da5f361d8cb76acfbbc13438ad2",
+          "git_blob": "88e746c88be273a32b21f736308da3d1760a8f2d"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 109,
+          "end_line": 109,
+          "span_sha256": "e26c1d7b4085c567bfef70b1395c634d484e29cc9ba48b6f1af32559f9dbc1d9",
+          "file_sha256": "c4e4ef4332569e7dbfac8a5b4b6b0811db058d67388e7f559937cea270a70791",
+          "git_blob": "a1912cb0a4950d5ef98d6c143515676af2243033"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/ops.rs",
+      "symbol": "unchanged global-host/async-slot reads; RPN no longer lowers here",
+      "anchor": "            Op::ReadHost { local, slot } =>",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1706,
+          "end_line": 1725,
+          "span_sha256": "b4ac9bd0edfbd73f06736102ac83097ddef9d62ac792dbcb4af613404b6c7ecf",
+          "file_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+          "git_blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1706,
+          "end_line": 1725,
+          "span_sha256": "b4ac9bd0edfbd73f06736102ac83097ddef9d62ac792dbcb4af613404b6c7ecf",
+          "file_sha256": "74aa2b21ef97cb5ceda3cbb25a47d3676d840ae06b103cc4ac1a0b7218838be2",
+          "git_blob": "ba75f9ab8f7e3c70bf415dc017f2fa6e08431825"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/script.rs",
+      "symbol": "exact instance state consumer",
+      "anchor": "    pub(super) fn behavior_write_script_cell(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 149,
+          "end_line": 176,
+          "span_sha256": "b4e333a3af26c044f1c9695f262e6068e94b9335bff26fef7365e02b8d164709",
+          "file_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+          "git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 149,
+          "end_line": 176,
+          "span_sha256": "b4e333a3af26c044f1c9695f262e6068e94b9335bff26fef7365e02b8d164709",
+          "file_sha256": "52ff97654b9b2aee5b69f19f20de058966424c61f16ef99571dd2d5ac6a56dfd",
+          "git_blob": "b01249e4b1754880f7f2129be152b36c5e0cd325"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "symbol": "existing performance ownership",
+      "anchor": "    pub(super) fn behavior_performance(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 280,
+          "end_line": 306,
+          "span_sha256": "769e4264a08df23abbc6e4329f92a1bacef1878eb36c244658c438d699abeab7",
+          "file_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98",
+          "git_blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 280,
+          "end_line": 306,
+          "span_sha256": "769e4264a08df23abbc6e4329f92a1bacef1878eb36c244658c438d699abeab7",
+          "file_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98",
+          "git_blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/plans.rs",
+      "symbol": "generation replacement/old ownership retention",
+      "anchor": "    pub fn poll_plan_update(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 480,
+          "end_line": 531,
+          "span_sha256": "0993a1709fe731e605bd0636a0017c9a61a71dca493c60eba9d38ba4f5155afd",
+          "file_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+          "git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 480,
+          "end_line": 531,
+          "span_sha256": "0993a1709fe731e605bd0636a0017c9a61a71dca493c60eba9d38ba4f5155afd",
+          "file_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+          "git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/plans.rs",
+      "symbol": "retired handle generation fence",
+      "anchor": "    pub fn collect_retired_plans(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 397,
+          "end_line": 439,
+          "span_sha256": "f85f3f2796ecafb4697ec42a7fb558ae9adbbd07121c9b269eabe5627361f47b",
+          "file_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+          "git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 397,
+          "end_line": 439,
+          "span_sha256": "f85f3f2796ecafb4697ec42a7fb558ae9adbbd07121c9b269eabe5627361f47b",
+          "file_sha256": "24e1b318a5eb42ac53eb6b439d1914ab5706239ca3d13c5440fa6dadf25eb9fc",
+          "git_blob": "ed890432ea23c382ae5e9e56df9a4c376bc8bb01"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/midi_object.rs",
+      "symbol": "unchanged MIDI instance/job completion consumer",
+      "anchor": "    pub fn complete_midi(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1107,
+          "end_line": 1143,
+          "span_sha256": "f82d3eb90ebb2428c6323eb4a74645970811088e7373775ae8a49c411608b502",
+          "file_sha256": "78cd52927ee9a17fd3a530381ff19db0f0cb0dfba4ec6168679981395b6f8cb3",
+          "git_blob": "686997d380c23d7f63e6cffc6eb1430eb9a3b511"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1107,
+          "end_line": 1143,
+          "span_sha256": "f82d3eb90ebb2428c6323eb4a74645970811088e7373775ae8a49c411608b502",
+          "file_sha256": "78cd52927ee9a17fd3a530381ff19db0f0cb0dfba4ec6168679981395b6f8cb3",
+          "git_blob": "686997d380c23d7f63e6cffc6eb1430eb9a3b511"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-core/src/array_file.rs",
+      "symbol": "unchanged NKA typed completion consumer",
+      "anchor": "    pub fn complete_array_file(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 484,
+          "end_line": 533,
+          "span_sha256": "9332491ed2b884cdcac8228709e7e8bc56778717d8b634c1964707f97d71774d",
+          "file_sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e",
+          "git_blob": "c64f1771bb9d0b437fd2e315db1bcd05781aa4ae"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 484,
+          "end_line": 533,
+          "span_sha256": "9332491ed2b884cdcac8228709e7e8bc56778717d8b634c1964707f97d71774d",
+          "file_sha256": "9723a7580f55958a000b6755c35326481d8ec1491f7a4187bf9373361e95260e",
+          "git_blob": "c64f1771bb9d0b437fd2e315db1bcd05781aa4ae"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "symbol": "actual Kontakt loader public source compile caller",
+      "anchor": "                    sampler_ksp::compile_initialized(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 853,
+          "end_line": 855,
+          "span_sha256": "d9d9afe5f093a2d3792df437d486bac42177f7e13692ee33f4e44e304dd4b633",
+          "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+          "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 853,
+          "end_line": 855,
+          "span_sha256": "d9d9afe5f093a2d3792df437d486bac42177f7e13692ee33f4e44e304dd4b633",
+          "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+          "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c"
+        }
+      }
+    },
+    {
+      "path": "crates/sampler-kontakt/src/load.rs",
+      "symbol": "actual instrument lower-to-binder caller",
+      "anchor": "            sampler_ksp::bind_modules(compiled, plan)",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1006,
+          "end_line": 1012,
+          "span_sha256": "6baa1b76fd905184bf0b51094a11c5b12f4afd9a4a511369987f529a26c51408",
+          "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+          "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1006,
+          "end_line": 1012,
+          "span_sha256": "6baa1b76fd905184bf0b51094a11c5b12f4afd9a4a511369987f529a26c51408",
+          "file_sha256": "881defcef92840a65e1a0b76c157ca293fbc41ddc202cc7ffe56c9432e6b8c94",
+          "git_blob": "cefa61bc0f138d27e437722c5de21f588929195c"
+        }
+      }
+    },
+    {
+      "path": "src/sound/v2.rs",
+      "symbol": "production Runtime installation",
+      "anchor": "        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 3361,
+          "end_line": 3368,
+          "span_sha256": "f09924ea8eb1544f5ea6b67d2b07fb98d237211d96f82f1f42a5821b39b58dc0",
+          "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+          "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 3361,
+          "end_line": 3368,
+          "span_sha256": "f09924ea8eb1544f5ea6b67d2b07fb98d237211d96f82f1f42a5821b39b58dc0",
+          "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+          "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a"
+        }
+      }
+    },
+    {
+      "path": "src/sound/v2.rs",
+      "symbol": "unchanged per-instance effect drain (RPN bypasses)",
+      "anchor": "    fn take_effects(",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 2490,
+          "end_line": 2500,
+          "span_sha256": "be10450c26cd9549a51e08c0a642e9630f7173b3900ed8131a57521d9f03ed30",
+          "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+          "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 2490,
+          "end_line": 2500,
+          "span_sha256": "be10450c26cd9549a51e08c0a642e9630f7173b3900ed8131a57521d9f03ed30",
+          "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+          "git_blob": "aa1a021dab8c89aaeb74844bcba6f5b81ccf298a"
+        }
+      }
+    },
+    {
+      "path": "src/plugin.rs",
+      "symbol": "unchanged slot/epoch host sink",
+      "anchor": "        while let Some((slot, epoch, instance, effect)) = self.effects.pop()",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 1728,
+          "end_line": 1756,
+          "span_sha256": "18aefbd4b8791392ad522abd584cde7ebac0c92b4541af605a4deaa5953dcbab",
+          "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+          "git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 1728,
+          "end_line": 1756,
+          "span_sha256": "18aefbd4b8791392ad522abd584cde7ebac0c92b4541af605a4deaa5953dcbab",
+          "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+          "git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9"
+        }
+      }
+    },
+    {
+      "path": "src/plugin.rs",
+      "symbol": "unchanged audio effect queue caller",
+      "anchor": "            s.core.take_effects(slot,",
+      "versions": {
+        "2a243bcfa2262abb789265aa0951fd2a85854023": {
+          "start_line": 3216,
+          "end_line": 3221,
+          "span_sha256": "ac1019a65709665e31b946bdff92747e1d89d5750898a5b30386e8e044d2a871",
+          "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+          "git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9"
+        },
+        "3cc0f94ea625715028897d4611c0d477ccfed724": {
+          "start_line": 3216,
+          "end_line": 3221,
+          "span_sha256": "ac1019a65709665e31b946bdff92747e1d89d5750898a5b30386e8e044d2a871",
+          "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+          "git_blob": "5595327ceeee59659777f53fe3a4552ba464cfe9"
+        }
+      }
+    }
+  ],
+  "historical_rpn_service_retraces": [
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "start_line": 1015,
+        "end_line": 1041,
+        "symbol": "initialize_inner parser/sema→eval::run init caller",
+        "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+        "span_sha256": "8f598a0cc3b0fc1cd39b01887ec8f449de600947830e969e129234087b08b347",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lib.rs#L1015-L1041",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1015,
+      "end_line": 1041,
+      "parent_file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "start_line": 273,
+        "end_line": 294,
+        "symbol": "ScriptView service decoding and apply_ui_effect caller",
+        "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+        "span_sha256": "6d3685e8ff08177d6bd32f8932c2011f1e001eae4e9a1d0bbaf21764d0fdd2bc",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lib.rs#L273-L294",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 273,
+      "end_line": 294,
+      "parent_file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "start_line": 1185,
+        "end_line": 1205,
+        "symbol": "RPN/NRPN callback→compiled EntryKind and Plan context",
+        "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+        "span_sha256": "ef322a88fc64210cc8a9f2e23764f873de0dc132e5b6f68af500feffd389c7fb",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lib.rs#L1185-L1205",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1185,
+      "end_line": 1205,
+      "parent_file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "start_line": 741,
+        "end_line": 759,
+        "symbol": "registered signal consumers only PGS/async",
+        "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+        "span_sha256": "f815bce82c51b33cb292acc07387c6d1a384e024e76a29c7299f46831aa81e5a",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lib.rs#L741-L759",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 741,
+      "end_line": 759,
+      "parent_file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lower.rs",
+        "start_line": 1406,
+        "end_line": 1426,
+        "symbol": "generic effect emission caller and arguments",
+        "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+        "span_sha256": "dd99988a5ce5b089004abb5f603e35cdbcd2bc1a0c78e5a2202324229cd325dc",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lower.rs#L1406-L1426",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1406,
+      "end_line": 1426,
+      "parent_file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lower.rs",
+        "start_line": 2729,
+        "end_line": 2749,
+        "symbol": "RPN/NRPN generic effect lowering",
+        "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+        "span_sha256": "e33280479b92b45f7200dd86964d149211ca966087e6d7a7139d98b434fc7dfb",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lower.rs#L2729-L2749",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 2729,
+      "end_line": 2749,
+      "parent_file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/eval.rs",
+        "start_line": 1779,
+        "end_line": 1786,
+        "symbol": "init explicitly warns SetRpn/SetNrpn have no effect",
+        "file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7",
+        "span_sha256": "3e39906d3ba213ea8d24b9eb8db2f08a04c878a252a30c1f907830891c169b57",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/eval.rs#L1779-L1786",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1779,
+      "end_line": 1786,
+      "parent_file_sha256": "d6b633d6d8daab686a7b1206c68bacb59fccc285d1a8565dc679f0fb844800d7"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "src/sound/mod.rs",
+        "start_line": 258,
+        "end_line": 275,
+        "symbol": "ScriptUi.apply routes only to view.apply_ui_effect",
+        "file_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9",
+        "span_sha256": "661b3e5abf8d67859c1b310b3441cb7c073fa7a0aa00df4e0383d6012426979d",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/src/sound/mod.rs#L258-L275",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 258,
+      "end_line": 275,
+      "parent_file_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lib.rs",
+        "start_line": 410,
+        "end_line": 485,
+        "symbol": "UI-service dispatch match excludes RPN",
+        "file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758",
+        "span_sha256": "12f1b43df3d9a6fd5542b21cd0521df8e5feb12a8253c44fd72951ca9ae86227",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lib.rs#L410-L485",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 410,
+      "end_line": 485,
+      "parent_file_sha256": "0d4d82b377797656c2ac7d80026dc484854c83eca3adf2f04868dab354c68758"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "crates/sampler-ksp/src/lower.rs",
+        "start_line": 1457,
+        "end_line": 1493,
+        "symbol": "emit_prepared_effect→runtime service instruction",
+        "file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf",
+        "span_sha256": "63c92a487e848f1c0fa2f2a004eb89f9531cf09bf7c4cb053946cc5f705b0017",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/crates/sampler-ksp/src/lower.rs#L1457-L1493",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1457,
+      "end_line": 1493,
+      "parent_file_sha256": "30ce457d29ecc0dea928e188139d9671bd1b6e7dd8070d6b0dbc8706c6f91cdf"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "src/sound/v2.rs",
+        "start_line": 2490,
+        "end_line": 2500,
+        "symbol": "Sound.take_effects→runtime.drain_effects per-instance caller",
+        "file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524",
+        "span_sha256": "be10450c26cd9549a51e08c0a642e9630f7173b3900ed8131a57521d9f03ed30",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/src/sound/v2.rs#L2490-L2500",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 2490,
+      "end_line": 2500,
+      "parent_file_sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "src/plugin.rs",
+        "start_line": 3216,
+        "end_line": 3221,
+        "symbol": "audio core effects→slot/epoch/instance host queue",
+        "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+        "span_sha256": "ac1019a65709665e31b946bdff92747e1d89d5750898a5b30386e8e044d2a871",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/src/plugin.rs#L3216-L3221",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 3216,
+      "end_line": 3221,
+      "parent_file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45"
+    },
+    {
+      "historical": {
+        "sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "path": "src/plugin.rs",
+        "start_line": 1727,
+        "end_line": 1755,
+        "symbol": "generic effect→epoch-fenced UI sink",
+        "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+        "span_sha256": "39d61687bbb581c9ee733ce0af1b0ad614b03aa988d77c59d1fcecdc1cbad32e",
+        "url": "https://github.com/DerpcatMusic/KONTRA/blob/366515c96b583747d1bd77c881b1f6909e86cf0d/src/plugin.rs#L1727-L1755",
+        "inspection": "Pinned Git blob and exact span inspected; production consumer distinct from execution/native parity."
+      },
+      "parent_sha": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "status": "EXACT_SNIPPET_RETRACED",
+      "start_line": 1727,
+      "end_line": 1755,
+      "parent_file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45"
+    }
+  ],
+  "limit": "Exact own source identities, not compiler/typechecker/runtime/native proof."
+}

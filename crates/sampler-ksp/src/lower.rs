@@ -141,6 +141,7 @@ pub struct Unit<'h> {
     /// The whole script's instruction limit.
     pub limit: usize,
     pub services: Vec<Builtin>,
+    pub array_files: std::collections::BTreeSet<VarId>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
@@ -187,6 +188,7 @@ impl<'h> Unit<'h> {
         let mut g = Gen {
             u: self,
             ctx: context,
+            in_function: false,
             callback_type: cb,
             ui_id,
             code: module.code,
@@ -218,7 +220,9 @@ impl<'h> Unit<'h> {
             g.starts[f.0 as usize] = g.code.len() as u32;
             let function = &g.u.hir.functions[f.0 as usize];
             g.span = function.span;
+            g.in_function = true;
             g.block(&function.body)?;
+            g.in_function = false;
             g.emit(I::Op(Op::Return))?;
             g.ends[f.0 as usize] = g.code.len() as u32;
         }
@@ -378,6 +382,7 @@ impl<'h> Unit<'h> {
         let mut g = Gen {
             u: self,
             ctx: Context::Plan,
+            in_function: false,
             callback_type: b::cb::LISTENER,
             ui_id: None,
             code: Vec::new(),
@@ -468,14 +473,16 @@ fn callback_type(kind: CallbackKind) -> i32 {
         CallbackKind::PgsChanged => b::cb::PGS_CHANGED,
         CallbackKind::PersistenceChanged => b::cb::PERSISTENCE_CHANGED,
         CallbackKind::AsyncComplete => b::cb::ASYNC_COMPLETE,
-        CallbackKind::Rpn => 5,
-        CallbackKind::Nrpn => 6,
+        CallbackKind::Rpn => b::cb::RPN,
+        CallbackKind::Nrpn => b::cb::NRPN,
     }
 }
 
 struct Gen<'u, 'h> {
     u: &'u mut Unit<'h>,
     ctx: Context,
+    /// Function bodies share callback context, but exit only returns to their caller.
+    in_function: bool,
     callback_type: i32,
     ui_id: Option<i32>,
     code: Vec<I>,
@@ -1044,6 +1051,14 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: i64::from(self.signal.unwrap()),
             },
+            SysVar::RpnAddress => I::ReadParameter {
+                local: dst,
+                value: false,
+            },
+            SysVar::RpnValue => I::ReadParameter {
+                local: dst,
+                value: true,
+            },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
                 value: i64::from(self.u.slot),
@@ -1287,9 +1302,10 @@ impl Gen<'_, '_> {
                 builtin @ (Builtin::GetEngineParDisp | Builtin::GetEngineParDispExt),
                 args,
             ) => {
-                self.engine_address(args, free, false)?;
+                // Ext shares set_engine_par's address layout; arg 1 is its supplied value.
+                self.engine_address(args, free, *builtin == Builtin::GetEngineParDispExt)?;
                 let value = if *builtin == Builtin::GetEngineParDispExt {
-                    self.arg(args, 4, free + 4)?;
+                    self.arg(args, 1, free + 4)?;
                     Some(free + 4)
                 } else {
                     None
@@ -1405,6 +1421,24 @@ impl Gen<'_, '_> {
     fn effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         self.emit_effect(builtin, args, dst)?;
         self.cover(builtin, host_service(builtin));
+        Ok(())
+    }
+
+    fn waveform(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        use sampler_core::waveform::Action;
+        let action = match builtin {
+            Builtin::AttachZone => Action::Attach,
+            Builtin::SetUiWfProperty => Action::Set,
+            _ => Action::Get,
+        };
+        // Arg::Var is the original HIR UI identity; every other operand once.
+        let (_, text) = self.effect_args(builtin, args, dst)?;
+        if text.is_some() { return fault(self.span, "waveform operands must be integers"); }
+        let services = [self.u.service(Builtin::AttachZone), self.u.service(Builtin::SetUiWfProperty)];
+        let local = reg(dst, 4)?;
+        self.emit(I::Op(Op::Waveform { action, args: dst, local, services }))?;
+        if action == Action::Get { self.copy_i32(local, dst)?; }
+        self.cover(builtin, Coverage::Approximate);
         Ok(())
     }
 
@@ -1542,9 +1576,16 @@ impl Gen<'_, '_> {
         let t = reg(dst, 1)?;
         let is_real = |i: usize| matches!(args.get(i), Some(Arg::Expr(e)) if e.ty == Ty::Real);
         let native = match builtin {
+            AttachZone | SetUiWfProperty | GetUiWfProperty => {
+                return self.waveform(builtin, args, dst);
+            }
             Exit => {
-                self.forward()?;
-                self.emit(I::End)?;
+                if self.in_function {
+                    self.emit(I::Op(Op::Return))?;
+                } else {
+                    self.forward()?;
+                    self.emit(I::End)?;
+                }
                 true
             }
             Continue => {
@@ -1695,20 +1736,21 @@ impl Gen<'_, '_> {
                 true
             }
             Sgn => {
-                // (x > 0) - (x < 0); the argument is evaluated twice.
+                // (x > 0) - (0 > x), evaluating x once. CompareReal writes only
+                // lhs, so the first comparison preserves all IEEE bits in dst.
                 let u = reg(dst, 2)?;
                 self.arg(args, 0, dst)?;
-                self.arg(args, 0, u)?;
                 self.set(t, real_bits(0.0))?;
+                self.set(u, real_bits(0.0))?;
+                self.emit(I::Op(Op::CompareReal {
+                    lhs: u,
+                    rhs: dst,
+                    comparison: Cmp::Greater,
+                }))?;
                 self.emit(I::Op(Op::CompareReal {
                     lhs: dst,
                     rhs: t,
                     comparison: Cmp::Greater,
-                }))?;
-                self.emit(I::Op(Op::CompareReal {
-                    lhs: u,
-                    rhs: t,
-                    comparison: Cmp::Less,
                 }))?;
                 self.emit(I::Binary32 {
                     lhs: dst,
@@ -1835,9 +1877,9 @@ impl Gen<'_, '_> {
                 self.set(dst, i64::from(len))?;
                 true
             }
-            Search => return self.search(args, dst),
+            Search => return self.search(args, dst, span),
             Sort => return self.sort(args, dst),
-            ArrayEqual => return self.array_equal(args, dst),
+            ArrayEqual => return self.array_equal(args, dst, span),
             ByMarks => {
                 self.arg(args, 0, dst)?;
                 self.set(t, i64::from(b::MARKS_FLAG))?;
@@ -2277,17 +2319,26 @@ impl Gen<'_, '_> {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.emit(I::MicrosToFrames { local: t })?;
+                let curve_arg = if builtin == FadeIn { 2 } else { 3 };
+                let curve = if args.get(curve_arg).is_some() {
+                    let local = reg(dst, 2)?;
+                    self.arg(args, curve_arg, local)?;
+                    Some(local)
+                } else {
+                    None
+                };
                 let fade = |stop| I::FadeEvent {
                     event: dst,
                     frames: t,
                     out: builtin == FadeOut,
                     stop,
+                    curve,
                 };
                 match (builtin, self.const_int(args, 2)) {
                     (FadeIn, _) => self.emit(fade(false))?,
                     (_, Some(stop)) => self.emit(fade(stop != 0))?,
                     _ => {
-                        let flag = reg(dst, 2)?;
+                        let flag = reg(dst, 3)?;
                         self.arg(args, 2, flag)?;
                         let keep = self.jump_if_zero(flag)?;
                         self.emit(fade(true))?;
@@ -2326,16 +2377,84 @@ impl Gen<'_, '_> {
                 }
                 true
             }
-            SetListener | ChangeListenerPar => {
-                // The timer driver reads the period from the store.
-                self.arg(args, 1, dst)?;
-                let key = [
-                    Key::Fixed(LISTENER_TAG),
-                    Key::Arg(0),
-                    Key::Fixed(0),
-                    Key::Fixed(LISTENER_TAG),
-                ];
-                self.store(args, key, dst, true)?;
+            SetListener => {
+                // Functions are lowered in their caller's callback context.
+                return fault(span, "set_listener can only be used in on init");
+            }
+            ChangeListenerPar => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                let check = reg(dst, 2)?;
+                let mut done = Vec::new();
+                for signal in [b::signal::TIMER_MS, b::signal::TIMER_BEAT] {
+                    self.set(check, i64::from(signal))?;
+                    self.emit(I::CompareLocal {
+                        lhs: check,
+                        rhs: dst,
+                        comparison: Cmp::Equal,
+                    })?;
+                    let miss = self.jump_if_zero(check)?;
+                    let zero = self.jump_if_zero(t)?;
+                    let (lo, hi) = crate::sema::listener_range(builtin, signal, span)?;
+                    self.in_range(t, lo, hi, check)?;
+                    let invalid = self.jump_if_zero(check)?;
+                    self.land(zero);
+                    // ponytail: invalid live values leave the period unchanged;
+                    // no new service or timer driver is needed for validation.
+                    self.store(
+                        args,
+                        [
+                            Key::Fixed(LISTENER_TAG),
+                            Key::Fixed(signal),
+                            Key::Fixed(0),
+                            Key::Fixed(LISTENER_TAG),
+                        ],
+                        t,
+                        true,
+                    )?;
+                    done.push(self.jump()?);
+                    self.land(invalid);
+                    self.land(miss);
+                }
+                for end in done {
+                    self.land(end);
+                }
+                self.set(dst, 0)?;
+                true
+            }
+            LoadArrayStr | SaveArrayStr => {
+                if ![
+                    b::cb::PERSISTENCE_CHANGED,
+                    b::cb::UI_CONTROL,
+                    b::cb::PGS_CHANGED,
+                ]
+                .contains(&self.callback_type)
+                {
+                    self.ignore(
+                        builtin,
+                        "outside init/persistence_changed/ui_control/pgs_changed; rejected",
+                    );
+                    return self.set(dst, -1);
+                }
+                let Some(Arg::Var(var, _)) = args.first() else {
+                    return self.set(dst, -1);
+                };
+                crate::array_file::array(self.u.hir, *var).map_err(|_| Fault {
+                    span: self.span,
+                    builtin: Some(builtin.name()),
+                    message: "invalid or oversized NKA typed array".into(),
+                })?;
+                self.u.array_files.insert(*var);
+                let Some(path) = self.text_arg(args, 1, reg(dst, 1)?)? else {
+                    return self.set(dst, -1);
+                };
+                self.emit(I::Op(Op::ArrayFile {
+                    array: var.0,
+                    path,
+                    write: builtin == SaveArrayStr,
+                    local: dst,
+                }))?;
+                self.tdepth -= 1;
                 true
             }
             builtin if builtin.midi().is_some() => {
@@ -2681,16 +2800,30 @@ impl Gen<'_, '_> {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
             }
+            SetRpn | SetNrpn => {
+                self.arg(args, 0, dst)?;
+                let value = t;
+                self.arg(args, 1, value)?;
+                self.emit(I::SendParameter {
+                    kind: if builtin == SetRpn {
+                        sampler_core::ParameterKind::Rpn
+                    } else {
+                        sampler_core::ParameterKind::Nrpn
+                    },
+                    address: dst,
+                    value,
+                })?;
+                // Runtime-owned, but command-specific routing/timing is our policy.
+                false
+            }
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
-            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
-            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
-            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
-            | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
-            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
-            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
-            | SaveArray | LoadArrayStr | SaveArrayStr | PgsSetStrKeyVal | PgsCreateKey
-            | PgsCreateStrKey => {
+            | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
+            | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
+            | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
+            | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
+            | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
+            | PgsCreateKey | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;
@@ -3087,22 +3220,20 @@ impl Gen<'_, '_> {
         })
     }
 
-    fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+    fn search(&mut self, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let (array, len) = match args.first() {
             Some(Arg::Var(v, _)) => {
                 let Home::Cells { offset, len } = self.var(*v).home else {
-                    self.ignore(Builtin::Search, "of a text array is not available; -1");
-                    return self.set(dst, -1);
+                    return fault(span, "search requires an integer array");
                 };
                 (Ok(ScriptArray { offset, len }), len)
             }
             Some(Arg::SysArray(sys)) if self.sys_readable(*sys) => (Err(*sys), sys.len()),
             _ => {
-                self.ignore(
-                    Builtin::Search,
-                    "of this runtime-maintained array is not available; -1",
+                return fault(
+                    span,
+                    "search of this array is not available in this callback",
                 );
-                return self.set(dst, -1);
             }
         };
         let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
@@ -3114,19 +3245,32 @@ impl Gen<'_, '_> {
         } else {
             self.set(dst, 0)?;
             self.arg(args, 1, value)?;
-            if matches!(array, Err(SysArray::GroupsAffected)) {
-                self.emit(I::ReadAffectedGroup {
-                    index: None,
-                    local: end,
-                })?;
-                self.emit(I::AddLocal {
-                    local: end,
-                    value: -1,
-                })?;
-            } else {
-                self.set(end, i64::from(len) - 1)?;
-            }
+            self.set(end, i32::MAX.into())?;
         }
+        // Intersect the inclusive range with actual storage; empty stays empty.
+        self.set(t, 0)?;
+        self.emit(I::Op(Op::Integer {
+            lhs: dst,
+            rhs: t,
+            operation: IntegerExtra::Max,
+        }))?;
+        if matches!(array, Err(SysArray::GroupsAffected)) {
+            self.emit(I::ReadAffectedGroup {
+                index: None,
+                local: t,
+            })?;
+            self.emit(I::AddLocal {
+                local: t,
+                value: -1,
+            })?;
+        } else {
+            self.set(t, i64::from(len) - 1)?;
+        }
+        self.emit(I::Op(Op::Integer {
+            lhs: end,
+            rhs: t,
+            operation: IntegerExtra::Min,
+        }))?;
         let start = self.here();
         self.set(t, 0)?;
         self.emit(I::Binary32 {
@@ -3339,16 +3483,15 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
-    /// `array_equal(a, b)`: same length and cells.
-    fn array_equal(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+    /// `array_equal(a, b)`: sema admits same-sized declared integer arrays.
+    fn array_equal(&mut self, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let (Some(a), Some(b)) = (self.cells(args, 0), self.cells(args, 1)) else {
-            self.ignore(Builtin::ArrayEqual, "of text arrays is not available; 0");
-            return self.set(dst, 0);
+            return fault(span, "array_equal requires declared integer arrays");
         };
-        self.cover(Builtin::ArrayEqual, Coverage::Native);
         if a.len != b.len {
-            return self.set(dst, 0);
+            return fault(span, "array_equal requires arrays of the same size");
         }
+        self.cover(Builtin::ArrayEqual, Coverage::Native);
         let [i, x, y] = [1, 2, 3].map(|n| dst + n);
         reg(dst, 3)?;
         self.set(i, i64::from(a.len))?;
@@ -3754,6 +3897,33 @@ impl Gen<'_, '_> {
                 _ => {}
             }
         }
+        let mut menu_exits = Vec::new();
+        if builtin == Builtin::GetControlPar && par.is_none() {
+            for selector in [
+                Some(b::CONTROL_PAR_NUM_ITEMS),
+                b::control_par("$CONTROL_PAR_SELECTED_ITEM_IDX"),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.arg(args, 1, dst + 1)?;
+                self.set(dst + 2, i64::from(selector))?;
+                self.emit(I::CompareLocal {
+                    lhs: dst + 1,
+                    rhs: dst + 2,
+                    comparison: Cmp::Equal,
+                })?;
+                let skip = self.jump_if_zero(dst + 1)?;
+                if selector == b::CONTROL_PAR_NUM_ITEMS {
+                    self.builtin(Builtin::GetNumMenuItems, args, dst, self.span)?;
+                } else {
+                    self.set(dst, -1)?;
+                    self.menu_selected_index(args, dst)?;
+                }
+                menu_exits.push(self.jump()?);
+                self.land(skip);
+            }
+        }
         self.set(dst, 0)?;
         self.store(args, PROPERTY_KEY, dst, false)?;
         if par == Some(b::CONTROL_PAR_VALUE) || par.is_none() {
@@ -3793,6 +3963,9 @@ impl Gen<'_, '_> {
         }
         if par == Some(b::CONTROL_PAR_VALUE) && builtin == Builtin::GetControlPar {
             self.menu_selected_index(args, dst)?;
+        }
+        for exit in menu_exits {
+            self.land(exit);
         }
         Ok(())
     }
@@ -3935,3 +4108,7 @@ fn host_service(builtin: Builtin) -> Coverage {
         _ => Coverage::Effect,
     }
 }
+
+#[cfg(test)]
+#[path = "lower_display_ext_tests.rs"]
+mod display_ext_tests;

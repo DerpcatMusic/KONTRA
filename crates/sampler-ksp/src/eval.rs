@@ -44,6 +44,9 @@ fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) ->
     let mut seen = vec![false; hir.functions.len()];
     while let Some(body) = pending.pop() {
         for stmt in body {
+            if async_wait_suspends && statement_has_array_file(&stmt.kind) {
+                return true;
+            }
             match &stmt.kind {
                 StmtKind::Builtin(builtin, _) => {
                     if matches!(builtin, Builtin::Wait | Builtin::WaitTicks)
@@ -71,6 +74,44 @@ fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) ->
         }
     }
     false
+}
+
+// File calls can appear in assignments/conditions, not just standalone statements.
+fn statement_has_array_file(stmt: &StmtKind) -> bool {
+    fn arg(a: &Arg) -> bool {
+        match a {
+            Arg::Expr(e) => expr(e),
+            Arg::Place(Place::Elem(_, e)) => expr(e),
+            _ => false,
+        }
+    }
+    fn expr(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Builtin(b, args) => {
+                matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) || args.iter().any(arg)
+            }
+            ExprKind::LoadElem(_, e)
+            | ExprKind::SysElem(_, e)
+            | ExprKind::Neg(e)
+            | ExprKind::BitNot(e)
+            | ExprKind::Not(e)
+            | ExprKind::Cast(e) => expr(e),
+            ExprKind::Arith(_, a, b) | ExprKind::Compare(_, a, b) | ExprKind::Logic(_, a, b) => {
+                expr(a) || expr(b)
+            }
+            ExprKind::Concat(parts) => parts.iter().any(expr),
+            _ => false,
+        }
+    }
+    match stmt {
+        StmtKind::Assign(p, e) => expr(e) || matches!(p, Place::Elem(_, index) if expr(index)),
+        StmtKind::Fill(_, values) => values.iter().any(expr),
+        StmtKind::If(e, _, _) | StmtKind::While(e, _) | StmtKind::Select(e, _) => expr(e),
+        StmtKind::Builtin(b, args) => {
+            matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) || args.iter().any(arg)
+        }
+        StmtKind::Call(_) => false,
+    }
 }
 
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
@@ -398,9 +439,8 @@ impl Eval<'_> {
                 self.depth += 1;
                 let flow = self.block(&self.hir.functions[f.0 as usize].body);
                 self.depth -= 1;
-                if let Flow::Exit = flow? {
-                    return Ok(Flow::Exit);
-                }
+                // Function exit resumes its caller; errors still propagate after depth restoration.
+                flow?;
             }
             StmtKind::Builtin(Builtin::Exit, _) => return Ok(Flow::Exit),
             StmtKind::Builtin(Builtin::Continue, _) => return Ok(Flow::Continue),
@@ -877,6 +917,50 @@ impl Eval<'_> {
         Ok(())
     }
 
+    fn waveform(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        use sampler_core::waveform::Property;
+        let var = Self::var(args, 0);
+        let ui = self.ui_of(var);
+        let id = ui.map(|i| b::FIRST_UI_ID + i as i32);
+        let name = self.hir.vars[var.0 as usize].name.to_string();
+        // Every non-variable operand is evaluated exactly once, even on rejection.
+        let selector = self.int(args, 1)?;
+        let index = self.int(args, 2)?;
+        let value = if builtin == Builtin::SetUiWfProperty { self.int(args, 3)? } else { 0 };
+        let valid_ui = ui.is_some_and(|i| self.hir.uis[i].kind == WidgetKind::Waveform && !self.hir.uis[i].unresolved);
+        let Some(id) = id.filter(|_| valid_ui) else {
+            self.warn(span, "waveform operation requires a declared waveform UI identity");
+            return Ok(V::I(0));
+        };
+        if builtin == Builtin::AttachZone {
+            if selector <= 0 || !self.env.zones.contains_key(&(selector as u32)) {
+                self.warn(span, "waveform source zone is absent from the physical-source environment");
+                return Ok(V::I(0));
+            }
+            crate::waveform::project(&mut self.st.model, &name, id, Request {
+                command: "attach_zone",
+                args: vec![Value::Int(id), Value::Int(selector), Value::Int(index)],
+            });
+            return Ok(V::I(0));
+        }
+        let property_name = symbol_name(self.hir, selector);
+        let property = property_name.as_deref().and_then(Property::from_name);
+        let wave = crate::ui::waveform_requests(&self.st.model, id, &name);
+        let Some((p, wave)) = property.zip(wave).filter(|(p, _)| p.validate_index(index).is_ok()) else {
+            self.warn(span, "waveform property requires an attachment, known symbol and admitted index");
+            return Ok(V::I(0));
+        };
+        if builtin == Builtin::GetUiWfProperty {
+            return Ok(V::I(crate::waveform::read(&wave, p, index)));
+        }
+        crate::waveform::project(&mut self.st.model, &name, id, Request {
+            command: "set_ui_wf_property",
+            args: vec![Value::Int(id), Value::Text(property_name.unwrap_or_default()),
+                Value::Int(index), Value::Int(p.value(index, value))],
+        });
+        Ok(V::I(0))
+    }
+
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
         let result = self.builtin_inner(builtin, args, span);
@@ -901,7 +985,26 @@ impl Eval<'_> {
             // Runtime-maintained arrays are all zero while initializing.
             return Ok(match builtin {
                 NumElements => V::I(array.len() as i32),
-                Search => V::I(if self.int(args, 1)? == 0 { 0 } else { -1 }),
+                Search => {
+                    let needle = self.int(args, 1)?;
+                    // No affected groups exist before a note callback.
+                    let len = if *array == b::SysArray::GroupsAffected {
+                        0
+                    } else {
+                        array.len() as i32
+                    };
+                    let (lo, hi) = if args.len() == 4 {
+                        (self.int(args, 2)?, self.int(args, 3)?)
+                    } else {
+                        (0, len - 1)
+                    };
+                    let lo = lo.max(0);
+                    V::I(if needle == 0 && lo <= hi.min(len - 1) {
+                        lo
+                    } else {
+                        -1
+                    })
+                }
                 _ => V::I(0),
             });
         }
@@ -1053,11 +1156,9 @@ impl Eval<'_> {
             ArrayEqual => {
                 let (a, b2) = (Self::var(args, 0), Self::var(args, 1));
                 let len = self.hir.vars[a.0 as usize].len.unwrap_or(0);
-                let equal = len == self.hir.vars[b2.0 as usize].len.unwrap_or(0)
-                    && (0..len as i32).all(|i| {
-                        format!("{:?}", self.read_elem(a, i, span))
-                            == format!("{:?}", self.read_elem(b2, i, span))
-                    });
+                // Sema admits only same-sized declared integer arrays.
+                let equal = (0..len as i32)
+                    .all(|i| self.read_elem(a, i, span).int() == self.read_elem(b2, i, span).int());
                 V::I(i32::from(equal))
             }
             GetUiId => V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0)).unwrap_or(0) as i32),
@@ -1426,7 +1527,17 @@ impl Eval<'_> {
                 )
             }
             SetListener | ChangeListenerPar => {
+                if builtin == SetListener && self.callback_type != b::cb::INIT {
+                    return fault(span, "set_listener can only be used in on init");
+                }
                 let (signal, value) = (self.int(args, 0)?, self.int(args, 1)?);
+                let (lo, hi) = crate::sema::listener_range(builtin, signal, span)?;
+                if !(builtin == ChangeListenerPar && value == 0) && !(lo..=hi).contains(&value) {
+                    return fault(
+                        span,
+                        format!("{} parameter must be {lo}..={hi}", builtin.name()),
+                    );
+                }
                 self.st.model.listeners.insert(signal, value);
                 V::I(0)
             }
@@ -1642,7 +1753,8 @@ impl Eval<'_> {
                         .unwrap_or(0),
                 )
             }
-            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit | GetUiWfProperty
+            AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
+            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
             | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
@@ -1659,9 +1771,69 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
-            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr | SaveArrayStr
-            | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi
-            | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            LoadArrayStr | SaveArrayStr => {
+                if self.callback_type != b::cb::INIT {
+                    self.warn(
+                        span,
+                        "explicit-path array I/O requires a scheduled runtime callback",
+                    );
+                    V::I(-1)
+                } else {
+                    let var = Self::var(args, 0);
+                    let path = self.text(args, 1)?;
+                    let id = self.st.midi_object.allocate_async_id().map_err(|_| Fault {
+                        span,
+                        builtin: Some(builtin.name()),
+                        message: "async ID exhausted".into(),
+                    })?;
+                    let operation = (|| {
+                        let array = crate::array_file::array(self.hir, var)?;
+                        let range = array.offset as usize..(array.offset + array.len) as usize;
+                        let write = builtin == SaveArrayStr;
+                        let (numbers, texts) = if write {
+                            if array.kind == sampler_core::ArrayFileKind::Text {
+                                (
+                                    Vec::new(),
+                                    self.st.texts[range]
+                                        .iter()
+                                        .map(|s| sampler_core::Text::try_new(s))
+                                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                                )
+                            } else {
+                                (self.st.cells[range].to_vec(), Vec::new())
+                            }
+                        } else {
+                            (Vec::new(), Vec::new())
+                        };
+                        let mut output = sampler_core::ArrayFileCompletion::synchronous(
+                            array, &path, write, numbers, texts,
+                        )?;
+                        output.perform()?;
+                        if !write {
+                            let range = array.offset as usize..(array.offset + array.len) as usize;
+                            if array.kind == sampler_core::ArrayFileKind::Text {
+                                for (cell, value) in range.zip(output.texts()) {
+                                    self.st.texts[cell] = value.as_str().to_owned();
+                                }
+                            } else {
+                                self.st.cells[range].copy_from_slice(output.numbers());
+                            }
+                        }
+                        Ok::<(), sampler_core::Error>(())
+                    })();
+                    if operation.is_err() {
+                        self.warn(
+                            span,
+                            format!("{} failed; array/file unchanged", builtin.name()),
+                        );
+                    }
+                    // Sync init has no async callback. Share the monotonically increasing ID domain.
+                    V::I(id)
+                }
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
+            | FsNavigate | LoadNativeUi | SetNksNavName
+            | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }

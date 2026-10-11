@@ -2,6 +2,26 @@
 use ni_file::kontakt::objects as ni;
 use sampler_ir::kontakt as ir;
 
+/// Exact original array body, including physical slot framing and opaque sources.
+/// This is in-memory provenance, not a playback source or a re-encoding law.
+pub(crate) fn wire(
+    group: usize,
+    external: bool,
+    chunk: &ni_file::kontakt::Chunk,
+) -> Result<sampler_ir::SourceParameterRecord, ni_file::Error> {
+    let version = ni_file::kontakt::StructuredObject::try_from(chunk)?.version;
+    let kind = if external { "external" } else { "internal" };
+    Ok(sampler_ir::SourceParameterRecord {
+        location: format!("group {group} original {kind} modulation array"),
+        object_id: chunk.id,
+        version,
+        fields: vec![sampler_ir::SourceParameter {
+            name: "chunk_body",
+            value: sampler_ir::SourceParameterValue::Opaque(chunk.data.clone()),
+        }],
+    })
+}
+
 pub(crate) fn internal(version: u16, p: &ni::InternalModParams) -> ir::Modulation {
     let source = match &p.modulator {
         ni::Modulator::Ahdsr(e) => ir::InternalSource::Ahdsr {

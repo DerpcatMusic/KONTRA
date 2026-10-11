@@ -1,0 +1,36 @@
+{
+  "state": "STATIC_CUSTODY_AND_SCALAR_ONLY",
+  "source_sha": "e6710e4e04c2404123a730d5b7977afa6a68c679",
+  "changed_paths": [
+    "crates/sampler-core/src/controller_event.rs",
+    "crates/sampler-core/src/plan_programs.rs",
+    "crates/sampler-core/src/prepare.rs",
+    "crates/sampler-core/src/stages.rs",
+    "crates/sampler-ksp/tests/rpn.rs"
+  ],
+  "source_files": 20,
+  "git_blobs_copied": 40,
+  "symbol_records": 27,
+  "versioned_spans": 54,
+  "tests_not_run": 20,
+  "retained_test_names": 14,
+  "unchanged_full_test_bodies": 13,
+  "strengthened_original_tests": 1,
+  "new_tests": 6,
+  "archives": 4,
+  "primary_sections_reextracted": 7,
+  "scalar_checks": [
+    "three-module changed schema",
+    "wrong in-range owner",
+    "empty route explicit assignment",
+    "mixed peer owner rejection",
+    "capacity3 first refusal",
+    "capacity5 second refusal",
+    "FIFO sketch12345"
+  ],
+  "scalar_limit": "Independent arithmetic/order sketch only. Actual deferred=true/public binder/runtime/heap/PCM witnesses NOT_RUN.",
+  "rustfmt": "PARSE_FORMAT_ONLY",
+  "git_whitespace": "STATIC_ONLY",
+  "native": "UNKNOWN",
+  "performance": "CPU AND RAM below BOTH v1/Kontakt UNACHIEVED"
+}

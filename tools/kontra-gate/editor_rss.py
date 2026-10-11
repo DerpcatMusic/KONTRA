@@ -18,30 +18,81 @@ from evidence import Capture
 from live_host import V1, sha, private_settings, v1_state, native_selection, log_rows, keyed, sized
 
 PHASES = ('loaded', 'open', 'closed', 'reopened')
+CYCLE_PHASES = ('loaded', 'warmup_open', 'warmup_closed') + tuple(
+    phase for cycle in range(1, 5) for phase in (f'open_{cycle}', f'closed_{cycle}'))
 
 
-def summarize(rows):
-    assert len(rows) == 40, 'four complete RSS phases required'
+def summarize(rows, phases=PHASES, viewport=(1180, 760)):
+    assert len(rows) == 10*len(phases), 'complete RSS phases required'
     result = {}
-    for index, phase in enumerate(PHASES):
+    for index, phase in enumerate(phases):
         samples = rows[index*10:(index+1)*10]
         assert [r['phase'] for r in samples] == [phase]*10
         assert [r['sample'] for r in samples] == list(range(10))
-        shown = phase in ('open', 'reopened')
+        shown = phase in ('open', 'reopened', 'warmup_open') or phase.startswith('open_')
         for row in samples:
             assert row['editor_children'] == int(shown), 'editor lifecycle mismatch'
             assert (0 < row['width'] <= 4096 and 0 < row['height'] <= 2160) if shown else (row['width'], row['height']) == (0, 0)
             assert all(type(row[k]) is int and row[k] >= 0 for k in ('rss_kib', 'hwm_kib', 'swap_kib'))
             assert 0 < row['rss_kib'] <= row['hwm_kib']
             if shown:
-                assert 1179 <= row['width'] <= 1181 and 759 <= row['height'] <= 761, 'mapped viewport exceeds compositor tolerance'
+                assert abs(row['width']-viewport[0]) <= 1 and abs(row['height']-viewport[1]) <= 1, 'mapped viewport exceeds compositor tolerance'
                 assert (row['width'], row['height']) == (row['parent_width'], row['parent_height']) == (row['clap_width'], row['clap_height']), 'parent/child/CLAP clipping disagreement'
         values = [r['rss_kib']/1024 for r in samples]
         result[phase] = {'rss_mib': statistics.median(values), 'min_mib': min(values), 'max_mib': max(values)}
-    result['open_delta_mib'] = result['open']['rss_mib']-result['loaded']['rss_mib']
-    result['close_delta_mib'] = result['closed']['rss_mib']-result['loaded']['rss_mib']
-    result['reopen_delta_mib'] = result['reopened']['rss_mib']-result['loaded']['rss_mib']
+    if phases == PHASES:
+        result['open_delta_mib'] = result['open']['rss_mib']-result['loaded']['rss_mib']
+        result['close_delta_mib'] = result['closed']['rss_mib']-result['loaded']['rss_mib']
+        result['reopen_delta_mib'] = result['reopened']['rss_mib']-result['loaded']['rss_mib']
     return result
+
+
+# Matches plugin::ui_activity::FIELDS version 1. These are observations, not readiness.
+UI_ACTIVITY_VERSION = 1
+UI_ACTIVITY_FIELDS = ('readback_calls', 'readback_busy', 'readback_cells', 'readback_changes',
+                      'publication_calls', 'publication_changes', 'face_new', 'face_updates',
+                      'face_noops', 'native_materializations', 'native_widgets', 'typed_calls',
+                      'meter_calls', 'watch_calls', 'readout_polls', 'readout_changes',
+                      'watch_wakes', 'animation_wakes', 'pending_wakes', 'worker_ticks')
+
+
+def summarize_cycles(rows, viewport):
+    result = summarize(rows, CYCLE_PHASES, viewport)
+    counters = ('wall_ns', 'cpu_ns', 'audio_thread_cpu_ns', 'audio_blocks', 'audio_busy_ns', 'audio_callback_overruns')
+    for row in rows:
+        assert all(type(row.get(k)) is int and row[k] >= 0 for k in counters), 'invalid lifecycle counter'
+        perf = row.get('plugin_perf')
+        assert type(perf) is dict and all(type(perf.get(k)) is int and perf[k] >= 0
+            for k in ('busy_ns', 'span_ns', 'voices', 'audible', 'dropouts', 'memory',
+                      'freed', 'disk', 'underruns', 'loaded', 'blocks')), 'missing or invalid plugin perf counters'
+        assert perf['loaded'] > 0, 'plugin reports no loaded parts'
+        activity = row.get('ui_activity')
+        assert (type(activity) is dict and type(activity.get('version')) is int
+                and activity['version'] == UI_ACTIVITY_VERSION), 'missing or unsupported UI activity version'
+        counts = activity.get('counts')
+        assert (type(counts) is list and len(counts) == len(UI_ACTIVITY_FIELDS)
+                and all(type(value) is int and 0 <= value <= 2**64-1 for value in counts)), 'invalid UI activity counters'
+        assert type(row['threads']) is int and row['threads'] > 0, 'invalid live thread count'
+    for previous, current in zip(rows, rows[1:]):
+        assert current['wall_ns'] > previous['wall_ns'], 'nonmonotonic sample clock'
+        assert all(current[k] >= previous[k] for k in counters[1:]), 'reset lifecycle counter'
+        assert all(after >= before for before, after in zip(previous['ui_activity']['counts'],
+                                                            current['ui_activity']['counts'])), 'reset UI activity counter'
+    for index, phase in enumerate(CYCLE_PHASES):
+        first, last = rows[index*10], rows[index*10+9]
+        span = last['wall_ns']-first['wall_ns']
+        assert last['audio_blocks'] > first['audio_blocks'], 'audio engine did not survive phase'
+        result[phase].update(cpu_percent=100*(last['cpu_ns']-first['cpu_ns'])/span,
+                             audio_callback_busy_percent=100*(last['audio_busy_ns']-first['audio_busy_ns'])/span,
+                             audio_thread_cpu_percent=100*(last['audio_thread_cpu_ns']-first['audio_thread_cpu_ns'])/span,
+                             live_threads_max=max(r['threads'] for r in rows[index*10:index*10+10]),
+                             audio_callback_overruns=last['audio_callback_overruns']-first['audio_callback_overruns'],
+                             ui_activity_delta=dict(zip(UI_ACTIVITY_FIELDS, (
+                                 after-before for before, after in zip(first['ui_activity']['counts'],
+                                                                       last['ui_activity']['counts'])))))
+    return dict(phases=result,
+                open_growth_mib=result['open_4']['rss_mib']-result['open_1']['rss_mib'],
+                closed_growth_mib=result['closed_4']['rss_mib']-result['closed_1']['rss_mib'])
 
 
 def selected_loads(rows, item, programs):

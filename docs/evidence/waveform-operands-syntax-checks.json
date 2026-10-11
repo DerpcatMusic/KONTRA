@@ -1,0 +1,27 @@
+{
+  "kind": "WASM syntax parsing ONLY; not Rust type checking or product execution",
+  "grammar_sha256": "dc7f9b4d182af6b8332b44cfb8d24c0b25892900b006af5ce7eafdef8c976d5a",
+  "rust_tests": "NOT_RUN",
+  "files": [
+    {
+      "file": "crates/sampler-ksp/src/ui.rs",
+      "sha256": "e4a9eab82573ad0e1d4077f5636898ac286ca4eedd53c730ae716c35d7600acd",
+      "errors": []
+    },
+    {
+      "file": "crates/sampler-ksp/tests/ui.rs",
+      "sha256": "54c3e288cc6115410aa06fe33791ce847ef38537f31113da7a742538e88813d7",
+      "errors": []
+    },
+    {
+      "file": "crates/sampler-ksp/tests/waveform.rs",
+      "sha256": "9e09c77a6fcb0e71c003017180ca2ca6efa29d2e4983b9d92ac9ce7e122bae04",
+      "errors": []
+    },
+    {
+      "file": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "sha256": "8549f115eb2a0377b34bb6b9e9ac1aae916c0c764280b2d5990dffc24a922fe0",
+      "errors": []
+    }
+  ]
+}
