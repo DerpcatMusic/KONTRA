@@ -7,6 +7,7 @@ const LIMIT: u64 = 32 << 20;
 
 // Header-only sizing, as v1 src/uvi/ui_assets.rs::dimensions; pixels still
 // pass through the bounded UI decoder before painting.
+// shortcut: intrinsic sizing covers PNG; add other headers when unsized image fixtures require them.
 pub(crate) fn png_size(bytes: &[u8]) -> Option<sampler_ui_ir::Size> {
     if bytes.len() < 33 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR") {
         return None;
