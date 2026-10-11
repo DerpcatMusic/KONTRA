@@ -169,6 +169,7 @@ pub(crate) fn encode(
             z.chain,
             z.amplitude,
             &z.routes,
+            z.playback.loop_control_crossfade,
         ))?;
         w.bytes(&extra);
     }
@@ -275,8 +276,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
         let end = has_end.then_some(end_value);
         let reverse = r.boolean()?;
         let start_range = r.u64()?;
-        let (conditions, trigger, selection, articulation, axes, looping, chain, amplitude, routes) =
-            serde_json::from_slice(r.bytes()?).ok()?;
+        let (
+            conditions,
+            trigger,
+            selection,
+            articulation,
+            axes,
+            looping,
+            chain,
+            amplitude,
+            routes,
+            loop_control_crossfade,
+        ) = serde_json::from_slice(r.bytes()?).ok()?;
         zones.push(ir::Zone {
             asset,
             group,
@@ -305,6 +316,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
                 reverse,
                 start_range,
                 looping,
+                loop_control_crossfade,
             },
             conditions,
             trigger,
@@ -430,6 +442,7 @@ mod tests {
         a.playback.end = Some(456);
         a.playback.reverse = true;
         a.playback.start_range = 7;
+        a.playback.loop_control_crossfade = Some(ir::Span::Frames(32));
         let zones = [a, ir::Zone::new(ir::AssetRef(1))];
         let mut bytes = Vec::new();
         encode(&zones, &[], &mut bytes).unwrap();

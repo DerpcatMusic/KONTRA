@@ -678,7 +678,15 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
+            law: if routes.iter().any(|b| {
+                b.1 == alias.control
+                    && matches!(
+                        instrument.routes[b.0.0].target,
+                        ir::Target::LoopStart | ir::Target::LoopLength
+                    )
+            }) {
+                crate::EngineParameterLaw::SignedCubic
+            } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
             } else {
                 crate::EngineParameterLaw::Linear {
@@ -973,6 +981,10 @@ impl Lowering<'_> {
                 }),
                 _ => [None; 8],
             },
+            loop_control_crossfade: zone
+                .playback
+                .loop_control_crossfade
+                .map(|span| span.frames(asset_rate) as usize),
             transpose_semitones: tune,
         };
         let region = Region {
@@ -1202,6 +1214,29 @@ impl Lowering<'_> {
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
             let mut processor_targets = Vec::new();
+            let mut source_of = |modulator: ir::ModulatorRef,
+                                 program: &mut ModProgram|
+             -> Result<usize, LowerError> {
+                if let Some(&index) = sources.get(&modulator) {
+                    return Ok(index);
+                }
+                let m = &self.ir.modulators[modulator.0];
+                // One instrument-wide LFO: free-running, or restarted by every voice start.
+                let shared = matches!(
+                    (m.scope, &m.source),
+                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
+                );
+                if m.scope != ir::Scope::Voice && !shared {
+                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
+                }
+                let mut source = self.mod_source(&owner, &m.source, program)?;
+                if let ModSource::Lfo(lfo) = &mut source {
+                    lfo.shared = shared;
+                }
+                program.sources.push(source);
+                sources.insert(modulator, program.sources.len() - 1);
+                Ok(program.sources.len() - 1)
+            };
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -1214,6 +1249,12 @@ impl Lowering<'_> {
                 (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
                 (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
                 (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (ir::Target::LoopStart, ir::Depth::Normalized(d)) => (ModTarget::LoopStart, d),
+                (ir::Target::LoopLength, ir::Depth::Normalized(d)) => (ModTarget::LoopLength, d),
+                (ir::Target::SourcePhase(target), ir::Depth::Normalized(d)) => (
+                    ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
+                    d,
+                ),
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,
@@ -1341,29 +1382,6 @@ impl Lowering<'_> {
                     }
                 }
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
-            };
-            let mut source_of = |modulator: ir::ModulatorRef,
-                                 program: &mut ModProgram|
-             -> Result<usize, LowerError> {
-                if let Some(&index) = sources.get(&modulator) {
-                    return Ok(index);
-                }
-                let m = &self.ir.modulators[modulator.0];
-                // One instrument-wide LFO: free-running, or restarted by every voice start.
-                let shared = matches!(
-                    (m.scope, &m.source),
-                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
-                );
-                if m.scope != ir::Scope::Voice && !shared {
-                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
-                }
-                let mut source = self.mod_source(&owner, &m.source, program)?;
-                if let ModSource::Lfo(lfo) = &mut source {
-                    lfo.shared = shared;
-                }
-                program.sources.push(source);
-                sources.insert(modulator, program.sources.len() - 1);
-                Ok(program.sources.len() - 1)
             };
             let source = source_of(route.source, &mut program)?;
             let scale = match route.scale {

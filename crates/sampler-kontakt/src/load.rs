@@ -1382,6 +1382,23 @@ mod fit_tests {
     }
 
     #[test]
+    fn saved_modulated_crossfade_survives_the_initial_file_boundary_clamp() {
+        let mut playback = looped(0, 0, 4096, 32);
+        playback.loop_control_crossfade = Some(ir::Span::Frames(32));
+        let mut report = Vec::new();
+        assert!(fit(&mut playback, 4096, &mut report));
+        assert!(matches!(
+            playback.looping,
+            ir::Looping::Continuous(ir::LoopRange {
+                crossfade: ir::Span::Frames(0),
+                ..
+            })
+        ));
+        assert_eq!(playback.loop_control_crossfade, Some(ir::Span::Frames(32)));
+        assert!(report.is_empty());
+    }
+
+    #[test]
     fn a_loop_before_the_sample_start_is_kept_and_its_crossfade_uses_the_file() {
         let mut report = Vec::new();
         let mut playback = looped(150, 100, 400, 50);
