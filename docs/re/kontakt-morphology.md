@@ -1,6 +1,7 @@
 # Morphology filter: cached dispatch and output table
 
-Status: implementation blocked at the [MCP evidence gate](kontakt-fx-2-evidence.md).
+Status (round 3): saved ladder types 30–41 now select the verified native
+output rows; type 13 is a separate legacy effect filter and remains under extraction.
 
 Docs first: Kontakt 8 [Filter Reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference),
 sections Ladder high-pass, band-pass and peak/notch filters; KSP
@@ -45,3 +46,25 @@ For input/stages (1, 1/2, 1/4, 1/8, 1/16), rows 35, 39 and 41 give
 1/4, 3/8 and 1/2 before compensation. These are table arithmetic checks,
 not audio parity tests. Record-version field order, the type-13 kernel,
 native clamp/smoothing behavior and a production vector test remain open.
+
+## Round 3 implementation and confirmation
+
+The cache is accepted protocol step 2 for SHA `0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`.
+Read `complete-export/pseudocode.c` functions `FUN_140cf4c80`,
+`FUN_140af01d0`, `FUN_140b05c70`, `FUN_140b00b80`. radare2 MCP opened
+`/mnt/Windows11/DEV_WORKSPACE/re-binaries/Kontakt8.exe`; hexdumps
+`0x144fcebc0..0x144fcef50` confirm all output and compensation rows.
+Disassembly `0x140cf4c80..0x140cf4ca4` confirms saved-ID subtraction;
+`0x140b00ffc..0x140b01049` confirms compensation interpolation;
+`0x140b01283..0x140b012c8` confirms the weighted sum order.
+
+Reused the v1-derived four-pole state, correction, soft clipping, and
+32/4-frame control scheduling. Added HP1–4, BP2/4, Peak and Notch output
+rows with their own extracted compensation. Existing LP compensation stays
+unchanged. IR validation and importer now accept selectors 1–12.
+`morphology_hp2_bp4_notch_use_native_weights_and_compensation` failed first
+(HP2 expected 47/192, received LP4 47/768), then passed. Independent
+first-sample vectors at g=1, no feedback, unit input: HP2 47/192,
+BP4 47/128, Notch 47/96; endpoint compensation at q=1: .4/.38/.38.
+These are extracted-law vectors, not Kontakt recordings. HQ and version
+0x95 secondary cutoff scheduling remain diagnosed by the existing code.

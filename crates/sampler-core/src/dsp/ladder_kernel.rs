@@ -42,7 +42,7 @@ struct Controls {
     pending: bool,
     started: bool,
     // bit0: version-derived instant cutoff; bit1: enabled target route;
-    // bits2-3: 4 - output stage (LP1..LP4; the loop always closes around stage 4)
+    // bits2-5: output selector (zero retains the default LP4)
     modes: u8,
 }
 
@@ -137,6 +137,9 @@ const TAP_COMPENSATION: [&[(f32, f32)]; 3] = [
 ];
 
 fn compensation(q: f32, taps: u8) -> f32 {
+    if taps > 4 {
+        return morphology_compensation(q, usize::from(taps - 5));
+    }
     let Some(table) = TAP_COMPENSATION.get(usize::from(taps).wrapping_sub(1)) else {
         return lp4_compensation(q);
     };
@@ -146,6 +149,46 @@ fn compensation(q: f32, taps: u8) -> f32 {
         (Some((_, y)), None) => y,
         (Some((x0, y0)), Some(&(x1, y1))) => y0 + (y1 - y0) * (q - x0) / (x1 - x0),
     }
+}
+
+// NI Kontakt 8 Filter Reference: Ladder HP/BP/Peak/Notch. Ghidra
+// FUN_140b00b80; radare2 confirms weights 0x144fcebc0 and compensation
+// knots/values/reciprocal widths 0x144fcecb0/0x144fced70/0x144fceec0.
+#[rustfmt::skip]
+const MORPHOLOGY_WEIGHTS: [[f32; 5]; 8] = [
+    [1., -1., 0., 0., 0.], [1., -2., 1., 0., 0.],
+    [1., -3., 3., -1., 0.], [1., -4., 6., -4., 1.],
+    [0., -2., 2., 0., 0.], [0., 0., 6., -12., 6.],
+    [1., 0., 0., 0., 0.], [1., -4., 12., -16., 8.],
+];
+#[rustfmt::skip]
+const MORPHOLOGY_COMPENSATION: [([f32; 4], [f32; 4], [f32; 3]); 8] = [
+    ([0., 0.46, 0.79, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.030303, 4.761905]),
+    ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.448276, 4.]),
+    ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.25], [2.173913, 3.448276, 4.]),
+    ([0., 0.46, 0.76, 1.], [0.5, 0.5, 0.5, 0.28], [2.173913, 3.333333, 4.166667]),
+    ([0., 0.51, 0.63, 1.], [0.5, 0.5, 0.5, 0.25], [1.960784, 8.333333, 2.702703]),
+    ([0., 0.56, 0.63, 1.], [0.5, 0.5, 0.5, 0.19], [1.785714, 14.285714, 2.702703]),
+    ([0., 0.54, 0.80, 1.], [0.5, 0.5, 0.5, 0.2], [1.851852, 3.846154, 5.]),
+    ([0., 0.25, 0.60, 1.], [0.5, 0.5, 0.49, 0.19], [4., 2.857143, 2.5]),
+];
+fn morphology_compensation(q: f32, row: usize) -> f32 {
+    let (knots, values, inverse) = MORPHOLOGY_COMPENSATION[row];
+    let p = q * q;
+    let interval = if p < knots[1] {
+        0
+    } else if p < knots[2] {
+        1
+    } else {
+        2
+    };
+    let t = (p - knots[interval]) * inverse[interval];
+    let s = (1. - t) * (1. - t);
+    let smooth = 1. - (2. - s) * s;
+    let y = values[interval];
+    let blend = smooth + y.abs() * ((2. - t) * t - smooth);
+    let delta = values[interval + 1] - y;
+    blend * (delta + delta) + y + y
 }
 
 fn lp4_compensation(q: f32) -> f32 {
@@ -172,13 +215,15 @@ pub(super) fn instant_cutoff(version: u16) -> bool {
 }
 
 impl Ladder {
-    /// Output stage 1..=4; stored in the spare mode bits so the pinned size holds.
+    /// Native output selector 1..=12, stored in spare bits without growing state.
     pub(super) fn set_taps(&mut self, taps: u8) {
-        self.controls.modes = (self.controls.modes & !0b1100) | ((4 - taps.clamp(1, 4)) << 2);
+        let taps = taps.clamp(1, 12);
+        self.controls.modes = (self.controls.modes & 3) | (if taps == 4 { 0 } else { taps } << 2);
     }
 
     fn taps(&self) -> u8 {
-        4 - ((self.controls.modes >> 2) & 3)
+        let taps = self.controls.modes >> 2;
+        if taps == 0 { 4 } else { taps }
     }
 
     pub(super) fn record_version(&mut self, version: u16) {
@@ -347,16 +392,22 @@ impl Ladder {
                 state[4] = correction;
                 let mut value = (input - feedback).clamp(-24.0, 24.0);
                 value *= 1.0 - value.abs() / 48.0;
-                let mut tap = value;
+                let mut outputs = [value; 5];
                 for (stage, history) in state[..4].iter_mut().enumerate() {
                     let previous = *history;
                     let predicted = (2.0 * previous + self.g * value) * self.reciprocal;
                     *history = previous + self.g * (value - predicted);
                     value = previous + *history;
-                    if stage + 1 == taps {
-                        tap = value;
-                    }
+                    outputs[stage + 1] = value;
                 }
+                let tap = if taps <= 4 {
+                    outputs[taps]
+                } else {
+                    let weights = MORPHOLOGY_WEIGHTS[taps - 5];
+                    // Native sum order: stages 4,3,2, then (stage 1 + input).
+                    ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
+                        + (outputs[1] * weights[1] + outputs[0] * weights[0])
+                };
                 *sample = tap * self.compensation;
             }
         }
@@ -367,8 +418,34 @@ impl Ladder {
 mod tests {
     use super::*;
 
-    /// Kontakt 8 recording (calibration noise, x = .4997): LP1..LP3 response vs bypass in dB
-    /// at 200/500/1000/2000/5000 Hz for resonance .5039 and .8031.
+    #[test]
+    fn morphology_hp2_bp4_notch_use_native_weights_and_compensation() {
+        // Independent first-frame vectors: g=1, no feedback, unit input is
+        // clipped to 47/48; stage outputs then halve at each pole.
+        for (taps, expected, end_gain) in [
+            (6, 47.0 / 192.0, 0.4),
+            (10, 47.0 / 128.0, 0.38),
+            (12, 47.0 / 96.0, 0.38),
+        ] {
+            let mut filter = Ladder {
+                g: 1.0,
+                reciprocal: 0.5,
+                gain: 1.0,
+                compensation: 1.0,
+                ..Ladder::default()
+            };
+            filter.set_taps(taps);
+            let (mut l, mut r) = ([1.0], [-1.0]);
+            filter.process_held(&mut l, &mut r);
+            assert!((l[0] - expected).abs() < 1e-6, "taps {taps}: {}", l[0]);
+            assert!((r[0] + expected).abs() < 1e-6);
+            assert!((compensation(1.0, taps) - end_gain).abs() < 1e-6);
+            assert_eq!(compensation(0.0, taps), 1.0);
+        }
+    }
+
+    /// Kontakt 8 recording (calibration noise, x = 0.4997): LP1..LP3 response vs bypass in dB
+    /// at 200/500/1000/2000/5000 Hz for resonance 0.5039 and 0.8031.
     #[test]
     fn ladder_taps_match_the_measured_kontakt_responses() {
         prepare();
@@ -381,7 +458,10 @@ mod tests {
             (3, 0.8031, [-11.7, -5.5, -9.6, -27.2, -50.5]),
         ];
         for (taps, resonance, expected) in measured {
-            for (hz, expected) in [200.0_f32, 500., 1000., 2000., 5000.].into_iter().zip(expected) {
+            for (hz, expected) in [200.0_f32, 500., 1000., 2000., 5000.]
+                .into_iter()
+                .zip(expected)
+            {
                 let mut filter = Ladder::default();
                 filter.record_version(0x92);
                 filter.set_taps(taps);
@@ -391,7 +471,12 @@ mod tests {
                     .collect();
                 let (mut l, mut r) = (sine.clone(), sine.clone());
                 filter.process(&mut l, &mut r);
-                let power = |v: &[f32]| v[12_000..].iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                let power = |v: &[f32]| {
+                    v[12_000..]
+                        .iter()
+                        .map(|x| f64::from(*x).powi(2))
+                        .sum::<f64>()
+                };
                 let db = 10.0 * (power(&l) / power(&sine)).log10();
                 assert!(
                     (db - f64::from(expected)).abs() < 0.7,
