@@ -3333,11 +3333,27 @@ impl Gen<'_, '_> {
 
     /// `sort(array, direction[, from, to])`: in place, descending when
     /// `direction` is non-zero.
-    // ponytail: insertion sort, O(n²) callback fuel on large unsorted arrays.
+    // shortcut: insertion sort uses O(n²) callback fuel; upgrade for large unsorted arrays.
     fn sort(&mut self, args: &[Arg], dst: u16) -> Result<()> {
-        let Some(array) = self.cells(args, 0) else {
-            self.ignore(Builtin::Sort, "of a text or runtime array is not available");
-            return Ok(());
+        let home = args.first().and_then(|arg| match arg {
+            Arg::Var(v, _) => Some(self.var(*v).home),
+            _ => None,
+        });
+        let (array, text) = match home {
+            Some(Home::Cells { offset, len }) => (ScriptArray { offset, len }, false),
+            Some(Home::Texts { offset, len }) => (ScriptArray { offset, len }, true),
+            _ => {
+                self.ignore(Builtin::Sort, "of a runtime array is not available");
+                return Ok(());
+            }
+        };
+        let text_key = text.then(|| self.scratch());
+        let copy_text = |this: &mut Self, target, source| -> Result<()> {
+            this.emit(I::Op(Op::TextClear { text: target }))?;
+            this.emit(I::Op(Op::TextAppend {
+                text: target,
+                part: TextPart::Text(source),
+            }))
         };
         let real = matches!(args.first(),Some(Arg::Var(v,_)) if self.var(*v).ty==Ty::Real);
         // Arguments in ascending registers: evaluation uses those above.
@@ -3384,11 +3400,15 @@ impl Gen<'_, '_> {
             comparison: Cmp::LessEqual,
         })?;
         let done = self.jump_if_zero(t)?;
-        self.emit(I::ReadScriptArray {
-            array,
-            index: i,
-            local: key,
-        })?;
+        if let Some(text_key) = text_key {
+            copy_text(self, text_key, TextRef::Element { array, index: i })?;
+        } else {
+            self.emit(I::ReadScriptArray {
+                array,
+                index: i,
+                local: key,
+            })?;
+        }
         self.set(j, -1)?;
         self.emit(I::Binary32 {
             lhs: j,
@@ -3408,15 +3428,24 @@ impl Gen<'_, '_> {
             comparison: Cmp::GreaterEqual,
         })?;
         let place = self.jump_if_zero(t)?;
-        self.emit(I::ReadScriptArray {
-            array,
-            index: j,
-            local: x,
-        })?;
+        if !text {
+            self.emit(I::ReadScriptArray {
+                array,
+                index: j,
+                local: x,
+            })?;
+        }
         // Shift while a[j] is out of order against key.
         let ascending = self.jump_if_zero(desc)?;
         let compare = |real, lhs, rhs, comparison| {
-            if real {
+            if let Some(text_key) = text_key {
+                I::Op(Op::CompareText {
+                    lhs: TextRef::Element { array, index: j },
+                    rhs: text_key,
+                    local: lhs,
+                    comparison,
+                })
+            } else if real {
                 I::Op(Op::CompareReal {
                     lhs,
                     rhs,
@@ -3431,19 +3460,23 @@ impl Gen<'_, '_> {
             }
         };
         // Comparing consumes lhs; copy real bits without 32-bit arithmetic.
-        self.emit(I::ReadScriptArray {
-            array,
-            index: j,
-            local: t,
-        })?;
+        if !text {
+            self.emit(I::ReadScriptArray {
+                array,
+                index: j,
+                local: t,
+            })?;
+        }
         self.emit(compare(real, t, key, Cmp::Less))?;
         let compared = self.jump()?;
         self.land(ascending);
-        self.emit(I::ReadScriptArray {
-            array,
-            index: j,
-            local: t,
-        })?;
+        if !text {
+            self.emit(I::ReadScriptArray {
+                array,
+                index: j,
+                local: t,
+            })?;
+        }
         self.emit(compare(real, t, key, Cmp::Greater))?;
         self.land(compared);
         let place2 = self.jump_if_zero(t)?;
@@ -3453,11 +3486,19 @@ impl Gen<'_, '_> {
             rhs: j,
             operation: IB::Add,
         })?;
-        self.emit(I::WriteScriptArray {
-            array,
-            index: t,
-            local: x,
-        })?;
+        if text {
+            copy_text(
+                self,
+                TextRef::Element { array, index: t },
+                TextRef::Element { array, index: j },
+            )?;
+        } else {
+            self.emit(I::WriteScriptArray {
+                array,
+                index: t,
+                local: x,
+            })?;
+        }
         self.emit(I::AddLocal {
             local: j,
             value: -1,
@@ -3471,14 +3512,21 @@ impl Gen<'_, '_> {
             rhs: j,
             operation: IB::Add,
         })?;
-        self.emit(I::WriteScriptArray {
-            array,
-            index: t,
-            local: key,
-        })?;
+        if let Some(text_key) = text_key {
+            copy_text(self, TextRef::Element { array, index: t }, text_key)?;
+        } else {
+            self.emit(I::WriteScriptArray {
+                array,
+                index: t,
+                local: key,
+            })?;
+        }
         self.emit(I::AddLocal { local: i, value: 1 })?;
         self.emit(I::Jump { target: outer })?;
         self.land(done);
+        if text {
+            self.tdepth -= 1;
+        }
         self.cover(Builtin::Sort, Coverage::Native);
         Ok(())
     }
