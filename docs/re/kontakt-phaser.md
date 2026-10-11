@@ -29,7 +29,9 @@ Speed object vtable 0x144e74208 (radare2 dump) has index 5
 `FUN_14072b330`, which calls `FUN_140a736a0`. Non-synced Speed is
 already Hz. Unit > 9.999999717180685e-10 enables sync (0x144737708),
 then speed is at least 1 and Hz=1/(((unit*60)/tempo)*speed), all f32,
-clamped 0..8 Hz. Unit's own +20 flag defaults to 1 in `FUN_140a723e0`;
+clamped 0..8 Hz. Tempo below .1 BPM falls back to 120 BPM: radare2
+`0x140a736ac..0x140a736b5` confirms the comparison and replacement,
+with constants at `0x1447148d0` and `0x144f38cd0`. Unit's own +20 flag defaults to 1 in `FUN_140a723e0`;
 it is distinct from the saved byte at BPar+21. The saved +3c/+40 values
 and +21 byte do not participate in this getter. Bounds 0/8 are set in
 `FUN_140701a80`. Runtime tempo reaches both voice and bus DSP contexts.
@@ -54,4 +56,5 @@ uses Depth=.5, Feedback=.25, Speed=1 Hz, Phase=1 at 48 kHz:
 L=[.857850552,-.106721222,-.290372699,-.274628252],
 R=[-.476720124,-.0511267483,.0421471819,.0595008172]
 for input impulse [1,-.5]. Two beats at 120 BPM equals this free oscillator
-bit-for-bit. These are independently computed f32 vectors, not host recordings.
+bit-for-bit; synced tempo .05 BPM also equals 120 BPM. The low-tempo
+assertion failed before adding the extracted fallback. These are independently computed f32 vectors, not host recordings.

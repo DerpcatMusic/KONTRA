@@ -96,7 +96,13 @@ impl LegacyPhaser {
         }
         // FUN_140a736a0: preserve native f32 unit/tempo/speed operation order.
         let hz = self.period_unit.map_or(self.speed, |unit| {
-            (1. / (((unit * 60.) / tempo as f32) * self.speed)).clamp(0., 8.)
+            let tempo = tempo as f32;
+            let tempo = if tempo < f32::from_bits(0x3dcccccd) {
+                120.
+            } else {
+                tempo
+            };
+            (1. / (((unit * 60.) / tempo) * self.speed)).clamp(0., 8.)
         });
         let step =
             (2. * (f64::from(hz) * std::f64::consts::PI / f64::from(self.rate)).sin()) as f32;
