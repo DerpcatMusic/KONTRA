@@ -696,6 +696,7 @@ pub(crate) fn script_environment(
             .collect(),
         performance_view,
         midi_object: Default::default(),
+        folders: Default::default(),
     }
 }
 
@@ -771,7 +772,7 @@ pub(crate) fn initialize_scripts(
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
-            environment.folders = script_folders(options.library.as_deref());
+            environment.folders = script_folders(library);
             environment.control_values.extend(
                 control_values
                     .iter()

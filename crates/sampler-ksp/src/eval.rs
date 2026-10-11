@@ -1761,6 +1761,38 @@ impl Eval<'_> {
                 }
             }
             FsGetFilename => V::S(String::new()),
+            GetScale => {
+                let scale = self.int(args, 0)?;
+                let var = Self::var(args, 1);
+                let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
+                let notes = b::scale(scale).map(|s| s.1);
+                if notes.is_none() {
+                    self.warn(span, format!("get_scale: scale {scale} is not modelled; array cleared"));
+                }
+                for i in 0..len {
+                    let note = notes.and_then(|n| n.get(i as usize)).map_or(-1, |&n| i32::from(n));
+                    self.write_elem(var, i, V::I(note), span);
+                }
+                V::I(0)
+            }
+            GetScaleName => {
+                let scale = self.int(args, 0)?;
+                match b::scale(scale) {
+                    Some((name, _)) => V::S(name.into()),
+                    None => {
+                        self.warn(span, format!("get_scale_name: scale {scale} is not modelled"));
+                        V::S(String::new())
+                    }
+                }
+            }
+            SetGlobalKey | SetGlobalScale => {
+                self.warn(span, "set_global_key/scale: the plugin has no global key/scale to set");
+                V::I(0)
+            }
+            SubscribeAsync => {
+                self.warn(span, "subscribe_async: the plugin has no global key/scale to deliver");
+                V::I(0)
+            }
             FindZone => V::I(b::NOT_FOUND),
             GetZonePar => {
                 let zone = self.int(args, 0)?;
