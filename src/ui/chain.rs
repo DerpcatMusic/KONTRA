@@ -245,6 +245,11 @@ fn detail(p: ir::Processor) -> String {
             "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
         ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
+        ir::Processor::Saturation(shape) => format!("Saturation · shape {shape:+.2}"),
+        ir::Processor::Distortion { transistor, drive, damping } => format!(
+            "{} distortion · drive {:.0}% · damping {:.0}%",
+            if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
+        ),
         ir::Processor::StereoModeller { width, pan, pseudo } => format!(
             "Stereo modeller · width {:.0}% · pan {}{}",
             width * 200.,
@@ -301,7 +306,14 @@ fn detail(p: ir::Processor) -> String {
             d.cutoff * 100.,
             d.resonance * 100.
         ),
-        ir::Processor::LadderLP4(_) => "Ladder low-pass · 4 poles".into(),
+        ir::Processor::LadderLP4(d) => format!("Ladder low-pass · {} poles", d.taps),
+        ir::Processor::Ar(d) => format!(
+            "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
+            ["2", "4", "2/4"][usize::from(d.mode / 3)],
+            ["low-pass", "band-pass", "high-pass"][usize::from(d.mode % 3)],
+            d.cutoff * 100.,
+            d.resonance * 100.
+        ),
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),

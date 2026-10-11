@@ -1057,7 +1057,7 @@ impl Lowering<'_> {
             .nth(index)?;
         if matches!(
             processor,
-            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+            ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
         ) {
             return None;
         }
@@ -1302,7 +1302,9 @@ impl Lowering<'_> {
                         (parameter, ir::Depth::Normalized(d))
                             if matches!(
                                 **processor,
-                                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+                                ir::Processor::LadderLP4(_)
+                                    | ir::Processor::Daft(_)
+                                    | ir::Processor::Ar(_)
                             ) =>
                         {
                             (
@@ -1612,6 +1614,8 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::Ar(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::Ar(filter), Resonance) => filter.resonance = parameter,
             (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
@@ -1794,11 +1798,12 @@ impl Lowering<'_> {
             {
                 vec![Processor::PeakingEq(crate::PeakingEq {
                     frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
-                    bandwidth: Parameter::Constant(
-                        ((2. * (0.5 / q).asinh() / std::f64::consts::LN_2 - 0.3) / 2.7)
-                            .clamp(0., 1.),
+                    bandwidth: Parameter::Constant(crate::PeakingEq::bandwidth_knob(
+                        crate::PeakingEq::octaves_of_q(q),
+                    )),
+                    gain_db: Parameter::Constant(
+                        20. * gain.linear().log10() / crate::PeakingEq::GAIN_SCALE,
                     ),
-                    gain_db: Parameter::Constant(20. * gain.linear().log10()),
                 })]
             } else if let Some(live) = self.live_stage(chain, start + index, p) {
                 vec![live]
@@ -1925,6 +1930,11 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
+            ir::Processor::Ar(d) => Processor::Ar(crate::ArSettings {
+                mode: d.mode,
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+            }),
             ir::Processor::LadderLP4(d) => {
                 let lanes = ladder_lanes(d);
                 let parameter = |index: usize, value: f64| {
@@ -1947,6 +1957,7 @@ impl Lowering<'_> {
                     resonance: parameter(1, d.resonance),
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
+                    taps: d.taps,
                 })
             }
             ir::Processor::LoFi {
@@ -1964,6 +1975,8 @@ impl Lowering<'_> {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
             }),
+            ir::Processor::Saturation(shape) => Processor::Saturation(shape),
+            ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
@@ -2126,6 +2139,7 @@ impl Lowering<'_> {
                     | Processor::ControlMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
+                    | Processor::Saturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
