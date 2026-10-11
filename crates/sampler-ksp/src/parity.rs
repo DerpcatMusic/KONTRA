@@ -319,6 +319,7 @@ pub fn parity_report_with(
         hir: &hir,
         controls: &ids,
         groups: &environment.groups,
+            folders: &environment.folders,
         slot: environment.slot,
         budget: limits.instructions,
         limit: limits.instructions,
