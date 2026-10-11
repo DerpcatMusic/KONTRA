@@ -34,13 +34,21 @@ fn script_coverage(
     _id: &str,
     _collect: bool,
 ) -> Option<Coverage> {
+    #[cfg(test)]
+    if _instrument.name == "Synthetic script inspector" && _collect {
+        return fixtures::reports()
+            .into_iter()
+            .find(|(r, _)| r.id == _id)
+            .map(|(r, s)| fixtures::coverage(&Script::new(r, s)));
+    }
     None
 }
 
-fn mono() -> Font {
+pub(super) fn mono() -> Font {
     static FONT: OnceLock<Font> = OnceLock::new();
     FONT.get_or_init(|| {
-        Font::new(&include_bytes!("script_fonts/Hack-Regular.ttf")[..]).expect("bundled Hack")
+        Font::new(&include_bytes!("script_fonts/DejaVuSansMono.ttf")[..])
+            .expect("bundled DejaVu Sans Mono")
     })
     .clone()
 }
@@ -473,18 +481,16 @@ fn draw(ui: &mut Ui, state: &mut State, key: &str) -> El {
         state.collecting = Some(id.clone());
         state.scripts[state.selected].observe(coverage);
     }
-    let field = text_edit(
+    let field = super::browser::search_field(
         ui,
-        format!("{key}-search"),
+        &format!("{key}-search"),
         &mut state.search,
-        TextOpts::default(),
+        "Search source",
+        "Search script source",
     )
-    .el
     .min_w(100.)
     .flex(1)
-    .h(CONTROL)
-    .named("Search script source")
-    .tip("Search source; next/previous walks matching lines");
+    .tip("Search source; Next match walks matching lines");
     let (gaps, gaps_el) = latch(
         ui,
         format!("{key}-gaps"),
@@ -1339,6 +1345,7 @@ mod tests {
                 "expected status on line {line}"
             );
         }
+        editor.press("scripts-0-live");
         editor.press("scripts-0-construct-2-3");
         assert!(
             editor
@@ -1397,6 +1404,12 @@ mod tests {
         assert_eq!(state.scripts[0].lines[2].hits, 3);
         assert_eq!(state.scripts[0].lines[8].hits, 0);
         assert_eq!(state.scripts[0].line_status(5), Some(Status::Fault));
+        let instrument = Arc::new(sampler_ir::Instrument::default());
+        state.instrument = Arc::downgrade(&instrument);
+        press(&mut ui, &mut state, "scripts-test-live");
+        assert!(state.collecting());
+        press(&mut ui, &mut state, "scripts-test-live");
+        assert!(!state.collecting());
         press(&mut ui, &mut state, "scripts-test-gaps");
         assert_eq!(state.matches, [2, 3, 4, 5]);
         press(&mut ui, &mut state, "scripts-test-next");
@@ -1438,10 +1451,11 @@ mod tests {
     #[test]
     fn ten_thousand_lines_stay_under_node_budget() {
         let source: Arc<str> = (1..=10_000)
-            .map(|n| format!("message({n})\n"))
-            .collect::<String>()
+            .map(|n| format!("message({n})"))
+            .collect::<Vec<_>>()
+            .join("\n")
             .into();
-        let report = ScriptReport {
+        let mut report = ScriptReport {
             id: "ksp:large".into(),
             title: "10k synthetic lines".into(),
             lang: Lang::Ksp,
@@ -1450,6 +1464,32 @@ mod tests {
             constructs: vec![],
             lowered: vec![],
         };
+        let mut start = 0;
+        for (n, text) in source.split('\n').enumerate() {
+            let span = Span {
+                start,
+                end: start + 7,
+                line: n as u32 + 1,
+            };
+            report.tokens.push(sampler_parity::Token {
+                span,
+                class: TokenClass::Builtin,
+            });
+            report.constructs.push(sampler_parity::Construct {
+                span,
+                kind: ConstructKind::Builtin,
+                name: "message".into(),
+                status: STATUSES[n % STATUSES.len()],
+                detail: "Synthetic 10k-line use".into(),
+                owner: None,
+                spec: None,
+            });
+            report.lowered.push(sampler_parity::Lowered {
+                span,
+                ops: vec![format!("host.message({})", n + 1)],
+            });
+            start += text.len() as u32 + 1;
+        }
         let mut state = State::default();
         state.scripts = vec![Script::new(report, source)];
         let mut ui = super::super::theme::ui();

@@ -15,8 +15,8 @@ pub enum View {
     Articulations,
     Mapping,
     Sound,
-    Scripts,
     Info,
+    Scripts,
 }
 
 impl View {
@@ -25,8 +25,8 @@ impl View {
         Self::Articulations,
         Self::Mapping,
         Self::Sound,
-        Self::Scripts,
         Self::Info,
+        Self::Scripts,
     ];
 
     fn label(self) -> &'static str {
@@ -308,7 +308,9 @@ pub(super) fn release_learn(cx: &mut Cx) {
     let armed = cx.p.shared.learn_target.load(Ordering::Relaxed) != 0;
     let rack = cx.state.tab == super::Tab::Rack;
     for (&slot, state) in &mut cx.state.inside {
-        if !rack || state.view != Some(View::Scripts)
+        if !rack
+            || cx.state.settings
+            || state.view != Some(View::Scripts)
             || cx.selection.parts.get(slot).is_none_or(|p| p.collapsed)
         {
             state.scripts.stop_coverage();
