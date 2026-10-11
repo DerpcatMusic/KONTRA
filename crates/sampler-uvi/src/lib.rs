@@ -1113,6 +1113,15 @@ impl Translated {
         }
         config.rate = f64::from(rate);
         let mut lua = self.lua.clone();
+        #[cfg(feature = "library-access")]
+        if let Some((bank, program)) = &self.bank {
+            let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
+            lua = lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+        }
+        if self.bank.is_none() && let Some(dir) = &self.dir {
+            let resources = resources::Resources::of(&dir.join("ui.uvip"));
+            lua = lua.with_images(move |path| resources.read(path));
+        }
         let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
             match (&self.bank, &self.dir) {
                 (Some((bank, program)), _) => {
@@ -1615,12 +1624,8 @@ pub fn load_program_scripted_with_options(
     })
 }
 
-/// `text` with the insert values the scripts set while loading written into
-/// its attributes, so the translation starts from the state the scripts leave.
-#[cfg(feature = "library-access")]
 /// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
 /// write, so the translator makes them live and the host drives them.
-#[cfg(feature = "library-access")]
 fn promote(text: String, scripts: &script::Scripts) -> String {
     let promoted = engine_parameters::promoted_constants(&text, scripts);
     let marks: Vec<_> = promoted
@@ -1630,6 +1635,7 @@ fn promote(text: String, scripts: &script::Scripts) -> String {
     if marks.is_empty() { text } else { apply_overrides(&text, &marks) }
 }
 
+/// Write initialized script values into XML before translating the program.
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();

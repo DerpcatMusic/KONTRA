@@ -313,6 +313,21 @@ impl ScriptHost {
                 kind_ir,
             );
             wd.source_id = Some(index as i32 + 1);
+            // Image's omitted axes use its resource size; explicit script bounds win.
+            // UVI Image geometry contract (class_image.html); preserve this distinction
+            // before the shared renderer sees a default 100x100 rectangle.
+            if kind == "Image"
+                && (!flag(w, "width_set", false) || !flag(w, "height_set", false))
+                && let Some(path) = text(w, "image")
+                && let Some(size) = self.shared.files.image_size(&path)
+            {
+                if !flag(w, "width_set", false) {
+                    wd.rect.width = size.width;
+                }
+                if !flag(w, "height_set", false) {
+                    wd.rect.height = size.height;
+                }
+            }
             wd.initial_value = value;
             wd.opacity = num(w, "alpha").unwrap_or(1.).clamp(0., 1.) as f32;
             wd.intercepts_mouse = flag(w, "interceptsMouseClicks", true);
