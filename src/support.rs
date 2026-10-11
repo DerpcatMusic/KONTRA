@@ -171,6 +171,18 @@ fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Op
     Ok((bytes.len() <= limit).then_some(bytes))
 }
 
+/// "host REAPER (CLAP) · linux x86_64" for copied diagnostics.
+pub fn host_summary() -> String {
+    let (host, format) = HOST_IDENTITY.lock_unpoisoned().clone();
+    let host = if host.is_empty() { "unknown host" } else { &host };
+    let format = if format.is_empty() { "?" } else { &format };
+    format!(
+        "host {host} ({format}) · {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
 fn record_host_identity(format: &str, host: Option<&str>) {
     let mut identity = HOST_IDENTITY.lock_unpoisoned();
     identity.1 = format.to_owned();
