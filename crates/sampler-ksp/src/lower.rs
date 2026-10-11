@@ -1078,6 +1078,11 @@ impl Gen<'_, '_> {
     }
 
     fn sys_elem(&mut self, array: SysArray, index: &Expr, dst: u16) -> Result<()> {
+        // The Group Editor selection: this host has no editor, so no group is
+        // selected and every element reads 0, as in a Kontakt that is not editing.
+        if array == SysArray::GroupsSelected {
+            return self.set(dst, 0);
+        }
         if !self.sys_readable(array) {
             self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
             return self.set(dst, 0);
@@ -2105,7 +2110,7 @@ impl Gen<'_, '_> {
                 self.tdepth -= 1;
                 true
             }
-            ChangeVol | ChangeTune | ChangePan if !self.selects_many(builtin, args, 0) => {
+            ChangeVol | ChangeTune | ChangePan => {
                 let target = match builtin {
                     ChangeVol => ModTarget::Decibels,
                     ChangeTune => ModTarget::Pitch,
@@ -2258,7 +2263,7 @@ impl Gen<'_, '_> {
             // modulator range (sampler_core::USER_EVENT_PAR).
             SetEventPar | GetEventPar
                 if matches!(self.const_int(args, 1), Some(0..=3))
-                    && !self.selects_many(builtin, args, 0) =>
+                    && (builtin == SetEventPar || !self.selects_many(builtin, args, 0)) =>
             {
                 let id = reg(dst, 2)?;
                 self.arg(args, 0, dst)?;
@@ -2286,7 +2291,8 @@ impl Gen<'_, '_> {
                 true
             }
             SetEventPar | GetEventPar
-                if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
+                if self.event_param(args).is_some()
+                    && (builtin == SetEventPar || !self.selects_many(builtin, args, 0)) =>
             {
                 let target = self.event_param(args).unwrap();
                 self.arg(args, 0, dst)?;
@@ -2315,7 +2321,7 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
-            FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
+            FadeIn | FadeOut => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.emit(I::MicrosToFrames { local: t })?;
