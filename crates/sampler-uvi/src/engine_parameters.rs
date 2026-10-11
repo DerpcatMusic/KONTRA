@@ -92,6 +92,10 @@ pub(crate) fn bypassable(node: roxmltree::Node) -> bool {
 /// "BypassGain" marks a rack chain, whose bypass is folded into its gain.
 pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
     let kind = node.tag_name().name();
+    if kind == "ConstantModulation" {
+        // Marked by `promote` when a script can write it.
+        return if node.attribute("ScriptLive").is_some() { vec!["Value", "Style"] } else { vec![] };
+    }
     let mut out: Vec<&'static str> = parameters::definitions(kind)
         .iter()
         .filter(|p| !node_lanes(node, p.name).is_empty())
@@ -299,4 +303,68 @@ pub(crate) fn initialize(instrument: &mut ir::Instrument, overrides: &[(usize, S
             }
         }
     }
+}
+
+/// The ConstantModulation sources (XML node -> Script Event Modulation id,
+/// counted down from 1000: the core keeps script values below USER_EVENT_PAR)
+/// that a program's scripts can write: those they name by a string literal
+/// (or by a literal prefix before `..`), or all of them when a script indexes
+/// `modulations` by anything but a literal. Only these leave the static fold
+/// and become live sources, so a constant nobody writes costs nothing.
+pub(crate) fn promoted_constants(
+    xml: &str,
+    scripts: &crate::script::Scripts,
+) -> std::collections::HashMap<usize, u16> {
+    let Ok(doc) = crate::parse_program_xml(xml) else {
+        return Default::default();
+    };
+    let roots: String = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("script"))
+        .filter_map(|n| n.text())
+        .collect();
+    let text = scripts.reachable(&roots);
+    if !text.contains("modulations") {
+        return Default::default();
+    }
+    // Lowercased by `reachable`; names are compared the same way.
+    let mut literals = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if matches!(bytes[i], b'"' | b'\'') {
+            let quote = bytes[i];
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != quote && bytes[end] != b'\n' {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == quote {
+                let after = text[end + 1..].trim_start();
+                literals.push((&text[start..end], after.starts_with("..")));
+                i = end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let dynamic = text.match_indices("modulations").any(|(at, word)| {
+        let rest = text[at + word.len()..].trim_start();
+        rest.strip_prefix('[')
+            .is_some_and(|r| !r.trim_start().starts_with(['"', '\'']))
+    });
+    let mut out = std::collections::HashMap::new();
+    let sources = doc.descendants().filter(|n| n.has_tag_name("ConstantModulation"));
+    for (rank, node) in sources.enumerate() {
+        let name = node.attribute("Name").unwrap_or_default().to_lowercase();
+        let named = literals
+            .iter()
+            .any(|(l, open)| !l.is_empty() && (*l == name || (*open && name.starts_with(l))));
+        if let Some(id) = 1000u16.checked_sub(rank as u16)
+            && (dynamic || named)
+        {
+            out.insert(node.id().get_usize(), id);
+        }
+    }
+    out
 }
