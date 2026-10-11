@@ -1132,17 +1132,27 @@ impl ScriptHost {
             &class,
             &list_class,
         )?;
-        // The part the program sits in (MidiChannel, MidiInput...): inert.
-        let part = self.lua.create_table()?;
-        part.raw_set("__id", tree.params.len())?;
-        tree.params.push(Vec::new());
-        tree.scopes.push(None);
-        tree.nodes.push((usize::MAX, false));
-        tree.kinds.push("Part".into());
-        tree.live.push(Vec::new());
-        part.raw_set("type", "Part")?;
-        part.raw_set("name", "")?;
-        part.set_metatable(Some(class))?;
+        // The part the program sits in (MidiChannel, MidiInput...). Its level and
+        // expression controllers are real connections on Gain, which scripts such as
+        // hornScript3 query (and bypass) unguarded; the part itself stays inert.
+        let part_xml = roxmltree::Document::parse(
+            r#"<Part Name="" Gain="1" Pan="0" Bypass="0"><Connections>
+              <SignalConnection Name="SignalConnection 0" Ratio="1" Source="@MIDI CC 7" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+              <SignalConnection Name="SignalConnection 1" Ratio="1" Source="@MIDI CC 11" Destination="Gain" Mapper="" ConnectionMode="0" Bypass="0" Inverted="0"/>
+            </Connections></Part>"#,
+        )
+        .map_err(mlua::Error::external)?;
+        let part = element(
+            &self.lua,
+            &mut tree,
+            part_xml.root_element(),
+            None,
+            false,
+            &self.shared,
+            1,
+            &class,
+            &list_class,
+        )?;
         root.raw_set("parent", part.clone())?;
         root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
