@@ -230,6 +230,10 @@ impl Check<'_> {
                 }
                 Processor::Rectify(_) => {}
                 Processor::Saturation(shape) => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+                Processor::Distortion { drive, damping, .. } => {
+                    self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
+                    self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
+                }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
