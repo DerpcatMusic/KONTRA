@@ -2509,7 +2509,9 @@ impl Core for V2Core {
         };
         let nodes = &p.buses;
         p.runtime.take_bus_peaks(|bus, peak| {
-            if let Some(node) = nodes.iter().position(|&b| b == Some(bus)) {
+            // Part::new places runtime bus b at tree node b + 1.
+            let node = bus + 1;
+            if nodes.get(node) == Some(&Some(bus)) {
                 each(node, peak);
             }
         });
@@ -5247,6 +5249,9 @@ mod tests {
         let mut nodes = Vec::new();
         core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
         assert_eq!(nodes, [(1, true)], "the group node meters its signal");
+        nodes.clear();
+        core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
+        assert_eq!(nodes, [(1, false)], "taking a node peak resets it");
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");

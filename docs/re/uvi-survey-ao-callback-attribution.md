@@ -43,3 +43,30 @@ changing refresh semantics. The sound-core measurement did not reproduce the
 all-block deadline failure; no speculative DSP optimization was applied.
 
 The damaged bank's decode failures were not investigated or repaired.
+
+## Round 2: full callback stack attribution
+
+A fresh release build at `7f6bbfe9` with line tables and unstripped symbols
+reproduces the sustained full-plugin callback problem. `perf record -e
+cpu-clock:u --call-graph dwarf` and `task-clock:u` both fail to open events
+with the machine's current profiling permissions (`perf_event_paranoid=2`);
+noninteractive sudo also requires a password. No machine security setting was
+changed. Fallback: launch the survey live-host under GDB, take argument-free
+all-thread stacks every 25 ms, and continue after each SIGSTOP. This is
+instrumented attribution, not a performance acceptance run.
+
+Of 1,708 sampled stacks containing the CLAP/plugin callback, 1,676 (98.1%)
+contain `V2Core::take_node_peaks`, chiefly its `nodes.iter().position` search.
+`src/plugin.rs` publishes node meters every block. `Part::new` assigns runtime
+bus b to tree node b+1, but publication searched all nodes for every bus: O(B*N).
+AO's approximately 7,000 nodes therefore incur approximately 24 million
+comparisons every callback, even while no voice sounds. This explains the
+large cost absent from the previous sound-core render-only measurement.
+
+The fix uses the constructor's existing bus+1 mapping and checks that the
+node still names that bus before publication. It needs no new lookup table,
+allocation, dependency, UI refresh throttling or DSP change. Every bus peak is
+still taken/reset, unmapped buses remain omitted, and the group-meter fixture
+also verifies resetting after publication. V1 `0cb7a8a0:src/engine/mod.rs` has
+no corresponding nested node lookup to port; this uses v2's existing layout.
+Uninstrumented paired timings and focused-test results follow below.
