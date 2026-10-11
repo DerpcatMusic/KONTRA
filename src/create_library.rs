@@ -1,6 +1,7 @@
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("parity") => kontakto::parity::run(&args[1..]),
         Some("create-library") => kontakto::creator::create_library(&args[1..]),
         #[cfg(feature = "plugin")]
         Some("export-multi-state") => {
@@ -19,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {
             println!(
-                "kontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR]"
+                "kontakto create-library <samples folder> [--name NAME] [--vendor NAME] [--out DIR]\nkontakto parity <patch> [--json] [--lowered]\nkontakto parity --corpus <dir|items.tsv> [--json]"
             );
             Ok(())
         }

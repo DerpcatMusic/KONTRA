@@ -25,7 +25,10 @@ mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 mod resources;
+mod reverb;
 pub mod script;
+pub mod parity;
+pub use parity::parity_reports;
 pub use resources::{ResourceError, Resources};
 pub mod scripted;
 mod stream;
@@ -53,7 +56,11 @@ pub const LIBRARY_ACCESS_ENABLED: bool = cfg!(feature = "library-access");
 const XML_LIMIT: u64 = 32 << 20;
 
 /// Container nodes whose meaning is their children.
-const STRUCTURAL: [&str; 18] = [
+const STRUCTURAL: [&str; 22] = [
+    "Auxs",
+    "AuxEffect",
+    "Inserts",
+    "BusRouters",
     "Mappers",
     "UVI4",
     "Program",
@@ -308,6 +315,12 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
+    if !out.ir.behaviors.is_empty() {
+        out.ir.uvi_script_sources = Some(ir::UviScriptSources {
+            xml: text.into(),
+            files: Default::default(),
+        });
+    }
     Ok((out.ir, out.locations, out.osc_groups, out.insert_nodes))
 }
 
@@ -431,24 +444,10 @@ impl Translation {
     }
 
     /// Program and layer connections act on the mixed signal of their scope.
-    fn scope_connections(&mut self, scope: Node) -> Result<(), String> {
-        for connection in connections(scope) {
-            if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
-            {
-                #[cfg(feature = "scan")]
-                self.dropped_connections.insert(connection.id());
-                self.unsupported(
-                    &path(connection),
-                    "program or layer modulation",
-                    format!(
-                        "{} -> {}",
-                        connection.attribute("Source").unwrap_or_default(),
-                        connection.attribute("Destination").unwrap_or_default()
-                    ),
-                );
-            }
-        }
-        Ok(())
+    /// Gain, pitch and pan modulation are linear in the mix, so each keygroup
+    /// below the scope takes the connection itself (`Self::keygroup`).
+    fn scope_connections<'a>(&mut self, scope: Node<'a, 'a>) -> Vec<Node<'a, 'a>> {
+        connections(scope).collect()
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
@@ -472,7 +471,7 @@ impl Translation {
                 requires: Vec::new(),
             });
         }
-        self.scope_connections(program)?;
+        let program_scope = self.scope_connections(program);
         let scripted = !self.ir.behaviors.is_empty();
         // Program-level aux effects become buses (their own effects are
         // reported as modules); layers reach them through BusRouters.
@@ -485,11 +484,40 @@ impl Translation {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
             let bus = ir::BusRef(self.ir.buses.len());
             let live = number(aux, "Bypass", 0.0)? == 0.0;
-            let (processors, placed) = if live {
+            let (mut processors, mut placed) = if live || scripted {
                 self.inserts(aux, false, None)?
             } else {
                 (Vec::new(), Vec::new())
             };
+            let mut gain = ir::Gain::Linear(number(aux, "Gain", 1.0)?);
+            if scripted {
+                // The aux's inserts sit in one Mix (its Bypass); its Gain is
+                // the last stage, a control a script can move.
+                if !processors.is_empty() {
+                    processors.insert(
+                        0,
+                        ir::Processor::Mix {
+                            count: processors.len() as u16,
+                            address: ir::SlotAddress {
+                                group: -1,
+                                slot: -1,
+                                generic: i32::try_from(aux.id().get_usize()).unwrap_or(-1),
+                            },
+                            dry: 0.0,
+                            wet: 1.0,
+                            bypass: !live,
+                        },
+                    );
+                    for entry in &mut placed {
+                        entry.1 += 1;
+                    }
+                }
+                placed.push((aux.id().get_usize(), processors.len(), 1));
+                processors.push(ir::Processor::Gain(std::mem::replace(
+                    &mut gain,
+                    ir::Gain::UNITY,
+                )));
+            }
             let chain = (!placed.is_empty()).then(|| {
                 self.ir.chains.push(ir::Chain {
                     scope: ir::Scope::Bus(bus),
@@ -505,7 +533,7 @@ impl Translation {
                 chain,
                 sends: Vec::new(),
                 output: ir::Output::Master,
-                gain: ir::Gain::Linear(number(aux, "Gain", 1.0)?),
+                gain,
             });
             auxes.push((name, bus));
         }
@@ -526,7 +554,8 @@ impl Translation {
             if number(layer, "Mute", 0.0)? != 0.0 {
                 continue;
             }
-            self.scope_connections(layer)?;
+            let mut scoped = program_scope.clone();
+            scoped.extend(self.scope_connections(layer));
             let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
@@ -554,6 +583,7 @@ impl Translation {
                 else {
                     continue;
                 };
+                self.used.push(router.id());
                 base.sends.push(ir::GroupSend {
                     to: bus,
                     gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
@@ -577,28 +607,11 @@ impl Translation {
             // oscillator group, see `oscillator_group`.)
             let group = ir::GroupRef(self.ir.groups.len().saturating_sub(1));
             // A script's playNote can trigger one oscillator of a keygroup
-            // (oscIndex); scripts do not run, so every oscillator plays.
-            let stacked = layer
-                .descendants()
-                .filter(|n| n.has_tag_name("Keygroup"))
-                .map(|k| {
-                    k.descendants()
-                        .filter(|n| n.has_tag_name("SamplePlayer"))
-                        .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-                        .count()
-                })
-                .filter(|&n| n > 1);
-            let (keygroups, most) = stacked.fold((0, 0), |(k, m), n| (k + 1, m.max(n)));
-            if keygroups > 0 && !self.ir.behaviors.is_empty() {
-                self.unsupported(
-                    &path(layer),
-                    "keygroup oscillators all play (the script may pick one per note)",
-                    format!("{keygroups} keygroups, up to {most} oscillators"),
-                );
-            }
+            // (oscIndex): a scripted layer is split per oscillator above, and
+            // without one every oscillator plays, as in UVI.
             let keys = (midi(layer, "LowKey", 0)?, midi(layer, "HighKey", 127)?);
             for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
-                self.keygroup(keygroup, group, keys)?;
+                self.keygroup(keygroup, group, keys, &scoped)?;
             }
         }
         Ok(())
@@ -609,6 +622,7 @@ impl Translation {
         keygroup: Node,
         group: ir::GroupRef,
         layer_keys: (u8, u8),
+        scoped: &[Node],
     ) -> Result<(), String> {
         let at = path(keygroup);
         let keys = (
@@ -637,6 +651,9 @@ impl Translation {
         // AnalogADSR. Every other connection is a route or a static factor.
         let mut amplitude = None;
         let mut shared = modulation::Modulation::default();
+        for connection in scoped {
+            self.connect_scoped(*connection, &mut shared)?;
+        }
         for connection in connections(keygroup) {
             let plain = number(connection, "Ratio", 1.0)? == 1.0
                 && number(connection, "Bypass", 0.0)? == 0.0
@@ -1051,13 +1068,15 @@ pub struct Translated {
     pub instrument: ir::Instrument,
     pub locations: Vec<String>,
     /// The bank and program path the samples come from; loose files have none.
-    bank: Option<(Bank, String)>,
+    bank: Option<(std::sync::Arc<Bank>, String)>,
+    /// The folder of a loose program, which its relative resources are read from.
+    dir: Option<PathBuf>,
     /// Where each (layer, oscillator) of the program plays, for its scripts.
     pub groups: Vec<OscGroup>,
     /// Where each insert element sits in the IR chains, for parameter bindings.
     pub inserts: Vec<InsertNode>,
     /// The program's XML and the bank's Lua members, for its scripts.
-    text: String,
+    text: std::sync::Arc<str>,
     lua: script::Scripts,
 }
 
@@ -1093,9 +1112,48 @@ impl Translated {
             return Ok(None);
         }
         config.rate = f64::from(rate);
-        let (thread, loaded) = scripted::ScriptThread::spawn_with_ui_state(
+        let mut lua = self.lua.clone();
+        #[cfg(feature = "library-access")]
+        if let Some((bank, program)) = &self.bank {
+            let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
+            lua = lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+        }
+        if self.bank.is_none() && let Some(dir) = &self.dir {
+            let resources = resources::Resources::of(&dir.join("ui.uvip"));
+            lua = lua.with_images(move |path| resources.read(path));
+        }
+        let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
+            match (&self.bank, &self.dir) {
+                (Some((bank, program)), _) => {
+                    let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
+                    Some(Box::new(move |path| bank.decode_resource(&program, path).ok()))
+                }
+                (None, Some(dir)) => {
+                    let dir = dir.clone();
+                    Some(Box::new(move |path| {
+                        decode_sample(&dir.join(path.trim_start_matches('/'))).ok()
+                    }))
+                }
+                (None, None) => None,
+            };
+        if let Some(decode) = decode {
+            let source: script::ImpulseSource = std::sync::Arc::new(move |path: &str| {
+                let d = decode(path)?;
+                (!d.frames.is_empty() && d.frames.len() <= 1 << 24).then(|| ir::Impulse {
+                    rate: d.rate,
+                    left: d.frames.iter().map(|f| f[0]).collect(),
+                    right: d.frames.iter().map(|f| f[1]).collect(),
+                    asset: None,
+                })
+            });
+            lua = lua.with_convolution(
+                source,
+                engine_parameters::convolver_slots(&self.instrument, &self.inserts),
+            );
+        }
+        let (thread, loaded) = scripted::ScriptThread::spawn_shared_with_ui_state(
             self.text.clone(),
-            self.lua.clone(),
+            lua,
             config,
             state,
         )
@@ -1108,9 +1166,6 @@ impl Translated {
         })?;
         engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
-        if scripted::Script::handles_notes(&thread) {
-            unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
-        }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
         for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
@@ -1146,8 +1201,13 @@ pub fn translate_program(
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
-        let (instrument, ..) =
+        let lua = bank.scripts();
+        let text = promote(text, &lua);
+        let (mut instrument, ..) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+        if let Some(sources) = &mut instrument.uvi_script_sources {
+            sources.files = lua.sources();
+        }
         Ok(instrument)
     };
     translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
@@ -1211,34 +1271,46 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         };
         let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
+        let lua = bank.scripts();
+        let text = promote(text, &lua);
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
-        let (instrument, locations, groups, inserts) =
+        let (mut instrument, locations, groups, inserts) =
             translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(&member), e))?;
         drop(span);
-        let span = sampler_kontakt::audit::Span::new("uvi_script_resources");
-        let lua = bank.scripts();
-        drop(span);
+        let text = instrument
+            .uvi_script_sources
+            .as_ref()
+            .map_or_else(|| std::sync::Arc::from(text), |s| s.xml.clone());
+        if let Some(sources) = &mut instrument.uvi_script_sources {
+            sources.files = lua.sources();
+        }
         return Ok(Translated {
             instrument,
             locations,
-            bank: Some((bank, program_path)),
+            bank: Some((std::sync::Arc::new(bank), program_path)),
+            dir: None,
             groups,
             inserts,
             text,
             lua,
         });
     }
-    let text = read_text(path)?;
+    let text = promote(read_text(path)?, &Default::default());
     let (instrument, locations, groups, inserts) = translate_full(
         &text,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
     )
     .map_err(|e| describe(path, e))?;
+    let text = instrument
+        .uvi_script_sources
+        .as_ref()
+        .map_or_else(|| std::sync::Arc::from(text), |s| s.xml.clone());
     Ok(Translated {
         instrument,
         locations,
         bank: None,
+        dir: path.parent().map(Path::to_path_buf),
         groups,
         inserts,
         text,
@@ -1345,8 +1417,11 @@ pub fn load_program_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations) =
+    let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = bank.scripts().sources();
+    }
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
@@ -1473,6 +1548,9 @@ pub fn load_program_with_options(
     let (text, program_path) = bank.program(program)?;
     let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = bank.scripts().sources();
+    }
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
@@ -1512,10 +1590,15 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let lua = bank.scripts();
+    let text = promote(text, &lua);
+    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
     let (mut instrument, locations, groups, inserts) =
         translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = lua.sources();
+    }
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
@@ -1541,9 +1624,18 @@ pub fn load_program_scripted_with_options(
     })
 }
 
-/// `text` with the insert values the scripts set while loading written into
-/// its attributes, so the translation starts from the state the scripts leave.
-#[cfg(feature = "library-access")]
+/// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
+/// write, so the translator makes them live and the host drives them.
+fn promote(text: String, scripts: &script::Scripts) -> String {
+    let promoted = engine_parameters::promoted_constants(&text, scripts);
+    let marks: Vec<_> = promoted
+        .into_iter()
+        .map(|(node, id)| (node, "ScriptLive".to_owned(), id.to_string()))
+        .collect();
+    if marks.is_empty() { text } else { apply_overrides(&text, &marks) }
+}
+
+/// Write initialized script values into XML before translating the program.
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();
@@ -1578,12 +1670,6 @@ fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String 
 /// modeled is.
 #[cfg(feature = "library-access")]
 fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
-    if host.handles_notes() {
-        // The script picks the oscillators now.
-        instrument
-            .unsupported
-            .retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
-    }
     instrument
         .unsupported
         .retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1607,10 +1693,15 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let lua = bank.scripts();
+    let text = promote(text, &lua);
+    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
     let patched = apply_overrides(&text, &host.insert_overrides());
-    let (instrument, locations, groups, inserts) =
+    let (mut instrument, locations, groups, inserts) =
         translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = lua.sources();
+    }
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))

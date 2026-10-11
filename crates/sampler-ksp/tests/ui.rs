@@ -18,6 +18,18 @@ fn performance_intent_reaches_ir_without_being_inferred_from_native_ui() {
 }
 
 #[test]
+fn init_engine_par_disp_is_the_bare_number_the_script_appends_its_unit_to() {
+    let source = r#"on init
+        declare ui_label $L(1, 1)
+        set_text($L, get_engine_par_disp($ENGINE_PAR_ATTACK, -1, -1, -1) & " ms")
+        end on"#;
+    let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = script.ui(&|_| None).unwrap();
+    let text = &face.widgets[0].text;
+    assert!(text.ends_with(" ms") && text.len() > 3, "{text:?}");
+}
+
+#[test]
 fn ksp_interface_maps_to_validated_ui_ir() {
     let source = r#"on init
         make_perfview

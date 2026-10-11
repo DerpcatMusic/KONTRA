@@ -196,6 +196,9 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ir::Target::Pitch => "Pitch".into(),
         ir::Target::Pan => "Pan".into(),
         ir::Target::SampleStart => "Sample start".into(),
+        ir::Target::SourcePhase(_) => "LFO start phase".into(),
+        ir::Target::LoopStart => "Loop start".into(),
+        ir::Target::LoopLength => "Loop length".into(),
         ir::Target::Control(c) => i
             .controls
             .get(c.0)
@@ -215,6 +218,15 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::Ratio => "Ratio",
                 ir::ProcessorParameter::Attack => "Attack",
                 ir::ProcessorParameter::Release => "Release",
+                ir::ProcessorParameter::Frequency => "Frequency",
+                ir::ProcessorParameter::Quality => "Q",
+                ir::ProcessorParameter::GainDecibels => "Gain",
+                ir::ProcessorParameter::ReferenceDecibels => "Reference gain",
+                ir::ProcessorParameter::Enabled => "Enabled",
+                ir::ProcessorParameter::CellLL => "Left to left",
+                ir::ProcessorParameter::CellLR => "Left to right",
+                ir::ProcessorParameter::CellRL => "Right to left",
+                ir::ProcessorParameter::CellRR => "Right to right",
             },
             index + 1
         ),
@@ -236,6 +248,11 @@ fn detail(p: ir::Processor) -> String {
             "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
         ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
+        ir::Processor::Saturation(shape) | ir::Processor::LiveSaturation { shape, .. } => format!("Saturation · shape {shape:+.2}"),
+        ir::Processor::Distortion { transistor, drive, damping } | ir::Processor::LiveDistortion { transistor, drive, damping, .. } => format!(
+            "{} distortion · drive {:.0}% · damping {:.0}%",
+            if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
+        ),
         ir::Processor::StereoModeller { width, pan, pseudo } => format!(
             "Stereo modeller · width {:.0}% · pan {}{}",
             width * 200.,
@@ -253,6 +270,8 @@ fn detail(p: ir::Processor) -> String {
                 ir::FilterKind::Peak { .. } => "EQ peak",
                 ir::FilterKind::LowShelf { .. } => "Low shelf",
                 ir::FilterKind::HighShelf { .. } => "High shelf",
+                ir::FilterKind::FirstOrderLowShelf { .. } => "Low shelf (6 dB/oct)",
+                ir::FilterKind::FirstOrderHighShelf { .. } => "High shelf (6 dB/oct)",
             },
             match f.cutoff {
                 ir::Frequency::Hertz(h) => super::viz::hz_text(h as f32),
@@ -290,7 +309,18 @@ fn detail(p: ir::Processor) -> String {
             d.cutoff * 100.,
             d.resonance * 100.
         ),
-        ir::Processor::LadderLP4(_) => "Ladder low-pass · 4 poles".into(),
+        ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
+        ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
+        ir::Processor::Phaser(_) => "Phaser filter".into(),
+        ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
+        ir::Processor::Formant(_) => "Formant I".into(),
+        ir::Processor::Ar(d) => format!(
+            "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
+            ["2", "4", "2/4"][usize::from(d.mode / 3)],
+            ["low-pass", "band-pass", "high-pass"][usize::from(d.mode % 3)],
+            d.cutoff * 100.,
+            d.resonance * 100.
+        ),
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),

@@ -451,6 +451,7 @@ impl FilterBank {
 }
 
 pub(crate) struct FilterContext<'a> {
+    pub tempo: f64,
     pub bank: &'a mut FilterBank,
     pub expression: Option<(crate::ExpressionId, crate::Expression)>,
     /// A bus's reverbs, by `PreparedProcessor::Reverb` index; empty elsewhere.

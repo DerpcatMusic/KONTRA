@@ -79,8 +79,9 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
-    Parameter, PeakingEq, Processor, Rectifier, ReverbSettings, StateVariableFilter,
+    ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
+    LiveFilter, LiveShape, Parameter, PeakingEq, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
@@ -97,7 +98,7 @@ pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
     EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
-    engine_parameter_id, engine_parameter_name,
+    engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };
 mod parameter_registry;
 mod steal;

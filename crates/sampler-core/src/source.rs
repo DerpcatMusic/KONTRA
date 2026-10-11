@@ -38,7 +38,7 @@ pub enum LoopShape {
 }
 
 /// Half-open sample-frame range. One-frame loops are valid.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loop {
     pub start: usize,
     pub end: usize,
@@ -104,10 +104,53 @@ pub struct Playback {
     pub direction: Direction,
     pub loop_range: Option<Loop>,
     pub loop_slots: [Option<LoopSlot>; 8],
+    /// Saved crossfade before the unmodulated loop was clamped to file boundaries.
+    pub loop_control_crossfade: Option<usize>,
     pub transpose_semitones: f64,
 }
 
 impl Playback {
+    /// A forward zone may start inside or past its loop, and a loop crossfade blends toward the
+    /// frames before the loop start in the file, not only after the sample start (v1
+    /// `play_map`). The cursor's view starts early enough to hold both, and playback begins
+    /// `lead` frames into it. Loops the sample start is already past are never entered.
+    fn reach_back(self, end: usize) -> Option<(Playback, u64)> {
+        if self.direction != Direction::Forward || self.wavetable.is_some() || self.start >= end {
+            return None;
+        }
+        let mut shifted = self;
+        let mut origin = self.start;
+        let mut dropped = false;
+        let mut reach = |range: &mut Option<Loop>| {
+            let Some(r) = *range else { return };
+            if r.end <= self.start {
+                *range = None;
+                dropped = true;
+            } else if r.start < r.end && r.end <= end {
+                let fade = match r.shape {
+                    LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } => {
+                        frames
+                    }
+                    _ => 0,
+                };
+                if fade <= r.end - r.start && fade <= r.start {
+                    origin = origin.min(r.start - fade);
+                }
+            }
+        };
+        reach(&mut shifted.loop_range);
+        for slot in &mut shifted.loop_slots {
+            let mut range = slot.map(|slot| slot.range);
+            reach(&mut range);
+            *slot = slot.zip(range).map(|(slot, range)| LoopSlot { range, ..slot });
+        }
+        if origin == self.start && !dropped {
+            return None;
+        }
+        shifted.start = origin;
+        Some((shifted, (self.start - origin) as u64))
+    }
+
     pub(super) fn rate_ratio(self, source_rate: u32, output_rate: u32) -> f64 {
         if self.wavetable.is_some() {
             440. * crate::wavetable::CYCLE as f64 / f64::from(output_rate)
@@ -126,6 +169,12 @@ impl Playback {
         output_rate: u32,
     ) -> Result<Cursor, Error> {
         let end = self.end.unwrap_or(frames);
+        if let Some((shifted, lead)) = self.reach_back(end) {
+            let mut cursor = shifted.cursor(frames, source_rate, output_rate)?;
+            cursor.lead = lead;
+            cursor.position = lead;
+            return Ok(cursor);
+        }
         let step = self.step(source_rate, output_rate);
         if self.start >= end
             || end > frames
@@ -159,6 +208,7 @@ impl Playback {
             end,
             direction: self.direction,
             loop_range: self.loop_range,
+            controlled_loop: None,
             loops: None,
             position: self
                 .wavetable
@@ -173,6 +223,7 @@ impl Playback {
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
             cold_hold: false,
+            lead: 0,
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -238,6 +289,12 @@ impl Playback {
                 });
             }
         }
+        if let Some(crossfade) = self.loop_control_crossfade {
+            if !cursor.supports_loop_control(frames) {
+                return Err(Error::InvalidInput);
+            }
+            cursor = cursor.with_saved_crossfade(crossfade);
+        }
         Ok(cursor)
     }
 }
@@ -250,10 +307,12 @@ pub(super) struct CursorTemplate {
     end: usize,
     direction: Direction,
     loop_range: Option<Loop>,
+    loop_control_crossfade: Option<usize>,
     loops: Option<usize>,
     step: f64,
     exit: Option<u64>,
     fade_frames: u32,
+    lead: u64,
 }
 
 impl CursorTemplate {
@@ -275,24 +334,32 @@ impl CursorTemplate {
             end: cursor.end,
             direction: cursor.direction,
             loop_range: cursor.loop_range,
+            loop_control_crossfade: cursor
+                .controlled_loop
+                .and_then(|(base, _)| match base.shape {
+                    LoopShape::Crossfade { frames } => Some(frames),
+                    _ => None,
+                }),
             loops: index,
             step: cursor.step,
             exit: cursor.exit,
             fade_frames: cursor.fade_frames,
+            lead: cursor.lead,
         }
     }
 
     pub(super) fn cursor(self, loops: &[LoopSlots]) -> Cursor {
         let extra = self.loops.map(|i| loops[i]);
         let wavetable = extra.and_then(|extra| extra.wavetable);
-        Cursor {
+        let mut cursor = Cursor {
             wavetable,
             start: self.start,
             end: self.end,
             direction: self.direction,
             loop_range: self.loop_range,
+            controlled_loop: None,
             loops: extra.filter(|extra| extra.wavetable.is_none()),
-            position: wavetable.map_or(0, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            position: wavetable.map_or(self.lead, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
             fraction: wavetable.map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
             step: self.step,
             exit: self.exit,
@@ -301,7 +368,12 @@ impl CursorTemplate {
             fade_in: 0,
             fade_frames: self.fade_frames,
             cold_hold: false,
+            lead: self.lead,
+        };
+        if let Some(frames) = self.loop_control_crossfade {
+            cursor = cursor.with_saved_crossfade(frames);
         }
+        cursor
     }
 }
 
@@ -312,6 +384,8 @@ pub(super) struct Cursor {
     end: usize,
     direction: Direction,
     loop_range: Option<Loop>,
+    /// Saved geometry and last admitted offsets; edits never accumulate.
+    controlled_loop: Option<(Loop, [f32; 2])>,
     loops: Option<LoopSlots>,
     // Distance along the traversal, not an absolute floating-point PCM index.
     position: u64,
@@ -328,6 +402,9 @@ pub(super) struct Cursor {
     fade_frames: u32,
     /// Initial storage hold; lifecycle events still end an unsounded voice.
     cold_hold: bool,
+    /// Frames between this view's start and the zone's sample start, where playback begins:
+    /// the view reaches back to a loop that starts before the sample start.
+    lead: u64,
 }
 
 struct ReadAddress {
@@ -337,6 +414,112 @@ struct ReadAddress {
 }
 
 impl Cursor {
+    fn with_saved_crossfade(mut self, frames: usize) -> Self {
+        if let Some(range) = self.loop_range {
+            self.controlled_loop = Some((
+                Loop {
+                    shape: LoopShape::Crossfade { frames },
+                    ..range
+                },
+                [f32::NAN; 2],
+            ));
+        }
+        self
+    }
+
+    pub(super) fn supports_loop_control(&self, frames: usize) -> bool {
+        self.wavetable.is_none()
+            && self.direction == Direction::Forward
+            && self.start == 0
+            && self.end == frames
+            && (4..=i32::MAX as usize).contains(&frames)
+            && self.loops.is_none()
+            && self.exit.is_none()
+            && self
+                .loop_range
+                .is_some_and(|r| r.shape != LoopShape::PingPong && r.passes.is_none())
+    }
+
+    /// Port 0cb7a8a0:src/engine/map.rs::controlled_loop and voice.rs::refresh_loop.
+    pub(super) fn with_loop_offsets(mut self, offsets: [f32; 2]) -> Self {
+        if self.exit.is_some()
+            || self
+                .controlled_loop
+                .is_some_and(|(_, previous)| previous == offsets)
+        {
+            return self;
+        }
+        let Some((base, _)) = self
+            .controlled_loop
+            .or_else(|| self.loop_range.map(|r| (r, [0.; 2])))
+        else {
+            return self;
+        };
+        let shifts = offsets.map(|v| self.end as f32 * v);
+        if !shifts
+            .iter()
+            .all(|&v| v.is_finite() && v >= i32::MIN as f32 && v < 2147483648.)
+        {
+            return self;
+        }
+        let [start_shift, length_shift] = shifts.map(|v| i64::from(v as i32));
+        let n = self.end as i64;
+        let mut start = base.start as i64 + start_shift;
+        let mut end = base.end as i64 + start_shift + length_shift;
+        if start < 0 {
+            end = (end - start).min(n);
+            start = 0;
+        }
+        if end >= n {
+            start = (start + n - end).max(0);
+            end = n;
+        }
+        if end - start < 4 {
+            if start < n - 4 {
+                end = start + 4;
+            } else if start >= 4 {
+                start = end - 4;
+            }
+        }
+        if start < 0 || end > n || end - start < 4 {
+            return self;
+        }
+        let mut range = Loop {
+            start: start as usize,
+            end: end as usize,
+            ..base
+        };
+        let physical = self.index(i128::from(self.position));
+        let Some(physical) = physical else {
+            return self;
+        };
+        // shortcut: the native behind-end transition is unmeasured; admit a later valid edit.
+        if physical as f64 + self.fraction > end as f64 + 4. {
+            return self;
+        }
+        if let LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } =
+            base.shape
+        {
+            let frames = frames.min(range.end - range.start - 1).min(range.start);
+            range.shape = if frames == 0 {
+                LoopShape::Wrap
+            } else {
+                match base.shape {
+                    LoopShape::EqualPowerCrossfade { .. } => {
+                        LoopShape::EqualPowerCrossfade { frames }
+                    }
+                    _ => LoopShape::Crossfade { frames },
+                }
+            };
+        }
+        if self.loop_range != Some(range) {
+            self.position = physical as u64;
+            self.loop_range = Some(range);
+        }
+        self.controlled_loop = Some((base, offsets));
+        self
+    }
+
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
         self.wavetable
     }
@@ -348,7 +531,7 @@ impl Cursor {
             return self;
         }
         let ticks = u64::from(micros) * u64::from(source_rate);
-        self.position = ticks / 1_000_000;
+        self.position = self.lead + ticks / 1_000_000;
         self.fraction = (ticks % 1_000_000) as f64 / 1_000_000.;
         if self.position >= (self.end - self.start) as u64
             || self
@@ -1376,6 +1559,114 @@ fn mix<'a>(
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "focused CPU/work witness; 64x is deliberately injected past admission for diagnosis"]
+    fn pitch_limit_increase_work_witness() {
+        use std::{hint::black_box, time::Instant};
+        let frames: Vec<Frame> = (0..4096).map(|i| [(i as f32 * 0.1).sin(); 2]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let initial = Playback {
+            loop_range: Some(Loop {
+                start: 256,
+                end: 512,
+                mode: LoopMode::Continuous,
+                shape: LoopShape::Wrap,
+                passes: None,
+            }),
+            ..Playback::default()
+        }
+        .cursor(frames.len(), 48000, 48000)
+        .unwrap();
+        for step in [16., 64.] {
+            let cursor = Cursor {
+                position: 384,
+                fraction: 0.25,
+                step,
+                ..initial
+            };
+            let started = Instant::now();
+            for _ in 0..1024 {
+                let output = black_box(cursor)
+                    .sample(black_box(&frames[..]), &kernel)
+                    .unwrap();
+                assert!(output.iter().all(|v| v.is_finite()));
+                black_box(output);
+            }
+            eprintln!(
+                "pitch_work step={step} taps={} mean_ns_per_stereo_frame={} profile=debug samples=1024",
+                kernel.window(step) * 2 + 1,
+                started.elapsed().as_nanos() / 1024
+            );
+        }
+    }
+
+    #[test]
+    fn constant_loop_control_ports_v1_quantisation_and_live_cursor_law() {
+        let initial = Playback {
+            loop_range: Some(Loop {
+                start: 100,
+                end: 700,
+                mode: LoopMode::UntilRelease,
+                shape: LoopShape::Crossfade { frames: 40 },
+                passes: None,
+            }),
+            ..Playback::default()
+        }
+        .cursor(1000, 48000, 48000)
+        .unwrap();
+        assert!(initial.supports_loop_control(1000));
+        let mut cursor = Cursor {
+            position: 1420,
+            fraction: 0.375,
+            ..initial
+        };
+        let physical = cursor.trace_position();
+        cursor = cursor.with_loop_offsets([0.1266360729932785, -0.9170099496841431]);
+        assert_eq!(cursor.trace_position(), physical);
+        assert_eq!(cursor.fraction, 0.375);
+        assert_eq!(cursor.loop_range.unwrap().start, 226);
+        assert_eq!(cursor.loop_range.unwrap().end, 230);
+        assert_eq!(
+            cursor.loop_range.unwrap().shape,
+            LoopShape::Crossfade { frames: 3 }
+        );
+        // Every edit uses the saved geometry; repeated writes cannot accumulate.
+        let restored = cursor.with_loop_offsets([0.; 2]);
+        assert_eq!(restored.loop_range, initial.loop_range);
+        assert_eq!(restored.trace_position(), physical);
+        assert_eq!(restored.fraction, 0.375);
+        // A behind-end edit is deferred, and edits after release retain the tail seam.
+        let late = Cursor {
+            position: 500,
+            fraction: 0.5,
+            ..initial
+        };
+        let deferred = late.with_loop_offsets([0., -0.8]);
+        assert_eq!(deferred.loop_range, late.loop_range);
+        let mut released = restored;
+        released.release();
+        assert_eq!(
+            released.with_loop_offsets([0.1, 0.1]).loop_range,
+            restored.loop_range
+        );
+        let negative = initial.with_loop_offsets([-0.2, 0.]);
+        assert_eq!(
+            (
+                negative.loop_range.unwrap().start,
+                negative.loop_range.unwrap().end
+            ),
+            (0, 600)
+        );
+        let upper = initial.with_loop_offsets([0.5, 0.]);
+        assert_eq!(
+            (
+                upper.loop_range.unwrap().start,
+                upper.loop_range.unwrap().end
+            ),
+            (400, 1000)
+        );
+    }
+
+    #[test]
     fn cubic_columns_preserve_scalar_output_cursor_and_envelope() {
         use super::*;
         use crate::{Envelope, EnvelopeCurve};
@@ -1506,6 +1797,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn forward_zone_may_start_inside_or_past_its_loop_and_crossfade_reaches_before_the_start() {
+        let lp = |start, end, shape| Loop {
+            start,
+            end,
+            shape,
+            mode: LoopMode::Continuous,
+            passes: None,
+        };
+        let physical = |playback: Playback| {
+            let mut cursor = playback.cursor(64, 48000, 48000).unwrap();
+            let mut out = Vec::new();
+            for _ in 0..14 {
+                out.push(cursor.index(i128::from(cursor.position)).unwrap());
+                cursor.advance();
+            }
+            out
+        };
+        // Starts inside the loop 4..12: plays 8..12, then wraps to the loop start before the start.
+        let inside = Playback {
+            start: 8,
+            loop_range: Some(lp(4, 12, LoopShape::Wrap)),
+            ..Playback::default()
+        };
+        assert_eq!(physical(inside), [8, 9, 10, 11, 4, 5, 6, 7, 8, 9, 10, 11, 4, 5]);
+        // Starts past the loop: plays straight through, the loop is never entered.
+        let past = Playback {
+            start: 12,
+            loop_range: Some(lp(4, 12, LoopShape::Wrap)),
+            ..Playback::default()
+        };
+        assert_eq!(physical(past), [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+        // A crossfade longer than the room after the sample start still fits in the file.
+        let fade = Playback {
+            start: 4,
+            loop_range: Some(lp(6, 14, LoopShape::Crossfade { frames: 6 })),
+            ..Playback::default()
+        };
+        assert!(fade.cursor(64, 48000, 48000).is_ok());
     }
 
     #[test]

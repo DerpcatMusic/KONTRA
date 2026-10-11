@@ -183,6 +183,11 @@ impl DataLoads {
 }
 
 fn read_data(path: &str) -> Result<Option<Vec<u8>>, &'static str> {
+    // Relative paths name library members ("Rooms.ufs/rooms.json"), which this host does not
+    // mount: unreadable is a successful load with no callback, never a read against the cwd.
+    if !Path::new(path).is_absolute() {
+        return Ok(None);
+    }
     // Reject devices/directories before opening; never read an unbounded special file.
     let Ok(metadata) = std::fs::metadata(path) else {
         return Ok(None);
@@ -259,9 +264,9 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
     lua.globals().raw_set(
         "loadData",
         lua.create_function(move |lua, (path, callback): (String, Option<Function>)| {
-            if path.len() > 4096 || path.contains('\0') || !Path::new(&path).is_absolute() {
+            if path.is_empty() || path.len() > 4096 || path.contains('\0') {
                 return Err(mlua::Error::runtime(
-                    "loadData requires an explicit absolute path of at most 4096 bytes",
+                    "loadData requires a path of at most 4096 bytes without NUL",
                 ));
             }
             let mut loads = s.data_loads.borrow_mut();
