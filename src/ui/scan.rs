@@ -78,8 +78,14 @@ fn settle_snapshot(
 ) -> Vec<(usize, sampler_core::Outcome)> {
     let mut changed = false;
     let mut faults = Vec::new();
-    // Frozen v1 processes ten 480-sample ticks before taking the face.
-    for _ in 0..10 {
+    // Frozen v1 processes ten 480-sample ticks before taking the face. A script
+    // that rewrites its interface in one callback needs more: go on while it still emits.
+    let mut quiet = 0;
+    for tick in 0..400 {
+        if tick >= 10 && quiet >= 3 {
+            break;
+        }
+        let mut emitted = false;
         let mut remaining = 480;
         while remaining > 0 {
             let frames = remaining.min(crate::sound::MAX_BLOCK);
@@ -91,12 +97,14 @@ fn settle_snapshot(
             core.render(frames);
             core.take_effects(0, &mut |instance, effect| {
                 changed |= scripts.apply(instance, effect);
+                emitted = true;
                 true
             });
             faults.extend(core.scan_runtime_faults(0));
             core.end_block(frames, &mut |_| true);
             remaining -= frames;
         }
+        quiet = if emitted { 0 } else { quiet + 1 };
     }
     if changed || scripts.uvi.is_some() {
         *faces = scripts.interfaces();
