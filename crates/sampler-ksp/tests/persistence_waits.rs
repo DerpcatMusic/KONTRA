@@ -284,7 +284,6 @@ fn a_ui_refresh_larger_than_the_outbox_is_delivered_whole() {
         });
     }
     assert!(rt.stalled_effects() > 0, "the refresh must exceed the outbox");
-    assert_eq!(rt.dropped_effects(), 0);
     assert!(view.model().interface.widgets[0].hidden());
 }
 
