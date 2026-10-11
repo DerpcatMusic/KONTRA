@@ -4452,6 +4452,51 @@
       ],
       "accepted": true,
       "validation": "Independent source review plus exact 7971dcc468bf44ef3b5d800128732176ef88ace5 combined release build and all 116 selected direct runs passed: 1077 pass invocations, zero failures, 79 ignored; all 359 required entries passed (358 unique identities). REGRESSION-VERDICT SHA256 e3f0cdad49dc0fbb3a46aa206c3c47c6a4e1457daa6350718c9fd7569561e8cc. Native parity and comparative performance remain unverified."
+    },
+    {
+      "id": "envelope-stage-edit-step-curves",
+      "summary": "Preserve authored step curves when retiming envelope stages",
+      "source_commits": [
+        "fbaf2225b1dcfe83ab9099bea3d2a0b24c89f566"
+      ],
+      "accepted": true,
+      "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
+    },
+    {
+      "id": "ksp-callback-string-array-sort",
+      "summary": "Sort string arrays consistently during initialization and callbacks",
+      "source_commits": [
+        "fe37821d86d9158cd15ea625ed6c1a42b1e1f294"
+      ],
+      "accepted": true,
+      "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
+    },
+    {
+      "id": "uvi-absent-parameter-connections",
+      "summary": "Return nil for unconnected and unknown UVI parameter connections",
+      "source_commits": [
+        "d6cf6555a4cdda809c6c60ab4eb95dd97dab3e76"
+      ],
+      "accepted": true,
+      "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
+    },
+    {
+      "id": "artwork-stale-completion-pending-epoch",
+      "summary": "Keep the current artwork request pending when an older epoch completes",
+      "source_commits": [
+        "3a213f20886fa1068ba0d0dba4cbca2b8768b56e"
+      ],
+      "accepted": true,
+      "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
+    },
+    {
+      "id": "kontakt-empty-saved-numeric-arrays",
+      "summary": "Accept empty saved numeric arrays without failing library initialization",
+      "source_commits": [
+        "72d4f2244773747a4455038eb79bfa576afbbf45"
+      ],
+      "accepted": true,
+      "validation": "PR57 merged at 78e8948bb461e6f5d0d3f5c8143d9c569735a043 with the exact tested source tree. All eight hosted checks passed on 72d4f2244773747a4455038eb79bfa576afbbf45, including Linux/Windows/macOS and Vulkan/OpenGL/CPU editor checks; all eight authored regressions passed in run38098604797. Raw log SHA256 61804360d3db4a3324b596a69f64bd3c13d1724459eaac389cd468f0391dbf79. Final local stamped packaging/install and native library audition remain pending."
     }
   ]
 }
