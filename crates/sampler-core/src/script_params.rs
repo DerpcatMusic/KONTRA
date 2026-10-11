@@ -685,6 +685,38 @@ impl Runtime {
         Ok(())
     }
 
+    /// The note slots a script event argument addresses: one source event id,
+    /// a `by_marks` union or `$ALL_EVENTS` (every slot; filter with
+    /// [`Self::event_selected`]). Unknown or retired ids address nothing.
+    pub(crate) fn event_targets(
+        &mut self,
+        plan: crate::PlanId,
+        event: i32,
+    ) -> Result<std::ops::Range<usize>, Error> {
+        Ok(if Self::selects_many_events(event) {
+            0..self.notes.slots.len()
+        } else if let Some(note) = self.resolve_source_event(plan, event)? {
+            note.0.index..note.0.index + 1
+        } else {
+            0..0
+        })
+    }
+
+    fn selects_many_events(event: i32) -> bool {
+        event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0)
+    }
+
+    /// Whether the note in slot `index` belongs to `plan` and, for a mark
+    /// union, carries one of the marks (a single id was already resolved).
+    pub(crate) fn event_selected(&self, plan: crate::PlanId, event: i32, index: usize) -> bool {
+        self.notes.slots[index].value.is_some_and(|note| {
+            note.plan == plan
+                && (!Self::selects_many_events(event)
+                    || event == 0x3fff_fffe
+                    || self.note_events[index].marks & (event as u32 & 0x0fff_ffff) != 0)
+        })
+    }
+
     fn param_layer(
         &mut self,
         plan: crate::PlanId,
@@ -727,6 +759,17 @@ impl Runtime {
                 "param {scope:?} {index} {target:?} {value} relative {relative}"
             ));
         }
+        if scope == ParamScope::Note
+            && let Ok(event) = i32::try_from(index)
+            && Self::selects_many_events(event)
+        {
+            for slot in self.event_targets(plan, event)? {
+                if self.event_selected(plan, event, slot) {
+                    self.note_params[slot].layer.write(target, value, relative)?;
+                }
+            }
+            return Ok(());
+        }
         let Some(layer) = self.param_layer(plan, scope, index)? else {
             return Ok(());
         };
@@ -761,29 +804,9 @@ impl Runtime {
         if id > 1000 && !user {
             return Ok(());
         }
-        // Port v1's bounded target scan for a mark union or all source events.
-        let many = event == 0x3fff_fffe || (event > 0 && event & 0x2000_0000 != 0);
-        let single = if many {
-            None
-        } else {
-            self.resolve_source_event(plan, event)?
-        };
-        let range = if many {
-            0..self.notes.slots.len()
-        } else if let Some(note) = single {
-            note.0.index..note.0.index + 1
-        } else {
-            0..0
-        };
+        let range = self.event_targets(plan, event)?;
         for index in range {
-            let Some(note) = self.notes.slots[index].value else {
-                continue;
-            };
-            if note.plan != plan
-                || (many
-                    && event != 0x3fff_fffe
-                    && self.note_events[index].marks & (event as u32 & 0x0fff_ffff) == 0)
-            {
+            if !self.event_selected(plan, event, index) {
                 continue;
             }
             // Modulator values are normalized to +-1e6; user parameters keep
@@ -909,20 +932,22 @@ impl Runtime {
         let Ok(id) = i32::try_from(event) else {
             return Ok(());
         };
-        let Some(note) = self.resolve_source_event(plan, id)? else {
-            return Ok(());
-        };
         let now = self.now;
-        let params = &mut self.note_params[note.0.index];
-        let current = params.fade.map_or(1.0, |f| f.at(now));
-        params.fade = Some(Fade {
-            from: if out { current } else { 0.0 },
-            to: if out { 0.0 } else { 1.0 },
-            start: now,
-            frames: u64::from(frames),
-            curve,
-            stop: out && stop,
-        });
+        for slot in self.event_targets(plan, id)? {
+            if !self.event_selected(plan, id, slot) {
+                continue;
+            }
+            let params = &mut self.note_params[slot];
+            let current = params.fade.map_or(1.0, |f| f.at(now));
+            params.fade = Some(Fade {
+                from: if out { current } else { 0.0 },
+                to: if out { 0.0 } else { 1.0 },
+                start: now,
+                frames: u64::from(frames),
+                curve,
+                stop: out && stop,
+            });
+        }
         Ok(())
     }
 }
