@@ -1888,6 +1888,15 @@ impl Gen<'_, '_> {
             }
             Search => return self.search(args, dst, span),
             Sort => return self.sort(args, dst),
+            GetScale => return self.get_scale(args, dst),
+            SetGlobalKey | SetGlobalScale => {
+                self.ignore(builtin, "has no global key/scale to set");
+                true
+            }
+            SubscribeAsync => {
+                self.ignore(SubscribeAsync, "has no global key/scale to deliver at runtime");
+                true
+            }
             ArrayEqual => return self.array_equal(args, dst, span),
             ByMarks => {
                 self.arg(args, 0, dst)?;
@@ -3538,6 +3547,48 @@ impl Gen<'_, '_> {
             self.tdepth -= 1;
         }
         self.cover(Builtin::Sort, Coverage::Native);
+        Ok(())
+    }
+
+    /// `get_scale(scale, array)`: the scale's semitones, then -1, as an if-chain over the table.
+    fn get_scale(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let Some(array) = self.cells(args, 1) else {
+            self.ignore(Builtin::GetScale, "of a runtime array is not available");
+            return Ok(());
+        };
+        let [matched, index, value] = [1, 2, 3].map(|n| dst + n);
+        reg(dst, 4)?;
+        self.arg(args, 0, dst)?;
+        let mut done = Vec::new();
+        for (scale, notes) in b::scales() {
+            self.set(matched, i64::from(scale))?;
+            self.emit(I::CompareLocal {
+                lhs: matched,
+                rhs: dst,
+                comparison: Cmp::Equal,
+            })?;
+            let next = self.jump_if_zero(matched)?;
+            self.fill_scale(array, index, value, notes)?;
+            done.push(self.jump()?);
+            self.land(next);
+        }
+        self.fill_scale(array, index, value, &[])?;
+        for at in done {
+            self.land(at);
+        }
+        self.cover(Builtin::GetScale, Coverage::Native);
+        Ok(())
+    }
+    fn fill_scale(&mut self, array: ScriptArray, index: u16, value: u16, notes: &[u8]) -> Result<()> {
+        for i in 0..array.len {
+            self.set(index, i64::from(i))?;
+            self.set(value, notes.get(i as usize).map_or(-1, |&n| i64::from(n)))?;
+            self.emit(I::WriteScriptArray {
+                array,
+                index,
+                local: value,
+            })?;
+        }
         Ok(())
     }
 
