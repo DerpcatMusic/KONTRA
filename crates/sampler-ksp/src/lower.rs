@@ -1059,6 +1059,10 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: true,
             },
+            SysVar::NumOutputChannels => I::SetLocal {
+                local: dst,
+                value: i64::from(b::NUM_OUTPUT_CHANNELS),
+            },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
                 value: i64::from(self.u.slot),
