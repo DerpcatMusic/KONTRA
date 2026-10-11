@@ -31,6 +31,9 @@ const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget 
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
+    fn image_size(&self, _path: &str) -> Option<sampler_ui_ir::Size> {
+        None
+    }
     fn script_path(&self, _module: &str) -> Option<String> {
         None
     }
@@ -46,6 +49,9 @@ pub trait Files {
 }
 
 impl<T: Files> Files for std::rc::Rc<T> {
+    fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
+        (**self).image_size(path)
+    }
     fn script(&self, module: &str) -> Option<String> {
         (**self).script(module)
     }
@@ -96,11 +102,25 @@ impl PartialEq for ImpulseUpload {
 pub struct Scripts {
     files: std::sync::Arc<Vec<(String, String)>>,
     impulses: Option<ImpulseSource>,
+    images: Option<std::sync::Arc<dyn Fn(&str) -> Option<sampler_ui_ir::Size> + Send + Sync>>,
     /// Bus insert element (node id) to its convolution slot.
     convolvers: std::collections::HashMap<usize, usize>,
 }
 
 impl Scripts {
+    pub(crate) fn with_images(
+        mut self,
+        source: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        self.images = Some(std::sync::Arc::new(move |path| {
+            let mut cache = cache.lock().ok()?;
+            *cache.entry(path.to_owned()).or_insert_with(|| {
+                source(path).as_deref().and_then(crate::resources::png_size)
+            })
+        }));
+        self
+    }
     pub fn sources(&self) -> std::sync::Arc<Vec<(String, String)>> {
         self.files.clone()
     }
@@ -174,6 +194,9 @@ impl Scripts {
 }
 
 impl Files for Scripts {
+    fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
+        self.images.as_ref()?(path)
+    }
     /// Exact bank members win; relative slash/dot aliases require identical source.
     fn script(&self, module: &str) -> Option<String> {
         self.member(module).map(|(_, source)| source.clone())
@@ -2954,6 +2977,27 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_resource_headers_are_cached_across_snapshots() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let reads = Arc::new(AtomicUsize::new(0));
+        let count = reads.clone();
+        let files = Scripts::default().with_images(move |path| {
+            count.fetch_add(1, Ordering::Relaxed);
+            if path != "overlay.png" { return None; }
+            let mut bytes = vec![0; 33];
+            bytes[..16].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+            bytes[16..20].copy_from_slice(&720u32.to_be_bytes());
+            bytes[20..24].copy_from_slice(&18u32.to_be_bytes());
+            Some(bytes)
+        });
+        let host = ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Image('overlay.png'); Image('overlay.png'); Image('missing.png')</script></ScriptProcessor></EventProcessors></Program></UVI4>", files, Config::default()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(host.interface().widgets[0].rect.width, 720);
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 2, "cache successes and absence by resource path");
+    }
+
     #[test]
     fn finite_initialization_survives_expired_elapsed_budget() {
         let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onInit() for n=1,100 do assert(n&gt;0) end; initialized=true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
