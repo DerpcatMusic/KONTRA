@@ -134,7 +134,6 @@ fn settle_snapshot(
     if changed || scripts.uvi.is_some() {
         *faces = scripts.interfaces();
     }
-    if std::env::var_os("WP78_ONLY").is_some() { for f in faces.iter_mut() { f.widgets.retain(|w| w.name.contains("readout")); } }
     faults
 }
 
@@ -351,7 +350,6 @@ fn render(
                         std::thread::sleep(Duration::from_millis(2));
                     }
                 }
-                for (i, a) in face.assets.iter().enumerate() { if a.path.contains("transparent") { if let Some(pic) = assets.get(ir::AssetRef(i)) { for f in &pic.frames { eprintln!("WP78 asset {i} {} {}x{} px0 {:?} window {:?}", a.path, f.width, f.height, f.rgba.get(0..4), pic.window); } } else { eprintln!("WP78 asset {i} not loaded"); } } }
                 let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
                 let mut resources = vello::vello_cpu::Resources::default();
                 vello::paint(
