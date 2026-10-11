@@ -1,7 +1,7 @@
 //! UVI insert effects as IR processors: aux-bus chains, effect racks and
 //! keygroup inserts. Exact catalog fields with supported native DSP lanes
 //! receive live controls in `engine_parameters`; other writes stay reported.
-use super::{Translation, number, path};
+use super::{Translation, engine_parameters, number, path};
 use roxmltree::Node;
 use sampler_ir as ir;
 
@@ -80,13 +80,35 @@ impl Translation {
         let Some(inserts) = parent.children().find(|n| n.has_tag_name("Inserts")) else {
             return Ok((out, placed));
         };
+        // A scripted program's inserts sit inside a Mix so `setParameter
+        // ("Bypass")` can reach them at runtime (core `slot_control` path), and
+        // its bus-scope inserts get the control-driven stages that
+        // `engine_parameters::lanes` addresses.
+        let scripted = !self.ir.behaviors.is_empty();
+        let live = scripted && !voice;
         for node in inserts.children().filter(|n| n.is_element()) {
-            let first = out.len();
+            let slot = out.len();
             let id = node.id().get_usize();
-            if number(node, "Bypass", 0.0)? != 0.0 {
-                placed.push((id, first, 0));
+            let bypassed = number(node, "Bypass", 0.0)? != 0.0;
+            let mix = scripted && engine_parameters::bypassable(node);
+            if bypassed && !mix {
+                placed.push((id, slot, 0));
                 continue;
             }
+            if mix {
+                out.push(ir::Processor::Mix {
+                    count: 0,
+                    address: ir::SlotAddress {
+                        group: -1,
+                        slot: -1,
+                        generic: i32::try_from(id).unwrap_or(-1),
+                    },
+                    dry: 0.0,
+                    wet: 1.0,
+                    bypass: bypassed,
+                });
+            }
+            let first = out.len();
             let at = path(node);
             match node.tag_name().name() {
                 "Gain" => {
@@ -116,7 +138,7 @@ impl Translation {
                         self.unsupported(&at, "GainMatrix beyond the first two channels", "");
                     }
                 }
-                "DigitalEq" => self.digital_eq(node, &at, &mut out)?,
+                "DigitalEq" => self.digital_eq(node, &at, live, &mut out)?,
                 "ThreeBandShelves" => {
                     let middle = number(node, "GainMid", 0.0)?;
                     out.push(ir::Processor::Gain(db(middle)));
@@ -154,7 +176,8 @@ impl Translation {
                         7.0 => ir::Rectifier::Half,
                         _ => {
                             self.unsupported(&at, "WaveShaper mode", mode);
-                            placed.push((id, first, 0));
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
                             continue;
                         }
                     };
@@ -269,29 +292,48 @@ impl Translation {
                     }
                 }
                 "EffectRack" => {
-                    // Live chains are parallel branches summed at their own gains
-                    // (one is just a serial section at that gain).
-                    let live: Vec<_> = node
+                    // Chains are parallel branches summed at their own gains
+                    // (one is just a serial section at that gain). A scripted
+                    // bus keeps every chain, bypassed or silent, because its
+                    // gain stage is a control the script can raise; a chain's
+                    // bypass is that gain at zero.
+                    let chains: Vec<_> = node
                         .descendants()
                         .filter(|n| n.has_tag_name("Chains"))
                         .flat_map(|c| c.children().filter(|c| c.has_tag_name("AuxEffect")))
                         .filter(|c| {
-                            number(*c, "Bypass", 0.0).is_ok_and(|b| b == 0.0)
-                                && number(*c, "Gain", 1.0).is_ok_and(|g| g != 0.0)
+                            live || (number(*c, "Bypass", 0.0).is_ok_and(|b| b == 0.0)
+                                && number(*c, "Gain", 1.0).is_ok_and(|g| g != 0.0))
                         })
                         .collect();
-                    for (n, chain) in live.iter().enumerate() {
-                        let gain = ir::Gain::Linear(number(*chain, "Gain", 1.0)?);
+                    for (n, chain) in chains.iter().enumerate() {
+                        let off = live && number(*chain, "Bypass", 0.0)? != 0.0;
+                        let gain = ir::Gain::Linear(if off {
+                            0.0
+                        } else {
+                            number(*chain, "Gain", 1.0)?
+                        });
                         let (inner, entries) = self.inserts(*chain, voice, key)?;
-                        if let [_] = live[..] {
+                        if let [_] = chains[..] {
+                            out.push(ir::Processor::Gain(gain));
+                        } else if live {
+                            out.push(ir::Processor::Branch {
+                                count: (inner.len() + 1) as u16,
+                                gain: ir::Gain::UNITY,
+                                first: n == 0,
+                                last: n + 1 == chains.len(),
+                            });
                             out.push(ir::Processor::Gain(gain));
                         } else {
                             out.push(ir::Processor::Branch {
                                 count: inner.len() as u16,
                                 gain,
                                 first: n == 0,
-                                last: n + 1 == live.len(),
+                                last: n + 1 == chains.len(),
                             });
+                        }
+                        if live {
+                            placed.push((chain.id().get_usize(), out.len() - 1, 1));
                         }
                         let base = out.len();
                         placed.extend(entries.into_iter().map(|(n, f, c)| (n, base + f, c)));
@@ -299,11 +341,22 @@ impl Translation {
                     }
                 }
                 _ => {
-                    placed.push((id, first, 0));
+                    out.truncate(slot);
+                    placed.push((id, slot, 0));
                     continue;
                 }
             }
-            placed.push((id, first, out.len() - first));
+            let count = out.len() - first;
+            if count == 0 && mix {
+                out.truncate(slot);
+                placed.push((id, slot, 0));
+            } else {
+                if let (true, Some(ir::Processor::Mix { count: c, .. })) = (mix, out.get_mut(slot))
+                {
+                    *c = count as u16;
+                }
+                placed.push((id, first, count));
+            }
             self.used.push(node.id());
         }
         Ok((out, placed))
@@ -313,6 +366,7 @@ impl Translation {
         &mut self,
         node: Node,
         at: &str,
+        live: bool,
         out: &mut Vec<ir::Processor>,
     ) -> Result<(), String> {
         for (name, why) in [
@@ -328,7 +382,9 @@ impl Translation {
         let scale = number(node, "GainScale", 1.0)?;
         for band in 1..=16 {
             let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
-            if get("Enabled", 0.0)? == 0.0 {
+            // A scripted bus keeps all 16 bands and the overall level so
+            // each one is a control (`engine_parameters::lanes`).
+            if get("Enabled", 0.0)? == 0.0 && !live {
                 continue;
             }
             let gain = db(get("Gain", 0.0)? * scale);
@@ -348,17 +404,20 @@ impl Translation {
                     | ir::FilterKind::HighShelf { gain: g }
                     if (g.linear() - 1.0).abs() < 1e-9
             );
-            if flat {
+            if flat && !live {
                 continue;
             }
             out.push(ir::Processor::Filter(ir::Filter {
                 kind,
                 cutoff: ir::Frequency::Hertz(get("Freq", 1000.0)?),
-                resonance: ir::Resonance::Q(get("Q", std::f64::consts::FRAC_1_SQRT_2)?),
+                resonance: ir::Resonance::Q(engine_parameters::band_q(
+                    |n| node.attribute(n).and_then(|v| v.parse().ok()),
+                    band,
+                )),
             }));
         }
         let overall = number(node, "OverallGain", 0.0)?;
-        if overall != 0.0 {
+        if overall != 0.0 || live {
             out.push(ir::Processor::Gain(db(overall)));
         }
         // The manual lists the seven shapes but not their numbering; this is

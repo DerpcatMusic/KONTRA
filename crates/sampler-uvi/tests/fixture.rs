@@ -807,7 +807,7 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
           gain:setParameter('Missing',0.75)
           gain:setParameter(1000000,0.75)
           gain:setParameter('Volume','wrong type')
-          gain:setParameter(gain.parameterDefinitions.Bypass.id,true)
+          gain:setParameter(gain.parameterDefinitions.Volume.id,false)
           assert(gain:getParameter('Volume')==0.25 and gain:getParameter('Bypass')==false)
           assert(not gain:hasParameter('Missing'))
           controlChange(119,42)
@@ -925,6 +925,157 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A constant-level note through `xml` (a scripted program), rendered before
+/// and after controller 1 fires the script's `onController`: the output level
+/// then, and once the change has settled.
+fn level_change(xml: &str) -> (f64, f64) {
+    use sampler_uvi::{script::Config, scripted::HostInput};
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "sampler-uvi-level-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &vec![16000; 48000])).unwrap();
+    let path = dir.join("Level.uvip");
+    std::fs::write(&path, xml).unwrap();
+    let mut translated = sampler_uvi::translate_path(&path).unwrap();
+    let mut attached = translated
+        .attach_script(48000, Config::default())
+        .unwrap()
+        .unwrap();
+    let streamed =
+        sampler_uvi::assemble_translated_streamed(translated, 48000, &Default::default()).unwrap();
+    let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
+    let mut rt = Runtime::new(streamed.loaded.plan, limits)
+        .unwrap()
+        .with_stream_cache(streamed.cache);
+    // Let the script thread's load-time commands arrive before the note.
+    for _ in 0..20 {
+        attached.driver.wake(&mut rt).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let note = rt.note_on(input, 60, 1.).unwrap();
+    attached.driver.note_on(&mut rt, note, 60, 1.).unwrap();
+    let mut block = vec![[0.; 2]; 128];
+    for _ in 0..4 {
+        rt.render(&mut block).unwrap();
+    }
+    let before = f64::from(block[100][0]);
+    assert!(before > 0.01, "the note sounds before the write");
+    attached.driver.input(&rt, HostInput::Controller { cc: 1, value: 127, channel: 0 });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut after = before;
+    let mut settled = 0;
+    while settled < 8 {
+        attached.driver.wake(&mut rt).unwrap();
+        rt.render(&mut block).unwrap();
+        after = f64::from(block[100][0]);
+        if (after / before - 1.).abs() > 0.005 || settled > 0 {
+            settled += 1;
+        }
+        assert!(std::time::Instant::now() < deadline || settled > 0, "no change");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(rt);
+    drop(streamed.streamer);
+    std::fs::remove_dir_all(dir).unwrap();
+    (before, after)
+}
+
+fn script_program(inserts: &str, script: &str) -> String {
+    insert_program(None).replace(
+        "<Layers>",
+        &format!(
+            "<Inserts>{inserts}</Inserts><EventProcessors><ScriptProcessor><script>{script}</script></ScriptProcessor></EventProcessors><Layers>"
+        ),
+    )
+}
+
+#[test]
+fn scripted_insert_bypass_reaches_the_dsp() {
+    let xml = script_program(
+        r#"<Gain Volume="0.25"/>"#,
+        "function onController(e) Program.inserts[1]:setParameter('Bypass', true) end",
+    );
+    let (before, after) = level_change(&xml);
+    assert!((after / before - 4.).abs() < 0.05, "{before} {after}");
+}
+
+#[test]
+fn scripted_bypass_reaches_rack_and_voice_inserts() {
+    // An insert inside an effect rack chain, and one on a keygroup's voice.
+    let rack = script_program(
+        r#"<EffectRack><Chains><AuxEffect Gain="1"><Inserts><Gain Volume="0.5"/></Inserts></AuxEffect></Chains></EffectRack>"#,
+        "function onController(e) Program.inserts[1].auxs[1].inserts[1]:setParameter('Bypass', true) end",
+    );
+    let (before, after) = level_change(&rack);
+    assert!((after / before - 2.).abs() < 0.05, "rack {before} {after}");
+    let voice = insert_program(None)
+        .replace("<Keygroup Name=\"K\">", "<Keygroup Name=\"K\"><Inserts><Gain Volume=\"0.5\"/></Inserts>")
+        .replace(
+            "<Layers>",
+            "<EventProcessors><ScriptProcessor><script>function onController(e) Program.layers[1].keygroups[1].inserts[1]:setParameter('Bypass', true) end</script></ScriptProcessor></EventProcessors><Layers>",
+        );
+    let (before, after) = level_change(&voice);
+    assert!((after / before - 2.).abs() < 0.05, "voice {before} {after}");
+}
+
+#[test]
+fn scripted_program_aux_gain_and_bypass_reach_the_dsp() {
+    for (write, ratio) in [
+        ("setParameter('Gain', 0.5)", 0.5),
+        ("setParameter('Bypass', true)", 4.0),
+    ] {
+        let xml = insert_program(Some(r#"<Gain Volume="0.25"/>"#)).replace(
+            "<Layers>",
+            &format!(
+                "<EventProcessors><ScriptProcessor><script>function onController(e) Program.auxs[1]:{write} end</script></ScriptProcessor></EventProcessors><Layers>"
+            ),
+        );
+        let (before, after) = level_change(&xml);
+        assert!((after / before - ratio).abs() < 0.02, "{write}: {before} -> {after}");
+    }
+}
+
+#[test]
+fn scripted_effect_parameters_reach_the_dsp() {
+    // Each case: inserts, the write, and the level change it makes at DC.
+    for (inserts, write, ratio) in [
+        (r#"<GainMatrix/>"#, "setParameter('Gain_1_1', 0.5)", 0.5),
+        (r#"<GainMatrix/>"#, "setParameter('Gain_2_1', 1.0)", 2.0),
+        (r#"<ThreeBandShelves/>"#, "setParameter('GainLow', 6.0206)", 2.0),
+        (r#"<DigitalEq Enabled1="1" Type1="4" Freq1="1000" Gain1="0"/>"#, "setParameter('Gain1', 6.0206)", 2.0),
+        (r#"<DigitalEq Enabled1="1" Type1="4" Freq1="1000" Gain1="6.0206"/>"#, "setParameter('Enabled1', false)", 0.5),
+        (r#"<DigitalEq/>"#, "setParameter('OverallGain', 6.0206)", 2.0),
+        (r#"<DigitalEq GainScale="0.5" Enabled1="1" Type1="4" Freq1="1000" Gain1="0"/>"#, "setParameter('Gain1', 6.0206)", 1.4142),
+        (
+            r#"<EffectRack><Chains><AuxEffect Gain="1"/><AuxEffect Gain="0"/></Chains></EffectRack>"#,
+            "auxs[2]:setParameter('Gain', 1)",
+            2.0,
+        ),
+        (
+            r#"<EffectRack><Chains><AuxEffect Gain="1"/><AuxEffect Gain="1" Bypass="1"/></Chains></EffectRack>"#,
+            "auxs[2]:setParameter('Bypass', false)",
+            2.0,
+        ),
+    ] {
+        let write = if write.starts_with("auxs") {
+            format!("Program.inserts[1].{write}")
+        } else {
+            format!("Program.inserts[1]:{write}")
+        };
+        let xml = script_program(inserts, &format!("function onController(e) {write} end"));
+        let (before, after) = level_change(&xml);
+        assert!(
+            (after / before - ratio).abs() < 0.02,
+            "{inserts} {write}: {before} -> {after}, expected x{ratio}"
+        );
+    }
+}
+
 #[test]
 fn input_tone_marker_names_program_entry_after_aux_buses() {
     let xml = insert_program(Some(r#"<Gain Volume="1"/>"#)).replace(
@@ -941,4 +1092,24 @@ fn input_tone_marker_names_program_entry_after_aux_buses() {
     );
     assert_eq!(i.buses[0].output, ir::Output::Bus(i.input_bus.unwrap()));
     i.validate().unwrap();
+}
+
+#[test]
+fn a_constant_modulation_a_script_writes_is_live() {
+    // Folded to 0.25 until the script writes it, then 1: the gain it drives follows.
+    let program = |script: &str| {
+        insert_program(None)
+            .replace(
+                "<Layers>",
+                &format!("<ControlSignalSources><ConstantModulation Name=\"Macro 1\" Value=\"0.25\"/></ControlSignalSources><EventProcessors><ScriptProcessor><script>{script}</script></ScriptProcessor></EventProcessors><Layers>"),
+            )
+            .replace(
+                "<Keygroup Name=\"K\">",
+                "<Keygroup Name=\"K\"><Connections><SignalConnection Source=\"$Program/Macro 1\" Destination=\"Gain\" Ratio=\"1\"/></Connections>",
+            )
+    };
+    let (before, after) = level_change(&program(
+        "function onController(e) Program.modulations['Macro 1']:setParameter('Value', 1) end",
+    ));
+    assert!((after / before - 4.).abs() < 0.1, "{before} {after}");
 }

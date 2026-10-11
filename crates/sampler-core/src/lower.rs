@@ -1624,9 +1624,92 @@ impl Lowering<'_> {
             (Processor::Compressor(c), Release) => c.release_seconds = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
+            (Processor::LiveFilter(f), Frequency) => f.frequency_hz = parameter,
+            (Processor::LiveFilter(f), Quality) => f.q = parameter,
+            (Processor::LiveFilter(f), GainDecibels) => f.gain_db = parameter,
+            (Processor::LiveFilter(f), ReferenceDecibels) => f.reference_db = parameter,
+            (Processor::LiveFilter(f), Enabled) => f.enabled = parameter,
+            (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
+            (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
+            (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
+            (Processor::ControlMatrix(cells), CellRR) => cells[3] = parameter,
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Whether a live parameter (frequency, quality, decibels, enable or a
+    /// matrix cell) binds the processor at `index` of `chain`.
+    fn live_bound(&self, chain: ir::ChainRef, index: usize) -> bool {
+        use ir::ProcessorParameter as P;
+        self.ir
+            .processor_controls
+            .iter()
+            .filter(|b| b.chain == chain && b.index == index)
+            .any(|b| {
+                matches!(
+                    b.parameter,
+                    P::Frequency
+                        | P::Quality
+                        | P::GainDecibels
+                        | P::ReferenceDecibels
+                        | P::Enabled
+                        | P::CellLL
+                        | P::CellLR
+                        | P::CellRL
+                        | P::CellRR
+                )
+            })
+    }
+
+    /// The control-driven stage for an IR filter, gain or matrix that a
+    /// live parameter binds (frequency, quality, decibels, enable or a matrix
+    /// cell), seeded with the authored constants.
+    fn live_stage(&self, chain: ir::ChainRef, index: usize, p: &ir::Processor) -> Option<Processor> {
+        let live = self.live_bound(chain, index);
+        if !live {
+            return None;
+        }
+        let constant = |v| Parameter::Constant(v);
+        let db = |g: ir::Gain| 20. * g.linear().log10();
+        let seed = |shape, frequency, q, gain| {
+            Processor::LiveFilter(crate::LiveFilter {
+                shape,
+                frequency_hz: constant(frequency),
+                q: constant(q),
+                gain_db: constant(gain),
+                reference_db: constant(0.),
+                enabled: constant(1.),
+            })
+        };
+        use crate::LiveShape as S;
+        match *p {
+            ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
+            ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([
+                constant(m[0][0]),
+                constant(m[0][1]),
+                constant(m[1][0]),
+                constant(m[1][1]),
+            ])),
+            ir::Processor::Filter(ir::Filter {
+                kind,
+                cutoff: ir::Frequency::Hertz(hz),
+                resonance: ir::Resonance::Q(q),
+            }) => {
+                let (shape, gain) = match kind {
+                    ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
+                    ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
+                    ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
+                    ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
+                    ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
+                    ir::FilterKind::BandPass { .. } => (S::BandPass, 0.),
+                    ir::FilterKind::Notch { .. } => (S::Notch, 0.),
+                    ir::FilterKind::AllPass => return None,
+                };
+                Some(seed(shape, hz, q, gain))
+            }
+            _ => None,
+        }
     }
 
     /// A slot control's binding: ramped over 10 ms like a script's gain edit.
@@ -1699,6 +1782,7 @@ impl Lowering<'_> {
                 cutoff: ir::Frequency::Hertz(hz),
                 resonance: ir::Resonance::Q(q),
             }) = **p
+                && !self.live_bound(chain, start + index)
                 && self
                     .ir
                     .processor_controls
@@ -1713,6 +1797,8 @@ impl Lowering<'_> {
                     ),
                     gain_db: Parameter::Constant(20. * gain.linear().log10()),
                 })]
+            } else if let Some(live) = self.live_stage(chain, start + index, p) {
+                vec![live]
             } else {
                 self.processors(owner, **p)?
             };
@@ -2028,6 +2114,7 @@ impl Lowering<'_> {
                 .map(|p| match p {
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
+                    | Processor::ControlMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
                     | Processor::Branch { .. }
