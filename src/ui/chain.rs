@@ -262,6 +262,8 @@ fn detail(p: ir::Processor) -> String {
                 ir::FilterKind::Peak { .. } => "EQ peak",
                 ir::FilterKind::LowShelf { .. } => "Low shelf",
                 ir::FilterKind::HighShelf { .. } => "High shelf",
+                ir::FilterKind::FirstOrderLowShelf { .. } => "Low shelf (6 dB/oct)",
+                ir::FilterKind::FirstOrderHighShelf { .. } => "High shelf (6 dB/oct)",
             },
             match f.cutoff {
                 ir::Frequency::Hertz(h) => super::viz::hz_text(h as f32),
