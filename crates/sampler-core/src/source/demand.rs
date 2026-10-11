@@ -289,6 +289,20 @@ impl Cursor {
         (((offset - lead) / self.step()).floor() - 1.).max(0.) as u32
     }
 
+    /// The single-loop cursor serving the current native-slot segment, at the
+    /// larger of the tuned and untuned rates so reaches stay a superset. A
+    /// window leaving the segment's exit is rejected by its reach helpers.
+    pub(crate) fn segment_cursor(&self) -> Self {
+        let Some(loops) = self.loops else {
+            return *self;
+        };
+        let (mut local, offset) = self.segment(i128::from(self.position));
+        let tuning = loops.slots.iter().flatten().fold(1.0f64, |max, s| max.max(s.tuning));
+        local.position = offset as u64;
+        local.step = self.step * tuning;
+        local
+    }
+
     pub(crate) fn visit_demand(
         mut self,
         frames: u32,
@@ -663,6 +677,58 @@ mod tests {
                         assert!(seen > 0);
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn a_native_slot_reach_covers_every_read_no_later_than_its_first_use() {
+        let slot = |start, end, tuning| {
+            Some(crate::LoopSlot {
+                range: Loop {
+                    start,
+                    end,
+                    mode: LoopMode::Continuous,
+                    shape: LoopShape::Crossfade { frames: 300 },
+                    passes: None,
+                },
+                tuning,
+            })
+        };
+        for tuning in [1., 1.5] {
+            for (advance, frames) in [(500, 600), (1800, 600), (2500, 3000), (6000, 4000)] {
+                let mut loop_slots = [None; 8];
+                loop_slots[0] = slot(2000, 3000, tuning);
+                loop_slots[1] = slot(5000, 6000, tuning);
+                let mut cursor = Playback {
+                    loop_slots,
+                    ..Default::default()
+                }
+                .cursor(9000, 48000, 48000)
+                .unwrap()
+                .with_step(1.2);
+                for _ in 0..advance {
+                    cursor.advance();
+                }
+                let local = cursor.segment_cursor();
+                let reach = local.loop_reach(frames);
+                let linear = local.linear_reach(frames);
+                let envelope = EnvelopeState::new(Envelope::default());
+                assert!(cursor.visit_demand(frames, envelope, |frame, range| {
+                    for index in range {
+                        let covered = reach
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .any(|(r, at)| r.contains(&index) && *at <= frame)
+                            || linear.as_ref().is_some_and(|(r, d, lead)| {
+                                r.contains(&index) && local.first_use(index, *d, *lead) <= frame
+                            });
+                        assert!(covered, "{tuning} {advance} {index} at {frame}");
+                    }
+                    true
+                }));
+                assert!(reach.is_some() || linear.is_some(), "{tuning} {advance}");
             }
         }
     }
