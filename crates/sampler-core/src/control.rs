@@ -275,7 +275,7 @@ impl Prepared {
         &self,
         programs: &[super::Program],
     ) -> Result<(), Error> {
-        for op in programs.iter().flat_map(|p| p.code.iter()) {
+        for op in super::behavior::distinct_code(programs, false).flat_map(|p| p.code.iter()) {
             if let Instruction::ReadControl { control, .. }
             | Instruction::WriteControl { control, .. } = *op
             {

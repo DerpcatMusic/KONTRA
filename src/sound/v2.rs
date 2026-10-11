@@ -2742,6 +2742,10 @@ const MAX_VOICES: usize = 1024;
 const GROWTH: usize = 8;
 // port from v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY.
 const INITIAL_NOTE_PARAMS: usize = 4096;
+/// Note-parameter pages resident at load (4 KiB per note); the grower doubles
+/// them under pressure up to `INITIAL_NOTE_PARAMS`. Fully resident they were
+/// 17 MB of the 20 MB the runtime added, which v1's small event slots never cost.
+const RESIDENT_NOTE_PARAMS: usize = 512;
 /// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
 const VOICE_OVERHEAD: usize = 4096;
 
@@ -3363,7 +3367,7 @@ impl V2Loader {
             limits,
             2,
             1,
-            limits.notes.min(INITIAL_NOTE_PARAMS),
+            limits.notes.min(RESIDENT_NOTE_PARAMS),
         )
         .map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
@@ -5737,12 +5741,12 @@ mod tests {
     }
 
     #[test]
-    fn loader_starts_note_parameters_at_v1_event_capacity() {
+    fn loader_starts_note_parameters_small_and_grows_to_v1_event_capacity() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note-capacity.wav");
         sine(&path);
         let part = load(&path).unwrap();
-        assert_eq!(part.runtime.note_params_capacity(), 4096);
+        assert_eq!(part.runtime.note_params_capacity(), 512);
         assert_eq!(part.runtime.voice_capacity(), 1024);
     }
 

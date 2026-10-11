@@ -159,6 +159,9 @@ pub struct StreamWorker {
     ready: BinaryHeap<Reverse<(u64, usize, u64)>>,
     launched: Box<[u64]>,
     free: Vec<Box<[Frame]>>,
+    /// Page buffers not yet allocated: the worker makes one only when a job
+    /// needs it, so an idle pool holds no RAM (v1's rings were touched on use).
+    unallocated: usize,
     store: u64,
 }
 impl StreamCache {
@@ -188,14 +191,6 @@ impl StreamCache {
             .ok_or(Error::Capacity)?;
         let mut free = Vec::new();
         free.try_reserve_exact(pages).map_err(|_| Error::Capacity)?;
-        for _ in 0..pages {
-            let mut frames = Vec::new();
-            frames
-                .try_reserve_exact(PAGE_FRAMES)
-                .map_err(|_| Error::Capacity)?;
-            frames.resize(PAGE_FRAMES, [0.; 2]);
-            free.push(frames.into_boxed_slice());
-        }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let store = NEXT_STORE
@@ -231,6 +226,7 @@ impl StreamCache {
                 ready: BinaryHeap::with_capacity(pages * 2),
                 launched: vec![0; pages].into_boxed_slice(),
                 free,
+                unallocated: pages,
                 store,
             },
         ))
@@ -686,7 +682,7 @@ impl StreamWorker {
                 }
             }
         }
-        if self.requests.is_abandoned() || self.free.is_empty() {
+        if self.requests.is_abandoned() || (self.free.is_empty() && self.unallocated == 0) {
             return None;
         }
         let slot = loop {
@@ -695,9 +691,22 @@ impl StreamWorker {
                 break slot;
             }
         };
+        let mut samples = match self.free.pop() {
+            Some(samples) => samples,
+            None => {
+                let mut frames = Vec::new();
+                if frames.try_reserve_exact(PAGE_FRAMES).is_err() {
+                    let r = self.pending[slot].unwrap();
+                    self.ready.push(Reverse((r.deadline, slot, r.serial)));
+                    return None;
+                }
+                frames.resize(PAGE_FRAMES, [0.; 2]);
+                self.unallocated -= 1;
+                frames.into_boxed_slice()
+            }
+        };
         let request = self.pending[slot].take().unwrap();
         self.launched[slot] = request.serial;
-        let mut samples = self.free.pop().unwrap();
         samples[..request.len].fill([0.; 2]);
         Some(DecodeJob { request, samples })
     }
@@ -997,7 +1006,10 @@ impl crate::Runtime {
                 else {
                     continue;
                 };
-                let cursor = demand.cursor;
+                let full = demand.cursor;
+                // Native loop slots reduce to the single-loop law of their
+                // current segment, so they keep the geometric reaches too.
+                let cursor = full.segment_cursor();
                 if let Some((reach, direction, lead)) =
                     cursor.linear_reach(demand.frames.saturating_sub(1))
                 {
@@ -1038,7 +1050,7 @@ impl crate::Runtime {
                     }
                 } else {
                     let complete =
-                        cursor.visit_demand(demand.frames, demand.envelope, |offset, frames| {
+                        full.visit_demand(demand.frames, demand.envelope, |offset, frames| {
                             visit(frames, demand.at + u64::from(offset))
                         });
                     debug_assert!(complete || failure.is_some());
