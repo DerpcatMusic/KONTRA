@@ -771,6 +771,7 @@ pub(crate) fn initialize_scripts(
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
+            environment.folders = script_folders(options.library.as_deref());
             environment.control_values.extend(
                 control_values
                     .iter()
@@ -1356,4 +1357,20 @@ fn warning_class(message: &str) -> String {
         }
     }
     out
+}
+
+/// `get_folder` results (library, install, patch, factory) for an instrument file. The library
+/// folder is the one holding its `Instruments` directory; the factory library is not installed
+/// with the plugin, so factory paths (and the impulse responses under them) stay empty.
+fn script_folders(file: Option<&std::path::Path>) -> [String; 4] {
+    let dir = |path: &std::path::Path| format!("{}/", path.display());
+    let Some(patch) = file.and_then(std::path::Path::parent) else {
+        return Default::default();
+    };
+    let library = patch
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("Instruments")))
+        .and_then(std::path::Path::parent)
+        .map_or_else(String::new, dir);
+    [library.clone(), library, dir(patch), String::new()]
 }

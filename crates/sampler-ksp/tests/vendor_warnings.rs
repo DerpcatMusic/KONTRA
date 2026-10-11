@@ -32,3 +32,11 @@ fn groups_selected_reads_zero_without_a_warning() {
     let w = warnings("on init\n declare $x\n $x := %GROUPS_SELECTED[0]\nend on");
     assert!(w.is_empty(), "{w:?}");
 }
+
+#[test]
+fn output_channel_name_and_get_folder_evaluate_in_init() {
+    let ok = warnings("on init\n declare @a\n @a := output_channel_name(1) & get_folder($GET_FOLDER_PATCH_DIR)\nend on");
+    assert!(ok.is_empty(), "{ok:?}");
+    let bad = warnings("on init\n declare @a\n @a := output_channel_name($NUM_OUTPUT_CHANNELS)\nend on");
+    assert!(bad.iter().any(|m| m.contains("out of range")), "{bad:?}");
+}
