@@ -148,6 +148,10 @@ pub struct Assets {
     pub meter: Option<Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
     preparation: Option<super::picture_worker::Preparation>,
+    /// Bumped when the face's widgets change (Face::sync); keys retained widgets.
+    pub(super) epoch: u64,
+    /// Hash of which pictures and fonts are loaded; keys retained widgets.
+    version: u64,
 }
 
 impl Assets {
@@ -168,6 +172,9 @@ impl Assets {
                 .as_mut()
                 .unwrap()
                 .prepare(face, page, presentation, scale, values);
+        if self.preparation.as_ref().is_some_and(|p| p.unchanged()) {
+            return;
+        }
         self.loaded.clear();
         self.fonts.clear();
         for (n, picture, font) in prepared {
@@ -193,6 +200,27 @@ impl Assets {
                 self.fonts.insert(n, font);
             }
         }
+        // Order-free, so the map's iteration order does not matter.
+        let hash = |v: &dyn Fn(&mut std::hash::DefaultHasher)| {
+            let mut h = std::hash::DefaultHasher::new();
+            v(&mut h);
+            std::hash::Hasher::finish(&h)
+        };
+        let entry = |n: &usize, p: &Option<Arc<Picture>>| {
+            let frames = p.iter().flat_map(|p| p.indices.iter().zip(&p.frames));
+            hash(&|h| std::hash::Hash::hash(&(n, p.as_ref().map(|p| (p.window, p.count))), h))
+                .wrapping_add(
+                    frames
+                        .map(|(i, f)| hash(&|h| std::hash::Hash::hash(&(i, Arc::as_ptr(f) as usize), h)))
+                        .fold(0, u64::wrapping_add),
+                )
+        };
+        self.version = self
+            .loaded
+            .iter()
+            .map(|(n, p)| entry(n, p))
+            .chain(self.fonts.keys().map(|n| (*n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+            .fold(0, u64::wrapping_add);
     }
     pub fn pending(&self) -> usize {
         self.preparation.as_ref().map_or(0, |p| p.pending())
@@ -295,6 +323,8 @@ pub struct InputState {
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
     xy_drags: HashMap<WidgetRef, (usize, [f64; 2], Point)>,
+    /// Layout nodes of each retained run as last built, by its first widget.
+    run_nodes: HashMap<usize, usize>,
     table_drags: HashMap<WidgetRef, (usize, f64)>,
     files: HashMap<WidgetRef, (std::path::PathBuf, Vec<std::path::PathBuf>)>,
     // One current pure generated descriptor; never owns widget values or an El.
@@ -311,6 +341,53 @@ pub struct Edit {
     /// W5 WidgetEventType: down=0, up=1, drag=2, drop=3.
     pub event: i32,
     pub mouse_over: bool,
+}
+
+/// Controls whose element is a pure function of the face, size, scale,
+/// pictures and one value, so MUI can keep the built, laid-out subtree while
+/// none of that moves. MUI itself rebuilds it on hover, press, focus and input.
+fn retainable(kind: &Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Knob { .. }
+            | Kind::Slider { .. }
+            | Kind::Button { .. }
+            | Kind::Switch
+            | Kind::Label
+            | Kind::Menu { .. }
+            | Kind::Panel
+            | Kind::Image
+    )
+}
+
+/// `build` for widget `n`, kept by MUI between frames when nothing it reads moved.
+/// `place` is whatever the caller adds around the widget (position, size).
+pub(super) fn retained(
+    ui: &mut Ui,
+    namespace: &str,
+    face: &Interface,
+    n: WidgetRef,
+    assets: &Assets,
+    value: Option<u64>,
+    place: impl std::hash::Hash,
+    build: impl FnOnce(&mut Ui) -> El,
+) -> El {
+    if !retainable(&face.widgets[n.0].kind)  {
+        return build(ui);
+    }
+    ui.memo(
+        format!("{}-w", target(namespace, n)),
+        (assets.epoch, assets.version, value, place),
+        build,
+    )
+}
+
+/// The value `widget_state` shows for `n`, as a retention key.
+pub(super) fn value_key(face: &Interface, n: WidgetRef, values: &Values) -> Option<u64> {
+    match face.widgets[n.0].binding {
+        Binding::Control(c) => values.get(&c).map(|v| v.to_bits()),
+        _ => None,
+    }
 }
 
 fn target(namespace: &str, n: WidgetRef) -> String {
@@ -672,7 +749,7 @@ pub fn view_state(
             },
         ));
     }
-    let mut built = Vec::new();
+    let mut items = Vec::new();
     for n in face.draw_order(page) {
         if !face.visible(n) {
             continue;
@@ -708,46 +785,63 @@ pub fn view_state(
                 continue;
             }
         }
-        let (x, y, ww, hh) = (
-            f64::from(r.x) * scale,
-            f64::from(r.y) * scale,
-            f64::from(r.width) * scale,
-            f64::from(r.height) * scale,
-        );
-        let mut el = widget_state(
-            ui,
-            namespace,
-            face,
+        items.push(Placed {
             n,
-            assets,
-            presentation,
-            scale,
-            values,
-            input,
-            ww,
-            hh,
-        );
-        let (mut x, mut y) = (x, y);
-        let mut parent = face.widgets[n.0].parent;
-        while let Some(p) = parent {
-            if face.widgets[p.0].viewport.is_some() {
-                let r = face.page_rect(p);
-                let (px, py) = (r.x as f64 * scale, r.y as f64 * scale);
-                el = stack![el.at(x - px, y - py)]
-                    .w(r.width as f64 * scale)
-                    .h(r.height as f64 * scale)
-                    .clip();
-                (x, y) = (px, py);
-            }
-            parent = face.widgets[p.0].parent;
+            x: f64::from(r.x) * scale,
+            y: f64::from(r.y) * scale,
+            w: f64::from(r.width) * scale,
+            h: f64::from(r.height) * scale,
+        });
+    }
+    // Consecutive retainable widgets share one memo, so MUI keeps and splices a
+    // run, not a subtree per widget; hover or a drag rebuilds one run, not all.
+    let mut built = Vec::new();
+    let mut at = 0;
+    while at < items.len() {
+        let important = |p: &Placed| {
+            !matches!(face.widgets[p.n.0].kind, Kind::Panel | Kind::Image | Kind::Label)
+        };
+        if !retainable(&face.widgets[items[at].n.0].kind) {
+            let p = &items[at];
+            let el = placed(ui, namespace, face, assets, presentation, scale, values, input, p);
+            let nodes = node_count(&el);
+            built.push((el, nodes, important(p)));
+            at += 1;
+            continue;
         }
-        let el = el.at(x, y);
-        let important = !matches!(
-            face.widgets[n.0].kind,
-            Kind::Panel | Kind::Image | Kind::Label
+        let end = (at..items.len().min(at + RUN))
+            .find(|&i| !retainable(&face.widgets[items[i].n.0].kind))
+            .unwrap_or(items.len().min(at + RUN));
+        let run = &items[at..end];
+        let first = run[0].n.0;
+        let deps = (
+            (assets.epoch, assets.version, presentation == Presentation::Bitmap),
+            run.iter()
+                .map(|p| {
+                    (
+                        p.n.0,
+                        [p.x, p.y, p.w, p.h, scale].map(f64::to_bits),
+                        value_key(face, p.n, values),
+                    )
+                })
+                .collect::<Vec<_>>(),
         );
-        let nodes = node_count(&el);
-        built.push((el, nodes, important));
+        let mut nodes = None;
+        let el = ui.memo(format!("{namespace}-ir-run-{first}"), deps, |ui| {
+            let els = run
+                .iter()
+                .map(|p| placed(ui, namespace, face, assets, presentation, scale, values, input, p))
+                .collect::<Vec<_>>();
+            let el = stack(els).w(w).h(h).shrink(0);
+            nodes = Some(node_count(&el));
+            el
+        });
+        let nodes = match nodes {
+            Some(n) => *input.run_nodes.entry(first).insert_entry(n).get(),
+            None => input.run_nodes.get(&first).copied().unwrap_or(1),
+        };
+        built.push((el, nodes, run.iter().any(important)));
+        at = end;
     }
     layers.extend(within_budget(built));
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) {
@@ -765,6 +859,51 @@ pub fn view_state(
         } else {
             format!("{namespace}-ir-view")
         })
+}
+
+/// One visible widget's drawn rectangle in view pixels.
+struct Placed {
+    n: WidgetRef,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// Widgets per memo run.
+const RUN: usize = 16;
+
+/// The widget's element, inside its scrolling viewports, at its place.
+#[allow(clippy::too_many_arguments)]
+fn placed(
+    ui: &mut Ui,
+    namespace: &str,
+    face: &Interface,
+    assets: &Assets,
+    presentation: Presentation,
+    scale: f64,
+    values: &mut Values,
+    input: &mut InputState,
+    p: &Placed,
+) -> El {
+    let mut el = widget_state(
+        ui, namespace, face, p.n, assets, presentation, scale, values, input, p.w, p.h,
+    );
+    let (mut x, mut y) = (p.x, p.y);
+    let mut parent = face.widgets[p.n.0].parent;
+    while let Some(q) = parent {
+        if face.widgets[q.0].viewport.is_some() {
+            let r = face.page_rect(q);
+            let (px, py) = (r.x as f64 * scale, r.y as f64 * scale);
+            el = stack![el.at(x - px, y - py)]
+                .w(r.width as f64 * scale)
+                .h(r.height as f64 * scale)
+                .clip();
+            (x, y) = (px, py);
+        }
+        parent = face.widgets[q.0].parent;
+    }
+    el.at(x, y)
 }
 
 /// MUI's vendored node limit is 65536 per frame (vendor/mui/PATCHES.md). A face
@@ -2423,9 +2562,10 @@ mod page_layout_tests {
             assert_eq!(ui.scene().unwrap().surface("photo-ir-2").unwrap().frame, plain.scene().unwrap().surface("photo-ir-2").unwrap().frame);
             misses
         };
-        assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, 0), 3);
+        assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, 0), 4);
         for shell in 1..5 {
-            assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, shell), 0);
+            // The run settles once more after its first build (glyph hinting).
+            assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, shell), usize::from(shell == 1));
         }
         // Preparation may replace Picture wrappers while keeping live pixels.
         for n in 0..2 {
@@ -2433,36 +2573,75 @@ mod page_layout_tests {
             assets.loaded.insert(n, Some(Arc::new(Picture::new(frames))));
         }
         assert_eq!(tick(&face, &assets, 1., Presentation::Bitmap, 4), 0);
-        assert_eq!(tick(&face, &assets, 2., Presentation::Bitmap, 5), 3);
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 6), 3);
+        assert_eq!(tick(&face, &assets, 2., Presentation::Bitmap, 5), 4);
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 6), 4);
         face.pages[0].background.frame = 1;
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 7), 1);
+        assets.epoch += 1; // the face changed, as Face::sync would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 7), 2);
         face.widgets[1].images[0].frame = Some(1);
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 8), 1);
+        assets.epoch += 1; // the face changed, as Face::sync would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 8), 2);
         face.widgets[0].rect.x += 3;
         face.widgets[0].viewport = Some([1, 2]);
         face.widgets[0].opacity = 0.5;
         face.widgets[0].enabled = false;
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 9), 1);
+        assets.epoch += 1; // the face changed, as Face::sync would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 9), 2);
         if let ir::AssetKind::Image(ref mut meta) = face.assets[1].kind {
             meta.margins.left = 0;
         }
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 10), 1);
+        assets.epoch += 1;
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 10), 2);
         assets.loaded.insert(1, Some(Arc::new(Picture::new(vec![image([20, 100, 40, 255])]))));
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 11), 1);
+        assets.version += 1; // what Assets::prepare would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 11), 2);
         assets.loaded.clear();
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 12), 0);
+        assets.version += 1; // what Assets::prepare would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 12), 1);
         assets.loaded.insert(0, Some(Arc::new(Picture::new(vec![image([80, 40, 20, 255])]))));
+        assets.version += 1; // what Assets::prepare would note
         assets.loaded.insert(1, Some(Arc::new(Picture::new(vec![image([20, 40, 80, 255])]))));
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 13), 2);
+        assets.version += 1; // what Assets::prepare would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 13), 3);
         face.pages[0].background.color = Some(ir::Rgba::rgb(0x404040));
         face.pages[0].background.offset_y = 1;
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 14), 2);
+        assets.epoch += 1; // the face changed, as Face::sync would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 14), 3);
         let img = assets.loaded[&0].as_ref().unwrap().at(1).unwrap().clone();
         assets.loaded.insert(0, Some(Arc::new(Picture::prepared(img, 1, 2, Some([1, 0, 3, 4])))));
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 15), 1);
+        assets.version += 1; // what Assets::prepare would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 15), 2);
         face.pages[0].size.width += 1;
-        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 16), 2);
+        assets.epoch += 1; // the face changed, as Face::sync would note
+        assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 16), 3);
+    }
+
+    /// A steady face rebuilds no widget; one changed value rebuilds only its run.
+    #[test]
+    fn an_idle_face_is_retained_and_a_changed_value_rebuilds_one_run() {
+        let mut face = Interface {
+            pages: vec![ir::Page { size: ir::Size { width: 400, height: 400 }, ..Default::default() }],
+            ..Default::default()
+        };
+        for n in 0..(3 * RUN) as i32 {
+            let kind = Kind::Knob { range: ir::Range::default(), display: ir::Display::default() };
+            let mut w = ir::Widget::new(format!("$k{n}"), PageRef(0), ir::Rect::new(n % 8 * 40, n / 8 * 40, 36, 36), kind);
+            w.binding = Binding::Control(ControlId(n as u128));
+            face.widgets.push(w);
+        }
+        let (mut ui, assets) = (super::super::theme::ui(), Assets::default());
+        let (mut input, mut values) = (InputState::default(), Values::default());
+        let mut tick = |values: &mut Values| {
+            let root = view_state(&mut ui, "idle", &face, PageRef(0), &assets, Presentation::Vector, 1., values, &mut input);
+            let misses = memo_misses(&root);
+            ui.frame(root, Some(Size::new(400., 400.)), Input::default(), 1. / 60.).unwrap();
+            misses
+        };
+        let cold = tick(&mut values);
+        tick(&mut values);
+        assert_eq!(tick(&mut values), 0, "nothing moved, nothing rebuilt (cold {cold})");
+        values.insert(ControlId(20), 0.9);
+        assert_eq!(tick(&mut values), 1, "only the run holding the changed knob");
     }
 
     #[test]
