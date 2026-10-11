@@ -78,3 +78,34 @@ fn evaluator_coverage_is_opt_in_and_records_hits_and_fault_spans() {
     assert!(!coverage.snapshot().faults.is_empty());
     sampler_ksp::initialize(source, Limits::LIBRARY, &Environment::default()).unwrap();
 }
+
+#[test]
+fn empty_slot_has_no_gap_and_user_commands_use_resolved_functions() {
+    assert!(
+        parity_report("", "ksp:slot0", "empty")
+            .constructs
+            .is_empty()
+    );
+    let source = "on init declare const $c := 2 end on function f message($c) end function on note call f end on";
+    let r = parity_report(source, "ksp:slot0", "test");
+    assert!(r.constructs.iter().any(|c| c.name == "f"
+        && c.kind == sampler_parity::ConstructKind::Command
+        && c.status == Status::Implemented));
+}
+
+#[test]
+fn constants_and_init_function_statements_keep_their_source_spans() {
+    let source = "on init declare const $c := 2 call f end on function f message($c) end function";
+    let r = parity_report(source, "ksp:slot0", "test");
+    assert!(
+        r.tokens
+            .iter()
+            .filter(|t| &source[t.span.start as usize..t.span.end as usize] == "$c")
+            .all(|t| t.class == TokenClass::Constant)
+    );
+    assert!(
+        r.lowered
+            .iter()
+            .any(|l| l.span.start as usize == source.find("message").unwrap())
+    );
+}
