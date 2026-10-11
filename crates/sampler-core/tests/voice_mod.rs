@@ -621,52 +621,27 @@ fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
             for velocity in [0.25, 0.75] {
                 for bipolar in [false, true] {
                     let second = if bipolar {
-                        ModSource::Lfo(Lfo {
-                            shape: LfoShape::Zero,
-                            rate: LfoRate::Hertz(1.),
-                            phase: 0.,
-                            delay: 0,
-                            fade: 0,
-                            retrigger: true,
-                            shared: false,
-                        })
-                    } else {
-                        ModSource::Velocity
-                    };
-                    let p = program(
-                        vec![ModSource::Constant, second],
-                        vec![ModRoute {
-                            invert: true,
-                            scale: Some(ModScale {
-                                source: 1,
-                                shape: None,
-                                law: ModScaleLaw::KontaktIntensity {
-                                    depth: 0.5,
-                                    flags,
-                                    unit: 1.,
-                                },
-                            }),
-                            ..ModRoute::new(0, ModTarget::Attenuate, base)
-                        }],
-                    );
-                    let mut rt =
-                        Runtime::new(modulated(plan(64, Envelope::default()), p, 0), limits())
-                            .unwrap();
-                    support::without_heap(|| {
-                        rt.trigger(input(1), 60, velocity).unwrap();
-                    });
+                        ModSource::Lfo(Lfo { shape: LfoShape::Zero,
+                            rate: LfoRate::Hertz(1.), phase: 0., delay: 0, fade: 0,
+                            retrigger: true, shared: false })
+                    } else { ModSource::Velocity };
+                    let p = program(vec![ModSource::Constant, second], vec![ModRoute {
+                        invert: true,
+                        scale: Some(ModScale { source: 1, shape: None,
+                            law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. } }),
+                        ..ModRoute::new(0, ModTarget::Attenuate, base)
+                    }]);
+                    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+                        limits()).unwrap();
+                    support::without_heap(|| { rt.trigger(input(1), 60, velocity).unwrap(); });
                     let audio = render(&mut rt, 8, 8);
                     let source = if bipolar { 0.5 } else { velocity };
                     let depth = if flags & 4 == 0 {
                         base * (1. - (1. - source) * 0.5)
-                    } else {
-                        1. - (1. - base) * (1. - source * 0.5)
-                    };
+                    } else { 1. - (1. - base) * (1. - source * 0.5) };
                     let expected = (0.5 * (1. - depth)) as f32;
-                    assert!(
-                        audio.iter().all(|f| (f[1] - expected).abs() < 1e-7),
-                        "flags={flags} base={base} bipolar={bipolar} {audio:?}"
-                    );
+                    assert!(audio.iter().all(|f| (f[1] - expected).abs() < 1e-7),
+                        "flags={flags} base={base} bipolar={bipolar} {audio:?}");
                 }
             }
         }
@@ -675,109 +650,41 @@ fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
 
 #[test]
 fn id25_unverified_lag_init_shape_and_live_paths_are_rejected() {
-    let scale = ModScale {
-        source: 1,
-        shape: None,
-        law: ModScaleLaw::KontaktIntensity {
-            depth: 0.5,
-            flags: 0x10,
-            unit: 1.,
-        },
-    };
-    let route = ModRoute {
-        scale: Some(scale),
-        ..ModRoute::new(0, ModTarget::Attenuate, 0.4)
-    };
+    let scale = ModScale { source: 1, shape: None,
+        law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x10, unit: 1. } };
+    let route = ModRoute { scale: Some(scale),
+        ..ModRoute::new(0, ModTarget::Attenuate, 0.4) };
     let rejected = |source, route| {
-        plan(64, Envelope::default())
-            .with_voice_modulation(
-                vec![program(vec![ModSource::Constant, source], vec![route])],
-                vec![Some(0)],
-                vec![0],
-            )
-            .is_err()
+        plan(64, Envelope::default()).with_voice_modulation(
+            vec![program(vec![ModSource::Constant, source], vec![route])],
+            vec![Some(0)], vec![0]).is_err()
     };
     assert!(rejected(ModSource::Velocity, ModRoute { lag: 1, ..route }));
-    assert!(rejected(
-        ModSource::Velocity,
-        ModRoute {
-            target: ModTarget::SampleStart,
-            ..route
-        }
-    ));
+    assert!(rejected(ModSource::Velocity, ModRoute { target: ModTarget::SampleStart, ..route }));
     for flags in [0, 4, 0x12, 0x18, 0xff] {
-        assert!(rejected(
-            ModSource::Velocity,
-            ModRoute {
-                scale: Some(ModScale {
-                    law: ModScaleLaw::KontaktIntensity {
-                        depth: 0.5,
-                        flags,
-                        unit: 1.
-                    },
-                    ..scale
-                }),
-                ..route
-            }
-        ));
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. },
+                ..scale }), ..route }));
     }
     for depth in [f64::NAN, f64::INFINITY, -0.25, 1.25] {
-        assert!(rejected(
-            ModSource::Velocity,
-            ModRoute {
-                scale: Some(ModScale {
-                    law: ModScaleLaw::KontaktIntensity {
-                        depth,
-                        flags: 0x10,
-                        unit: 1.
-                    },
-                    ..scale
-                }),
-                ..route
-            }
-        ));
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity { depth, flags: 0x10, unit: 1. },
+                ..scale }), ..route }));
     }
     for unit in [0., f64::NAN, f64::INFINITY, 1e-310] {
-        assert!(rejected(
-            ModSource::Velocity,
-            ModRoute {
-                scale: Some(ModScale {
-                    law: ModScaleLaw::KontaktIntensity {
-                        depth: 0.5,
-                        flags: 0x10,
-                        unit
-                    },
-                    ..scale
-                }),
-                ..route
-            }
-        ));
+        assert!(rejected(ModSource::Velocity, ModRoute {
+            scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity {
+                depth: 0.5, flags: 0x10, unit }, ..scale }), ..route }));
     }
-    for source in [
-        ModSource::Controller(1),
-        ModSource::Pressure,
-        ModSource::Timbre,
-        ModSource::PitchBend,
-        ModSource::Script(0),
-    ] {
+    for source in [ModSource::Controller(1), ModSource::Pressure, ModSource::Timbre,
+        ModSource::PitchBend, ModSource::Script(0)] {
         assert!(rejected(source, route));
     }
-    let mut p = program(
-        vec![ModSource::Constant, ModSource::Velocity],
-        vec![ModRoute {
-            scale: Some(ModScale {
-                shape: Some(0),
-                ..scale
-            }),
-            ..route
-        }],
-    );
+    let mut p = program(vec![ModSource::Constant, ModSource::Velocity], vec![ModRoute {
+        scale: Some(ModScale { shape: Some(0), ..scale }), ..route }]);
     p.shapes.push(vec![(0., 0.), (1., 1.)]);
-    assert!(
-        plan(64, Envelope::default())
-            .with_voice_modulation(vec![p], vec![Some(0)], vec![0])
-            .is_err()
-    );
+    assert!(plan(64, Envelope::default()).with_voice_modulation(
+        vec![p], vec![Some(0)], vec![0]).is_err());
 }
 
 #[test]
@@ -785,37 +692,20 @@ fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
     for flags in [0x10, 0x14] {
         for unit in [12., -12., 20., -20.] {
             for base in [0., 0.4, 1.] {
-                let p = program(
-                    vec![ModSource::Constant, ModSource::Velocity],
-                    vec![ModRoute {
-                        scale: Some(ModScale {
-                            source: 1,
-                            shape: None,
-                            law: ModScaleLaw::KontaktIntensity {
-                                depth: 0.5,
-                                flags,
-                                unit,
-                            },
-                        }),
-                        ..ModRoute::new(0, ModTarget::Decibels, base * unit)
-                    }],
-                );
-                let mut rt =
-                    Runtime::new(modulated(plan(64, Envelope::default()), p, 0), limits()).unwrap();
-                support::without_heap(|| {
-                    rt.trigger(input(1), 60, 0.25).unwrap();
-                });
+                let p = program(vec![ModSource::Constant, ModSource::Velocity], vec![ModRoute {
+                    scale: Some(ModScale { source: 1, shape: None,
+                        law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit } }),
+                    ..ModRoute::new(0, ModTarget::Decibels, base * unit)
+                }]);
+                let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+                    limits()).unwrap();
+                support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
                 let audio = render(&mut rt, 8, 8);
-                let adjusted = if flags & 4 == 0 {
-                    base * 0.625
-                } else {
-                    1. - (1. - base) * 0.875
-                };
+                let adjusted = if flags & 4 == 0 { base * 0.625 }
+                    else { 1. - (1. - base) * 0.875 };
                 let expected = (0.5 * 10f64.powf(adjusted * unit / 20.)) as f32;
-                assert!(
-                    audio.iter().all(|f| (f[1] - expected).abs() < 2e-6),
-                    "flags={flags} base={base} unit={unit} {audio:?}"
-                );
+                assert!(audio.iter().all(|f| (f[1] - expected).abs() < 2e-6),
+                    "flags={flags} base={base} unit={unit} {audio:?}");
             }
         }
     }
@@ -824,33 +714,19 @@ fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
 #[test]
 fn id25_preserves_independent_bases_for_two_outgoing_targets() {
     let routes = [(0., 20.), (0.4, 12.)].map(|(base, unit)| ModRoute {
-        scale: Some(ModScale {
-            source: 1,
-            shape: None,
-            law: ModScaleLaw::KontaktIntensity {
-                depth: 0.5,
-                flags: 0x14,
-                unit,
-            },
-        }),
+        scale: Some(ModScale { source: 1, shape: None,
+            law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x14, unit } }),
         ..ModRoute::new(0, ModTarget::Decibels, base * unit)
     });
-    let p = program(
-        vec![ModSource::Constant, ModSource::Velocity],
-        routes.into(),
-    );
-    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0), limits()).unwrap();
-    support::without_heap(|| {
-        rt.trigger(input(1), 60, 0.25).unwrap();
-    });
+    let p = program(vec![ModSource::Constant, ModSource::Velocity], routes.into());
+    let mut rt = Runtime::new(modulated(plan(64, Envelope::default()), p, 0),
+        limits()).unwrap();
+    support::without_heap(|| { rt.trigger(input(1), 60, 0.25).unwrap(); });
     let audio = render(&mut rt, 8, 8);
     // At src=.25/depth=.5, each saved target gets its own additive result:
     // 0 -> .125 (20 units), .4 -> .475 (12 units); neither shares a gain stage.
     let expected = (0.5 * 10f64.powf((0.125 * 20. + 0.475 * 12.) / 20.)) as f32;
-    assert!(
-        audio.iter().all(|f| (f[1] - expected).abs() < 2e-6),
-        "{audio:?}"
-    );
+    assert!(audio.iter().all(|f| (f[1] - expected).abs() < 2e-6), "{audio:?}");
 }
 
 #[test]
@@ -1292,6 +1168,187 @@ fn source_phase_rejects_cycles_wrong_owners_and_unmeasured_lag() {
             plan(128, Envelope::default())
                 .with_voice_modulation(vec![program(sources, routes)], vec![Some(0)], vec![0])
                 .is_err()
+        );
+    }
+}
+
+#[test]
+fn constant_loop_destinations_reach_audio_without_heap_and_reject_unmeasured_sources() {
+    let make = |modulate, crossfade| {
+        let playback = Playback {
+            loop_range: Some(Loop {
+                start: if modulate { 0 } else { 200 },
+                end: if modulate { 700 } else { 500 },
+                mode: LoopMode::UntilRelease,
+                shape: if !modulate && crossfade > 0 {
+                    LoopShape::Crossfade { frames: crossfade }
+                } else {
+                    LoopShape::Wrap
+                },
+                passes: None,
+            }),
+            loop_control_crossfade: modulate.then_some(crossfade),
+            ..Playback::default()
+        };
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, (0..1000).map(|i| [i as f32 / 1000.; 2]).collect()).unwrap()],
+            vec![Region {
+                playback,
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap();
+        if modulate {
+            modulated(
+                prepared,
+                program(
+                    vec![ModSource::Constant],
+                    vec![
+                        ModRoute::new(0, ModTarget::LoopStart, 0.2),
+                        ModRoute::new(0, ModTarget::LoopLength, -0.4),
+                    ],
+                ),
+                0,
+            )
+        } else {
+            prepared
+        }
+    };
+    for crossfade in [0, 32] {
+        for block in [1, 7, 64, 137] {
+            let mut actual = Runtime::new(make(true, crossfade), limits()).unwrap();
+            let mut expected = Runtime::new(make(false, crossfade), limits()).unwrap();
+            for id in [1, 2] {
+                support::without_heap(|| {
+                    actual.trigger(input(id), 60, 1.).unwrap();
+                    expected.trigger(input(id), 60, 1.).unwrap();
+                });
+                assert!(
+                    render(&mut actual, 1200, block) == render(&mut expected, 1200, block),
+                    "loop lanes and saved crossfade must reach the cursor"
+                );
+                support::without_heap(|| {
+                    actual.note_off(input(id), None).unwrap();
+                    expected.note_off(input(id), None).unwrap();
+                });
+                assert!(render(&mut actual, 128, block) == render(&mut expected, 128, block));
+            }
+        }
+    }
+    assert!(
+        make(false, 0)
+            .with_voice_modulation(
+                vec![program(
+                    vec![ModSource::Controller(1)],
+                    vec![ModRoute::new(0, ModTarget::LoopStart, 0.1)]
+                )],
+                vec![Some(0)],
+                vec![0]
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn live_loop_depth_uses_native_alias_at_an_event_fragment_without_heap() {
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_INTMOD_INTENSITY").unwrap(),
+        group: 0,
+        slot: 16,
+        generic: 0,
+    };
+    let depth = engine_parameter_control(address);
+    let bypass = ControlId(999);
+    let make = |start, end| {
+        Prepared::new(
+            48000,
+            vec![Pcm::new(48000, (0..1000).map(|i| [i as f32 / 1000.; 2]).collect()).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    loop_range: Some(Loop {
+                        start,
+                        end,
+                        mode: LoopMode::UntilRelease,
+                        shape: LoopShape::Wrap,
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                },
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap()
+    };
+    let mut program = program(
+        vec![ModSource::Constant],
+        vec![
+            ModRoute::new(0, ModTarget::LoopStart, 0.),
+            ModRoute::new(0, ModTarget::LoopLength, -0.5),
+        ],
+    );
+    program.controls.push((0, [depth, bypass]));
+    let prepared = || {
+        make(100, 700)
+            .with_controls(vec![
+                ControlDefinition {
+                    id: depth,
+                    domain: ControlDomain::Real { min: -1., max: 1. },
+                    default: ControlValue::Real(0.),
+                },
+                ControlDefinition {
+                    id: bypass,
+                    domain: ControlDomain::Real { min: 0., max: 1. },
+                    default: ControlValue::Real(0.),
+                },
+            ])
+            .unwrap()
+            .with_engine_parameters(
+                vec![EngineParameterBinding {
+                    address,
+                    control: depth,
+                    law: EngineParameterLaw::SignedCubic,
+                }],
+                vec![],
+            )
+            .unwrap()
+    };
+    for block in [1, 7, 64, 137] {
+        let mut actual = Runtime::new(modulated(prepared(), program.clone(), 0), limits()).unwrap();
+        let mut expected = Runtime::new(make(225, 325), limits()).unwrap();
+        support::without_heap(|| {
+            actual.trigger(input(1), 60, 1.).unwrap();
+            expected.trigger(input(1), 60, 1.).unwrap();
+        });
+        render(&mut actual, 513, block);
+        render(&mut expected, 113, block);
+        support::without_heap(|| {
+            actual.set_engine_parameter(address, 750000).unwrap();
+        });
+        assert_eq!(actual.engine_parameter(address).unwrap(), 750000);
+        assert!(
+            render(&mut actual, 400, block) == render(&mut expected, 400, block),
+            "an event fragment must preserve physical phase and update the loop immediately"
         );
     }
 }

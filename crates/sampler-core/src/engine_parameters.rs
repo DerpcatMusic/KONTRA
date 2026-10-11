@@ -94,6 +94,8 @@ pub enum EngineParameterLaw {
         low_db: f64,
         high_db: f64,
     },
+    /// Kontakt signed modulation depth, ported from v1 CubicDepth::Loop.
+    SignedCubic,
     CubicGain {
         unity: f64,
     },
@@ -126,7 +128,7 @@ impl EngineParameterLaw {
 
     pub(crate) fn valid(self) -> bool {
         match self {
-            Self::SignedNormalized | Self::Switch => true,
+            Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high >= low
@@ -181,6 +183,7 @@ impl EngineParameterLaw {
         match self {
             Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0),
+            Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => {
                 // Declared endpoints must not shrink or widen through log/exp roundoff.
@@ -219,6 +222,7 @@ impl EngineParameterLaw {
         (match self {
             Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0.),
+            Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
@@ -457,6 +461,24 @@ fn slot_parameter(name: &str) -> Option<SlotKind> {
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn signed_cubic_loop_depth_matches_v1_authored_controls() {
+        let law = EngineParameterLaw::SignedCubic;
+        for (raw, depth) in [
+            (751086, 0.1266360729932785),
+            (14233, -0.9170099496841431),
+            (500000, 0.),
+            (0, -1.),
+            (1000000, 1.),
+        ] {
+            assert!((law.decode(raw) - depth).abs() < 1e-7);
+            assert!((law.encode(depth) - raw).abs() <= 1);
+            assert!(law.normalized_value(depth).is_ok());
+        }
+        assert!(law.normalized_value(f64::NAN).is_err());
+        assert!(law.normalized_value(1.1).is_err());
+    }
+
     #[test]
     fn exponential_parameter_endpoints_are_exact_and_reject_exterior_neighbors() {
         for (law, low, high) in [
