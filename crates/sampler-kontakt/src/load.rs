@@ -876,7 +876,7 @@ fn compile_ui_initialized(
                         location: format!("{} line {}", behavior.name, w.line),
                         feature: match w.builtin {
                             Some(builtin) => format!("script {:?}: {builtin}", w.kind),
-                            None => format!("script {:?}", w.kind),
+                            None => format!("script {:?}: {}", w.kind, warning_class(&w.message)),
                         },
                         value: w.message.clone(),
                         reason: ir::Reason::NotModeled,
@@ -1337,4 +1337,23 @@ mod native_lookup_tests {
         assert_eq!(cell(&rt, 3), Ok(12));
         assert_eq!(cell(&rt, 4), Ok(3));
     }
+}
+
+/// Message with the per-site parts (`$names`, numbers) masked, so each distinct script warning
+/// is one feature class in diagnostics instead of a single opaque "script Warning".
+fn warning_class(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
+            out.push_str("$name");
+        } else if c.is_ascii_digit() {
+            while chars.next_if(|c| c.is_ascii_digit()).is_some() {}
+            out.push('N');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
