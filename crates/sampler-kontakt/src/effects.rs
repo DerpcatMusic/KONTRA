@@ -1384,13 +1384,14 @@ fn convolution(
         ch.splice(0..0, std::iter::repeat_n(0.0, pre));
     }
     if c.flags[1] {
-        // Auto Gain: the loudest channel's energy to 0.5, at most +6 dB.
+        // NI Effect Reference / Convolution Auto Gain: CConvolver 0x1419b31f0..3267
+        // accumulates f32 squares in f64, then divides/square-roots in f32.
         let energy = channels
             .iter()
-            .map(|ch| ch.iter().map(|x| x * x).sum::<f32>())
-            .fold(0.0, f32::max);
-        let gain = if energy >= 0.001 {
-            (0.5 / energy).sqrt().min(2.0)
+            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
+            .fold(0.0, f64::max);
+        let gain = if energy > f64::from(0.001f32) {
+            (0.5 / energy as f32).sqrt().min(2.0)
         } else {
             1.0
         };
@@ -1810,6 +1811,22 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn convolution_auto_gain_keeps_native_double_energy_sum() {
+        let recipe = super::Convolution {
+            decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
+            late: [1., 20., 20_000.], xpoint: 0.5,
+            flags: [false, true, false, false, false],
+            curve_x: Vec::new(), curve_db: Vec::new(), ir_index: 0,
+        };
+        let mut frames = vec![[0.0001, 0.00005]; 10_001];
+        frames[0] = [1., 0.5];
+        let impulse = super::restore_impulse(&recipe, (48_000, frames)).unwrap();
+        // f32 products, f64 sum, f32 division/sqrt: CConvolver 0x1419b3200..3267.
+        assert_eq!(impulse.left[0].to_bits(), 0x3f3502a2);
+        assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
+    }
+
     use ni_file::kontakt::Chunk;
 
     fn legacy_eq_slot(kind: i32) -> super::Slot {
