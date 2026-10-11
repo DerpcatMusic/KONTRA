@@ -947,12 +947,13 @@ pub(crate) fn chain_with(
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
-                kind: 33,
+                kind: kind @ 30..=33,
                 cutoff,
                 resonance,
                 extra,
-            }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92) => {
-                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto.
+            }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) => {
+                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto. Types 30..=32
+                // (Ladder LP1..LP3) read the same loop at an earlier stage.
                 // Gain is signed normalized (12 dB per unit); the native kernel
                 // retains the record-version cutoff clock.
                 let values = [extra[0], *cutoff, *resonance];
@@ -972,6 +973,7 @@ pub(crate) fn chain_with(
                         cutoff: f64::from(values[1]),
                         resonance: f64::from(values[2]),
                         record_version: fx.version,
+                        taps: (kind - 29) as u8,
                     }));
                     combined = product(gain, combined);
                 } else {
@@ -2009,6 +2011,32 @@ mod tests {
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
                 && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
                 && d.record_version == 0x92)));
+    }
+
+    #[test]
+    fn morphology_ladder_lp1_record_selects_the_first_stage() {
+        // A saved v0x95 type-30 record: kind repeats, then gain 0, cutoff 1.0, resonance 0.
+        let hex = "1e000000001e0000001e0000001e000000001e00000000000000" .to_owned()
+            + "0000803f00000000";
+        let public: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let slot = super::Slot {
+            slot: 2,
+            module: 0x18,
+            version: 0x95,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
+        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
+        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
+                && d.resonance == 0.0 && d.record_version == 0x95)));
     }
 
     #[test]
