@@ -1482,10 +1482,15 @@ pub enum Processor {
     Reverb(Reverb),
     /// Feed-forward compressor on the stereo pair.
     Compressor(Compressor),
+    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
+    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
     Saturation(f32),
+    /// Script-addressed Classic Saturation; the saved static form remains above.
+    LiveSaturation { shape: f32, address: SlotAddress },
+    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
@@ -1501,6 +1506,12 @@ pub enum Processor {
     LadderLP4(LadderLP4),
     /// Kontakt's adaptive-resonance filter family (saved types 100..=108).
     Ar(Ar),
+    /// Native Formant I: saved Talk, Sharp, Size normalized controls.
+    Formant([f32; 3]),
+    /// Kontakt Phaser filter, normalized Cutoff/Resonance.
+    Phaser([f32; 2]),
+    /// Legacy Phaser: normalized Depth, Feedback, Phase; native free/synced Speed.
+    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1567,7 +1578,7 @@ pub struct LadderLP4 {
     pub cutoff: f64,
     pub resonance: f64,
     pub record_version: u16,
-    /// Output stage: 1..=4 for Ladder LP1..LP4. The loop closes around stage 4.
+    /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
     pub taps: u8,
 }
 
