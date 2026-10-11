@@ -4231,6 +4231,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-parity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sampler-perf"
 version = "0.1.0"
 dependencies = [
