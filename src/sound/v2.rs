@@ -6294,6 +6294,38 @@ mod tests {
         );
     }
 
+    /// Targeted sound-core attribution; this does not time the full CLAP callback.
+    #[test]
+    #[ignore = "one targeted installed AO callback attribution measurement"]
+    fn survey_ao_callback_attribution() {
+        let path = std::path::PathBuf::from("/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip");
+        let loaded = V2Loader.prepare(&LoadRequest {
+            path, sample_rate: 48000., ..Default::default()
+        }, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, loaded.part);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        core.play(0, Event::midi1(0xb0, 1, 100));
+        core.play(0, Event::midi1(0xb0, 11, 127));
+        let mut times = Vec::with_capacity(2250);
+        let mut peak = 0f32;
+        core.onset_audit();
+        for block in 0..2250 {
+            let frame = block * 128;
+            if frame < 240000 && frame % 48000 < 128 { core.play(0, Event::midi1(0x90, 60, 64)); }
+            if frame < 240000 && frame % 48000 >= 24000 && frame % 48000 < 24128 { core.play(0, Event::midi1(0x80, 60, 0)); }
+            let start = std::time::Instant::now();
+            let rendered = core.render(128);
+            for bus in rendered.buses { for channel in bus { for value in &channel[..128] { peak = peak.max(value.abs()); } } }
+            times.push(start.elapsed().as_micros());
+            core.end_block(128, &mut |_| true);
+            std::thread::sleep(std::time::Duration::from_micros(2667));
+        }
+        times.sort_unstable();
+        println!("AO attribution debug blocks=2250 p50_us={} p99_us={} peak={} load={} stages={}", times[1125], times[2227], peak,
+            std::fs::read_to_string("/proc/loadavg").unwrap_or_default().trim(), core.onset_audit());
+    }
+
     /// Idle cost of a loaded part: blocks with no note playing. Prints the
     /// share of one core; `KONTRA_KONTAKT_LIBRARIES=… cargo test idle_cost -- --ignored --nocapture`.
     #[test]
