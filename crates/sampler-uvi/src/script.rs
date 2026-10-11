@@ -1867,6 +1867,22 @@ impl ScriptHost {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_get_param");
                 let kinds = s.kinds.borrow();
+                if kinds.get(id).is_some_and(|kind| kind == "StepEnvelope")
+                    && let Some(index) = name.strip_prefix("Level").and_then(|s| s.parse::<usize>().ok())
+                    && index < 128
+                    && name == format!("Level{index}")
+                {
+                    // UVI Element.getParameter / Step Envelope; native 0x141150e40
+                    // registers 128 float levels (getter 0x141153110), independently of NumSteps.
+                    let params = s.params.borrow();
+                    let saved = params.get(id).and_then(|p| p.iter().find(|(k, _)| k == "Levels"));
+                    let value = saved
+                        .and_then(|(_, levels)| levels.split_whitespace().nth(index))
+                        .and_then(|v| v.replace(',', ".").parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .unwrap_or(if matches!(index, 0 | 4 | 8 | 10 | 12) { 1. } else { 0. });
+                    return Ok(Value::Number(f64::from(value)));
+                }
                 let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str))
                     .iter()
                     .find(|p| p.name == name);
