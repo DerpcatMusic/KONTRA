@@ -29,7 +29,7 @@ pub(super) fn revision() -> u64 {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Key {
     asset: usize,
-    identity: String,
+    identity: Arc<str>,
     frame: usize,
     target: [u32; 2],
     window: Option<[u32; 4]>,
@@ -65,7 +65,11 @@ pub(super) struct Preparation {
     pending: HashSet<Key>,
     wanted: Vec<Key>,
     assets: Vec<ir::Asset>,
+    /// `path:kind` per asset, built once per asset list, not per frame.
+    identities: Vec<Arc<str>>,
     presentation: ir::Presentation,
+    /// The last `prepare` found nothing new: same wanted set, no new result.
+    unchanged: bool,
     tick: u64,
     bytes: usize,
     #[cfg(feature = "shots")]
@@ -146,7 +150,9 @@ impl Preparation {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -163,6 +169,11 @@ impl Preparation {
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+    /// Whether the last `prepare` found nothing new (it then returned nothing,
+    /// and what the caller took from the one before still stands).
+    pub fn unchanged(&self) -> bool {
+        self.unchanged
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
@@ -209,7 +220,7 @@ impl Preparation {
                     && face
                         .assets
                         .get(key.asset)
-                        .is_some_and(|a| key.identity == format!("{}:{:?}", a.path, a.kind))
+                        .is_some_and(|a| *key.identity == *format!("{}:{:?}", a.path, a.kind))
             });
             #[cfg(feature = "shots")]
             self.decoded_bytes
@@ -217,17 +228,25 @@ impl Preparation {
             self.bytes = self.cache.values().map(|e| e.bytes).sum();
             // Identity keys keep unchanged assets reusable across a sparse publication.
             self.assets = face.assets.clone();
+            self.identities = face
+                .assets
+                .iter()
+                .map(|a| Arc::from(format!("{}:{:?}", a.path, a.kind)))
+                .collect();
             self.presentation = presentation;
+            self.unchanged = false;
         }
+        let mut changed = !self.unchanged;
         let epoch = self.epoch.load(Ordering::Acquire);
         self.tick = self.tick.wrapping_add(1);
         let mut wanted = Vec::new();
+        let identities = &self.identities;
         let mut add =
             |asset: ir::AssetRef, frame: usize, target: [u32; 2], window: Option<[u32; 4]>| {
                 if let Some(a) = face.assets.get(asset.0) {
                     wanted.push(Key {
                         asset: asset.0,
-                        identity: format!("{}:{:?}", a.path, a.kind),
+                        identity: identities[asset.0].clone(),
                         frame,
                         target,
                         window,
@@ -341,12 +360,14 @@ impl Preparation {
         wanted.dedup();
         if self.wanted != wanted {
             self.cache.retain(|_, entry| !entry.limited);
+            changed = true;
         }
         self.wanted = wanted;
         while let Ok(mut result) = self.results.try_recv() {
             if result.epoch != epoch {
                 continue;
             }
+            changed = true;
             self.pending.remove(&result.key);
             #[cfg(feature = "shots")]
             {
@@ -436,6 +457,11 @@ impl Preparation {
                 epoch,
             })
             .collect::<Vec<_>>();
+        changed |= !batch.is_empty();
+        self.unchanged = !changed;
+        if !changed {
+            return Vec::new();
+        }
         if !batch.is_empty() && self.jobs.try_send(batch.clone()).is_ok() {
             #[cfg(feature = "shots")]
             {
@@ -488,7 +514,9 @@ mod tests {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -597,7 +625,9 @@ mod tests {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
@@ -835,7 +865,9 @@ mod tests {
             pending: HashSet::new(),
             wanted: Vec::new(),
             assets: Vec::new(),
+            identities: Vec::new(),
             presentation: Default::default(),
+            unchanged: false,
             tick: 0,
             bytes: 0,
             #[cfg(feature = "shots")]
