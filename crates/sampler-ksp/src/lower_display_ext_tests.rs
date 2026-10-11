@@ -28,6 +28,7 @@ fn emitted(source: &str) -> Vec<I> {
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        inspection: None,
     };
     let callback = hir
         .callbacks
@@ -66,7 +67,10 @@ fn operands(code: &[I]) -> Vec<([Operand; 4], Option<Operand>, bool)> {
             }
             I::Op(Op::EngineDisplay { address, value, .. }) => {
                 if let Some(value) = value {
-                    assert!(value < address || value >= address + 4, "value aliases address");
+                    assert!(
+                        value < address || value >= address + 4,
+                        "value aliases address"
+                    );
                 }
                 calls.push((
                     std::array::from_fn(|i| registers[&(address + i as u16)]),
@@ -79,7 +83,10 @@ fn operands(code: &[I]) -> Vec<([Operand; 4], Option<Operand>, bool)> {
                 local,
                 write,
             }) => {
-                assert!(local < address || local >= address + 4, "value aliases address");
+                assert!(
+                    local < address || local >= address + 4,
+                    "value aliases address"
+                );
                 calls.push((
                     std::array::from_fn(|i| registers[&(address + i as u16)]),
                     write.then(|| registers[&local]),
@@ -113,7 +120,9 @@ fn display_ext_constant_operands_keep_value_group_slot_and_generic_distinct() {
             .iter()
             .take_while(|i| !matches!(i, I::Op(Op::EngineDisplay { .. })));
         assert_eq!(
-            before_display.filter(|i| matches!(i, I::SetLocal { .. })).count(),
+            before_display
+                .filter(|i| matches!(i, I::SetLocal { .. }))
+                .count(),
             5
         );
         let address = [
@@ -141,7 +150,7 @@ fn display_ext_dynamic_operands_are_loaded_once_into_nonaliasing_registers() {
     let code = emitted(
         "on init declare $parameter := $ENGINE_PAR_PAN declare $value := 234567
          declare $group := 3 declare $slot := 5 declare $generic := 11 declare @text end on
-         on note @text := get_engine_par_disp_ext($parameter,$value,$group,$slot,$generic) end on"
+         on note @text := get_engine_par_disp_ext($parameter,$value,$group,$slot,$generic) end on",
     );
     for cell in 0..5 {
         assert_eq!(
@@ -154,7 +163,12 @@ fn display_ext_dynamic_operands_are_loaded_once_into_nonaliasing_registers() {
     assert_eq!(
         operands(&code),
         vec![(
-            [Operand::Cell(0), Operand::Cell(2), Operand::Cell(3), Operand::Cell(4)],
+            [
+                Operand::Cell(0),
+                Operand::Cell(2),
+                Operand::Cell(3),
+                Operand::Cell(4)
+            ],
             Some(Operand::Cell(1)),
             false,
         )]
@@ -169,6 +183,9 @@ fn display_ext_semantic_admission_still_requires_all_five_integer_operands() {
         "get_engine_par_disp_ext($ENGINE_PAR_PAN,234567,3,5,\"bad\")",
     ] {
         let source = format!("on init declare @text end on on note @text := {call} end on");
-        assert!(crate::compile(&source, 48000, limits(), &[]).is_err(), "{call}");
+        assert!(
+            crate::compile(&source, 48000, limits(), &[]).is_err(),
+            "{call}"
+        );
     }
 }
