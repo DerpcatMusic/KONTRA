@@ -17,6 +17,7 @@ pub enum Tok {
     Real(f64),
     Str(Sym),
     Punct(Punct),
+    Comment,
     Eof,
 }
 
@@ -81,6 +82,18 @@ fn ident_byte(b: u8) -> bool {
 /// Tokenize the whole source. Newlines are not tokens: KSP statements are
 /// unambiguous without them, and `...` continuations are simply skipped.
 pub fn lex<'a>(source: &'a str, syms: &mut Interner<'a>) -> Result<Vec<Token>> {
+    lex_inner::<false>(source, syms)
+}
+
+/// The same lexer, retaining comments for source highlighting.
+pub fn lex_highlight<'a>(source: &'a str, syms: &mut Interner<'a>) -> Result<Vec<Token>> {
+    lex_inner::<true>(source, syms)
+}
+
+fn lex_inner<'a, const TRIVIA: bool>(
+    source: &'a str,
+    syms: &mut Interner<'a>,
+) -> Result<Vec<Token>> {
     if source.len() > u32::MAX as usize {
         return fault(Span::default(), "source exceeds 4 GiB");
     }
@@ -100,6 +113,12 @@ pub fn lex<'a>(source: &'a str, syms: &mut Interner<'a>) -> Result<Vec<Token>> {
                     return fault(Span::new(i, i + 1), "unterminated comment");
                 };
                 i += len + 1;
+                if TRIVIA {
+                    out.push(Token {
+                        tok: Tok::Comment,
+                        span: Span::new(start, i),
+                    });
+                }
                 continue;
             }
             b'.' if s[i..].starts_with(b"...") => {
