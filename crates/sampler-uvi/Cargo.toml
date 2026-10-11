@@ -25,6 +25,7 @@ sampler-ir = { path = "../sampler-ir" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 sampler-core = { path = "../sampler-core" }
 sampler-midi = { path = "../sampler-midi" }
+sampler-parity = { path = "../sampler-parity" }
 sampler-kontakt = { path = "../sampler-kontakt", default-features = false }
 roxmltree = "=0.21.1"
 rtrb = "=0.4.0"

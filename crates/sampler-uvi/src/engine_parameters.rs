@@ -19,7 +19,7 @@ pub(crate) fn bus_scope(node: roxmltree::Node) -> bool {
 /// ThreeBandShelves is [level, low shelf, high shelf] with the shelves
 /// relative to the level, DigitalEq is 16 bands then its overall level, a
 /// GainMatrix and an AuxEffect gain are one processor.
-fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
+pub(crate) fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
     match (kind, name) {
         ("Gain", "Volume") | ("AuxEffect", "Gain") => vec![(0, P::Gain)],
         ("OnePole", "Freq") => vec![(0, P::Cutoff)],
