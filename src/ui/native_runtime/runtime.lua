@@ -2,6 +2,7 @@
 local ui = {}
 local methods = {}
 local node_mt = {__index=methods}
+_G.__rev=0 -- bumped by every state write: the host's render-cache key
 local state_slots, current_path, hook_index, current_context = {}, 'root', 0, {}
 local function bind(fn,path,context)
     return function(...)
@@ -40,7 +41,7 @@ function ui.create_state(default)
     local key=current_path..':'..hook_index
     local slot=state_slots[key]
     if not slot then slot={value=default}; state_slots[key]=slot end
-    return function() return slot.value end,function(value) slot.value=value end
+    return function() return slot.value end,function(value) slot.value=value; _G.__rev=_G.__rev+1 end
 end
 function ui.create_computed(fn) return bind(fn,current_path,current_context) end
 function ui.create_effect(fn) fn() end
