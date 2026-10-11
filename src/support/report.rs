@@ -331,7 +331,14 @@ pub(super) fn try_auto_report_pending_incident() {
                 "support",
                 "previous_session_unconfirmed",
                 serde_json::json!({"incident_id":incident.id,
-                    "reason":"A previous session ended without native crash confirmation. Its evidence remains local and has not been sent."}),
+                    "reason":format!(
+                        "Previous session {} (v{}, host {}) ended without native crash confirmation, detected {}. Evidence stays local and was not sent: open {} in a text editor.",
+                        incident.id,
+                        incident.version,
+                        incident.host_process,
+                        crate::diagnostics::utc_stamp(incident.detected_at),
+                        crash::evidence_hint(&incident.id),
+                    )}),
             );
             return;
         }
