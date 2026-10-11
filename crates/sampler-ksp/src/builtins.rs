@@ -642,6 +642,9 @@ const VALUED: &[(&str, i32)] = &[
 /// from the KSP reference catalog, which scripts use by identity only. Digit
 /// runs are compared as `#`, so numbered families (`$NI_REVERB1_TYPE_ROOM`,
 /// `$ENGINE_PAR_SENDLEVEL_3`) match their catalog entry.
+/// `$NUM_OUTPUT_CHANNELS`: mono channels of the plugin's 16 stereo output buses (`sound::BUSES`).
+pub const NUM_OUTPUT_CHANNELS: i32 = 32;
+
 pub fn is_vendor_constant(name: &str) -> bool {
     static CATALOG: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
         std::sync::OnceLock::new();
