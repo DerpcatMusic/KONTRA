@@ -938,8 +938,14 @@ impl Translation {
             2.0 => ir::LfoShape::Triangle,
             // v1 measured the square only per voice.
             1.0 if retrigger => ir::LfoShape::Square,
-            wave @ (6.0 | 9.0) => {
-                let what = format!("WaveFormType {wave} (random/user table)");
+            // The manual's waveform menu runs Sine, Square, Triangle, Ramp Up,
+            // Ramp Down, Analog Square, Random S&H, Chaos Lorenz, Chaos Rossler,
+            // User; indices 0, 1, 2 and 6 are measured to sit at those places.
+            3.0 => ir::LfoShape::SawUp,
+            4.0 => ir::LfoShape::SawDown,
+            6.0 => ir::LfoShape::SampleAndHold,
+            wave @ 9.0 => {
+                let what = format!("WaveFormType {wave} (user table)");
                 return Ok(Err(gap("LFO waveform", what, NotModeled)));
             }
             wave => {
@@ -1360,6 +1366,24 @@ mod tests {
     }
 
     #[test]
+    fn lfo_ramps_and_sample_and_hold_follow_the_waveform_menu() {
+        for (wave, expected) in [
+            (3, ir::LfoShape::SawUp),
+            (4, ir::LfoShape::SawDown),
+            (6, ir::LfoShape::SampleAndHold),
+        ] {
+            let ir = translate(
+                &format!(r#"<LFO Name="V" WaveFormType="{wave}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>"#,
+            );
+            let (_, source) = only_route(&ir);
+            assert!(matches!(source, ir::ModulationSource::Lfo(l) if l.shape == expected), "{wave}");
+            assert!(ir.unsupported.iter().all(|u| u.feature != "LFO waveform"), "{:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
     fn pitch_bend_and_lfo_pitch_use_semitone_ratios() {
         let ir = translate(
             "",
@@ -1496,7 +1520,7 @@ mod tests {
     #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
-            r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
+            r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="8"/><LFO Name="V"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
                <SignalConnection Source="@PitchBend" Destination="Gain" Ratio="1"/>"#,
