@@ -41,7 +41,9 @@ struct Controls {
     phase: u8,
     pending: bool,
     started: bool,
-    modes: u8, // bit0: version-derived instant cutoff; bit1: enabled target route
+    // bit0: version-derived instant cutoff; bit1: enabled target route;
+    // bits2-3: 4 - output stage (LP1..LP4; the loop always closes around stage 4)
+    modes: u8,
 }
 
 impl Controls {
@@ -103,7 +105,50 @@ fn pole(w: f32) -> f32 {
     ((40.802_63 * w2 + 10.335_426) * w2 + std::f32::consts::PI) * w
 }
 
-fn compensation(q: f32) -> f32 {
+/// Output level of the LP1..LP3 taps against the shared loop, measured from
+/// Kontakt 8 recordings (noise through each type over the resonance range,
+/// level taken from the shape fit to this kernel). Points are (q, gain).
+#[rustfmt::skip]
+const TAP_COMPENSATION: [&[(f32, f32)]; 3] = [
+    &[
+        (0.000, 0.968), (0.047, 0.979), (0.122, 1.013), (0.194, 1.090), (0.263, 1.205),
+        (0.329, 1.352), (0.355, 1.413), (0.392, 1.500), (0.452, 1.606), (0.509, 1.643),
+        (0.563, 1.642), (0.642, 1.644), (0.754, 1.640), (0.839, 1.640), (0.857, 1.639),
+        (0.885, 1.454), (0.910, 1.228), (0.932, 1.052), (0.944, 0.975), (0.951, 0.935),
+        (0.961, 0.889), (0.967, 0.858), (0.975, 0.831), (0.980, 0.813), (0.986, 0.798),
+        (0.990, 0.792), (0.995, 0.786), (0.999, 0.784),
+    ],
+    &[
+        (0.047, 0.996), (0.122, 1.045), (0.194, 1.150), (0.263, 1.300), (0.329, 1.493),
+        (0.355, 1.581), (0.392, 1.694), (0.452, 1.857), (0.509, 1.919), (0.642, 1.923),
+        (0.754, 1.924), (0.839, 1.925), (0.857, 1.904), (0.885, 1.602), (0.910, 1.374),
+        (0.932, 1.217), (0.944, 1.149), (0.951, 1.112), (0.961, 1.077), (0.967, 1.052),
+        (0.975, 1.027), (0.980, 1.009), (0.986, 0.999), (0.990, 0.995), (0.995, 0.985),
+        (0.999, 0.982),
+    ],
+    &[
+        (0.047, 0.998), (0.122, 1.039), (0.194, 1.122), (0.263, 1.236), (0.329, 1.400),
+        (0.355, 1.490), (0.392, 1.577), (0.452, 1.753), (0.509, 1.908), (0.563, 1.977),
+        (0.642, 2.000), (0.754, 2.000), (0.839, 2.002), (0.857, 1.975), (0.885, 1.982),
+        (0.910, 1.669), (0.932, 1.399), (0.944, 1.285), (0.961, 1.164), (0.967, 1.132),
+        (0.975, 1.090), (0.980, 1.072), (0.986, 1.047), (0.990, 1.038), (0.995, 1.029),
+        (0.999, 1.022),
+    ],
+];
+
+fn compensation(q: f32, taps: u8) -> f32 {
+    let Some(table) = TAP_COMPENSATION.get(usize::from(taps).wrapping_sub(1)) else {
+        return lp4_compensation(q);
+    };
+    let at = table.partition_point(|&(x, _)| x <= q);
+    match (at.checked_sub(1).map(|i| table[i]), table.get(at)) {
+        (None, _) => table[0].1,
+        (Some((_, y)), None) => y,
+        (Some((x0, y0)), Some(&(x1, y1))) => y0 + (y1 - y0) * (q - x0) / (x1 - x0),
+    }
+}
+
+fn lp4_compensation(q: f32) -> f32 {
     // Algebraic form of the three native LP4 interpolation intervals.
     // An independent float-order comparison bounds its difference to 2 ULP.
     let p = f64::from(q * q);
@@ -127,6 +172,15 @@ pub(super) fn instant_cutoff(version: u16) -> bool {
 }
 
 impl Ladder {
+    /// Output stage 1..=4; stored in the spare mode bits so the pinned size holds.
+    pub(super) fn set_taps(&mut self, taps: u8) {
+        self.controls.modes = (self.controls.modes & !0b1100) | ((4 - taps.clamp(1, 4)) << 2);
+    }
+
+    fn taps(&self) -> u8 {
+        4 - ((self.controls.modes >> 2) & 3)
+    }
+
     pub(super) fn record_version(&mut self, version: u16) {
         self.controls.modes = (self.controls.modes & !1) | u8::from(instant_cutoff(version));
     }
@@ -214,7 +268,7 @@ impl Ladder {
         self.g = pole(cutoff(frequency) / rate).min(8.0);
         self.reciprocal = 1.0 / (1.0 + self.g);
         self.feedback = 4.16 * q;
-        self.compensation = compensation(q);
+        self.compensation = compensation(q, self.taps());
         self.gain = gain;
     }
 
@@ -275,6 +329,7 @@ impl Ladder {
     fn process_held(&mut self, left: &mut [f32], right: &mut [f32]) {
         let c = self.g * self.reciprocal;
         let c4 = ((c * c) * c) * c;
+        let taps = usize::from(self.taps());
         for (channel, samples) in [left, right].into_iter().enumerate() {
             let state = &mut self.state[channel];
             for sample in samples {
@@ -292,13 +347,17 @@ impl Ladder {
                 state[4] = correction;
                 let mut value = (input - feedback).clamp(-24.0, 24.0);
                 value *= 1.0 - value.abs() / 48.0;
-                for history in &mut state[..4] {
+                let mut tap = value;
+                for (stage, history) in state[..4].iter_mut().enumerate() {
                     let previous = *history;
                     let predicted = (2.0 * previous + self.g * value) * self.reciprocal;
                     *history = previous + self.g * (value - predicted);
                     value = previous + *history;
+                    if stage + 1 == taps {
+                        tap = value;
+                    }
                 }
-                *sample = value * self.compensation;
+                *sample = tap * self.compensation;
             }
         }
     }
@@ -307,6 +366,40 @@ impl Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kontakt 8 recording (calibration noise, x = .4997): LP1..LP3 response vs bypass in dB
+    /// at 200/500/1000/2000/5000 Hz for resonance .5039 and .8031.
+    #[test]
+    fn ladder_taps_match_the_measured_kontakt_responses() {
+        prepare();
+        let measured: [(u8, f32, [f32; 5]); 6] = [
+            (1, 0.5039, [-6.2, 3.6, 2.2, -5.2, -12.9]),
+            (2, 0.5039, [-5.2, 3.2, -1.1, -13.3, -28.8]),
+            (3, 0.5039, [-5.3, 1.7, -5.5, -22.5, -45.8]),
+            (1, 0.8031, [-13.4, -4.3, -2.5, -10.6, -18.3]),
+            (2, 0.8031, [-12.0, -4.5, -5.6, -18.5, -33.9]),
+            (3, 0.8031, [-11.7, -5.5, -9.6, -27.2, -50.5]),
+        ];
+        for (taps, resonance, expected) in measured {
+            for (hz, expected) in [200.0_f32, 500., 1000., 2000., 5000.].into_iter().zip(expected) {
+                let mut filter = Ladder::default();
+                filter.record_version(0x92);
+                filter.set_taps(taps);
+                filter.tune([0.4997, resonance, 0.0], 48_000.0);
+                let sine: Vec<f32> = (0..24_000)
+                    .map(|n| 0.01 * (std::f32::consts::TAU * hz * n as f32 / 48_000.0).sin())
+                    .collect();
+                let (mut l, mut r) = (sine.clone(), sine.clone());
+                filter.process(&mut l, &mut r);
+                let power = |v: &[f32]| v[12_000..].iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                let db = 10.0 * (power(&l) / power(&sine)).log10();
+                assert!(
+                    (db - f64::from(expected)).abs() < 0.7,
+                    "LP{taps} r={resonance} {hz} Hz: {db} dB vs Kontakt {expected}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn native_ladder_enabled_routes_rearm_on_persistent_control_ticks() {

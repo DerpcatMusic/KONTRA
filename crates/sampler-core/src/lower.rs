@@ -1948,6 +1948,7 @@ impl Lowering<'_> {
                     resonance: parameter(1, d.resonance),
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
+                    taps: d.taps,
                 })
             }
             ir::Processor::LoFi {
