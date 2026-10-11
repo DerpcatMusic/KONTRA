@@ -139,3 +139,33 @@ fn declarations_and_existing_file_selector_properties_are_not_stubs() {
             .starts_with("crates/sampler-ksp/src/ui.rs:")
     );
 }
+
+#[test]
+fn vendor_constants_are_opaque_bindings_instead_of_frontend_gaps() {
+    let source =
+        "on init declare const $c := $EVENT_PAR_3 declare const $d := $EFFECT_TYPE_REVERB end on";
+    let report = parity_report(source, "ksp:slot0", "test");
+    for name in ["$EVENT_PAR_3", "$EFFECT_TYPE_REVERB"] {
+        let c = report.constructs.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(c.status, Status::Approximate, "{name}");
+        assert!(c.detail.contains("Opaque symbolic identity"));
+    }
+    let vendors: std::collections::BTreeSet<_> = include_str!("../src/vendor_constants.txt")
+        .lines()
+        .collect();
+    for entry in sampler_ksp::parity::ledger() {
+        let mut key = String::new();
+        let mut digits = false;
+        for c in entry.name.chars() {
+            if !c.is_ascii_digit() {
+                key.push(c);
+            } else if !digits {
+                key.push('#');
+            }
+            digits = c.is_ascii_digit();
+        }
+        if vendors.contains(key.as_str()) {
+            assert_ne!(entry.status, Status::Unsupported, "{}", entry.name);
+        }
+    }
+}
