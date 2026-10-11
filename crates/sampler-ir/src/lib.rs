@@ -1747,12 +1747,16 @@ pub enum Automation {
     Controller(u8),
 }
 
-/// Saved Kontakt script-slider assignment. Ordinals count only sliders, not all UI controls.
+/// Saved Kontakt script-slider or -switch assignment. Ordinals count only widgets of that
+/// kind (`ui_slider` or `ui_switch`), not all UI controls.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptAutomation {
     pub source: ScriptAutomationSource,
     pub source_slot: u8,
+    /// A `pts_script_switch_*` target; otherwise a slider.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub switch: bool,
     pub slider: u32,
     pub low: f64,
     pub high: f64,
