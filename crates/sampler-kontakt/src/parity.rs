@@ -110,7 +110,7 @@ fn program_reports(
                     .script(link)
                 {
                     Some(text) => source = text,
-                    None => missing_link = true,
+                    None => missing_link = source.trim().is_empty(),
                 }
             }
             let performance_view = sampler_ksp::nckp::view_name(&source)
@@ -138,7 +138,11 @@ fn program_reports(
             );
             if missing_link {
                 report.constructs.push(sampler_parity::Construct {
-                    span: Default::default(),
+                    span: sampler_parity::Span {
+                        start: 0,
+                        end: 0,
+                        line: 1,
+                    },
                     kind: sampler_parity::ConstructKind::Syntax,
                     name: "@linked-source".into(),
                     status: sampler_parity::Status::Unsupported,
@@ -151,4 +155,45 @@ fn program_reports(
             Ok(report)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_link_uses_embedded_fallback_and_only_reports_absent_source() {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let path = std::env::temp_dir().join(format!(
+            "parity-missing-link-{}/Piano.nki",
+            std::process::id()
+        ));
+        for source in ["", "on init message(1) end on"] {
+            let mut data = vec![0, 0x50, 0];
+            data.extend((source.len() as u32).to_le_bytes());
+            data.extend(source.as_bytes());
+            data.extend([0; 3]);
+            data.extend(0u32.to_le_bytes());
+            data.extend(u32::MAX.to_le_bytes());
+            let link = "Source.txt";
+            data.extend((link.len() as u32).to_le_bytes());
+            data.extend(link.as_bytes());
+            let program = Program(StructuredObject {
+                version: 0xaf,
+                public_data: vec![0; 70],
+                private_data: Vec::new(),
+                children: vec![Chunk { id: 6, data }],
+            });
+            let report = super::program_reports(&path, &program, "")
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(report.id, "ksp:slot0");
+            assert_eq!(
+                report.constructs.iter().any(|c| c.name == "@linked-source"),
+                source.is_empty()
+            );
+            if !source.is_empty() {
+                assert!(report.constructs.iter().any(|c| c.name == "message"));
+            }
+        }
+    }
 }
