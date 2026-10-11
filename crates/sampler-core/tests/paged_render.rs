@@ -153,6 +153,7 @@ fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partit
                 let playback = Playback {
                     wavetable: None,
                     loop_slots: [None; 8],
+                    loop_control_crossfade: None,
                     start: PAGE_FRAMES - 101,
                     end: Some(PAGE_FRAMES + 111),
                     direction,
