@@ -265,13 +265,17 @@ fn aux_inserts_gain_matrix_and_convolver_shape_the_bus() {
     assert!(plain[0] > 0.05, "plain {plain:?}");
     // Input 1 feeds output 2 at 0.5, then the impulse halves it again.
     let inserts = r#"<GainMatrix Gain_1_1="0" Gain_1_2="0.5" Gain_2_1="0" Gain_2_2="0"/>
-        <Convolver Dry="0" Wet="1" SamplePath="samples/half.wav"/>"#;
+        <Convolver Dry="0" Wet="1" NormalizePower="0" SamplePath="samples/half.wav"/>"#;
     let [left, right] = peaks(Some(inserts));
     assert!(left < plain[0] * 0.001, "left {left}");
     assert!(
         (right / plain[1] - 0.25).abs() < 0.02,
         "right {right}, plain {plain:?}"
     );
+    // The default NormalizePower scales the impulse to unit mean channel energy
+    // (the 0.5 impulse doubles), so the same chain now carries the full level.
+    let normalized = peaks(Some(&inserts.replace(r#"NormalizePower="0" "#, "")));
+    assert!((normalized[1] / plain[1] - 0.5).abs() < 0.02, "{normalized:?}");
     // A bypassed insert does nothing.
     let bypassed = peaks(Some(r#"<GainMatrix Bypass="1" Gain_1_1="0"/>"#));
     assert!((bypassed[0] / plain[0] - 1.0).abs() < 0.01, "{bypassed:?}");
