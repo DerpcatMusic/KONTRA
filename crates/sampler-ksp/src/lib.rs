@@ -63,7 +63,8 @@ impl Limits {
 /// 19,264,696 source bytes and 2,881,448 array cells (Areia "Pyramid"),
 /// 8,662,930 instructions and 2,039 variables (Analog Strings).
 /// Refresh from the scan when libraries are added.
-const LIBRARY_LIMITS: [usize; 4] = [80 << 20, 40_000_000, 1 << 16, 1 << 24];
+// Array storage follows authored declarations; address arithmetic is validated separately.
+const LIBRARY_LIMITS: [usize; 4] = [80 << 20, 40_000_000, 1 << 16, usize::MAX];
 
 /// Presentation of a host-owned control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

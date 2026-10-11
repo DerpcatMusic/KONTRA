@@ -471,10 +471,6 @@ fn nka_unreachable_invalid_typed_ranges_are_rejected_at_preparation() {
     ));
     for (descriptor, error) in [
         (array(ArrayFileKind::Integer, "%a", 0), Error::Capacity),
-        (
-            array(ArrayFileKind::Integer, "%a", ARRAY_FILE_MAX_CELLS as u32 + 1),
-            Error::Capacity,
-        ),
         (array(ArrayFileKind::Integer, "!a", 1), Error::InvalidInput),
         (array(ArrayFileKind::Text, "%a", 1), Error::InvalidInput),
         (array(ArrayFileKind::Integer, "%a", 2), Error::InvalidInput),
@@ -507,19 +503,60 @@ fn nka_unreachable_invalid_typed_ranges_are_rejected_at_preparation() {
 
 fn snapshot_jobs(numbers: usize, texts: usize) -> usize {
     let bytes = numbers * std::mem::size_of::<i64>() + texts * std::mem::size_of::<Text>();
-    ARRAY_FILE_JOBS.min(8 * 1024 * 1024 / bytes)
+    ARRAY_FILE_JOBS.min((8 * 1024 * 1024 / bytes).max(1))
 }
 
 #[test]
-fn nka_maximum_text_array_admits_bounded_jobs_and_reuses_after_saturation() {
+fn nka_arrays_above_legacy_caps_bind_and_stream_without_partial_updates() {
+    let fixture = Fixture::new();
+    let path = fixture.path("large-stream.nka");
+    let len = 32768;
+    let source = format!(
+        r#"on init declare !names[{len}] declare $job end on
+        on pgs_changed $job := save_array_str(!names,"{path}") end on"#
+    );
+    let (mut rt, entry) = runtime(&source);
+    run(&mut rt, entry);
+    let effect = effects(&mut rt).pop().unwrap();
+    let mut output = capture(&rt, &effect);
+    output.perform().unwrap();
+    complete(&mut rt, effect.plan, &mut output);
+
+    let value = Text::new(&"abcdefghij".repeat(8));
+    let descriptor = array(ArrayFileKind::Text, "!names", len as u32);
+    let mut write =
+        ArrayFileCompletion::synchronous(descriptor, &path, true, vec![], vec![value; len])
+            .unwrap();
+    write.perform().unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 2 * 1024 * 1024);
+    let mut read =
+        ArrayFileCompletion::synchronous(descriptor, &path, false, vec![], vec![]).unwrap();
+    read.perform().unwrap();
+    assert_eq!(read.texts().len(), len);
+    assert!(
+        read.texts()
+            .iter()
+            .all(|text| text.as_str() == value.as_str())
+    );
+    std::fs::write(&path, "!names\nshort\n").unwrap();
+    assert!(read.perform().is_err());
+    assert_eq!(
+        read.texts().len(),
+        len,
+        "failed reads preserve the previous payload"
+    );
+}
+
+#[test]
+fn nka_large_text_array_admits_bounded_jobs_and_reuses_after_saturation() {
     // The old negative exceeded the budget only when reserving eight copies.
     let prepared = Prepared::new(48000, vec![], vec![], 0)
         .unwrap()
         .with_script_instances(vec![vec![]])
         .unwrap()
         .with_script_resources(vec![ScriptResources {
-            array_files: vec![array(ArrayFileKind::Text, "!a", ARRAY_FILE_MAX_CELLS as u32)],
-            texts: vec![String::new(); ARRAY_FILE_MAX_CELLS],
+            array_files: vec![array(ArrayFileKind::Text, "!a", 16384 as u32)],
+            texts: vec![String::new(); 16384],
             ..Default::default()
         }])
         .unwrap();
@@ -527,12 +564,12 @@ fn nka_maximum_text_array_admits_bounded_jobs_and_reuses_after_saturation() {
     let fixture = Fixture::new();
     let path = fixture.path("maximum.nka");
     let source = format!(
-        r#"on init declare !a[{ARRAY_FILE_MAX_CELLS}] declare $job declare $count end on
+        r#"on init declare !a[16384] declare $job declare $count end on
         on pgs_changed $job := save_array_str(!a,"{path}") end on
         on async_complete inc($count) end on"#
     );
     let (mut rt, entry) = runtime(&source);
-    let slots = snapshot_jobs(0, ARRAY_FILE_MAX_CELLS);
+    let slots = snapshot_jobs(0, 16384);
     assert!((1..ARRAY_FILE_JOBS).contains(&slots));
     let mut pending = Vec::with_capacity(slots);
     for _ in 0..slots {
@@ -546,12 +583,16 @@ fn nka_maximum_text_array_admits_bounded_jobs_and_reuses_after_saturation() {
     let effect = pending.pop().unwrap();
     let mut output = capture(&rt, &effect);
     assert!(output.numbers().is_empty());
-    assert_eq!(output.texts().len(), ARRAY_FILE_MAX_CELLS);
+    assert_eq!(output.texts().len(), 16384);
     output.perform().unwrap();
     complete(&mut rt, effect.plan, &mut output);
     run(&mut rt, entry);
     let reused = effects(&mut rt).pop().unwrap();
-    assert_eq!(reused.args[0], effect.args[0] + 1, "rejection consumes no ID");
+    assert_eq!(
+        reused.args[0],
+        effect.args[0] + 1,
+        "rejection consumes no ID"
+    );
     pending.push(reused);
     for effect in pending.into_iter().rev() {
         let mut output = capture(&rt, &effect);
@@ -878,7 +919,7 @@ fn nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve
     assert!(output.perform().is_err());
     assert_eq!(output.numbers(), &[real_bits(2.0)]);
     let path = fixture.path("oversized.nka");
-    std::fs::write(&path, vec![b'x'; ARRAY_FILE_MAX_BYTES + 1]).unwrap();
+    std::fs::write(&path, vec![b'x'; 2 * 1024 * 1024 + 1]).unwrap();
     let mut output = ArrayFileCompletion::synchronous(
         array(ArrayFileKind::Integer, "%data", 2),
         &path,
