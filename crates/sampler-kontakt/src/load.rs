@@ -886,7 +886,7 @@ fn compile_ui_initialized(
                 instrument
                     .unsupported
                     .extend(script.warnings().iter().map(|w| ir::Unsupported {
-                        location: format!("{} line {}", behavior.name, w.line),
+                        location: format!("script slot {} {} line {}", behavior.slot.map_or(index, usize::from), behavior.name, w.line),
                         feature: match w.builtin {
                             Some(builtin) => format!("script {:?}: {builtin}", w.kind),
                             None => format!("script {:?}: {}", w.kind, warning_class(&w.message)),
@@ -1447,4 +1447,25 @@ fn script_folders(file: Option<&std::path::Path>) -> [String; 4] {
         .and_then(std::path::Path::parent)
         .map_or_else(String::new, dir);
     [library.clone(), library, dir(patch), String::new()]
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn initialization_warnings_keep_physical_script_slot_line_and_index() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group { name: "present".into(), ..Default::default() });
+        instrument.behaviors.push(ir::Behavior {
+            name: "Lookup".into(), language: ir::Language::Ksp, slot: Some(3),
+            state: vec![], requires: vec![],
+            source: "on init\n declare $g\n declare %a[1]\n declare $x := %a[9]\nend on\non note\n $g := find_group(\"absent\")\nend on".into(),
+        });
+        let (scripts, _, _) = compile_ui(&mut instrument, &Options::default());
+        assert_eq!(scripts.len(), 1);
+        let warnings = &instrument.unsupported;
+        assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 7" && w.value.contains("find_group") && w.value.contains("-1")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 4" && w.value.contains("array index 9 out of bounds")), "{warnings:?}");
+    }
 }
