@@ -886,6 +886,17 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             }
+            Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let knobs = [*cutoff, *resonance];
+                if knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+                    out.processors.push(sampler_ir::Processor::Phaser(knobs));
+                    combined = gain;
+                } else {
+                    notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
+            }
             Some(Params::Filter {
                 kind: 90,
                 cutoff,
@@ -2632,6 +2643,33 @@ mod tests {
             let mut output = [[0.0; 2]; 8]; rt.render(&mut output).unwrap();
             assert!((output[0][0] - expected).abs() < 1e-7, "{:?} expected {expected}", output[0]);
             assert!((output[0][1] + expected * 0.5).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn phaser_filter_native_four_stage_impulse() {
+        let mut payload = 13i32.to_le_bytes().repeat(2);
+        for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
+        let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let mut instrument = sampler_ir::Instrument::default();
+        instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.chain = Some(sampler_ir::ChainRef(0)); zone.velocity = sampler_ir::VelocityResponse::None;
+        instrument.zones.push(zone);
+        let mut samples = vec![[0.0; 2]; 64]; samples[0] = [1.0, -0.5];
+        let pcm = sampler_core::Pcm::new(48000, samples.into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+        let mut output = [[0.0; 2]; 4]; rt.render(&mut output).unwrap();
+        // Cutoff zero: a=(1-.02)/(1+.02); four allpasses, half dry/half wet.
+        for (actual, expected) in output.iter().zip([0.926062942f32, -0.136394471, -0.114671811, -0.095316768]) {
+            assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}");
+            assert!((actual[1] + expected * 0.5).abs() < 2e-7);
         }
     }
 

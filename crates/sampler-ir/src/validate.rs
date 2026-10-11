@@ -243,6 +243,8 @@ impl Check<'_> {
                 }
                 Processor::Formant(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }                Processor::Phaser(knobs) => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
                 }
                 Processor::Ar(d) => {
                     self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
