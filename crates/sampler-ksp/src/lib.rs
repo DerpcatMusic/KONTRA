@@ -63,7 +63,8 @@ impl Limits {
 /// 19,264,696 source bytes and 2,881,448 array cells (Areia "Pyramid"),
 /// 8,662,930 instructions and 2,039 variables (Analog Strings).
 /// Refresh from the scan when libraries are added.
-const LIBRARY_LIMITS: [usize; 4] = [80 << 20, 40_000_000, 1 << 16, 1 << 24];
+// Array storage follows authored declarations; address arithmetic is validated separately.
+const LIBRARY_LIMITS: [usize; 4] = [80 << 20, 40_000_000, 1 << 16, usize::MAX];
 
 /// Presentation of a host-owned control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1506,7 +1507,7 @@ fn compile_initialized_inner(
         .iter()
         .map(|&v| array_file::array(&hir, v))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| error("NKA typed array exceeds explicit-path service limits"))?;
+        .map_err(|_| error("NKA typed array has an invalid name or storage range"))?;
     if !array_files.is_empty() && texts.iter().any(|s| s.len() > sampler_core::TEXT_CAPACITY) {
         return Err(error("NKA script initial text exceeds runtime capacity"));
     }
