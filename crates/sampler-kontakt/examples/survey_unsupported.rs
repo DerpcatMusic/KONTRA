@@ -9,6 +9,11 @@ fn main() {
         .nth(1)
         .map(|f| std::fs::read_to_string(f).unwrap())
         .unwrap_or_default();
+    survey(&list);
+}
+
+pub fn survey(list: &str) -> usize {
+    let mut errors = 0;
     for path in list.lines() {
         let path = Path::new(path);
         let multi = path.extension().is_some_and(|e| e == "nkm");
@@ -36,8 +41,12 @@ fn main() {
                         println!("U\t{}\t{}\t{}\t{:?}", u.feature, u.value, u.location, u.reason);
                     }
                 }
-                Err(e) => println!("ERR {e:?}"),
+                Err(e) => {
+                    errors += 1;
+                    println!("ERR {e:?}");
+                }
             }
         }
     }
+    errors
 }
