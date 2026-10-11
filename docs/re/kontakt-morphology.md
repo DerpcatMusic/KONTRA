@@ -68,3 +68,26 @@ first-sample vectors at g=1, no feedback, unit input: HP2 47/192,
 BP4 47/128, Notch 47/96; endpoint compensation at q=1: .4/.38/.38.
 These are extracted-law vectors, not Kontakt recordings. HQ and version
 0x95 secondary cutoff scheduling remain diagnosed by the existing code.
+
+## Saved type 13 (Phaser filter), round 3
+
+NI Kontakt 8 [Filter Reference: Phaser](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference)
+documents cutoff and resonance, with no built-in LFO. This is not the legacy Phaser effect.
+Same-SHA Ghidra `FUN_1407c9a70` prepares the Taylor polynomial constants,
+`FUN_14095d770` sets coefficients and `FUN_140909810` runs four allpasses.
+radare2 confirms the constructor immediates at 0x1407c9b19–0x1407c9b41,
+coefficient mapping at 0x14095d8a7–0x14095d8f5 and all four stages at
+0x1409098b3–0x14090994e. Constants: cutoff factor 3 (0x1447149d0),
+square factor 9 (0x1447149fc), double mapping .05431093007467753,
+.32999999999999996, .02 (0x144f388f0/0x144f38968/0x144f388b0),
+feedback .85 (0x144f389b0). All hexdumps confirmed via radare2 on the
+same SHA cited above. Positive cutoff evaluates the sixth-degree exponential
+polynomial; zero gives frequency .02 and a=(1-.02)/(1+.02).
+
+Each stage is y=a(x+previous_y)-previous_x. Input adds last stage's previous
+output times .85*Resonance; output is half the sum of dry and final stage.
+Focused failing-first `effects::tests::phaser_filter_native_four_stage_impulse`
+checks the first four f32 impulse samples from the extracted recurrence:
+.926062942, -.136394471, -.114671811, -.095316768 (and right channel -.5 times these).
+Static saved controls are supported; live filter clock is still open.
+Morphology labels now name HP/BP/Peak/Notch instead of showing every selector as LP4.

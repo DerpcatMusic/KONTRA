@@ -1994,6 +1994,7 @@ impl Lowering<'_> {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             ir::Processor::Saturation(shape) => Processor::Saturation(shape),
+            ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },
             ir::Processor::Mix { address, .. } => Processor::Mix {
