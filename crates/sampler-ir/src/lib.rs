@@ -80,6 +80,9 @@ pub struct Instrument {
     pub bus_addresses: Vec<(i32, BusRef)>,
     /// Impulse responses bus convolutions refer to.
     pub impulses: Vec<Impulse>,
+    /// How the importing profile's loader shapes each of [`Instrument::impulses`]
+    /// once its audio is decoded (parallel; missing or `None` entries stay as decoded).
+    pub impulse_shapes: Vec<Option<ImpulseShape>>,
     pub controls: Vec<Control>,
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
@@ -1575,6 +1578,24 @@ pub struct Impulse {
     /// file of the program) and clears the field; `rate`/`left`/`right` hold a
     /// unit-impulse placeholder until then.
     pub asset: Option<AssetRef>,
+}
+
+/// The source controls of a sampled reverb that act on its impulse response.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseShape {
+    /// Kept fraction of the response's duration, `(0, 1]`.
+    pub time: f64,
+    /// Low and high frequency damping, `[-1, 1]` (negative boosts).
+    pub damping_low: f64,
+    pub damping_high: f64,
+    pub pre_delay_ms: f64,
+    /// Stereo width, `[-1, 1]`; negative swaps the channels.
+    pub width: f64,
+    /// Scale the response to unit mean channel energy.
+    pub normalize: bool,
+    /// A SampledReverb (its own gain references) rather than a Convolver.
+    pub sampled_reverb: bool,
 }
 
 /// Physical reverb settings; an importing profile maps its own controls
