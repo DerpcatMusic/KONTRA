@@ -1395,6 +1395,24 @@ mod tests {
         assert!(ir.unsupported.iter().all(|u| u.feature != "program or layer modulation"));
     }
 
+    /// Aux buses, their inserts and a layer's sends are translated, so none of
+    /// those containers is reported as an untranslated module.
+    #[test]
+    fn routing_containers_are_not_reported_as_modules() {
+        let xml = r#"<Program Name="t"><Auxs><AuxEffect Name="Verb"><Inserts><Gain Gain="0.5"/></Inserts></AuxEffect></Auxs>
+            <Layers><Layer Name="L"><BusRouters><BusRouter Destination="Verb" Gain="0.5"/></BusRouters>
+            <Inserts><Gain Gain="0.5"/></Inserts>
+            <Keygroups><Keygroup Name="K"><Oscillators><SamplePlayer Name="P" SamplePath="a.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let ir = crate::translate_bank(xml).unwrap().0;
+        let modules: Vec<_> = ir
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "module")
+            .map(|u| (&u.location, &u.value))
+            .collect();
+        assert!(modules.is_empty(), "{modules:?}");
+    }
+
     #[test]
     fn bipolar_script_modulation_keeps_negative_values() {
         for (bip, expected) in [(1, ir::ModulationSource::ScriptBipolar(3)), (0, ir::ModulationSource::Script(3))] {
