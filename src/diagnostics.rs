@@ -1895,11 +1895,9 @@ impl LoadTrace {
             message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
             impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
         }
-        // Engine-raised lua findings carry the fault text (error, widget, index, range); other
-        // values are authored and stay out.
-        if missing.feature.starts_with("lua ") && !missing.value.is_empty() {
+        if let Some(detail) = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value) {
             message.push_str(": ");
-            message.push_str(&clip(&missing.value, 200));
+            message.push_str(&clip(detail, 200));
         }
         let key = grouped::missing(
             &missing.feature,
@@ -1925,8 +1923,7 @@ impl LoadTrace {
             key,
             location,
             enabled,
-            // The typed key flattens the feature; keep its text (never the authored value) so the
-            // event says what was not translated, where, and what that means for the sound.
+            // Preserve semantic names in the message; the typed key still folds repeated sites.
             json!({"stage":"translate","code":"unsupported",
                 "message":message,
                 "where":clip(&missing.location, 160),

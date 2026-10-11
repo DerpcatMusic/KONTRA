@@ -245,12 +245,16 @@ pub fn missing(feature: &str, reason: &str, value: &str) -> Key {
             builtin,
         );
     }
-    if feature == "modulation target" {
+    if matches!(feature, "modulation target" | "modulation of a module parameter") {
         return Key::new(
-            "ModTarget",
+            if feature == "modulation target" { "ModTarget" } else { "ModParameter" },
             reason,
             value.split_whitespace().next().unwrap_or("UnknownSubject"),
         );
+    }
+    if feature == "effect" {
+        let name = value.split_once(" v").map_or(value, |(name, _)| name);
+        return Key::new("FxSlot", reason, &name.replace(' ', "_"));
     }
     Key::new("Unsupported", reason, &feature.replace(' ', "_"))
 }
@@ -451,6 +455,15 @@ fn setter_subject(types: sampler_uvi::script::SetterTypes) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_effects_and_module_parameters_keep_distinct_semantic_names() {
+        let a = missing("effect", "NotModeled", "Raum v0x50 len 64");
+        let b = missing("effect", "NotModeled", "Classic Saturation v0x50 len 64");
+        assert_ne!(a, b);
+        assert_eq!(b.subject, "Classic_Saturation");
+        assert_ne!(missing("modulation of a module parameter", "NotModeled", "frequency (RATE)"), missing("modulation of a module parameter", "NotModeled", "intensity (AMT)"));
+    }
     #[test]
     fn shared_scanner_runtime_contract() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
