@@ -149,20 +149,14 @@ impl Translation {
                         let gain = db(number(node, name, 0.0)? - middle);
                         out.push(ir::Processor::Filter(ir::Filter {
                             kind: if low {
-                                ir::FilterKind::LowShelf { gain }
+                                ir::FilterKind::FirstOrderLowShelf { gain }
                             } else {
-                                ir::FilterKind::HighShelf { gain }
+                                ir::FilterKind::FirstOrderHighShelf { gain }
                             },
                             cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
                             resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
                         }));
                     }
-                    self.ir.unsupported.push(ir::Unsupported {
-                        location: at.clone(),
-                        feature: "ThreeBandShelves crossover kernel (shared shelves used)".into(),
-                        value: String::new(),
-                        reason: ir::Reason::UnknownLaw,
-                    });
                 }
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
