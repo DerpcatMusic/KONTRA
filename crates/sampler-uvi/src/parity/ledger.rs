@@ -151,6 +151,11 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         }
         add(row("table.copy", K::LuaApi, S::Approximate, "script_prelude.lua", "_G.table.copy", "Shallow table copy.", "table shallow copy"));
         add(row("table.print", K::LuaApi, S::Stub, "script_prelude.lua", "_G.table.print", "Printing is discarded.", "no output"));
+        add(row("Part", K::LuaModule, S::Stub, "script.rs", "let part_xml", "Retained synthetic parent context; no live Part DSP writes.", "synthetic Part element"));
+        for name in ["Name", "Gain", "Pan", "Bypass"] {
+            add(row(&format!("getParameter Part.{name}"), K::LuaParameter, S::Approximate, "script.rs", "let part_xml", "Reads the retained synthetic Part context.", "synthetic Part readback"));
+            add(row(&format!("setParameter Part.{name}"), K::LuaParameter, S::Stub, "script.rs", "\"setParam\"", "Part fields have no DSP write binding.", "unbound write"));
+        }
         let modules: std::collections::BTreeSet<_> = include_str!("../parameters.tsv").lines().filter_map(|l| l.split('\t').next()).collect();
         for module in modules {
             let (file, anchor, supported) = match module {
@@ -248,7 +253,8 @@ pub(super) fn parameter(
         let known = crate::script::parameters::definitions(kind)
             .iter()
             .any(|p| p.name == name)
-            || matches!(target, Target::Node(n) if n.attribute(name).is_some());
+            || matches!(target, Target::Node(n) if n.attribute(name).is_some())
+            || matches!(target, Target::Part) && matches!(name, "Name" | "Gain" | "Pan" | "Bypass");
         if !known {
             c.status = S::Stub;
             c.detail = "Unknown parameter returns a reported zero.".into();
@@ -377,5 +383,13 @@ pub(super) fn unknown(span: Span, name: &str, engine: bool) -> Construct {
         "Unknown host API; global lookup returns nil."
     }
     .into();
+    c
+}
+
+pub(super) fn module_reference(span: Span, kind: &str) -> Construct {
+    let mut c = entry(kind)
+        .map(|e| construct(span, e))
+        .unwrap_or_else(|| unknown(span, kind, false));
+    c.kind = K::LuaModule;
     c
 }
