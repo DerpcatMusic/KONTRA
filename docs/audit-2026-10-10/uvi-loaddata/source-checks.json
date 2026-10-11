@@ -1,0 +1,29 @@
+{
+  "kind": "SOURCE_ONLY_STATIC_CHECK_NOT_RUST_RUNTIME_OR_NATIVE",
+  "base": "9075da681fbca5019640619822a4540bfd2a57a1",
+  "source_sha": "1cdc8d4d5a82aa67d5a4a942b8501f8bf5bf1c41",
+  "source_tree": "76e908e3bf57b91df5f70f57592a665907ebc85e",
+  "checks": {
+    "completion_capacity1_ack_before_next_read": true,
+    "owner_ack_is_nonblocking": true,
+    "request_limit64": true,
+    "byte_limit8MiB": true,
+    "growth_capped": true,
+    "no_vm_in_worker": true,
+    "no_io_join": true,
+    "completion_note_none": true,
+    "data_not_in_stub_group": true,
+    "drop_closes_owner": true,
+    "eight_production_seam_tests": true,
+    "parked_owner_regression": true,
+    "invalid_payload_cases": true
+  },
+  "file_sha256": {
+    "crates/sampler-uvi/src/script/async_data.rs": "510925c84a53d26d8ff060957b1218c9ebcdd415f46947b77fe299a30a97a360",
+    "crates/sampler-uvi/tests/load_data.rs": "26be72bf9764734d695bfb6b6cf4be4ca827dfb58fc4d8bdd794532e67e46e70",
+    "docs/audit-2026-10-10/uvi-loaddata/official-async-task.html": "c2b6a09f0b5eda7f2ae6b3f12ff7c6f529980db2afe2f8c6b638ff2c2cbc9a4d"
+  },
+  "runtime": "UNRUN: integration worker sole Rust validation owner",
+  "native_parity": "UNKNOWN: no native host authorized",
+  "performance": "UNMEASURED"
+}

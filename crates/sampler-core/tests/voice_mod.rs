@@ -52,6 +52,7 @@ fn plan(frames: usize, envelope: Envelope) -> Prepared {
 }
 fn program(sources: Vec<ModSource>, routes: Vec<ModRoute>) -> ModProgram {
     ModProgram {
+        controls: vec![],
         breakpoints: vec![],
         sources,
         routes,
@@ -534,6 +535,7 @@ fn measure_modulation_cost_per_voice() {
         })
     };
     let mpe = || ModProgram {
+        controls: vec![],
         breakpoints: vec![],
         sources: vec![ModSource::Pressure, ModSource::Timbre],
         routes: vec![
@@ -546,6 +548,7 @@ fn measure_modulation_cost_per_voice() {
         shapes: vec![vec![(0., -1.), (0.5, 0.), (1., 0.)]],
     };
     let full = ModProgram {
+        controls: vec![],
         breakpoints: vec![],
         sources: vec![
             lfo(LfoShape::Sine, 5.),
@@ -584,6 +587,7 @@ fn a_second_source_scales_route_depth() {
     // Constant +6 dB, depth scaled by velocity (0.5) through a shape doubling it
     // past 0.25: multiplier 0.5 + (0.5 - 0.25) = 0.75 => +4.5 dB.
     let program = ModProgram {
+        controls: vec![],
         breakpoints: vec![],
         sources: vec![ModSource::Constant, ModSource::Velocity],
         routes: vec![ModRoute {

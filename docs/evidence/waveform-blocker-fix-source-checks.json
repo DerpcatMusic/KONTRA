@@ -1,0 +1,1046 @@
+{
+  "status": "SOURCE_READY_FOR_FRESH_REVIEW",
+  "kind": "SOURCE_CUSTODY_AND_INDEPENDENT_SCALAR_MODELS_NOT_EXECUTION",
+  "parent": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+  "parent_tree": "6807036133b3f681ad88904f5e0dd4e218201fae",
+  "code": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+  "code_tree": "13a66dd42ff4327553051ffdee8a032cb532dcb3",
+  "historical_source": "d057af736d48cdbc0af0fca7293756b16a00a252",
+  "frozen": "2a243bcfa2262abb789265aa0951fd2a85854023",
+  "changed_full_file_pins": [
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "start_line": 1,
+      "end_line": 1882,
+      "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+      "span_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/waveform.rs",
+      "blob": "c755c976e379cdb7dc409d5eb45230839606ac3d",
+      "start_line": 1,
+      "end_line": 140,
+      "file_sha256": "3a3c420aee817fd575d4103fba0fc8054a5781a670bfbadc4b5d7525c0ca299e",
+      "span_sha256": "3a3c420aee817fd575d4103fba0fc8054a5781a670bfbadc4b5d7525c0ca299e"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "blob": "98d429d8ac992bd264484fa4c2dfec7ef4167723",
+      "start_line": 1,
+      "end_line": 230,
+      "file_sha256": "f13fad32d3c851f186503b6058b8d7fa67a7400edabba2608c4bd3658d43d77a",
+      "span_sha256": "f13fad32d3c851f186503b6058b8d7fa67a7400edabba2608c4bd3658d43d77a"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/waveform.rs",
+      "blob": "94741e66b401623583f679517068c75a5523d31a",
+      "start_line": 1,
+      "end_line": 119,
+      "file_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a",
+      "span_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "blob": "4a342893854e0a724e5a708eaa619a58e1421aff",
+      "start_line": 1,
+      "end_line": 622,
+      "file_sha256": "8a161f83af8d0d2e662c1acc6619fee69fcb20bf89a7e532e72f33293abd0ca5",
+      "span_sha256": "8a161f83af8d0d2e662c1acc6619fee69fcb20bf89a7e532e72f33293abd0ca5"
+    }
+  ],
+  "parent_full_file_pins": [
+    {
+      "sha": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "8b62123219016f7aa9754525607dcfe7840fc3c6",
+      "start_line": 1,
+      "end_line": 1880,
+      "file_sha256": "51371c92d25999aec73aeb1f8dc7567790482b87dcf6f7ea43011e4fe0a3f96a",
+      "span_sha256": "51371c92d25999aec73aeb1f8dc7567790482b87dcf6f7ea43011e4fe0a3f96a"
+    },
+    {
+      "sha": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+      "path": "crates/sampler-core/src/waveform.rs",
+      "blob": "5ea518c4db2543974460a774603410b62568cc6c",
+      "start_line": 1,
+      "end_line": 139,
+      "file_sha256": "6e7b0b30a310ae379b2d95bd2bfd9b0be24a940e9b0539314864da2352d8d14d",
+      "span_sha256": "6e7b0b30a310ae379b2d95bd2bfd9b0be24a940e9b0539314864da2352d8d14d"
+    },
+    {
+      "sha": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "blob": "69886d7648aa54dfa32ee8a0dac10bddc71a7214",
+      "start_line": 1,
+      "end_line": 76,
+      "file_sha256": "bbb03f29c32c37e7f8450ad43611b2d1255145763b9e2bb1d7f7a20f7165fbe9",
+      "span_sha256": "bbb03f29c32c37e7f8450ad43611b2d1255145763b9e2bb1d7f7a20f7165fbe9"
+    },
+    {
+      "sha": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+      "path": "crates/sampler-ksp/src/waveform.rs",
+      "blob": "8383a4609eef1d8619cf16b2ad0eb17b49f77d57",
+      "start_line": 1,
+      "end_line": 85,
+      "file_sha256": "b43c94ecb03fcf1fee8ed89fcc8f943b021167b1906e6fb53d872ba71a99ea96",
+      "span_sha256": "b43c94ecb03fcf1fee8ed89fcc8f943b021167b1906e6fb53d872ba71a99ea96"
+    },
+    {
+      "sha": "d247e0550b7ce2019d837d7e5c391ee85bb8c687",
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "blob": "af7d3a8d5a126166225dab19e14bdeed0eb33102",
+      "start_line": 1,
+      "end_line": 364,
+      "file_sha256": "5292a0f91bbdb9692e7569978f14dea10c15a3ccdf939c90a5e69d704513e4fc",
+      "span_sha256": "5292a0f91bbdb9692e7569978f14dea10c15a3ccdf939c90a5e69d704513e4fc"
+    }
+  ],
+  "focused_source_pins": [
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "start_line": 1756,
+      "end_line": 1793,
+      "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+      "span_sha256": "333f4f2f29e8fa931e3b2221426b91586ce17f37660af196675c5962619a6499"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/waveform.rs",
+      "blob": "c755c976e379cdb7dc409d5eb45230839606ac3d",
+      "start_line": 93,
+      "end_line": 117,
+      "file_sha256": "3a3c420aee817fd575d4103fba0fc8054a5781a670bfbadc4b5d7525c0ca299e",
+      "span_sha256": "da8b6f04b13891e944b22e665a7ed9cae9ee3aa8ea08450a0e30af458f7b0f84"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/waveform.rs",
+      "blob": "94741e66b401623583f679517068c75a5523d31a",
+      "start_line": 18,
+      "end_line": 38,
+      "file_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a",
+      "span_sha256": "457e69808749739f701497a57f3f9a18d62abebbd9fdfe6a6147f88e05f53836"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/waveform.rs",
+      "blob": "94741e66b401623583f679517068c75a5523d31a",
+      "start_line": 43,
+      "end_line": 119,
+      "file_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a",
+      "span_sha256": "e962d68bbf302e9b86b35b82fb155b927b77d06e4f04f2dd914320dfca61cb40"
+    }
+  ],
+  "complete_subject_rust_pins": [
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "start_line": 1,
+      "end_line": 1882,
+      "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+      "span_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "start_line": 1,
+      "end_line": 1882,
+      "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+      "span_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/eval.rs",
+      "blob": "aa2cdfde48f3a5c064deabae70a130bad601c719",
+      "start_line": 1,
+      "end_line": 1884,
+      "file_sha256": "7c68524bfd5bca0635bf0483fd52f3c81745b25caf9e3bf7865c41cadc7d1425",
+      "span_sha256": "7c68524bfd5bca0635bf0483fd52f3c81745b25caf9e3bf7865c41cadc7d1425"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/lower.rs",
+      "blob": "dbd57b57ef9f381c534caf5a96fe20d36bc465a8",
+      "start_line": 1,
+      "end_line": 4032,
+      "file_sha256": "609780d305ede66386f5656ecc51df257b346a2f75809f689f4651b5d761f946",
+      "span_sha256": "609780d305ede66386f5656ecc51df257b346a2f75809f689f4651b5d761f946"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "blob": "7d9c4683d3221ceb6d8675b39cb4bdb1309bb190",
+      "start_line": 1,
+      "end_line": 1606,
+      "file_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8",
+      "span_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "blob": "7d9c4683d3221ceb6d8675b39cb4bdb1309bb190",
+      "start_line": 1,
+      "end_line": 1606,
+      "file_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8",
+      "span_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/lib.rs",
+      "blob": "7d9c4683d3221ceb6d8675b39cb4bdb1309bb190",
+      "start_line": 1,
+      "end_line": 1606,
+      "file_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8",
+      "span_sha256": "aaa2f9e6ce3178392d5d6370a3edbe6eefa6495114dbee8037c14f0a33d1b6b8"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/ui.rs",
+      "blob": "0fe86035be30804c61ee8cde4baa73e055fba110",
+      "start_line": 1,
+      "end_line": 787,
+      "file_sha256": "e0af9df2379e1d6a45a3828cec7172fda57a297200be7fc9e1a76eb58519495d",
+      "span_sha256": "e0af9df2379e1d6a45a3828cec7172fda57a297200be7fc9e1a76eb58519495d"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/waveform.rs",
+      "blob": "c755c976e379cdb7dc409d5eb45230839606ac3d",
+      "start_line": 1,
+      "end_line": 140,
+      "file_sha256": "3a3c420aee817fd575d4103fba0fc8054a5781a670bfbadc4b5d7525c0ca299e",
+      "span_sha256": "3a3c420aee817fd575d4103fba0fc8054a5781a670bfbadc4b5d7525c0ca299e"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/src/waveform.rs",
+      "blob": "94741e66b401623583f679517068c75a5523d31a",
+      "start_line": 1,
+      "end_line": 119,
+      "file_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a",
+      "span_sha256": "3bd390a9c75a95e8843c5e5fef60dea4b4e6afd84755adb710aaf7dfe0d50c0a"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "blob": "98d429d8ac992bd264484fa4c2dfec7ef4167723",
+      "start_line": 1,
+      "end_line": 230,
+      "file_sha256": "f13fad32d3c851f186503b6058b8d7fa67a7400edabba2608c4bd3658d43d77a",
+      "span_sha256": "f13fad32d3c851f186503b6058b8d7fa67a7400edabba2608c4bd3658d43d77a"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "blob": "cebf9aa1eb9e57ad72b851e13cfd8952a89cb428",
+      "start_line": 1,
+      "end_line": 139,
+      "file_sha256": "736c0a13486a14c705a56fd85f9001fd388810be7ee67eac13bad490bbf210cb",
+      "span_sha256": "736c0a13486a14c705a56fd85f9001fd388810be7ee67eac13bad490bbf210cb"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "blob": "4a342893854e0a724e5a708eaa619a58e1421aff",
+      "start_line": 1,
+      "end_line": 622,
+      "file_sha256": "8a161f83af8d0d2e662c1acc6619fee69fcb20bf89a7e532e72f33293abd0ca5",
+      "span_sha256": "8a161f83af8d0d2e662c1acc6619fee69fcb20bf89a7e532e72f33293abd0ca5"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "blob": "2b31a003b12aa75a776d10cdf824aa78dec034a6",
+      "start_line": 1,
+      "end_line": 257,
+      "file_sha256": "a8a4e7e6dca70ab0636a0f055ad21a1873da0ef3f05fd3091fa785cb5f3cb887",
+      "span_sha256": "a8a4e7e6dca70ab0636a0f055ad21a1873da0ef3f05fd3091fa785cb5f3cb887"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-ksp/tests/ui.rs",
+      "blob": "11f5ed0678794e7946780f7d0a337572935408e5",
+      "start_line": 1,
+      "end_line": 382,
+      "file_sha256": "63f578b5fda30e60bad407f55a1d80ca0cf258d1710160a22e924e2db67650a9",
+      "span_sha256": "63f578b5fda30e60bad407f55a1d80ca0cf258d1710160a22e924e2db67650a9"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "src/plugin.rs",
+      "blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "start_line": 1,
+      "end_line": 4417,
+      "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45",
+      "span_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "src/sound/mod.rs",
+      "blob": "925c6cc51dcafc684950d055f14f4bb097b77231",
+      "start_line": 1,
+      "end_line": 438,
+      "file_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9",
+      "span_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9"
+    },
+    {
+      "sha": "1cdac230b0b51e28db5843ae1a45d02865228e0b",
+      "path": "crates/sampler-core/src/ops.rs",
+      "blob": "5fd265bc6d4992014a070c42d66a119cf3419870",
+      "start_line": 1,
+      "end_line": 1882,
+      "file_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29",
+      "span_sha256": "f78db293b056889f8942264894ee7929b26dd0649cdaa0c05e9d00bca5b27b29"
+    }
+  ],
+  "exact_diff_sha256": "f6de807e61f0267b3d75b8498b84bb9f9312405de7884ca6487786bcb11ccc73",
+  "unchanged_shared_files": [
+    {
+      "path": "crates/sampler-core/src/behavior.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "1663c16f93c7ebdf4e438395d607fc06ff85fea6",
+      "file_sha256": "a72534826b6fcb23de6807adc06dda4a20f157ec0b5c1de765d025eded02fcca"
+    },
+    {
+      "path": "crates/sampler-core/src/stages.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "270fc70090f1655f22bbdd75c7126166350435ca",
+      "file_sha256": "1ffdac1694a74abf52af154838000b1c7adde45eb0b45d445da909343610bc66"
+    },
+    {
+      "path": "crates/sampler-core/src/plan_programs.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "a9c75d1d63cea897ac95a9f687c7d0afbfa8b468",
+      "file_sha256": "dab2a6aebc9c8e00464a810f04ed4eae054e489139ae0439e07fbceeca02b1b2"
+    },
+    {
+      "path": "crates/sampler-core/src/prepare.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "0ec2b2d6d08eef080ed4ade0bcdc2ccc0c09c947",
+      "file_sha256": "c70a1d28185a0c3cd084ad2341ca429856248dfabb94fef919f34707d1550547"
+    },
+    {
+      "path": "crates/sampler-core/src/controller_event.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "26d6305b55c8b6d0dd3ac1df0dcca5af61fc28e5",
+      "file_sha256": "5f93e11c0c1efca05fc0726bda6e0e6d1bc618f6ace2da66d35ae23e5b942d98"
+    },
+    {
+      "path": "crates/sampler-ksp/src/init_cache.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "52fd3a3b292ffdb52973871efb9a9c2eddaefaf0",
+      "file_sha256": "e794244b8dca3e5c9ebf59f9bb5a5a577cf668ac3c554db68a4014e7c9804cc5"
+    },
+    {
+      "path": "src/plugin.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "5595327ceeee59659777f53fe3a4552ba464cfe9",
+      "file_sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45"
+    },
+    {
+      "path": "src/sound/mod.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "925c6cc51dcafc684950d055f14f4bb097b77231",
+      "file_sha256": "2be0b1636b7b94c360ce53917aa462437184773b76afdc1b7e752afc97fda3a9"
+    },
+    {
+      "path": "src/sound/waveform.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "c4de40db1befa137188a23f6968fab57c07da658",
+      "file_sha256": "6dd9ac998062fc27582451058a4567fa157986e29015b92153886a5a7c0443f8"
+    },
+    {
+      "path": "src/ui/render_art.rs",
+      "sha": "d057af736d48cdbc0af0fca7293756b16a00a252",
+      "blob": "9edd5c41919bb0cbaa2af737c0110055aaee6841",
+      "file_sha256": "e895bab21adb977e7d05cc1c48de2cf0065acb5e35192f5731768f6d15a45967"
+    }
+  ],
+  "preserved23": [
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_checked_store_capacity_rejection_is_explicit_and_all_or_none_without_heap",
+      "body_sha256": "5861174bc3fd678162a23d507c9e2d8532c41729395051c4f6051ab7e7bcb2b7",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_reset_missing_preseed_rejects_without_clearing_existing_table",
+      "body_sha256": "4a338d08f84969c9109dbfba741c2ea077e661581f6ee71203e6f4f737f6e725",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_seam_does_not_change_legacy_store_missing_read_or_dropped_write_behavior",
+      "body_sha256": "afc6eec0bc581a58ac704363886cb52c6fbf3358554bd8d513ebf31632eb4e51",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_op_keeps_existing_instruction_size_budget",
+      "body_sha256": "cf2de57e21a877e71f8176f0fc02a46bdb2f28d713957a74d5a9aeb74d774799",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_four_operand_values_and_slice_indices_are_distinct",
+      "body_sha256": "e78392d857d2bb549f22ac1a5c0ea36348cd1d933dfb7c9d97a93f92f914624b",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_slice_index_bounds_do_not_alias_value_or_allocate_from_value",
+      "body_sha256": "4d7880aa12ecc14c0ee717869b8c5eac030d5ee5e607b0298bbddde39c7d7c1e",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_requests_do_not_cross_widget_source_identity",
+      "body_sha256": "ca298ffb74529a2ffdc6cbf0fa38a04ff6b0ec1a31ef00f0fb4672f6aab73622",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_decoder_rejects_malformed_and_unknown_property_requests",
+      "body_sha256": "c0fbe2e58592e834bcbe9f098f2223587b577bbcad92f583bd42c0c16795ba0a",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_setter_requires_four_operands_despite_vendor_getter_example",
+      "body_sha256": "284fd215b6d1692e13eb330d1d2c45ccf339a5262c24984a2bb131dd20dfb3e1",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_init_getter_roundtrip_requirement",
+      "body_sha256": "964fa28a04fafff4928c851f396a9e046641edc901a90c952c1adfebd66c6464",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_state_and_projection_roundtrip_without_audio_heap",
+      "body_sha256": "57228b7ee437eb2f0a168ce4d5a48e5fb0287cc89857b81de81394b61f1b75a5",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_dynamic_symbol_and_random_operands_evaluate_once",
+      "body_sha256": "e3e153cd1d2ed3bab1ad9fc697cb0b508817cd9723e6c2536b64da30e6f7a75f",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_rejections_preserve_attachment_table_and_projection",
+      "body_sha256": "fcaed55c048374a26c323fe337818ea53f4695a13645c8db434049144b8b420a",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_attachment_reset_cannot_cross_coalescing_boundary",
+      "body_sha256": "671d8104eb7765d8201690cef2a78fa404f4c2f2c6eba474d5aa60791e8fc9f4",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_tail_coalescing_respects_unrelated_effect_order",
+      "body_sha256": "bde2ef00b1d5119046e04972bc62152c47d731cde96a283097adda4f41b3d2a3",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_sparse_store_pressure_faults_without_fake_readback_or_effect",
+      "body_sha256": "8c415c572a1501451d89fb27a4d1edcaa49ce6d8e606ccc9183928a956a7d2d7",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_outbox_pressure_rejects_reset_before_mutating_any_key",
+      "body_sha256": "67f52d7d0554b4aa1c1892253bd656efb06db4b95355ddc6769972029d8c5435",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_widgets_instances_cells_and_interned_symbol_maps_do_not_alias",
+      "body_sha256": "174c1c0c7f52138f3a7df53da635320074184888bc413bc0dcfe74d0c6034fd7",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_retained_old_plan_state_isolated_and_stale_projection_rejected",
+      "body_sha256": "0e5c674e5edf2a4300811f0365b673ae22e3090e88766aac6bf16ae3d6588ce6",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_init_alias_imported_placeholder_and_multiple_widgets_use_hir_identity",
+      "body_sha256": "050505b4789aba545d6342805555493e1fbb3f26f2bcdc98df4001524181bc60",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_cache_hit_miss_roundtrip_and_missing_captured_source_rejection",
+      "body_sha256": "894a5f8874435ac1a152dc44b8cfeaf403b6e15d76d24b2b19cb95e9e49aefbc",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "name": "waveform_headless_initial_seed_and_runtime_roundtrip_requirement",
+      "body_sha256": "147a31610d231f086ff8ef749328b5a52aa4fe7fe3d33790ecdab61a43a2e8a9",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/ui.rs",
+      "name": "typed_seed_meter_and_waveform_addresses_reach_ir",
+      "body_sha256": "f6c3cbff2e0e1426e0adde6273418cc2e98d9772d756d526d4a33f560051db38",
+      "status": "BYTE_IDENTICAL_NOT_RUN"
+    }
+  ],
+  "test_catalog": [
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_checked_store_capacity_rejection_is_explicit_and_all_or_none_without_heap",
+      "start_line": 31,
+      "end_line": 41,
+      "body_sha256": "5861174bc3fd678162a23d507c9e2d8532c41729395051c4f6051ab7e7bcb2b7",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_reset_missing_preseed_rejects_without_clearing_existing_table",
+      "start_line": 44,
+      "end_line": 56,
+      "body_sha256": "4a338d08f84969c9109dbfba741c2ea077e661581f6ee71203e6f4f737f6e725",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_seam_does_not_change_legacy_store_missing_read_or_dropped_write_behavior",
+      "start_line": 59,
+      "end_line": 71,
+      "body_sha256": "afc6eec0bc581a58ac704363886cb52c6fbf3358554bd8d513ebf31632eb4e51",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_op_keeps_existing_instruction_size_budget",
+      "start_line": 74,
+      "end_line": 76,
+      "body_sha256": "cf2de57e21a877e71f8176f0fc02a46bdb2f28d713957a74d5a9aeb74d774799",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_wide_nonpositive_and_unattached_sources_reject_get_set_with_full_store_unchanged",
+      "start_line": 88,
+      "end_line": 112,
+      "body_sha256": "e511ad6858b300f0149fdf9bfbe5b37220ad73cec9981bfc2f2afd860c2412ee",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_exact_positive_i32_source_boundary_and_unattached_atomic_reset_are_admitted",
+      "start_line": 115,
+      "end_line": 157,
+      "body_sha256": "d9269772cd48beabb79525df76c0b72c1997d176dd527b190ad657e84d47fcdf",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_full_store_existing_scalar_overwrite_is_admitted",
+      "start_line": 160,
+      "end_line": 176,
+      "body_sha256": "f561123784eec3371c37deb791f3b47c736a67adf6b9185a372f6be0b14c997d",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_all_actions_reject_overflowing_register_window_before_reads_or_mutation",
+      "start_line": 179,
+      "end_line": 199,
+      "body_sha256": "a11ea408b49117a874be31b3f0837e8116597ee3fc4d91bde1a97d45508c0541",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-core/tests/waveform.rs",
+      "name": "waveform_all_actions_accept_last_complete_u16_register_window",
+      "start_line": 202,
+      "end_line": 230,
+      "body_sha256": "dbcd922b9582cd10a576a17f9b796e6487364b774fd40d7bd7185438b31a63cd",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/ui.rs",
+      "name": "typed_seed_meter_and_waveform_addresses_reach_ir",
+      "start_line": 331,
+      "end_line": 382,
+      "body_sha256": "f6c3cbff2e0e1426e0adde6273418cc2e98d9772d756d526d4a33f560051db38",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/ui_callbacks.rs",
+      "name": "waveform_headless_initial_seed_and_runtime_roundtrip_requirement",
+      "start_line": 214,
+      "end_line": 257,
+      "body_sha256": "147a31610d231f086ff8ef749328b5a52aa4fe7fe3d33790ecdab61a43a2e8a9",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_four_operand_values_and_slice_indices_are_distinct",
+      "start_line": 27,
+      "end_line": 54,
+      "body_sha256": "e78392d857d2bb549f22ac1a5c0ea36348cd1d933dfb7c9d97a93f92f914624b",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_slice_index_bounds_do_not_alias_value_or_allocate_from_value",
+      "start_line": 57,
+      "end_line": 67,
+      "body_sha256": "4d7880aa12ecc14c0ee717869b8c5eac030d5ee5e607b0298bbddde39c7d7c1e",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_requests_do_not_cross_widget_source_identity",
+      "start_line": 70,
+      "end_line": 85,
+      "body_sha256": "ca298ffb74529a2ffdc6cbf0fa38a04ff6b0ec1a31ef00f0fb4672f6aab73622",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_decoder_rejects_malformed_and_unknown_property_requests",
+      "start_line": 88,
+      "end_line": 109,
+      "body_sha256": "c0fbe2e58592e834bcbe9f098f2223587b577bbcad92f583bd42c0c16795ba0a",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_setter_requires_four_operands_despite_vendor_getter_example",
+      "start_line": 112,
+      "end_line": 119,
+      "body_sha256": "284fd215b6d1692e13eb330d1d2c45ccf339a5262c24984a2bb131dd20dfb3e1",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform.rs",
+      "name": "waveform_init_getter_roundtrip_requirement",
+      "start_line": 122,
+      "end_line": 139,
+      "body_sha256": "964fa28a04fafff4928c851f396a9e046641edc901a90c952c1adfebd66c6464",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_state_and_projection_roundtrip_without_audio_heap",
+      "start_line": 66,
+      "end_line": 89,
+      "body_sha256": "57228b7ee437eb2f0a168ce4d5a48e5fb0287cc89857b81de81394b61f1b75a5",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_dynamic_symbol_and_random_operands_evaluate_once",
+      "start_line": 92,
+      "end_line": 116,
+      "body_sha256": "e3e153cd1d2ed3bab1ad9fc697cb0b508817cd9723e6c2536b64da30e6f7a75f",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_rejections_preserve_attachment_table_and_projection",
+      "start_line": 119,
+      "end_line": 146,
+      "body_sha256": "fcaed55c048374a26c323fe337818ea53f4695a13645c8db434049144b8b420a",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_attachment_reset_cannot_cross_coalescing_boundary",
+      "start_line": 149,
+      "end_line": 171,
+      "body_sha256": "671d8104eb7765d8201690cef2a78fa404f4c2f2c6eba474d5aa60791e8fc9f4",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_tail_coalescing_respects_unrelated_effect_order",
+      "start_line": 174,
+      "end_line": 189,
+      "body_sha256": "bde2ef00b1d5119046e04972bc62152c47d731cde96a283097adda4f41b3d2a3",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_sparse_store_pressure_faults_without_fake_readback_or_effect",
+      "start_line": 192,
+      "end_line": 225,
+      "body_sha256": "8c415c572a1501451d89fb27a4d1edcaa49ce6d8e606ccc9183928a956a7d2d7",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_outbox_pressure_rejects_reset_before_mutating_any_key",
+      "start_line": 228,
+      "end_line": 252,
+      "body_sha256": "67f52d7d0554b4aa1c1892253bd656efb06db4b95355ddc6769972029d8c5435",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_widgets_instances_cells_and_interned_symbol_maps_do_not_alias",
+      "start_line": 255,
+      "end_line": 280,
+      "body_sha256": "174c1c0c7f52138f3a7df53da635320074184888bc413bc0dcfe74d0c6034fd7",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_retained_old_plan_state_isolated_and_stale_projection_rejected",
+      "start_line": 283,
+      "end_line": 313,
+      "body_sha256": "0e5c674e5edf2a4300811f0365b673ae22e3090e88766aac6bf16ae3d6588ce6",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_init_alias_imported_placeholder_and_multiple_widgets_use_hir_identity",
+      "start_line": 316,
+      "end_line": 338,
+      "body_sha256": "050505b4789aba545d6342805555493e1fbb3f26f2bcdc98df4001524181bc60",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_cache_hit_miss_roundtrip_and_missing_captured_source_rejection",
+      "start_line": 342,
+      "end_line": 364,
+      "body_sha256": "894a5f8874435ac1a152dc44b8cfeaf403b6e15d76d24b2b19cb95e9e49aefbc",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "cache"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_projection_table_addresses_remain_per_index_in_final_write_order",
+      "start_line": 367,
+      "end_line": 386,
+      "body_sha256": "b20603f7067d27f6398fb7dddff5d5f2fe170e0d36f0f1b387e0d2a77de41f10",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_init_highlight_revisit_and_clear_getters_match_seeded_scalar_state",
+      "start_line": 395,
+      "end_line": 412,
+      "body_sha256": "7c6f39fd751ed8d733b26821fe9fa0f055674dd68f0309dce007200dc9518e73",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_runtime_highlight_revisit_clear_and_unchanged_revisit_agree_before_and_after_drain",
+      "start_line": 415,
+      "end_line": 454,
+      "body_sha256": "8ffa12ced111e83579002c746d7917c180c6c29067a6d2256db975bf18c59f13",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_highlight_projection_preserves_reattach_table_widget_and_effect_boundaries",
+      "start_line": 457,
+      "end_line": 489,
+      "body_sha256": "9b771fe9a694328e6b725124dcfe44ea7f5a1126d4fdde765dd5afcce43258b7",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_cached_requests_reject_index_type_shape_ui_and_source_schema_bypass",
+      "start_line": 500,
+      "end_line": 553,
+      "body_sha256": "1d61903bb8a0f9daefea78e35fe10800b39797b8d69bc65698c18fd503be7e5d",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "cache"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_cached_boundary_requests_and_imported_names_match_fresh_owned_state",
+      "start_line": 557,
+      "end_line": 596,
+      "body_sha256": "e5997c879706ac832af2cf4aefd3566cbbd2cb3f9a9efd578dc0eb9380ad5d7a",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "cache"
+    },
+    {
+      "path": "crates/sampler-ksp/tests/waveform_runtime.rs",
+      "name": "waveform_full_outbox_matching_tail_replacement_remains_admitted",
+      "start_line": 599,
+      "end_line": 622,
+      "body_sha256": "3e76affd8218df13e1deae564b4a791de217eb39f04dff4301efee6199ffcb06",
+      "execution": "NOT_RUN",
+      "typecheck": "NOT_RUN",
+      "feature": "default"
+    }
+  ],
+  "primary_pairs": [
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#attach_zone--",
+      "section": "attach_zone()",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "archive_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-attach_zone--.txt",
+      "excerpt_sha256": "3d713aac8b97a88aa60682a50f445c8acae180563cb564c98549102638e9e599",
+      "authority": "PRIMARY_SPEC_ONLY",
+      "native": "UNKNOWN"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_wf_property--",
+      "section": "set_ui_wf_property()",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "archive_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-set_ui_wf_property--.txt",
+      "excerpt_sha256": "2a9471a493de93c180f0347fdbe5c79e5ac00ec8387c6dd2445a03f8ced165e4",
+      "authority": "PRIMARY_SPEC_ONLY",
+      "native": "UNKNOWN"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_wf_property--",
+      "section": "get_ui_wf_property()",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-ui.html",
+      "archive_sha256": "ad269b9e26a32e9f1a8aea9b00d8e199af43551adb3b47cf71b93a7234e09d5e",
+      "excerpt_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-ui-get_ui_wf_property--.txt",
+      "excerpt_sha256": "1cb17d2563736d61695192c94857f00cae950997980124b57a6244f6886c5263",
+      "authority": "PRIMARY_SPEC_ONLY",
+      "native": "UNKNOWN"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters#ui_waveform-731967",
+      "section": "ui_waveform",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-control-pars.html",
+      "archive_sha256": "8b1d2badc937f5980135c8b671b1d6c2bd906d2f4c80db520ccae270a766858c",
+      "excerpt_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-control-pars-ui_waveform-731967.txt",
+      "excerpt_sha256": "2a656b21901e4fcd4871a3fe335159bbebb3f40abe609ba9c0a1e8590771cdd3",
+      "authority": "PRIMARY_SPEC_ONLY",
+      "native": "UNKNOWN"
+    },
+    {
+      "url": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-controls#ui_waveform",
+      "section": "ui_waveform",
+      "archive_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/official-docs/ksp-controls.html",
+      "archive_sha256": "c736e2f0a27e8131a8cf8fa2669a8f1b2ad26a27dadcbc916c20ea00f4ed518d",
+      "excerpt_path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/round11-selected-sections/ksp-controls-ui_waveform.txt",
+      "excerpt_sha256": "eed4be25411400bc47fe029b4aa04a4cff1588c08de47d84699285e98c1d713b",
+      "authority": "PRIMARY_SPEC_ONLY",
+      "native": "UNKNOWN"
+    }
+  ],
+  "checks": [
+    {
+      "finding": "WF-R1",
+      "input": [
+        3,
+        4,
+        3
+      ],
+      "historical": 4,
+      "corrected": 3
+    },
+    {
+      "finding": "WF-R1",
+      "input": [
+        -1,
+        3,
+        -1
+      ],
+      "historical": 3,
+      "corrected": -1
+    },
+    {
+      "finding": "WF-R2",
+      "historical_cached_highlight_65536": "PROMOTED_BY_SOURCE_RULE",
+      "corrected": "REJECTED_BY_MODEL",
+      "negative_schema_cases": 20,
+      "accepted_boundaries": [
+        -1,
+        0,
+        65535
+      ]
+    },
+    {
+      "finding": "WF-R3",
+      "cases": [
+        {
+          "zone": 4294967323,
+          "historical_admitted": true,
+          "corrected_admitted": false
+        },
+        {
+          "zone": 9223372036854775807,
+          "historical_admitted": true,
+          "corrected_admitted": false
+        },
+        {
+          "zone": 0,
+          "historical_admitted": true,
+          "corrected_admitted": false
+        },
+        {
+          "zone": -27,
+          "historical_admitted": false,
+          "corrected_admitted": false
+        },
+        {
+          "zone": -1,
+          "historical_admitted": false,
+          "corrected_admitted": false
+        },
+        {
+          "zone": 27,
+          "historical_admitted": true,
+          "corrected_admitted": true
+        },
+        {
+          "zone": 2147483647,
+          "historical_admitted": true,
+          "corrected_admitted": true
+        }
+      ]
+    },
+    {
+      "finding": "WF-R4",
+      "cases": [
+        {
+          "action": "Set",
+          "count": 4,
+          "valid_edge": 65532,
+          "overflow_start": 65533,
+          "mathematical_last": 65536,
+          "wrapped_last": 0,
+          "corrected": "REJECT_BEFORE_READ"
+        },
+        {
+          "action": "Get",
+          "count": 3,
+          "valid_edge": 65533,
+          "overflow_start": 65534,
+          "mathematical_last": 65536,
+          "wrapped_last": 0,
+          "corrected": "REJECT_BEFORE_READ"
+        },
+        {
+          "action": "Attach",
+          "count": 3,
+          "valid_edge": 65533,
+          "overflow_start": 65535,
+          "mathematical_last": 65537,
+          "wrapped_last": 1,
+          "corrected": "REJECT_BEFORE_READ"
+        }
+      ]
+    }
+  ],
+  "highlight_four_write_model_cases": 625,
+  "immutable_inputs": [
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/waveform-runtime-source-review.md",
+      "sha256": "2aed9d5fa9390940c1721c895aedf4833250d479192104b151100b554b21026a"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/waveform-runtime-source-review.json",
+      "sha256": "cfad205e62c53994bf6fbd43d07be0ece0026114c728f3672cf989c0880388bc"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/root-waveform-runtime-source-review-check.json",
+      "sha256": "055244e54520658bdff7865fc5633f37d1ce7e232b3c2d18698dd6d9b5287280"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/waveform-runtime-ready.md",
+      "sha256": "a5b5d6e99225c08429270d3df79ab98420ca8c1f0bfb188f061f0e8ce093b294"
+    },
+    {
+      "path": "/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff/handoff/waveform-runtime-ready.json",
+      "sha256": "cd1fe6e7f1d12278b338046fd18187307a91d52ca72d5659237840a0ac4c9f89"
+    }
+  ],
+  "checker_sha256": "d83ff477d51d658122780f420ed83cf9efc8329a8f6b3739c9aa3061920e9fb8",
+  "rust_tests": "NOT_RUN",
+  "rust_typechecks": "NOT_RUN",
+  "native": "UNKNOWN",
+  "cpu_and_ram_below_both_v1_and_kontakt": "UNACHIEVED"
+}

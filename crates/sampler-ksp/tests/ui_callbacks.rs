@@ -8,7 +8,10 @@ fn runtime(source: &str) -> Runtime {
         48000,
         KspLimits::LIBRARY,
         &[],
-        &Environment::default(),
+        &Environment {
+            zones: [(27, [0, 0, 127]), (91, [0, 0, 127])].into(),
+            ..Environment::default()
+        },
     )
     .unwrap();
     let plan = script
@@ -202,5 +205,53 @@ fn update_without_global_controls_runs_after_local_and_on_widgets_without_local(
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(122));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(8));
+    assert!(rt.take_fault().is_none());
+}
+
+/// Authored NOT_RUN requirement using the public compiler/binder/Runtime.
+/// No ScriptView or effect drain: UI publication does not own script state.
+#[test]
+fn waveform_headless_initial_seed_and_runtime_roundtrip_requirement() {
+    let mut rt = runtime(
+        "on init
+         declare $seed_cursor declare $seed_table declare $cursor
+         declare $flags declare $table declare $alias declare $midi
+         declare ui_waveform $w(1,1) declare ui_button $apply
+         attach_zone($w,27,3)
+         set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,12000)
+         set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,77)
+         end on
+         on ui_control($apply)
+         $seed_cursor := get_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0)
+         $seed_table := get_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3)
+         attach_zone($w,27,3)
+         set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0,24000)
+         set_ui_wf_property($w,$UI_WF_PROP_FLAGS,0,11)
+         set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3,99)
+         set_ui_wf_property($w,$UI_WF_PROP_MIDI_DRAG_START_NOTE,0,65)
+         $cursor := get_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,0)
+         $flags := get_ui_wf_property($w,$UI_WF_PROP_FLAGS,0)
+         $table := get_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,3)
+         $alias := get_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,77)
+         $midi := get_ui_wf_property($w,$UI_WF_PROP_MIDI_DRAG_START_NOTE,0)
+         end on",
+    );
+    let plan = rt.active_plan();
+    rt.invoke_control(
+        context(&rt),
+        plan,
+        None,
+        ControlWrite {
+            id: sampler_ksp::derived_control_id(0, "$apply"),
+            value: ControlValue::Integer(1),
+        },
+    )
+    .unwrap();
+    for (index, expected) in [12000, 77, 24000, 11, 99, 0, 65].into_iter().enumerate() {
+        assert_eq!(
+            rt.script_cell(plan, ScriptInstanceId(0), u32::try_from(index).unwrap()),
+            Ok(expected)
+        );
+    }
     assert!(rt.take_fault().is_none());
 }

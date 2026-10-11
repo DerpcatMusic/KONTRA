@@ -217,6 +217,9 @@ pub(crate) fn apply_writes(
                 fx.output_set = true;
             }
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
+            "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
+            "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
             _ => {}
         }
     }
@@ -303,6 +306,24 @@ pub(crate) struct Convolution {
 }
 
 impl Slot {
+    fn apply_eq_gain(&mut self, band: usize, value: i32) {
+        let Some(Params::Eq { bands }) = self.params() else {
+            return;
+        };
+        if band >= bands.len() {
+            return;
+        }
+        // Init-only writes have no live control owner. Edit the validated legacy
+        // Hz/octaves/dB record before static translation; native gain law is unverified.
+        let db = sampler_core::EngineParameterLaw::Linear {
+            low: -18.,
+            high: 18.,
+        }
+        .decode(value) as f32;
+        let at = 8 + band * 12 + 8;
+        self.public[at..at + 4].copy_from_slice(&db.to_le_bytes());
+    }
+
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
@@ -1108,7 +1129,24 @@ pub(crate) fn chain_with(
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
             },
-            None => modelled = false,
+            None => {
+                modelled = false;
+                // Preserve framing failures instead of reporting them only as missing DSP.
+                // Filter subtypes have a separate versioned reader and admission path.
+                if fx.module != 0x18
+                    && let Err(error) = ni_file::kontakt::objects::EffectParameters::read(
+                        fx.module,
+                        fx.version,
+                        &fx.public,
+                    )
+                {
+                    notes.push((
+                        "parameter framing".into(),
+                        error.to_string(),
+                        sampler_ir::Reason::InvalidValue,
+                    ));
+                }
+            }
         }
         if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
@@ -1675,6 +1713,162 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     use ni_file::kontakt::Chunk;
+
+    fn legacy_eq_slot(kind: i32) -> super::Slot {
+        let mut public = [kind.to_le_bytes(); 2].concat();
+        for values in [[300f32, 1., 0.], [1000., 1.5, 0.], [6000., 2., 0.]]
+            .into_iter()
+            .take((kind - 21) as usize)
+        {
+            for value in values {
+                public.extend(value.to_le_bytes());
+            }
+        }
+        let mut fx = slot(0x18, public, 1.);
+        fx.slot = 5;
+        fx
+    }
+
+    #[test]
+    fn init_only_group_eq_gain_writes_reach_static_bands() {
+        let initialized = sampler_ksp::initialize(
+            "on init\nset_engine_par($ENGINE_PAR_GAIN1, 0, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN1, 250000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN2, 1000000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN3, 750000, 7, 5, -1)\nend on",
+            sampler_ksp::Limits::LIBRARY,
+            &Default::default(),
+        ).unwrap();
+        assert!(!initialized.writes_effect_slots());
+        let writes = initialized.engine_pars();
+        for kind in 22..=24 {
+            let mut fx = legacy_eq_slot(kind);
+            let saved = fx.public.clone();
+            apply_writes(std::slice::from_mut(&mut fx), &writes, 7, -1);
+            let Some(Params::Eq { bands }) = fx.params() else {
+                panic!("legacy EQ record must still decode")
+            };
+            for (band, values) in bands.iter().enumerate() {
+                assert_eq!(values[2], [-9., 18., 9.][band]);
+                let at = 8 + band * 12;
+                assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
+            }
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            let filters: Vec<_> = built
+                .processors
+                .iter()
+                .filter_map(|p| match p {
+                    sampler_ir::Processor::Filter(f) => Some(f),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(filters.len(), bands.len());
+            for (filter, values) in filters.iter().zip(&bands) {
+                assert_eq!(
+                    filter.cutoff,
+                    sampler_ir::Frequency::Hertz(f64::from(values[0]))
+                );
+                assert_eq!(
+                    filter.kind,
+                    sampler_ir::FilterKind::Peak {
+                        gain: sampler_ir::Gain::Decibels(f64::from(values[2])),
+                    }
+                );
+            }
+            assert!(
+                built
+                    .notes
+                    .iter()
+                    .all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
+            );
+        }
+    }
+
+    #[test]
+    fn init_eq_gain_writes_reject_wrong_owners_and_clamp_own_law() {
+        let mut write = sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_GAIN1".into(),
+            value: 1_000_000,
+            group: 7,
+            slot: 5,
+            generic: -1,
+        };
+        for (group, physical_slot, generic) in [(8, 5, -1), (7, 4, -1), (7, 5, 1), (-1, 5, 1)] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            (write.group, write.slot, write.generic) = (group, physical_slot, generic);
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+            // Even an exact instrument rack address must remain outside this route.
+            if group == -1 {
+                apply_writes(
+                    std::slice::from_mut(&mut fx),
+                    std::slice::from_ref(&write),
+                    group,
+                    generic,
+                );
+                assert_eq!(fx.public, saved);
+            }
+        }
+        (write.group, write.slot, write.generic) = (7, 5, -1);
+        for name in [
+            "ENGINE_PAR_GAIN2",
+            "ENGINE_PAR_GAIN3",
+            "ENGINE_PAR_GAIN4",
+            "ENGINE_PAR_GAIN01",
+        ] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            write.parameter = name.into();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+        write.parameter = "ENGINE_PAR_GAIN1".into();
+        for value in [i32::MIN, i32::MAX] {
+            let mut fx = legacy_eq_slot(22);
+            write.value = value;
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(
+                fx.params(),
+                Some(Params::Eq {
+                    bands: vec![[300., 1., if value < 0 { -18. } else { 18. }]],
+                })
+            );
+        }
+        for variant in 0..5 {
+            let mut fx = legacy_eq_slot(22);
+            match variant {
+                0 => fx.module = 0x44,
+                1 => {
+                    fx.public.pop();
+                }
+                2 => fx.public.push(0),
+                3 => fx.public[4..8].copy_from_slice(&23i32.to_le_bytes()),
+                _ => fx.public[8..12].copy_from_slice(&f32::NAN.to_le_bytes()),
+            }
+            let saved = fx.public.clone();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+    }
+
     #[test]
     fn live_eq_retains_flat_bands_and_their_physical_indices() {
         let mut public = Vec::new();
@@ -2080,6 +2274,125 @@ mod tests {
             dry_level: 1.0,
             output_set: true,
             public,
+        }
+    }
+
+    // Owned wire fixture: the wrapper's internal enum deliberately differs from the child ID.
+    fn effect_fixture(module: u16, version: u16, public: &[u8]) -> BParamArrayBParFX8 {
+        mod wire {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/chunks.rs"
+            ));
+        }
+        let mut state = 20u32.to_le_bytes().to_vec();
+        state.extend([0; 6]);
+        state.extend(1f32.to_le_bytes());
+        state.extend(0f32.to_le_bytes());
+        state.extend((-1i32).to_le_bytes());
+        let child = wire::chunk(module, &wire::object(version, &[], public, &[]));
+        let wrapper = wire::object(0x50, &state, &[], &child);
+        let mut array = vec![0];
+        array.extend(0x13u16.to_le_bytes());
+        array.extend(8u32.to_le_bytes());
+        for index in 0..8 {
+            array.push(u8::from(index == 5));
+            if index == 5 {
+                array.extend(wire::chunk(0x25, &wrapper));
+            }
+        }
+        BParamArrayBParFX8::try_from(&Chunk {
+            id: RACK,
+            data: array,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn malformed_effect_payloads_keep_raw_bytes_and_report_physical_framing_errors() {
+        use sampler_ir::{Reason, SourceParameterValue};
+        let cases = [
+            (0x13, 0x50, vec![0; 3], "Static error: Truncated FX parameter"),
+            (0x13, 0x50, vec![0; 5], "Static error: Trailing FX parameter bytes"),
+            (0x42, 0x10, vec![0; 12], "Static error: Truncated FX parameter"),
+            (0x17, 0x51, vec![0xff; 4], "Static error: Truncated FX parameter list"),
+        ];
+        for (module, version, bytes, expected) in cases {
+            let array = effect_fixture(module, version, &bytes);
+            let slots = rack(&array, |_, error| panic!("{error}"));
+            assert_eq!(slots.len(), 1);
+            assert_eq!(
+                (slots[0].slot, slots[0].module, slots[0].version),
+                (5, module, version)
+            );
+            assert_eq!(slots[0].public, bytes);
+            let records = crate::source_parameters::rack("owned rack", &array).unwrap();
+            let saved = records.iter().find(|r| r.object_id == module).unwrap();
+            assert_eq!(saved.version, version);
+            assert_eq!(saved.location, "owned rack/slot 5/module");
+            assert!(saved.fields.iter().any(|f| {
+                f.name == "undecoded_public"
+                    && f.value == SourceParameterValue::Opaque(bytes.clone())
+            }));
+            for scope in [Scope::Voice, Scope::Bus] {
+                let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                assert!(
+                    out.processors.is_empty(),
+                    "a rejected slot must not become a Mix identity"
+                );
+                assert!(out.send_taps.is_empty());
+                assert!(out.notes.iter().any(|(slot, field, value, reason)| {
+                    *slot == 5
+                        && field.ends_with(": parameter framing")
+                        && value == expected
+                        && *reason == Reason::InvalidValue
+                }));
+                assert!(out.notes.iter().any(|(slot, field, _, reason)| {
+                    *slot == 5 && field == "effect" && *reason == Reason::NotModeled
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn valid_unimplemented_and_unknown_effects_stay_unadmitted_without_framing_errors() {
+        use sampler_ir::{Reason, SourceParameterValue};
+        let mut tape: Vec<u8> = [0.5f32, 0.25, 0.75]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        tape.push(0xa5); // Raw byte, not a guessed Boolean or quality ordinal.
+        for (module, bytes) in [(0x42, tape), (0x65, vec![0xde, 0xad, 0xbe, 0xef])] {
+            let array = effect_fixture(module, 0x10, &bytes);
+            let slots = rack(&array, |_, error| panic!("{error}"));
+            assert_eq!(slots[0].public, bytes);
+            let records = crate::source_parameters::rack("owned rack", &array).unwrap();
+            let saved = records.iter().find(|r| r.object_id == module).unwrap();
+            assert_eq!(
+                (saved.version, saved.location.as_str()),
+                (0x10, "owned rack/slot 5/module")
+            );
+            if module == 0x42 {
+                assert!(matches!(slots[0].params(), Some(Params::Fields(_))));
+                assert!(saved.fields.iter().any(|f| {
+                    f.name == "quality" && f.value == SourceParameterValue::Integer(0xa5)
+                }));
+            } else {
+                assert!(slots[0].params().is_none());
+                assert!(saved.fields.iter().any(|f| {
+                    f.name == "undecoded_public"
+                        && f.value == SourceParameterValue::Opaque(bytes.clone())
+                }));
+            }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                assert!(out.processors.is_empty());
+                assert_eq!(out.notes.len(), 1);
+                assert_eq!(
+                    (out.notes[0].0, out.notes[0].1.as_str(), out.notes[0].3),
+                    (5, "effect", Reason::NotModeled)
+                );
+            }
         }
     }
 

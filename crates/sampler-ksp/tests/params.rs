@@ -155,6 +155,200 @@ fn note_volume_pan_and_fades_shape_the_voice() {
 }
 
 #[test]
+fn fade_curve_array_selectors_reach_audio_and_use_time_mirrored_fade_out() {
+    // Independent quarter-time values from the documented five equations.
+    let gains = [
+        (0.25, 0.75),
+        (0.38268343, 0.92387953),
+        (0.14644661, 0.85355339),
+        (0.0625, 0.5625),
+        (0.4375, 0.9375),
+    ];
+    for (index, (fade_in, fade_out)) in gains.into_iter().enumerate() {
+        for out in [false, true] {
+            for block in [1, 17, 128] {
+                let call = if out {
+                    "fade_out($EVENT_ID,100000,$stop,%curves[$index])"
+                } else {
+                    "fade_in($EVENT_ID,100000,%curves[$index])"
+                };
+                let mut rt = runtime(&format!(
+                    "on init declare $index := {index} declare $stop := 0
+                     declare %curves[5] := ($NI_FADE_LINEAR,$NI_FADE_EQUAL_POWER,
+                     $NI_FADE_S_CURVE,$NI_FADE_EXPONENTIAL,$NI_FADE_LOGARITHMIC)
+                     end on on note {call} end on"
+                ));
+                rt.trigger(input(60), 60, 1.).unwrap();
+                let mut audio = [[0.; 2]; 1201];
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                }
+                let gain = if out { fade_out } else { fade_in };
+                assert!(
+                    audio[1199]
+                        .iter()
+                        .all(|value| (value - 0.5 * gain).abs() < 2e-7),
+                    "curve {index}, out {out}, block {block}, elapsed1200: {:?}",
+                    audio[1199]
+                );
+                assert!(rt.take_fault().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn fade_curve_inside_mix_cell_matches_exponential_not_endpoint_interpolation() {
+    // Sample-end clock: index15 is elapsed16, inside the 64-frame gain cell.
+    for out in [false, true] {
+        for block in [1, 17, 128] {
+            let call = if out {
+                "fade_out($EVENT_ID,8000,0,$NI_FADE_EXPONENTIAL)"
+            } else {
+                "fade_in($EVENT_ID,8000,$NI_FADE_EXPONENTIAL)"
+            };
+            let mut control = runtime("on note end on");
+            control.trigger(input(60), 60, 1.).unwrap();
+            assert_eq!(control.voice_count(), 1);
+            let mut unfaded = [[0.; 2]; 129];
+            for chunk in unfaded.chunks_mut(block) {
+                control.render(chunk).unwrap();
+            }
+            assert!(unfaded.iter().all(|frame| *frame == [0.5; 2]));
+            let mut rt = runtime(&format!("on note {call} end on"));
+            rt.trigger(input(60), 60, 1.).unwrap();
+            assert_eq!(rt.voice_count(), 1);
+            assert!(rt.take_fault().is_none());
+            let mut audio = [[0.; 2]; 129];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(rt.now(), control.now());
+            assert_ne!(audio[15], unfaded[15]);
+            let t = 16.0_f32 / 384.0; // Exactly8000us at48kHz.
+            let expected = 0.5 * if out { (1.0 - t).powi(2) } else { t.powi(2) };
+            assert!(
+                audio[15]
+                    .iter()
+                    .all(|value| (value - expected).abs() < 1e-7),
+                "out {out}, block {block}, elapsed16: {:?}, expected {expected}",
+                audio[15]
+            );
+            assert!(rt.take_fault().is_none());
+        }
+    }
+}
+
+#[test]
+fn fade_curve_script_clock_and_omitted_linear_match_sample_end_control() {
+    for origin in [0, 128] {
+        for out in [false, true] {
+            for block in [1, 17, 128] {
+                let mut previous = None;
+                for selector in ["", ",$NI_FADE_LINEAR"] {
+                    let call = if out {
+                        format!("fade_out($EVENT_ID,8000,0{selector})")
+                    } else {
+                        format!("fade_in($EVENT_ID,8000{selector})")
+                    };
+                    let mut rt = runtime(&format!("on note {call} end on"));
+                    rt.render(&mut vec![[0.; 2]; origin]).unwrap();
+                    assert_eq!(rt.now(), origin as u64);
+                    rt.trigger(input(60), 60, 1.).unwrap();
+                    assert_eq!(rt.now(), origin as u64); // Callback runs synchronously.
+                    let mut audio = [[0.; 2]; 385];
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                    for index in [0, 15, 383, 384] {
+                        let t = ((index + 1) as f32 / 384.).min(1.);
+                        let expected = 0.5 * if out { 1. - t } else { t };
+                        assert!(
+                            audio[index].iter().all(|v| (v - expected).abs() < 1e-7),
+                            "origin {origin}, out {out}, block {block}, index {index}: {:?}",
+                            audio[index]
+                        );
+                    }
+                    if let Some(default) = previous {
+                        assert_eq!(audio, default); // Optional selector keeps legacy PCM bits.
+                    }
+                    previous = Some(audio);
+                    assert!(rt.take_fault().is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fade_curve_unknown_selector_faults_without_a_silent_linear_substitution() {
+    for selector in [-1, 5, 99] {
+        let mut rt = runtime(&format!(
+            "on init declare $curve := {selector} declare $id := 0 end on
+             on note $id := $EVENT_ID end on
+             on controller fade_out($id,100000,1,$curve) end on"
+        ));
+        let note = rt.trigger(input(60), 60, 1.).unwrap();
+        assert_eq!(level(&mut rt), [0.5; 2]);
+        assert_eq!(rt.voice_count(), 1);
+        let origin = rt.now();
+        let performance = rt.performance(0).unwrap();
+        let callback = rt
+            .dispatch_controller(performance, input(60).channel_address(), 1, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rt.now(), origin);
+        assert_eq!(
+            rt.behavior_outcome(callback),
+            Ok(Some(sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput)))
+        );
+        assert!(matches!(
+            rt.take_fault(),
+            Some((_, sampler_core::Error::InvalidInput))
+        ));
+        // Plan-owned failure cannot close this note; rejection must not install a fade.
+        let mut audio = [[0.; 2]; 256];
+        rt.render(&mut audio).unwrap();
+        assert!(
+            audio.iter().all(|frame| *frame == [0.5; 2]),
+            "{selector}: {:?}",
+            audio[255]
+        );
+        assert_eq!(rt.now(), origin + 256);
+        assert_eq!(rt.note(note), Ok((60, 1., true)));
+        assert_eq!(rt.voice_count(), 1);
+        assert!(rt.take_fault().is_none());
+    }
+}
+
+#[test]
+fn fade_curve_note_owned_fault_releases_only_its_owner_at_the_callback_clock() {
+    let mut rt = runtime(
+        "on init declare $curve := 99 end on
+         on note if ($EVENT_NOTE = 60) fade_out($EVENT_ID,100000,1,$curve) end if end on",
+    );
+    let unaffected = rt.trigger(input(61), 61, 1.).unwrap();
+    assert_eq!(level(&mut rt), [0.25; 2]);
+    let origin = rt.now();
+    let faulty = rt.trigger(input(60), 60, 1.).unwrap();
+    assert_eq!(rt.now(), origin);
+    assert!(matches!(
+        rt.take_fault(),
+        Some((_, sampler_core::Error::InvalidInput))
+    ));
+    // Existing fault policy closes the initiating note, not an unaffected note.
+    assert_eq!(rt.note(faulty), Ok((60, 1., false)));
+    assert_eq!(rt.note(unaffected), Ok((61, 1., true)));
+    assert_eq!(rt.voice_count(), 1);
+    let mut audio = [[0.; 2]; 256];
+    rt.render(&mut audio).unwrap();
+    assert!(audio.iter().all(|frame| *frame == [0.25; 2]));
+    assert_eq!(rt.now(), origin + 256);
+    assert_eq!(rt.note(unaffected), Ok((61, 1., true)));
+    assert!(rt.take_fault().is_none());
+}
+
+#[test]
 fn engine_volume_and_purge_address_one_group() {
     let mut rt = runtime(
         "on init
@@ -265,22 +459,31 @@ fn timer_listener_plays_notes_on_its_period() {
 
 #[test]
 fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
+    assert_pgs_writes_reach_reader("pgs_changed");
+}
+
+#[test]
+fn pgs_writes_reach_every_slot_and_run_underscored_pgs_changed() {
+    assert_pgs_writes_reach_reader("_pgs_changed");
+}
+
+fn assert_pgs_writes_reach_reader(callback: &str) {
     let writer = compile(
         "on note
            ignore_event($EVENT_ID)
            pgs_set_key_val(SHARED, 0, 5)
          end on",
     );
-    let reader = compile(
+    let reader = compile(&format!(
         "on init
            pgs_create_key(SHARED, 1)
          end on
-         on pgs_changed
+         on {callback}
            if (pgs_key_exists(SHARED) and pgs_get_key_val(SHARED, 0) = 5)
              play_note(61, 127, 0, 100000)
            end if
-         end on",
-    );
+         end on"
+    ));
     let mut rt = modules(vec![writer, reader], GroupParams::default());
     rt.trigger(input(60), 60, 1.).unwrap();
     // Only the reader's note 61 sounds.

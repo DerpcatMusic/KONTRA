@@ -192,7 +192,13 @@ if name == 'pkgbuild':
         pathlib.Path(args[-1]).write_bytes(b'synthetic installer payload')
 if name == 'productsign': pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-2]).read_bytes())
 if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
-    print(json.dumps({'status': os.environ.get('NOTARY_STATUS', 'Accepted'), 'id': '00000000-0000-4000-8000-000000000000'}))
+    print(json.dumps({'status': 'Uploaded' if os.environ.get('NOTARY_RESUME') else os.environ.get('NOTARY_STATUS', 'Accepted'), 'id': '00000000-0000-4000-8000-000000000000'}))
+    if os.environ.get('NOTARY_RESUME') and '--wait' in args: sys.exit(1)
+if name == 'xcrun' and args[:2] == ['notarytool', 'wait']:
+    calls = pathlib.Path(os.environ['MOCK_LOG']).read_text().splitlines()
+    if sum(json.loads(c)[0] == 'xcrun' and json.loads(c)[1][:2] == ['notarytool', 'wait'] for c in calls) == 1:
+        sys.exit(1)
+    print(json.dumps({'status': 'Accepted', 'id': args[2]}))
 ''')
         mock.chmod(0o755)
         for name in ('codesign', 'pkgbuild', 'productsign', 'pkgutil', 'xcrun', 'spctl'):
@@ -204,7 +210,7 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
                    APPLE_DEVELOPER_ID_INSTALLER='Developer ID Installer: Synthetic (TESTTEAM)',
                    APPLE_ID='synthetic@example.invalid', APPLE_APP_SPECIFIC_PASSWORD='synthetic',
                    MOCK_LOG=str(self.root / 'calls.jsonl'))
-        cases = [('valid', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
+        cases = [('valid', '', 'Accepted'), ('resume', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
                  ('package-registration', 'swift', 'Accepted'),
                  ('productsign', 'productsign', 'Accepted'), ('pkgutil', 'pkgutil', 'Accepted'),
                  ('rejected', '', 'Invalid'), ('staple', 'staple', 'Accepted'), ('validate', 'validate', 'Accepted'), ('assessment', 'spctl', 'Accepted')]
@@ -212,11 +218,11 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
             with self.subTest(case=case):
                 output = self.root / f'{case}.pkg'
                 result = subprocess.run(['bash', str(HERE / 'package_macos.sh'), str(self.stage), str(output)],
-                                        env=dict(env, FAIL_TOOL=tool, NOTARY_STATUS=status), capture_output=True)
-                self.assertEqual(result.returncode == 0, case == 'valid', result.stderr.decode())
-                self.assertEqual(output.exists(), case == 'valid')
-                self.assertEqual(output.with_suffix('.notarization.json').exists(), case == 'valid')
-                if case == 'valid':
+                                        env=dict(env, FAIL_TOOL=tool, NOTARY_STATUS=status, NOTARY_RESUME='1' if case == 'resume' else ''), capture_output=True)
+                self.assertEqual(result.returncode == 0, case in ('valid', 'resume'), result.stderr.decode())
+                self.assertEqual(output.exists(), case in ('valid', 'resume'))
+                self.assertEqual(output.with_suffix('.notarization.json').exists(), case in ('valid', 'resume'))
+                if case in ('valid', 'resume'):
                     receipt = json.loads(output.with_suffix('.notarization.json').read_text())
                     self.assertEqual(receipt['source_builds']['arm64']['vst3']['target'], 'aarch64-apple-darwin')
                     self.assertEqual(len(receipt['products']), 3)

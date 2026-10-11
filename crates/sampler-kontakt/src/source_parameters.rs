@@ -118,20 +118,28 @@ pub(crate) fn internal(
     };
     let object = StructuredObject::try_from(source)?;
     let fields = match &params.modulator {
-        Modulator::Ahdsr(e) => vec![
-            number("attack_curve", e.attack_curve),
-            number("attack_ms", e.attack_ms),
-            number("decay_ms", e.decay_ms),
-            number("hold_ms", e.hold_ms),
-            number("release_ms", e.release_ms),
-            number("sustain_linear", e.sustain),
-            integer("ahd_only", e.unknown_flag),
-            field(
-                "timing_records",
-                Value::Records(e.timing_records()?.into_iter().map(timing).collect()),
-            ),
-            opaque("unknown_extension", &e.unknown_tail[52..]),
-        ],
+        Modulator::Ahdsr(e) => {
+            let mut fields = vec![
+                number("attack_curve", e.attack_curve),
+                number("attack_ms", e.attack_ms),
+                number("decay_ms", e.decay_ms),
+                number("hold_ms", e.hold_ms),
+                number("release_ms", e.release_ms),
+                number("sustain_linear", e.sustain),
+                integer("ahd_only", e.unknown_flag),
+            ];
+            if object.version == 0x10 {
+                // Legacy metadata is 16 opaque bytes, not v0x11 timing records.
+                fields.push(opaque("unknown_tail", &e.unknown_tail));
+            } else {
+                fields.push(field(
+                    "timing_records",
+                    Value::Records(e.timing_records()?.into_iter().map(timing).collect()),
+                ));
+                fields.push(opaque("unknown_extension", &e.unknown_tail[52..]));
+            }
+            fields
+        }
         Modulator::Flex(e) => vec![
             integer("sustain_index", e.sustain),
             integer("unknown_index", e.unknown_index),

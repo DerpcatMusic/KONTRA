@@ -1,0 +1,155 @@
+{
+  "source_commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+  "base_commit": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+  "classification": "SOURCE_SYNTAX_AND_INTEGRITY_ONLY_NOT_RUST_TEST_PASS",
+  "new_rust_tests": "UNRUN",
+  "native_execution": "UNKNOWN",
+  "checks": [
+    {
+      "check": "source_commit_bytes",
+      "file": "crates/sampler-uvi/src/script.rs",
+      "sha256": "4cc690f0606e4da7e9db5727782c516194fd8410e54c8596e1a9443cd0d25071"
+    },
+    {
+      "check": "source_commit_bytes",
+      "file": "crates/sampler-uvi/src/script_prelude.lua",
+      "sha256": "13d8fb1a33f68b2ad06e96023b9a7447576fda4cb01aeac809fc1e6f2abe9aa1"
+    },
+    {
+      "check": "source_commit_bytes",
+      "file": "crates/sampler-uvi/tests/host_parameters.rs",
+      "sha256": "9c34b78f55940480e357c704c80430ce18e205a5789f86f40a610180b91c87fb"
+    },
+    {
+      "check": "source_commit_bytes",
+      "file": "crates/sampler-uvi/tests/fixture.rs",
+      "sha256": "b06883e609f1bdb0f2182b1b8588b09d3a01ee474a182d19410e25dbcd7146df"
+    },
+    {
+      "check": "async_data_unchanged_from_base",
+      "sha256": "510925c84a53d26d8ff060957b1218c9ebcdd415f46947b77fe299a30a97a360"
+    },
+    {
+      "check": "outside_two_rust_seams_byte_identical",
+      "direct_callsites": 14,
+      "unchanged_ignored_return_statements": 12,
+      "async_data_install_unchanged": true
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "366515c96b583747d1bd77c881b1f6909e86cf0d",
+        "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0"
+      ],
+      "status": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/sampler-uvi/tests/host_parameters.rs",
+        "crates/sampler-uvi/tests/fixture.rs"
+      ],
+      "status": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "luac",
+        "-p",
+        "crates/sampler-uvi/src/script_prelude.lua"
+      ],
+      "status": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--emit",
+        "stdout",
+        "--config",
+        "skip_children=true",
+        "crates/sampler-uvi/src/script.rs"
+      ],
+      "status": 0,
+      "stdout": "OMITTED: formatted text only; source file was not rewritten",
+      "stderr": ""
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "unknown_parameter_names_and_ids_are_silently_ignored_on_cold_and_cached_elements",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "unsupported_catalog_writes_leave_authored_readback_and_production_queue_unchanged",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "accepted_parameters_and_rejected_types_share_the_production_queue_seam",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "a_full_production_queue_does_not_accept_parameter_readback_or_insert_overrides",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "retained_connection_and_string_parameters_have_typed_descriptor_identities",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "initialized_controller_and_widget_cutoff_writes_change_production_pcm",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "check": "embedded_lua_syntax_only",
+      "test": "streamed_bus_gain_has_live_catalog_defaults_and_controller_readback",
+      "status": 0,
+      "limitation": "System Lua parser only; production Luau and Rust test execution UNRUN"
+    },
+    {
+      "command": [
+        "graft",
+        "--dir",
+        "/home/derpcat/.t3/worktrees/KONTAKTO/uvi-setter-consistency-next/graft",
+        "grep",
+        "setParam"
+      ],
+      "status": 1,
+      "stdout": "",
+      "stderr": "\u2b06 graft 0.20.0 \u2192 0.21.1 available: run `npm i -g @nanonets/graft@latest` (restart your agent after).\n\u2717 no graph \u2014 run graft build first\n"
+    },
+    {
+      "command": [
+        "graft",
+        "--dir",
+        "/home/derpcat/.t3/worktrees/KONTAKTO/uvi-setter-consistency-next/graft",
+        "callers",
+        "setParameter"
+      ],
+      "status": 1,
+      "stdout": "",
+      "stderr": "\u2b06 graft 0.20.0 \u2192 0.21.1 available: run `npm i -g @nanonets/graft@latest` (restart your agent after).\n\u2717 no graph found at /home/derpcat/.t3/worktrees/KONTAKTO/uvi-setter-consistency-next/graft \u2014 run `graft build` first\n"
+    }
+  ]
+}

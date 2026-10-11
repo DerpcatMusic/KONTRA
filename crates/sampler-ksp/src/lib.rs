@@ -10,6 +10,7 @@ use sampler_core::{
     ScriptInstanceId, ScriptResources,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod array_file;
 mod ast;
 mod builtins;
 mod diag;
@@ -28,6 +29,7 @@ mod parser;
 pub mod scan;
 mod sema;
 pub mod ui;
+mod waveform;
 
 pub use diag::{Error, Kind};
 pub use eval::Environment;
@@ -283,6 +285,17 @@ impl ScriptView {
     pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
         apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
     }
+    /// Reject wrong plan/instance before projection. The caller must supply the
+    /// live plan admitted by its part/epoch fence; this is not an epoch oracle.
+    pub fn apply_ui_effect_for(
+        &mut self,
+        plan: sampler_core::PlanId,
+        instance: ScriptInstanceId,
+        effect: &sampler_core::Effect,
+    ) -> bool {
+        if effect.plan != plan || effect.instance != Some(instance) { return false; }
+        self.apply_ui_effect(effect)
+    }
     /// [`Script::ui`].
     pub fn ui(
         &self,
@@ -306,6 +319,29 @@ fn apply_ui_effect(
     };
     let arg = |i: usize| args.get(i).and_then(|&v| i32::try_from(v).ok());
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+    if matches!(service, "attach_zone" | "set_ui_wf_property") {
+        use sampler_core::waveform::Property;
+        let Some(id) = arg(0) else { return false; };
+        let Some(widget) = model.interface.widgets.iter().find(|w| {
+            w.ui_id == id && w.kind == model::WidgetKind::Waveform && !w.unresolved
+        }) else { return false; };
+        let name = widget.name.clone();
+        if effect.text.is_some() { return false; }
+        let request = if service == "attach_zone" {
+            if args.len() != 3 { return false; }
+            let (Some(zone), Some(flags)) = (arg(1).filter(|z| *z > 0), arg(2)) else { return false; };
+            model::Request { command: "attach_zone", args: vec![Value::Int(id), Value::Int(zone), Value::Int(flags)] }
+        } else {
+            if args.len() != 4 { return false; }
+            let (Some(property), Some(index), Some(value)) =
+                (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2), arg(3)) else { return false; };
+            let Some(p) = Property::from_name(&property) else { return false; };
+            if p.validate_index(index).is_err() || ui::waveform_requests(model, id, &name).is_none() { return false; }
+            model::Request { command: "set_ui_wf_property", args: vec![Value::Int(id), Value::Text(property),
+                Value::Int(index), Value::Int(p.value(index, value))] }
+        };
+        return waveform::project(model, &name, id, request);
+    }
     if let Some(rest) = service.strip_prefix("set_key_") {
         let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
         else {
@@ -621,6 +657,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut stages = Vec::new();
     let mut starts = Vec::new();
     let mut signals = Vec::new();
+    let mut parameters = Vec::new();
     let mut shared = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
     let mut midi_instances = Vec::new();
@@ -753,6 +790,18 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                     stage: index,
                 }),
         );
+        parameters.extend(script.entries.iter().filter_map(|e| {
+            let kind = match e.kind {
+                EntryKind::Rpn => sampler_core::ParameterKind::Rpn,
+                EntryKind::Nrpn => sampler_core::ParameterKind::Nrpn,
+                _ => return None,
+            };
+            Some(sampler_core::ParameterProgram {
+                kind,
+                program: base + e.program,
+                stage: index,
+            })
+        }));
         // Keys created by several scripts keep the first script's values.
         shared.extend(script.shared.iter().copied());
         starts.extend(script.starts.iter().map(|&p| sampler_core::PlanProgram {
@@ -786,6 +835,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_control_programs(callbacks)?
         .with_plan_programs(starts)?
         .with_signal_programs(signals)?
+        .with_parameter_programs(parameters)?
         .with_widgets(widgets)?
         .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
@@ -1171,6 +1221,7 @@ fn compile_initialized_inner(
         budget: limits.instructions,
         limit: limits.instructions,
         services: Vec::new(),
+        array_files: BTreeSet::new(),
         coverage: BTreeMap::new(),
         warnings: Vec::new(),
         scratch: 0,
@@ -1367,6 +1418,8 @@ fn compile_initialized_inner(
     let mut texts = init.texts.clone();
     texts.resize(texts.len() + unit.scratch as usize, String::new());
     let mut store = Vec::new();
+    waveform::seed(&hir, &init, &environment, &mut store)
+        .map_err(|_| error("waveform initial attachment has no admitted physical source"))?;
     let mut text_properties: Vec<_> = init
         .text_properties
         .iter()
@@ -1448,7 +1501,17 @@ fn compile_initialized_inner(
     }
     // ponytail: fixed headroom for runtime-created keys; size from usage if exceeded.
     let store_capacity = store.len() + 4096;
+    let array_files = unit
+        .array_files
+        .iter()
+        .map(|&v| array_file::array(&hir, v))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| error("NKA typed array exceeds explicit-path service limits"))?;
+    if !array_files.is_empty() && texts.iter().any(|s| s.len() > sampler_core::TEXT_CAPACITY) {
+        return Err(error("NKA script initial text exceeds runtime capacity"));
+    }
     let resources = ScriptResources {
+        array_files,
         texts,
         text_properties,
         store,

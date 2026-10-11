@@ -268,8 +268,8 @@ fn user_event_parameters_reach_the_release_callback() {
     assert_eq!((cell(&rt, 0), cell(&rt, 1)), (1234567, -5));
 }
 
-/// `get_event_par` reports a sounding event's zone as nonzero and an ignored
-/// one as 0, and the event's MIDI channel (Solo clears finished events by it).
+/// Historical narrow witness: a sounding zone is nonzero, an unknown alias
+/// reads 0, and MIDI channel reads back. No live-no-zone or highest-zone proof.
 #[test]
 fn event_zone_id_is_nonzero_only_while_the_event_sounds() {
     let rt = run(
@@ -734,4 +734,85 @@ fn duplicate_menu_values_select_the_first_authored_match_including_hidden_entrie
         &[],
     );
     assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (0, 0, 17));
+}
+
+/// Own formatter comparisons, not native Kontakt text or address-validity proof.
+/// Authored regression tests: NOT_RUN_NOT_COMPILED.
+#[test]
+fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune_formatter() {
+    use sampler_core::{
+        ControlDefinition, ControlDomain, ControlValue, EngineParameterAddress,
+        EngineParameterBinding, EngineParameterLaw, engine_parameter_control, engine_parameter_id,
+    };
+    for parameter in ["$ENGINE_PAR_PAN", "$ENGINE_PAR_VOLUME", "$ENGINE_PAR_TUNE"] {
+        // Nonnegative group/modulation-target and instrument/bus identities.
+        for (group, slot, generic) in [(3, 5, 11), (-1, 2, 1007)] {
+            let address = EngineParameterAddress {
+                parameter: engine_parameter_id(parameter).unwrap(),
+                group,
+                slot,
+                generic,
+            };
+            let source = format!(
+                "on init declare $p := {parameter} declare $v declare $g := {group}
+                 declare $s := {slot} declare $q := {generic}
+                 declare $before declare $after
+                 declare @constant declare @dynamic declare @stored
+                 declare @normal_constant declare @normal_dynamic end on
+                 on note
+                   $v := $EVENT_NOTE * 10000 + 78901
+                   @constant := get_engine_par_disp_ext({parameter},234567,{group},{slot},{generic})
+                   @dynamic := get_engine_par_disp_ext($p,$v,$g,$s,$q)
+                   @stored := get_engine_par_disp($p,$g,$s,$q)
+                   $before := get_engine_par($p,$g,$s,$q)
+                   set_engine_par($p,234567,$g,$s,$q)
+                   @normal_constant := get_engine_par_disp($p,$g,$s,$q)
+                   set_engine_par($p,$v,$g,$s,$q)
+                   @normal_dynamic := get_engine_par_disp($p,$g,$s,$q)
+                   $after := get_engine_par($p,$g,$s,$q)
+                 end on"
+            );
+            let law = EngineParameterLaw::Linear { low: 0., high: 1. };
+            let control = engine_parameter_control(address);
+            let mut rt = run_shaped(&source, Default::default(), |p| {
+                let mut controls = p.controls().to_vec();
+                controls.push(ControlDefinition {
+                    id: control,
+                    domain: ControlDomain::Real { min: 0., max: 1. },
+                    default: ControlValue::Real(law.decode(800000)),
+                });
+                p.with_controls(controls)?.with_engine_parameters(
+                    vec![EngineParameterBinding { address, control, law }],
+                    vec![],
+                )
+            });
+            let text = [0, 1, 2, 3, 4].map(|index| {
+                rt.script_text(rt.active_plan(), ScriptInstanceId(0), index)
+                    .unwrap()
+            });
+            assert!(!text[0].as_str().is_empty());
+            assert_eq!(text[0].as_str(), text[3].as_str(), "{parameter}, {address:?}");
+            assert_eq!(text[1].as_str(), text[4].as_str(), "{parameter}, {address:?}");
+            assert_ne!(text[0].as_str(), text[2].as_str(), "Ext must not use the stored value");
+            assert_ne!(text[1].as_str(), text[2].as_str(), "Ext must not use the stored value");
+            assert_eq!((cell(&rt, 5), cell(&rt, 6)), (800000, 678901));
+            // Real read/write consumers check complete address binding. Display
+            // with a supplied value does NOT, so text above cannot replace this guard.
+            for write in [false, false, true, false, true, false, false] {
+                let outcome = rt.take_engine_parameter_outcome().unwrap();
+                assert_eq!(outcome.address, Some(address));
+                assert_eq!(outcome.write, write);
+                assert_eq!(outcome.result, Ok(()));
+            }
+            assert!(rt.take_engine_parameter_outcome().is_none());
+            assert_eq!(rt.engine_parameter(address).unwrap(), 678901);
+            for wrong in [
+                EngineParameterAddress { group: group + 1, ..address },
+                EngineParameterAddress { slot: slot + 1, ..address },
+                EngineParameterAddress { generic: generic + 1, ..address },
+            ] {
+                assert_eq!(rt.engine_parameter(wrong), Err(sampler_core::Error::InvalidInput));
+            }
+        }
+    }
 }

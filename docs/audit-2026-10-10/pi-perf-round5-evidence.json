@@ -1,0 +1,235 @@
+{
+  "schema": 1,
+  "source_sha": "366515c96b583747d1bd77c881b1f6909e86cf0d",
+  "tree": "a3a49bd4427b9b6941ebdaf14948bfc844197365",
+  "scope": "read-only artifact admission and authored input checks; zero runtime measurements",
+  "files": [
+    {
+      "path": "/home/derpcat/.cache/kontra-v1/README.md",
+      "bytes": 913,
+      "sha256": "136d701b7710e0f87948bb6398d865888982fdf7c155cb3afa6131b1e5034c0c"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-v1/SHA256SUMS",
+      "bytes": 648,
+      "sha256": "ccc7b9f464ae99a217550efba0d4b29fb0f2fd767d35368bb1b08ccde32f4fbc"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-v1/plugin/KONTRA.clap",
+      "bytes": 43168144,
+      "sha256": "20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de"
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-plugin-backup/v1-20261005/clap/KONTRA.clap",
+      "bytes": 43168144,
+      "sha256": "20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-frozen-clap-cpu-20261009/BUILD.json",
+      "bytes": 1007,
+      "sha256": "b674c89994965609adf3384fb6fc76a84a3e58dc6f7fffc09b88eba49dcb829a"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-frozen-clap-cpu-20261009/frozen-state-check.json",
+      "bytes": 131,
+      "sha256": "64a89013e92cf1e5e9aafd0173c31555119fe0229a51f23a365c4b812f80c290"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/docs/audit-2026-10-08/cpu-evidence/provenance.json",
+      "bytes": 2080,
+      "sha256": "ddffabdd1dca21649ce8754a7613169323164597845ef457d465dc0d3caff1f9"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/release/BUILD.json",
+      "bytes": 4714,
+      "sha256": "62e3cd9b33ef759a161078c94192ed35433c3e3799c8252ec040a9df8721a59b"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/release/KONTRA.clap",
+      "bytes": 50359280,
+      "sha256": "acb651b0dd81e56d684df3178bccaf06f53a8aad7439596ba1d74c3ed608009c"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/release/kontakto",
+      "bytes": 19668704,
+      "sha256": "6a03aafbbd7e7df162f722e90faff7635dca80c54fc058732ea25afeadab36e1"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/release/clap-cpu-host",
+      "bytes": 77080,
+      "sha256": "b2b7abfe56f197ed950d7d33eb7d82164d21b6a7061741aa552bce5ad1a3fbdd"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/FINAL-VERDICT.json",
+      "bytes": 44766,
+      "sha256": "624302e22df71c026cdb038de5bef13e3b8d13bf93101acb8bd9448e443cc3ce"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/FINAL-CUSTODY.json",
+      "bytes": 59128,
+      "sha256": "7494d0ca4443f8407039988176765ae791c0cb4bd49a5e5c1d6e36de28c88452"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/stream-neighbors.log",
+      "bytes": 1264,
+      "sha256": "a307cac12f632d1a1930ed73801a9faf00f4ad28eab040e16aeb4ffdbed61da6"
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/pi-integration-round4/core-plans.log",
+      "bytes": 620,
+      "sha256": "976b23652c89f37d16df09f347c8e2b61d58990933474a593f634ab4f79e8761"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/check-results.json",
+      "bytes": 8231,
+      "sha256": "f56987ad0ee1cf1783c0774ea91d503e93852341ebf0d0d23855491f7ac598e2"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b/artifacts/ni-file-records-2026-10-08/sources.json",
+      "bytes": 8271,
+      "sha256": "4cfbf652b7aca9e475ac9b2bb8386635dcd52cb1930ab76fdfb487fdf7f419cd"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/docs/audit-2026-10-10/pi-head-reload-reference.json",
+      "bytes": 4550,
+      "sha256": "ee85cad917a4f69afde8a112ad5a33cad0b2dad0dee608b18517bed7d07bd384"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/tools/kontra-gate/live_host.py",
+      "bytes": 27245,
+      "sha256": "6b25305beb08b102fe83f744c6a61967c3a54b0c8dd376126838763e7b8816c9"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/tools/kontra-gate/contention.py",
+      "bytes": 8744,
+      "sha256": "5333b5f58cac61e50e21f68b2f28dcc0256d60b7991cfaa1492d0a4c172ab041"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/tools/kontra-gate/evidence.py",
+      "bytes": 5864,
+      "sha256": "b3d972040f9c458a40a2617ddc53a38bd426f47b8154c189dacb5e96a7b0bcaa"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/tools/cpu-audit-native.py",
+      "bytes": 7928,
+      "sha256": "4c42def6fbe7fde22003acabf60d405397b672d1092934606fa9edf037802e28"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/tools/cpu-audit-cold.py",
+      "bytes": 1515,
+      "sha256": "e3f98d1b3004afe335c4656128dc68e3017cea75319e4b47b6f0cb4ae2433990"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/vendor/moose-clap/tests/live_performance.cpp",
+      "bytes": 27931,
+      "sha256": "76c617e404794084ee08ca7a8497c58f1810a684718efd5f2595ce5cf0d16a85"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/src/plugin/host_probe.rs",
+      "bytes": 7998,
+      "sha256": "25e83f9e9880a5f003d91a8453b1a5a4cc9ef5c345b653a165a1713836fbf53a"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/src/sound/v2.rs",
+      "bytes": 259748,
+      "sha256": "b266b42d10bfdb54a5fa46dd0b3f68361db5b7bcba97e1e567e16ae549311524"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/src/plugin.rs",
+      "bytes": 166117,
+      "sha256": "3038bb8429d147fea37e034e81278fee8c0f1f9c1441ebdefd3e01ebffb4be45"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/crates/sampler-kontakt/src/stream.rs",
+      "bytes": 57110,
+      "sha256": "2de68aed6392306665f5eebfeb4dedb934c898e88bc775b6858178b24c9ab312"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/crates/sampler-core/src/ownership.rs",
+      "bytes": 25959,
+      "sha256": "58e198f05458756595287e08ed12ab25782ee0b96a13e69c74ef45e1e955bb09"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/docs/audit-2026-10-10/pi-perf-round5-prepare-inputs.py",
+      "bytes": 2337,
+      "sha256": "5007fccb7fb78914505b2c7ec5742769d4d782c1b1e7b431c2bbef1dac23c994"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/.cache/pi-perf-round5-inputs/samples/tone.wav",
+      "bytes": 1536044,
+      "sha256": "119cafbc0105181507877e7cce21fca9e2715fc461ea59ea4bb4f35c416428f7"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/.cache/pi-perf-round5-inputs/input.kontra-multi",
+      "bytes": 336,
+      "sha256": "4a61a14d34ed2adcb5e33ec62ab51b198e6e23c4801aae84cdb6440ab209f95f"
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5/.cache/pi-perf-round5-inputs/events.tsv",
+      "bytes": 390,
+      "sha256": "21a4a6da474757177cc3232b442e9dbdbfeff2c6a25cf4d6e1401735e3f64860"
+    }
+  ],
+  "absent_paths": [
+    {
+      "path": "/mnt/Windows11/DEV_PROJECTS/Artifacts/KONTAKTO-20261005-e50b9147-build-cache",
+      "exists": false
+    },
+    {
+      "path": "/mnt/Windows11/DEV_PROJECTS/Artifacts/KONTAKTO-20261005-e50b9147-build-cache/shipping-checkpoint-0.3.152-d097c36",
+      "exists": false
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-v1/plugin/BUILD.json",
+      "exists": false
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-v1/BUILD.json",
+      "exists": false
+    },
+    {
+      "path": "/home/derpcat/.cache/kontra-plugin-backup/v1-20261005/BUILD.json",
+      "exists": false
+    }
+  ],
+  "frozen_inventory": [
+    "README.md",
+    "SHA256SUMS",
+    "bin/kontakto-v1",
+    "bin/v1-stage-probe",
+    "bin/v1-uvi-onset-probe",
+    "plugin/KONTRA.clap",
+    "plugin/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so",
+    "scan/kontra-scan-v1",
+    "scan/kontra-scan-v1-uvi"
+  ],
+  "frozen_build": {
+    "plugin_sha256": "20ff6b471069d6891d2847e72a4f863db5b50ce24265fda82d083b713b3496de",
+    "backup_byte_identity": true,
+    "source_sha": "UNKNOWN",
+    "profile": "UNKNOWN",
+    "elf_build_id": "124812b720d8b7dce75460d7d9a2c4330f36fc3f",
+    "compiler_comment": "rustc 1.99.0 (b940084d7 2026-09-28); GCC 16.2.1; LLD 23.1.1",
+    "compiler_comment_limit": "static diagnostic only; not profile/feature/source attestation"
+  },
+  "checks": {
+    "own_build_hashes_host_source_profile": "PASS read-only, no executable run",
+    "native_receipt_hashes": "PASS",
+    "frozen_manifest": "7/7 PASS",
+    "admission_fixtures": "7/7 PASS mocked subprocesses",
+    "schedule_check": "PASS no host",
+    "input_roundtrip_and_repeat": "PASS",
+    "input_keep_contract": "PASS: repeat identical bytes accepted; changed bytes rejected without overwriting original",
+    "runtime_recipe_syntax": "PASS: compile/AST inspection only; body NOT EXECUTED",
+    "runtime": "NOT RUN"
+  },
+  "acceptance": {
+    "cpu_vs_frozen_v1": "UNKNOWN",
+    "ram_vs_frozen_v1": "UNKNOWN",
+    "cpu_vs_kontakt": "UNKNOWN",
+    "ram_vs_kontakt": "UNKNOWN",
+    "achieved": false
+  }
+}

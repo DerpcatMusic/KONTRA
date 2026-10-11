@@ -726,3 +726,101 @@ fn thousands_of_nested_release_callbacks_use_reserved_frames_on_a_small_thread_s
         .join()
         .unwrap();
 }
+
+#[test]
+fn event_zone_instructions_reject_out_of_range_i64_aliases_and_read_live_alias() {
+    let program = Program::new(vec![
+        Instruction::SetLocal {
+            local: 0,
+            value: i64::from(i32::MAX) + 1,
+        },
+        Instruction::SetLocal {
+            local: 1,
+            value: 10,
+        },
+        Instruction::ReadEventInfo {
+            event: 0,
+            info: EventInfo::ZoneId,
+            local: 2,
+        },
+        Instruction::ReadEventParameter {
+            event: 0,
+            parameter: 1,
+            local: 3,
+        },
+        Instruction::SetLocal {
+            local: 0,
+            value: i64::from(i32::MIN) - 1,
+        },
+        Instruction::ReadEventInfo {
+            event: 0,
+            info: EventInfo::ZoneId,
+            local: 4,
+        },
+        Instruction::ReadEventParameter {
+            event: 0,
+            parameter: 1,
+            local: 5,
+        },
+        Instruction::ReadEventId { local: 0 },
+        Instruction::ReadEventInfo {
+            event: 0,
+            info: EventInfo::ZoneId,
+            local: 6,
+        },
+        Instruction::ReadEventParameter {
+            event: 0,
+            parameter: 1,
+            local: 7,
+        },
+    ])
+    .unwrap();
+    let prepared = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[0.25; 2]; 16])).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::new(0, 0, 0, 1., 128).unwrap(),
+            playback: Playback::default(),
+        }],
+        1,
+    )
+    .unwrap()
+    .with_source_zones(vec![9001])
+    .unwrap()
+    .with_programs(vec![program], None)
+    .unwrap();
+    let mut test_limits = limits(8);
+    test_limits.behaviors = 1;
+    test_limits.behavior_cells = prepared.behavior_local_count();
+    let mut rt = Runtime::new(prepared, test_limits).unwrap();
+    support::without_heap(|| {
+        let note = rt.trigger(input(), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.voice_count(), 1);
+        let callback = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        let alias = rt.behavior_local(callback, 0).unwrap() as i32;
+        assert_eq!(
+            rt.resolve_source_event(rt.active_plan(), alias),
+            Ok(Some(note))
+        );
+        assert_eq!(
+            (
+                rt.behavior_local(callback, 2).unwrap(),
+                rt.behavior_local(callback, 3).unwrap(),
+                rt.behavior_local(callback, 4).unwrap(),
+                rt.behavior_local(callback, 5).unwrap(),
+                rt.behavior_local(callback, 6).unwrap(),
+                rt.behavior_local(callback, 7).unwrap(),
+            ),
+            (0, 0, 0, 0, 9001, 9001)
+        );
+    });
+}
