@@ -683,6 +683,8 @@ struct CachedGraph {
     meters_read: bool,
     calls: u64,
     state_rev: u64,
+    generation: u64,
+    live: bool,
 }
 pub struct Session {
     lua: Lua,
@@ -695,8 +697,11 @@ pub struct Session {
     cached: std::cell::RefCell<Option<CachedGraph>>,
     /// Lua callbacks run (events, text edits); each may change script state.
     calls: std::cell::Cell<u64>,
-    /// Off in tests that poke Lua globals behind the host's back.
-    pub(super) reuse: std::cell::Cell<bool>,
+    /// Counts fresh renders: a lowered tree is good while it is unchanged.
+    generation: std::cell::Cell<u64>,
+    /// The last graph holds a text field or an open popover: lowering them
+    /// has side effects (editing, wheel capture), so it must run each frame.
+    live: std::cell::Cell<bool>,
     #[cfg(test)]
     event_payloads: std::cell::Cell<usize>,
 }
@@ -870,7 +875,8 @@ impl Session {
             fuel,
             cached: Default::default(),
             calls: Default::default(),
-            reuse: std::cell::Cell::new(!cfg!(test)),
+            generation: Default::default(),
+            live: Default::default(),
             #[cfg(test)]
             event_payloads: std::cell::Cell::new(0),
         })
@@ -935,6 +941,21 @@ impl Session {
             }
         }
     }
+    /// Forget the cached graph: script state changed behind the host's back.
+    #[cfg(test)]
+    pub(super) fn invalidate(&self) {
+        *self.cached.borrow_mut() = None;
+    }
+    /// Render, ignoring the cache: for tests that change globals directly.
+    #[cfg(test)]
+    pub(super) fn fresh(&self) -> Table {
+        self.fresh_result().unwrap()
+    }
+    #[cfg(test)]
+    pub(super) fn fresh_result(&self) -> anyhow::Result<Table> {
+        self.invalidate();
+        self.render()
+    }
     pub fn render(&self) -> anyhow::Result<Table> {
         let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(1_000_000, Ordering::Relaxed);
@@ -948,12 +969,13 @@ impl Session {
             (bridge.rev, bridge.meter_rev)
         };
         if let Some(c) = &*self.cached.borrow()
-            && self.reuse.get()
             && c.rev == rev
             && c.calls == calls
             && c.state_rev == state_rev
             && (!c.meters_read || c.meter_rev == meter_rev)
         {
+            self.generation.set(c.generation);
+            self.live.set(c.live);
             return Ok(c.graph.clone());
         }
         {
@@ -970,6 +992,9 @@ impl Session {
         let mut bridge = self.bridge.lock_unpoisoned();
         bridge.rendering = false;
         // A render that itself changed script state (an effect) is not stable.
+        self.generation.set(self.generation.get() + 1);
+        let live = self.lua.globals().get::<bool>("__live").unwrap_or(true);
+        self.live.set(live);
         let stable = self.lua.globals().get::<u64>("__rev").unwrap_or(0) == state_rev
             && bridge.rev == rev
             && self.calls.get() == calls;
@@ -980,8 +1005,18 @@ impl Session {
             meters_read: bridge.render_read_meters,
             calls,
             state_rev,
+            generation: self.generation.get(),
+            live,
         });
         Ok(graph)
+    }
+    /// The key the last `render`'s lowering stays valid under, or `None` when
+    /// lowering must run every frame (text fields and popups have side
+    /// effects). Canvas callbacks read meters even when the graph did not, so
+    /// the meter revision is part of it.
+    pub(super) fn lowering_key(&self) -> Option<(u64, u64)> {
+        (!self.live.get())
+            .then(|| (self.generation.get(), self.bridge.lock_unpoisoned().meter_rev))
     }
     #[cfg(test)]
     pub fn work_remaining(&self) -> usize {
@@ -1248,7 +1283,6 @@ mod tests {
         ).unwrap();
         let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
         let session = Session::new(package, "main", vec![]).unwrap();
-        session.reuse.set(true);
         let renders = || session.lua().globals().get::<u32>("renders").unwrap();
         session.render().unwrap();
         session.render().unwrap();
