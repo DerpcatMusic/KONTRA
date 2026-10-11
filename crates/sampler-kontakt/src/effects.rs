@@ -2802,7 +2802,9 @@ mod tests {
         let synced_payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, 2.0].into_iter().flat_map(f32::to_le_bytes).collect();
         let synced = chain(&[slot(0x14, synced_payload, 1.0)], Scope::Voice);
         assert!(synced.notes.is_empty(), "{:?}", synced.notes);
-        assert_eq!(fx_probe(synced.processors, 120., &[[1., -0.5]]), output);
+        assert_eq!(fx_probe(synced.processors.clone(), 120., &[[1., -0.5]]), output);
+        // The native synced getter substitutes 120 BPM below .1 BPM.
+        assert_eq!(fx_probe(synced.processors, 0.05, &[[1., -0.5]]), output);
     }
 
     #[test]
