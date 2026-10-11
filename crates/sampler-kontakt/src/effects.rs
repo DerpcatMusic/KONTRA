@@ -217,6 +217,9 @@ pub(crate) fn apply_writes(
                 fx.output_set = true;
             }
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
+                fx.apply_drive_parameter(parameter, w.value)
+            }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
@@ -316,6 +319,17 @@ pub(crate) struct Convolution {
 }
 
 impl Slot {
+    fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
+        let (at, low, high) = match (parameter, self.params()) {
+            ("ENGINE_PAR_SHAPE", Some(Params::Saturation { .. })) => (0, -1., 1.),
+            ("ENGINE_PAR_DRIVE", Some(Params::Distortion { .. })) => (4, 0., 1.),
+            ("ENGINE_PAR_DAMPING", Some(Params::Distortion { .. })) => (8, 0., 1.),
+            _ => return,
+        };
+        let stored = sampler_core::EngineParameterLaw::Linear { low, high }.decode(value) as f32;
+        self.public[at..at + 4].copy_from_slice(&stored.to_le_bytes());
+    }
+
     fn apply_eq_gain(&mut self, band: usize, value: i32) {
         let Some(Params::Eq { bands }) = self.params() else {
             return;
@@ -2556,6 +2570,33 @@ mod tests {
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert!(!out.processors.is_empty(), "Lo-Fi cannot disappear");
         }
+    }
+
+    #[test]
+    fn init_shape_drive_and_damping_writes_update_only_addressed_valid_slots() {
+        let initialized = sampler_ksp::initialize(
+            "on init\nset_engine_par($ENGINE_PAR_SHAPE, 750000, -1, 3, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DRIVE, 250000, -1, 5, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DAMPING, 1000000, -1, 5, $NI_INSERT_BUS)\nend on",
+            sampler_ksp::Limits::LIBRARY, &Default::default(),
+        ).unwrap();
+        let writes = initialized.engine_pars();
+        let mut saturation = slot(0x1d, [0f32, 0.].into_iter().flat_map(f32::to_le_bytes).collect(), 1.);
+        saturation.slot = 3;
+        let mut distortion = slot(0x1e, [1f32, 0.8, 0.2].into_iter().flat_map(f32::to_le_bytes).collect(), 1.);
+        distortion.slot = 5;
+        let mut slots = [saturation, distortion];
+        let saved: Vec<_> = slots.iter().map(|fx| fx.public.clone()).collect();
+        apply_writes(&mut slots, &writes, 0, -1);
+        assert_eq!(slots.iter().map(|fx| fx.public.clone()).collect::<Vec<_>>(), saved);
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[0].params(), Some(Params::Saturation { shape: 0.5, mode: 0. }));
+        assert_eq!(slots[1].params(), Some(Params::Distortion { mode: 1., drive: 0.25, damping: 1. }));
+        slots[1].public.truncate(4);
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[1].public, 1f32.to_le_bytes());
+        slots[1].module = 0x1d;
+        slots[1].public = saved[0].clone();
+        apply_writes(&mut slots, &writes, -1, 1);
+        assert_eq!(slots[1].public, saved[0], "Drive/Damping cannot overwrite another module");
     }
 
     #[test]
