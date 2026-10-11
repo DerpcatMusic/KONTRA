@@ -3638,8 +3638,16 @@ mod tests {
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
-        let (mut render, mut lower, mut layout, mut paint) = (vec![], vec![], vec![], vec![]);
+        session.reuse.set(std::env::var_os("KONTRA_NO_RENDER_REUSE").is_none());
+        let mut hovered = HashSet::new();
+        let mut previous: Option<Table> = None;
+        let (mut render, mut lower, mut layout, mut paint, mut walk) = (vec![], vec![], vec![], vec![], vec![]);
         for n in 0..48 {
+            let t = Instant::now();
+            if let Some(graph) = &previous {
+                events(&mut ui, graph, &session, 0, 1., &mut hovered).unwrap();
+            }
+            let w = t.elapsed();
             let t = Instant::now();
             let graph = session.render().unwrap();
             let r = t.elapsed();
@@ -3653,16 +3661,17 @@ mod tests {
             let t = Instant::now();
             let _ = super::super::tests::pixels(&ui, authored.width as u16, authored.height as u16);
             let p = t.elapsed();
+            previous = Some(graph);
             if n >= 8 {
-                for (v, x) in [(&mut render, r), (&mut lower, d), (&mut layout, l), (&mut paint, p)] {
+                for (v, x) in [(&mut render, r), (&mut lower, d), (&mut layout, l), (&mut paint, p), (&mut walk, w)] {
                     v.push(x.as_secs_f64() * 1000.);
                 }
             }
         }
         let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
         println!(
-            "NATIVE_FRAME_MS lua_render={:.2} lower={:.2} layout={:.2} sw_paint={:.2}",
-            med(&mut render), med(&mut lower), med(&mut layout), med(&mut paint)
+            "NATIVE_FRAME_MS events_walk={:.2} lua_render={:.2} lower={:.2} layout={:.2} sw_paint={:.2}",
+            med(&mut walk), med(&mut render), med(&mut lower), med(&mut layout), med(&mut paint)
         );
     }
 
