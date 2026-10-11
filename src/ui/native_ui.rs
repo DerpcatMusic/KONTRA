@@ -415,13 +415,19 @@ impl State {
             let session = &local.session;
             {
                 let _sync = self.activity.as_ref().map(|a| a.span(Phase::UiProjectionSync));
+                let _p = super::prof::span("view.sync");
                 session.update_view(face, values, &input.values, &input.meters);
             }
+            let _p = super::prof::span("view.events");
             if let Some(graph) = &local.graph {
                 let generation = session.generation();
                 if local.targets.as_ref().is_none_or(|(g, _)| *g != generation) {
-                    let mut found = Vec::new();
-                    let indexed = event_targets(graph, &mut found)?.map(|()| found);
+                    let indexed = session
+                        .event_nodes()
+                        .map(|nodes| {
+                            nodes.iter().map(|node| Ok(Target { path: string(node, "path"), gestures: gestures(node)? })).collect::<anyhow::Result<Vec<_>>>()
+                        })
+                        .transpose()?;
                     local.targets = Some((generation, indexed));
                 }
                 match &local.targets {
@@ -433,7 +439,10 @@ impl State {
                     _ => events(ui, graph, session, slot, scale, &mut local.hovered)?,
                 }
             }
+            drop(_p);
+            let _p = super::prof::span("view.render");
             let graph = session.render();
+            drop(_p);
             #[cfg(feature = "shots")]
             {
                 self.graph_work = Some(session.graph_work());
@@ -441,9 +450,21 @@ impl State {
             let graph = graph?;
             #[cfg(feature = "shots")]
             {
-                self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
+                // An audit figure: walking 1700 nodes each frame would dwarf the frame.
+                if self.graph_depth.is_none() || session.generation() % 64 == 0 {
+                    let _p = super::prof::span("view.depth");
+                    self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?));
+                }
             }
             let _submission = self.activity.as_ref().map(|a| a.span(Phase::UiAuthoredLayoutSubmission));
+            // KONTRA_VERIFY: compare the memoized graph with a fresh resolve.
+            #[cfg(feature = "shots")]
+            if std::env::var_os("KONTRA_VERIFY").is_some() {
+                if let Some(difference) = session.verify(&graph) {
+                    println!("NATIVE_VERIFY_DIFF {difference}");
+                }
+                let _ = session.take_edits();
+            }
             let authored = authored_size(&graph);
             self.size = authored;
             // While the Lua graph is the one lowered last frame, MUI keeps the
@@ -455,10 +476,12 @@ impl State {
                 Ok(el) => el,
                 Err(e) => { error = Some(e); stack([]) }
             };
+            let _p = super::prof::span("view.lower");
             let el = match key {
                 Some(key) => ui.memo(format!("nui-{slot}-graph"), key, build),
                 None => { let mut build = build; build(ui) }
             };
+            drop(_p);
             if let Some(error) = error { return Err(error); }
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
@@ -1082,6 +1105,7 @@ struct DrawNode {
     modifiers: Vec<Table>,
     style: Style,
     child_nodes: Vec<Table>,
+    meta: DrawMeta,
 }
 struct DrawFrame {
     node: Table,
@@ -1091,10 +1115,32 @@ struct DrawFrame {
     el: El,
     flex: (bool, bool),
     fixed: (bool, bool),
+    meta: DrawMeta,
 }
 enum DrawProgress {
-    Complete(El),
+    Complete(El, DrawMeta),
     Child(Box<DrawFrame>, Table),
+}
+/// What lowering a node depended on, so a finished El can be kept on the node.
+struct DrawMeta {
+    /// The style the parent passed in: part of the cache key.
+    incoming: Style,
+    /// Lowering touched nothing but the node and what the key holds: no text
+    /// field, popover or canvas in the node or below.
+    pure: bool,
+    /// Worth keeping: leaves cost no more to lower than to copy.
+    inner: bool,
+}
+/// A lowered node, kept on the Lua node itself so it lives and dies with it.
+struct Lowered {
+    key: PrimitiveKey,
+    el: El,
+    placed: bool,
+}
+fn lowered(node: &Table, key: &PrimitiveKey) -> Option<(El, bool)> {
+    let held = node.raw_get::<Option<mlua::AnyUserData>>("__lowered").ok()??;
+    let held = held.borrow::<Lowered>().ok()?;
+    (held.key == *key).then(|| (held.el.clone(), held.placed))
 }
 fn draw(
     ui: &mut Ui,
@@ -1127,8 +1173,11 @@ fn draw_impl(
         Build(DrawNode, usize, PrimitivePlacement),
         Resume(Box<DrawFrame>, usize, PrimitivePlacement),
     }
+    // Only the live path keeps lowered nodes: the retained and eager paths
+    // are the oracles the tests compare it with.
+    let keep = plan.is_none() && retention.is_none() && matches!(placement, PrimitivePlacement::Root(_));
     let mut work = vec![Work::Enter(node.clone(), style, 0, placement, allow_memo)];
-    let mut results = Vec::new();
+    let mut results: Vec<(El, bool, bool)> = Vec::new();
     let mut nodes = 0;
     while let Some(job) = work.pop() {
         let (progress, depth, placement, placed_node) = match job {
@@ -1138,6 +1187,16 @@ fn draw_impl(
                     nodes <= 16384 && depth <= 192,
                     "NativeUI graph budget exceeded"
                 );
+                let key = keep.then(|| PrimitiveKey {
+                    atoms: Vec::new(), style: style.clone(), scale: s.to_bits(),
+                    assets: super::pictures::revision(), placement: placement.clone(),
+                });
+                if let Some(key) = &key
+                    && let Some((el, placed)) = lowered(&node, key)
+                {
+                    results.push((el, placed, true));
+                    continue;
+                }
                 if allow_memo
                     && retention.as_ref().is_some_and(|r| r.live.len() < NATIVE_MEMO_SCOPE_LIMIT)
                     && let Some((path, atoms, images)) = plan.and_then(|p| p.candidate(&node))
@@ -1158,7 +1217,7 @@ fn draw_impl(
                         }
                     });
                     if let Some(error) = error { return Err(error); }
-                    results.push((el, placement != PrimitivePlacement::None));
+                    results.push((el, placement != PrimitivePlacement::None, false));
                     continue;
                 }
                 let props: Table = node.get("props")?;
@@ -1166,6 +1225,13 @@ fn draw_impl(
                 let style = draw_style(package, &modifiers, style)?;
                 let child_nodes = tables(&node, "children")?;
                 let children = child_nodes.clone();
+                let meta = DrawMeta {
+                    incoming: if keep { key.map(|k| k.style).unwrap_or_default() } else { Style::default() },
+                    pure: keep
+                        && !matches!(string(&node, "kind").as_str(), "Canvas" | "TextInput")
+                        && !modifiers.iter().any(|m| string(m, "name") == "popover"),
+                    inner: !child_nodes.is_empty() || modifiers.iter().any(|m| matches!(string(m, "name").as_str(), "background" | "overlay")),
+                };
                 // A completed plan proves lowering has no Lua side effects.
                 // An opaque callback ancestor remains eager, but its resolved
                 // child placement is still safe to move inside child memos.
@@ -1184,6 +1250,7 @@ fn draw_impl(
                         modifiers,
                         style: style.clone(),
                         child_nodes,
+                        meta,
                     },
                     depth,
                     placement,
@@ -1197,18 +1264,42 @@ fn draw_impl(
                 continue;
             }
             Work::Build(input, depth, placement) => {
-                let children = results.split_off(results.len() - input.child_nodes.len());
+                let mut children = results.split_off(results.len() - input.child_nodes.len());
                 let placed_node = input.node.clone();
+                let mut input = input;
+                input.meta.pure &= children.iter().all(|c| c.2);
+                let children = children.drain(..).map(|(el, placed, _)| (el, placed)).collect();
+                let _p = super::prof::span("lower.base");
                 let frame = draw_base(ui, package, session, slot, s, drafts, input, children)?;
+                drop(_p);
+                let _p = super::prof::span("lower.modifiers");
                 (draw_modifiers(ui, slot, s, frame, None)?, depth, placement, placed_node)
             }
             Work::Resume(frame, depth, placement) => {
                 let placed_node = frame.node.clone();
-                (draw_modifiers(ui, slot, s, *frame, results.pop().map(|(el, _)| el))?, depth, placement, placed_node)
+                let mut frame = *frame;
+                let subtree = results.pop().map(|(el, _, pure)| {
+                    frame.meta.pure &= pure;
+                    el
+                });
+                (draw_modifiers(ui, slot, s, frame, subtree)?, depth, placement, placed_node)
             }
         };
         match progress {
-            DrawProgress::Complete(el) => results.push((placement.apply(&placed_node, el, s)?, placement != PrimitivePlacement::None)),
+            DrawProgress::Complete(el, meta) => {
+                let placed = placement != PrimitivePlacement::None;
+                let el = placement.apply(&placed_node, el, s)?;
+                if keep && meta.pure && meta.inner {
+                    let key = PrimitiveKey {
+                        atoms: Vec::new(), style: meta.incoming, scale: s.to_bits(),
+                        assets: super::pictures::revision(), placement: placement.clone(),
+                    };
+                    if let Ok(held) = session.lua().create_any_userdata(Lowered { key, el: el.clone(), placed }) {
+                        let _ = placed_node.raw_set("__lowered", held);
+                    }
+                }
+                results.push((el, placed, meta.pure));
+            }
             DrawProgress::Child(frame, child) => {
                 let style = frame.style.clone();
                 work.push(Work::Resume(frame, depth, placement));
@@ -1269,6 +1360,7 @@ fn draw_base(
         modifiers,
         style,
         child_nodes,
+        meta,
     } = input;
     let kind = string(&node, "kind");
     let node = &node;
@@ -1505,6 +1597,7 @@ fn draw_base(
         el,
         flex,
         fixed: (false, false),
+        meta,
     })
 }
 fn draw_modifiers(
@@ -1522,6 +1615,7 @@ fn draw_modifiers(
         mut el,
         mut flex,
         mut fixed,
+        meta,
     } = frame;
     let kind = string(&node, "kind");
     let container = matches!(kind.as_str(), "HStack" | "VStack" | "ZStack");
@@ -1664,6 +1758,7 @@ fn draw_modifiers(
                                 el,
                                 flex,
                                 fixed,
+                                meta,
                             }),
                             t,
                         ));
@@ -1738,6 +1833,7 @@ fn draw_modifiers(
                                 el,
                                 flex,
                                 fixed,
+                                meta,
                             }),
                             content,
                         ));
@@ -1773,7 +1869,7 @@ fn draw_modifiers(
     if style.hidden {
         el = el.opacity(0.).disabled();
     }
-    Ok(DrawProgress::Complete(el))
+    Ok(DrawProgress::Complete(el, meta))
 }
 /// A node with pointer handlers: what a frame needs to find out whether any
 /// of them fires, without walking the whole Lua graph.
@@ -1792,32 +1888,6 @@ fn gestures(node: &Table) -> anyhow::Result<Vec<(String, Table)>> {
         }
     }
     Ok(out)
-}
-/// The handler-bearing nodes under `node`, in event order; `None` when a
-/// popover is open (its dismissal needs the full walk).
-fn event_targets(node: &Table, out: &mut Vec<Target>) -> anyhow::Result<Option<()>> {
-    let gestures_here = gestures(node)?;
-    if !gestures_here.is_empty() {
-        out.push(Target { path: string(node, "path"), gestures: gestures_here });
-    }
-    for m in tables(node, "modifiers")? {
-        let name = string(&m, "name");
-        if name == "popover" {
-            return Ok(None);
-        }
-        if (name == "background" || name == "overlay")
-            && let Value::Table(t) = val(&m, "value")
-            && event_targets(&t, out)?.is_none()
-        {
-            return Ok(None);
-        }
-    }
-    for child in tables(node, "children")? {
-        if event_targets(&child, out)?.is_none() {
-            return Ok(None);
-        }
-    }
-    Ok(Some(()))
 }
 fn events(
     ui: &mut Ui,
@@ -3748,6 +3818,8 @@ mod tests {
         let meters: Vec<usize> = face.widgets.iter().enumerate().filter(|(_, w)| w.meter.is_some() || matches!(w.kind, ir::Kind::LevelMeter { .. })).map(|(n, _)| n).collect();
         println!("NATIVE_SCENARIO {scenario} knob={} meters={}", knob.is_some(), meters.len());
         let (mut view, mut layout, mut paint, mut gpu_paint) = (vec![], vec![], vec![], vec![]);
+        let mut spans: std::collections::BTreeMap<&str, (Vec<f64>, u64)> = Default::default();
+        let mut lua_peak = 0;
         let mut gpu = moose::mui::mui::vello::host::Host::headless((970, 600)).map_err(|e| println!("NATIVE_GPU unavailable: {e}")).ok();
         let start = Instant::now();
         for n in 0..400 {
@@ -3767,6 +3839,7 @@ mod tests {
             let t = Instant::now();
             let el = state.view(&mut ui, 0, 1., &face, &values, &input);
             let v = t.elapsed();
+            lua_peak = lua_peak.max(LOCAL.with(|l| l.borrow().get(&state.id).map_or(0, |l| l.session.lua().used_memory())));
             let size = state.authored();
             let t = Instant::now();
             ui.frame(el, Some(size), Input { pointer, ..Default::default() }, 1. / 60.).unwrap();
@@ -3789,6 +3862,15 @@ mod tests {
                 vec.push(x.as_secs_f64() * 1000.);
             }
             gpu_paint.extend(g.map(|g| g.as_secs_f64() * 1000.));
+            for (name, ms, calls) in super::super::prof::take() {
+                let e = spans.entry(name).or_insert((vec![], 0));
+                e.0.push(ms);
+                e.1 = calls;
+            }
+        }
+        println!("NATIVE_LUA_PEAK_MB {:.1}", lua_peak as f64 / 1048576.);
+        for (name, (mut ms, calls)) in spans {
+            println!("NATIVE_SPAN {name} ms={:.2} calls={calls}", { ms.sort_by(f64::total_cmp); ms[ms.len() / 2] });
         }
         let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
         println!(
