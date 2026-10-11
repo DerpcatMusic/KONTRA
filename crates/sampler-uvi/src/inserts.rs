@@ -80,13 +80,31 @@ impl Translation {
         let Some(inserts) = parent.children().find(|n| n.has_tag_name("Inserts")) else {
             return Ok((out, placed));
         };
+        // A scripted bus-scope insert sits inside a Mix so `setParameter
+        // ("Bypass")` can reach it at runtime (core `slot_control` path).
+        let mix = !voice && !self.in_rack && !self.ir.behaviors.is_empty();
         for node in inserts.children().filter(|n| n.is_element()) {
-            let first = out.len();
+            let slot = out.len();
             let id = node.id().get_usize();
-            if number(node, "Bypass", 0.0)? != 0.0 {
-                placed.push((id, first, 0));
+            let bypassed = number(node, "Bypass", 0.0)? != 0.0;
+            if bypassed && !mix {
+                placed.push((id, slot, 0));
                 continue;
             }
+            if mix {
+                out.push(ir::Processor::Mix {
+                    count: 0,
+                    address: ir::SlotAddress {
+                        group: -1,
+                        slot: -1,
+                        generic: i32::try_from(id).unwrap_or(-1),
+                    },
+                    dry: 0.0,
+                    wet: 1.0,
+                    bypass: bypassed,
+                });
+            }
+            let first = out.len();
             let at = path(node);
             match node.tag_name().name() {
                 "Gain" => {
@@ -154,7 +172,8 @@ impl Translation {
                         7.0 => ir::Rectifier::Half,
                         _ => {
                             self.unsupported(&at, "WaveShaper mode", mode);
-                            placed.push((id, first, 0));
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
                             continue;
                         }
                     };
@@ -282,7 +301,10 @@ impl Translation {
                         .collect();
                     for (n, chain) in live.iter().enumerate() {
                         let gain = ir::Gain::Linear(number(*chain, "Gain", 1.0)?);
-                        let (inner, entries) = self.inserts(*chain, voice, key)?;
+                        let outer = std::mem::replace(&mut self.in_rack, true);
+                        let inner = self.inserts(*chain, voice, key);
+                        self.in_rack = outer;
+                        let (inner, entries) = inner?;
                         if let [_] = live[..] {
                             out.push(ir::Processor::Gain(gain));
                         } else {
@@ -299,11 +321,22 @@ impl Translation {
                     }
                 }
                 _ => {
-                    placed.push((id, first, 0));
+                    out.truncate(slot);
+                    placed.push((id, slot, 0));
                     continue;
                 }
             }
-            placed.push((id, first, out.len() - first));
+            let count = out.len() - first;
+            if count == 0 && mix {
+                out.truncate(slot);
+                placed.push((id, slot, 0));
+            } else {
+                if let (true, Some(ir::Processor::Mix { count: c, .. })) = (mix, out.get_mut(slot))
+                {
+                    *c = count as u16;
+                }
+                placed.push((id, first, count));
+            }
             self.used.push(node.id());
         }
         Ok((out, placed))
