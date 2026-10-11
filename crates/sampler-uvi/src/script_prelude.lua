@@ -206,8 +206,14 @@ widget_mt.__newindex = function(w, k, v)
   if k == "value" or k == "selected" then
     if v ~= w.value then methods.setValue(w, v) end
     return
-  elseif k == "bounds" then d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
-  elseif k == "size" then d.width,d.height = v[1],v[2]
+  elseif k == "bounds" then
+    d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
+    d.width_set,d.height_set = true,true
+  elseif k == "size" then
+    d.width,d.height = v[1],v[2]
+    d.width_set,d.height_set = true,true
+  elseif k == "width" then d.width,d.width_set = v,true
+  elseif k == "height" then d.height,d.height_set = v,true
   elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
   elseif k == "parent" then d.parent,d.parent_id = v,v and rawget(v,"id")
   else d[k] = v end

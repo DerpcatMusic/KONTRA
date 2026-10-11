@@ -5,6 +5,42 @@ use std::{
 };
 const LIMIT: u64 = 32 << 20;
 
+// Header-only sizing, as v1 src/uvi/ui_assets.rs::dimensions; pixels still
+// pass through the bounded UI decoder before painting.
+// shortcut: intrinsic sizing covers PNG; add other headers when unsized image fixtures require them.
+pub(crate) fn png_size(bytes: &[u8]) -> Option<sampler_ui_ir::Size> {
+    if bytes.len() < 33 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR") {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    (width > 0 && height > 0 && u64::from(width) * u64::from(height) <= (64 << 20) / 4)
+        .then_some(sampler_ui_ir::Size { width, height })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn image_headers_reject_truncation_empty_and_excessive_sizes() {
+        let mut png = vec![0; 33];
+        png[..16].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        png[16..20].copy_from_slice(&720u32.to_be_bytes());
+        png[20..24].copy_from_slice(&18u32.to_be_bytes());
+        assert_eq!(
+            super::png_size(&png),
+            Some(sampler_ui_ir::Size {
+                width: 720,
+                height: 18
+            })
+        );
+        assert_eq!(super::png_size(&png[..24]), None);
+        png[20..24].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(super::png_size(&png), None);
+        png[16..24].fill(255);
+        assert_eq!(super::png_size(&png), None);
+    }
+}
+
 // This authored host font is not a substitute for any other family or style.
 fn host_font(path: &str) -> Option<Vec<u8>> {
     path.rsplit(['/', '\\'])
