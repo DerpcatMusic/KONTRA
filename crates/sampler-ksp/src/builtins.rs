@@ -638,6 +638,27 @@ const VALUED: &[(&str, i32)] = &[
     ("$NI_SIGNAL_TRANSP_STOP", signal::TRANSP_STOP),
 ];
 
+/// Whether `name` is a Kontakt vendor constant (`$ENGINE_PAR_*`, `$NI_*`, ...)
+/// from the KSP reference catalog, which scripts use by identity only. Digit
+/// runs are compared as `#`, so numbered families (`$NI_REVERB1_TYPE_ROOM`,
+/// `$ENGINE_PAR_SENDLEVEL_3`) match their catalog entry.
+pub fn is_vendor_constant(name: &str) -> bool {
+    static CATALOG: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| include_str!("vendor_constants.txt").lines().collect());
+    let mut key = String::with_capacity(name.len());
+    let mut digits = false;
+    for c in name.chars() {
+        if !c.is_ascii_digit() {
+            key.push(c);
+        } else if !digits {
+            key.push('#');
+        }
+        digits = c.is_ascii_digit();
+    }
+    catalog.contains(key.as_str())
+}
+
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
     if let Some(value) = match name {

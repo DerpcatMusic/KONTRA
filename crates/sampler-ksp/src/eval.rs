@@ -770,7 +770,13 @@ impl Eval<'_> {
                 self.st.properties.insert((id, par), v.int());
             }
         }
-        if self.ui_index(id).is_none() && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id) {
+        // The library tab's fields (`$INST_LIB_*_ID`) are instrument metadata
+        // addressed by vendor id; their values are kept above for the interface.
+        let library_info = symbol_in(&self.hir.symbols, id).is_some_and(|n| n.starts_with("$INST_LIB_"));
+        if self.ui_index(id).is_none()
+            && !library_info
+            && !(b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(&id)
+        {
             self.warn(span, format!("control parameter set on unknown UI id {id}"));
         }
     }
