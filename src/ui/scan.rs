@@ -71,10 +71,6 @@ fn observed_font_styles(
         .count()
 }
 
-fn authored_view(face: &ir::Interface) -> bool {
-    !matches!(face.source, ir::Source::Ksp { .. }) || face.performance || face.native_ui.is_some()
-}
-
 /// Drain the script effects the way the plugin's `apply_effects` does: interface effects go to
 /// the script views, MIDI / array-file jobs to the part's ingress. A script that emits into a
 /// full queue stalls (back-pressure), so every rendering loop must call this.
@@ -800,7 +796,6 @@ pub fn one(id: &str, out: &Path) -> Value {
         let faces = loaded.interfaces.clone();
         any_ui |= faces
             .iter()
-            .filter(|face| authored_view(face))
             .any(|face| !face.widgets.is_empty() || face.native_ui.is_some());
         let paint_path = path.clone();
         let paint_out = out.to_path_buf();
@@ -809,7 +804,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             .spawn(move || {
                 let mut views = Vec::new();
                 for (slot, face) in faces.iter().enumerate() {
-                    if !authored_view(face) || (face.widgets.is_empty() && face.native_ui.is_none()) {
+                    if face.widgets.is_empty() && face.native_ui.is_none() {
                         continue;
                     }
                     let view = render(
@@ -1151,18 +1146,6 @@ fn ksp_observations() -> Value {
 #[cfg(test)]
 mod font_observation_tests {
     use super::*;
-    #[test]
-    fn scanner_does_not_paint_helper_scripts_as_blank_performance_views() {
-        for (declaration, expected) in [("", false), ("make_perfview", true)] {
-            let source = format!("on init {declaration} declare ui_label $l(1,1) end on");
-            let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
-            let mut face = script.ui(&|_| None).unwrap();
-            assert_eq!(authored_view(&face), expected);
-            face.native_ui = Some(ir::NativeUi { entry: "main.nui".into() });
-            assert!(authored_view(&face));
-        }
-    }
-
     #[test]
     fn scanner_services_array_io_and_waits_before_capturing_the_face() {
         let dir = tempfile::tempdir().unwrap();
