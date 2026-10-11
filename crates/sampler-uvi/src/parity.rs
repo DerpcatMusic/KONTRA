@@ -340,17 +340,13 @@ fn report(
         if let Some((target, end)) = resolve(source, &ts, i, &aliases, program) {
             targets.insert(end, target);
             let module = kind_name(target);
-            if let Some(e) = ledger::entry(module) {
-                let mut c = construct(
-                    Span {
-                        end: ts[end - 1].span.end,
-                        ..t.span
-                    },
-                    e,
-                );
-                c.kind = K::LuaModule;
-                out.constructs.push(c);
-            }
+            out.constructs.push(ledger::module_reference(
+                Span {
+                    end: ts[end - 1].span.end,
+                    ..t.span
+                },
+                module,
+            ));
         }
         if ledger::is_callback(name) {
             out.constructs
