@@ -1,4 +1,9 @@
-# Kontakt FX round 2: evidence boundary
+# Kontakt FX round 2: historical evidence boundary
+
+Round 3 update: the revised handoff accepts this same-SHA Ghidra cache as
+protocol step 2. Radare2 successfully opens the read-only non-hidden copy
+and confirms tables and branches. The historical gate below is superseded;
+see [round-3 implementation receipt](../audit-2026-10-11/kontakt-fx-3-handoff.md).
 
 Research only, 2026-10-11. No DSP, reader, registry or diagnostic changed.
 

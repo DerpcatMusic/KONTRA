@@ -1,18 +1,21 @@
 # Morphology filter: cached dispatch and output table
 
 Status (round 3): saved ladder types 30–41 now select the verified native
-output rows; type 13 is a separate legacy effect filter and remains under extraction.
+output rows; saved type 13 now has its separate native four-allpass kernel.
 
 Docs first: Kontakt 8 [Filter Reference](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference),
 sections Ladder high-pass, band-pass and peak/notch filters; KSP
 [Engine Parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters), filter type constants.
+
+## Historical round-2 observations (superseded below)
 
 Historical binary leads: reader `0x140d00db0`, saved-ID conversion
 `0x140cf4c80`, subtype clamp `0x140af01d0`, wrapper `0x1408faa30`,
 parameter setter `0x140b05c70`, coefficient clock `0x140b036a0`,
 four-stage ladder audio `0x140b00b80`. Reader contains versions 0x92 and
 0x95; saved types 30–41 become internal 22–33 and ladder selectors 0–11.
-Saved 13 remains a separate Phaser filter (`0x140ae9f90`), not this ladder.
+The preliminary round-2 type-13 lead was `0x140ae9f90`; round 3 resolves
+the actual Phaser filter audio to `0x140909810`, separately from this ladder.
 
 The output table at `0x144fcebc0` has five columns: input, then stages 1–4.
 
