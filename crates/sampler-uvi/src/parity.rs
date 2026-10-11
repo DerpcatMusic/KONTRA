@@ -1,0 +1,502 @@
+//! Source-free Falcon/UVI script reports and opt-in runtime observations.
+pub mod ledger;
+mod lexer;
+mod runtime;
+pub(crate) use runtime::Inspection;
+use sampler_parity::{
+    Construct, ConstructKind as K, Lang, Lowered, ScriptReport, Span, Token, TokenClass as C,
+};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Reports for the script processors in valid, loaded program XML. Malformed XML
+/// yields no reports; bank loading should validate it before calling this entry point.
+pub fn parity_reports(xml: &str) -> Vec<ScriptReport> {
+    parity_reports_with_files(xml, &())
+}
+
+/// Bank entry point for the parity CLI. Embedded modules stay in memory.
+pub fn bank_reports(
+    bank: &crate::Bank,
+    program: &str,
+) -> Result<Vec<ScriptReport>, crate::AccessError> {
+    let (xml, _) = bank.program(program)?;
+    Ok(parity_reports_with_files(&xml, &bank.scripts()))
+}
+
+impl crate::Translated {
+    pub fn parity_reports(&self) -> Vec<ScriptReport> {
+        parity_reports_with_files(&self.text, &self.lua)
+    }
+}
+
+pub(crate) fn script_id(node: roxmltree::Node) -> String {
+    let mut parts = Vec::new();
+    for n in node
+        .ancestors()
+        .filter(|n| n.is_element() && !n.has_tag_name("script"))
+    {
+        let index = n
+            .prev_siblings()
+            .skip(1)
+            .filter(|p| p.is_element() && p.tag_name().name() == n.tag_name().name())
+            .count();
+        parts.push(format!("{}[{index}]", n.tag_name().name()));
+    }
+    parts.reverse();
+    format!("uvi:/{}", parts.join("/"))
+}
+
+pub fn parity_reports_with_files(
+    xml: &str,
+    files: &impl crate::script::Files,
+) -> Vec<ScriptReport> {
+    let Ok(doc) = crate::parse_program_xml(xml) else {
+        return Vec::new();
+    };
+    let Some(program) = doc.descendants().find(|n| n.has_tag_name("Program")) else {
+        return Vec::new();
+    };
+    let lowered = crate::translate_full(xml, crate::Source::Bank).ok();
+    let mut out = Vec::new();
+    let mut modules = BTreeSet::new();
+    let mut pending = Vec::new();
+    for script in program.descendants().filter(|n| n.has_tag_name("script")) {
+        let source = script.text().unwrap_or_default();
+        let report = report(
+            source,
+            script_id(script),
+            script
+                .parent()
+                .and_then(|p| p.attribute("Name"))
+                .unwrap_or("ScriptProcessor"),
+            program,
+            lowered.as_ref(),
+        );
+        required_modules(source, &report.tokens, &mut pending);
+        out.push(report);
+    }
+    while let Some(module) = pending.pop() {
+        if !modules.insert(module.clone()) {
+            continue;
+        }
+        if let Some(source) = files.script(&module) {
+            let report = report(
+                &source,
+                format!("uvi:module:{module}"),
+                &module,
+                program,
+                lowered.as_ref(),
+            );
+            required_modules(&source, &report.tokens, &mut pending);
+            out.push(report);
+        }
+    }
+    out
+}
+
+fn required_modules(source: &str, tokens: &[Token], pending: &mut Vec<String>) {
+    let tokens: Vec<_> = tokens.iter().filter(|t| t.class != C::Comment).collect();
+    for w in tokens.windows(3) {
+        if text(source, w[0]) == "require"
+            && text(source, w[1]) == "("
+            && w[2].class == C::String
+            && let Some(name) = lexer::literal(text(source, w[2]))
+            && valid_name(&name)
+        {
+            pending.push(name);
+        }
+    }
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "_ .:/-@".contains(c))
+}
+fn text<'a>(source: &'a str, token: &Token) -> &'a str {
+    &source[token.span.start as usize..token.span.end as usize]
+}
+
+#[derive(Clone, Copy)]
+enum Target<'a, 'input> {
+    Node(roxmltree::Node<'a, 'input>),
+    Part,
+}
+fn kind_name<'a>(target: Target<'_, 'a>) -> &'a str {
+    match target {
+        Target::Node(n) => n.tag_name().name(),
+        Target::Part => "Part",
+    }
+}
+
+fn collection<'a, 'b>(node: roxmltree::Node<'a, 'b>, name: &str) -> Option<&'static str> {
+    Some(match name {
+        "layers" => "Layers",
+        "keygroups" => "Keygroups",
+        "oscillators" => "Oscillators",
+        "inserts" => "Inserts",
+        "auxs" => {
+            if node.has_tag_name("EffectRack") {
+                "Chains"
+            } else {
+                "Auxs"
+            }
+        }
+        "sends" => "BusRouters",
+        "modulations" | "mods" => "ControlSignalSources",
+        "eventProcessors" => "EventProcessors",
+        "connections" => "Connections",
+        "children" | "synthChildren" => return None,
+        _ => return None,
+    })
+}
+
+fn resolve<'a, 'b>(
+    source: &str,
+    tokens: &[&Token],
+    start: usize,
+    aliases: &BTreeMap<String, Target<'a, 'b>>,
+    program: roxmltree::Node<'a, 'b>,
+) -> Option<(Target<'a, 'b>, usize)> {
+    let name = text(source, tokens.get(start)?);
+    let (mut target, mut end) = if name == "Program" {
+        (Target::Node(program), start + 1)
+    } else if name == "findLayer"
+        && tokens
+            .get(start + 1)
+            .is_some_and(|t| text(source, t) == "(")
+    {
+        let layer = lexer::literal(text(source, tokens.get(start + 2)?))?;
+        let node = program
+            .children()
+            .find(|n| n.has_tag_name("Layers"))?
+            .children()
+            .find(|n| n.is_element() && n.attribute("Name") == Some(layer.as_str()))?;
+        if text(source, tokens.get(start + 3)?) != ")" {
+            return None;
+        }
+        (Target::Node(node), start + 4)
+    } else {
+        (*aliases.get(name)?, start + 1)
+    };
+    loop {
+        if !tokens.get(end).is_some_and(|t| text(source, t) == ".") {
+            break;
+        }
+        let field = text(source, tokens.get(end + 1)?);
+        if matches!(field, "parent" | "part") {
+            target = match target {
+                Target::Node(n) if field == "part" || n == program => Target::Part,
+                Target::Node(n) => Target::Node(n.parent()?.parent()?),
+                Target::Part => return None,
+            };
+            end += 2;
+            continue;
+        }
+        let Target::Node(node) = target else {
+            return None;
+        };
+        let name = collection(node, field);
+        let children: Vec<_> = if let Some(name) = name {
+            node.children()
+                .find(|n| n.has_tag_name(name))?
+                .children()
+                .filter(|n| n.is_element())
+                .collect()
+        } else if matches!(field, "children" | "synthChildren") {
+            node.children()
+                .filter(|n| n.is_element())
+                .filter(|n| {
+                    field == "children" || matches!(n.tag_name().name(), "Layers" | "Keygroups")
+                })
+                .flat_map(|n| {
+                    n.children()
+                        .filter(|n| n.is_element() && n.tag_name().name() != "script")
+                })
+                .collect()
+        } else {
+            break;
+        };
+        if text(source, tokens.get(end + 2)?) != "[" || text(source, tokens.get(end + 4)?) != "]" {
+            return None;
+        }
+        let index = text(source, tokens.get(end + 3)?);
+        let selected = if let Ok(n) = index.parse::<usize>() {
+            *children.get(n.checked_sub(1)?)?
+        } else {
+            let name = lexer::literal(index)?;
+            *children.iter().find(|n| {
+                n.attribute("Name") == Some(name.as_str())
+                    || n.attribute("DisplayName") == Some(name.as_str())
+            })?
+        };
+        target = Target::Node(selected);
+        end += 5;
+    }
+    Some((target, end))
+}
+
+fn construct(span: Span, entry: &ledger::Entry) -> Construct {
+    Construct {
+        span,
+        kind: entry.kind,
+        name: entry.name.clone(),
+        status: entry.status,
+        detail: entry.detail.clone(),
+        owner: Some(entry.owner.clone()),
+        spec: Some(entry.spec.clone()),
+    }
+}
+
+fn report(
+    source: &str,
+    id: String,
+    title: &str,
+    program: roxmltree::Node,
+    lowered: Option<&crate::FullTranslation>,
+) -> ScriptReport {
+    let tokens = lexer::lex(source);
+    let ts: Vec<_> = tokens.iter().filter(|t| t.class != C::Comment).collect();
+    let mut out = ScriptReport {
+        id,
+        title: title.into(),
+        lang: Lang::Luau,
+        source_len: source.len() as u32,
+        tokens: Vec::new(),
+        constructs: Vec::new(),
+        lowered: Vec::new(),
+    };
+    let mut aliases = BTreeMap::new();
+    let mut targets = BTreeMap::new();
+    let mut scopes = Vec::new();
+    let assigned: BTreeSet<_> = ts
+        .windows(2)
+        .filter(|w| text(source, w[1]) == "=")
+        .map(|w| text(source, w[0]))
+        .collect();
+    let mut authored = BTreeSet::new();
+    for (i, t) in ts.iter().enumerate() {
+        if text(source, t) == "function" {
+            if ts.get(i + 1).is_some_and(|t| text(source, t) == "(") {
+                continue;
+            }
+            let mut j = i + 1;
+            while j + 1 < ts.len() && text(source, ts[j + 1]) != "(" {
+                j += 1;
+            }
+            if j < ts.len() {
+                authored.insert(text(source, ts[j]));
+            }
+        }
+    }
+    for (i, t) in ts.iter().enumerate() {
+        let name = text(source, t);
+        let next = ts.get(i + 1).map(|t| text(source, t)).unwrap_or("");
+        match name {
+            "function" => {
+                scopes.push(aliases.clone());
+                let mut j = i + 1;
+                while j < ts.len() && text(source, ts[j]) != "(" {
+                    j += 1;
+                }
+                j += 1;
+                while j < ts.len() && text(source, ts[j]) != ")" {
+                    aliases.remove(text(source, ts[j]));
+                    j += 1;
+                }
+                aliases.remove("self");
+            }
+            "then" | "do" | "repeat" => scopes.push(aliases.clone()),
+            "else" => {
+                if let Some(saved) = scopes.last() {
+                    aliases = saved.clone();
+                }
+            }
+            "end" | "until" => {
+                if let Some(saved) = scopes.pop() {
+                    aliases = saved;
+                }
+            }
+            _ => {}
+        }
+        if next == "=" && t.class == C::Variable {
+            let local = i > 0 && text(source, ts[i - 1]) == "local";
+            if !local {
+                for saved in &mut scopes {
+                    saved.remove(name);
+                }
+            }
+            aliases.remove(name);
+            if let Some((target, end)) = resolve(source, &ts, i + 2, &aliases, program)
+                && (end == ts.len()
+                    || ts[end].span.line > t.span.line
+                    || matches!(text(source, ts[end]), ";" | "end"))
+            {
+                aliases.insert(name.to_owned(), target);
+            }
+        }
+        if let Some((target, end)) = resolve(source, &ts, i, &aliases, program) {
+            targets.insert(end, target);
+            let module = kind_name(target);
+            out.constructs.push(ledger::module_reference(
+                Span {
+                    end: ts[end - 1].span.end,
+                    ..t.span
+                },
+                module,
+            ));
+        }
+        if ledger::is_callback(name) {
+            out.constructs
+                .push(construct(t.span, ledger::entry(name).unwrap()));
+            continue;
+        }
+        let is_call =
+            matches!(next, "(" | "{") || ts.get(i + 1).is_some_and(|t| t.class == C::String);
+        let declaration = i > 0 && text(source, ts[i - 1]) == "function";
+        let library_member = i >= 2
+            && text(source, ts[i - 1]) == "."
+            && matches!(
+                text(source, ts[i - 2]),
+                "math" | "string" | "table" | "coroutine" | "bit" | "bit32"
+            );
+        if library_member
+            && i >= 2
+            && text(source, ts[i - 2]) == "table"
+            && matches!(name, "copy" | "print")
+        {
+            let e = ledger::entry(&format!("table.{name}")).unwrap();
+            out.constructs.push(construct(t.span, e));
+            out.lowered.push(Lowered {
+                span: t.span,
+                ops: vec![e.binding.clone()],
+            });
+            continue;
+        }
+        if authored.contains(name) && !ledger::is_callback(name) || library_member {
+            continue;
+        }
+        if !is_call || declaration || !matches!(t.class, C::Builtin | C::Variable) {
+            if !is_call
+                && t.class == C::Builtin
+                && let Some(e) = ledger::entry(name)
+                && e.kind == K::LuaApi
+            {
+                out.constructs.push(construct(t.span, e));
+            }
+            continue;
+        }
+        if i >= 2 && text(source, ts[i - 2]) == "Engine" {
+            out.constructs.push(ledger::unknown(t.span, name, true));
+            out.lowered.push(Lowered {
+                span: t.span,
+                ops: vec!["unbound Engine stand-in".into()],
+            });
+            continue;
+        }
+        if matches!(name, "setParameter" | "getParameter") {
+            let target = i.checked_sub(1).and_then(|colon| {
+                if matches!(text(source, ts[colon]), ":" | ".") {
+                    targets.get(&colon).copied()
+                } else {
+                    None
+                }
+            });
+            let first = ts.get(i + 2);
+            let literal = first
+                .filter(|t| t.class == C::String)
+                .and_then(|t| lexer::literal(text(source, t)))
+                .filter(|s| valid_name(s));
+            let numeric = first
+                .filter(|t| t.class == C::Number)
+                .and_then(|t| text(source, t).parse::<usize>().ok());
+            let numeric_name = target.zip(numeric).and_then(|(target, n)| {
+                crate::script::parameters::definitions(kind_name(target))
+                    .get(n.checked_sub(1)?)
+                    .map(|p| p.name)
+            });
+            let (c, op) = ledger::parameter(
+                target,
+                name,
+                literal.as_deref().or(numeric_name),
+                t.span,
+                lowered,
+            );
+            out.constructs.push(c);
+            out.lowered.push(Lowered {
+                span: t.span,
+                ops: vec![op],
+            });
+        } else if let Some(e) = ledger::entry(name) {
+            // A dot-qualified Engine call uses the Engine stand-in, regardless of member name.
+            let e = if i >= 2 && text(source, ts[i - 2]) == "Engine" {
+                ledger::entry("Engine").unwrap()
+            } else {
+                e
+            };
+            out.constructs.push(construct(t.span, e));
+            out.lowered.push(Lowered {
+                span: t.span,
+                ops: vec![e.binding.clone()],
+            });
+        } else if !assigned.contains(name)
+            && !matches!(
+                name,
+                "assert"
+                    | "error"
+                    | "pcall"
+                    | "xpcall"
+                    | "pairs"
+                    | "ipairs"
+                    | "next"
+                    | "select"
+                    | "tostring"
+                    | "tonumber"
+                    | "rawget"
+                    | "rawset"
+                    | "rawequal"
+                    | "getmetatable"
+                    | "setmetatable"
+                    | "unpack"
+            )
+        {
+            // Local functions and standard-library members are not unknown host APIs.
+            let local_function = ts
+                .windows(2)
+                .any(|w| text(source, w[0]) == "function" && text(source, w[1]) == name);
+            let std_member = i >= 2
+                && text(source, ts[i - 1]) == "."
+                && matches!(
+                    text(source, ts[i - 2]),
+                    "math" | "string" | "table" | "coroutine" | "bit" | "bit32"
+                );
+            let method = i > 0 && matches!(text(source, ts[i - 1]), "." | ":");
+            let host_method = i > 0 && targets.contains_key(&(i - 1));
+            if local_function
+                || std_member
+                || method && !host_method && !(i >= 2 && text(source, ts[i - 2]) == "Engine")
+            {
+                continue;
+            }
+            let engine = i >= 2 && text(source, ts[i - 2]) == "Engine";
+            let c = ledger::unknown(t.span, name, engine);
+            out.constructs.push(c);
+            out.lowered.push(Lowered {
+                span: t.span,
+                ops: vec![
+                    if engine {
+                        "unbound Engine stand-in"
+                    } else {
+                        "unbound API (nil)"
+                    }
+                    .into(),
+                ],
+            });
+        }
+    }
+    out.constructs.sort_by_key(|c| c.span.start);
+    out.tokens = tokens;
+    out
+}
