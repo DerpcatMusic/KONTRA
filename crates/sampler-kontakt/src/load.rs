@@ -577,7 +577,10 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
     }
     if let ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) = &mut playback.looping
     {
-        if range.start < playback.start || range.end > end || range.start >= range.end {
+        // A forward zone may start inside or past its loop (core enters it mid-cycle or plays
+        // straight through, as v1 and Kontakt do); only a reversed one needs the loop inside.
+        let before = playback.reverse && range.start < playback.start;
+        if before || range.end > end || range.start >= range.end {
             report.push((
                 "loop starting before the zone start or past its end, dropped",
                 format!(
@@ -588,19 +591,26 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
             playback.looping = ir::Looping::None;
             return true;
         }
+        // The crossfade blends toward audio before the loop start in the file (forward) or
+        // after its end (reverse); the sample start does not limit it.
         let room = if playback.reverse {
             end - range.end
         } else {
-            range.start - playback.start
+            range.start
         };
         let limit = (range.end - range.start).min(room);
         if let ir::Span::Frames(crossfade) = range.crossfade
             && crossfade > limit
         {
-            report.push((
-                "loop crossfade longer than its room, clamped",
-                format!("{crossfade} > {limit}"),
-            ));
+            // Audio that is not in the file cannot be blended, in Kontakt either (v1 `play_map`
+            // clamped the same way): a loop at the file start has no crossfade. Only a crossfade
+            // longer than the loop itself is an authoring fault worth reporting.
+            if crossfade > range.end - range.start {
+                report.push((
+                    "loop crossfade longer than its loop, clamped",
+                    format!("{crossfade} > {}", range.end - range.start),
+                ));
+            }
             range.crossfade = ir::Span::Frames(limit);
         }
     }
@@ -1338,6 +1348,38 @@ mod native_lookup_tests {
         .unwrap();
         assert_eq!(cell(&rt, 3), Ok(12));
         assert_eq!(cell(&rt, 4), Ok(3));
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    fn looped(start: u64, loop_start: u64, loop_end: u64, crossfade: u64) -> ir::Playback {
+        ir::Playback {
+            start,
+            looping: ir::Looping::Continuous(ir::LoopRange {
+                start: loop_start,
+                end: loop_end,
+                crossfade: ir::Span::Frames(crossfade),
+                alternating: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_loop_before_the_sample_start_is_kept_and_its_crossfade_uses_the_file() {
+        let mut report = Vec::new();
+        let mut playback = looped(150, 100, 400, 50);
+        assert!(fit(&mut playback, 1000, &mut report));
+        assert_eq!(playback, looped(150, 100, 400, 50));
+        assert!(report.is_empty(), "{report:?}");
+        // Nothing precedes the file start: clamped to no crossfade, as in Kontakt, without a report.
+        let mut at_start = looped(0, 0, 400, 50);
+        assert!(fit(&mut at_start, 1000, &mut report));
+        assert_eq!(at_start, looped(0, 0, 400, 0));
+        assert!(report.is_empty(), "{report:?}");
     }
 }
 
