@@ -983,7 +983,14 @@ fn prepare_inner(
                     .interface
                     .widgets
                     .iter()
-                    .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
+                    .filter(|w| {
+                        w.kind
+                            == if binding.switch {
+                                sampler_ksp::model::WidgetKind::Switch
+                            } else {
+                                sampler_ksp::model::WidgetKind::Slider
+                            }
+                    })
                     .nth(binding.slider as usize)
             });
         if let Some(widget) = target {
@@ -1005,7 +1012,12 @@ fn prepare_inner(
         } else {
             instrument.unsupported.push(ir::Unsupported {
                 location: format!("script slot {}", binding.source_slot),
-                feature: "saved automation slider".into(),
+                feature: if binding.switch {
+                    "saved automation switch"
+                } else {
+                    "saved automation slider"
+                }
+                .into(),
                 value: binding.slider.to_string(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -1179,6 +1191,7 @@ mod automation_tests {
         });
         instrument.script_automation.push(ir::ScriptAutomation {
             source: ir::ScriptAutomationSource::Controller(21),
+            switch: false,
             source_slot: 3,
             slider: 1,
             low: 0.,
