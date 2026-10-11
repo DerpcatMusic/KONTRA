@@ -23,6 +23,8 @@ pub use init_cache::{CachedInit, restore_initialized};
 mod lexer;
 mod lower;
 pub mod model;
+pub mod parity;
+pub use parity::{RuntimeCoverage, parity_report, parity_report_with};
 pub mod nckp;
 mod parser;
 #[cfg(feature = "scan")]
@@ -294,7 +296,9 @@ impl ScriptView {
         instance: ScriptInstanceId,
         effect: &sampler_core::Effect,
     ) -> bool {
-        if effect.plan != plan || effect.instance != Some(instance) { return false; }
+        if effect.plan != plan || effect.instance != Some(instance) {
+            return false;
+        }
         self.apply_ui_effect(effect)
     }
     /// [`Script::ui`].
@@ -322,24 +326,59 @@ fn apply_ui_effect(
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
     if matches!(service, "attach_zone" | "set_ui_wf_property") {
         use sampler_core::waveform::Property;
-        let Some(id) = arg(0) else { return false; };
-        let Some(widget) = model.interface.widgets.iter().find(|w| {
-            w.ui_id == id && w.kind == model::WidgetKind::Waveform && !w.unresolved
-        }) else { return false; };
+        let Some(id) = arg(0) else {
+            return false;
+        };
+        let Some(widget) = model
+            .interface
+            .widgets
+            .iter()
+            .find(|w| w.ui_id == id && w.kind == model::WidgetKind::Waveform && !w.unresolved)
+        else {
+            return false;
+        };
         let name = widget.name.clone();
-        if effect.text.is_some() { return false; }
+        if effect.text.is_some() {
+            return false;
+        }
         let request = if service == "attach_zone" {
-            if args.len() != 3 { return false; }
-            let (Some(zone), Some(flags)) = (arg(1).filter(|z| *z > 0), arg(2)) else { return false; };
-            model::Request { command: "attach_zone", args: vec![Value::Int(id), Value::Int(zone), Value::Int(flags)] }
+            if args.len() != 3 {
+                return false;
+            }
+            let (Some(zone), Some(flags)) = (arg(1).filter(|z| *z > 0), arg(2)) else {
+                return false;
+            };
+            model::Request {
+                command: "attach_zone",
+                args: vec![Value::Int(id), Value::Int(zone), Value::Int(flags)],
+            }
         } else {
-            if args.len() != 4 { return false; }
-            let (Some(property), Some(index), Some(value)) =
-                (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2), arg(3)) else { return false; };
-            let Some(p) = Property::from_name(&property) else { return false; };
-            if p.validate_index(index).is_err() || ui::waveform_requests(model, id, &name).is_none() { return false; }
-            model::Request { command: "set_ui_wf_property", args: vec![Value::Int(id), Value::Text(property),
-                Value::Int(index), Value::Int(p.value(index, value))] }
+            if args.len() != 4 {
+                return false;
+            }
+            let (Some(property), Some(index), Some(value)) = (
+                arg(1).and_then(|p| eval::symbol_in(symbols, p)),
+                arg(2),
+                arg(3),
+            ) else {
+                return false;
+            };
+            let Some(p) = Property::from_name(&property) else {
+                return false;
+            };
+            if p.validate_index(index).is_err() || ui::waveform_requests(model, id, &name).is_none()
+            {
+                return false;
+            }
+            model::Request {
+                command: "set_ui_wf_property",
+                args: vec![
+                    Value::Int(id),
+                    Value::Text(property),
+                    Value::Int(index),
+                    Value::Int(p.value(index, value)),
+                ],
+            }
         };
         return waveform::project(model, &name, id, request);
     }
@@ -1227,6 +1266,7 @@ fn compile_initialized_inner(
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
+        inspection: None,
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
