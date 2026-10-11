@@ -245,6 +245,11 @@ fn detail(p: ir::Processor) -> String {
             "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
         ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
+        ir::Processor::Saturation(shape) => format!("Saturation · shape {shape:+.2}"),
+        ir::Processor::Distortion { transistor, drive, damping } => format!(
+            "{} distortion · drive {:.0}% · damping {:.0}%",
+            if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
+        ),
         ir::Processor::StereoModeller { width, pan, pseudo } => format!(
             "Stereo modeller · width {:.0}% · pan {}{}",
             width * 200.,
