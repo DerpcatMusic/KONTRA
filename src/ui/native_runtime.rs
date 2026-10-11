@@ -385,6 +385,12 @@ struct Bridge {
     touches: BTreeSet<(usize, usize)>,
     unavailable: BTreeSet<String>,
     meters: HashMap<usize, f64>,
+    /// Bumped whenever a value Lua can read changes: the render cache key.
+    rev: u64,
+    /// Bumped when a meter level changes; only matters if a render read one.
+    meter_rev: u64,
+    rendering: bool,
+    render_read_meters: bool,
 }
 #[derive(Clone)]
 struct Parameter {
@@ -605,14 +611,14 @@ impl UserData for Parameter {
             let mut bridge = this.bridge.lock_unpoisoned();
             if bridge.controls.get(this.binding).is_some() {
                 bridge.touches.insert((this.binding, index.unwrap_or(0)));
+                bridge.rev += 1;
             }
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
-            this.bridge
-                .lock_unpoisoned()
-                .touches
-                .remove(&(this.binding, index.unwrap_or(0)));
+            let mut bridge = this.bridge.lock_unpoisoned();
+            bridge.touches.remove(&(this.binding, index.unwrap_or(0)));
+            bridge.rev += 1;
             Ok(())
         });
         methods.add_method("is_touch_active", |_, this, index: Option<usize>| {
@@ -644,7 +650,8 @@ pub(super) fn update_widget(
     widget: &mut ir::Widget,
     authored: Option<&ir::Widget>,
     typed: Option<&ir::Value>,
-) {
+) -> bool {
+    let mut changed = false;
     if let Some(authored) = authored
         && &*widget != authored
     {
@@ -657,21 +664,39 @@ pub(super) fn update_widget(
         if previous.is_some() && previous.as_ref() == typed {
             widget.value = previous;
         }
+        changed = true;
     }
     if let Some(value) = typed
         && widget.value.as_ref() != Some(value)
     {
         widget.value = Some(value.clone());
+        changed = true;
     }
+    changed
 }
 
 /// One editor-owned Lua VM. Audio receives only the bounded numeric edits.
+struct CachedGraph {
+    graph: Table,
+    rev: u64,
+    meter_rev: u64,
+    meters_read: bool,
+    calls: u64,
+    state_rev: u64,
+}
 pub struct Session {
     lua: Lua,
     root: Function,
     activity: Option<Arc<Activity>>,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
+    /// The last graph and what it was rendered from: while none of it moves
+    /// the Lua tree is the same, so the 30 ms resolve is skipped.
+    cached: std::cell::RefCell<Option<CachedGraph>>,
+    /// Lua callbacks run (events, text edits); each may change script state.
+    calls: std::cell::Cell<u64>,
+    /// Off in tests that poke Lua globals behind the host's back.
+    pub(super) reuse: std::cell::Cell<bool>,
     #[cfg(test)]
     event_payloads: std::cell::Cell<usize>,
 }
@@ -801,7 +826,9 @@ impl Session {
                     lua.create_function(move |_, _: LuaValue| {
                         Ok(binding
                             .and_then(|binding| {
-                                bridge.lock_unpoisoned().meters.get(&binding).copied()
+                                let mut bridge = bridge.lock_unpoisoned();
+                                bridge.render_read_meters |= bridge.rendering;
+                                bridge.meters.get(&binding).copied()
                             })
                             .unwrap_or(0.))
                     })?,
@@ -841,6 +868,9 @@ impl Session {
             activity: None,
             bridge,
             fuel,
+            cached: Default::default(),
+            calls: Default::default(),
+            reuse: std::cell::Cell::new(!cfg!(test)),
             #[cfg(test)]
             event_payloads: std::cell::Cell::new(0),
         })
@@ -862,9 +892,11 @@ impl Session {
                 continue;
             }
             let typed = typed.get(&ir::WidgetRef(index));
-            update_widget(&mut bridge.controls[at], face.widgets.get(index), typed);
-            if let Some(level) = meters.get(&ir::WidgetRef(index)) {
-                bridge.meters.insert(at, *level);
+            let mut changed = update_widget(&mut bridge.controls[at], face.widgets.get(index), typed);
+            if let Some(level) = meters.get(&ir::WidgetRef(index))
+                && bridge.meters.insert(at, *level) != Some(*level)
+            {
+                bridge.meter_rev += 1;
             }
             let w = &mut bridge.controls[at];
             if typed.is_none()
@@ -875,12 +907,17 @@ impl Session {
                 && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
-                w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
+                let next = if matches!(w.value, Some(ir::Value::Real(_))) {
                     ir::Value::Real(n)
                 } else {
                     ir::Value::Integer(n.round() as i32)
-                });
+                };
+                if w.value.as_ref() != Some(&next) {
+                    w.value = Some(next);
+                    changed = true;
+                }
             }
+            bridge.rev += u64::from(changed);
         }
     }
     pub fn update_meters(&self, mut meter: impl FnMut(&ir::Widget) -> f64) {
@@ -892,7 +929,11 @@ impl Session {
             .filter(|(_, w)| w.meter.is_some() || matches!(w.kind, ir::Kind::LevelMeter { .. }))
             .map(|(n, w)| (n, meter(w)))
             .collect::<Vec<_>>();
-        bridge.meters.extend(values);
+        for (at, level) in values {
+            if bridge.meters.insert(at, level) != Some(level) {
+                bridge.meter_rev += 1;
+            }
+        }
     }
     pub fn render(&self) -> anyhow::Result<Table> {
         let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
@@ -900,11 +941,47 @@ impl Session {
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
         }
-        Ok(self
+        let state_rev = self.lua.globals().get::<u64>("__rev").unwrap_or(0);
+        let calls = self.calls.get();
+        let (rev, meter_rev) = {
+            let bridge = self.bridge.lock_unpoisoned();
+            (bridge.rev, bridge.meter_rev)
+        };
+        if let Some(c) = &*self.cached.borrow()
+            && self.reuse.get()
+            && c.rev == rev
+            && c.calls == calls
+            && c.state_rev == state_rev
+            && (!c.meters_read || c.meter_rev == meter_rev)
+        {
+            return Ok(c.graph.clone());
+        }
+        {
+            let mut bridge = self.bridge.lock_unpoisoned();
+            bridge.rendering = true;
+            bridge.render_read_meters = false;
+        }
+        let graph: Table = self
             .lua
             .globals()
             .get::<Function>("__render")?
-            .call(self.root.clone())?)
+            .call(self.root.clone())
+            .inspect_err(|_| self.bridge.lock_unpoisoned().rendering = false)?;
+        let mut bridge = self.bridge.lock_unpoisoned();
+        bridge.rendering = false;
+        // A render that itself changed script state (an effect) is not stable.
+        let stable = self.lua.globals().get::<u64>("__rev").unwrap_or(0) == state_rev
+            && bridge.rev == rev
+            && self.calls.get() == calls;
+        *self.cached.borrow_mut() = stable.then(|| CachedGraph {
+            graph: graph.clone(),
+            rev,
+            meter_rev,
+            meters_read: bridge.render_read_meters,
+            calls,
+            state_rev,
+        });
+        Ok(graph)
     }
     #[cfg(test)]
     pub fn work_remaining(&self) -> usize {
@@ -939,6 +1016,7 @@ impl Session {
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
         let _script = self.activity.as_ref().map(|a| a.span(Phase::UiNativeScript));
         self.fuel.store(100_000, Ordering::Relaxed);
+        self.calls.set(self.calls.get() + 1);
         function.call(args)
     }
     pub fn event(
@@ -1154,6 +1232,39 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn unchanged_inputs_reuse_the_rendered_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(
+            dir.path().join("Resources/native_ui/main.nui"),
+            br#"local ui=require("native_ui")
+                return function()
+                    local get,set=ui.create_state(0)
+                    _G.bump=function() set(get()+1) end
+                    _G.renders=(_G.renders or 0)+1
+                    return @ui.Rectangle {}.frame(width=8,height=8)
+                end"#,
+        ).unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let session = Session::new(package, "main", vec![]).unwrap();
+        session.reuse.set(true);
+        let renders = || session.lua().globals().get::<u32>("renders").unwrap();
+        session.render().unwrap();
+        session.render().unwrap();
+        assert_eq!(renders(), 1, "nothing changed: the Lua tree is reused");
+        session.lua().globals().get::<Function>("bump").unwrap().call::<()>(()).unwrap();
+        session.render().unwrap();
+        assert_eq!(renders(), 2, "a state write re-resolves");
+        let noop: Function = session.lua().load("return function() end").eval().unwrap();
+        session.call(noop, ()).unwrap();
+        session.render().unwrap();
+        assert_eq!(renders(), 3, "a callback may have changed anything");
+        session.bridge.lock_unpoisoned().rev += 1;
+        session.render().unwrap();
+        assert_eq!(renders(), 4, "a changed control value re-resolves");
+    }
+
     #[test]
     fn native_profiler_counts_connected_script_and_deferred_paint_calls() {
         let dir = tempfile::tempdir().unwrap();
