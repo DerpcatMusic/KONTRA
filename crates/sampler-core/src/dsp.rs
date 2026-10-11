@@ -189,6 +189,8 @@ pub enum Processor {
     Daft(DaftSettings),
     /// Pinned v1 native Ladder LP4, with separate preallocated family state.
     LadderLP4(LadderSettings),
+    /// Native adaptive-resonance filter (FilterDJ), saved types 100..=108.
+    Ar(ArSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -242,6 +244,7 @@ impl Processor {
             Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
+            Processor::Ar(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -257,11 +260,9 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
-// Numerical/runtime candidates only; AR playback remains disconnected.
-#[cfg(test)]
 mod ar;
-#[cfg(test)]
 mod ar_kernel;
+pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
 mod kernel_tests;
@@ -321,6 +322,10 @@ pub(super) enum PreparedProcessor {
     Daft(daft::Daft),
     LadderLP4 {
         ladder: ladder::Ladder,
+        offset: usize,
+    },
+    Ar {
+        ar: ar::Ar,
         offset: usize,
     },
     StereoModeller {
@@ -500,6 +505,14 @@ pub(super) fn compile_processors(
                     filters.push(svf::PreparedFilter::NativeControl);
                     PreparedProcessor::LadderLP4 { ladder, offset }
                 }
+                Processor::Ar(settings) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ar::CELLS).ok_or(Error::Capacity)?;
+                    let mut ar = settings.compile(rate, bindings);
+                    ar.modulation_index = filters.len();
+                    filters.push(svf::PreparedFilter::NativeControl);
+                    PreparedProcessor::Ar { ar, offset }
+                }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
@@ -581,6 +594,9 @@ impl PreparedVoiceChain {
                 }
                 PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => {
                     u32::try_from(ladder.modulation_index).ok()
+                }
+                PreparedProcessor::Ar { ar, .. } if stages.contains(&i) => {
+                    u32::try_from(ar.modulation_index).ok()
                 }
                 _ => None,
             })
@@ -860,6 +876,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
+                        | PreparedProcessor::Ar { .. }
                         | PreparedProcessor::Branch { .. }
                         | PreparedProcessor::LiveFilter(_)
                         | PreparedProcessor::ControlMatrix(_)
@@ -1150,6 +1167,17 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                     at,
                     filters.bank.native_knobs(ladder.modulation_index),
+                );
+            }
+            PreparedProcessor::Ar { ar, offset } => {
+                fault |= ar.process(
+                    state,
+                    &mut delay_samples[*offset..*offset + ar::CELLS],
+                    parameters,
+                    block,
+                    len,
+                    at,
+                    filters.bank.native_knobs(ar.modulation_index),
                 );
             }
             PreparedProcessor::StereoModeller { stereo, offset } => {

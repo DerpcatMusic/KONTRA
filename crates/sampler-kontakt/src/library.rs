@@ -1945,7 +1945,7 @@ impl Translation {
             }
             let native = matches!(
                 processor,
-                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)
+                ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
             );
             let parameter = match target.param.as_str() {
                 "filterCutoff"
