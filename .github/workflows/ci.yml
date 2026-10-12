@@ -131,6 +131,7 @@ jobs:
           key: linux-${{ env.CI_PROFILE }}-default
           save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
           cache-on-failure: true
+          cache-workspace-crates: true
       # Existing formatting debt remains advisory; do not reformat unrelated code.
       - name: rustfmt (advisory)
         continue-on-error: true
