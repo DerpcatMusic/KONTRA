@@ -1206,7 +1206,7 @@ fn scripted_effect_parameters_reach_the_dsp() {
         (r#"<DigitalEq Enabled1="1" Type1="4" Freq1="1000" Gain1="0"/>"#, "setParameter('Gain1', 6.0206)", 2.0),
         (r#"<DigitalEq Enabled1="1" Type1="4" Freq1="1000" Gain1="6.0206"/>"#, "setParameter('Enabled1', false)", 0.5),
         (r#"<DigitalEq/>"#, "setParameter('OverallGain', 6.0206)", 2.0),
-        (r#"<DigitalEq GainScale="0.5" Enabled1="1" Type1="4" Freq1="1000" Gain1="0"/>"#, "setParameter('Gain1', 6.0206)", 1.4142),
+        (r#"<DigitalEq GainScale="0.5" Enabled1="1" Type1="4" Freq1="1000" Gain1="0"/>"#, "setParameter('Gain1', 6.0206)", std::f64::consts::SQRT_2),
         (
             r#"<EffectRack><Chains><AuxEffect Gain="1"/><AuxEffect Gain="0"/></Chains></EffectRack>"#,
             "auxs[2]:setParameter('Gain', 1)",
