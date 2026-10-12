@@ -6,6 +6,21 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.450
+
+This experimental snapshot includes the source consolidation reviewed on 2026-10-12, together with the previously recorded 0.3.430–0.3.446 compatibility changes.
+
+- Accessibility value changes and button activation now wake the retained controls that own them, including nested views, while unrelated siblings stay cached.
+- Validated Kontakt instruments release excess executable and saved zone storage before publication, preserving physical zone identities, holes and ordering.
+- The legacy Kontakt multi health probe visits every program and reports real program/zone totals or read failures.
+- Mac publication accepts Apple’s upload acknowledgement and then waits for approval of that submission before packaging.
+
+The consolidated source also recovers scoped native control consumers, host release and note ownership, MPE controller precision, authored UVI geometry/value/gesture paths, shared callback budgets and typed effect framing. Historical sources and unfinished snapshots are preserved in main ancestry and recovery refs; their presence alone is not acceptance evidence. Existing logical fixes and follow-up ports are not counted again. Four newly reviewed defect IDs advance the patch from 446 to 450.
+
+Source 14a284fc passed 2,605 tests with zero failures, doctest checks, CI-equivalent Clippy and optimized plugin, standalone and offline-inspector builds. The actual shared library loaded with non-null VST3 and CLAP entry points. Source 0ae6e387 adds the completed consolidation receipts only. The publication pipeline validates this versioned source with the shipping release profile and requires the packaged products and notarized Mac installer before publishing. The Apple upload/wait correction passes 19 notarization regressions and the complete local signing/publication mock gate.
+
+Known limits: full Kontakt/Falcon instrument, UI and DSP parity remain unverified. Preserved v1 program-bank ownership, asynchronous replacement and scheduling, modern UI dialect discovery and several native effect/control laws remain unresolved. Linux host/fixture acceptance does not establish Windows/macOS DAW acceptance or comparative CPU/RAM superiority.
+
 ## 0.3.446
 
 - Copy diagnostics now produces a compact, deduplicated error-and-origin summary without JSON, script syntax, configuration dumps or journal history. The full local export remains available.
