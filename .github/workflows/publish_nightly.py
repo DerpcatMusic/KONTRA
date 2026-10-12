@@ -270,7 +270,7 @@ def main():
     Path("dist/release-manifest.json").write_bytes(data)
     Path("notes.md").write_text(f"""{inline_changelog}
 
-Every download comes from this source commit. `release-manifest.json` records their sizes and SHA256 checksums; each Linux/Windows archive includes separate `clap-build-info.json`, `vst3-build-info.json` and standalone `build-info.json` with their actual feature sets.
+Every download comes from this source commit. `release-manifest.json` records download sizes and SHA256 checksums, plus separate CLAP, VST3 and standalone build details with their actual feature sets.
 Experimental nightly snapshot, not a stable-quality release. GitHub marks it Latest solely to provide permanent download links.
 Contents: CLAP plug-in, VST3 plug-in and standalone application. These builds have not been certified in Windows or macOS DAWs.
 Licensing: project-authored code is Apache-2.0; third-party terms apply. Redistribution permission for the required ni-file parser remains unresolved. Library-access decryption is enabled and does not validate ownership or activation. No commercial Kontakt instrument library is supplied. Read the included THIRD_PARTY.md and docs/LEGAL.md before use or redistribution; the notice/source bundle is not legal clearance.

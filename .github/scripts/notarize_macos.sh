@@ -71,8 +71,8 @@ info = json.load(open(sys.argv[1]))
 assert info['status'] == 'Accepted', 'Apple did not accept the notarization submission'
 uuid.UUID(info['id'])
 PY
-xcrun stapler staple "$work/KONTRA.dmg"
-xcrun stapler validate "$work/KONTRA.dmg"
+python3 "$(dirname "$0")/stapler.py" staple "$work/KONTRA.dmg"
+python3 "$(dirname "$0")/stapler.py" validate "$work/KONTRA.dmg"
 hdiutil verify -quiet "$work/KONTRA.dmg"
 spctl --assess --type open --context context:primary-signature "$work/KONTRA.dmg"
 mv "$work/KONTRA.dmg" "$STAGE/KONTRA.dmg"
