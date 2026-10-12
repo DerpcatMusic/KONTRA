@@ -3873,6 +3873,7 @@ pub(crate) mod tests {
                 dsp.core.install(slot, part);
                 if present {
                     installed_ms = Some(t0.elapsed().as_secs_f64() * 1000.);
+                    dsp.core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
                     if audit_onset {
                         onset.push(serde_json::json!({"event":"installed","at_ms":installed_ms,"state":dsp.core.onset_audit()}));
                     }
@@ -3891,6 +3892,7 @@ pub(crate) mod tests {
                 }
             }
             if installed_ms.is_some() {
+                if blocks > 0 { dsp.core.begin_block(&BlockInfo { frames: 64, ..Default::default() }); }
                 let render_start = Instant::now();
                 let rendered = dsp.core.render(64);
                 for bus in rendered.buses {

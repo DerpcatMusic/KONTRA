@@ -130,6 +130,7 @@ fn main() {
     let mut idle = Vec::with_capacity(1000);
     for _ in 0..schedule.idle_blocks {
         let t = Instant::now();
+        p.begin(block);
         std::hint::black_box(p.render(block));
         idle.push(t.elapsed().as_nanos() as u64)
     }
@@ -181,6 +182,7 @@ fn main() {
         };
         let cpu_start = thread_cpu_ns();
         let t = Instant::now();
+        p.begin(block);
         while next < events.len() && events[next].0 < begin + block {
             let (_, s, a, b) = events[next];
             p.event(s, a, b);
