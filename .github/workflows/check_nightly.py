@@ -106,13 +106,18 @@ elif name=="xcrun" and args[:1]==["swift"]:
         print('{"factory_classes":1}')
         sys.exit(1)
 elif name=="xcrun" and args[:2]==["notarytool","submit"]:
+    assert "--wait" not in args
     if os.environ["SIGNING_CASE"]=="bad-notary-submit":
         print(json.dumps(dict(status="Invalid",id="12345678-1234-1234-1234-123456789abc",statusCode=503,message="synthetic-fixture",unexpected_private_field="synthetic-installer-fixture")))
         sys.exit(1)
     if os.environ["SIGNING_CASE"]=="bad-notary-json":
         print("synthetic-fixture")
         sys.exit(1)
-    print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id="12345678-1234-1234-1234-123456789abc")))
+    print(json.dumps(dict(id="12345678-1234-1234-1234-123456789abc",path=args[2],message="synthetic-fixture")))
+elif name=="xcrun" and args[:2]==["notarytool","wait"]:
+    assert args[2]=="12345678-1234-1234-1234-123456789abc"
+    assert args[args.index("--timeout")+1]=="30m"
+    print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id=args[2])))
 elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_CASE"]=="bad-ticket": sys.exit(1)
 '''
 for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-chain", "rejected", "bad-ticket", "bad-swift-after-output", "bad-dmg-create", "bad-dmg-sign", "bad-notary-submit", "bad-notary-json"):
@@ -147,12 +152,19 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
             assert '"statusCode": 503' in result.stderr and '"status": "Invalid"' in result.stderr
             assert "unexpected_private_field" not in result.stderr and '"message"' not in result.stderr
         if case=="bad-notary-json": assert "without a parseable result" in result.stderr
+        if case in ("bad-notary-submit", "bad-notary-json"):
+            assert calls.count("xcrun notarytool submit")==1
+            assert "xcrun notarytool wait" not in calls
+        if case=="rejected":
+            assert calls.count("xcrun notarytool submit")==1 and calls.count("xcrun notarytool wait")==1
+            assert "xcrun stapler staple" not in calls
         if case in ("accepted", "duplicate-ca", "duplicate-p12"):
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
             assert stage.joinpath("notarization.json").stat().st_mode & 0o777 == 0o600
             assert all(hashlib.sha256(stage.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in receipt["sha256"].items())
-            assert calls.index("xcrun notarytool submit") < calls.index("xcrun stapler validate") < calls.index("spctl --assess")
+            assert calls.count("xcrun notarytool submit")==1 and calls.count("xcrun notarytool wait")==1
+            assert calls.index("xcrun notarytool submit") < calls.index("xcrun notarytool wait") < calls.index("xcrun stapler validate") < calls.index("spctl --assess")
 
 mock_gh = r'''#!/usr/bin/env python3
 import base64,hashlib,json,os,sys

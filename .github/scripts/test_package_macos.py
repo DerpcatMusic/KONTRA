@@ -192,13 +192,14 @@ if name == 'pkgbuild':
         pathlib.Path(args[-1]).write_bytes(b'synthetic installer payload')
 if name == 'productsign': pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-2]).read_bytes())
 if name == 'xcrun' and args[:2] == ['notarytool', 'submit']:
-    print(json.dumps({'status': 'Uploaded' if os.environ.get('NOTARY_RESUME') else os.environ.get('NOTARY_STATUS', 'Accepted'), 'id': '00000000-0000-4000-8000-000000000000'}))
-    if os.environ.get('NOTARY_RESUME') and '--wait' in args: sys.exit(1)
+    assert '--wait' not in args
+    print(json.dumps({'id': '00000000-0000-4000-8000-000000000000', 'path': args[2], 'message': 'synthetic acknowledgement'}))
 if name == 'xcrun' and args[:2] == ['notarytool', 'wait']:
+    assert args[2] == '00000000-0000-4000-8000-000000000000'
     calls = pathlib.Path(os.environ['MOCK_LOG']).read_text().splitlines()
-    if sum(json.loads(c)[0] == 'xcrun' and json.loads(c)[1][:2] == ['notarytool', 'wait'] for c in calls) == 1:
+    if os.environ.get('NOTARY_RESUME') and sum(json.loads(c)[0] == 'xcrun' and json.loads(c)[1][:2] == ['notarytool', 'wait'] for c in calls) == 1:
         sys.exit(1)
-    print(json.dumps({'status': 'Accepted', 'id': args[2]}))
+    print(json.dumps({'status': os.environ.get('NOTARY_STATUS', 'Accepted'), 'id': args[2]}))
 ''')
         mock.chmod(0o755)
         for name in ('codesign', 'pkgbuild', 'productsign', 'pkgutil', 'xcrun', 'spctl'):
@@ -217,11 +218,21 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'wait']:
         for case, tool, status in cases:
             with self.subTest(case=case):
                 output = self.root / f'{case}.pkg'
+                (self.root / 'calls.jsonl').write_text('')
                 result = subprocess.run(['bash', str(HERE / 'package_macos.sh'), str(self.stage), str(output)],
                                         env=dict(env, FAIL_TOOL=tool, NOTARY_STATUS=status, NOTARY_RESUME='1' if case == 'resume' else ''), capture_output=True)
                 self.assertEqual(result.returncode == 0, case in ('valid', 'resume'), result.stderr.decode())
                 self.assertEqual(output.exists(), case in ('valid', 'resume'))
                 self.assertEqual(output.with_suffix('.notarization.json').exists(), case in ('valid', 'resume'))
+                calls = [json.loads(row) for row in (self.root / 'calls.jsonl').read_text().splitlines()]
+                notary = [args for name, args in calls if name == 'xcrun' and args[:1] == ['notarytool']]
+                if case in ('valid', 'resume', 'rejected', 'staple', 'validate', 'assessment'):
+                    self.assertEqual(sum(args[1] == 'submit' for args in notary), 1)
+                    waits = [args for args in notary if args[1] == 'wait']
+                    self.assertEqual([args[args.index('--timeout')+1] for args in waits], ['30m', '5m'] if case == 'resume' else ['30m'])
+                    self.assertTrue(all(args[2] == '00000000-0000-4000-8000-000000000000' for args in waits))
+                if case == 'rejected':
+                    self.assertFalse(any(name == 'xcrun' and args[:2] == ['stapler', 'staple'] for name, args in calls))
                 if case in ('valid', 'resume'):
                     receipt = json.loads(output.with_suffix('.notarization.json').read_text())
                     self.assertEqual(receipt['source_builds']['arm64']['vst3']['target'], 'aarch64-apple-darwin')
