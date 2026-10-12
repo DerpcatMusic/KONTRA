@@ -3,13 +3,13 @@
 use sampler_ir as ir;
 use sampler_ui_ir::{Binding, Interface, Kind, Placement, Widget};
 
-fn position(w: &Widget) -> (i32, i32, u32, u32) {
+fn position(w: &Widget) -> (f64, f64, f64, f64) {
     match w.placement {
         Placement::Grid { column, row } => (
-            column as i32 * 92,
-            row as i32 * 22,
-            w.rect.width.max(92),
-            w.rect.height.max(22),
+            f64::from(column) * 92.,
+            f64::from(row) * 22.,
+            w.rect.width.max(92.),
+            w.rect.height.max(22.),
         ),
         Placement::Pixels => (w.rect.x, w.rect.y, w.rect.width, w.rect.height),
     }
@@ -46,14 +46,18 @@ pub(crate) fn normalize(
                     && matches!(w.binding, Binding::Control(_))
             })
             .collect();
-        choices.sort_by_key(|w| {
-            let (x, y, width, _) = position(w);
-            (w.page.0, w.parent.map(|p| p.0), x, width, y)
+        choices.sort_by(|a, b| {
+            let (ax, ay, aw, _) = position(a);
+            let (bx, by, bw, _) = position(b);
+            (a.page.0, a.parent).cmp(&(b.page.0, b.parent))
+                .then_with(|| ax.total_cmp(&bx))
+                .then_with(|| aw.total_cmp(&bw))
+                .then_with(|| ay.total_cmp(&by))
         });
         let mut runs: Vec<Vec<&Widget>> = Vec::new();
         for w in choices {
             let (x, y, width, height) = position(w);
-            if height == 0 || width < height * 3 {
+            if height == 0. || width < height * 3. {
                 continue;
             }
             // Hidden overlays at a visible row's position are alternate faces, not extra rows.
@@ -73,8 +77,8 @@ pub(crate) fn normalize(
                     && last.parent == w.parent
                     && lx == x
                     && lw == width
-                    && y >= ly + lh as i32
-                    && y - ly - lh as i32 <= 12
+                    && y >= ly + lh
+                    && y - ly - lh <= 12.
             });
             if joins {
                 runs.last_mut().unwrap().push(w);
@@ -101,9 +105,9 @@ pub(crate) fn normalize(
                     })
                     .filter(|l| {
                         let (lx, ly, _, lh) = position(l);
-                        (ly + lh as i32 / 2 >= y && ly + lh as i32 / 2 <= y + height as i32)
-                            && lx < x + width as i32 + 160
-                            && lx >= x - 16
+                        (ly + lh / 2. >= y && ly + lh / 2. <= y + height)
+                            && lx < x + width + 160.
+                            && lx >= x - 16.
                     })
                     .collect();
                 let name = labels

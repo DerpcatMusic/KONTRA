@@ -1016,6 +1016,8 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// Prepared with the immutable instrument on the load worker.
+    pub(crate) mapping_index: Option<Arc<crate::ui::MappingIndex>>,
     /// The keys as the scripts colour and name them (128, or none).
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
@@ -2403,13 +2405,18 @@ fn load_part(
                     }
                 }
             }
-            Ok(loaded)
+            let mapping_index = loaded.instrument.as_ref()
+                .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            if canceled() {
+                return Err(CoreError::Canceled);
+            }
+            Ok((loaded, mapping_index))
         });
     let mut view = shared.view.lock_unpoisoned();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
-        Ok(mut loaded) => {
+        Ok((mut loaded, mapping_index)) => {
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
@@ -2473,6 +2480,7 @@ fn load_part(
                 .map(|&(id, value)| ControlCell::new(id, value))
                 .collect();
             v.instrument = loaded.instrument;
+            v.mapping_index = mapping_index;
             v.keys = loaded.scripts.keys();
             *atoms.scripts.lock_unpoisoned() = loaded.scripts;
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
@@ -2635,7 +2643,8 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
                     port,
                 )
             }
-            ExactNoteKind::Off => ExactInput::Routed(CoreEvent::NoteOff(pattern), 0),
+            ExactNoteKind::Off if (0.0..=1.0).contains(&velocity) =>
+                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), 0),
             ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), 0),
             _ => ExactInput::Unsupported,
         }
@@ -2821,7 +2830,7 @@ fn feed_exact_input(
                 s.end_rejections += 1;
             }
         }
-        CoreEvent::NoteOff(pattern) | CoreEvent::Choke(pattern) => {
+        CoreEvent::NoteOff(pattern) | CoreEvent::NoteOffVelocity(pattern, _) | CoreEvent::Choke(pattern) => {
             for key in (0..128u8).filter(|key| pattern.key == -1 || pattern.key == i32::from(*key))
             {
                 let held = (0..16).any(|channel| s.core.key_held(channel, key));
@@ -3639,19 +3648,24 @@ pub(crate) mod tests {
     #[test]
     fn loader_hands_parts_over_and_the_audio_thread_installs_them() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tone.wav");
+        let sample = dir.path().join("tone.wav");
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 48000,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        let mut w = hound::WavWriter::create(&sample, spec).unwrap();
         for i in 0..48000 {
             w.write_sample(((i as f32 * 0.05).sin() * 20000.0) as i16)
                 .unwrap();
         }
         w.finalize().unwrap();
+        // Plain WAV loads have no imported instrument metadata. Exercise the
+        // production instrument reader and its worker index with an authored
+        // UVI program referencing the small synthetic sample above.
+        let path = dir.path().join("tone.uvip");
+        std::fs::write(&path, r#"<UVI4><Program Name="Authored worker mapping"><Layers><Layer Name="Tone"><Keygroups><Keygroup Name="C4" LowKey="0" HighKey="108"><Oscillators><SamplePlayer SamplePath="tone.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#).unwrap();
         let params = SamplerParams::new();
         params.selection.write_unpoisoned().parts = vec![Part {
             path: path.display().to_string(),
@@ -3667,7 +3681,18 @@ pub(crate) mod tests {
             "{}",
             v.status
         );
+        let index = v.mapping_index.clone().expect("load worker prepared the mapping index");
+        let instrument = v.instrument.clone().unwrap();
+        let generation = v.generation;
         drop(view);
+        assert!(!load_part(&params, 0, None), "unchanged source does not rebuild mapping");
+        {
+            let view = params.shared.view.lock_unpoisoned();
+            let current = &view.parts[0];
+            assert!(Arc::ptr_eq(&index, current.mapping_index.as_ref().unwrap()));
+            assert!(Arc::ptr_eq(&instrument, current.instrument.as_ref().unwrap()));
+            assert_eq!(current.generation, generation);
+        }
 
         let mut dsp = Dsp::default();
         let (slot, generation, part) = params.shared.ready.pop().expect("a part was handed over");
@@ -3710,6 +3735,7 @@ pub(crate) mod tests {
             .last()
             .unwrap();
         assert!(part.is_none());
+        assert!(params.shared.view.lock_unpoisoned().parts[0].mapping_index.is_none());
     }
 
     #[test]
