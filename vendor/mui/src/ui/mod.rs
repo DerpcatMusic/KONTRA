@@ -641,7 +641,8 @@ impl Ui {
         } else {
             1.0
         };
-        match action {
+        let target = action.id().to_owned();
+        let accepted = match action {
             SemanticAction::Focus { id } if surface.focusable => {
                 self.focus(Id::runtime(&id));
                 true
@@ -707,7 +708,13 @@ impl Ui {
                 true
             }
             _ => false,
+        };
+        if accepted && let Some(scene) = self.scene.as_deref() {
+            // Requests arrive before the next build. A cold retained ancestor
+            // must run its control closure to consume this action this frame.
+            self.hot.extend(scene.memos_at(&target).map(|(id, _)| id));
         }
+        accepted
     }
 
     /// All gesture edges for a control. Unlike `edit`, this preserves an atomic
