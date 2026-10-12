@@ -2466,21 +2466,8 @@ impl ScriptHost {
                 self.cycle();
             }
             let restored = Span::new("uvi_lua_restore");
-            // Initial load sees constructor values; explicit restoration below
-            // uses the opposite order and never reruns onInit.
-            if let Some(state) = state {
-                self.restore_ui_custom(state)?;
-            } else if let Some(saved) = script
-                .parent()
-                .and_then(|p| p.children().find(|n| n.has_tag_name("state")))
-            {
-                self.restore_ui_custom(&UiState {
-                    custom: Some(ui::json_state(saved.text().unwrap_or_default())?),
-                    ..Default::default()
-                })?;
-            }
-            // Saved widget values and their `changed` callbacks come after the script body
-            // and before onInit, which is why scripts test for a restored zero there.
+            // Saved widget values and their `changed` callbacks run after the
+            // script body and before onLoad and onInit.
             if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
                 self.shared
                     .arm(self.shared.config.load, self.shared.config.load_work);
@@ -2491,6 +2478,17 @@ impl ScriptHost {
             }
             if let Some(state) = state {
                 self.restore_ui_values(state)?;
+            }
+            if let Some(state) = state {
+                self.restore_ui_custom(state)?;
+            } else if let Some(saved) = script
+                .parent()
+                .and_then(|p| p.children().find(|n| n.has_tag_name("state")))
+            {
+                self.restore_ui_custom(&UiState {
+                    custom: Some(ui::json_state(saved.text().unwrap_or_default())?),
+                    ..Default::default()
+                })?;
             }
             drop(restored);
             let _span = Span::new("uvi_lua_on_init");
