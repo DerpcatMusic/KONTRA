@@ -44,10 +44,12 @@ pub struct Token {
     pub class: TokenClass,
 }
 
-/// Ordered from best to worst; a line shows its worst construct.
+/// Ordered by binding availability and failures; a line shows its worst
+/// construct. These statuses do not establish native-host equivalence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Status {
-    /// Behaves like the native host (tested against a law, reference or v1).
+    /// A concrete implementation binding exists. Native semantic equivalence
+    /// and actual execution require separate laws or observation receipts.
     Implemented,
     /// Runs, but a documented approximation differs from the native host.
     Approximate,
@@ -55,7 +57,8 @@ pub enum Status {
     Stub,
     /// Not supported: compile/translate drops it or the load reports it.
     Unsupported,
-    /// Supported, but faulted at runtime in this instrument.
+    /// A binding, initialization or runtime fault. Consult the reported stage
+    /// and execution observations before attributing this to a live callback.
     Fault,
 }
 
