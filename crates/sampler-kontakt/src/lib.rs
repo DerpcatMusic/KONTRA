@@ -52,7 +52,7 @@ pub use library::{
 pub use load::take_script_init_runs;
 // Stage and Kind are defined below with LoadError.
 pub use load::{
-    ArticulationMigration, Loaded, Options, Progress, articulation_migration, compile_ui, finish,
+    ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish,
     load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
     load_streamed, prepare, stream_instrument,
 };
