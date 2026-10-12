@@ -1031,14 +1031,18 @@ impl Runtime {
                     tempo: self.tempo,
                     now: self.now,
                 };
-                g.modulation.start(
+                let native_allowed = self.voices.get(voice.0).unwrap().envelope.admits_v1_controls();
+                g.modulation.start_with_controls(
                     &g.prepared.voice_modulation,
                     voice.0.index,
                     candidate.region,
                     &inputs,
                     clock,
-                    seed,
+                    seed, native_allowed,
                 );
+                if let Some(Some(state)) = g.modulation.native.as_mut_slice().get(voice.0.index) {
+                    self.voices.get_mut(voice.0).unwrap().envelope.set_v1_amplitude(state.amplitude(), self.rate as f32);
+                }
             }
             if let Some(family) = family {
                 self.finish_family(family).expect("admitted family");
