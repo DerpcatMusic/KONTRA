@@ -21,8 +21,12 @@ REPORT_KINDS = {
     "uvi-loose": "uvi-loose",
     "uvi-program": "uvi-bank",
 }
-STAGE_STATUSES = {"ok", "failed", "skipped"}
+STAGE_STATUSES = {"ok", "partial", "failed", "skipped"}
 INSPECTION_STATUSES = {"ok", "partial", "failed"}
+INITIALIZED_FAULT_CODES = {
+    "initialized_identity", "duplicate_initialized_id", "unexpected_initialized_id",
+    "initialized_schema", "initialized_stages", "initialized_evidence",
+}
 
 
 def digest(data: bytes) -> str:
@@ -386,8 +390,8 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
         translation = "translate" if key[0].startswith("uvi") else "initialize"
         ir_ok = converted.get("status") == "ok" and stage_map.get(translation) == "ok" and isinstance(converted.get("summary"), dict)
         ui_ok = (ui.get("status") == "ok" and stage_map.get("initialize") == "ok" and
-                 isinstance(ui.get("interfaces"), list) and
-                 (key[0].startswith("uvi") or stage_map.get("ui_projection") == "ok"))
+                 stage_map.get("ui_projection") == "ok" and
+                 isinstance(ui.get("interfaces"), list))
         if ir_ok:
             group["initialized_ir_ok"] += 1
         if ui_ok:
@@ -416,8 +420,12 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
     admission = ("complete_static_catalog" if not faults and
                  totals["source_inspected"] == totals["expected"] and
                  totals["ir_converted"] == totals["uvi_expected"] else "incomplete")
+    catalog_records_complete = (totals["expected"] > 0 and totals["observed"] == totals["expected"] and
+                                totals["unexpected"] == 0 and
+                                not any(f["code"] not in INITIALIZED_FAULT_CODES for f in faults))
     return {"format": "kontra-inspector-audit-summary", "schema": 1,
-            "admission": admission, "native_parity": "unknown",
+            "admission": admission, "catalog_records_complete": catalog_records_complete,
+            "native_parity": "unknown",
             "provenance": provenance, "totals": totals, "libraries": libraries,
             "unexpected_by_library": dict(sorted(unexpected.items())),
             "fault_counts": dict(Counter(f["code"] for f in faults)), "faults": faults}
@@ -426,7 +434,10 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
 def markdown(summary: dict) -> str:
     t = summary["totals"]
     lines = ["# Offline inspector catalog evidence", "",
-             f"Admission: **{summary['admission']}**. Native equivalence: **unknown**.", "",
+             f"Catalog record coverage/schema complete: **{str(summary['catalog_records_complete']).lower()}**. "
+             f"Static conversion admission: **{summary['admission']}**. Native equivalence: **unknown**.", "",
+             "Record completeness means each manifest ID has one structurally valid report; it does not require its compiler, source frontend, IR, or UI stages to succeed.",
+             "Static conversion admission additionally requires complete static source inspection, every expected UVI XML-to-IR conversion, and no integrity faults.", "",
              f"Manifest items: {t['expected']}; observed: {t['observed']}; missing: {t['missing']}; unexpected: {t['unexpected']}.",
              f"Static source inspected: {t['source_inspected']}; source semantics without reported gaps: {t['source_semantics_complete']}; "
              f"Static IR converted: {t['ir_converted']}; static UI projected: {t['ui_projected']}.",
@@ -470,7 +481,8 @@ def main(argv=None) -> int:
         parser.error(str(error))
     args.json_out.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     args.markdown_out.write_text(markdown(summary))
-    print(f"{summary['admission']}: {summary['totals']['observed']}/{summary['totals']['expected']} items; "
+    print(f"records_complete={str(summary['catalog_records_complete']).lower()} "
+          f"admission={summary['admission']}: {summary['totals']['observed']}/{summary['totals']['expected']} items; "
           f"{sum(summary['fault_counts'].values())} integrity faults")
     return 0 if summary["admission"] == "complete_static_catalog" else 1
 
