@@ -19,13 +19,28 @@ case = os.environ['CASE']
 if args[:2] == ['notarytool', 'submit']:
     assert '--wait' not in args
     if case == 'upload-error': sys.exit(1)
-    print(json.dumps({'id': 'bad' if case == 'bad-id' else '12345678-1234-1234-1234-123456789abc', 'status': 'Uploaded'}))
+    if case == 'upload-malformed': print('bad-json private-password'); sys.exit(0)
+    # Apple's upload acknowledgement has an ID/path, without a final status.
+    data = {'id': 'bad' if case == 'bad-id' else '12345678-1234-1234-1234-123456789abc',
+            'path': 'private-artifact-path', 'message': 'private-password'}
+    if case == 'missing-id': del data['id']
+    if case == 'upload-bool-code': data['statusCode'] = True
+    if case == 'upload-unknown-status': data['status'] = 'Unknown'
+    if case == 'submit-accepted-wait-rejected': data['status'] = 'Accepted'
+    print(json.dumps(data))
+    if case == 'upload-error-with-id': sys.exit(1)
 else:
     assert args[:3] == ['notarytool', 'wait', '12345678-1234-1234-1234-123456789abc']
-    assert '--timeout' in args
+    assert args[args.index('--timeout')+1] == ('30m' if len(calls) == 1 else '5m')
     if case == 'persistent' or (case == 'resume' and len(calls) == 1): sys.exit(1)
     if case == 'malformed': print('bad-json'); sys.exit(0)
-    print(json.dumps({'id': '00000000-0000-4000-8000-000000000000' if case == 'wrong-id' else args[2], 'status': 'Invalid' if case == 'rejected' else 'Accepted'}))
+    data = {'id': '00000000-0000-4000-8000-000000000000' if case == 'wrong-id' else 'bad' if case == 'bad-wait-id' else args[2],
+            'status': 'Invalid' if case in ('rejected', 'submit-accepted-wait-rejected') else 'Accepted',
+            'message': 'private-password'}
+    if case == 'missing-wait-status': del data['status']
+    if case == 'wait-bool-code': data['statusCode'] = True
+    if case == 'wait-unknown-status': data['status'] = 'Unknown'
+    print(json.dumps(data))
     if case == 'accepted-error': sys.exit(1)
 '''
 
@@ -46,19 +61,31 @@ class Notarization(unittest.TestCase):
             calls = [json.loads(row) for row in (root / 'calls').read_text().splitlines()]
             self.assertEqual(sum(c[:2] == ['notarytool', 'submit'] for c in calls), 1)
             self.assertEqual(sum(c[:2] == ['notarytool', 'wait'] for c in calls), waits)
-            for secret in ('private-id', 'private-password', 'private-team'):
+            for secret in ('private-id', 'private-password', 'private-team', 'private-artifact-path'):
                 self.assertNotIn(secret, result.stdout + result.stderr)
             if accepted:
                 self.assertEqual(json.loads(result.stdout), {'id': ID, 'status': 'Accepted'})
+            elif result.stdout:
+                self.assertNotEqual(json.loads(result.stdout).get('status'), 'Accepted')
 
     def test_success(self): self.check_case('accepted', True, 1)
     def test_timeout_resumes_same_upload_once(self): self.check_case('resume', True, 2)
     def test_persistent_error_is_bounded(self): self.check_case('persistent', False, 2)
     def test_upload_error_never_resubmits(self): self.check_case('upload-error', False, 0)
+    def test_failed_upload_with_known_id_never_waits(self): self.check_case('upload-error-with-id', False, 0)
     def test_bad_submission_id_never_waits(self): self.check_case('bad-id', False, 0)
+    def test_missing_submission_id_never_waits(self): self.check_case('missing-id', False, 0)
+    def test_malformed_upload_success_never_waits(self): self.check_case('upload-malformed', False, 0)
+    def test_upload_boolean_status_code_fails_closed(self): self.check_case('upload-bool-code', False, 0)
+    def test_unknown_upload_status_fails_closed(self): self.check_case('upload-unknown-status', False, 0)
+    def test_upload_acceptance_still_requires_matching_accepted_wait(self): self.check_case('submit-accepted-wait-rejected', False, 1)
     def test_rejection_never_retries(self): self.check_case('rejected', False, 1)
     def test_malformed_success_fails_closed(self): self.check_case('malformed', False, 1)
     def test_wrong_submission_fails_closed(self): self.check_case('wrong-id', False, 1)
+    def test_invalid_wait_submission_id_fails_closed(self): self.check_case('bad-wait-id', False, 1)
+    def test_wait_without_status_fails_closed(self): self.check_case('missing-wait-status', False, 1)
+    def test_wait_boolean_status_code_fails_closed(self): self.check_case('wait-bool-code', False, 1)
+    def test_unknown_wait_status_fails_closed(self): self.check_case('wait-unknown-status', False, 1)
     def test_nonzero_accepted_result_fails_closed(self): self.check_case('accepted-error', False, 1)
 
 
