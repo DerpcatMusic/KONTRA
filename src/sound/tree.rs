@@ -128,34 +128,39 @@ pub fn stereo_gain(mix: &NodeMix, audible: bool) -> [f32; 2] {
 pub fn audible(tree: &MixTree, mixes: &[NodeMix], out: &mut [bool]) {
     let soloed = |n: usize| n > 0 && mixes.get(n - 1).is_some_and(|m| m.solo);
     let any = (1..tree.nodes.len()).any(soloed);
-    for (n, slot) in out.iter_mut().enumerate().take(tree.nodes.len()) {
-        *slot = !any || {
-            // A soloed node on `n`'s path to the root carries it down...
-            let mut at = Some(n);
-            let mut hit = false;
-            while let Some(i) = at {
-                hit |= soloed(i);
-                at = tree.nodes[i].parent;
-            }
-            // ...and `n` carries any soloed node below it up.
-            hit || carries_solo(tree, n, &soloed)
-        };
+    for slot in out.iter_mut().take(tree.nodes.len()) {
+        *slot = !any;
     }
-}
-
-/// Whether some soloed node has `n` on its path to the root.
-fn carries_solo(tree: &MixTree, n: usize, soloed: &dyn Fn(usize) -> bool) -> bool {
-    (1..tree.nodes.len()).filter(|&s| soloed(s)).any(|mut s| {
-        loop {
-            if s == n {
-                break true;
+    if !any {
+        return;
+    }
+    // Each explicitly soloed node carries its ancestors. Mark those paths
+    // once, rather than searching every possible solo for every tree node.
+    for n in (1..tree.nodes.len()).filter(|&n| soloed(n)) {
+        let mut at = Some(n);
+        while let Some(i) = at {
+            if let Some(slot) = out.get_mut(i) {
+                *slot = true;
             }
-            match tree.nodes[s].parent {
-                Some(p) => s = p,
-                None => break false,
-            }
+            at = tree.nodes[i].parent;
         }
-    })
+    }
+    // Descendants sound only if an explicitly soloed node is on their own
+    // path. A marked ancestor may merely carry a sibling's solo and must not
+    // turn that sibling's whole branch on. Node order need not be topological.
+    for (n, slot) in out.iter_mut().enumerate().take(tree.nodes.len()) {
+        if *slot {
+            continue;
+        }
+        let mut at = Some(n);
+        while let Some(i) = at {
+            if soloed(i) {
+                *slot = true;
+                break;
+            }
+            at = tree.nodes[i].parent;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +205,97 @@ mod tests {
                 true
             ),
             [0.0; 2]
+        );
+    }
+
+    #[test]
+    fn every_authored_solo_and_mute_combination_keeps_exact_paths() {
+        let mut tree = MixTree::instrument("branches");
+        // Include parents after children: source bus order is not required to
+        // be tree traversal order. Two leaves share an ancestor, not a solo.
+        tree.nodes.extend([
+            node("left child", 4),
+            node("right child", 5),
+            node("left sibling", 4),
+            node("left", 0),
+            node("right", 0),
+            node("right grandchild", 2),
+        ]);
+        let ancestor = |candidate: usize, mut n: usize| loop {
+            if candidate == n {
+                break true;
+            }
+            match tree.nodes[n].parent {
+                Some(parent) => n = parent,
+                None => break false,
+            }
+        };
+        let mut mixes = vec![NodeMix::default(); 6];
+        // Four states per node: open, solo, mute, muted solo. Muting remains a
+        // separate fader decision and never removes that node's solo request.
+        for combination in 0..4usize.pow(6) {
+            for (n, mix) in mixes.iter_mut().enumerate() {
+                let state = combination >> (n * 2) & 3;
+                mix.solo = state & 1 != 0;
+                mix.mute = state & 2 != 0;
+            }
+            let any = mixes.iter().any(|m| m.solo);
+            let expected: Vec<_> = (0..tree.nodes.len())
+                .map(|n| {
+                    !any || mixes
+                        .iter()
+                        .enumerate()
+                        .any(|(s, m)| m.solo && (ancestor(n, s + 1) || ancestor(s + 1, n)))
+                })
+                .collect();
+            let mut actual = vec![false; tree.nodes.len() + 1];
+            actual[tree.nodes.len()] = true;
+            audible(&tree, &mixes, &mut actual);
+            assert_eq!(
+                &actual[..tree.nodes.len()],
+                expected,
+                "combination {combination}"
+            );
+            assert!(
+                actual[tree.nodes.len()],
+                "unowned output slots stay unchanged"
+            );
+            let mut short = [false; 3];
+            audible(&tree, &mixes, &mut short);
+            assert_eq!(short, expected[..3]);
+            for (n, mix) in mixes.iter().enumerate() {
+                assert_eq!(
+                    stereo_gain(mix, actual[n + 1]),
+                    if mix.mute || !expected[n + 1] {
+                        [0.; 2]
+                    } else {
+                        [1.; 2]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn large_solo_tree_preserves_sparse_paths_without_allocating() {
+        let mut tree = MixTree::instrument("large");
+        tree.nodes.extend((0..10_000).map(|_| node("source", 0)));
+        let mut mixes = vec![NodeMix::default(); 10_000];
+        mixes[7_321].solo = true;
+        let mut out = vec![false; tree.nodes.len()];
+        let started = std::time::Instant::now();
+        #[cfg(feature = "plugin")]
+        let allocations = crate::plugin::tests::allocations(|| audible(&tree, &mixes, &mut out));
+        #[cfg(not(feature = "plugin"))]
+        audible(&tree, &mixes, &mut out);
+        assert!(out[0] && out[7_322]);
+        assert_eq!(out.iter().filter(|&&on| on).count(), 2);
+        #[cfg(feature = "plugin")]
+        assert_eq!(allocations, 0, "solo mask is an audio-thread operation");
+        eprintln!(
+            "SOLO_MASK nodes={} elapsed_us={}",
+            tree.nodes.len(),
+            started.elapsed().as_micros()
         );
     }
 }
