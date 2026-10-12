@@ -768,6 +768,16 @@ fn w10_uvi_catalogued_protected_programs_keep_rows_and_show_bank_reason() {
                 .surface("library-0-status")
                 .unwrap()
                 .frame;
+        let name =
+            h.ui.scene()
+                .unwrap()
+                .surface("library-0-name")
+                .unwrap()
+                .frame;
+        assert!(
+            name.y + name.size.height <= badge.y + 0.5,
+            "library title and status must occupy separate rows: {name:?} {badge:?}"
+        );
         let viewport =
             h.ui.scene()
                 .unwrap()
