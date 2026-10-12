@@ -56,4 +56,24 @@ also survives as stash `b89b78247f83acc8d6932aa930cd4412e9d9e958` and a durable 
 Ignored reports, review captures and source indexes are relocated by same-volume
 rename before checkout deletion. Other repositories are outside cleanup scope.
 
-Final build/test and physical cleanup receipts are appended after execution.
+## Completed acceptance and cleanup
+
+[main-consolidation-receipt.json](main-consolidation-receipt.json) records the
+executed result at source `14a284fc`: **2,605 tests passed, zero failed**, including
+2,380 first-party tests, 192 MUI/NI-file tests and 33 native-host/display/visibility
+tests. Doctest checks and CI-equivalent Clippy passed; existing lint warnings remain.
+The optimized CI plugin library, standalone and offline inspector builds passed.
+The actual shared library loaded and exposed non-null VST3 and CLAP entry points.
+These fixtures and Linux host checks do not certify native library parity.
+
+Twenty-two explicit history merges retain all 700 frozen local tips, all 223
+remote refs, all checkout heads and the unfinished snapshot/index histories as
+main ancestors. **All 286 linked registrations/checkouts were removed**; Git now
+lists only the canonical main checkout. All 128 ignored evidence paths were
+relocated by verified same-device rename. No other repository was removed.
+The current thread's old path is a filesystem alias to the canonical main
+checkout, so it operates on main without a linked-worktree registration.
+
+The final receipt commit changes documentation only. Local main is clean;
+no remote push or publication was performed. Logs, snapshots and detailed
+operation receipts live under the owned evidence directory recorded in JSON.
