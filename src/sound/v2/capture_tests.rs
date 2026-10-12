@@ -54,7 +54,7 @@ fn edit(part: &mut Part, ingress: &mut ControlIngress, value: f64) {
     ingress.settle();
 }
 
-fn cells(ingress: &ControlIngress) -> &[i64] {
+fn cells(ingress: &ControlIngress) -> &[i32] {
     let table = sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(0, "%table").0);
     let sampler_ui_ir::Value::Integers(values) = &ingress.widget_values[&table] else {
         panic!("table values")
