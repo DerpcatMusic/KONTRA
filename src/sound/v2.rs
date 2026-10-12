@@ -44,6 +44,8 @@ use super::{
 
 #[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod capture_tests;
 mod persistence;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
