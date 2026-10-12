@@ -539,9 +539,35 @@ const FILTER_TYPES: &[(i32, FilterType)] = &[
     ),
 ];
 
+/// AR cutoff (REF s.8, AR LP2/4 measured on a noise instrument): `8.2 * 4329^x`
+/// Hz. The other AR ids are taken to share it, and AR resonance to follow the SV
+/// law (stored 0 reads as two cascaded one-poles, like SV LP2); AR's
+/// level-adaptive resonance and pass-band compensation are not modelled.
+// ponytail: unmeasured beyond id 106's cutoff; calibrate ids 100-105 and the
+// resonance against ANALOG STRINGS group 9.
+fn ar_hertz(x: f32) -> f64 {
+    8.2 * 4329f64.powf(f64::from(x))
+}
+
+/// Kontakt's AR filters (ids per v1's menu census, `audits/EFFECTS.md`: 100/103
+/// LP2/LP4, 101/104 BP2/BP4, 102/105 HP2/HP4) and the measured id 106 "AR LP2/4"
+/// (modelled as LP2), plus id 3 "Legacy HP1" (REF s.3): a one-pole high pass
+/// whose cutoff law is unmeasured; the SV law stands in.
+const EXTRA_TYPES: &[(i32, FilterType)] = &[
+    (3, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 1 }, hertz: sv_hertz, q: sv_q }),
+    (100, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 2 }, hertz: ar_hertz, q: sv_q }),
+    (101, FilterType { kind: sampler_ir::FilterKind::BandPass { poles: 2 }, hertz: ar_hertz, q: sv_q }),
+    (102, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 2 }, hertz: ar_hertz, q: sv_q }),
+    (103, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 4 }, hertz: ar_hertz, q: sv_q }),
+    (104, FilterType { kind: sampler_ir::FilterKind::BandPass { poles: 4 }, hertz: ar_hertz, q: sv_q }),
+    (105, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 4 }, hertz: ar_hertz, q: sv_q }),
+    (106, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 2 }, hertz: ar_hertz, q: sv_q }),
+];
+
 fn filter_type(kind: i32) -> Option<&'static FilterType> {
     FILTER_TYPES
         .iter()
+        .chain(EXTRA_TYPES)
         .find(|(k, _)| *k == kind)
         .map(|(_, t)| t)
 }

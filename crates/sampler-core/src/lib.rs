@@ -66,7 +66,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    FILTER_SLOTS, FilterFactors, Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;

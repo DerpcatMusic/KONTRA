@@ -62,6 +62,7 @@ impl StateVariableFilter {
             rate: f64::from(rate),
             cutoff: self.cutoff_hz.compile(bindings),
             q: self.q.compile(bindings),
+            slot: None,
         })
     }
 }
@@ -72,9 +73,16 @@ pub(crate) struct PreparedFilter {
     rate: f64,
     cutoff: PreparedParameter,
     q: PreparedParameter,
+    /// Which per-filter modulation factor pair a voice applies (see [`FilterFactors`]).
+    slot: Option<u8>,
 }
 
 impl PreparedFilter {
+    pub(super) fn with_slot(mut self, slot: u8) -> Self {
+        self.slot = Some(slot);
+        self
+    }
+
     pub fn requires_expression(self) -> bool {
         self.cutoff.requires_expression() || self.q.requires_expression()
     }
@@ -297,8 +305,17 @@ pub(crate) struct FilterBank {
     stride: usize,
     /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
-    pub modulation: [f64; 2],
+    pub modulation: FilterFactors,
 }
+
+/// Voices that modulate several filters of one chain address them by slot.
+pub const FILTER_SLOTS: usize = 8;
+
+/// Cutoff and Q factors: entry 0 applies to every state-variable filter of the
+/// voice chain, entry `1 + k` only to the filter tagged slot `k`. The two
+/// multiply.
+pub type FilterFactors = [[f64; 2]; FILTER_SLOTS + 1];
+
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
         let mut scopes = Vec::with_capacity(filters.len());
@@ -329,7 +346,7 @@ impl FilterBank {
             shared: shared.into_boxed_slice(),
             expressions: caches.into_boxed_slice(),
             stride,
-            modulation: [1.0; 2],
+            modulation: [[1.0; 2]; FILTER_SLOTS + 1],
         })
     }
 }
@@ -412,7 +429,11 @@ impl FilterContext<'_> {
             }
         };
         let expression = self.expression.as_ref().map(|(_, value)| value);
-        let [cutoff, q] = self.bank.modulation;
+        let [mut cutoff, mut q] = self.bank.modulation[0];
+        if let Some(slot) = cache.filter.slot {
+            let [c, k] = self.bank.modulation[1 + usize::from(slot)];
+            (cutoff, q) = (cutoff * c, q * k);
+        }
         if cutoff != 1.0 || q != 1.0 {
             // A modulated voice's coefficients are its own: one set per chunk at
             // its midpoint, outside the shared cache.
