@@ -35,10 +35,11 @@ workbench. `--binary` selects another corpus-health build; the default locates t
 worktree's CI binary on the configured cargo-target volume.
 
 The Problems view lists recorded unsupported features, stubs, approximations,
-faults and conversion gaps. Selecting a script problem opens its original line
+faults and conversion gaps. Selecting a script problem opens its coordinates
 alongside the frontend's lowering records and implementation/spec references.
+Original code appears when `--source` was requested or the opened report includes it.
 Converted structure exposes groups, zones, processors, modulators, routes,
-controls and physical ownership. UI projection exposes authored widget positions,
+controls and physical ownership. UI projection exposes model widget coordinates,
 bindings and omissions; it does not substitute a generated skin for native pixels.
 
 ## Evidence boundaries
@@ -47,7 +48,7 @@ bindings and omissions; it does not substitute a generated skin for native pixel
 | --- | --- | --- |
 | Kontakt default | Decoded chunk structure, every physical script slot, frontend reports and NCKP resource/field gaps | Product initialization, IR admission, sample binding, audio and live callbacks |
 | Falcon default | Program XML hierarchy, script bindings, actual compiler-only Luau syntax checks and production XML-to-IR translation | Native Lua 5.1 semantics, script initialization, sample binding, audio and live callbacks |
-| Optional initialization | Product initializer and UI model; Kontakt also attempts binding against zero-payload assets with deliberately fictitious sample metadata | Real sample admission, musical callbacks, rendered pixels, gestures and native equivalence |
+| Optional initialization | Product initializer and UI model; Falcon IR includes `onLoad` parameter overlays through the shared scripted-loader path; Kontakt also attempts binding against zero-payload assets with deliberately fictitious sample metadata | Real sample admission, musical callbacks, rendered pixels, gestures and native equivalence |
 
 An available binding is not evidence that it executed. A successful stage means
 that particular inspection completed, not that the whole library is compatible.
@@ -55,10 +56,24 @@ Unclassified fields remain unverified. Summary reports omit detailed coordinates
 and lowering records; open a full per-file report for line inspection. Partial
 program conversion does not establish complete NKM compatibility.
 
+Kontakt UI projection reuses the translated initializer once. Positioned KSP
+faults retain physical program/script-slot ownership and fail initialization;
+compiler rejection fails the frontend stage. A rejected KONTRA frontend does not
+establish that the native script is malformed. Omitted NCKP fields and controls
+make UI projection partial. Default frontends retain categorized resource/field
+gaps; optional source inspection adds categorized skipped counts in resource
+metadata, the original NCKP JSON and its path.
+
 Kontakt product conversion can read sample headers and decode convolution impulse
 resources. It does not audition samples or produce PCM output. The source-only
 path avoids that initializer entirely. Runtime and audio evidence are always
 separate, and native equivalence remains unknown in these reports.
+
+Initialized Falcon inspection promotes the decoded source, initializes one host,
+applies its parameter overlays and translates that resulting XML through the same
+helper as the scripted bank loaders. The returned IR therefore reflects `onLoad`
+changes; samples are not bound or decoded. Live/asynchronous changes require
+separate runtime evidence.
 
 ## Source and file handling
 
