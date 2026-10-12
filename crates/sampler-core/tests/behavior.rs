@@ -1833,3 +1833,69 @@ fn callbacks_over_fuel_continue_next_block_in_event_order() {
         rt.flush_ended(|_| true);
     });
 }
+
+#[test]
+fn explicit_host_block_shares_fuel_across_callbacks_and_render_fragments() {
+    let mut code = vec![Instruction::SetLocal { local: 0, value: 0 }];
+    code.extend((0..10).map(|_| Instruction::AddLocal { local: 0, value: 1 }));
+    let mut rt = runtime(code, Limits { behavior_fuel: 64, ..limits() });
+    support::without_heap(|| {
+        rt.begin_behavior_block(3, None);
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let first = rt.start_behavior(note, 0).unwrap();
+        let second = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(2));
+        rt.render(&mut []).unwrap();
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        rt.render(&mut [[0.; 2]; 3]).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(2), "fragments cannot refill a host block");
+        assert_eq!(rt.behavior_local(second, 0), Ok(0));
+        rt.begin_behavior_block(3, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(5));
+        assert_eq!(rt.behavior_local(second, 0), Ok(0), "later callbacks keep instrument order");
+        rt.begin_behavior_block(64, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_outcome(first), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_outcome(second), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(second, 0), Ok(10));
+    });
+}
+
+#[test]
+fn exhausted_host_callback_time_does_not_refill_between_events_or_renders() {
+    let mut rt = runtime(vec![Instruction::AddLocal { local: 0, value: 1 }; 10],
+        Limits { behavior_fuel: 64, ..limits() });
+    support::without_heap(|| {
+        rt.begin_behavior_block(64, Some(std::time::Duration::ZERO));
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let first = rt.start_behavior(note, 0).unwrap();
+        let second = rt.start_behavior(note, 0).unwrap();
+        for _ in 0..3 { rt.render(&mut [[0.; 2]; 1]).unwrap(); }
+        assert_eq!(rt.behavior_local(first, 0), Ok(0));
+        assert_eq!(rt.behavior_local(second, 0), Ok(0));
+        rt.begin_behavior_block(64, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(10));
+        assert_eq!(rt.behavior_local(second, 0), Ok(10));
+        assert_eq!(rt.behavior_outcome(second), Ok(Some(Outcome::Finished)));
+    });
+}
+
+#[test]
+fn positive_callback_time_preempts_a_long_straight_run_without_losing_work() {
+    let count = 100_000;
+    let mut rt = runtime(vec![Instruction::AddLocal { local: 0, value: 1 }; count],
+        Limits { behavior_fuel: count * 2, ..limits() });
+    support::without_heap(|| {
+        rt.begin_behavior_block(count * 2, Some(std::time::Duration::from_micros(1)));
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let callback = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(None), "time must bound a long straight run");
+        assert!(rt.behavior_local(callback, 0).unwrap() < count as i64);
+        rt.begin_behavior_block(count * 2, None);
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(callback, 0), Ok(count as i64));
+    });
+}
