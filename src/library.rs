@@ -99,7 +99,9 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
-    /// Settings this version does not know, such as KONTRA v1's `uvi_reader`:
+    /// The user's installed reader, under the same key as KONTRA v1.
+    pub uvi_reader: Option<PathBuf>,
+    /// Settings this version does not know:
     /// both versions share the file, so a save must keep them.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
@@ -374,6 +376,7 @@ pub struct Snapshots {
 pub struct Shelf {
     pub libraries: Vec<Library>,
     pub snapshots: HashMap<PathBuf, Snapshots>,
+    pub bank_issues: Vec<BankIssue>,
     /// Prepared once by the library worker, never scanned during painting.
     /// Native path keys also equate Windows' slash and backslash separators.
     by_dir: HashMap<PathBuf, usize>,
@@ -404,7 +407,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new(), bank_issues: Vec::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -448,6 +451,16 @@ pub struct Progress {
     pub found: AtomicUsize,
     pub cancel: AtomicBool,
     pub running: AtomicBool,
+    reader: Option<PathBuf>,
+    bank_issues: Mutex<BTreeMap<(bool, String), Vec<PathBuf>>>,
+}
+
+/// One catalog problem and every bank affected by it.
+#[derive(Debug)]
+pub struct BankIssue {
+    pub reader: bool,
+    pub message: String,
+    pub locations: Vec<PathBuf>,
 }
 
 impl Progress {
@@ -706,9 +719,12 @@ fn cached_presets(dir: &Path, progress: &Progress, cache: &mut cache::Cache) -> 
             cache.observe(path);
             out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open(path) {
+            if let Some(cache::Metadata::Bank(members)) = cache.memo(path, || match sampler_uvi::Bank::open_with_reader(path, progress.reader.as_deref()) {
                 Ok(bank) => Some(cache::Metadata::Bank(bank.programs())),
-                Err(e) => { trace.issue("catalog", "bank_unreadable", e.to_string()); None }
+                Err(e) => {
+                    lock(&progress.bank_issues).entry((matches!(e, sampler_uvi::AccessError::Reader(_)), e.to_string())).or_default().push(path.into());
+                    None
+                }
             }) { out.extend(members.into_iter().map(|member| path.join(member))); }
         }
     }
@@ -801,6 +817,15 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
     let mut shelf = Shelf::new(libraries);
     shelf.per_root = per_root;
     shelf.snapshots = snapshots;
+    shelf.bank_issues = lock(&progress.bank_issues).iter().map(|((reader, message), locations)| BankIssue {
+        reader: *reader, message: message.clone(), locations: locations.clone(),
+    }).collect();
+    for issue in &shelf.bank_issues {
+        crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "library", "bank_unreadable", serde_json::json!({
+            "path": roots.first().map(|r| &r.path), "stage": "catalog", "reader": issue.reader,
+            "message": issue.message, "locations": issue.locations, "count": issue.locations.len(),
+        }));
+    }
     Some((shelf, files.into_iter().collect()))
 }
 
@@ -869,7 +894,7 @@ impl Preferences {
         let mut next = (*state.0).clone();
         change(&mut next);
         if next == *state.0 { return; }
-        if next.roots != state.0.roots { self.roots_changed.fetch_add(1, Ordering::Release); }
+        if next.roots != state.0.roots || next.uvi_reader != state.0.uvi_reader { self.roots_changed.fetch_add(1, Ordering::Release); }
         state.0 = Arc::new(next);
         state.1 = state.1.wrapping_add(1);
         drop(state);
@@ -930,6 +955,11 @@ impl Scanner {
 
     /// Complete pending preference writes when an editor closes.
     pub fn flush_settings(&self) { self.preferences.flush(); }
+
+    pub fn configure_uvi_reader(&self, reader: Option<PathBuf>) {
+        self.edit(|s| s.uvi_reader = reader);
+        self.rescan();
+    }
 
     /// Called with native host logical dimensions; unchanged frames do no work.
     pub fn remember_window(&self, size: (u32, u32)) {
@@ -1059,10 +1089,10 @@ impl Scanner {
     }
 
     fn start(&self, generation: u64) {
-        let progress = Arc::new(Progress::default());
+        let settings = self.settings();
+        let progress = Arc::new(Progress { reader: settings.uvi_reader.clone(), ..Progress::default() });
         progress.running.store(true, Ordering::Relaxed);
         *lock(&self.progress) = progress.clone();
-        let settings = self.settings();
         let mut roots = settings.roots.clone();
         // A first run, with nothing set up yet, starts from what Kontakt knows.
         let first = !settings.imported && roots.is_empty() && Settings::path().is_some();
@@ -1093,9 +1123,11 @@ impl Scanner {
                     }
                     let per_root = std::mem::take(&mut shelf.per_root);
                     let snapshots = std::mem::take(&mut shelf.snapshots);
+                    let bank_issues = std::mem::take(&mut shelf.bank_issues);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
                     shelf.snapshots = snapshots;
+                    shelf.bank_issues = bank_issues;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
@@ -1166,13 +1198,34 @@ mod tests {
     #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        std::fs::write(&path, r#"{"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5,"future_option":{"enabled":true}}"#).unwrap();
         let settings = super::Settings::load(&path).unwrap();
+        assert_eq!(settings.uvi_reader.as_deref(), Some(Path::new("/x/UVIWorkstationx64.exe")));
         settings.save(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(super::Settings::load(&path).unwrap().uvi_reader, settings.uvi_reader);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(saved["uvi_reader"], "/x/UVIWorkstationx64.exe");
         assert_eq!(saved["ui_scale"], 1.5);
+        assert_eq!(saved["future_option"]["enabled"], true);
+    }
+
+    #[test]
+    fn w10_reader_selection_persists_and_wakes_other_instances() {
+        let root = tree("reader-setting", &[("settings.json", "{\"future_option\":42}")]);
+        let preferences = Preferences::new(Some(root.join("settings.json")));
+        let first = Scanner { preferences: preferences.clone(), ..Scanner::default() };
+        let second = Scanner { preferences, ..Scanner::default() };
+        let before = second.wanted();
+        let reader = PathBuf::from("/installed/UVIWorkstationx64.exe");
+        first.configure_uvi_reader(Some(reader.clone()));
+        assert!(second.wanted() > before);
+        assert_eq!(second.settings().uvi_reader, Some(reader.clone()));
+        first.flush_settings();
+        let saved = Settings::load(&root.join("settings.json")).unwrap();
+        assert_eq!(saved.uvi_reader, Some(reader));
+        assert_eq!(saved.other["future_option"], 42);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     use super::*;
@@ -1230,6 +1283,50 @@ mod tests {
         let (_, changed) = cached_scan(&roots, &Progress::default(), &mut cache::Cache::load(Some(&index))).unwrap();
         assert_eq!(changed, [root.join("Instruments/Organ.nki")]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn w10_catalog_bank_errors_are_grouped_with_all_locations() {
+        let _lease = crate::diagnostics::acquire();
+        let root = tree("bank-errors", &[("A/Bad.ufs", "broken"), ("B/Bad.ufs", "broken")]);
+        scan(&[Root { path: root.to_string_lossy().into_owned(), single: false }], &Progress::default()).unwrap();
+        let snapshot = crate::diagnostics::snapshot();
+        let records: Vec<_> = snapshot.events.iter().filter(|e| e.code.as_deref() == Some("bank_unreadable") && e.path.as_ref().is_some_and(|p| Path::new(p).starts_with(&root))).collect();
+        assert_eq!(records.len(), 1, "one grouped diagnostic must retain every failed bank location");
+        assert_eq!(records[0].details["locations"].as_array().unwrap().len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "read-only installed UVI discovery witness using copied settings/index"]
+    fn w10_readerless_catalog_recovery() {
+        assert!(std::env::vars_os().next().is_none(), "run this witness with env -i");
+        let out = std::env::temp_dir().join("kontra-w10-discovery");
+        let settings = Settings::load(&out.join("settings.json")).unwrap();
+        let mut cache = cache::Cache::load(Some(&out.join("index.json")));
+        let (shelf, files) = cached_scan(&settings.roots, &Progress::default(), &mut cache).unwrap();
+        let falcon_count = |shelf: &Shelf, files: &[PathBuf]| shelf.libraries.iter().filter(|l| files.iter().any(|p| p.starts_with(&l.dir) && p.components().any(|c| Path::new(c.as_os_str()).extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs"))))).count();
+        assert_eq!(falcon_count(&shelf, &files), 26, "read-only standard discovery must recover the readerless catalog");
+        assert!(shelf.bank_issues.is_empty());
+        let reader = PathBuf::from(std::fs::read_to_string(out.join("reader-path.txt")).unwrap().trim());
+        sampler_uvi::validate_reader(&reader).unwrap();
+        let scanner = Scanner { preferences: Preferences::new(Some(out.join("settings.json"))), ..Scanner::default() };
+        scanner.configure_uvi_reader(Some(reader.clone()));
+        scanner.flush_settings();
+        let saved = Settings::load(&out.join("settings.json")).unwrap();
+        assert_eq!(saved.uvi_reader, Some(reader));
+        let progress = Progress { reader: saved.uvi_reader.clone(), ..Progress::default() };
+        let (shelf, files) = cached_scan(&saved.roots, &progress, &mut cache).unwrap();
+        let falcon = falcon_count(&shelf, &files);
+        eprintln!("W10_DISCOVERY libraries={} falcon={} presets={} metadata_reads={}", shelf.libraries.len(), falcon, files.len(), cache.stats.reads);
+        assert_eq!(falcon, 26, "existing UVI banks must be discoverable from the saved reader without an environment override");
+        assert!(shelf.bank_issues.is_empty());
+        cache.save(Some(&out.join("green-index.json"))).unwrap();
+        let mut warm = cache::Cache::load(Some(&out.join("green-index.json")));
+        let (again, next) = cached_scan(&saved.roots, &Progress { reader: saved.uvi_reader, ..Progress::default() }, &mut warm).unwrap();
+        assert_eq!(again.libraries, shelf.libraries);
+        assert_eq!(next, files);
+        assert_eq!(warm.stats.reads, 0, "successful bank metadata must replace null entries and survive reload");
     }
 
     #[test]

@@ -51,6 +51,12 @@ pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
 impl Bank {
     /// Open and decode the directory of the bank at `path`.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
+        Self::open_with_reader(path, None)
+    }
+
+    /// Catalog scans use their current settings snapshot, even before it is saved.
+    pub fn open_with_reader(path: &Path, configured: Option<&Path>) -> Result<Self, AccessError> {
+        let configured = configured.map(Path::to_path_buf).or_else(configured_reader);
         let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
@@ -61,7 +67,7 @@ impl Bank {
         let (directory, program_namespace) = match ufs.decode_directory(&[]) {
             Ok(directory) => (directory, Vec::new()),
             Err(error) if error.is::<crate::ufs::NeedsMetadataNamespace>() => {
-                let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+                let reader = access::reader_path(configured.as_deref()).map_err(reader_error)?;
                 let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
                 (ufs.decode_directory(&namespaces.metadata).map_err(bank_error)?, namespaces.program)
             }

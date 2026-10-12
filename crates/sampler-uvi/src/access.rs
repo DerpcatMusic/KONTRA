@@ -199,35 +199,63 @@ pub(crate) fn recover_content_key(path: &Path, bank: &Ufs, directory: &Directory
 
 /// Bounded installed-reader discovery; configured paths and environment overrides remain authoritative.
 pub(crate) fn reader_path(configured: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = configured {
-        return Ok(path.to_owned());
-    }
     if let Some(path) = std::env::var_os("KONTRA_UVI_READER") {
         return Ok(path.into());
     }
-    let relative = Path::new("drive_c/Program Files/UVI Workstation/UVIWorkstationx64.exe");
+    if let Some(path) = configured {
+        return Ok(path.to_owned());
+    }
+    let native: Vec<PathBuf> = ["PROGRAMFILES", "ProgramW6432", "PROGRAMFILES(X86)"]
+        .into_iter().filter_map(std::env::var_os).map(PathBuf::from)
+        .chain(std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Programs")))
+        .collect();
+    let prefix = std::env::var_os("WINEPREFIX").map(PathBuf::from);
+    discover_reader(dirs::home_dir().as_deref(), prefix.as_deref(), &native).context(
+        "UVI reader not located. Install UVI Workstation or Falcon, or locate it.",
+    )
+}
+
+fn discover_reader(home: Option<&Path>, prefix: Option<&Path>, native: &[PathBuf]) -> Option<PathBuf> {
+    reader_candidates(home, prefix, native).into_iter().find(|path| path.is_file())
+}
+
+fn reader_candidates(home: Option<&Path>, prefix: Option<&Path>, native: &[PathBuf]) -> Vec<PathBuf> {
+    const WINDOWS: [&str; 5] = [
+        "UVI Workstation/UVIWorkstationx64.exe", "UVI Workstation x64/UVIWorkstationx64.exe",
+        "UVI/UVI Workstation/UVIWorkstationx64.exe", "UVI/Falcon/Falcon.exe", "Falcon/Falcon.exe",
+    ];
+    const MAC: [&str; 3] = [
+        "UVI Workstation.app/Contents/MacOS/UVIWorkstation",
+        "UVI Workstation.app/Contents/MacOS/UVI Workstation", "Falcon.app/Contents/MacOS/Falcon",
+    ];
     let mut candidates = Vec::new();
-    if let Some(prefix) = std::env::var_os("WINEPREFIX") {
-        candidates.push(PathBuf::from(prefix).join(relative));
-    }
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".wine").join(relative));
-    }
-    for variable in ["PROGRAMFILES", "ProgramW6432"] {
-        if let Some(path) = std::env::var_os(variable) {
-            candidates.push(PathBuf::from(path).join("UVI Workstation/UVIWorkstationx64.exe"));
+    for root in native.iter().cloned().chain([
+        PathBuf::from("C:/Program Files"), PathBuf::from("/mnt/c/Program Files"),
+        PathBuf::from("/mnt/Windows11/Program Files"),
+    ]) { candidates.extend(WINDOWS.iter().map(|p| root.join(p))); }
+    candidates.extend(MAC.iter().map(|p| Path::new("/Applications").join(p)));
+    let mut prefixes: Vec<PathBuf> = prefix.into_iter().map(Path::to_path_buf).collect();
+    if let Some(home) = home {
+        prefixes.push(home.join(".wine"));
+        candidates.extend(MAC.iter().map(|p| home.join("Applications").join(p)));
+        for root in [
+            ".local/share/bottles/bottles", ".var/app/com.usebottles.bottles/data/bottles/bottles",
+            ".local/share/lutris/prefixes", ".local/share/lutris/games", "Games",
+        ] {
+            // ponytail: one level/128 prefix folders; custom locations use Locate.
+            if let Ok(entries) = std::fs::read_dir(home.join(root)) {
+                for entry in entries.take(128).flatten().filter(|e| e.path().is_dir()) {
+                    prefixes.extend([entry.path(), entry.path().join("prefix"), entry.path().join("pfx")]);
+                }
+            }
         }
     }
-    candidates.extend(
-        [
-            "/mnt/c/Program Files/UVI Workstation/UVIWorkstationx64.exe",
-            "/mnt/Windows11/Program Files/UVI Workstation/UVIWorkstationx64.exe",
-        ]
-        .map(PathBuf::from),
-    );
-    candidates.into_iter().find(|path| path.is_file()).context(
-        "No local UVI reader was found; select a verified UVI Workstation reader in settings",
-    )
+    for prefix in prefixes {
+        for root in ["drive_c/Program Files", "drive_c/Program Files (x86)"] {
+            candidates.extend(WINDOWS.iter().map(|p| prefix.join(root).join(p)));
+        }
+    }
+    candidates
 }
 
 /// JSON type errors can echo private field values; journal only their category.
@@ -242,6 +270,41 @@ pub(crate) fn failure_reason(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_locations_cover_native_wine_bottles_and_lutris_without_writes() {
+        let root = std::env::temp_dir().join(format!("kontra-reader-locations-{}", std::process::id()));
+        let relative = "drive_c/Program Files/UVI Workstation/UVIWorkstationx64.exe";
+        let native = root.join("native");
+        let exe = native.join("UVI Workstation/UVIWorkstationx64.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"synthetic existence fixture, not a reader").unwrap();
+        for path in [".local/share/bottles/bottles/Test", ".var/app/com.usebottles.bottles/data/bottles/bottles/Test", ".local/share/lutris/prefixes/Test", "Games/Test/prefix"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        let paths = reader_candidates(Some(&root), Some(&root.join("custom")), &[native.clone()]);
+        for prefix in ["custom", ".wine", ".local/share/bottles/bottles/Test", ".var/app/com.usebottles.bottles/data/bottles/bottles/Test", ".local/share/lutris/prefixes/Test", "Games/Test/prefix"] {
+            assert!(paths.contains(&root.join(prefix).join(relative)), "missing {prefix}");
+        }
+        assert!(paths.contains(&root.join("Applications/Falcon.app/Contents/MacOS/Falcon")));
+        assert!(paths.contains(&PathBuf::from("/Applications/UVI Workstation.app/Contents/MacOS/UVIWorkstation")));
+        assert_eq!(discover_reader(Some(&root), None, &[native]), Some(exe.clone()));
+        assert_eq!(std::fs::read(&exe).unwrap(), b"synthetic existence fixture, not a reader");
+        assert!(ReaderNamespaces::open(&exe).is_err(), "existence discovery must not weaken reader validation");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reader_environment_precedes_the_saved_setting() {
+        if std::env::var("KONTRA_UVI_READER").ok().as_deref() == Some("test-env-reader") {
+            assert_eq!(reader_path(Some(Path::new("saved-reader"))).unwrap(), Path::new("test-env-reader"));
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "access::tests::reader_environment_precedes_the_saved_setting"])
+            .env("KONTRA_UVI_READER", "test-env-reader").status().unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn access_failure_reason_does_not_echo_private_json_values() {

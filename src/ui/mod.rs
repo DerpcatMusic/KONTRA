@@ -1069,6 +1069,12 @@ fn build(
 /// to save the rack as a multi.
 fn picked(cx: &mut Cx) {
     match cx.state.picker.take() {
+        Some(picker::Picked::UviReader(Ok(path))) => {
+            cx.p.shared.libraries.configure_uvi_reader(Some(path));
+            cx.state.browse.reader_path = None;
+            cx.state.notice = "UVI reader selected; rescanning libraries.".into();
+        }
+        Some(picker::Picked::UviReader(Err(error))) => cx.state.notice = format!("The reader was not selected: {error}"),
         Some(picker::Picked::DialogError(error)) => cx.state.notice = format!("The file picker could not open: {error}"),
         Some(picker::Picked::Revealed(result)) => {
             if let Err(error) = result { cx.state.notice = error; }
