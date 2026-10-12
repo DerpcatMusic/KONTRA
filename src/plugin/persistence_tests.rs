@@ -117,3 +117,38 @@ fn host_save_contains_live_original_text_and_array_values() {
         "rejected state cannot lose the current values"
     );
 }
+
+#[cfg(feature = "shots")]
+#[test]
+#[ignore = "requires installed Kontakt corpus"]
+fn conflux_builtin_report_contexts() {
+    let root = std::env::var_os("KONTRA_PERSISTENCE_CORPUS").map(PathBuf::from).unwrap();
+    let params = SamplerParams::new();
+    params.selection.write().unwrap().parts = vec![Part {
+        path: root.join("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki").display().to_string(),
+        ..Default::default()
+    }];
+    assert!(load_part(&params, 0, None));
+    let view = params.shared.view.lock().unwrap();
+    let instrument = view.parts[0].instrument.as_ref().unwrap();
+    let commands = ["get_menu_item_value", "get_menu_item_str", "get_zone_par", "set_event_par_arr", "ignore_controller"];
+    let mut unresolved = std::collections::BTreeSet::new();
+    for missing in &instrument.unsupported {
+        let Some(command) = commands.iter().find(|c| missing.feature.ends_with(&format!(": {c}"))) else { continue };
+        if missing.feature.starts_with("script Unsupported:") { unresolved.insert(*command); }
+        let mut parts = missing.location.rsplitn(2, " line ");
+        let line = parts.next().unwrap().parse::<usize>().unwrap();
+        let name = parts.next().unwrap();
+        let source = &instrument.behaviors.iter().find(|b| b.name == name).unwrap().source;
+        let text = source.lines().nth(line - 1).unwrap();
+        let symbols: Vec<_> = text.split(|c:char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|word| word.starts_with("ZONE_PAR_") || word.starts_with("EVENT_PAR_")).collect();
+        println!("BUILTIN_CONTEXT {}", serde_json::json!({"builtin":command,"line":line,
+            "symbols":symbols,"outside_controller":missing.value.contains("outside on controller"),
+            "init_no_effect":missing.value.contains("has no effect in on init"),
+            "ignored_runtime":missing.value.contains("not executed at runtime"),
+            "kind":missing.feature.split(":").next().unwrap()}));
+    }
+    println!("CONFLUX_UNKNOWN_COMMANDS {}", unresolved.len());
+    assert!(unresolved.is_empty(), "unresolved builtins: {unresolved:?}");
+}
