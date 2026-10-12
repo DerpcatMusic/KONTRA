@@ -10,6 +10,49 @@ use std::{
     path::Path,
 };
 
+/// A headless renderer still owns the script UI models and their lossless outbox.
+/// File/MIDI jobs need a separate service host; refusing them must retain the job.
+fn service_ui_effects(
+    runtime: &mut Runtime,
+    scripts: &mut [sampler_ksp::ScriptView],
+) -> io::Result<usize> {
+    let plan = runtime.active_plan();
+    let mut accepted = 0;
+    let mut failure = None;
+    runtime.drain_effects(|effect| {
+        let reason = match effect.service {
+            sampler_core::MIDI_SERVICE => Some("headless renderer needs a MIDI service host"),
+            sampler_core::ARRAY_FILE_SERVICE => {
+                Some("headless renderer needs an array-file service host")
+            }
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            failure = Some(reason);
+            return false;
+        }
+        let Some(instance) = effect.instance else {
+            failure = Some("script effect has no owner");
+            return false;
+        };
+        let Some(script) = scripts.get_mut(usize::from(instance.0)) else {
+            failure = Some("script effect owner is unavailable");
+            return false;
+        };
+        if effect.plan != plan || script.service(effect.service).is_none() {
+            failure = Some("script effect does not belong to this plan and service table");
+            return false;
+        }
+        script.apply_ui_effect_for(plan, instance, effect);
+        accepted += 1;
+        true
+    });
+    match failure {
+        Some(reason) => Err(io::Error::new(io::ErrorKind::Unsupported, reason)),
+        None => Ok(accepted),
+    }
+}
+
 /// A held note: key, velocity, start and length in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Note {
@@ -276,6 +319,7 @@ pub fn render(
             first.location
         );
     }
+    let mut scripts = loaded.scripts;
     let plan = loaded.plan;
     let rate = plan.sample_rate();
     let limits = Limits {
@@ -360,6 +404,7 @@ pub fn render(
                 },
             )
             .map_err(|e| io::Error::other(format!("MIDI block: {e:?}")))?;
+        service_ui_effects(&mut rt, &mut scripts)?;
         if let Some((index, result)) = failure {
             eprintln!(
                 "MIDI event at frame {}: {result:?}",
@@ -394,6 +439,114 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headless_host_refuses_external_jobs_without_dropping_them() {
+        for (source, service) in [
+            (
+                "on init declare $job end on on persistence_changed $job:=mf_reset() wait_async($job) end on",
+                sampler_core::MIDI_SERVICE,
+            ),
+            (
+                "on init declare %data[1] declare $job end on on persistence_changed $job:=load_array_str(%data,\"/not-opened.nka\") wait_async($job) end on",
+                sampler_core::ARRAY_FILE_SERVICE,
+            ),
+        ] {
+            let script =
+                sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let mut views = vec![script.view()];
+            let plan = script
+                .bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap())
+                .unwrap();
+            let limits = Limits::for_plan(&plan, 4, 4);
+            let mut runtime = Runtime::new(plan, limits).unwrap();
+            assert_eq!(
+                service_ui_effects(&mut runtime, &mut views)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
+            let mut retained = 0;
+            runtime.drain_effects(|effect| {
+                assert_eq!(effect.service, service);
+                retained += 1;
+                true
+            });
+            assert_eq!(
+                retained, 1,
+                "an unserviced job must remain owned by its outbox"
+            );
+        }
+    }
+
+    #[test]
+    fn headless_render_reaches_music_after_a_large_ui_refresh() {
+        let mut instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("authored.wav".into()),
+                encoding: sampler_ir::Encoding::Wav,
+                root_key: None,
+                loops: vec![],
+            }],
+            zones: vec![sampler_ir::Zone {
+                keys: sampler_ir::KeyRange { low: 60, high: 60 },
+                velocity: sampler_ir::VelocityResponse::None,
+                ..sampler_ir::Zone::new(sampler_ir::AssetRef(0))
+            }],
+            ..Default::default()
+        };
+        instrument.behaviors.push(sampler_ir::Behavior {
+            name: "authored headless host".into(),
+            language: sampler_ir::Language::Ksp,
+            source: "on init declare ui_label $label(1,1) declare $i end on
+                on note ignore_event($EVENT_ID) $i:=0
+                while ($i < 1000) inc($i) set_text($label,\"refresh\") end while
+                play_note($EVENT_NOTE,$EVENT_VELOCITY,0,100000) end on"
+                .into(),
+            slot: None,
+            state: vec![],
+            requires: vec![],
+        });
+        let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::finish(
+            instrument,
+            vec![pcm],
+            vec!["authored.wav".into()],
+            &sampler_kontakt::Options {
+                mpe: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(loaded.scripts.len(), 1);
+        struct Temp(std::path::PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let output = Temp(std::env::temp_dir().join(format!(
+            "kontra-headless-ui-{}-{}.wav", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        render(
+            loaded,
+            &output.0,
+            &[(0., [0x90, 60, 100]), (0.2, [0x80, 60, 64])],
+        )
+        .unwrap();
+        let audio = wave::read(&output.0).unwrap();
+        let frames = audio.resident_frames().unwrap();
+        assert!(frames.iter().flatten().all(|value| value.is_finite()));
+        assert!(frames.iter().flatten().any(|value| value.abs() > 0.01));
+        assert!(
+            frames[48000..]
+                .iter()
+                .flatten()
+                .all(|value| value.abs() < 1e-9),
+            "generated note must retire"
+        );
+    }
 
     #[test]
     fn sequences_parse_and_reject_out_of_range_notes() {

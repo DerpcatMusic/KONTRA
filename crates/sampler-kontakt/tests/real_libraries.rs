@@ -554,18 +554,87 @@ fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
         !loaded.plan.engine_lookups().is_empty(),
         "production needs physical names"
     );
+    let source = &loaded.instrument.source_indices;
+    let mut envelopes = 0;
+    let mut other_owners = 0;
     for binding in bindings {
-        assert!(
-            loaded
-                .instrument
-                .source_indices
-                .modulators
-                .iter()
-                .any(|source| source.group as i32 == binding.address.group
-                    && source.slot as i32 == binding.address.slot
-                    && source.runtime.is_some()
-                    && !source.external)
-        );
+        let name = sampler_core::engine_parameter_name(binding.address.parameter).unwrap();
+        if [
+            "$ENGINE_PAR_ATTACK",
+            "$ENGINE_PAR_HOLD",
+            "$ENGINE_PAR_DECAY",
+            "$ENGINE_PAR_SUSTAIN",
+            "$ENGINE_PAR_RELEASE",
+            "$ENGINE_PAR_ATK_CURVE",
+        ]
+        .contains(&name)
+        {
+            envelopes += 1;
+            assert!(
+                source.modulators.iter().any(|owner| {
+                    owner.group as i32 == binding.address.group
+                        && owner.slot as i32 == binding.address.slot
+                        && owner.runtime.is_some()
+                        && !owner.external
+                }),
+                "envelope lane lost its physical internal-modulator owner"
+            );
+        } else {
+            other_owners += 1;
+            let same_slot = |slot: sampler_ir::SlotAddress| {
+                slot.group == binding.address.group
+                    && slot.slot == binding.address.slot
+                    && slot.generic == binding.address.generic
+            };
+            if let Some(alias) = source.control_aliases.iter().find(|alias| {
+                same_slot(alias.address)
+                    && sampler_core::engine_parameter_id(&alias.parameter)
+                        == Some(binding.address.parameter)
+            }) {
+                assert_eq!(
+                    binding.control,
+                    sampler_core::lower::ir_control_id(
+                        &loaded.instrument.controls[alias.control.0].key
+                    )
+                );
+                assert!(
+                    loaded
+                        .instrument
+                        .processor_controls
+                        .iter()
+                        .any(|p| p.control == alias.control)
+                        || source
+                            .route_controls
+                            .iter()
+                            .any(|r| r.1 == alias.control || r.2 == alias.control),
+                    "the physical alias must feed an effect or modulation-route control"
+                );
+            } else {
+                // Direct native effect lanes retain a physical address instead
+                // of a separate semantic alias (for example the Ladder cutoff).
+                assert_eq!(
+                    binding.control,
+                    sampler_core::engine_parameter_control(binding.address)
+                );
+                assert!(
+                    loaded
+                        .instrument
+                        .chains
+                        .iter()
+                        .flat_map(|chain| {
+                            chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                        })
+                        .any(|processor| match processor {
+                            sampler_ir::Processor::LadderLP4(d) => d.address.is_some_and(same_slot),
+                            sampler_ir::Processor::LiveSaturation { address, .. }
+                            | sampler_ir::Processor::LiveDistortion { address, .. } =>
+                                same_slot(*address),
+                            _ => false,
+                        }),
+                    "native effect lane lost its physical processor owner"
+                );
+            }
+        }
         assert!(
             loaded
                 .plan
@@ -574,6 +643,10 @@ fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
                 .any(|control| control.id == binding.control)
         );
     }
+    assert!(
+        envelopes > 0 && other_owners > 0,
+        "exercise envelope and non-envelope binding ownership"
+    );
     let attack = bindings
         .iter()
         .find(|b| {
@@ -972,6 +1045,7 @@ fn big_screen_embedded_program_one_remains_audible_after_script_init() {
     let mut limits = Limits::for_plan(&loaded.plan, 32, 256);
     limits.behaviors = limits.behaviors.max(256);
     limits.behavior_cells = limits.behaviors * loaded.plan.behavior_local_count();
+    let mut scripts = loaded.scripts;
     let mut runtime = Runtime::new(loaded.plan, limits).unwrap();
     let performance = runtime.performance(0).unwrap();
     let origin = sampler_core::ChannelAddress {
@@ -998,6 +1072,21 @@ fn big_screen_embedded_program_one_remains_audible_after_script_init() {
     let mut output = [[0.0; 2]; 128];
     for _ in 0..188 {
         runtime.render(&mut output).unwrap();
+        runtime.drain_effects(|effect| {
+            assert_ne!(
+                effect.service,
+                sampler_core::MIDI_SERVICE,
+                "MIDI service requires a host"
+            );
+            assert_ne!(
+                effect.service,
+                sampler_core::ARRAY_FILE_SERVICE,
+                "array-file service requires a host"
+            );
+            let instance = effect.instance.expect("script UI effect owner");
+            scripts[usize::from(instance.0)].apply_ui_effect(effect);
+            true
+        });
         peak = output.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
         runtime.flush_behaviors(|_, _, _| true);
     }
