@@ -3440,6 +3440,42 @@ fn mutable_flex_without_a_raw_primary_keeps_the_shared_synthetic_gate_owner() {
 }
 
 #[test]
+fn initialized_flex_route_transforms_keep_the_current_source_consumer() {
+    for transform in 0..3 {
+        let mut ir = controlled_native_flex_fixture();
+        match transform {
+            0 => ir.routes[0].invert = true,
+            1 => {
+                ir.shapes.push(ir::Shape { points: vec![(0.,0.2),(1.,0.9)] });
+                ir.routes[0].shape = Some(ir::ShapeRef(0));
+            }
+            _ => ir.routes[0].smoothing = ir::Time::Milliseconds(1000.),
+        }
+        // Drop only the original Flex descriptor in the reference. Its current
+        // source, transform and independently prepared native primary remain.
+        let mut current = ir.clone();
+        current.source_indices.modulators.pop();
+        let make = |i:&ir::Instrument| Runtime::new(lower(i,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+        let mut actual = make(&ir); let mut expected = make(&current);
+        let mut nonzero = false;
+        support::without_heap(|| {
+            actual.trigger(input(60),60,1.).unwrap(); expected.trigger(input(60),60,1.).unwrap();
+        });
+        for block in 0..24 {
+            if block == 16 {
+                support::without_heap(|| {actual.note_off(input(60),None).unwrap();expected.note_off(input(60),None).unwrap();});
+            }
+            let mut a = [[0.;2];37]; let mut b = [[0.;2];37];
+            support::without_heap(|| {actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+            assert_eq!(a,b,"initialized Flex transform {transform} cannot be replaced by saved unity multiplication");
+            nonzero |= a.iter().any(|frame| frame[0] != 0.);
+        }
+        assert!(nonzero);
+        assert_eq!(actual.stats().v1_control_starts,0,"transformed Flex must keep its current route owner");
+    }
+}
+
+#[test]
 fn post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owner() {
     use sampler_core::{EngineParameterAddress,engine_parameter_id};
     let ir=native_primary_fixture();let mut generic=ir.clone();generic.source_indices.ahdsrs.clear();
