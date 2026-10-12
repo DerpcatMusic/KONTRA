@@ -323,6 +323,12 @@ pub(crate) fn prepare(
     }) {
         return None;
     }
+    // A Flex-only instrument uses the current synthetic gate. A mutable target
+    // needs that independent gate owner, which the native unity-primary view
+    // cannot replace. Keep this combination on the current shared consumer.
+    if amplitude.is_none() && program.controls.iter().any(|(route,_)| matches!(routed[*route],Route::Flex)) {
+        return None;
+    }
     description.mods = v1::ModTable::new(assignments.into_boxed_slice()).ok()?;
     Some(Program {
         plan: ControlPlan::prepare(description, rate as f32).ok()?,
@@ -399,8 +405,14 @@ pub(crate) struct Render<'a> {
     pub plan: &'a ControlPlan,
     pub state: &'a mut ControlState,
     pub blocks: &'a std::sync::atomic::AtomicU64,
+    pub flex_depth: f64,
 }
 impl Render<'_> {
+    pub fn done(&self) -> bool {
+        // A masked/partial Flex ending at zero leaves the primary audible.
+        // Its immutable source clock must not retire the held primary owner.
+        if self.flex_depth == 1. { self.state.done() } else { self.state.amplitude().done() }
+    }
     pub fn levels(
         &mut self,
         voice: &mut crate::Voice,
@@ -418,6 +430,11 @@ impl Render<'_> {
             &mut amplitude[held..len],
             Some(&mut flex[held..len]),
         );
+        if self.flex_depth != 1. {
+            for value in &mut flex[held..len] {
+                *value = (1. - self.flex_depth * (1. - f64::from(*value))) as f32;
+            }
+        }
         if !voice.envelope.admits_v1_controls() {
             let levels = crate::dsp::levels(voice, len, held);
             return std::array::from_fn(|i| levels[i] * f64::from(flex[i]));
@@ -425,7 +442,7 @@ impl Render<'_> {
         voice
             .envelope
             .set_v1_amplitude(self.state.amplitude(), self.plan.rate());
-        if self.state.done() {
+        if self.done() {
             voice.envelope.choke(0);
         }
         std::array::from_fn(|i| f64::from(voice.gain) * f64::from(amplitude[i] * flex[i]))
