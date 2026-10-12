@@ -2007,6 +2007,22 @@ mod tests {
     }
 
     #[test]
+    fn native_ar_family_keeps_every_authored_slot() {
+        for kind in 100i32..=108 {
+            let mut payload = kind.to_le_bytes().repeat(2);
+            for value in [0.5135f32, 0.7] { payload.extend(value.to_le_bytes()); }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let mut saved = slot(0x18, payload.clone(), 1.);
+                saved.slot = 5;
+                let out = chain(&[saved], scope);
+                assert_eq!(out.filter_slots, [(5, 0)],
+                    "native AR {kind} was dropped: {:?}", out.notes);
+                assert!(!out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled));
+            }
+        }
+    }
+
+    #[test]
     fn sv_filters_follow_the_measured_laws() {
         let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else {
             panic!()
