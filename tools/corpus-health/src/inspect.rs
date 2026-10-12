@@ -779,8 +779,16 @@ fn uvi(opts: &Options, report: &mut Value) {
             return;
         }
     };
-    report["metadata"] = json!({"xml_bytes":xml.len(),"elements":doc.descendants().filter(|n|n.is_element()).map(|n|{let p=doc.text_pos_at(n.range().start);json!({"node":n.id().get_usize(),"kind":n.tag_name().name(),"name":n.attribute("Name"),"parent":n.parent_element().map(|p|p.id().get_usize()),"span":{"start":n.range().start,"end":n.range().end,"line":p.row,"column":p.col},"attribute_names":n.attributes().map(|a|a.name()).collect::<Vec<_>>()})}).collect::<Vec<_>>()});
-    if opts.source {
+    if opts.summary {
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            *counts.entry(node.tag_name().name()).or_default() += 1;
+        }
+        report["metadata"] = json!({"xml_bytes":xml.len(),"element_counts":counts});
+    } else {
+        report["metadata"] = json!({"xml_bytes":xml.len(),"elements":doc.descendants().filter(|n|n.is_element()).map(|n|{let p=doc.text_pos_at(n.range().start);json!({"node":n.id().get_usize(),"kind":n.tag_name().name(),"name":n.attribute("Name"),"parent":n.parent_element().map(|p|p.id().get_usize()),"span":{"start":n.range().start,"end":n.range().end,"line":p.row,"column":p.col},"attribute_names":n.attributes().map(|a|a.name()).collect::<Vec<_>>()})}).collect::<Vec<_>>()});
+    }
+    if opts.source && !opts.summary {
         report["metadata"]["xml"] = json!(xml);
     }
     let mut syntax_ok = true;
@@ -1515,8 +1523,11 @@ mod tests {
     #[test]
     fn compact_reports_keep_evidence_and_gap_counts_without_source_payload() {
         let temp = Temp::new();
-        let full = inspect(&fixture(&temp, XML, false));
+        let mut opts = fixture(&temp, XML, false);
+        let full = inspect(&opts);
         let summary = compact(full.clone());
+        opts.summary = true;
+        assert_eq!(compact(inspect(&opts)), summary);
         assert_eq!(summary["status"], full["status"]);
         assert_eq!(summary["evidence"], full["evidence"]);
         assert_eq!(
