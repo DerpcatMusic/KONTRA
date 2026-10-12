@@ -14,34 +14,61 @@ mod heap;
 
 fn roots() -> Vec<PathBuf> {
     if let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") {
-        return std::env::split_paths(&paths).collect();
+        return kontakt_roots(std::env::split_paths(&paths));
     }
     let Some(home) = std::env::var_os("HOME") else {
         return Vec::new();
     };
     let settings = std::fs::read_to_string(Path::new(&home).join(".config/kontra/settings.json"))
         .unwrap_or_default();
-    // Each root is `{"path": "...", ...}`; only roots precede other keys holding paths.
-    let roots = settings
-        .split("\"roots\"")
-        .nth(1)
-        .and_then(|s| s.split(']').next())
-        .unwrap_or("");
+    settings_roots(&settings)
+}
+
+fn settings_roots(settings: &str) -> Vec<PathBuf> {
+    #[derive(serde::Deserialize, Default)]
+    struct Settings {
+        #[serde(default)]
+        roots: Vec<Root>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Root {
+        path: PathBuf,
+    }
+    let settings: Settings = serde_json::from_str(settings).unwrap_or_default();
+    kontakt_roots(settings.roots.into_iter().map(|root| root.path))
+}
+
+fn kontakt_roots(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root in paths {
+        // Player settings may point at an umbrella containing both Kontakt and UVI.
+        let nested = root.join("Kontakt");
+        let root = if nested.is_dir() { nested } else { root };
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
     roots
-        .split("\"path\"")
-        .skip(1)
-        .filter_map(|s| s.split('"').nth(1))
-        .map(PathBuf::from)
-        .collect()
+}
+
+fn find_in(roots: &[PathBuf], relative: &Path) -> Option<PathBuf> {
+    roots.iter().find_map(|root| {
+        let path = root.join(relative);
+        if path.is_file() {
+            return Some(path);
+        }
+        // A configured single-library root already includes the library's name.
+        let relative = relative.strip_prefix(root.file_name()?).ok()?;
+        let path = root.join(relative);
+        path.is_file().then_some(path)
+    })
 }
 
 fn find(relative: &str) -> Option<PathBuf> {
-    let found = roots()
-        .into_iter()
-        .map(|root| root.join(relative))
-        .find(|p| p.is_file());
+    let roots = roots();
+    let found = find_in(&roots, Path::new(relative));
     if found.is_none() {
-        eprintln!("skipped: {relative} is not installed");
+        eprintln!("skipped: {relative} is not installed under {roots:?}");
     }
     found
 }
@@ -601,34 +628,111 @@ fn vista_cellos_render_from_loose_ncw_samples() {
 /// fails only for want of local access data. Sample audio is not decoded.
 #[test]
 fn installed_instruments_translate_or_report_why_not() {
+    let roots = roots();
+    let instruments = first_instruments(&roots);
+    if instruments.is_empty() {
+        assert!(
+            std::env::var_os("KONTRA_KONTAKT_LIBRARIES").is_none(),
+            "no .nki instruments found under explicitly configured Kontakt roots {roots:?}"
+        );
+        eprintln!(
+            "skipped: no .nki instruments found under {roots:?}; set KONTRA_KONTAKT_LIBRARIES to installed library roots"
+        );
+        return;
+    }
     let mut translated = 0;
-    for root in roots() {
-        let Ok(libraries) = std::fs::read_dir(&root) else {
+    for path in &instruments {
+        match sampler_kontakt::read(path) {
+            Ok(kontakt) => {
+                translated += 1;
+                eprintln!(
+                    "{}: {} groups, {} zones, {} unsupported",
+                    path.display(),
+                    kontakt.instrument.groups.len(),
+                    kontakt.instrument.zones.len(),
+                    kontakt.instrument.unsupported.len()
+                );
+            }
+            Err(error @ sampler_kontakt::LoadError::Access { .. }) => eprintln!("{error}"),
+            Err(error) => panic!("{error}"),
+        }
+    }
+    eprintln!(
+        "{translated} of {} discovered instruments translated",
+        instruments.len()
+    );
+}
+
+fn first_instruments(roots: &[PathBuf]) -> Vec<PathBuf> {
+    fn first(library: &Path) -> Option<PathBuf> {
+        let mut instruments = Vec::new();
+        collect(&library.join("Instruments"), &mut instruments);
+        // Some libraries, including Morphology, keep their NKI at the library root.
+        for entry in std::fs::read_dir(library).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+            {
+                instruments.push(path);
+            }
+        }
+        instruments.sort();
+        instruments.into_iter().next()
+    }
+    let mut instruments = Vec::new();
+    for root in roots {
+        if let Some(path) = first(root) {
+            instruments.push(path);
+        }
+        if root.join("Instruments").is_dir() {
             continue;
-        };
-        for library in libraries.flatten() {
-            let mut instruments = Vec::new();
-            collect(&library.path().join("Instruments"), &mut instruments);
-            instruments.sort();
-            for path in instruments.iter().take(1) {
-                match sampler_kontakt::read(path) {
-                    Ok(kontakt) => {
-                        translated += 1;
-                        eprintln!(
-                            "{}: {} groups, {} zones, {} unsupported",
-                            path.display(),
-                            kontakt.instrument.groups.len(),
-                            kontakt.instrument.zones.len(),
-                            kontakt.instrument.unsupported.len()
-                        );
-                    }
-                    Err(error @ sampler_kontakt::LoadError::Access { .. }) => eprintln!("{error}"),
-                    Err(error) => panic!("{error}"),
-                }
+        }
+        for library in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            if let Some(path) = first(&library.path()) {
+                instruments.push(path);
             }
         }
     }
-    eprintln!("{translated} instruments translated");
+    instruments.sort();
+    instruments.dedup();
+    instruments
+}
+
+#[test]
+fn library_discovery_handles_umbrella_container_and_single_library_roots() {
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "kontakt-library-roots-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    )));
+    let container = temp.0.join("Kontakt");
+    let nested = container.join("Piano/Instruments/Nested/Piano.nki");
+    let direct = container.join("Synth/Synth.NKI");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(direct.parent().unwrap()).unwrap();
+    std::fs::write(&nested, []).unwrap();
+    std::fs::write(&direct, []).unwrap();
+    let settings = serde_json::json!({
+        "roots": [{"path": temp.0, "single": false}, {"path": container}],
+        "other": {"path": "unrelated"}
+    });
+    let roots = settings_roots(&settings.to_string());
+    assert_eq!(roots, [container.clone()]);
+    assert_eq!(first_instruments(&roots), [nested.clone(), direct.clone()]);
+    let relative = Path::new("Piano/Instruments/Nested/Piano.nki");
+    assert_eq!(find_in(&roots, relative), Some(nested.clone()));
+    let single = [container.join("Piano")];
+    assert_eq!(find_in(&single, relative), Some(nested.clone()));
+    assert_eq!(first_instruments(&single), [nested]);
+    assert!(first_instruments(&[temp.0.join("missing")]).is_empty());
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
