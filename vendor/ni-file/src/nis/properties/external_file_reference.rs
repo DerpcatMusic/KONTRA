@@ -1,4 +1,0 @@
-// ExternalFileReference
-//
-// Properties
-// - value
