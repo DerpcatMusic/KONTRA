@@ -203,7 +203,7 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
     source_ok = stage_map.get("container") == "ok" and stage_map.get("source_frontend") == "ok"
     source_ok &= not any(isinstance(d, dict) and d.get("stage") == "parse" for d in diagnostics)
     source_ok &= compiler_status_counts.get("failed", 0) == 0
-    if key[0].startswith("kontakt"):
+    if key[0].startswith("kontakt") and "source_frontend" in stage_map:
         programs = metadata.get("programs")
         try:
             program_count = count_int(metadata.get("program_count"), "program_count")
@@ -223,7 +223,7 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         except ValueError as error:
             fault(faults, "programs", str(error), key)
             source_ok = False
-    else:
+    elif key[0].startswith("uvi") and "source_frontend" in stage_map:
         if type(metadata.get("xml_bytes")) is not int or metadata["xml_bytes"] < 0:
             fault(faults, "metadata", "UVI XML byte count missing", key)
             source_ok = False
