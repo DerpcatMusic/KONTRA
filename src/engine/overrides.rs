@@ -132,8 +132,9 @@ impl Edits {
     }
 
     /// Store `o`, replacing its group and parameter's; offset 0 removes it.
-    /// False when it changed nothing or there is no room.
+    /// False for nonfinite offsets, no change, or no room.
     pub fn set(&mut self, o: Override) -> bool {
+        if !o.offset.is_finite() { return false; }
         let at = self.0.iter().position(|e| e.group == o.group && e.param == o.param);
         match at {
             Some(i) if o.offset == 0.0 => {
@@ -178,48 +179,47 @@ impl Engine {
     /// Recompute what plays of `param` in `group` (or all) from the base.
     fn refresh(&mut self, group: Option<u16>, param: Param) {
         self.player.touch();
-        let Some(bank) = self.bank.as_deref_mut() else {
-            return;
-        };
+        if self.bank.is_none() { return; }
         let groups = match group {
-            Some(g) => g as usize..(g as usize + 1).min(bank.base.len()),
-            None => 0..bank.base.len(),
+            Some(g) => g as usize..(g as usize + 1).min(self.state.base.len()),
+            None => 0..self.state.base.len(),
         };
         for g in groups {
             let address = param.address(g as u16);
-            if let Some(base) = params::read(&bank.base, address) {
+            if let Some(base) = params::read(&self.state.base, address) {
                 let value = param.apply(base, self.overrides.offset(g as u16, param));
-                params::write(&mut bank.settings, address, value);
+                params::write(&mut self.state.settings, address, value);
+                self.state.lfo_timings.refresh(&self.state.settings, Some(g), self.player.rate as f32, self.player.tempo);
             }
         }
     }
 
     /// Apply a script's group-level write: to the base, then what plays.
     pub(super) fn write_group(&mut self, address: Address, value: f32) -> bool {
-        let Some(bank) = self.bank.as_deref_mut() else {
-            return false;
-        };
-        if !params::write(&mut bank.base, address, value) {
+        if self.bank.is_none() { return false; }
+        if !params::write(&mut self.state.base, address, value) {
             return false;
         }
         let value = match Param::of(address) {
             Some((g, p)) => {
-                let base = params::read(&bank.base, address).unwrap_or(value);
+                let base = params::read(&self.state.base, address).unwrap_or(value);
                 p.apply(base, self.overrides.offset(g, p))
             }
             None => value,
         };
-        params::write(&mut bank.settings, address, value)
+        let written = params::write(&mut self.state.settings, address, value);
+        if written {
+            self.state.lfo_timings.refresh(&self.state.settings, address.group_index(), self.player.rate as f32, self.player.tempo);
+        }
+        written
     }
 
     /// Publish what the editor watches: `group`'s envelope and filter
     /// values (playing and base) and this engine's first voices. Relaxed
     /// stores only; no allocation. False without a bank.
     pub fn publish(&self, group: usize, probe: &Probe) -> bool {
-        let Some(bank) = self.bank.as_deref() else {
-            return false;
-        };
-        for (layer, settings) in probe.values.iter().zip([&bank.settings, &bank.base]) {
+        if self.bank.is_none() { return false; }
+        for (layer, settings) in probe.values.iter().zip([&self.state.settings, &self.state.base]) {
             let mut values = [f32::NAN; PROBE_VALUES];
             if let Some(s) = settings.get(group) {
                 if let Some(e) = s.envelope {
@@ -408,8 +408,7 @@ mod tests {
     }
 
     fn sustain(e: &Engine, g: usize) -> (f32, f32) {
-        let bank = e.bank().unwrap();
-        (bank.settings[g].envelope.unwrap().sustain, bank.base[g].envelope.unwrap().sustain)
+        (e.state.settings[g].envelope.unwrap().sustain, e.state.base[g].envelope.unwrap().sustain)
     }
 
     /// The preload landing (`Engine::upgrade_bank`) keeps what scripts set:
@@ -453,7 +452,7 @@ mod tests {
     #[test]
     fn time_offsets_follow_the_ksp_law_and_survive_a_new_bank() {
         let mut e = engine();
-        let release = |e: &Engine| e.bank().unwrap().settings[1].envelope.unwrap().release;
+        let release = |e: &Engine| e.settings().unwrap()[1].envelope.unwrap().release;
         let norm = Param::Release.norm(0.25);
         e.set_override(Override { group: Some(1), param: Param::Release, offset: 0.1 });
         assert!((release(&e) - Param::Release.value(norm + 0.1)).abs() < 1e-6);
@@ -473,3 +472,7 @@ mod tests {
         assert_eq!(Probe::watched(Probe::watching(15, 4000)), Some((15, 4000)));
     }
 }
+
+#[cfg(all(test, feature = "plugin"))]
+#[path = "override_admission_tests.rs"]
+mod override_admission_tests;

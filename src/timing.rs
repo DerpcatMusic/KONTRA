@@ -244,6 +244,7 @@ const NO_ART: u8 = u8::MAX;
 #[derive(Clone, Copy)]
 struct Queued {
     due: u64,
+    port: u8,
     ev: In,
     /// Articulation to switch to before this note plays, or [`NO_ART`].
     art: u8,
@@ -251,7 +252,7 @@ struct Queued {
 
 /// One part's held-back events, in the order they play.
 #[derive(Clone, Copy)]
-struct HostHold { note: crate::engine::HostNote, hold: u64, mono: bool, held: bool }
+struct HostHold { note: crate::engine::HostNote, hold: u64, mono: bool, held: bool, stop: Option<u64> }
 
 pub struct Scheduler {
     host: Vec<HostHold>,
@@ -281,7 +282,7 @@ pub struct Scheduler {
 
 impl Default for Scheduler {
     fn default() -> Self {
-        let empty = Queued { due: 0, ev: In::Pressure(0, 0), art: NO_ART };
+        let empty = Queued { due: 0, port: 0, ev: In::Pressure(0, 0), art: NO_ART };
         Self {
             host: Vec::with_capacity(crate::ksp::EVENT_CAPACITY),
             queue: vec![empty; CAPACITY].into_boxed_slice(),
@@ -333,28 +334,35 @@ impl Scheduler {
     /// Hold `ev`, arriving at frame `now`, back by its articulation's hold.
     /// Returns it when it must play at once (the queue is full).
     pub fn arrive(&mut self, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router) -> Option<In> {
-        if let In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
+        self.arrive_on_port(ev, now, holds, rate, router, 0)
+    }
+
+    fn arrive_on_port(&mut self, ev: In, now: u64, holds: &Holds, rate: f64, router: &Router, port: u8) -> Option<In> {
+        if let In::HostOff(pattern) | In::HostOffVelocity(pattern, _) | In::HostChoke(pattern) | In::HostExpression(pattern, _) | In::HostPressure(pattern, _) = ev {
             for i in 0..self.host.len() {
                 let owner = self.host[i];
-                if !pattern.matches(owner.note) || (matches!(ev, In::HostOff(_)) && !owner.held) { continue; }
+                if !pattern.matches(owner.note) || (matches!(ev, In::HostOff(_) | In::HostOffVelocity(..)) && !owner.held) { continue; }
                 let pattern = crate::engine::HostPattern { port:i32::from(owner.note.port), channel:i32::from(owner.note.channel), key:i32::from(owner.note.key), id:owner.note.id, clap:owner.note.clap };
                 let to = match ev {
                     In::HostOff(_) => In::HostOff(pattern),
+                    In::HostOffVelocity(_, velocity) => In::HostOffVelocity(pattern, velocity),
                     In::HostChoke(_) => In::HostChoke(pattern),
                     In::HostExpression(_, x) => In::HostExpression(pattern, x),
+                    In::HostPressure(_, value) => In::HostPressure(pattern, value),
                     _ => unreachable!(),
                 };
                 let lane = if router.by_channel() { owner.note.channel as usize } else { 0 };
                 let due = (now + owner.hold).max(if owner.mono { self.last_on[lane] } else { 0 });
-                if matches!(ev, In::HostOff(_) | In::HostChoke(_)) {
+                if matches!(ev, In::HostOff(_) | In::HostOffVelocity(..) | In::HostChoke(_)) {
                     self.host[i].held = false;
+                    self.host[i].stop = Some(self.host[i].stop.map_or(due, |stop| stop.max(due)));
                     if owner.held { self.down[lane] = self.down[lane].saturating_sub(1); }
                     self.last_off[lane] = self.last_off[lane].max(due);
                     if !self.host.iter().any(|o| o.held && o.note.channel == owner.note.channel && o.note.key == owner.note.key) {
                         self.held[owner.note.channel as usize][owner.note.key as usize] = UP;
                     }
                 }
-                if !self.push(Queued { due, ev:to, art:NO_ART }) { return Some(ev); }
+                if !self.push(Queued { due, port:owner.note.port, ev:to, art:NO_ART }) { return Some(ev); }
             }
             return None;
         }
@@ -365,8 +373,25 @@ impl Scheduler {
         }
         let frames = |row, legato, velocity| holds.frames(row, legato, velocity, rate);
         let lane = |channel: u8| if router.by_channel() { usize::from(channel & 15) } else { 0 };
-        let (due, art) = match ev {
-            In::NoteOn(channel, note, velocity) | In::HostOn(crate::engine::HostNote { channel, key: note, .. }, velocity, _) => {
+        // Scheduling and authored articulation buckets use their MIDI1 view.
+        // The queued event below retains the original normalized payload.
+        let projected = match ev {
+            In::HostOn(note, velocity, _) => In::NoteOn(note.channel, note.key, velocity.midi1()),
+            In::Midi1NoteOn(c,n,v) => In::NoteOn(c,n,v),
+            In::Midi1Cc(c,cc,raw) => In::Cc(c,cc,raw),
+            In::NoteOnVelocity(c,n,v) | In::NoteOnVelocityPitch(c,n,v,_) => In::NoteOn(c,n,v.midi1().max(1)),
+            In::NoteOffVelocity(c,n,_) | In::Midi1NoteOff(c,n,_) | In::Midi1ZeroNoteOff(c,n) => In::NoteOff(c,n),
+            In::MidiControl(c,control) => match control {
+                crate::midi::Control::Cc(cc,value) => In::Cc(c,cc,value.midi1()),
+                crate::midi::Control::Cc14 { cc,raw,.. } => In::Cc(c,cc,raw),
+                crate::midi::Control::Bend(value) => In::Bend(c,value.midi1()),
+                crate::midi::Control::Pressure(value) => In::Pressure(c,value.midi1()),
+                crate::midi::Control::ResetPressure => In::Pressure(c,0),
+            },
+            ev => ev,
+        };
+        let (due, art) = match projected {
+            In::NoteOn(channel, note, velocity) => {
                 let key = &mut self.held[usize::from(channel & 15)][usize::from(note & 127)];
                 let (row, switch) = router.articulation_of(channel, note, velocity);
                 if switch {
@@ -392,7 +417,7 @@ impl Scheduler {
                 }
                 let mono = if holds.1[row.min(LOADED)] { MONO } else { 0 };
                 *key = ((due - now) as u32).min(MONO - 1) | mono;
-                if let In::HostOn(note, ..) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true }); }
+                if let In::HostOn(note, ..) = ev { self.host.push(HostHold { note, hold:due - now, mono:mono != 0, held:true, stop:None }); }
                 let art = if picked || row == LOADED { NO_ART } else { row as u8 };
                 (due, art)
             }
@@ -415,17 +440,21 @@ impl Scheduler {
             }
             // Exact wildcard/old-ID events cannot borrow a newer key row's
             // hold. Queue after the preceding ingress so their owner exists.
-            In::HostOff(_) | In::HostChoke(_) | In::HostExpression(_, _) => {
+            In::HostOff(_) | In::HostOffVelocity(..) | In::HostChoke(_) | In::HostExpression(_, _) | In::HostPressure(_, _) => {
                 let latest = if self.len > 0 { self.at(self.len - 1).due } else { now };
                 (latest.max(now), NO_ART)
             }
             // Per note: with its note.
             In::PolyAt(channel, note, _)
+            | In::Midi1PolyAt(channel, note, _)
+            | In::PerNotePressure(channel, note, _)
             | In::NoteTune(channel, note, _)
             | In::NotePressure(channel, note, _)
             | In::NoteGain(channel, note, _)
             | In::NotePan(channel, note, _)
-            | In::NoteBrightness(channel, note, _) => {
+            | In::NoteBrightness(channel, note, _)
+            | In::PerNoteControl(channel, note, _)
+            | In::PerNoteManagement { channel, note, .. } => {
                 let hold = match self.held[usize::from(channel & 15)][usize::from(note & 127)] {
                     UP | SWITCH => self.ctl_hold,
                     held => u64::from(held & !MONO),
@@ -437,7 +466,7 @@ impl Scheduler {
                 let latest = if self.len > 0 { self.at(self.len - 1).due } else { 0 };
                 let due = (now + self.ctl_hold).max(latest);
                 self.last_ctl = due;
-                if matches!(cc, 120 | 123) {
+                if matches!(cc, 120 | 123..=127) {
                     let channels = router.stop_channels(channel);
                     for c in (0..16).filter(|c| channels & (1 << c) != 0) {
                         self.held[c].fill(UP);
@@ -450,13 +479,14 @@ impl Scheduler {
                 }
                 (due, NO_ART)
             }
-            In::Cc(..) | In::Bend(..) | In::Pressure(..) => {
+            In::Cc(..) | In::Bend(..) | In::Pressure(..) | In::Parameter(..) => {
                 let due = (now + self.ctl_hold).max(self.last_ctl);
                 self.last_ctl = due;
                 (due, NO_ART)
             }
+            In::HostOn(..) | In::NoteOnVelocity(..) | In::NoteOnVelocityPitch(..) | In::NoteOffVelocity(..) | In::Midi1NoteOn(..) | In::Midi1Cc(..) | In::Midi1NoteOff(..) | In::Midi1ZeroNoteOff(..) | In::MidiControl(..) => unreachable!("normalized above"),
         };
-        (!self.push(Queued { due, ev, art })).then_some(ev)
+        (!self.push(Queued { due, port, ev, art })).then_some(ev)
     }
 
     /// Play what is due by frame `now` on `slot` of `rack`.
@@ -479,14 +509,34 @@ impl Scheduler {
         self.stop_due.fill(0);
         (self.last_ctl, self.ctl_hold) = (0, 0);
     }
+
+    fn cancel_input(&mut self, now: u64) {
+        // A reroute cancels delayed input, including exact notes which never
+        // reached the engine. Retain their tuples until NOTE_END is accepted.
+        let mut host = std::mem::take(&mut self.host);
+        self.clear();
+        for owner in &mut host {
+            owner.held = false;
+            owner.stop = Some(now);
+        }
+        self.host = host;
+    }
 }
 
 fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, q: Queued) {
-    let (e, c, r) = (&mut rack.parts[slot], &rack.controls[slot], &mut routers[slot]);
-    if let (In::NoteOn(channel, ..), true) = (q.ev, q.art != NO_ART) {
-        r.select(usize::from(q.art), channel, e);
-    }
-    articulate::feed(r, e, q.ev, u8::try_from(c.channel).unwrap_or(0));
+    let (c, r) = (rack.controls[slot], &mut routers[slot]);
+    rack.with_part(slot, |part| {
+        let Some(e) = part.instrument_mut() else { return };
+        if q.art != NO_ART {
+            let channel = match q.ev {
+                In::NoteOn(channel, ..) | In::Midi1NoteOn(channel, ..) | In::NoteOnVelocity(channel, ..) | In::NoteOnVelocityPitch(channel, ..) => Some(channel),
+                In::HostOn(note, ..) => Some(note.channel),
+                _ => None,
+            };
+            if let Some(channel) = channel { r.select(usize::from(q.art), channel, e); }
+        }
+        articulate::feed_on_port(r, e, q.ev, u8::try_from(c.channel).unwrap_or(0), q.port);
+    });
 }
 
 /// Every part's scheduler and the plan they follow, on the audio thread.
@@ -529,7 +579,7 @@ impl Align {
         // Otherwise an ended root's queued expression could hit a reused ID.
         self.parts.iter().any(|s| (0..s.len).any(|i| match s.at(i).ev {
             In::HostOn(n, ..) => n==note,
-            In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern,_) => pattern.matches(note),
+                    In::HostOff(pattern) | In::HostOffVelocity(pattern, _) | In::HostChoke(pattern) | In::HostExpression(pattern,_) | In::HostPressure(pattern,_) => pattern.matches(note),
             _ => false,
         }))
     }
@@ -548,6 +598,15 @@ impl Align {
         for scheduler in &mut self.parts { scheduler.host.retain(|o| o.note != note); }
     }
 
+    pub(crate) fn cancel_input(&mut self, slot: usize) {
+        if let Some(scheduler) = self.parts.get_mut(slot) { scheduler.cancel_input(self.clock); }
+    }
+
+    pub(crate) fn host_note_end_at(&self, note: crate::engine::HostNote) -> Option<u64> {
+        self.parts.iter().flat_map(|scheduler| &scheduler.host)
+            .filter(|owner| owner.note == note).filter_map(|owner| owner.stop).max()
+    }
+
     pub fn holding(&self, playing: bool) -> bool {
         self.plan.on && (playing || !self.plan.transport_only)
     }
@@ -557,12 +616,18 @@ impl Align {
     pub fn arrive(&mut self, rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, now: u64, rate: f64) {
         let empty = Holds::default();
         for slot in 0..self.parts.len().min(rack.parts.len()).min(routers.len()) {
+            // Instrument banks reject alignment at preparation; no Router
+            // or queued instrument delivery may enter their physical decoder.
+            let Some(engine) = rack.parts[slot].instrument() else { continue };
+            if matches!(ev, In::HostOn(..)) && engine.bank().is_none() && engine.script().is_none() {
+                continue;
+            }
             if !articulate::reaches(&rack.controls[slot], &routers[slot], port, ev) {
                 continue;
             }
             let holds = self.plan.parts.get(slot).unwrap_or(&empty);
-            if let Some(ev) = self.parts[slot].arrive(ev, now, holds, rate, &routers[slot]) {
-                articulate::dispatch_to(rack, routers, [slot], ev);
+            if let Some(ev) = self.parts[slot].arrive_on_port(ev, now, holds, rate, &routers[slot], port) {
+                articulate::dispatch_to_on_port(rack, routers, [slot], ev, port);
             }
         }
     }
@@ -998,8 +1063,8 @@ mod tests {
         let router=Router::default(); let mut scheduler=Scheduler::default();
         let first=crate::engine::HostNote { port:0,channel:0,key:60,id:10,clap:true };
         let second=crate::engine::HostNote { id:11,..first };
-        assert!(scheduler.arrive(In::HostOn(first,100,0.),0,&holds(0.,0.,10.),RATE,&router).is_none());
-        assert!(scheduler.arrive(In::HostOn(second,100,0.),96,&holds(0.,0.,20.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostOn(first,crate::midi::Velocity::from_midi1(100),0.),0,&holds(0.,0.,10.),RATE,&router).is_none());
+        assert!(scheduler.arrive(In::HostOn(second,crate::midi::Velocity::from_midi1(100),0.),96,&holds(0.,0.,20.),RATE,&router).is_none());
         let old=crate::engine::HostPattern { port:0,channel:0,key:60,id:10,clap:true };
         assert!(scheduler.arrive(In::HostOff(old),192,&holds(0.,0.,20.),RATE,&router).is_none());
         assert!(scheduler.arrive(In::HostExpression(old,crate::engine::HostExpression::Tune(12.)),240,&holds(0.,0.,20.),RATE,&router).is_none());
@@ -1176,7 +1241,7 @@ mod tests {
         use crate::articulate::{Articulate, Mode, Mpe, Route, Zone};
         let r = Router::default();
         let h = holds(50.0, 250.0, 250.0);
-        for cc in [120, 123] {
+        for cc in [120, 123, 124, 125, 126, 127] {
             let mut s = Scheduler::default();
             s.arrive(In::NoteOn(0, 60, 100), 0, &h, RATE, &r);
             s.arrive(In::Cc(0, cc, 0), 500 * 48, &h, RATE, &r);

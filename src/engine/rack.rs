@@ -136,6 +136,8 @@ pub struct Rack {
     buses: [Block; BUSES],
     /// Per bus, frames holding signal; beyond them it is all zeros.
     written: [usize; BUSES],
+    /// Absolute frame shared by every Rack-owned instrument.
+    now: u64,
 }
 
 impl Default for Rack {
@@ -157,6 +159,7 @@ impl Rack {
             part: [[0.0; MAX_BLOCK]; 2],
             buses: [[[0.0; MAX_BLOCK]; 2]; BUSES],
             written: [0; BUSES],
+            now: 0,
         }
     }
 }
@@ -166,6 +169,9 @@ impl Rack {
     /// its voices. Return the old containers in `prepared` for worker disposal.
     pub fn adopt_parts(&mut self, prepared: &mut Self) {
         assert!(prepared.parts.len() >= self.parts.len());
+        for engine in &mut prepared.parts[self.parts.len()..] {
+            engine.initialize_frame(self.now);
+        }
         for (current, next) in self.parts.iter_mut().zip(&mut prepared.parts) {
             std::mem::swap(current, next);
         }
@@ -176,28 +182,50 @@ impl Rack {
         std::mem::swap(&mut self.peaks.parts, &mut prepared.peaks.parts);
     }
 
-    pub fn reset(&mut self, rate: f64) {
-        for e in &mut self.parts {
-            e.reset(rate);
+    /// Invoke one part with an immutable census of its peers at this DSP frame.
+    /// Direct access through `parts` does not establish a Rack-wide KSP context.
+    pub(crate) fn with_part<R>(&mut self, slot: usize, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
+        let index = slot.min(self.parts.len());
+        let (before, rest) = self.parts.split_at_mut(index);
+        let (engine, after) = rest.split_first_mut()?;
+        let peers = before.iter().chain(after.iter()).fold(0usize,
+            |total, peer| total.saturating_add(peer.active_voices()));
+        Some(engine.with_peer_voices(peers, f))
+    }
+
+    // One census per ordered phase; each invocation may change only its own roster.
+    fn for_each_part(&mut self, mut f: impl FnMut(usize, &mut Engine)) {
+        let mut total = self.parts.iter().fold(0usize, |sum, e| sum.saturating_add(e.active_voices()));
+        for (slot, engine) in self.parts.iter_mut().enumerate() {
+            let peers = total.saturating_sub(engine.active_voices());
+            engine.with_peer_voices(peers, |e| f(slot, e));
+            total = peers.saturating_add(engine.active_voices());
         }
+    }
+
+    pub fn reset(&mut self, rate: f64) {
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.reset(rate)); }
     }
 
     pub fn set_controls(&mut self, mix: &Mix) {
         self.bus_controls = mix.buses;
-        for (slot, (engine, old)) in self.parts.iter_mut().zip(&mut self.controls).enumerate() {
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let old = self.controls[slot];
             let new = mix.parts.get(slot).copied().unwrap_or_default();
-            if (old.port, old.channel) != (new.port, new.channel) {
-                let rate = engine.rate();
-                engine.reset(rate);
-            }
-            engine.set_home_channel(new.channel.clamp(0, 15) as u8);
-            *old = new;
+            let home = new.channel.clamp(0, 15) as u8;
+            self.with_part(slot, |engine| {
+                if (old.port, old.channel) != (new.port, new.channel) {
+                    let rate = engine.rate();
+                    engine.reset_input(rate, home, old.port != new.port);
+                } else { engine.set_home_channel(home); }
+            });
+            self.controls[slot] = new;
         }
     }
 
     /// One host timing snapshot reaches every instrument before its MIDI input.
     pub fn set_transport(&mut self, playing: bool, tempo: f64, beats: f64, signature: (u8, u8)) {
-        for engine in &mut self.parts { engine.set_transport(playing, tempo, beats, signature); }
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.set_transport(playing, tempo, beats, signature)); }
     }
 
     pub fn note_on(&mut self, channel: u8, note: u8, velocity: u8) {
@@ -205,78 +233,65 @@ impl Rack {
     }
 
     pub fn note_on_port(&mut self, port: u8, channel: u8, note: u8, velocity: u8) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            if c.hears(port, channel) {
-                e.note_on(channel, note, velocity);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.hears(port, channel) { self.with_part(slot, |e| { e.note_on(channel, note, velocity); }); }
         }
     }
 
     pub fn note_off_port(&mut self, port: u8, channel: u8, note: u8) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            if c.port == port {
-                e.note_off(channel, note);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.port == port { self.with_part(slot, |e| { e.note_off(channel, note); }); }
         }
     }
 
     /// Instrument volume and pan (CC7/CC10) reach only parts listening on the
     /// channel; other controllers reach the whole port so pedals never stick.
     pub fn cc_port(&mut self, port: u8, channel: u8, cc: u8, value: u8) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            let instrument_level = matches!(cc, 7 | 10);
-            if c.port == port && (!instrument_level || c.hears(port, channel)) {
-                e.cc(channel, cc, value);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.port == port && (!matches!(cc, 7 | 10) || c.hears(port, channel)) { self.with_part(slot, |e| { e.cc(channel, cc, value); }); }
         }
     }
 
     /// Channel pressure, for scripts of parts listening on the channel.
     pub fn channel_pressure_port(&mut self, port: u8, channel: u8, value: u8) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            if c.hears(port, channel) {
-                e.channel_pressure(channel, value);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.hears(port, channel) { self.with_part(slot, |e| { e.channel_pressure(channel, value); }); }
         }
     }
 
     /// Polyphonic key pressure, for scripts of parts listening on the channel.
     pub fn poly_pressure_port(&mut self, port: u8, channel: u8, note: u8, value: u8) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            if c.hears(port, channel) {
-                e.poly_pressure(channel, note, value);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.hears(port, channel) { self.with_part(slot, |e| { e.poly_pressure(channel, note, value); }); }
         }
     }
 
     pub fn pitch_bend_port(&mut self, port: u8, channel: u8, value: u16) {
-        for (e, c) in self.parts.iter_mut().zip(&self.controls) {
-            if c.port == port {
-                e.pitch_bend(channel, value);
-            }
+        for slot in 0..self.parts.len().min(self.controls.len()) {
+            let c = self.controls[slot];
+            if c.port == port { self.with_part(slot, |e| { e.pitch_bend(channel, value); }); }
         }
     }
 
     /// Releases always reach every engine: changing routing while a key is held must not stick it.
     pub fn note_off(&mut self, channel: u8, note: u8) {
-        for e in &mut self.parts {
-            e.note_off(channel, note);
-        }
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.note_off(channel, note)); }
     }
 
     pub fn cc(&mut self, channel: u8, cc: u8, value: u8) {
-        for e in &mut self.parts {
-            e.cc(channel, cc, value);
-        }
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.cc(channel, cc, value)); }
     }
     pub fn panic(&mut self) {
-        for e in &mut self.parts { e.panic(); }
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.panic()); }
     }
 
     pub fn pitch_bend(&mut self, channel: u8, value: u16) {
-        for e in &mut self.parts {
-            e.pitch_bend(channel, value);
-        }
+        for slot in 0..self.parts.len() { self.with_part(slot, |e| e.pitch_bend(channel, value)); }
     }
 
     /// Render `frames` (at most [`MAX_BLOCK`]) into the bus blocks, after
@@ -298,70 +313,80 @@ impl Rack {
             self.tapped[..n].fill(0.0);
         }
         let solo = self.controls.iter().any(|c| c.solo);
-        for (slot, ((engine, c), meter)) in self
-            .parts
-            .iter_mut()
-            .zip(&self.controls)
-            .zip(&mut self.peaks.parts)
-            .enumerate()
-        {
-            let [left, right] = &mut self.part;
-            engine.tune = c.tune;
-            engine.render(&mut left[..n], &mut right[..n]);
-            let (left, right) = (&mut left[..n], &mut right[..n]);
-            if c.mute || (solo && !c.solo) {
-                continue;
-            }
-            let [gl, gr] = balance(c.gain, c.pan);
-            // Output channels past the instrument's own, after the part's fader.
-            for (out, l, r) in engine.fx().direct_outs(n) {
-                let bus = match c.outs[out] {
-                    NO_AUX => c.output,
-                    b => b,
-                } as usize;
-                let bus = bus.min(BUSES - 1);
-                self.written[bus] = n;
-                let [bus_l, bus_r] = &mut self.buses[bus];
-                for (o, x) in bus_l[..n].iter_mut().zip(l) {
-                    *o += x * gl;
+        let _ftz = super::FlushDenormals::new();
+        for (engine, c) in self.parts.iter_mut().zip(&self.controls) { engine.tune = c.tune; }
+        self.for_each_part(|_, engine| engine.render_begin(n));
+        let mut at = 0;
+        loop {
+            // Every instrument has completed preceding DSP before any callback.
+            self.for_each_part(|_, engine| engine.render_boundary(at));
+            if at == n { break; }
+            let end = self.parts.iter().fold(n, |end, engine| end.min(engine.render_next_boundary(at)));
+            debug_assert!(end > at, "a settled Rack boundary must advance");
+            let len = end - at;
+            for (slot, engine) in self.parts.iter_mut().enumerate() {
+                let fx_offset = engine.render_output_offset(at);
+                let [left, right] = &mut self.part;
+                engine.render_interval(at, &mut left[at..end], &mut right[at..end]);
+                let (Some(c), Some(meter)) = (self.controls.get(slot), self.peaks.parts.get_mut(slot)) else { continue };
+                let (left, right) = (&mut left[at..end], &mut right[at..end]);
+                if c.mute || (solo && !c.solo) {
+                    continue;
                 }
-                for (o, x) in bus_r[..n].iter_mut().zip(r) {
-                    *o += x * gr;
+                let [gl, gr] = balance(c.gain, c.pan);
+                // Output channels past the instrument's own, after the part's fader.
+                for (out, l, r) in engine.fx().direct_outs_range(fx_offset..fx_offset + len) {
+                    let bus = match c.outs[out] {
+                        NO_AUX => c.output,
+                        b => b,
+                    } as usize;
+                    let bus = bus.min(BUSES - 1);
+                    self.written[bus] = end;
+                    let [bus_l, bus_r] = &mut self.buses[bus];
+                    for (o, x) in bus_l[at..end].iter_mut().zip(l) {
+                        *o += x * gl;
+                    }
+                    for (o, x) in bus_r[at..end].iter_mut().zip(r) {
+                        *o += x * gr;
+                    }
+                    *meter = [meter[0].max(peak(l) * gl), meter[1].max(peak(r) * gr)];
                 }
-                *meter = [meter[0].max(peak(l) * gl), meter[1].max(peak(r) * gr)];
-            }
-            // Silent parts, idle instruments and empty slots, add nothing.
-            if peak(left) == 0.0 && peak(right) == 0.0 {
-                continue;
-            }
-            for x in left.iter_mut() {
-                *x *= gl;
-            }
-            for x in right.iter_mut() {
-                *x *= gr;
-            }
-            *meter = [meter[0].max(peak(left)), meter[1].max(peak(right))];
-            if self.tap == Some(slot) {
-                for ((t, l), r) in self.tapped[..n].iter_mut().zip(&*left).zip(&*right) {
-                    *t = (l + r) * 0.5;
+                // Silent parts, idle instruments and empty slots, add nothing.
+                if peak(left) == 0.0 && peak(right) == 0.0 {
+                    continue;
+                }
+                for x in left.iter_mut() {
+                    *x *= gl;
+                }
+                for x in right.iter_mut() {
+                    *x *= gr;
+                }
+                *meter = [meter[0].max(peak(left)), meter[1].max(peak(right))];
+                if self.tap == Some(slot) {
+                    for ((t, l), r) in self.tapped[at..end].iter_mut().zip(&*left).zip(&*right) {
+                        *t = (l + r) * 0.5;
+                    }
+                }
+                let aux = (c.aux as usize) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+                for (bus, gain) in [(c.output as usize, 1.0), (c.aux as usize, c.aux_gain)]
+                    .into_iter()
+                    .take(1 + usize::from(aux))
+                {
+                    let bus = bus.min(BUSES - 1);
+                    self.written[bus] = end;
+                    let [bus_l, bus_r] = &mut self.buses[bus];
+                    for (out, x) in bus_l[at..end].iter_mut().zip(&*left) {
+                        *out += x * gain;
+                    }
+                    for (out, x) in bus_r[at..end].iter_mut().zip(&*right) {
+                        *out += x * gain;
+                    }
                 }
             }
-            let aux = (c.aux as usize) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
-            for (bus, gain) in [(c.output as usize, 1.0), (c.aux as usize, c.aux_gain)]
-                .into_iter()
-                .take(1 + usize::from(aux))
-            {
-                let bus = bus.min(BUSES - 1);
-                self.written[bus] = n;
-                let [bus_l, bus_r] = &mut self.buses[bus];
-                for (out, x) in bus_l[..n].iter_mut().zip(&*left) {
-                    *out += x * gain;
-                }
-                for (out, x) in bus_r[..n].iter_mut().zip(&*right) {
-                    *out += x * gain;
-                }
-            }
+            at = end;
         }
+        self.for_each_part(|_, engine| engine.render_finish());
+        self.now = self.now.saturating_add(n as u64);
         let solo = self.bus_controls.iter().any(|c| c.solo);
         for (((bus, c), meter), &written) in self
             .buses
@@ -394,3 +419,6 @@ impl Rack {
     }
 }
 
+#[cfg(all(test, feature = "plugin"))]
+#[path = "rack_timeline_tests.rs"]
+mod rack_timeline_tests;

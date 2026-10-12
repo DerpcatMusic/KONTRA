@@ -67,6 +67,7 @@ fn control(m: &Machine, id: i32) -> Exec<usize> {
 fn targets(m: &mut Machine, id: i32) -> usize {
     let env = &mut *m.env;
     env.events.targets(id, &mut env.targets);
+    env.targets.retain(|id| env.events.get(*id).is_some_and(|e| e.active(m.engine)));
     env.targets.len()
 }
 
@@ -76,10 +77,19 @@ fn set_voice_par(m: &mut Machine, id: i32, which: VoicePar, value: i32, relative
         let Some(e) = m.env.events.get_mut(id) else {
             continue;
         };
+        if which == VoicePar::ReleaseVelocity {
+            let value = value.clamp(0, 127);
+            e.release_velocity = Some(crate::midi::Velocity::from_midi1(value as u8));
+            if let Some(voice) = e.voice {
+                m.engine.set_par_from(m.env.offset, e.channel, e.input_channel, voice, which, value);
+            }
+            continue;
+        }
         let field = match which {
             VoicePar::VolumeMdb => &mut e.volume,
             VoicePar::TuneMc => &mut e.tune,
             VoicePar::Pan => &mut e.pan,
+            VoicePar::ReleaseVelocity => unreachable!(),
         };
         *field = if relative {
             field.saturating_add(value)
@@ -527,7 +537,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             };
             let id = m
                 .env
-                .play_note(slot, parent, m.t.ctx.channel, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
+                .play_note(m.engine, slot, parent, m.t.ctx.channel, m.t.ctx.input_channel, note, velocity.clamp(1, 127), offset, duration);
+            m.env.refresh_note_durations(m.prog, m.slot, m.t.ctx.event);
             push_int(m, id)
         }
         NoteOff => {
@@ -540,6 +551,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let id = m.env.targets[k];
                 m.env.note_off(slot, id, delay);
             }
+            m.env.refresh_note_durations(m.prog, m.slot, m.t.ctx.event);
             Ok(Step::Next)
         }
         IgnoreEvent => {
@@ -580,7 +592,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let id = m.env.targets[k];
                 if let Some(e) = m.env.events.get_mut(id).filter(|e| !e.at_engine) {
                     if f == ChangeVelo {
-                        e.velocity = value.clamp(1, 127);
+                        e.set_velocity(value);
                     } else {
                         e.note = value.clamp(0, 127);
                     }
@@ -627,6 +639,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 par::VOLUME => set_voice_par(m, id, VoicePar::VolumeMdb, value, false),
                 par::TUNE => set_voice_par(m, id, VoicePar::TuneMc, value, false),
                 par::PAN => set_voice_par(m, id, VoicePar::Pan, value, false),
+                par::REL_VELOCITY => set_voice_par(m, id, VoicePar::ReleaseVelocity, value, false),
                 par::ZONE_ID => m.env.note("set_event_par: EVENT_PAR_ZONE_ID is read-only"),
                 _ => {
                     for k in 0..targets(m, id) {
@@ -637,7 +650,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                         match p {
                             par::PAR_0..=par::PAR_3 => e.pars[p as usize] = value,
                             par::NOTE if !e.at_engine => e.note = value.clamp(0, 127),
-                            par::VELOCITY if !e.at_engine => e.velocity = value.clamp(1, 127),
+                            par::VELOCITY if !e.at_engine => e.set_velocity(value),
                             par::MIDI_CHANNEL if !e.at_engine && (0..16).contains(&value) => e.channel = value as u8,
                             _ => m.env.note("set_event_par: parameter not settable here"),
                         }
@@ -648,16 +661,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetEventPar => {
             let [id, p] = ints(m);
-            let v = m.env.events.get(id).map_or(0, |e| match p {
-                par::ZONE_ID => e.voice.filter(|_| e.live).map_or(0, |v| {
-                    m.engine.voice_zone(v).unwrap_or(if e.zone < 0 { -1 } else { 0 })
-                }),
+            let v = m.env.events.get(id).filter(|e| e.active(m.engine)).map_or(0, |e| match p {
+                par::ZONE_ID => e.voice.and_then(|v| m.engine.voice_zone(v)).unwrap_or(-1),
+                par::PLAY_POS => e.voice.and_then(|v| m.engine.voice_play_pos(v)).unwrap_or(0),
                 par::PAR_0..=par::PAR_3 => e.pars[p as usize],
                 par::VOLUME => e.volume,
                 par::TUNE => e.tune,
                 par::PAN => e.pan,
                 par::NOTE => e.note,
                 par::VELOCITY => e.velocity,
+                par::REL_VELOCITY => e.release_velocity.map_or(0, |v| i32::from(v.midi1())),
                 par::MIDI_CHANNEL => i32::from(e.channel),
                 par::SOURCE => e.source,
                 _ => 0,
@@ -679,6 +692,20 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 }
                 return Ok(Step::Next);
             }
+            if matches!(p, par::MOD_VALUE_ID | par::MOD_VALUE_EX_ID) {
+                let index = usize::try_from(group).ok().filter(|&n| n < crate::engine::SCRIPT_MOD_SOURCES)
+                    .ok_or(Fault("From-script modulation source index outside 0..1000"))?;
+                let value = if p == par::MOD_VALUE_ID { value.clamp(-1_000_000, 1_000_000) } else { value };
+                for k in 0..targets(m, id) {
+                    if let Some(e) = m.env.events.get_mut(m.env.targets[k]) {
+                        e.script_mods[index] = value;
+                        if let Some(voice) = e.voice {
+                            m.engine.set_script_mod(m.env.offset, e.channel, e.input_channel, voice, index as u16, value);
+                        }
+                    }
+                }
+                return Ok(Step::Next);
+            }
             if p != par::ALLOW_GROUP {
                 m.env
                     .note("set_event_par_arr: unsupported event array parameter");
@@ -694,10 +721,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         GetEventParArr => {
             let [id, p, group] = ints(m);
-            let v = match (p, m.env.events.get(id)) {
+            let v = match (p, m.env.events.get(id).filter(|e| e.active(m.engine))) {
                 (par::ALLOW_GROUP, Some(e)) => {
                     usize::try_from(group).is_ok_and(|g| e.groups.contains(g)) as i32
                 }
+                (par::MOD_VALUE_ID | par::MOD_VALUE_EX_ID, Some(e)) => usize::try_from(group).ok()
+                    .and_then(|n| e.script_mods.get(n)).copied().unwrap_or(0),
                 (par::CUSTOM, Some(e)) => usize::try_from(group).ok().and_then(|n| e.pars.get(n)).copied().unwrap_or(0),
                 _ => 0,
             };
@@ -722,7 +751,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetEventMark | DeleteEventMark => {
             let [id, mark] = ints(m);
-            if let Some(e) = m.env.events.get_mut(id) {
+            if let Some(e) = m.env.events.get_mut(id).filter(|e| e.active(m.engine)) {
                 if f == SetEventMark {
                     e.marks |= mark as u32;
                 } else {
@@ -737,6 +766,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .env
                 .events
                 .get(id)
+                .filter(|e| e.active(m.engine))
                 .is_some_and(|e| e.marks & mark as u32 != 0);
             push_int(m, v as i32)
         }
@@ -746,7 +776,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 .env
                 .events
                 .get(id)
-                .is_some_and(|e| e.live && !e.silenced && e.voice.is_none_or(|v| m.engine.voice_active(v)));
+                .is_some_and(|e| e.active(m.engine));
             push_int(m, live as i32)
         }
         GetEventIds => {
@@ -767,18 +797,34 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetController => {
             let [cc, value] = ints(m);
-            match u8::try_from(cc)
-                .ok()
-                .filter(|&c| usize::from(c) < b::CC_SLOTS)
-            {
-                Some(cc) => m.env.queue(super::runtime::Work::Controller {
+            if let Some(control) = u8::try_from(cc).ok()
+                .and_then(|cc| crate::midi::Control::from_legacy(cc, value)) {
+                // Mutation scope is authored; input remains cleanup lineage.
+                m.env.queue_control(m.t.ctx.channel, m.t.ctx.input_channel, slot + 1,
+                    crate::midi::ControlTarget::Authored, control, false, false);
+            } else {
+                m.env.note("set_controller: controller number out of range");
+            }
+            Ok(Step::Next)
+        }
+        SetPolyAt => {
+            let [note, value] = ints(m);
+            if m.t.ctx.kind == Kind::Cb(Callback::Init) {
+                return Err(Fault("set_poly_at is unavailable during initialization"));
+            }
+            if !(0..=127).contains(&note) || !(0..=127).contains(&value) {
+                m.env.note("set_poly_at: note or value out of range");
+            } else {
+                m.env.queue(super::runtime::Work::PolyAt {
                     channel: m.t.ctx.channel,
                     input_channel: m.t.ctx.input_channel,
-                    cc,
+                    note: note as u8,
                     value,
+                    host_pressure: None,
+                    input_pressure: None,
+                apply_poly_pressure: true,
                     slot: slot + 1,
-                }),
-                None => m.env.note("set_controller: controller number out of range"),
+                });
             }
             Ok(Step::Next)
         }
@@ -795,6 +841,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 m.env.queue(super::runtime::Work::NoteController {
                     channel: m.t.ctx.channel,
                     input_channel: m.t.ctx.input_channel,
+                    native_note_control: None,
                     controller,
                     note: note as u8,
                     value,
@@ -809,7 +856,7 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return Err(Fault("RPN address or value out of range"));
             }
             m.env.queue(super::runtime::Work::Rpn {
-                channel: m.t.ctx.channel, input_channel: m.t.ctx.input_channel, nrpn: f == SetNrpn, address, value, slot: slot + 1,
+                channel: m.t.ctx.channel, input_channel: m.t.ctx.input_channel, native_parameter: None, nrpn: f == SetNrpn, address, value, slot: slot + 1,
             });
             Ok(Step::Next)
         }
@@ -819,7 +866,16 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             }
             Ok(Step::Next)
         }
-        WillNeverTerminate | SetMapEditorEventColor => {
+        WillNeverTerminate => {
+            let id = m.stk.int();
+            for k in 0..targets(m, id) {
+                if let Some(e) = m.env.events.get_mut(m.env.targets[k]).filter(|e| e.live && !e.silenced) {
+                    e.force_completion = true;
+                }
+            }
+            Ok(Step::Next)
+        }
+        SetMapEditorEventColor => {
             m.stk.int();
             Ok(Step::Next)
         }
@@ -865,6 +921,9 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         }
         SetListener | ChangeListenerPar => {
             let [signal, value] = ints(m);
+            // Legacy instrument scripts use -1 to leave the MS timer disabled.
+            // Normalize that sentinel to the documented zero disable value.
+            let value = if signal == b::signal::TIMER_MS && value == -1 { 0 } else { value };
             let valid = match signal {
                 b::signal::TIMER_MS => value >= 1000 || value == 0,
                 b::signal::TIMER_BEAT => (0..=24).contains(&value),
@@ -1158,9 +1217,14 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 || !((-4..16).contains(&generic) || named_chain) {
                 return Err(Fault("Invalid level meter attachment"));
             }
-            // ponytail: no per-group/FX taps yet; preserve initialization and
-            // report the missing connection instead of showing fabricated levels.
-            m.env.note("KSP level meter attachments are unavailable");
+            let chain = match m.prog.symbol_name(generic) {
+                Some("$NI_LEVEL_METER_MAIN") => -2,
+                Some("$NI_LEVEL_METER_INSERT") => -1,
+                Some("$NI_LEVEL_METER_GROUP") => -3,
+                _ => generic,
+            };
+            m.slot.ui.controls[c].meter = Some([group, slot, channel, chain]);
+            if group >= 0 { m.env.note("Group level-meter taps are unavailable"); }
             Ok(Step::Next)
         }
         SetControlPar => {
@@ -1220,7 +1284,8 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 let slot = control_value_slot(m, id, Some(index), Ty::Int)?;
                 m.slot.mem.ints[slot] = value;
             } else if p != b::CONTROL_PAR_NONE {
-                m.env.note("Indexed control metadata is unavailable");
+                let c = control(m, id)?;
+                m.slot.ui.controls[c].set_indexed(p, index, Prop::Int(value)).map_err(Fault)?;
             }
             Ok(Step::Next)
         }
@@ -1231,7 +1296,13 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             if let Some(slot) = slot {
                 put_variable_text(&mut m.slot.mem.strs[slot], text, m.env.loading)?;
             } else if p != b::CONTROL_PAR_NONE {
-                m.env.note("Indexed control metadata is unavailable");
+                let c = m.slot.ui.control(id).ok_or(NO_CONTROL)?;
+                let control = &mut m.slot.ui.controls[c];
+                if control.frozen {
+                    let Some((_, _, Prop::Str(dst))) = control.indexed.iter_mut().find(|(par, i, _)| *par == p && *i == index as usize) else { return Err(Fault("Indexed control property must be prepared during init")); };
+                    put_variable_text(dst, text, false)?;
+                    control.revision = control.revision.wrapping_add(1);
+                } else { control.set_indexed(p, index, Prop::Str(text.to_owned())).map_err(Fault)?; }
             }
             Ok(Step::Next)
         }
@@ -1296,6 +1367,11 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
                 return push_int(m, 0);
             }
             let c = control(m, id)?;
+            if let Some(index) = index {
+                if index < 0 { return Err(Fault("Indexed control property index out of range")); }
+                let value = match m.slot.ui.controls[c].indexed(p, index as usize) { Some(Prop::Int(n)) => *n, _ => 0 };
+                return push_int(m, value);
+            }
             let v = if p == b::CONTROL_PAR_NUM_ITEMS {
                 m.slot.ui.controls[c].menu.len() as i32
             } else if p == b::CONTROL_PAR_SELECTED_ITEM_IDX
@@ -1336,6 +1412,12 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
             let c = control(m, id)?;
             let control = &m.slot.ui.controls[c];
             let var = &m.prog.vars[control.var as usize];
+            if let Some(index) = index {
+                if index < 0 { return Err(Fault("Indexed control property index out of range")); }
+                let text = match control.indexed(p, index as usize) { Some(Prop::Str(s)) => s.as_str(), _ => "" };
+                m.stk.strs.push_str(text)?;
+                return Ok(Step::Next);
+            }
             let text = match control.get(p) {
                 _ if p == b::CONTROL_PAR_IDENTIFIER => var.name.get(1..).unwrap_or(""),
                 Some(Prop::Str(s)) => s.as_str(),
@@ -1538,6 +1620,17 @@ pub fn call(m: &mut Machine, f: Builtin, argc: u8, fuel: &mut u64) -> Exec<Step>
         SetScriptTitle => {
             let text = m.stk.strs.pop();
             put_text(&mut m.slot.ui.title, text, m.env.loading)?;
+            Ok(Step::Next)
+        }
+        ExposeControls => {
+            if m.t.ctx.kind != Kind::Cb(Callback::Init) { return Err(Fault("expose_controls is init-only")); }
+            m.slot.ui.exposed = true;
+            Ok(Step::Next)
+        }
+        LoadNativeUi => {
+            let entry = m.stk.strs.pop();
+            if m.t.ctx.kind != Kind::Cb(Callback::Init) { return Err(Fault("load_native_ui is init-only")); }
+            put_text(&mut m.slot.ui.native_ui, entry, m.env.loading)?;
             Ok(Step::Next)
         }
         MakePerfview => {

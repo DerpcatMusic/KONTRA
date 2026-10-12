@@ -20,7 +20,7 @@ use std::{
 /// last place a first run looks. The app's libraries come from its settings.
 pub const LIBRARY_ROOT: &str = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
 
-pub use crate::modulation::{Ahdsr, FlexEnvelope, FlexPoint, ModAssignment, ModEnvelope, PitchLfo, VolumeLfo, ModSource, ModTarget, Modulator, ShaperCurve};
+pub use crate::modulation::{Ahdsr, DigitalLfo, LfoFadeSync, FlexEnvelope, FlexPoint, GlideMode, ModAssignment, ModEnvelope, PitchGlide, PitchLfo, VolumeLfo, ModSource, ModTarget, Modulator, ShaperCurve};
 
 /// Wavetable oscillator settings. Position and phase values are normalized.
 /// A zero form type is linear; other forms require an implemented phase map.
@@ -71,7 +71,7 @@ fn wavetable_params(source: &ni_file::kontakt::objects::WavetableSource) -> Resu
 pub struct Group {
     pub name: String,
     /// Native group-start records, including unknown mode/operator IDs.
-    /// Retained for writing; playback does not yet evaluate these conditions.
+    /// Retained for writing; known native rows are prepared for Group-slot playback.
     #[serde(default)]
     pub start_criteria: ni_file::kontakt::objects::StartCriteriaList,
     /// Linear amplitude ratio.
@@ -125,12 +125,29 @@ pub struct Group {
     /// Proven untransformed v11 primary AHDSR and admitted source geometry.
     #[serde(default)]
     pub native_volume_env: bool,
+    /// Sole active, untransformed v11 primary AHDSR with saved Retrigger off.
+    /// Requires an accepted source range before live admission.
+    #[serde(default)]
+    pub native_shared_volume_slot: Option<u8>,
+    /// Raw-address proof of a sole active retriggered primary volume source.
+    #[serde(default)]
+    pub native_primary_bypass_slot: Option<u8>,
+    /// Verified saved v0x12 Flex Oneshot with Loop disabled and zero endpoint.
+    /// This admits mode semantics over the existing Flex waveform consumer.
+    #[serde(default)]
+    pub native_flex_oneshot: bool,
+    /// Verified saved v0x12 wider-section Flex Loop with Oneshot disabled.
+    #[serde(default)]
+    pub native_flex_loop: bool,
+    /// Saved retriggered native Glide sources with admitted plain pitch targets.
+    #[serde(default)]
+    pub pitch_glides: Vec<PitchGlide>,
 }
 
 impl Default for Group {
     fn default() -> Self {
         Self { name: String::new(), start_criteria: Default::default(), gain: 1.0, pan: 0.0, tune: 1.0, key_tracking: true, reverse: false, source_mode: Some(0),
-            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None, volume_lfos: Vec::new(), native_volume_env: false }
+            release_trigger: false, release_counter_ms: 0, muted: false, channel: -1, soloed: false, volume_env: None, flex_env: None, mods: Vec::new(), modulators: Vec::new(), envelopes: Vec::new(), pitch_lfos: Vec::new(), fx: Default::default(), amp_split_slot: None, voice_group: None, interp_quality: 0, release_trigger_note_monophonic: false, wavetable: None, volume_lfos: Vec::new(), native_volume_env: false, native_shared_volume_slot: None, native_primary_bypass_slot: None, native_flex_oneshot: false, native_flex_loop: false, pitch_glides: Vec::new() }
     }
 }
 
@@ -156,6 +173,20 @@ pub struct Loop {
     pub alternating: bool,
 }
 
+/// Saved ordinary sampler rows, in their native selection order. Keep unsupported
+/// fields intact so preparation can diagnose them without substituting a later row.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct NativeLoop {
+    pub slot: u8,
+    pub mode: i32,
+    pub start: i32,
+    pub length: i32,
+    pub count: i32,
+    pub alternating: bool,
+    pub tuning: f32,
+    pub crossfade: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct Zone {
     pub group: usize,
@@ -177,20 +208,40 @@ pub struct Zone {
     pub start_mod: Option<u32>,
     pub gain: f32, pub pan: f32, pub tune: f64,
     pub loop_range: Option<Loop>,
+    #[serde(default)]
+    pub native_loops: Vec<NativeLoop>,
 }
 
 impl Default for Zone {
     fn default() -> Self {
         Self { group: 0, sample: PathBuf::new(), available: true, low_key: 0, high_key: 127, root: 60,
             low_velocity: 0, high_velocity: 127, start: 0, end: 0, gain: 1.0, pan: 0.0, tune: 1.0, loop_range: None,
-            start_mod: None, fade_low_velocity: 0, fade_high_velocity: 0, fade_low_key: 0, fade_high_key: 0 }
+            start_mod: None, fade_low_velocity: 0, fade_high_velocity: 0, fade_low_key: 0, fade_high_key: 0, native_loops: Vec::new() }
     }
+}
+
+/// Sampling arithmetic is independent of native MIDI/controller options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub enum SamplingProfile {
+    #[default]
+    Compatibility,
+    Kontakt,
 }
 
 #[derive(Debug, Default, Serialize)]
 pub struct Instrument {
     pub path: PathBuf,
     pub name: String,
+    pub program: ProgramControls,
+    pub sampling_profile: SamplingProfile,
+    /// Native controller options plus the uninterpreted private-record bytes.
+    #[serde(default)]
+    pub native_program_private: Option<ni_file::kontakt::objects::ProgramDataPrivateParams>,
+    /// Saved public keyswitch seed; absent in older caches and authored presets.
+    #[serde(default)]
+    pub default_key_switch: Option<i16>,
+    /// Fixed saved transposition, independent of the writable Tune control.
+    pub transpose: i8,
     pub groups: Vec<Group>,
     pub zones: Vec<Zone>,
     pub warnings: Vec<String>,
@@ -211,6 +262,19 @@ pub struct Instrument {
     /// Files and directories used by resolution, captured when parsed.
     #[serde(skip)]
     pub dependencies: Vec<crate::cache::Dependency>,
+}
+
+/// Authored instrument controls in the same physical units used during playback.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
+pub struct ProgramControls {
+    pub gain: f32,
+    pub pan: f32,
+    /// Semitones; native programs store a pitch ratio.
+    pub tune: f32,
+}
+
+impl Default for ProgramControls {
+    fn default() -> Self { Self { gain: 1.0, pan: 0.0, tune: 0.0 } }
 }
 
 /// ni-file is a research parser with panic paths. Keep those off the host thread.
@@ -271,16 +335,143 @@ fn multi_programs(c:&KontaktChunks)->Result<(String,Vec<(u32,Program)>)> {
     for (slot,pc) in slots.slots {
         let list=ProgramList::try_from(pc.0.find_first(0x36).context("Multi slot has no programs")?)?;
         ensure!(list.programs.len()==1,"Instrument banks with program switching are not supported");
-        for p in list.programs {programs.push((slot as u32,p));}
+        for (_,p) in list.programs {programs.push((slot as u32,p));}
     }
     programs.sort_by_key(|(slot,_)|*slot);ensure!(!programs.is_empty(),"Multi contains no instruments");Ok((name,programs))
 }
 pub fn read_multi(path:&Path)->Result<Multi> {
-    std::panic::catch_unwind(||->Result<_>{let (name,programs)=multi_programs(&chunks(path)?)?;let parts=programs.into_iter().map(|(program,p)|Ok(MultiPart{program,name:p.params()?.name})).collect::<Result<Vec<_>>>()?;Ok(Multi{name,parts})})
-        .map_err(|_|anyhow::anyhow!("Malformed Kontakt multi"))?
+    std::panic::catch_unwind(|| -> Result<_> {
+        use ni_file::kontakt::objects::{Bank, SlotList};
+        let chunks = chunks(path)?;
+        let bank = Bank::try_from(chunks.find_first(3).context("No Kontakt multi bank")?)?;
+        let name = bank.params()?.name;
+        let slots = SlotList::try_from(bank.0.find_first(0x37).context("Multi has no slot list")?)?;
+        let mut parts = Vec::with_capacity(slots.slots.len());
+        for (slot, container) in slots.slots {
+            let name = match container.mode().context("Multi slot mode")? {
+                1 => single_program(&container)?.params()?.name,
+                2 => container.params()?.name,
+                mode => bail!("Unsupported multi slot {slot} mode {mode}"),
+            };
+            parts.push(MultiPart { program: u32::from(slot), name });
+        }
+        parts.sort_by_key(|part| part.program);
+        ensure!(!parts.is_empty(), "Multi contains no instruments");
+        Ok(Multi { name, parts })
+    }).map_err(|_| anyhow::anyhow!("Malformed Kontakt multi"))?
 }
 pub fn read_program(path:&Path,program:u32)->Result<Instrument> {
     std::panic::catch_unwind(||read_inner(path,program)).map_err(|_|anyhow::anyhow!("Malformed Kontakt program"))?
+}
+
+/// A saved instrument-bank roster. Inner wire slots retain their actual IDs;
+/// absent rows are empty slots, independently of the outer rack selection.
+pub struct InstrumentBank {
+    pub outer_slot: u32,
+    /// Retains the multi's receive-channel, master and routing metadata.
+    pub bank: ni_file::kontakt::objects::Bank,
+    /// Retained for the prepared consumer to validate mode, routing and limits.
+    /// Reading this roster alone does not admit those container settings.
+    pub container: ni_file::kontakt::objects::ProgramContainer,
+    pub programs: Vec<(u8, Instrument)>,
+}
+
+/// An actual saved slot source. The program number remains its outer rack ID;
+/// a bank's selected inner program is retained in its container metadata.
+pub enum SlotSource {
+    Instrument(std::sync::Arc<Instrument>),
+    InstrumentBank(InstrumentBank),
+}
+
+/// Classify from the saved native mode, retaining one decoded source for its
+/// prepared consumer. Ordinary instruments keep the existing shared cache.
+pub fn read_slot_source(path: &Path, outer_slot: u32) -> Result<SlotSource> {
+    std::panic::catch_unwind(|| -> Result<_> {
+        use ni_file::kontakt::objects::{Bank, SlotList};
+        if crate::creator::is_native(path) {
+            return shared_program(path, outer_slot).map(SlotSource::Instrument);
+        }
+        let path = path.canonicalize()?;
+        let chunks = chunks(&path).context("Container decoding")?;
+        if let Some(program) = chunks.find_first(0x28) {
+            ensure!(outer_slot == 0, "NKI has only one instrument");
+            let program = Program::try_from(program)?;
+            return shared_instrument(&path, outer_slot, || cached_program(&path, &chunks, program, outer_slot))
+                .map(SlotSource::Instrument);
+        }
+        ensure!(chunks.find_first(0x29).is_none(), "Standalone instrument banks are unsupported");
+        let bank = Bank::try_from(chunks.find_first(3).context("No Kontakt multi bank")?)?;
+        let mut slots = SlotList::try_from(bank.0.find_first(0x37).context("Multi has no slot list")?)?;
+        let id = u16::try_from(outer_slot).context("Invalid outer rack slot")?;
+        let container = slots.slots.remove(&id).context("Multi outer slot not found")?;
+        match container.mode().context("Multi slot mode")? {
+            1 => {
+                let program = single_program(&container)?;
+                shared_instrument(&path, outer_slot, || cached_program(&path, &chunks, program, outer_slot))
+                    .map(SlotSource::Instrument)
+            }
+            2 => parse_instrument_bank(&path, &chunks, bank, container, outer_slot)
+                .map(SlotSource::InstrumentBank),
+            mode => bail!("Unsupported multi slot {outer_slot} mode {mode}"),
+        }
+    }).map_err(|_| anyhow::anyhow!("Malformed Kontakt slot source"))?
+}
+
+fn single_program(container: &ni_file::kontakt::objects::ProgramContainer) -> Result<Program> {
+    let mut list = container.program_list()?.programs;
+    ensure!(list.len() == 1, "Ordinary multi slot must contain one instrument");
+    Ok(list.pop().unwrap().1)
+}
+
+/// Decode a script-free bank off-thread without changing outer selection.
+pub fn read_instrument_bank(path: &Path, outer_slot: u32) -> Result<InstrumentBank> {
+    match read_slot_source(path, outer_slot)? {
+        SlotSource::InstrumentBank(bank) => Ok(bank),
+        SlotSource::Instrument(_) => bail!("Selected source is not an instrument bank"),
+    }
+}
+
+fn parse_instrument_bank(
+    path: &Path,
+    chunks: &KontaktChunks,
+    bank: ni_file::kontakt::objects::Bank,
+    container: ni_file::kontakt::objects::ProgramContainer,
+    outer_slot: u32,
+) -> Result<InstrumentBank> {
+    use ni_file::kontakt::objects::ProgramList;
+    script_free(&bank.0).context("Multi scripts are not supported by instrument-bank delivery")?;
+    let source = container.0.find_first(0x36).context("Instrument bank has no program list")?;
+    let count = source.data.get(..2).context("Truncated instrument-bank program count")?;
+    ensure!(u16::from_le_bytes([count[0], count[1]]) <= 128, "Instrument bank contains more than 128 programs");
+    let mut input = Cursor::new(&source.data);
+    let list = ProgramList::read(&mut input)?;
+    ensure!(input.position() == source.data.len() as u64, "Unsupported trailing instrument-bank program data");
+    let mut occupied = [false; 128];
+    for (slot, program) in &list.programs {
+        let slot = usize::try_from(*slot).ok().filter(|&slot| slot < 128)
+            .with_context(|| format!("Invalid instrument-bank inner slot {slot}"))?;
+        ensure!(!occupied[slot], "Duplicate instrument-bank inner slot {slot}");
+        occupied[slot] = true;
+        script_free(&program.0).with_context(|| format!("Instrument-bank inner slot {slot} is not script-free"))?;
+    }
+    let programs = list.programs.into_iter().map(|(slot, program)| {
+        parse_program(path.to_path_buf(), chunks, program)
+            .with_context(|| format!("Instrument-bank inner slot {slot}"))
+            .map(|program| (slot as u8, program))
+    }).collect::<Result<_>>()?;
+    Ok(InstrumentBank { outer_slot, bank, container, programs })
+}
+
+fn script_free(object: &StructuredObject) -> Result<()> {
+    for (slot, source) in object.children.iter().filter(|source| source.id == 6).enumerate() {
+        let source = BParScript::try_from(source)?;
+        let params = source.params().context("Script parameters")?;
+        ensure!(params.bypass || (params.text.as_deref().is_none_or(|s| s.trim().is_empty())
+            && params.textfile_name.as_deref().is_none_or(|s| s.trim().is_empty())
+            && params.password_hash.is_empty() && source.0.private_data.is_empty()
+            && source.0.children.is_empty()), "Active or opaque script slot {slot} is unsupported");
+    }
+    Ok(())
 }
 
 /// Apply a Kontakt snapshot to its explicitly supplied base NKI. Snapshots do
@@ -411,12 +602,18 @@ fn read_snapshot_inner(base: &Path, snapshot: &Path) -> Result<Instrument> {
         let group = &mut instrument.groups[id];
         group.volume_env = modulation.volume_env;
         group.native_volume_env = modulation.native_volume_env;
+        group.native_shared_volume_slot = modulation.native_shared_volume_slot;
+        group.native_primary_bypass_slot = modulation.native_primary_bypass_slot;
         group.flex_env = modulation.flex_env;
         group.mods = modulation.mods;
         group.modulators = modulation.modulators;
         group.envelopes = modulation.envelopes;
         group.pitch_lfos = modulation.pitch_lfos;
         group.volume_lfos = modulation.volume_lfos;
+        group.pitch_glides = modulation.pitch_glides;
+        if group.wavetable.is_some() && !group.pitch_glides.is_empty() {
+            warnings.push(format!("{}: saved Glide pitch is retained but only ordinary sampler playback is admitted", group.name));
+        }
         group.fx = fx;
     }
     let mut slots = 0;
@@ -575,6 +772,14 @@ fn snapshot_rooted_path(name: &str) -> Result<Option<PathBuf>> {
 /// [`read_program`], shared: parts and plugin instances in one process that
 /// load the same program hold one parsed copy while any of them lives.
 pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instrument>> {
+    shared_instrument(path, program, || read_program(path, program))
+}
+
+fn shared_instrument(
+    path: &Path,
+    program: u32,
+    load: impl FnOnce() -> Result<Instrument>,
+) -> Result<std::sync::Arc<Instrument>> {
     use std::sync::{Arc, Mutex, Weak};
     type Parsed = std::collections::HashMap<(PathBuf, u32), Weak<Instrument>>;
     static PARSED: Mutex<Option<Parsed>> = Mutex::new(None);
@@ -585,7 +790,7 @@ pub fn shared_program(path: &Path, program: u32) -> Result<std::sync::Arc<Instru
             return Ok(i);
         }
     }
-    let instrument = Arc::new(read_program(path, program)?);
+    let instrument = Arc::new(load()?);
     let mut parsed = lock();
     let parsed = parsed.get_or_insert_default();
     parsed.retain(|_, i| i.strong_count() > 0);
@@ -723,9 +928,48 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
 
 fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let c = chunks(&path).context("Container decoding")?;
-    let p = if let Some(p)=c.find_first(0x28) {ensure!(index==0,"NKI has only one instrument");Program::try_from(p)?}else{multi_programs(&c)?.1.into_iter().find(|(id,_)|*id==index).context("Multi program not found")?.1};
+    let p = if let Some(p) = c.find_first(0x28) {
+        ensure!(index == 0, "NKI has only one instrument");
+        Program::try_from(p)?
+    } else {
+        use ni_file::kontakt::objects::{Bank, SlotList};
+        ensure!(c.find_first(0x29).is_none(), "Standalone instrument banks are unsupported");
+        let bank = Bank::try_from(c.find_first(3).context("No Kontakt multi bank")?)?;
+        let mut slots = SlotList::try_from(bank.0.find_first(0x37).context("Multi has no slot list")?)?;
+        let id = u16::try_from(index).context("Invalid outer rack slot")?;
+        let container = slots.slots.remove(&id).context("Multi program not found")?;
+        match container.mode().context("Multi slot mode")? {
+            1 => single_program(&container)?,
+            2 => bail!("Instrument-bank source requires typed slot preparation"),
+            mode => bail!("Unsupported multi slot {index} mode {mode}"),
+        }
+    };
+    parse_program(path, &c, p)
+}
+
+fn cached_program(path: &Path, chunks: &KontaktChunks, program: Program, index: u32) -> Result<Instrument> {
+    let dir = crate::cache::dir();
+    if let Some(instrument) = dir.as_deref().and_then(|dir| crate::cache::load(dir, path, index)) {
+        return Ok(instrument);
+    }
+    let instrument = parse_program(path.to_path_buf(), chunks, program)?;
+    if let Some(dir) = &dir { crate::cache::store(dir, path, index, &instrument); }
+    Ok(instrument)
+}
+
+fn parse_program(path: PathBuf, c: &KontaktChunks, p: Program) -> Result<Instrument> {
     let mut warnings = Vec::new();
     let program = p.params().context("Program parameters")?;
+    let native_program_private = p.private_params();
+    match native_program_private.controller_options() {
+        Ok(Some(options)) => {
+            if options.sustain_mode == ni_file::kontakt::objects::SustainPedalMode::SustainWithoutController {
+                warnings.push("Native sustain-without-controller mode is retained; normal CC64 modulation availability remains unverified".into());
+            }
+        }
+        Ok(None) => warnings.push(format!("Native program controller options are not decoded for private version {:#x}; original bytes are retained", native_program_private.version)),
+        Err(error) => warnings.push(format!("Native program controller options are malformed: {error}; original bytes are retained")),
+    }
     // Decode each file table once: resource/IR lookup needs only a few paths,
     // but parsing it again would recreate every sample path and timestamp.
     let modern = c.0.iter().find(|c| c.id == 0x4b).map(FNTableImpl::try_from).transpose().context("Sample file table")?;
@@ -759,11 +1003,6 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
                 None
             }
         };
-        if !v.start_criteria.items.is_empty() || !v.start_criteria.unknown_tail.is_empty() {
-            let records: Vec<_> = v.start_criteria.items.iter()
-                .map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
-            warnings.push(format!("{}: native group start conditions are retained but not evaluated (mask {}, raw mode/operator/cycle records {records:?}, {} opaque tail bytes); native numeric IDs are not verified", v.name, v.start_criteria.mask, v.start_criteria.unknown_tail.len()));
-        }
         let modulation = match crate::modulation::read_group_partial(g, groups.len(), &v.name) {
             Ok(modulation) => modulation,
             Err(e) => {
@@ -798,18 +1037,26 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
             soloed: v.soloed,
             volume_env: modulation.volume_env,
             native_volume_env: modulation.native_volume_env,
+            native_shared_volume_slot: modulation.native_shared_volume_slot,
+            native_primary_bypass_slot: modulation.native_primary_bypass_slot,
+            native_flex_oneshot: modulation.native_flex_oneshot,
+            native_flex_loop: modulation.native_flex_loop,
             flex_env: modulation.flex_env,
             mods: modulation.mods,
             modulators: modulation.modulators,
             envelopes: modulation.envelopes,
             pitch_lfos: modulation.pitch_lfos,
             volume_lfos: modulation.volume_lfos,
+            pitch_glides: modulation.pitch_glides,
             fx,
             amp_split_slot: u8::try_from(v.fx_idx_amp_split_point).ok().filter(|&slot| slot <= 8),
             voice_group: u32::try_from(v.voice_group_index).ok(),
             interp_quality: v.interp_quality,
             wavetable,
         };
+        if group.wavetable.is_some() && !group.pitch_glides.is_empty() {
+            warnings.push(format!("{}: saved Glide pitch is retained but only ordinary sampler playback is admitted", group.name));
+        }
         if group.mods.iter().any(|m| matches!(&m.target, crate::modulation::ModTarget::Group(p) if p == "loopStart" || p == "loopLength")
             && !crate::engine::params::loop_control_supported(&group, m)) {
             warnings.push(format!("{}: loop modulation is retained but only Constant, zero-lag, unshaped/non-inverted targets in Source mode 0 are processed; other loop assignments are unapplied", group.name));
@@ -876,27 +1123,32 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
         ensure!(start >= 0 && end <= 0 && gain.is_finite() && pan.is_finite() && tune.is_finite() && tune > 0.0, "Invalid zone {} v{:x}: start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}",zones.len(),so.version);
         let loops = so.find_first(0x39).map(LoopArray::try_from).transpose().with_context(|| format!("Zone {} loops",zones.len()))?;
         let mut loop_range = None;
+        let mut native_loops = Vec::new();
         if let Some(loops) = loops {
-            if loops.items.iter().filter(|l| l.mode != 0).count() > 1 {warnings.push("Multiple loops are parsed; playback currently uses the first supported loop".into());}
+            native_loops = (0..8u8).filter(|slot| loops.slot_mask & (1 << slot) != 0)
+                .zip(&loops.items).map(|(slot,l)| NativeLoop { slot, mode:l.mode, start:l.loop_start,
+                length:l.loop_length, count:l.loop_count, alternating:l.alternating_loop,
+                tuning:l.loop_tuning, crossfade:l.x_fade_length }).collect();
+            // Preserve the established single unlimited path. Counted/ordered
+            // rows are prepared against actual sample geometry by the bank.
+            if loops.items.iter().filter(|l| l.mode != 0).count() == 1 {
             for l in loops.items.into_iter().filter(|l| l.mode != 0) {
-                if l.loop_count != 0 || (l.loop_tuning - 1.0).abs() > 0.001 {
-                    warnings.push("An unsupported counted or tuned loop was skipped".into()); continue;
-                }
+                if l.loop_count != 0 || l.loop_tuning != 1.0 || !matches!(l.mode, 1 | 2) { break; }
                 if l.alternating_loop && l.x_fade_length != 0 {
                     warnings.push("A crossfaded alternating loop is preserved; playback uses forward crossfading".into());
                 }
                 ensure!(l.loop_start >= 0 && l.loop_length > 0, "Invalid sample loop");
-                // Only mode 1 occurs locally; mode 2 as "until release" is unverified.
                 loop_range = Some(Loop { start: l.loop_start as usize, end: l.loop_start as usize + l.loop_length as usize,
                     alternating: l.alternating_loop, until_release: l.mode == 2, crossfade: l.x_fade_length.max(0) as usize });
                 break;
+            }
             }
         }
         // Samples resolve in one batch after the zone list.
         zones.push(Zone { group, sample: PathBuf::new(), available: true, low_key: lk as u8, high_key: hk as u8, root: root as u8, low_velocity: lv as u8, high_velocity: hv as u8,
             fade_low_velocity, fade_high_velocity, fade_low_key, fade_high_key, start_mod,
-            start: start as usize, end, gain: gain * program.volume, pan: (pan + program.pan).clamp(-1.0,1.0),
-            tune: tune as f64 * program.tune as f64 * 2f64.powf(program.transpose as f64 / 12.0), loop_range });
+            start: start as usize, end, gain, pan,
+            tune: tune as f64, loop_range, native_loops });
     }
     let resolved = resolver.resolve_all(parent, &order.iter().map(|id| names[id]).collect::<Vec<_>>())?;
     let mut paths = HashMap::new();
@@ -950,6 +1202,11 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     Ok(Instrument {
         path,
         name: program.name,
+        program: ProgramControls { gain: program.volume, pan: program.pan, tune: 12.0 * program.tune.log2() },
+        sampling_profile: SamplingProfile::Kontakt,
+        native_program_private: Some(native_program_private),
+        default_key_switch: Some(program.default_key_switch),
+        transpose: program.transpose,
         groups,
         zones,
         warnings,
@@ -1207,6 +1464,26 @@ pub fn archive_member_where(path: &Path, mut is_file: impl FnMut(&Path) -> bool)
 }
 
 impl Instrument {
+    /// Compare a selected path with the Windows verbatim path canonicalization returns.
+    pub(crate) fn matches_path(&self, path: &Path) -> bool {
+        if self.path == path { return true; }
+        let Some((loaded, selected)) = self.path.to_str().zip(path.to_str()) else { return false; };
+        fn identity(path: &str) -> (&str, bool) {
+            if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+                return (unc, true);
+            }
+            if let Some(drive) = path.strip_prefix(r"\\?\")
+                && drive.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && drive.as_bytes().get(1) == Some(&b':')
+                && drive.as_bytes().get(2) == Some(&b'\\')
+            {
+                return (drive, false);
+            }
+            path.strip_prefix(r"\\").map_or((path, false), |unc| (unc, true))
+        }
+        identity(loaded) == identity(selected)
+    }
+
     pub fn first_playable_group(&self)->Option<usize> {
         (0..self.groups.len()).find(|g| !self.groups[*g].muted && !self.groups[*g].release_trigger && {
             let mut zones=self.zones.iter().filter(|z|z.group==*g).peekable();
@@ -1481,3 +1758,7 @@ mod preset_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "import/program_list_tests.rs"]
+mod program_list_tests;

@@ -12,6 +12,7 @@ use crate::{
 /// KontaktIO:      LoopArray
 #[derive(Debug)]
 pub struct LoopArray {
+    pub slot_mask: u8,
     pub items: Vec<Loop>,
 }
 
@@ -35,7 +36,7 @@ impl LoopArray {
             }
         }
 
-        Ok(Self { items })
+        Ok(Self { slot_mask: mask, items })
     }
 }
 

@@ -14,7 +14,7 @@ pub(super) fn instrument_of<'a>(cx: &'a Cx, slot: usize) -> Option<&'a Arc<Instr
     let v = &cx.view.parts[slot];
     v.instrument
         .as_ref()
-        .filter(|i| i.path == Path::new(&part.path) && v.program == part.program)
+        .filter(|i| i.matches_path(Path::new(&part.path)) && v.program == part.program)
 }
 
 /// The instrument loaded for the selected part.

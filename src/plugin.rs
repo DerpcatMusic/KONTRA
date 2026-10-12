@@ -1,4 +1,6 @@
 use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
+mod visual_assets;
+pub(crate) use visual_assets::VisualDemand;
 use crate::{artwork, library};
 use crate::{
     engine::{
@@ -397,17 +399,24 @@ struct PartDiagnostics {
     underruns: u64,
     dropped_commands: u64,
     host_note_drops: u64,
+    controls_available: bool,
     held_keys: [[u64; 2]; 16],
     sustain_cc: [u8; 16],
     sostenuto_cc: [u8; 16],
     pending_commands: usize,
     pending_writes: usize,
     pending_releases: usize,
+    stream_error: Option<StreamFailure>,
+    shared_source_error: Option<&'static str>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+struct StreamFailure { part: usize, generation: u64, error: crate::engine::StreamError }
 
 #[derive(Clone, serde::Serialize)]
 struct AudioDiagnostics {
     block: u64,
+    audio_session: u64,
     sample_rate: f64,
     block_size: usize,
     output_channels: usize,
@@ -418,12 +427,13 @@ struct AudioDiagnostics {
     unsupported_host_expression: u64,
     alignment_overflows: u64,
     host_note_end_rejections: u64,
+    stream_failure: Option<StreamFailure>,
 }
 
 impl AudioDiagnostics {
     fn with_parts(count: usize) -> Self {
-        Self { block: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
-            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0, unsupported_host_expression: 0, alignment_overflows: 0, host_note_end_rejections: 0 }
+        Self { block: 0, audio_session: 0, sample_rate: 0.0, block_size: 0, output_channels: 0,
+            offline: false, output_buses: [(0, 0); BUSES], parts: vec![PartDiagnostics::default(); count], unsupported_note_brightness: 0, unsupported_host_expression: 0, alignment_overflows: 0, host_note_end_rejections: 0, stream_failure: None }
     }
 }
 
@@ -637,6 +647,8 @@ fn first_script_live(rt: &Runtime) -> Box<Live> {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     pub(crate) interface: Option<Arc<crate::ksp::Interface>>,
+    pub(crate) exposed_controls: Arc<[crate::ksp::ExposedControl]>,
+    pub(crate) native_ui: Option<Arc<crate::native_ui::Package>>,
     pub(crate) interface_status: String,
     pub(crate) load_report: Option<Arc<serde_json::Value>>,
     pub(crate) runtime_status: String,
@@ -647,6 +659,10 @@ pub(crate) struct PartView {
     pub(crate) wallpaper: Option<Arc<artwork::Picture>>,
     /// Control pictures the scripts name, by name.
     pub(crate) pictures: Arc<HashMap<String, Arc<artwork::Picture>>>,
+    pub(crate) picture_metadata: Arc<HashMap<String, artwork::PictureMetadata>>,
+    pub(crate) visual_demand: VisualDemand,
+    pub(crate) visual_revision: u64,
+    pub(crate) visual_worker: bool,
     pub(crate) wallpaper_status: String,
     pub(crate) attempted: Option<(String, u32, String)>,
     /// How the attempted load placed samples.
@@ -1014,6 +1030,12 @@ struct Edit {
     slot: usize,
     control: usize,
     value: i32,
+    native: Option<NativeUiEdit>,
+}
+enum NativeUiEdit {
+    Number(usize, f64),
+    Learn(usize, bool),
+    Text {index: usize, bytes: [u8;1024], len: usize},
 }
 /// Loader-built state for one rack slot, installed by the audio thread.
 struct IrHandoff {
@@ -1131,13 +1153,13 @@ fn finish_zone_maps(s: &mut Dsp,p: &SamplerParams) {
     }
     if !prepared.installed && prepared.completed == 0 {
         if p.shared.discard.is_full() { return; }
-        prepared.success = s.rack.parts[*part].install_zone_map(prepared);
+        prepared.success = s.rack.parts[*part].instrument_mut().is_some_and(|e| e.install_zone_map(prepared));
         // Mark a failed attempt too, so it never installs after callbacks began.
         prepared.installed = true;
     }
     for _ in 0..64 {
         let Some(edit) = prepared.edits.get(prepared.completed).copied() else { break };
-        if !s.rack.parts[*part].finish_zone_edit(edit,prepared.success) { break; }
+        if !s.rack.with_part(*part, |part| part.instrument_mut().is_some_and(|engine| engine.finish_zone_edit(edit,prepared.success))).unwrap_or(false) { break; }
         prepared.completed += 1;
     }
     if prepared.completed == prepared.edits.len() && !p.shared.discard.is_full() {
@@ -1306,6 +1328,7 @@ fn next_epoch(
     v.script_epoch = view.script_epoch;
     v.snapshot = snapshot;
     v.snapshot_lent = None;
+    v.exposed_controls = live.as_ref().map_or_else(Arc::default, |l| l.exposed_controls.clone().into());
     v.live = live;
     v.live_revisions = None;
     v.live_control_versions = Arc::default();
@@ -1337,6 +1360,7 @@ fn prepare_interface(live: &Live, previous: Option<&Interface>, versions: &[(u64
         (versions[n] != next[n] || old.menu != new.menu).then(|| (n, new.clone()))
     }).collect();
     let header = Interface {
+        native_ui: source.native_ui.clone(),
         performance: source.performance, width: source.width, height: source.height,
         title: source.title.clone(), wallpaper: source.wallpaper.clone(),
         wallpaper_state: source.wallpaper_state, skin_offset: source.skin_offset,
@@ -1449,6 +1473,9 @@ impl Shared {
                 retired_versions = Some(std::mem::replace(&mut view.parts[slot].live_control_versions, update.versions.clone()));
             }
             let v = &mut view.parts[slot];
+            if live.refresh_interface && v.live_revisions.is_none_or(|old| old.0 != revisions.0) {
+                v.exposed_controls = live.exposed_controls.clone().into();
+            }
             #[cfg(test)]
             if publication_rows.is_some() { v.publication_rows = publication_rows; }
             if live.refresh_interface {
@@ -1612,6 +1639,24 @@ impl Shared {
         self.file_selections.push(selected).is_ok()
     }
 
+    pub(crate) fn edit_native_control(&self, part: usize, epoch: u64, slot: usize, control: usize, index: usize, value: f64) -> bool {
+        if !value.is_finite() || part >= self.grown.load(Ordering::Acquire) as usize { return false; }
+        let view = self.view.lock().unwrap();
+        if view.parts.get(part).is_none_or(|v| v.script_epoch != epoch) { return false; }
+        self.edits.push(Edit { part, epoch, slot, control, value: 0, native: Some(NativeUiEdit::Number(index, value)) }).is_ok()
+    }
+
+    pub(crate) fn learn_native_control(&self, part: usize, epoch: u64, slot: usize, control: usize, index: usize, active: bool) -> bool {
+        if epoch == 0 || self.part(part).is_none() || slot >= crate::ksp::MAX_SLOTS { return false; }
+        self.edits.push(Edit { part, epoch, slot, control, value: 0, native: Some(NativeUiEdit::Learn(index, active)) }).is_ok()
+    }
+    pub(crate) fn edit_native_text(&self, part:usize, epoch:u64, slot:usize, control:usize, index:usize, text:&str)->bool {
+        if text.len()>1024 || part>=self.grown.load(Ordering::Acquire) as usize {return false;}
+        let view=self.view.lock().unwrap();
+        if view.parts.get(part).is_none_or(|v|v.script_epoch!=epoch){return false;}
+        let mut bytes=[0;1024];bytes[..text.len()].copy_from_slice(text.as_bytes());
+        self.edits.push(Edit {part,epoch,slot,control,value:0,native:Some(NativeUiEdit::Text {index,bytes,len:text.len()})}).is_ok()
+    }
     pub(crate) fn edit_control(&self, part: usize, control: usize, value: i32) {
         if part >= self.grown.load(Ordering::Acquire) as usize { return }
         let mut view = self.view.lock().unwrap();
@@ -1622,6 +1667,7 @@ impl Shared {
             slot: v.script_slot,
             control,
             value,
+            native: None,
         };
         if self.edits.push(edit).is_err() {
             return;
@@ -1825,7 +1871,7 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
         if brightness != 0 {
             crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "unsupported_note_brightness", serde_json::json!({
                 "instance_id":params.shared.instance_id, "delta":brightness, "total":audio.unsupported_note_brightness,
-                "reason":"Host note-expression brightness has no verified CC74 value law; an unlinked brightness event after event-buffer overflow also has unknown provenance. It was not applied to another note or to channel CC74.",
+                "reason":"An unlinked brightness event after event-buffer overflow has unknown exact-note provenance. It was not applied to another note or to channel CC74.",
             }));
         }
         let ends=audio.host_note_end_rejections.saturating_sub(previous.as_ref().map_or(0,|old| old.host_note_end_rejections));
@@ -1856,6 +1902,17 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             let underruns = current.underruns.saturating_sub(before.map_or(0, |p| p.underruns));
             let dropped = current.dropped_commands.saturating_sub(before.map_or(0, |p| p.dropped_commands));
             let owners = current.host_note_drops.saturating_sub(before.map_or(0, |p| p.host_note_drops));
+            let previous_error = previous.as_ref().filter(|old| old.audio_session == audio.audio_session)
+                .and_then(|old| old.parts.get(part)).and_then(|part| part.stream_error);
+            if let Some(failure) = current.stream_error && previous_error != Some(failure) {
+                let error = failure.error;
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Error, "engine", "stream_read_failed", serde_json::json!({
+                    "instance_id":params.shared.instance_id, "part":part, "generation":failure.generation,
+                    "audio_session":audio.audio_session, "offline":audio.offline,
+                    "sample":error.sample, "frame":error.frame, "kind":error.kind,
+                    "reason":"Required streamed audio could not be read. Offline processing remains failed until the host resets the audio session.",
+                }));
+            }
             if owners != 0 {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "midi", "host_note_owner_exhausted", serde_json::json!({
                     "instance_id":params.shared.instance_id, "part":part, "delta":owners, "total":current.host_note_drops,
@@ -1871,23 +1928,6 @@ fn drain_audio_diagnostics(params: &SamplerParams) {
             }));
         }
         if let Some(previous) = previous { let _ = params.shared.diagnostic_free.force_push(previous); }
-    }
-}
-
-/// The simplified CC74 companion cannot supply a host expression's value law
-/// or note ID. Keep it unsupported, rather than applying it as absolute MIDI2
-/// CC74 to a newer same-pitch note. Direct registered MIDI2 CC74 stays admitted.
-#[cfg(test)]
-fn unsupported_host_brightness(events: &EventList, index: usize) -> bool {
-    if !events.get(index).is_some_and(|event| matches!(event.body,
-        EventBody::PerNoteCC { cc:74, registered:true, .. })) { return false }
-    match events.exact_for_event(index).map(|event| event.body()) {
-        Some(moose::core::ExactEventBody::NoteExpression { expression_id:5, .. }
-            | moose::core::ExactEventBody::NormalizedNoteExpression { expression_id:5, .. }) => true,
-        // A full exact lane makes the adapter emit an unlinked semantic
-        // fallback. Capacity exhaustion must not erase the safety boundary.
-        None => events.overflow().is_some(),
-        _ => false,
     }
 }
 
@@ -1918,27 +1958,45 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
         return;
     }
     let audio = &mut s.diagnostic;
-    audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
+    audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.audio_session = s.audio_session; audio.sample_rate = s.rack.parts[0].rate();
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
     audio.unsupported_note_brightness = s.unsupported_note_brightness;
-    audio.unsupported_host_expression = s.unsupported_host_expression;
+    audio.unsupported_host_expression = s.rack.parts.iter().fold(s.unsupported_host_expression,
+        |total, engine| total.saturating_add(engine.unsupported_native_controls()));
     audio.alignment_overflows=s.align.overflows();
     audio.host_note_end_rejections=s.host_note_end_rejections;
+    audio.stream_failure=s.stream_failure;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
     for (part, current) in audio.parts.iter_mut().enumerate() {
         let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
+        let instrument = e.instrument();
+        let cc = instrument.map(Engine::cc_state).unwrap_or([[0; 128]; 16]);
         *current = PartDiagnostics { generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
             voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(), host_note_drops:e.host_note_drops(),
+            controls_available:instrument.is_some(),
             held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
-                keys | (u64::from(e.key_down(channel as u8, (half * 64 + note) as u8)) << note)))),
-            sustain_cc:std::array::from_fn(|channel| e.cc_state()[channel][64]),
-            sostenuto_cc:std::array::from_fn(|channel| e.cc_state()[channel][66]),
-            pending_commands, pending_writes, pending_releases };
+                keys | (u64::from(instrument.is_some_and(|e| e.key_down(channel as u8, (half * 64 + note) as u8))) << note)))),
+            sustain_cc:std::array::from_fn(|channel| cc[channel][64]),
+            sostenuto_cc:std::array::from_fn(|channel| cc[channel][66]),
+            pending_commands, pending_writes, pending_releases, stream_error:s.stream_errors[part], shared_source_error:instrument.and_then(Engine::shared_source_reason) };
     }
     std::mem::swap(&mut s.diagnostic, &mut spare);
     p.shared.diagnostic_audio.push(spare).ok().unwrap();
     if let Some(tasks) = cx.tasks::<AudioDiagnosticsTask>() {
         tasks.spawn_coalescing(AudioDiagnosticsTask);
+    }
+}
+
+fn collect_stream_errors(s: &mut Dsp) {
+    for (part, engine) in s.rack.parts.iter().enumerate() {
+        if let Some(error) = engine.take_stream_error() {
+            let failure = StreamFailure { part, generation:s.installed_generation[part], error };
+            if s.stream_errors[part].is_none() {
+                s.stream_errors[part] = Some(failure);
+                s.until_diagnostics = 0;
+            }
+            s.stream_failure.get_or_insert(failure);
+        }
     }
 }
 
@@ -2333,11 +2391,15 @@ impl BackgroundTask for Load {
                     || atoms.generation.load(Ordering::Acquire) != generation
             };
             if part.path.is_empty() {
-                params.shared.view.lock().unwrap().parts[slot] = PartView {
+                let mut view = params.shared.view.lock().unwrap();
+                let visual_worker = view.parts[slot].visual_worker;
+                view.parts[slot] = PartView {
                     attempted: Some(target),
                     streaming,
+                    visual_worker,
                     ..Default::default()
                 };
+                drop(view);
                 let _ = params.shared.publish_part((
                     slot,
                     generation,
@@ -2426,6 +2488,9 @@ impl BackgroundTask for Load {
                         v.interface_status = parsed.status;
                         v.keys = parsed.keys;
                         v.pictures = Arc::default();
+                        v.picture_metadata = Arc::default();
+                        v.visual_demand = VisualDemand::default();
+                        v.visual_revision = v.visual_revision.wrapping_add(1);
                         v.wallpaper = None;
                         v.wallpaper_status.clear();
                         parsed.interface
@@ -2474,13 +2539,19 @@ impl BackgroundTask for Load {
             // Keep both outside the editor's view lock, including controller patches.
             if result.is_ok() { set_stage(&mut trace, "effects"); }
             let result = result.map(|(instrument, bank, script, snapshot, preload, art)| {
+                let native_ui = if script.as_deref().and_then(|rt| rt.native_ui_entry()).is_some() {
+                    match crate::native_ui::Package::load_sources(&instrument.path) {
+                        Ok(package) => Some(Arc::new(package)),
+                        Err(error) => { trace.issue("native_ui", "resource_load", format!("{error:#}")); None }
+                    }
+                } else { None };
                 let live = script.as_deref().map(first_script_live);
                 let pages = script_pages(script.as_deref());
                 let rate = params.shared.rate();
                 let irs = script.as_deref().map_or(Vec::new(), |rt| rt.init_irs.clone());
                 trace_effects(&mut trace, &instrument);
                 let fx = crate::engine::effects(&instrument, script.as_deref(), rate as f32);
-                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)
+                (instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs, native_ui)
             });
             if canceled() {
                 let report = trace.finish("canceled");
@@ -2490,7 +2561,7 @@ impl BackgroundTask for Load {
                 continue;
             }
             let status = match &result {
-                Ok((_, bank, _, _, _, _, _, _, _, _, _)) => {
+                Ok((_, bank, _, _, _, _, _, _, _, _, _, _)) => {
                     if let Some(b) = bank.as_deref() {
                         trace.detail("samples_loaded", b.sample_count());
                         trace.detail("samples_streamed", b.streamed_samples());
@@ -2515,7 +2586,7 @@ impl BackgroundTask for Load {
             view.parts[slot].runtime_status.clear();
             view.parts[slot].diagnostics_lent = None;
             match result {
-                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs)) => {
+                Ok((instrument, bank, script, snapshot, preload, art, live, pages, fx, rate, irs, native_ui)) => {
                     let epoch = if script.is_some() {
                         next_epoch(&mut view, slot, snapshot, live)
                     } else {
@@ -2532,6 +2603,7 @@ impl BackgroundTask for Load {
                     v.ir_settings = part.ir_settings.clone();
                     v.engine_state = part.engine_state.clone().into();
                     v.delay_state = part.delay_state.clone().into();
+                    v.native_ui = native_ui;
                     v.active = instrument.name.clone();
                     v.bytes = bank.as_ref().map(|b| b.bytes).unwrap_or(0);
                     v.freed = 0;
@@ -2562,13 +2634,8 @@ impl BackgroundTask for Load {
                         trace.detail("parent_load_id", parent_id);
                         trace.stage("artwork");
                         let interface = interface.as_deref();
-                        let wallpaper = artwork::performance(&instrument, interface);
                         let pages = params.shared.view.lock().unwrap().parts[slot].script_pages.clone();
-                        let names: Vec<_> = interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(artwork::picture_names).collect();
-                        let (pictures, errors) = artwork::pictures_report(&instrument.path, names.iter().map(|name| name.as_ref()));
-                        for e in errors { trace.issue("artwork", crate::diagnostics::code(&e), e); }
-                        if let Err(e) = &wallpaper { trace.issue("artwork", crate::diagnostics::code(e), e); }
-                        trace.detail("pictures_loaded", pictures.len());
+                        // Pixel and geometry demand is supplied lazily by the visible editor.
                         trace.detail("performance_view", interface.is_some_and(|u| u.performance));
                         trace.detail("controls", interface.map_or(0, |u| u.controls.len()));
                         for warning in interface.into_iter().chain(pages.views.iter().map(|p| p.interface.as_ref())).flat_map(crate::ui::font_fallbacks) {
@@ -2588,11 +2655,6 @@ impl BackgroundTask for Load {
                             if report["status"] != "loaded" && load["status"] == "loaded" { load["status"] = "partial".into(); }
                             load["artwork"] = (*report).clone();
                         }
-                        v.pictures = Arc::new(pictures);
-                        (v.wallpaper, v.wallpaper_status) = match wallpaper {
-                            Ok(image) => (image, String::new()),
-                            Err(e) => (None, e),
-                        };
                     }
                     // The preload: the full bank takes over from the bare one,
                     // playing voices carrying on (`Engine::upgrade_bank`).
@@ -2864,7 +2926,7 @@ impl BackgroundTask for Load {
         }
     }
 }
-enum ExactInput { Routed(In, u8), Brightness, Unsupported }
+enum ExactInput { Routed(In, u8), ProgramChange { port: u8, channel: u8, program: u8 }, Unsupported }
 
 fn host_pattern(address: ExactNoteAddress, clap: bool) -> Option<crate::engine::HostPattern> {
     if matches!(address.port, ExactAddress::InvalidRaw(_)) || matches!(address.channel, ExactAddress::InvalidRaw(_))
@@ -2875,20 +2937,95 @@ fn host_pattern(address: ExactNoteAddress, clap: bool) -> Option<crate::engine::
 
 fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
     use crate::engine::{HostExpression, HostNote};
+    use crate::midi::{ControlValue, Velocity};
     let on = |kind, address:ExactNoteAddress, velocity:f64, clap, tune:f32| {
         let Some(pattern) = host_pattern(address, clap) else { return ExactInput::Unsupported };
         match kind {
             ExactNoteKind::On => {
                 let (Ok(port), Ok(channel), Ok(key)) = (u8::try_from(pattern.port), u8::try_from(pattern.channel), u8::try_from(pattern.key)) else { return ExactInput::Unsupported };
-                if channel >= 16 || key >= 128 || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) || !tune.is_finite() { return ExactInput::Unsupported; }
-                ExactInput::Routed(In::HostOn(HostNote { port, channel, key, id:pattern.id, clap }, (velocity * 127.).round() as u8, tune), port)
+                if channel >= 16 || key >= 128 || !tune.is_finite() { return ExactInput::Unsupported; }
+                let Some(velocity) = Velocity::new(velocity) else { return ExactInput::Unsupported };
+                ExactInput::Routed(In::HostOn(HostNote { port, channel, key, id:pattern.id, clap }, velocity, tune), port)
             }
-            ExactNoteKind::Off => ExactInput::Routed(In::HostOff(pattern), 0),
+            ExactNoteKind::Off => {
+                let Some(velocity) = Velocity::new(velocity) else { return ExactInput::Unsupported };
+                ExactInput::Routed(In::HostOffVelocity(pattern, velocity), 0)
+            }
             ExactNoteKind::Choke => ExactInput::Routed(In::HostChoke(pattern), 0),
             _ => ExactInput::Unsupported,
         }
     };
     Some(match *exact.body() {
+        // The engine currently addresses MIDI groups only through group0 and
+        // ports through u8. Reject before a narrowed companion can alias it.
+        ExactEventBody::Midi1 { port, .. } | ExactEventBody::Ump { port, .. }
+        | ExactEventBody::SysEx { port } if port > u16::from(u8::MAX) => ExactInput::Unsupported,
+        ExactEventBody::Midi1 { port, .. } | ExactEventBody::Ump { port, .. }
+        | ExactEventBody::SysEx { port } if exact.fallback().into_iter().chain(exact.companions())
+            .any(|event| u16::from(event.port) != port) => ExactInput::Unsupported,
+        ExactEventBody::Ump { packet, .. } if matches!(packet.words()[0] >> 28, 1..=5 | 0xd)
+            && (packet.words()[0] >> 24) & 15 != 0 => ExactInput::Unsupported,
+        // Validate original channel-voice data before the semantic decoder
+        // masks high bits. Two-byte messages have no second data byte.
+        ExactEventBody::Midi1 { message, .. } if (0x80..=0xef).contains(&message.bytes()[0]) && {
+            let expected = if matches!(message.bytes()[0] >> 4, 0xc | 0xd) { 2 } else { 3 };
+            message.len() != expected || message.bytes()[1..].iter().any(|byte| byte & 0x80 != 0)
+        } => ExactInput::Unsupported,
+        ExactEventBody::Ump { packet, .. } if packet.words()[0] >> 28 == 2
+            && matches!((packet.words()[0] >> 20) & 15, 8..=0xe) && {
+                let mask = if matches!((packet.words()[0] >> 20) & 15, 0xc | 0xd) { 0x8000 } else { 0x8080 };
+                packet.words().len() != 1 || packet.words()[0] & mask != 0
+            } => ExactInput::Unsupported,
+        ExactEventBody::Ump { packet, .. } if packet.words()[0] >> 28 == 4
+            && packet.words().len() != 2 => ExactInput::Unsupported,
+        // Banks consume one original MIDI1 receipt; semantic companions
+        // are relayed only, and ordinary source acceptance remains unchanged.
+        ExactEventBody::Midi1 { message, port } if message.bytes()[0] >> 4 == 0xc
+            => ExactInput::ProgramChange { port: port as u8, channel: message.bytes()[0] & 15, program: message.bytes()[1] },
+        ExactEventBody::Ump { packet, port } if packet.words()[0] >> 28 == 2
+            && (packet.words()[0] >> 20) & 15 == 0xc
+            => ExactInput::ProgramChange { port: port as u8, channel: ((packet.words()[0] >> 16) & 15) as u8, program: ((packet.words()[0] >> 8) & 127) as u8 },
+        ExactEventBody::Ump { packet, .. } if packet.words()[0] >> 28 == 4
+            && (packet.words()[0] >> 20) & 15 == 0xc
+            && exact.fallback().is_none() && exact.companions().next().is_none()
+            => ExactInput::Unsupported,
+        // Moose's UMP decoder masks a malformed note/index high bit. Check
+        // the original word before its otherwise-valid semantic companion.
+        ExactEventBody::Ump { packet, .. } if packet.words()[0] >> 28 == 4
+            && matches!((packet.words()[0] >> 20) & 15, 0 | 1 | 6 | 8 | 9 | 0xa | 0xb | 0xf)
+            && packet.words()[0] & 0x8000 != 0 => ExactInput::Unsupported,
+        // Registered/assignable parameter bank and index are both seven-bit.
+        ExactEventBody::Ump { packet, .. } if packet.words()[0] >> 28 == 4
+            && matches!((packet.words()[0] >> 20) & 15, 2..=5)
+            && packet.words()[0] & 0x8080 != 0 => ExactInput::Unsupported,
+        ExactEventBody::Ump { packet, port } if packet.words()[0] >> 28 == 4
+            && matches!((packet.words()[0] >> 20) & 15, 2..=5) => {
+            use crate::midi::{NativeParameter, NativeParameterData};
+            let word = packet.words()[0];
+            let status = (word >> 20) & 15;
+            let value = packet.words()[1];
+            let data = if status < 4 { NativeParameterData::Absolute(value) }
+                else { NativeParameterData::Relative(value as i32) };
+            ExactInput::Routed(In::Parameter(((word >> 16) & 15) as u8, NativeParameter {
+                registered: status & 1 == 0,
+                address: (((word >> 8) & 127) << 7 | (word & 127)) as u16,
+                data,
+            }), port as u8)
+        },
+        // Native per-note controller indices are eight bits. Read the original
+        // packet so an older semantic decoder cannot narrow index129 to1.
+        ExactEventBody::Ump { packet, port } if packet.words()[0] >> 28 == 4
+            && matches!((packet.words()[0] >> 20) & 15, 0 | 1 | 6) => {
+            let word = packet.words()[0];
+            if packet.words().len() != 2 { return Some(ExactInput::Unsupported); }
+            let value = packet.words()[1];
+            let control = match (word >> 20) & 15 {
+                0 => crate::midi::NoteControl::Registered { index:word as u8, value },
+                1 => crate::midi::NoteControl::Assignable { index:word as u8, value },
+                _ => crate::midi::NoteControl::Pitch(crate::midi::Bend::from_midi2(value)),
+            };
+            ExactInput::Routed(In::PerNoteControl(((word >> 16) & 15) as u8, ((word >> 8) & 127) as u8, control), port as u8)
+        },
         ExactEventBody::Note { kind, address, velocity } => on(kind,address,velocity,true,0.),
         // VST3 tuning is cents; the engine's expression is semitones. Carry
         // it with the onset so only its newly admitted host owner receives it.
@@ -2897,23 +3034,44 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
         ExactEventBody::DetailedNote { kind, address, velocity, tuning, .. } => {
             on(kind,address,f64::from(velocity),false,tuning / 100.)
         },
-        ExactEventBody::NoteExpression { expression_id:5, .. }
-        | ExactEventBody::NormalizedNoteExpression { expression_id:5, .. } => ExactInput::Brightness,
         ExactEventBody::NoteExpression { expression_id, address, value } => {
             let Some(pattern) = host_pattern(address,true) else { return Some(ExactInput::Unsupported) };
             let x = match expression_id {
                 0 if value.is_finite() && (0.0..=4.0).contains(&value) => HostExpression::Gain(value as f32),
                 1 if value.is_finite() && (0.0..=1.0).contains(&value) => HostExpression::Pan((value * 2. - 1.) as f32),
                 2 if value.is_finite() && (-120.0..=120.0).contains(&value) => HostExpression::Tune(value as f32),
+                5 | 6 => {
+                    let Some(value) = ControlValue::new(value) else { return Some(ExactInput::Unsupported) };
+                    if expression_id == 5 { HostExpression::Brightness(value) }
+                    else { HostExpression::Pressure(value) }
+                }
                 _ => return Some(ExactInput::Unsupported),
             };
             ExactInput::Routed(In::HostExpression(pattern,x),0)
         }
-        // The adapter's faithful VST3 poly-pressure fallback exists only for
-        // anonymous IDs. Preserve that established per-key path; concrete IDs
-        // cannot borrow it and are diagnosed until their value law is added.
-        ExactEventBody::DetailedPolyPressure { .. } if exact.fallback().is_some() => return None,
-        ExactEventBody::NormalizedNoteExpression { .. } | ExactEventBody::DetailedPolyPressure { .. } => ExactInput::Unsupported,
+        ExactEventBody::NormalizedNoteExpression { expression_id, address, value } => {
+            let Some(pattern) = host_pattern(address,false) else { return Some(ExactInput::Unsupported) };
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) { return Some(ExactInput::Unsupported); }
+            // VST3's predefined expression values are normalized; the engine
+            // takes linear gain, bipolar pan and relative semitones.
+            let x = match expression_id {
+                0 => HostExpression::Gain((value * 4.) as f32),
+                1 => HostExpression::Pan((value * 2. - 1.) as f32),
+                2 => HostExpression::Tune(((value - 0.5) * 240.) as f32),
+                // Local mapping: absolute normalized brightness feeds the
+                // authored CC74 source, independently of channel CC receipt.
+                5 => HostExpression::Brightness(ControlValue::new(value).unwrap()),
+                _ => return Some(ExactInput::Unsupported),
+            };
+            ExactInput::Routed(In::HostExpression(pattern,x),0)
+        }
+        // Native VST3 poly-pressure has its own normalized law and note ID;
+        // it does not depend on advertised note-expression types.
+        ExactEventBody::DetailedPolyPressure { address, pressure } => {
+            let Some(pattern) = host_pattern(address,false) else { return Some(ExactInput::Unsupported) };
+            let Some(value) = ControlValue::new(f64::from(pressure)) else { return Some(ExactInput::Unsupported) };
+            ExactInput::Routed(In::HostPressure(pattern,value),0)
+        }
         _ => return None,
     })
 }
@@ -2925,17 +3083,22 @@ fn input_offset(event: &LosslessEventRef<'_>) -> u32 {
 fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool, rate: f64) {
     let lit = |note:u8, velocity| { if let Some(lit) = p.shared.heard.get(note as usize) { lit.store(velocity,Ordering::Relaxed); } };
     match ev {
-        In::NoteOn(_,note,velocity) | In::HostOn(crate::engine::HostNote { key:note, .. },velocity,_) => lit(note,velocity.max(1)),
-        In::NoteOff(_,note) => lit(note,0),
-        In::HostOff(pattern) | In::HostChoke(pattern) if (0..128).contains(&pattern.key) => lit(pattern.key as u8,0),
-        In::Cc(_,120|123,_) => (0..128).for_each(|note| lit(note,0)),
+        In::NoteOn(_,note,velocity) | In::Midi1NoteOn(_,note,velocity) => lit(note,velocity.max(1)),
+        In::NoteOnVelocity(_,note,velocity) | In::NoteOnVelocityPitch(_,note,velocity,_) | In::HostOn(crate::engine::HostNote { key:note, .. },velocity,_) => lit(note,velocity.midi1().max(1)),
+        In::NoteOff(_,note) | In::NoteOffVelocity(_,note,_) | In::Midi1NoteOff(_,note,_) | In::Midi1ZeroNoteOff(_,note) => lit(note,0),
+        In::HostOff(pattern) | In::HostOffVelocity(pattern, _) | In::HostChoke(pattern) if (0..128).contains(&pattern.key) => lit(pattern.key as u8,0),
+        In::Cc(_,120|123..=127,_) | In::Midi1Cc(_,120|123..=127,_) => (0..128).for_each(|note| lit(note,0)),
         In::Bend(_,value) => p.shared.bend.store(u32::from(value),Ordering::Relaxed),
-        In::Cc(_,1,value) => p.shared.modulation.store(u32::from(value),Ordering::Relaxed),
+        In::Cc(_,1,value) | In::Midi1Cc(_,1,value) => p.shared.modulation.store(u32::from(value),Ordering::Relaxed),
         _ => {},
     }
+    let ordinal = s.source_input_ordinal;
+    s.source_input_ordinal = s.source_input_ordinal.saturating_add(1);
+    for engine in s.rack.parts.iter().filter_map(|part| part.instrument()) { engine.shared_source_current(Some(ordinal)); }
     if holding { s.align.arrive(&mut s.rack,&mut s.routers,port,ev,s.align.clock + u64::from(offset),rate); }
     else { articulate::dispatch(&mut s.rack,&mut s.routers,port,ev); }
-    if let In::HostOff(pattern) | In::HostChoke(pattern) = ev {
+    for engine in s.rack.parts.iter().filter_map(|part| part.instrument()) { engine.shared_source_current(None); }
+    if let In::HostOff(pattern) | In::HostOffVelocity(pattern, _) | In::HostChoke(pattern) = ev {
         for key in (0..128).filter(|key| pattern.key == -1 || pattern.key == *key) {
             let held = (0..16).any(|channel| s.rack.parts.iter().any(|e| e.host_key_held(channel,key as u8))
                 || holding && s.align.host_key_held(channel,key as u8));
@@ -2950,23 +3113,149 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
     }
 }
 
-fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool, rate: f64) {
-    relay_typed_input(e,cx,thru);
-    let Some(ev) = In::from_event(&e.body) else { return };
-    if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::NoteBrightness(..)) {
-        if matches!(ev,In::NoteBrightness(..)) { s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1); }
-        else { s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1); }
-        return;
+fn typed_host_input(e: &Event, overflow: bool) -> Result<Option<In>, bool> {
+    if unsupported_midi_group(&e.body) { return Err(false); }
+    if matches!(e.body, EventBody::ControlChange2 { channel, cc, .. }
+        if channel < 16 && crate::midi::ignored_midi2_cc(cc)) { return Ok(None); }
+    let Some(ev) = In::from_event(&e.body) else {
+        return if matches!(e.body,EventBody::PerNoteCC { .. } | EventBody::PerNotePitchBend { .. }
+            | EventBody::PolyPressure2 { .. } | EventBody::ControlChange2 { .. }
+            | EventBody::ChannelPressure2 { .. } | EventBody::PitchBend2 { .. }
+            | EventBody::NoteOn2 { .. } | EventBody::NoteOff2 { .. } | EventBody::PerNoteManagement { .. }
+            | EventBody::ProgramChange { .. } | EventBody::ProgramChange2 { .. }
+            | EventBody::RegisteredController { .. } | EventBody::AssignableController { .. }
+            | EventBody::RelativeRegisteredController { .. } | EventBody::RelativeAssignableController { .. }) {
+            Err(false)
+        } else { Ok(None) };
+    };
+    if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::PerNotePressure(..)|In::NoteBrightness(..)|In::PerNoteControl(..)|In::PerNoteManagement { .. }|In::Parameter(..)) {
+        return Err(matches!(ev,In::NoteBrightness(..)));
     }
-    feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
+    Ok(Some(ev))
 }
 
-fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
+fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool, rate: f64) {
+    relay_typed_input(e,cx,thru);
+    if let EventBody::ProgramChange { channel, program, .. } = e.body
+        && !unsupported_midi_group(&e.body) && channel < 16 && program < 128 {
+        if !s.rack.program_change_port(e.port, channel, program) {
+            s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1);
+        }
+        return;
+    }
+    match typed_host_input(e,overflow) {
+        Ok(Some(ev)) => feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate),
+        Ok(None) => {},
+        Err(true) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
+        Err(false) => s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1),
+    }
+}
+
+/// The same lossless normalized input order as live delivery, without changing
+/// a Router, physical decoder, library receiver or callback queue.
+fn accepted_inputs(events: &EventList, mut visit: impl FnMut(u32,u32,u8,In)) -> Result<(), &'static str> {
+    let mut ordinal = 0u32;
+    let mut previous = 0;
+    for record in events.lossless_iter() {
+        let offset = input_offset(&record);
+        if offset < previous { return Err("shared AHDSR requires ordered host input offsets"); }
+        previous = offset;
+        let mut input = |port,ev| {
+            visit(ordinal,offset,port,ev);
+            ordinal = ordinal.saturating_add(1);
+        };
+        match record {
+            LosslessEventRef::Typed(e) => {
+                if let Ok(Some(ev)) = typed_host_input(e,events.overflow().is_some()) { input(e.port,ev); }
+            },
+            LosslessEventRef::Exact(exact) => match exact_host_input(exact) {
+                Some(ExactInput::Routed(ev,port)) => input(port,ev),
+                Some(ExactInput::ProgramChange { .. } | ExactInput::Unsupported) => {},
+                None => {
+                    for e in exact.fallback().into_iter().chain(exact.companions()) {
+                        if let Ok(Some(ev)) = typed_host_input(e,false) { input(e.port,ev); }
+                    }
+                },
+            },
+        }
+        if ordinal == u32::MAX { return Err("shared AHDSR accepted input ordinal exceeded capacity"); }
+    }
+    Ok(())
+}
+
+fn prepare_shared_sources(s: &mut Dsp, events: &EventList, frames: usize, holding: bool) -> Result<usize, &'static str> {
+    let mut boundary = frames;
+    for slot in 0..s.rack.parts.len() {
+        let Some(engine) = s.rack.parts[slot].instrument_mut() else { continue };
+        let Some(window) = engine.shared_source_window() else {
+            if engine.shared_source_required() {
+                let mut reached = false;
+                accepted_inputs(events, |_,_,port,input| {
+                    reached |= articulate::reaches(&s.rack.controls[slot], &s.routers[slot], port, input);
+                })?;
+                if reached {
+                    engine.reject_unsealed_source();
+                    return Err("shared AHDSR received input without a positive source range");
+                }
+            }
+            continue;
+        };
+        boundary = boundary.min(window.1.saturating_sub(engine.audio_block_start()) as usize);
+        let controls = s.rack.controls[slot];
+        let router = &s.routers[slot];
+        let topology = router.source_topology(engine.mpe_zones())
+            .filter(|_| !holding && s.audition_left[slot] == 0);
+        let origin = engine.audio_block_start();
+        engine.seal_shared_source(topology,controls.tune,|visit| {
+            let mut end_input = false;
+            accepted_inputs(events, |ordinal,offset,port,input| {
+                if !articulate::reaches(&controls,router,port,input) { return; }
+                if offset as usize >= frames { end_input = true; return; }
+                visit(ordinal,origin + u64::from(offset),port,input);
+            })?;
+            if end_input { Err("shared AHDSR host end-offset input requires an unproved delayed clone policy") }
+            else { Ok(()) }
+        })?;
+    }
+    for engine in s.rack.parts.iter_mut().filter_map(|part| part.instrument_mut()) { engine.commit_shared_source()?; }
+    Ok(boundary)
+}
+
+
+/// Group identity is not in the engine's physical-note key yet. A nonzero
+/// UMP group must not become a controller or key-up for a group0 owner.
+fn unsupported_midi_group(body: &EventBody) -> bool {
+    let group = match *body {
+        EventBody::NoteOn { group, .. } | EventBody::NoteOff { group, .. }
+        | EventBody::Aftertouch { group, .. } | EventBody::ChannelPressure { group, .. }
+        | EventBody::ControlChange { group, .. } | EventBody::PitchBend { group, .. }
+        | EventBody::ProgramChange { group, .. } | EventBody::NoteOn2 { group, .. }
+        | EventBody::NoteOff2 { group, .. } | EventBody::PolyPressure2 { group, .. }
+        | EventBody::PerNoteCC { group, .. } | EventBody::PerNotePitchBend { group, .. }
+        | EventBody::PerNoteManagement { group, .. } | EventBody::ControlChange2 { group, .. }
+        | EventBody::ChannelPressure2 { group, .. } | EventBody::PitchBend2 { group, .. }
+        | EventBody::ProgramChange2 { group, .. } | EventBody::RegisteredController { group, .. }
+        | EventBody::AssignableController { group, .. }
+        | EventBody::RelativeRegisteredController { group, .. }
+        | EventBody::RelativeAssignableController { group, .. } => group,
+        _ => return false,
+    };
+    group != 0
+}
+
+fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, frames: u32) {
     for e in &mut s.rack.parts { e.mark_host_notes(); }
     for part in 0..s.rack.parts.len() {
         let mut index = 0;
         while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
             if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note) { index += 1; continue; }
+            // Each part has its own engine clock. Convert before combining
+            // sibling lifetimes, and retain an exclusive block-end candidate
+            // for offset zero in the next block (also after backpressure).
+            let offset = s.rack.parts.iter().filter_map(|e| e.host_note_end_at(note)
+                .map(|end| end.saturating_sub(e.audio_block_start()))).max().unwrap_or(0);
+            if offset >= u64::from(frames) { index += 1; continue; }
+            let offset = offset as u32;
             let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
                 kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
             })).is_ok();
@@ -2980,6 +3269,9 @@ fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
     let mut index=0;
     while let Some((note,held))=s.align.host_note_at(index) {
         if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note)) { index+=1; continue; }
+        let offset = s.align.host_note_end_at(note).unwrap_or(s.align.clock).saturating_sub(s.align.clock);
+        if offset >= u64::from(frames) { index+=1; continue; }
+        let offset = offset as u32;
         let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
             kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
         })).is_ok();
@@ -3021,6 +3313,12 @@ pub struct Dsp {
     unsupported_note_brightness: u64,
     unsupported_host_expression: u64,
     host_note_end_rejections: u64,
+    source_input_ordinal: u32,
+    audio_session: u64,
+    stream_errors: Vec<Option<StreamFailure>>,
+    /// An offline export cannot silently recover after a failed source read.
+    /// Only the host's explicit audio reset starts a fresh session.
+    stream_failure: Option<StreamFailure>,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
@@ -3032,7 +3330,8 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0,
+            source_input_ordinal:0, audio_session:0, stream_errors:vec![None;RACK_SLOTS], stream_failure:None, _diagnostics: crate::diagnostics::acquire() }
     }
 }
 
@@ -3044,6 +3343,7 @@ struct PreparedGrowth {
     audition_left: Vec<usize>, script_epoch: Vec<u64>, installed_generation: Vec<u64>,
     live_seen: Vec<(u64, u64)>, snapshot_seen: Vec<(u64, u64)>,
     key_slots: KeySlots, shared_parts: Vec<Arc<PartShared>>, diagnostic: AudioDiagnostics,
+    stream_errors: Vec<Option<StreamFailure>>,
 }
 impl PreparedGrowth {
     fn new(parts: Vec<Arc<PartShared>>, rate: f64) -> Self {
@@ -3053,7 +3353,7 @@ impl PreparedGrowth {
             audition_left: vec![0; count], script_epoch: vec![0; count], installed_generation: vec![0; count],
             live_seen: vec![(0, 0); count], snapshot_seen: vec![(0, 0); count],
             key_slots: KeySlots(std::array::from_fn(|_| vec![false; count])), shared_parts: parts,
-            diagnostic: AudioDiagnostics::with_parts(count) }
+            diagnostic: AudioDiagnostics::with_parts(count), stream_errors:vec![None;count] }
     }
     fn adopt(&mut self, dsp: &mut Dsp) {
         let rate = dsp.rack.parts[0].rate();
@@ -3063,7 +3363,7 @@ impl PreparedGrowth {
             for (old, new) in dsp.$field.iter_mut().zip(&mut self.$field) { std::mem::swap(old, new); }
             std::mem::swap(&mut dsp.$field, &mut self.$field);
         })*}; }
-        preserve!(routers, audition_left, script_epoch, installed_generation, live_seen, snapshot_seen);
+        preserve!(routers, audition_left, script_epoch, installed_generation, live_seen, snapshot_seen, stream_errors);
         for (old, new) in dsp.key_slots.0.iter_mut().zip(&mut self.key_slots.0) {
             new[..old.len()].copy_from_slice(old); std::mem::swap(old, new);
         }
@@ -3256,7 +3556,7 @@ impl Shared {
 /// ([`routing::Mics`]): its first instrument bus there, else its first group.
 pub(crate) fn outs_of(engine: &Engine) -> [u16; OUTS] {
     let mut outs = engine.fx().routed().map(|b| b.map_or(0, |b| 1 + u16::from(b)));
-    let settings = engine.bank().map_or(&[][..], |b| &b.settings[..]);
+    let settings = engine.settings().unwrap_or(&[]);
     for (g, s) in settings.iter().enumerate() {
         if let Some(c) = s.bus.and_then(|b| b.checked_sub(DIRECT))
             && let Some(o) = outs.get_mut(usize::from(c))
@@ -3311,7 +3611,7 @@ fn align(params: &SamplerParams) {
                 let view = shared.view.lock().unwrap();
                 let v = &view.parts[slot];
                 let ready = v.attempted.as_ref().is_some_and(|(path, program, snapshot)| path == &part.path && *program == part.program && snapshot == &part.snapshot) && !v.loading && v.bytes > 0;
-                v.instrument.clone().filter(|i| ready && i.path == Path::new(&part.path) && v.program == part.program)
+                v.instrument.clone().filter(|i| ready && i.matches_path(Path::new(&part.path)) && v.program == part.program)
             };
             let Some(instrument) = instrument else { continue };
             let atoms = shared.part(slot).unwrap();
@@ -3430,6 +3730,10 @@ impl PluginLogic for Sampler {
     }
     fn reset(s: &mut Dsp, p: &SamplerParams, c: &AudioConfig) {
         s.rack.reset(c.sample_rate);
+        for engine in &s.rack.parts { engine.take_stream_error(); }
+        s.stream_errors.fill(None);
+        s.stream_failure = None;
+        s.audio_session = s.audio_session.saturating_add(1);
         p.shared
             .rate
             .store(c.sample_rate.to_bits(), Ordering::Release);
@@ -3454,6 +3758,8 @@ impl PluginLogic for Sampler {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let started = Instant::now();
+        // Read old latches before an install/reroute can reset an Engine.
+        collect_stream_errors(s);
         if !p.shared.discard.is_full() && let Some(mut growth) = p.shared.growth.pop() {
             if growth.rack.parts.len() > s.rack.parts.len() { growth.adopt(s); }
             p.shared.grown.store(s.rack.parts.len() as u64, Ordering::Release);
@@ -3468,7 +3774,7 @@ impl PluginLogic for Sampler {
         // tails go before the deadline does.
         let offline = cx.process_mode.is_offline();
         for engine in &mut s.rack.parts {
-            engine.blocking_streams = offline;
+            engine.set_blocking_streams(offline);
         }
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
@@ -3476,7 +3782,7 @@ impl PluginLogic for Sampler {
             }
             for (slot, engine) in s.rack.parts.iter().enumerate() {
                 let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
-                for (m, out) in atoms.mics.iter().zip(outs_of(engine)) {
+                for (m, out) in atoms.mics.iter().zip(engine.instrument().map(outs_of).unwrap_or([0; OUTS])) {
                     m.store(out, Ordering::Relaxed);
                 }
             }
@@ -3485,6 +3791,13 @@ impl PluginLogic for Sampler {
             s.until_poll -= frames;
         }
         if !p.shared.discard.is_full() && let Some(controls) = p.shared.controls.pop() {
+            for (slot, old) in s.rack.controls.iter().enumerate() {
+                let new = controls.parts.get(slot).copied().unwrap_or_default();
+                if (old.port, old.channel) != (new.port, new.channel) {
+                    s.align.cancel_input(slot);
+                    if let Some(router) = s.routers.get_mut(slot) { router.reset_midi(); }
+                }
+            }
             s.rack.set_controls(&controls);
             p.shared.discard.push(Retired { controls: Some(controls), ..Default::default() }).ok().unwrap();
         }
@@ -3504,9 +3817,8 @@ impl PluginLogic for Sampler {
             let Some((slot, generation, handoff)) = p.shared.ready.pop() else {
                 break;
             };
-            let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire);
-            let retired = match handoff {
+            let retired = s.rack.with_part(slot, |engine| match handoff {
                 Handoff::Part {
                     bank,
                     fx,
@@ -3579,22 +3891,23 @@ impl PluginLogic for Sampler {
                     script,bank,
                     ..Retired::default()
                 },
-            };
+            }).expect("prepared part slot");
             let _ = p.shared.discard.push(retired);
         }
         while !p.shared.discard.is_full() {
             let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
-            let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) && epoch == s.script_epoch[slot];
-            let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
-            let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
-                engine.finish_ir(request.script_slot, request.id, ir)
-            } else {
-                if let Err(request) = engine.retry_ir_request(request) {
-                    engine.finish_ir(request.script_slot, request.id, None);
+            let ir = s.rack.with_part(slot, |engine| {
+                let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
+                if !current { ir } else if ir_rate == engine.rate() && settings_current {
+                    engine.finish_ir(request.script_slot, request.id, ir)
+                } else {
+                    if let Err(request) = engine.retry_ir_request(request) {
+                        engine.finish_ir(request.script_slot, request.id, None);
+                    }
+                    ir
                 }
-                ir
-            };
+            }).expect("prepared IR part slot");
             let _ = p.shared.discard.push(Retired { ir, ..Retired::default() });
         }
         finish_zone_maps(s,p);
@@ -3610,7 +3923,7 @@ impl PluginLogic for Sampler {
             } else { request };
             p.shared.array_retired.push((slot, generation, epoch, request)).ok().unwrap();
         }
-        let scripted = s.rack.parts.iter().filter(|e| e.script().is_some()).count();
+        let scripted = s.rack.parts.iter().filter(|e| e.instrument().is_some_and(|e| e.script().is_some())).count();
         for engine in &mut s.rack.parts {
             engine.begin_audio_block(frames, scripted, offline);
         }
@@ -3620,21 +3933,23 @@ impl PluginLogic for Sampler {
             s.align.flush(&mut s.rack, &mut s.routers);
         }
         while let Some((slot, o)) = p.shared.overrides.pop() {
-            if let Some(engine) = s.rack.parts.get_mut(slot) {
-                engine.set_override(o);
-            }
+            s.rack.with_part(slot, |engine| engine.set_override(o));
         }
         while let Some(e) = p.shared.file_selections.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch)
-                && let Some(engine) = s.rack.parts.get_mut(e.part)
                 && let Ok(path) = std::str::from_utf8(&e.path[..e.len])
             {
-                engine.ui_file_selection(e.slot, e.control, path);
+                s.rack.with_part(e.part, |engine| engine.ui_file_selection(e.slot, e.control, path));
             }
         }
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch) {
-                s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
+                s.rack.with_part(e.part, |engine| match e.native {
+                    Some(NativeUiEdit::Learn(index,active))=>{engine.native_midi_learn(e.slot,e.control,index,active);},
+                    Some(NativeUiEdit::Number(index,value))=>{engine.native_control(e.slot,e.control,index,value);},
+                    Some(NativeUiEdit::Text {index,bytes,len})=>{if let Ok(text)=std::str::from_utf8(&bytes[..len]) {engine.native_text(e.slot,e.control,index,text);}},
+                    None=>engine.ui_control(e.slot,e.control,e.value),
+                });
                 s.routers[e.part].forget();
                 let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
                 s.align.picked(e.part, picked);
@@ -3643,7 +3958,7 @@ impl PluginLogic for Sampler {
         // Refresh lent live views and persistence snapshots in place, one at
         // a time and a budget a block; the loader shows and saves them.
         let version = |s: &Dsp, slot: usize| {
-            let changes = s.rack.parts[slot].script().map_or(0, Runtime::changes);
+            let changes = s.rack.parts[slot].instrument().and_then(Engine::script).map_or(0, Runtime::changes);
             (s.script_epoch[slot], changes)
         };
         if s.live.is_none() && !p.shared.lives.is_full() {
@@ -3652,7 +3967,7 @@ impl PluginLogic for Sampler {
         }
         if let Some((slot, seen, live, at)) = &mut s.live {
             let done = seen.0 != s.script_epoch[*slot]
-                || (s.rack.parts[*slot].script()).is_none_or(|rt| {
+                || (s.rack.parts[*slot].instrument().and_then(Engine::script)).is_none_or(|rt| {
                     rt.refresh_diagnostics(live);
                     (*seen == s.live_seen[*slot] && live.refresh_interface && live.interface_current)
                         || rt.refresh_live_within(live, at, LIVE_BUDGET)
@@ -3668,9 +3983,8 @@ impl PluginLogic for Sampler {
             }
         }
         for (e, r) in s.rack.parts.iter_mut().zip(&s.routers) {
-            e.attack = p.attack.value();
-            e.release = p.release.value();
-            e.cutoff = p.cutoff.value() * r.cutoff_scale();
+            let scale = if e.instrument().is_some() { r.cutoff_scale() } else { 1. };
+            e.set_sampler_defaults(p.attack.value(), p.release.value(), p.cutoff.value() * scale);
         }
         if p.shared.panic.swap(false, Ordering::AcqRel) {
             p.shared.reset_midi();
@@ -3697,7 +4011,7 @@ impl PluginLogic for Sampler {
                 }
                 continue;
             }
-            let Some(engine) = s.rack.parts.get(slot) else { continue };
+            let Some(engine) = s.rack.parts.get(slot).and_then(|part| part.instrument()) else { continue };
             let channel = preview_channel(engine);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
@@ -3714,20 +4028,21 @@ impl PluginLogic for Sampler {
         let selected = p.shared.selected.load(Ordering::Relaxed) as usize;
         if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.rack.parts.len() {
             let slot = selected;
-            let e = &mut s.rack.parts[slot];
-            for channel in 0..16 {
-                e.cc(channel, 120, 0);
-            }
-            let requested = p.shared.audition_note.swap(128, Ordering::Relaxed);
-            let note = if requested < 128 {
-                requested as u8
-            } else {
-                e.bank()
-                    .and_then(|b| b.zones().first())
-                    .map_or(60, |z| z.root)
-            };
-            let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
-            e.note_on(channel, note, velocity);
+            s.rack.with_part(slot, |e| {
+                for channel in 0..16 {
+                    e.cc(channel, 120, 0);
+                }
+                let requested = p.shared.audition_note.swap(128, Ordering::Relaxed);
+                let note = if requested < 128 {
+                    requested as u8
+                } else {
+                    e.bank()
+                        .and_then(|b| b.zones().first())
+                        .map_or(60, |z| z.root)
+                };
+                let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
+                e.note_on(channel, note, velocity);
+            });
             s.audition_left[slot] = (rate * 1.5) as usize;
         }
 
@@ -3737,8 +4052,23 @@ impl PluginLogic for Sampler {
         let mut gains = [0f32; MAX_BLOCK];
         let scope = p.shared.scope.source.load(Ordering::Relaxed);
         let mut at = 0;
+        s.source_input_ordinal = 0;
         let mut incoming = events.lossless_iter().peekable();
         loop {
+            let source_boundary = if at < frames || frames == 0 && events.lossless_iter().next().is_some() {
+                match prepare_shared_sources(s,events,frames,holding) {
+                    Ok(boundary) => boundary,
+                    Err(_reason) => {
+                        // The rejected source range admits no input and publishes
+                        // no PCM. Earlier balanced ranges have already completed.
+                        for channel in 0..channels { b.output(channel)[at..frames].fill(0.); }
+                        collect_stream_errors(s);
+                        s.until_diagnostics = 0;
+                        capture_audio_diagnostics(s,p,frames,channels,offline,cx);
+                        return ProcessStatus::Error;
+                    },
+                }
+            } else { frames };
             // Exact events are consumed once; linked semantic companions do
             // not replace the host tuple or fan an old ID into a new key row.
             while incoming.peek().is_some_and(|e| at >= frames || input_offset(e) as usize <= at) {
@@ -3759,7 +4089,13 @@ impl PluginLogic for Sampler {
                                 })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
                             }
                         }
-                        Some(ExactInput::Brightness) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
+                        Some(ExactInput::ProgramChange { port, channel, program }) => {
+                            if let Some(e) = exact.fallback() { relay_typed_input(e,cx,thru); }
+                            for e in exact.companions() { relay_typed_input(e,cx,thru); }
+                            if !s.rack.program_change_port(port, channel, program) {
+                                s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1);
+                            }
+                        }
                         Some(ExactInput::Unsupported) => s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1),
                         None => {
                             if let Some(e) = exact.fallback() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
@@ -3779,7 +4115,7 @@ impl PluginLogic for Sampler {
                     due = due.min(at + (held - now).min(frames as u64) as usize);
                 }
             }
-            let len = (due - at).min(MAX_BLOCK);
+            let len = (due.min(source_boundary) - at).min(MAX_BLOCK);
             for (e, left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {
                 if *left > 0 {
                     *left = left.saturating_sub(len);
@@ -3836,8 +4172,10 @@ impl PluginLogic for Sampler {
                 p.shared.scope.push(&s.rack.tapped[..len]);
             }
             at += len;
+            collect_stream_errors(s);
         }
-        finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
+        collect_stream_errors(s);
+        finish_host_notes(s,cx,frames as u32);
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
                 .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
@@ -3845,14 +4183,14 @@ impl PluginLogic for Sampler {
         if let Some((slot, seen, saved, at)) = &mut s.snapshot {
             let done = seen.0 != s.script_epoch[*slot]
                 || *seen == s.snapshot_seen[*slot]
-                || (s.rack.parts[*slot].script())
+                || (s.rack.parts[*slot].instrument().and_then(Engine::script))
                     .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET)
                         && rt.native_state.refresh(&mut saved.native, 256));
             if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
                 let mut saved = saved;
                 let mut changed = at.changed || saved.native.changed;
                 for value in saved.ir.iter_mut().filter(|_| seen.0 == s.script_epoch[slot]) {
-                    if let Some(settings) = s.rack.parts[slot].fx().ir_settings(value.rack, value.slot) {
+                    if let Some(settings) = s.rack.parts[slot].instrument().and_then(|e| e.fx().ir_settings(value.rack, value.slot)) {
                         changed |= value.settings != settings;
                         value.settings = settings;
                     }
@@ -3863,7 +4201,8 @@ impl PluginLogic for Sampler {
         }
         // Parameter writes have rendered: capture the block's latest settings.
         let mut arrays_queued = false;
-        for (part, engine) in s.rack.parts.iter_mut().enumerate() {
+        for (part, slot) in s.rack.parts.iter_mut().enumerate() {
+            let Some(engine) = slot.instrument_mut() else { continue };
             let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
             while !p.shared.array_requests.is_full() {
                 let Some(request) = engine.pop_array_job() else { break };
@@ -3906,12 +4245,12 @@ impl PluginLogic for Sampler {
         }
         let watch = p.shared.probe.watch.load(Ordering::Relaxed);
         if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < s.rack.parts.len()) {
-            let published = if s.rack.parts[slot].publish(group, &p.shared.probe) { watch } else { 0 };
+            let published = if s.rack.parts[slot].instrument_mut().is_some_and(|e| e.publish(group, &p.shared.probe)) { watch } else { 0 };
             p.shared.probe.published.store(published, Ordering::Relaxed);
         }
-        let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
+        let voices: usize = s.rack.parts.iter().map(|e| e.active_voices()).sum();
         p.shared.voices.store(voices as u64, Ordering::Relaxed);
-        let audible: usize = s.rack.parts.iter().map(Engine::audible_voices).sum();
+        let audible: usize = s.rack.parts.iter().map(|e| e.audible_voices()).sum();
         p.shared.audible.store(audible as u64, Ordering::Relaxed);
         let dropouts: u64 = (s.rack.parts.iter())
             .map(|e| e.underruns() + e.dropped_commands())
@@ -3931,11 +4270,11 @@ impl PluginLogic for Sampler {
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
             s.load = load.max(s.load * 0.98 + load * 0.02);
             for e in &mut s.rack.parts {
-                e.load = s.load;
+                e.set_load(s.load);
             }
         }
         capture_audio_diagnostics(s, p, frames, channels, offline, cx);
-        ProcessStatus::Normal
+        if offline && s.stream_failure.is_some() { ProcessStatus::Error } else { ProcessStatus::Normal }
     }
     fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         crate::ui::editor(params)
@@ -4052,12 +4391,12 @@ impl Counter {
 
     fn read(&self) -> u64 {
         unsafe extern "C" {
-            fn read(fd: i32, buf: *mut u64, n: usize) -> isize;
+            fn read(fd: i32, buf: *mut std::ffi::c_void, n: usize) -> isize;
         }
-        let mut value = 0;
-        // SAFETY: reads one u64 count from the counter's descriptor.
-        unsafe { read(self.0, &mut value, 8) };
-        value
+        let mut value = 0u64;
+        // SAFETY: the buffer holds one u64 count and remains valid during read.
+        let bytes = unsafe { read(self.0, std::ptr::from_mut(&mut value).cast(), 8) };
+        if bytes == 8 { value } else { 0 }
     }
 }
 /// Host-shaped timing: the parts at `paths` in the rack, `Sampler::process`
@@ -4830,6 +5169,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     Ok(())
 }
 #[cfg(test)]
+mod performance_tests;
+#[cfg(test)]
+mod shared_primary_tests;
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
@@ -5075,12 +5418,12 @@ pub(crate) mod tests {
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0,
                 "installing the prepared snapshot allocated or freed on audio");
             assert!(dsp.script_epoch[0] > epoch); epoch = dsp.script_epoch[0];
-            assert!(dsp.rack.parts[0].bank().is_some());
+            assert!(dsp.rack.parts[0].instrument().unwrap().bank().is_some());
             let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
             assert_eq!(instrument.name, snapshot.file_stem().unwrap().to_string_lossy());
             let (expected, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
             assert!(errors.is_empty(), "{errors:?}");
-            assert!(dsp.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
+            assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
             assert_eq!(allocations(|| {
                 for _ in 0..32 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
             }), 0, "loaded snapshot processing allocated or freed on audio");
@@ -5099,7 +5442,7 @@ pub(crate) mod tests {
                 for _ in 0..16 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
             }), 0);
             Load.run(&p);
-            let expected = serde_json::to_string(&dsp.rack.parts[0].script().unwrap().persistence()).unwrap();
+            let expected = serde_json::to_string(&dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()).unwrap();
             if p.selection.read().unwrap().parts[0].script_state == expected {
                 settled = true;
                 break;
@@ -5107,7 +5450,7 @@ pub(crate) mod tests {
         }
         assert!(settled, "active snapshot persistence did not settle within 512 blocks");
         let before = p.selection.read().unwrap().parts[0].clone();
-        let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
+        let bank = dsp.rack.parts[0].instrument().unwrap().bank().unwrap() as *const Bank;
         let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         let epoch = dsp.script_epoch[0];
         assert!(p.shared.queue_snapshot(0, &before, foreign));
@@ -5120,7 +5463,7 @@ pub(crate) mod tests {
         assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
             before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
             before.source() == after.source(), generation, p.shared.part(0).unwrap().generation.load(Ordering::Acquire), epoch, dsp.script_epoch[0],
-            dsp.rack.parts[0].bank().unwrap() as *const Bank == bank);
+            dsp.rack.parts[0].instrument().unwrap().bank().unwrap() as *const Bank == bank);
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
@@ -5130,7 +5473,7 @@ pub(crate) mod tests {
             event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
                 && event.details["status"] == "failed"));
         Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
-        assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().bank().unwrap() as *const Bank, bank);
         assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation);
         assert_eq!(dsp.script_epoch[0], epoch);
         println!("foreign snapshot rejected without replacing active state, bank, generation or script epoch");
@@ -5315,7 +5658,7 @@ end on"#;
         let mut dsp = Dsp::default();
         dsp.script_epoch[0] = 1;
         dsp.until_poll = usize::MAX;
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
         p.shared.publish_live(true);
         let bank_gate = Arc::new(Barrier::new(2));
         *p.shared.load_gate.lock().unwrap() = Some((1, bank_gate.clone()));
@@ -5396,8 +5739,8 @@ end on"#;
 
         // Replace the runtime after a view is prepared but before it commits.
         let (slot, _, mut live) = p.shared.live_requests.pop().unwrap();
-        dsp.rack.parts[0].ui_control(0, 0, 13);
-        dsp.rack.parts[0].script().unwrap().refresh_live(&mut live);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 13);
+        dsp.rack.parts[0].instrument().unwrap().script().unwrap().refresh_live(&mut live);
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         let publication_gate = Arc::new(Barrier::new(2));
         *p.shared.publish_gate.lock().unwrap() = Some(publication_gate.clone());
@@ -5406,7 +5749,7 @@ end on"#;
             std::thread::spawn(move || p.shared.publish_live(true))
         };
         publication_gate.wait();
-        let replacement = Box::new(dsp.rack.parts[0].script().unwrap().live());
+        let replacement = Box::new(dsp.rack.parts[0].instrument().unwrap().script().unwrap().live());
         next_epoch(&mut p.shared.view.lock().unwrap(), 0, None, Some(replacement));
         publication_gate.wait();
         publisher.join().unwrap();
@@ -5470,9 +5813,9 @@ end on"#,dir.display());
             vec![crate::import::Zone::default()], vec![(std::path::PathBuf::new(), crate::audio::Sample {
                 rate:48000, frames:vec![[0.25;2];48000],
             })]).unwrap();
-        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
-        dsp.rack.parts[0].set_script(Some(rt));
-        dsp.rack.parts[0].note_on(0,60,100);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(rt));
+        dsp.rack.parts[0].instrument_mut().unwrap().note_on(0,60,100);
         let mut outputs = vec![vec![0.;64];2];
         let mut refs:Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[],&mut refs,64);
@@ -5485,13 +5828,13 @@ end on"#,dir.display());
             let path = dir.join(name).to_string_lossy().into_owned();
             assert!(p.shared.select_control_file(0,1,0,0,&path));
             assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
-            let u = dsp.rack.parts[0].script().unwrap().interface(0);
+            let u = dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0);
             assert_eq!(u.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text(format!("{}:{name}",name.trim_end_matches(".nka"))));
             assert_eq!(u.controls[0].properties["$CONTROL_PAR_FILEPATH"],crate::ksp::Value::Text(path));
             assert_eq!(p.shared.array_requests.len(),1);
             load_arrays(&p);
             assert_eq!(allocations(|| { for _ in 0..10 { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); } }),0);
-            assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
+            assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
             peaks.push(buffer.output(0).iter().copied().map(f32::abs).fold(0.,f32::max));
             load_arrays(&p);
         }
@@ -5503,7 +5846,7 @@ end on"#,dir.display());
         dsp.script_epoch[0]=2;
         assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
         assert!(p.shared.array_requests.is_empty(),"queued old selections must not execute on a replacement script");
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -5547,7 +5890,7 @@ end on"#, dir.display(), dir.display());
             view.parts[0].script_epoch = 1;
             view.parts[0].interface = Some(Arc::new(rt.interface(0)));
         }
-        dsp.rack.parts[0].set_script(Some(rt));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(rt));
         let mut outputs = vec![vec![0.; 64]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
@@ -5561,17 +5904,17 @@ end on"#, dir.display(), dir.display());
         p.shared.edit_control(0, 1, 1);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(p.shared.array_requests.len(), 1);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0));
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0));
         load_arrays(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "600 cells do not copy in one block");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "600 cells do not copy in one block");
         assert_eq!(allocations(|| {
             tick(&mut dsp, &mut buffer, &mut cx);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
         assert_eq!(allocations(|| {
-            assert!(dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained));
+            assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().refresh_live(&mut retained));
         }), 0);
         assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
             crate::ksp::Value::IntArray(vec![84;600]),
@@ -5579,40 +5922,40 @@ end on"#, dir.display(), dir.display());
         load_arrays(&p); // Free parse buffers on the worker and return the prepared job.
         tick(&mut dsp, &mut buffer, &mut cx);
         assert_eq!(allocations(|| {
-            for value in [0, 1, 0] { dsp.rack.parts[0].ui_control(0, 1, value); }
+            for value in [0, 1, 0] { dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 1, value); }
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         assert_eq!(p.shared.array_requests.len(), 2, "one destination has two prepared jobs");
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s| s.contains("prepared request queue")));
+        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().iter().any(|s| s.contains("prepared request queue")));
         load_arrays(&p);
         assert_eq!(allocations(|| {
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
-        assert_eq!(allocations(|| { dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained); }), 0);
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
+        assert_eq!(allocations(|| { dsp.rack.parts[0].instrument().unwrap().script().unwrap().refresh_live(&mut retained); }), 0);
         assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
             crate::ksp::Value::IntArray(vec![42;600]),
             "a subsequent file invalidates the same retained table snapshot");
         assert_eq!(allocations(|| {
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(4), "each accepted or rejected job completes once");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()), "different paths on the same variable read different files");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(4), "each accepted or rejected job completes once");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()), "different paths on the same variable read different files");
         load_arrays(&p);
         tick(&mut dsp, &mut buffer, &mut cx);
-        dsp.rack.parts[0].ui_control(0, 1, 0);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 1, 0);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_arrays(&p);
         let (new_rt, _) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
         let mut retired = None;
         p.shared.view.lock().unwrap().parts[0].script_epoch = 2;
         assert_eq!(allocations(|| {
-            retired = dsp.rack.parts[0].set_script(new_rt);
+            retired = dsp.rack.parts[0].instrument_mut().unwrap().set_script(new_rt);
             dsp.script_epoch[0] = 2;
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         load_arrays(&p);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
         drop(retired);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -5678,7 +6021,7 @@ end on"#,dir.display());
             view.parts[0].script_epoch=1;
             view.parts[0].interface=Some(Arc::new(rt.as_deref().unwrap().interface(0)));
         }
-        dsp.rack.parts[0].set_script(rt);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(rt);
         let mut outputs=vec![vec![0.;64];2];
         let mut refs:Vec<_>=outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer=AudioBuffer::from_slices_checked(&[],&mut refs,64);
@@ -5697,42 +6040,42 @@ end on"#,dir.display());
         assert_eq!(std::fs::read(dir.join("reals.nka")).unwrap(),b"?reals\n0.25\n-1.5\n");
         assert_eq!(std::fs::read(dir.join("names.nka")).unwrap(),"!names\nΩ\n😀\n".as_bytes());
         assert_eq!(allocations(||for _ in 0..3 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$success"],crate::ksp::Value::Int(3));
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$success"],crate::ksp::Value::Int(3));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,2);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,2);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         assert!(!dir.join("missing").exists());
         assert_eq!(allocations(||tick(&mut dsp,&mut buffer,&mut cx)),0);
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: file could not be written")));
+        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: file could not be written")));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,3);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,3);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         assert_eq!(p.shared.array_requests.len(),2);
         load_arrays(&p);
         assert_eq!(std::fs::read(dir.join("queued.nka")).unwrap(),b"%integers\n51\n-3\n7\n");
         assert_eq!(allocations(||for _ in 0..2 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
-        let saved=dsp.rack.parts[0].script().unwrap().persistence();
+        let saved=dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence();
         assert_eq!(saved[0]["$done"],crate::ksp::Value::Int(7));
         assert_eq!(saved[0]["$success"],crate::ksp::Value::Int(5));
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: prepared request queue")));
+        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: prepared request queue")));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,4);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,4);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         let (rt,_)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
         let mut retired=None;
         p.shared.view.lock().unwrap().parts[0].script_epoch=2;
         assert_eq!(allocations(||{
-            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=2;
+            retired=dsp.rack.parts[0].instrument_mut().unwrap().set_script(rt);dsp.script_epoch[0]=2;
         }),0);
         load_arrays(&p);
         assert!(!dir.join("stale.nka").exists(),"stale queued write never begins");
         drop(retired);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,5);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,5);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         let committed=std::fs::read(dir.join("committed.nka")).unwrap();
@@ -5740,12 +6083,12 @@ end on"#,dir.display());
         let mut retired=None;
         p.shared.view.lock().unwrap().parts[0].script_epoch=3;
         assert_eq!(allocations(||{
-            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=3;
+            retired=dsp.rack.parts[0].instrument_mut().unwrap().set_script(rt);dsp.script_epoch[0]=3;
             tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         assert_eq!(std::fs::read(dir.join("committed.nka")).unwrap(),committed,"committed save is not rolled back when completion becomes stale");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$done"],crate::ksp::Value::Int(0));
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$done"],crate::ksp::Value::Int(0));
         drop(retired);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -5784,7 +6127,7 @@ end on"#,dir.display());
         let source = "on init\ndeclare ui_switch $setting\nset_controller(1,77)\nset_controller(11,12)\nset_controller(64,127)\nset_controller(100,5)\nset_controller(110,127)\nset_controller(111,127)\nset_controller(113,63)\nend on";
         for reset in 0..3 {
             let group = Group {
-                mods: [110, 111, 113].map(|cc| ModAssignment {
+                mods: [110, 111, 113].map(|cc| ModAssignment { cc_default: None,
                     name: format!("internal CC{cc}"), source: ModSource::MidiCc(cc),
                     target: ModTarget::Volume, intensity: 1., invert: false,
                     lag_ms: 0, shaper: None,
@@ -5927,7 +6270,7 @@ end on"#,dir.display());
         let mut dsp = Dsp::default();
         dsp.until_poll = usize::MAX;
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].set_script(Some(Box::new(old)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(old)));
         p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), bank:None, epoch: 2 })).ok().unwrap();
         let transport = TransportInfo::default();
         let mut outgoing = EventList::with_capacity(0);
@@ -5955,7 +6298,7 @@ end on"#,dir.display());
         assert_eq!(p.shared.live_requests.len(), 1, "the stale buffer is returned exactly once");
         p.shared.snapshot_requests.push((0, 2, new_saved)).ok().unwrap();
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 0, 37);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 37);
             for _ in 0..100 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
         }), 0);
         let (_, epoch, saved, changed) = p.shared.snapshots.pop().unwrap();
@@ -5982,8 +6325,8 @@ end on"#,dir.display());
         dsp.script_epoch[0] = 1;
         dsp.until_poll = usize::MAX;
         let live = Box::new(rt.live());
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
-        dsp.rack.parts[0].ui_control(0, 0, 42);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 42);
         p.shared.live_requests.push((0, dsp.script_epoch[0], live)).ok().unwrap();
         moose::core::tasks::warm_pool();
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6234,7 +6577,7 @@ end on"#,dir.display());
         Load.run(&p);
         let loaded = p.selection.read().unwrap().clone();
         std::fs::remove_dir_all(&root).unwrap();
-        assert!(loaded.parts == [rack.parts[1].clone(), rack.parts[0].clone()], "every setting, in rack order");
+        assert!(loaded.parts == [rack.parts[1].instrument_mut().unwrap().clone(), rack.parts[0].instrument_mut().unwrap().clone()], "every setting, in rack order");
         assert_eq!(loaded.order, [0, 1]);
         assert_eq!(loaded.multi, path.to_string_lossy());
         assert!(p.shared.view.lock().unwrap().multi_status.starts_with("Evening · 2 instruments"));
@@ -6776,25 +7119,25 @@ end on"#;
         s.installed_generation[0]=0;
         { let mut v=p.shared.view.lock().unwrap();v.parts[0].instrument=Some(Arc::new(i));v.parts[0].script_epoch=7; }
         let source=p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
-        s.rack.parts[0].set_bank(Some(Box::new(Bank::load(&source).unwrap())));
-        s.rack.parts[0].set_script(rt);
+        s.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::load(&source).unwrap())));
+        s.rack.parts[0].instrument_mut().unwrap().set_script(rt);
         let mut old_reference=Engine::default();old_reference.set_bank(Some(Box::new(bank(zones.clone()))));
-        s.rack.parts[0].note_on(0,59,100);old_reference.note_on(0,59,100);
-        s.rack.parts[0].render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
+        s.rack.parts[0].instrument_mut().unwrap().note_on(0,59,100);old_reference.note_on(0,59,100);
+        s.rack.parts[0].instrument_mut().unwrap().render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
         let scalar=|e:&Engine,name:&str|e.script().unwrap().persistence()[0][name].clone();
-        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,1)),0);
-        assert_eq!(scalar(&s.rack.parts[0],"$resumed"),crate::ksp::Value::Int(0));
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(allocations(||s.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,1)),0);
+        assert_eq!(scalar(s.rack.parts[0].instrument().unwrap(),"$resumed"),crate::ksp::Value::Int(0));
+        assert_eq!(s.rack.parts[0].instrument().unwrap().bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
         assert_eq!(allocations(|| {
-            while let Some(job)=s.rack.parts[0].pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
+            while let Some(job)=s.rack.parts[0].instrument_mut().unwrap().pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
         }),0);
         assert_eq!(p.shared.zone_requests.len(),3);
         let mut ram_fill=Box::new(Bank::load(&source).unwrap());
-        assert!(!s.rack.parts[0].zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
+        assert!(!s.rack.parts[0].instrument().unwrap().zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
         load_zone_maps(&p); // real serialized preparation, outside the audio allocation gate
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
+        assert_eq!(scalar(s.rack.parts[0].instrument().unwrap(),"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
         assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
-        let e=&s.rack.parts[0];
+        let e=s.rack.parts[0].instrument().unwrap();
         assert_eq!(scalar(e,"$done"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$success"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$resumed"),crate::ksp::Value::Int(1));
@@ -6807,12 +7150,12 @@ end on"#;
         let mut new_reference=Engine::default();new_reference.set_bank(Some(Box::new(bank(mapped))));
         let (mut al,mut ar,mut oldl,mut oldr,mut newl,mut newr)=([0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048]);
         assert_eq!(allocations(|| {
-            s.rack.parts[0].note_on(0,60,100);new_reference.note_on(0,60,100);
-            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+            s.rack.parts[0].instrument_mut().unwrap().note_on(0,60,100);new_reference.note_on(0,60,100);
+            s.rack.parts[0].instrument_mut().unwrap().render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
         }),0);
         assert!(newl.iter().any(|v|v.abs()>0.01),"remapped WT really produces PCM");
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"new WT mapping plus untouched old sampler voice matches independent reference");
-        assert!(s.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
+        assert!(s.rack.parts[0].instrument().unwrap().voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
         save("remapped-actual.wav",&al,&ar);save("old-sampler-reference.wav",&oldl,&oldr);save("new-wavetable-reference.wav",&newl,&newr);
         let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();
         save("remapped-independent-reference.wav",&expected_l,&expected_r);
@@ -6821,14 +7164,14 @@ end on"#;
         // retaining both mapped keys and the already playing WT window.
         { let chains=p.shared.zone_chains.lock().unwrap();let chain=chains.last().unwrap();
           ram_fill.rebase_zone_preload(&chain.context.upgrade().unwrap(),chain.state.clone(),&||false).unwrap(); }
-        assert!(s.rack.parts[0].zone_upgrade_ready(&ram_fill));
+        assert!(s.rack.parts[0].instrument().unwrap().zone_upgrade_ready(&ram_fill));
         let mut old_bank=None;
         assert_eq!(allocations(|| {
-            old_bank=s.rack.parts[0].upgrade_bank(ram_fill);
-            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+            old_bank=s.rack.parts[0].instrument_mut().unwrap().upgrade_bank(ram_fill);
+            s.rack.parts[0].instrument_mut().unwrap().render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
         }),0);
         assert!(old_bank.is_some());drop(old_bank);
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
+        assert_eq!(s.rack.parts[0].instrument().unwrap().bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"RAM fill retains remapped playback and active voice phase");
         save("upgraded-actual.wav",&al,&ar);
         let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();save("upgraded-independent-reference.wav",&expected_l,&expected_r);
@@ -6867,25 +7210,25 @@ end on"#;
         // A new source bank may share dimensions, but an old prepared job
         // must not edit it or claim successful completion.
         while p.shared.discard.pop().is_some() {}
-        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,0)),0);
-        while let Some(job)=s.rack.parts[0].pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        assert_eq!(allocations(||s.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,0)),0);
+        while let Some(job)=s.rack.parts[0].instrument_mut().unwrap().pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
         load_zone_maps(&p);
         let replacement=Box::new(bank(zones.clone()));
         let mut retired=None;
-        assert_eq!(allocations(|| {retired=s.rack.parts[0].set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
-        assert_eq!(scalar(&s.rack.parts[0],"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
+        assert_eq!(allocations(|| {retired=s.rack.parts[0].instrument_mut().unwrap().set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
+        assert_eq!(s.rack.parts[0].instrument().unwrap().bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(s.rack.parts[0].instrument().unwrap(),"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(scalar(s.rack.parts[0].instrument().unwrap(),"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
         drop(retired);
         // Runtime epoch replacement suppresses delivery entirely.
         while p.shared.discard.pop().is_some() {}
-        s.rack.parts[0].ui_control(0,0,1);
-        while let Some(job)=s.rack.parts[0].pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        s.rack.parts[0].instrument_mut().unwrap().ui_control(0,0,1);
+        while let Some(job)=s.rack.parts[0].instrument_mut().unwrap().pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
         load_zone_maps(&p);
         s.script_epoch[0]=8;
         assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(s.rack.parts[0].instrument().unwrap(),"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(s.rack.parts[0].instrument().unwrap().bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
         // Offline hosts and the Part script-before-bank install order use
         // the same preparation boundary; init is synchronous and returns -1.
         let init_source=Instrument {groups:groups.clone(),zones:zones.clone(),scripts:vec![r#"on init
@@ -6998,9 +7341,9 @@ end on"#.into()],
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
-        dsp.rack.parts[0].set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.));
-        dsp.rack.parts[0].set_script(rt);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(rt);
         {
             let mut view = p.shared.view.lock().unwrap();
             let v = &mut view.parts[0];
@@ -7017,10 +7360,10 @@ end on"#.into()],
             Sampler::process(dsp, &p, buffer, &events, cx);
         };
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 0, 1);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 1);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0, "queuing the IR allocated or freed on the audio thread");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "", "completion waits for installation");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "", "completion waits for installation");
         assert_eq!(p.shared.ir_requests.len(), 1);
         let pending = p.shared.ir_requests.pop().unwrap();
         for _ in 0..p.shared.ready.capacity() {
@@ -7034,25 +7377,25 @@ end on"#.into()],
         while p.shared.ready.pop().is_some() {}
         while p.shared.ir_ready.pop().is_some() {}
         load_irs(&p);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "");
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0, "installing or completing the IR allocated or freed on the audio thread");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "1:1");
         assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
         while p.shared.discard.pop().is_some() {}
         // Native switches use 0/1, coalesce through the same worker path,
         // and read back before/after installation without RT allocation.
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 3, 1);
-            dsp.rack.parts[0].ui_control(0, 4, 1);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 3, 1);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 4, 1);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         for name in ["$read_reverse", "$read_automatic"] {
-            assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
+            assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
         }
         assert_eq!(p.shared.ir_requests.len(), 1, "two switches need one IR rebuild");
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        let installed = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        let installed = dsp.rack.parts[0].instrument().unwrap().fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
         assert_eq!((installed.reverse, installed.auto_gain), (Some(true), Some(true)));
         let (instrument, loads) = {
             let view = p.shared.view.lock().unwrap();
@@ -7087,23 +7430,23 @@ end on"#.into()],
         while p.shared.discard.pop().is_some() {}
         let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
         assert!(matches!(before[0].load, FxLoad::Ir { .. }));
-        dsp.rack.parts[0].ui_control(0, 0, 0);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 0);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "2:0");
         assert!(p.shared.view.lock().unwrap().parts[0].irs == before, "failed loads keep the IR");
         // Knob edits coalesce into one worker rebuild, retaining the loaded IR
         // and exact requested values without issuing an async-file completion.
         let snapshot = PersistenceSnapshot {
-            script: dsp.rack.parts[0].script().unwrap().persistence(),
+            script: dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence(),
             ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Insert, slot: 0, settings: crate::fx::params::IrSettings::DEFAULT, file: None }],
-            native: dsp.rack.parts[0].script().unwrap().native_state.snapshot(),
+            native: dsp.rack.parts[0].instrument().unwrap().script().unwrap().native_state.snapshot(),
         };
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], Box::new(snapshot))).ok().unwrap();
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 1, 1000000);
-            dsp.rack.parts[0].ui_control(0, 2, 250000);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 1, 1000000);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 2, 250000);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         let (_, _, snapshot, changed) = p.shared.snapshots.pop().expect("host state snapshot before worker completion");
@@ -7118,23 +7461,23 @@ end on"#.into()],
         // A newer edit arriving while the worker builds must win. Execute that
         // callback before the handoff so the obsolete kernel is rejected.
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 1, 0);
-            dsp.rack.parts[0].ui_control(0, 3, 0);
-            dsp.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 1, 0);
+            dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 3, 0);
+            dsp.rack.parts[0].instrument_mut().unwrap().render(&mut [0.; 64], &mut [0.; 64]);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         assert_eq!(p.shared.ir_requests.len(), 1, "stale settings rebuild at the latest requested values");
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
-        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
-        dsp.rack.parts[0].ui_control(0, 0, 2);
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "2:0");
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 2);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "3:0");
         crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
         let journal = std::fs::read_to_string(crate::diagnostics::log_path().unwrap()).unwrap();
         assert!(journal.lines().any(|line| {
@@ -7143,34 +7486,34 @@ end on"#.into()],
             data["code"] == "ir_load_failed" && data["requested"] == "broken" && data["resolved"].as_str().is_some_and(|p| p.ends_with("Broken.wav"))
                 && v["part"] == 0 && data["message"].as_str().is_some_and(|s| s.contains("decoding failed") && s.contains("no suitable format reader"))
         }), "the worker preserves the requested name, resolved path, part and decoder's failure reason");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         p.shared.rate.store(44100f64.to_bits(), Ordering::Release);
         dsp.rack.parts[0].reset(44100.);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0", "wrong-rate kernels are retried without installation or premature completion");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "3:0", "wrong-rate kernels are retried without installation or premature completion");
         assert_eq!(p.shared.ir_requests.len(), 1);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
-        let flags = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
+        let flags = dsp.rack.parts[0].instrument().unwrap().fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
         assert_eq!((flags.reverse, flags.auto_gain), (Some(false), Some(true)), "rate rebuild retains latest switches");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         dsp.script_epoch[0] = 2;
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "a replaced script never gets a stale completion");
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().last_message(), "4:1", "a replaced script never gets a stale completion");
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         p.shared.part(0).unwrap().generation.store(1, Ordering::Release);
         load_irs(&p);
         assert!(p.shared.ir_ready.is_empty(), "replaced instruments discard queued loads");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
-        dsp.rack.parts[0].set_script(None);
-        assert!(dsp.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
+        dsp.rack.parts[0].instrument_mut().unwrap().ui_control(0, 0, 1);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(None);
+        assert!(dsp.rack.parts[0].instrument_mut().unwrap().pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7202,7 +7545,7 @@ end on"#;
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
         let mut outputs = [vec![0.;128], vec![0.;128]];
         let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
@@ -7222,12 +7565,12 @@ end on"#;
             let mut cx = ProcessContext::new(&transport, 48_000., 128, &mut outgoing);
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0,
                 "host timing updates and transport listeners must not allocate or free");
-            let interface = dsp.rack.parts[0].script().unwrap().interface(0);
+            let interface = dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0);
             assert_eq!(interface.controls[0].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(position.into()));
             assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(transition.into()),
                 "seeks/tempo changes must not fabricate start/stop transitions");
         }
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        assert!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().diagnostics().is_empty());
     }
 
     #[test]
@@ -7367,7 +7710,7 @@ end on"#;
             view.parts[0].interface = parsed.interface;
             dsp.script_epoch[0] = epoch;
         }
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
 
         p.shared.edit_control(0, 0, 1);
         let shown = p.shared.view.lock().unwrap().parts[0]
@@ -7404,7 +7747,7 @@ end on"#;
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         let (slot, _, live) = p.shared.lives.pop().unwrap();
         p.shared.live_requests.push((slot, dsp.script_epoch[slot], live)).ok().unwrap();
-        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new(), native: dsp.rack.parts[0].script().unwrap().native_state.snapshot() });
+        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence(), ir: Vec::new(), native: dsp.rack.parts[0].instrument().unwrap().script().unwrap().native_state.snapshot() });
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], saved)).ok().unwrap();
         // As if the scripts changed since: both refresh in full.
         (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));
@@ -7427,7 +7770,7 @@ end on"#;
             live.keys[&36].color,
             Some(crate::ksp::Value::Text("$KEY_COLOR_BLUE".into()))
         );
-        let saved = dsp.rack.parts[0].script().unwrap().persistence();
+        let saved = dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence();
         assert_eq!(
             saved[0]["$legato"],
             crate::ksp::Value::Int(1),
@@ -7440,88 +7783,722 @@ end on"#;
             "Panic must not allocate or free on the audio thread");
         assert_eq!(p.shared.bend.load(Ordering::Relaxed), 8192);
         assert_eq!(p.shared.modulation.load(Ordering::Relaxed), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
+        assert_eq!(dsp.rack.parts[0].instrument().unwrap().script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
             "Panic must preserve edited instrument controls");
     }
     #[test]
-    fn exact_host_brightness_does_not_alias_a_new_note_or_escape_through_overflow_without_heap() {
-        use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
-        use crate::modulation::{ModAssignment, ModSource, ModTarget};
-        let p = SamplerParams::new();
-        let setup = || {
-            let group = import::Group { mods:vec![ModAssignment { name:"CC74_VOLUME".into(),
-                source:ModSource::MidiCc(74), target:ModTarget::Volume, intensity:1., invert:false,
-                lag_ms:0, shaper:None }], ..Default::default() };
-            let bank = Bank::from_samples(vec![group],vec![import::Zone::default()],vec![(PathBuf::new(),
-                crate::audio::Sample { rate:48000, frames:vec![[0.25;2];4096] })]).unwrap();
-            let mut dsp = Dsp::default();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
-            dsp.rack.parts[0].cc(0,74,32);
+    fn vst3_normalized_expressions_decode_physical_domains() {
+        use crate::engine::HostExpression;
+        let address = ExactNoteAddress::from_vst3_signed(0,-1,-1,40);
+        for (expression_id,value,expected) in [
+            (0,0.,HostExpression::Gain(0.)),(0,0.25,HostExpression::Gain(1.)),(0,1.,HostExpression::Gain(4.)),
+            (1,0.,HostExpression::Pan(-1.)),(1,0.5,HostExpression::Pan(0.)),(1,1.,HostExpression::Pan(1.)),
+            (2,0.,HostExpression::Tune(-120.)),(2,0.5,HostExpression::Tune(0.)),(2,1.,HostExpression::Tune(120.)),
+            (5,0.,HostExpression::Brightness(crate::midi::ControlValue::ZERO)),
+            (5,0.5001,HostExpression::Brightness(crate::midi::ControlValue::new(0.5001).unwrap())),
+            (5,1.,HostExpression::Brightness(crate::midi::ControlValue::FULL)),
+        ] {
+            let mut events=EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0,ExactEventBody::NormalizedNoteExpression { expression_id,address,value })).unwrap();
+            let LosslessEventRef::Exact(event)=events.lossless_iter().next().unwrap() else { panic!("missing exact event") };
+            let Some(ExactInput::Routed(In::HostExpression(pattern,actual),_))=exact_host_input(event) else { panic!("unsupported expression") };
+            assert_eq!(actual,expected); assert!(!pattern.clap);
+            assert_eq!((pattern.port,pattern.channel,pattern.key,pattern.id),(0,-1,-1,40));
+        }
+        for (expression_id,value) in [(0,f64::NAN),(1,f64::INFINITY),(2,-0.01),(0,1.01),(3,0.5),(4,0.5),(6,0.5),(100_000,0.5)] {
+            let mut events=EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0,ExactEventBody::NormalizedNoteExpression { expression_id,address,value })).unwrap();
+            let LosslessEventRef::Exact(event)=events.lossless_iter().next().unwrap() else { panic!("missing exact event") };
+            assert!(matches!(exact_host_input(event),Some(ExactInput::Unsupported)));
+        }
+    }
+
+    #[test]
+    fn vst3_exact_expressions_follow_released_owners_and_script_children_without_heap() {
+        use crate::{audio::Sample,import::{Group,Zone}};
+        for scripted in [false,true] {
+            let setup=|| {
+                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48000.);
+                engine.attack=0.0001; engine.release=0.2;
+                let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
+                    Sample { rate:48000,frames:vec![[0.25;2];24000] })]).unwrap();
+                engine.set_bank(Some(Box::new(bank)));
+                if scripted {
+                    let (rt,errors)=Runtime::with_scripts(&["on note\nplay_note($EVENT_NOTE+12,100,0,-1)\nend on"],&mut crate::ksp::LogEngine::default(),0,Vec::new());
+                    assert!(errors.iter().all(Option::is_none)); engine.set_script(Some(Box::new(rt)));
+                }
+                dsp
+            };
+            let make_events=|vst3| {
+                let mut events=EventList::with_capacity(16);
+                for (at,id,kind) in [(0,40,ExactNoteKind::On),(16,40,ExactNoteKind::Off),(16,41,ExactNoteKind::On)] {
+                    let address=ExactNoteAddress::from_raw_signed(0,4,60,id);
+                    let body=if vst3 { ExactEventBody::DetailedNote { kind,address,velocity:0.8,tuning:0.,length:None } }
+                        else { ExactEventBody::Note { kind,address,velocity:f64::from(0.8f32) } };
+                    events.try_push_exact(ExactEvent::new(at,body)).unwrap();
+                }
+                for (expression_id,normalized,physical) in [(0,0.125,0.5),(1,0.,0.),(2,0.55,12.)] {
+                    let address=if vst3 { ExactNoteAddress::from_vst3_signed(0,-1,-1,40) }
+                        else { ExactNoteAddress::from_raw_signed(0,4,60,40) };
+                    let body=if vst3 { ExactEventBody::NormalizedNoteExpression { expression_id,address,value:normalized } }
+                        else { ExactEventBody::NoteExpression { expression_id:expression_id as i32,address,value:physical } };
+                    events.try_push_exact(ExactEvent::new(16,body)).unwrap();
+                }
+                if vst3 {
+                    for expression_id in [3,4,6,100_000] {
+                        // Keep the reference's render boundaries: gain/pan
+                        // smoothing otherwise compares different segment sizes.
+                        events.try_push_exact(ExactEvent::new(16,ExactEventBody::NormalizedNoteExpression {
+                            expression_id,address:ExactNoteAddress::from_vst3_signed(0,-1,-1,41),value:0.5 })).unwrap();
+                    }
+                }
+                events
+            };
+            let (mut actual,mut reference)=(setup(),setup());
+            let (params,reference_params)=(SamplerParams::new(),SamplerParams::new());
+            let (events,reference_events)=(make_events(true),make_events(false));
+            let mut outgoing=EventList::with_capacity(16);
+            let transport=TransportInfo::default();
+            let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
+            let mut render=|dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+                let (mut left,mut right)=([0.;128],[0.;128]);
+                let mut channels=[&mut left[..],&mut right[..]];
+                let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
+                (left,right)
+            };
+            assert_eq!(render(&mut actual,&params,&events),render(&mut reference,&reference_params,&reference_events));
+            let voices=actual.rack.parts[0].instrument().unwrap().voice_census();
+            assert!(voices.iter().any(|v| v.released && (v.step-2.).abs()<0.01));
+            assert!(voices.iter().any(|v| !v.released && (v.step-1.).abs()<0.01),"old ID retuned the newer same-key owner");
+            if scripted {
+                assert!(voices.iter().any(|v| v.released && v.note==72 && (v.step-4.).abs()<0.01));
+                assert!(voices.iter().any(|v| !v.released && v.note==72 && (v.step-2.).abs()<0.01));
+            }
+            assert_eq!(actual.unsupported_host_expression,4);
+            let none=EventList::with_capacity(0);
+            assert_eq!(render(&mut actual,&params,&none),render(&mut reference,&reference_params,&none));
+        }
+    }
+
+    #[test]
+    fn unsupported_ump_groups_and_narrowed_ports_cannot_change_group_zero_pcm() {
+        use crate::{audio::Sample, import::{Group, Zone}};
+        use moose::core::events::{RawMidi1, RawUmp};
+        for scripted in [false, true] {
+            let setup = || {
+                let mut dsp = Dsp::default();
+                dsp.until_poll = usize::MAX;
+                let engine = dsp.rack.parts[0].instrument_mut().unwrap();
+                engine.reset(48_000.);
+                engine.set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
+                    vec![Zone::default()], vec![(PathBuf::new(), Sample { rate:48_000,
+                        frames:vec![[0.25;2];64_000] })]).unwrap())));
+                if scripted {
+                    let (runtime, errors) = Runtime::with_scripts(&["on note\nend on"],
+                        &mut crate::ksp::LogEngine::default(), 0, Vec::new());
+                    assert!(errors.iter().all(Option::is_none));
+                    engine.set_script(Some(Box::new(runtime)));
+                }
+                dsp
+            };
+            let mut on = EventList::with_capacity(1);
+            on.push(Event::on_port(0,0,EventBody::NoteOn2 { group:0,channel:4,note:60,
+                velocity:u16::MAX,attribute_type:0,attribute:0 }));
+            let mut other = EventList::with_capacity(16);
+            for body in [
+                EventBody::NoteOn2 { group:1,channel:4,note:60,velocity:u16::MAX,attribute_type:0,attribute:0 },
+                EventBody::NoteOff2 { group:1,channel:4,note:60,velocity:0,attribute_type:0,attribute:0 },
+                EventBody::ControlChange2 { group:1,channel:4,cc:7,value:0 },
+                EventBody::PerNotePitchBend { group:1,channel:4,note:60,value:u32::MAX },
+            ] { other.push(Event::on_port(0,0,body)); }
+            let fallback = Event::on_port(0,0,EventBody::NoteOff2 { group:0,channel:4,note:60,
+                velocity:0,attribute_type:0,attribute:0 });
+            for (port, word) in [(0,0x4184_3c00), (256,0x4084_3c00)] {
+                let token = other.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Ump {
+                    port,packet:RawUmp::new([word,0,0,0],2).unwrap() })).unwrap();
+                other.try_push_exact_companion(token,fallback).unwrap();
+            }
+            // Even a representable exact port cannot borrow a companion which
+            // names another input port. The original address is authoritative.
+            let token = other.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Midi1 {
+                port:1,message:RawMidi1::new([0x84,60,0],3).unwrap() })).unwrap();
+            other.try_push_exact_companion(token,Event::on_port(0,0,
+                EventBody::NoteOff { group:0,channel:4,note:60,velocity:0 })).unwrap();
+            // Probe each rejection independently, then the complete batch.
+            // Exact semantic companions differ from the primary fallback.
+            let mut cases = Vec::with_capacity(8);
+            for input in other.lossless_iter() {
+                let mut case = EventList::with_capacity(2);
+                match input {
+                    LosslessEventRef::Typed(event) => { case.push(*event); }
+                    LosslessEventRef::Exact(event) => {
+                        let token = case.try_push_exact_token(ExactEvent::new(event.sample_offset(),*event.body())).unwrap();
+                        for companion in event.fallback().into_iter().chain(event.companions()) {
+                            case.try_push_exact_companion(token,*companion).unwrap();
+                        }
+                    }
+                }
+                cases.push(case);
+            }
+            cases.push(other);
+            for (case_index,other) in cases.iter().enumerate() {
+            let (mut actual,mut reference) = (setup(),setup());
+            let (params,reference_params) = (SamplerParams::new(),SamplerParams::new());
+            let none = EventList::with_capacity(0);
+            let transport = TransportInfo::default();
+            let mut output = EventList::with_capacity(16);
+            let mut cx = ProcessContext::new(&transport,48_000.,128,&mut output);
+            let mut render = |dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+                let (mut left,mut right) = ([0.;128],[0.;128]);
+                let mut channels = [&mut left[..],&mut right[..]];
+                let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
+                (left,right)
+            };
+            assert_eq!(render(&mut actual,&params,&on),render(&mut reference,&reference_params,&on));
+            for _ in 0..20 { assert_eq!(render(&mut actual,&params,&none),render(&mut reference,&reference_params,&none)); }
+            let (left,right) = render(&mut actual,&params,other);
+            assert_eq!((left,right),render(&mut reference,&reference_params,&none),
+                "case={case_index} scripted={scripted}: unsupported group or narrowed port changed an audible group0 note");
+            assert!(left.iter().chain(&right).any(|x| x.abs()>0.01), "the group0 source must actually sound");
+            assert_eq!(actual.unsupported_host_expression,other.lossless_iter().count() as u64);
+            assert!(actual.rack.parts[0].instrument().unwrap().key_down(4,60));
+            assert_eq!(actual.rack.parts[0].active_voices(),1);
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_per_note_controllers_leave_same_channel_owners_unchanged_without_heap() {
+        use crate::{audio::Sample,import::{Group,Zone},modulation::{ModAssignment,ModSource,ModTarget}};
+        let setup=|| {
+            let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+            let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48000.); engine.attack=0.0001;
+            let mods=[0,127].into_iter().map(|cc| ModAssignment { cc_default: None, name:format!("CC{cc}_VOLUME"),
+                source:ModSource::MidiCc(cc),target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None }).collect();
+            let bank=Bank::from_samples(vec![Group { mods,..Group::default() }],vec![Zone::default()],vec![(PathBuf::new(),
+                Sample { rate:48000,frames:vec![[0.25;2];4096] })]).unwrap();
+            engine.set_bank(Some(Box::new(bank))); engine.cc(4,0,96); engine.cc(4,127,96);
             dsp
         };
-        let brightness = Event::on_port(64,0,EventBody::PerNoteCC {
-            group:0, channel:0, note:60, cc:74, value:u32::MAX, registered:true });
-        let address = |id| ExactNoteAddress::from_raw_signed(0,0,60,id);
-        let make_events = |expression:bool| {
-            let mut events = EventList::with_capacity(8);
-            for (at,id,kind,body) in [
-                (0,10,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
-                (16,10,ExactNoteKind::Off,EventBody::NoteOff { group:0, channel:0, note:60, velocity:0 }),
-                (16,11,ExactNoteKind::On,EventBody::NoteOn { group:0, channel:0, note:60, velocity:100 }),
-            ] {
-                let token = events.try_push_exact_token(ExactEvent::new(at,ExactEventBody::Note {
-                    kind,address:address(id),velocity:100./127. })).unwrap();
-                events.try_push_exact_companion(token,Event::on_port(at,0,body)).unwrap();
-            }
-            if expression {
-                // The old released host note is still a legitimate expression
-                // target; its simplified companion must not affect note11.
-                let token = events.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NoteExpression {
-                    expression_id:5,address:address(10),value:1. })).unwrap();
-                events.try_push_exact_companion(token,brightness).unwrap();
-                assert!(unsupported_host_brightness(&events,3));
-            }
-            events
-        };
-        let render = |dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
-            let (mut left,mut right) = ([0.;128],[0.;128]);
-            let mut output = [&mut left[..],&mut right[..]];
-            let mut buffer = AudioBuffer::from_slices_checked(&[],&mut output,128);
-            let transport = TransportInfo::default();
-            let mut midi_out = EventList::with_capacity(0);
-            let mut cx = ProcessContext::new(&transport,48000.,128,&mut midi_out);
+        let mut on=EventList::with_capacity(4);
+        for (key,id) in [(60,40),(64,41)] {
+            on.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,
+                address:ExactNoteAddress::from_raw_signed(0,4,key,id),velocity:0.8 })).unwrap();
+        }
+        let mut unsupported=EventList::with_capacity(2);
+        for (note,cc,value) in [(60,0,u32::MAX),(64,127,0)] {
+            unsupported.push(Event::on_port(0,0,EventBody::PerNoteCC { group:0,channel:4,note,cc,value,registered:true }));
+        }
+        let none=EventList::with_capacity(0);
+        let (mut actual,mut reference)=(setup(),setup());
+        let (params,reference_params)=(SamplerParams::new(),SamplerParams::new());
+        let mut outgoing=EventList::with_capacity(8);
+        let transport=TransportInfo::default();
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut outgoing);
+        let mut render=|dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+            let (mut left,mut right)=([0.;128],[0.;128]);
+            let mut channels=[&mut left[..],&mut right[..]];
+            let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
             assert_eq!(allocations(|| { Sampler::process(dsp,params,&mut buffer,events,&mut cx); }),0);
             (left,right)
         };
-        let (mut actual,mut expected) = (setup(),setup());
-        let with_expression = make_events(true);
-        let plain = make_events(false);
-        let reference = SamplerParams::new();
-        assert_eq!(render(&mut actual,&p,&with_expression),render(&mut expected,&reference,&plain));
-        assert_eq!(actual.unsupported_note_brightness,1);
-        assert_eq!(actual.rack.parts[0].cc_state()[0][74],32);
-        drain_audio_diagnostics(&p);
-        actual.until_diagnostics = 0;
-        render(&mut actual,&p,&EventList::with_capacity(0));
-        drain_audio_diagnostics(&p);
-        assert_eq!(p.shared.diagnostic_latest.lock().unwrap().as_ref().unwrap().unsupported_note_brightness,1);
+        assert_eq!(render(&mut actual,&params,&on),render(&mut reference,&reference_params,&on));
+        assert_eq!(render(&mut actual,&params,&unsupported),render(&mut reference,&reference_params,&none));
+        assert_eq!((actual.rack.parts[0].instrument().unwrap().cc_state()[4][0],actual.rack.parts[0].instrument().unwrap().cc_state()[4][127]),(96,96));
+        assert_eq!(actual.unsupported_host_expression,0,"valid native indices reach the owner bridge");
+        assert_eq!(actual.rack.parts[0].unsupported_native_controls(),2,"unmapped defaults must be reported");
+        assert_eq!(actual.rack.parts[0].active_voices(),2);
+    }
 
-        let mut raw = EventList::with_capacity(1);
-        raw.push(brightness);
-        assert!(!unsupported_host_brightness(&raw,0),"direct registered MIDI2 brightness remains supported");
-        let mut normalized = EventList::with_capacity(1);
-        let token = normalized.try_push_exact_token(ExactEvent::new(64,ExactEventBody::NormalizedNoteExpression {
-            expression_id:5,address:address(11),value:1. })).unwrap();
-        normalized.try_push_exact_companion(token,brightness).unwrap();
-        assert!(unsupported_host_brightness(&normalized,0));
-        let mut overflow = EventList::with_capacity(1);
-        let exact = ExactEvent::new(64,ExactEventBody::NoteExpression { expression_id:5,address:address(10),value:1. });
-        overflow.try_push_exact_token(exact).unwrap();
-        assert!(overflow.try_push_exact_token(exact).is_err());
-        // Adapter fallback after the exact lane fills has no origin metadata.
-        overflow.push(brightness);
-        assert!(overflow.exact_for_event(0).is_none());
-        assert!(unsupported_host_brightness(&overflow,0));
+    #[test]
+    fn malformed_midi1_data_preserves_velocity_prefix_and_live_pcm_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone}, modulation::{ModAssignment,ModSource,ModTarget}};
+        use moose::core::events::{RawMidi1,RawUmp};
+        for scripted in [false,true] {
+            let setup=|| {
+                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                let engine=dsp.rack.parts[0].instrument_mut().unwrap(); engine.reset(48_000.); engine.attack=0.0001;
+                let mods=[ModSource::Velocity,ModSource::PolyAftertouch].into_iter().map(|source| ModAssignment { cc_default: None,
+                    name:"precision gain".into(),source,target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None }).collect();
+                engine.set_bank(Some(Box::new(Bank::from_samples(vec![Group {mods,..Group::default()}],vec![Zone::default()],
+                    vec![(PathBuf::new(),Sample {rate:48_000,frames:vec![[0.25;2];64_000]})]).unwrap())));
+                if scripted {
+                    let (rt,errors)=Runtime::with_scripts(&["on note\nend on\non poly_at\nend on\non controller\nend on"],
+                        &mut crate::ksp::LogEngine::default(),0,Vec::new());
+                    assert!(errors.iter().all(Option::is_none)); engine.set_script(Some(Box::new(rt)));
+                }
+                dsp
+            };
+            let mut prepare=EventList::with_capacity(2);
+            prepare.push(Event::on_port(0,0,EventBody::ControlChange {group:0,channel:4,cc:88,value:127}));
+            prepare.push(Event::on_port(0,0,EventBody::Aftertouch {group:0,channel:4,note:60,pressure:127}));
+            let none=EventList::with_capacity(0);
+            let mut malformed=EventList::with_capacity(40);
+            let invalid=[
+                ([0xb4,88,128],3,EventBody::ControlChange {group:0,channel:4,cc:88,value:0}),
+                ([0x94,60,129],3,EventBody::NoteOn {group:0,channel:4,note:60,velocity:1}),
+                ([0x84,60,128],3,EventBody::NoteOff {group:0,channel:4,note:60,velocity:0}),
+                ([0xa4,60,128],3,EventBody::Aftertouch {group:0,channel:4,note:60,pressure:0}),
+                ([0x94,188,64],3,EventBody::NoteOn {group:0,channel:4,note:60,velocity:64}),
+                ([0x94,60,64],2,EventBody::NoteOn {group:0,channel:4,note:60,velocity:64}),
+                ([0xd4,64,0],3,EventBody::ChannelPressure {group:0,channel:4,pressure:64}),
+            ];
+            for (bytes,len,body) in invalid {
+                let token=malformed.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Midi1 {port:0,
+                    message:RawMidi1::new(bytes,len).unwrap()})).unwrap();
+                malformed.try_push_exact_companion(token,Event::on_port(0,0,body)).unwrap();
+                if len==3 && bytes[0]!=0xd4 {
+                    let word=0x2000_0000 | (u32::from(bytes[0])<<16) | (u32::from(bytes[1])<<8) | u32::from(bytes[2]);
+                    let token=malformed.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Ump {port:0,
+                        packet:RawUmp::new([word,0,0,0],1).unwrap()})).unwrap();
+                    malformed.try_push_exact_companion(token,Event::on_port(0,0,body)).unwrap();
+                }
+            }
+            // Typed constructors can also contain invalid wire data.
+            for body in [
+                EventBody::ControlChange {group:0,channel:4,cc:88,value:128},
+                EventBody::NoteOn {group:0,channel:4,note:60,velocity:129},
+                EventBody::NoteOff {group:0,channel:4,note:60,velocity:128},
+                EventBody::Aftertouch {group:0,channel:4,note:60,pressure:128},
+            ] { malformed.push(Event::on_port(0,0,body)); }
+            // Unused storage/data2 is ignored for one-data-byte messages.
+            for body in [ExactEventBody::Midi1 {port:0,message:RawMidi1::new([0xd4,64,255],2).unwrap()},
+                ExactEventBody::Ump {port:0,packet:RawUmp::new([0x20d4_40ff,0,0,0],1).unwrap()}] {
+                let mut events=EventList::with_capacity(1); events.try_push_exact(ExactEvent::new(0,body)).unwrap();
+                let LosslessEventRef::Exact(event)=events.lossless_iter().next().unwrap() else {panic!("exact packet")};
+                assert!(exact_host_input(event).is_none(),"unused byte must not invalidate channel pressure");
+            }
+            let expected=f64::from((64u16<<7)|127)/16383.;
+            let mut on=EventList::with_capacity(1);
+            on.push(Event::on_port(0,0,EventBody::NoteOn {group:0,channel:4,note:60,velocity:64}));
+            let exact_on=|velocity| {
+                let mut events=EventList::with_capacity(1);
+                events.try_push_exact(ExactEvent::new(0,ExactEventBody::Note {kind:ExactNoteKind::On,
+                    address:ExactNoteAddress::from_raw_signed(0,4,60,10),velocity})).unwrap(); events
+            };
+            let (reference_on,full_on)=(exact_on(expected),exact_on(1.));
+            let (mut actual,mut reference,mut full)=(setup(),setup(),setup());
+            let (params,reference_params,full_params)=(SamplerParams::new(),SamplerParams::new(),SamplerParams::new());
+            let transport=TransportInfo::default(); let mut output=EventList::with_capacity(16);
+            let mut cx=ProcessContext::new(&transport,48_000.,128,&mut output);
+            let mut render=|dsp:&mut Dsp,params:&SamplerParams,events:&EventList| {
+                let (mut left,mut right)=([0.;128],[0.;128]); let mut channels=[&mut left[..],&mut right[..]];
+                let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                assert_eq!(allocations(|| {Sampler::process(dsp,params,&mut buffer,events,&mut cx);}),0); (left,right)
+            };
+            for (dsp,params) in [(&mut actual,&params),(&mut reference,&reference_params),(&mut full,&full_params)] {
+                assert_eq!(render(dsp,params,&prepare),([0.;128],[0.;128]));
+            }
+            assert_eq!(render(&mut actual,&params,&malformed),([0.;128],[0.;128]),"invalid On must not sound or consume the prefix");
+            render(&mut reference,&reference_params,&none); render(&mut full,&full_params,&none);
+            render(&mut actual,&params,&on); render(&mut reference,&reference_params,&reference_on); render(&mut full,&full_params,&full_on);
+            for _ in 0..20 {
+                render(&mut actual,&params,&none); render(&mut reference,&reference_params,&none); render(&mut full,&full_params,&none);
+            }
+            let actual_pcm=render(&mut actual,&params,&malformed);
+            let expected_pcm=render(&mut reference,&reference_params,&none);
+            let full_pcm=render(&mut full,&full_params,&none);
+            let error=actual_pcm.0.iter().chain(&actual_pcm.1).zip(expected_pcm.0.iter().chain(&expected_pcm.1))
+                .fold(0f32,|error,(a,b)|error.max((a-b).abs()));
+            assert!(error<2e-5,"scripted={scripted}: malformed Off/PolyAt changed live PCM, or the preserved prefix was lost: {error}");
+            let rms=|pcm:&([f32;128],[f32;128])| (pcm.0.iter().chain(&pcm.1).map(|v|f64::from(*v).powi(2)).sum::<f64>()/256.).sqrt();
+            assert!(rms(&full_pcm)>0.01,"known reference must sound");
+            assert!((rms(&actual_pcm)/rms(&full_pcm)-expected).abs()<1e-4,"the valid next note must use the original 14-bit velocity prefix");
+            assert!(actual.rack.parts[0].instrument().unwrap().input_key_down_from(4,4,60));
+        }
+    }
+
+    #[test]
+    fn aligned_input_reroute_cancels_old_port_controls_and_returns_exact_end_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone}, modulation::{ModAssignment,ModSource,ModTarget}};
+        for scripted in [false,true] {
+            let setup=|| {
+                let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
+                dsp.align.plan.on=true; dsp.align.plan.latency_ms=20.;
+                dsp.align.plan.parts.fill(timing::Holds::of(&timing::Timing::default(),&[],20.));
+                for (slot,port,pan) in [(0,0,-1.),(1,2,1.)] {
+                    dsp.rack.controls[slot].port=port; dsp.rack.controls[slot].pan=pan;
+                    let engine=dsp.rack.parts[slot].instrument_mut().unwrap(); engine.reset(48_000.);
+                    let mods=[ModSource::Velocity,ModSource::MidiCc(1)].into_iter().map(|source| ModAssignment { cc_default: None,
+                        name:"input gain".into(),source,target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None }).collect();
+                    engine.set_bank(Some(Box::new(Bank::from_samples(vec![Group {mods,..Group::default()}],vec![Zone::default()],
+                        vec![(PathBuf::new(),Sample {rate:48_000,frames:vec![[0.25;2];64_000]})]).unwrap())));
+                    if scripted {
+                        let (rt,errors)=Runtime::with_scripts(&["on note\nwait(1000)\nend on\non controller\nwait(1000)\nend on"],
+                            &mut crate::ksp::LogEngine::default(),0,Vec::new());
+                        assert!(errors.iter().all(Option::is_none)); engine.set_script(Some(Box::new(rt)));
+                    }
+                    engine.cc_from(4,4,1,127);
+                }
+                dsp
+            };
+            let old_address=ExactNoteAddress::from_raw_signed(0,4,60,10);
+            let mut old=EventList::with_capacity(4);
+            old.try_push_exact(ExactEvent::new(0,ExactEventBody::Note {kind:ExactNoteKind::On,address:old_address,velocity:1.})).unwrap();
+            for (cc,value) in [(88,127),(1,0)] {old.push(Event::on_port(0,0,EventBody::ControlChange {group:0,channel:4,cc,value}));}
+            let survivor=Event::on_port(0,2,EventBody::NoteOn {group:0,channel:4,note:60,velocity:100});
+            old.push(survivor);
+            let mut unaffected=EventList::with_capacity(1); unaffected.push(survivor);
+            let mut fresh=EventList::with_capacity(2);
+            fresh.push(Event::on_port(0,1,EventBody::ControlChange {group:0,channel:4,cc:1,value:127}));
+            fresh.push(Event::on_port(0,1,EventBody::NoteOn {group:0,channel:4,note:60,velocity:80}));
+            let none=EventList::with_capacity(0);
+            let (mut actual,mut reference)=(setup(),setup());
+            let (params,reference_params)=(SamplerParams::new(),SamplerParams::new());
+            let transport=TransportInfo::default(); let mut output=EventList::with_capacity(16);
+            let mut ends=Vec::with_capacity(4);
+            let mut render=|dsp:&mut Dsp,params:&SamplerParams,events:&EventList,record:bool| {
+                let (mut left,mut right)=([0.;128],[0.;128]); let mut channels=[&mut left[..],&mut right[..]];
+                let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                let mut cx=ProcessContext::new(&transport,48_000.,128,&mut output);
+                assert_eq!(allocations(|| {Sampler::process(dsp,params,&mut buffer,events,&mut cx);}),0);
+                if record {for event in output.lossless_iter() {
+                    if let LosslessEventRef::Exact(event)=event && let ExactEventBody::Note {kind:ExactNoteKind::End,address,..}=*event.body() {
+                        ends.push((address,event.sample_offset()));
+                    }
+                }}
+                output.clear(); (left,right)
+            };
+            assert_eq!(render(&mut actual,&params,&old,true),([0.;128],[0.;128]));
+            assert_eq!(render(&mut reference,&reference_params,&unaffected,false),([0.;128],[0.;128]));
+            assert!(actual.align.host_note_at(1).is_none(),"empty slots must not retain additional exact note owners");
+            assert!(actual.rack.parts[2..].iter().all(|engine| !engine.host_note_present(crate::engine::HostNote {
+                port:0,channel:4,key:60,id:10,clap:true })),"empty slots must not admit silent exact roots");
+            for (dsp,params) in [(&actual,&params),(&reference,&reference_params)] {
+                let mut mix=crate::engine::Mix {parts:dsp.rack.controls.clone(),buses:dsp.rack.bus_controls};
+                mix.parts[0].port=1;
+                params.shared.controls.push(mix).ok().unwrap();
+            }
+            assert_eq!(render(&mut actual,&params,&fresh,true),render(&mut reference,&reference_params,&fresh,false));
+            for _ in 0..24 {
+                let actual_pcm=render(&mut actual,&params,&none,true);
+                let reference_pcm=render(&mut reference,&reference_params,&none,false);
+                let error=actual_pcm.0.iter().chain(&actual_pcm.1).zip(reference_pcm.0.iter().chain(&reference_pcm.1))
+                    .fold(0f32,|error,(a,b)|error.max((a-b).abs()));
+                assert!(error<2e-5,"scripted={scripted}: old-port delayed note/controller leaked across reroute or another part lost its queued note: {error}");
+            }
+            let (left,right)=render(&mut actual,&params,&none,true);
+            let rms=|pcm:&[f32]|(pcm.iter().map(|x|f64::from(*x).powi(2)).sum::<f64>()/pcm.len() as f64).sqrt();
+            assert!(rms(&left)>0.005 && rms(&right)>0.005,"new port and unaffected port must both sound");
+            assert!((rms(&left)/rms(&right)-0.8).abs()<1e-4,"old-port CC88 must not alter new-port velocity80");
+            drop(render);
+            assert_eq!(ends,[(old_address,0)],"canceled pre-On exact identity must end once on its original port");
+            assert_eq!(actual.rack.parts[0].active_voices(),1);
+            assert_eq!(actual.rack.parts[1].active_voices(),1);
+            assert!(actual.rack.parts[0].instrument().unwrap().input_key_down_from(4,4,60));
+            assert!(actual.rack.parts[1].instrument().unwrap().input_key_down_from(4,4,60));
+        }
+    }
+
+    #[test]
+    fn offline_stream_failure_stays_failed_until_host_reset_and_reports_origin_without_heap() {
+        use crate::{audio::Sample, import::{Group,Instrument,Zone}};
+        let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("disappeared.wav");
+        let spec=hound::WavSpec {channels:2,sample_rate:48_000,bits_per_sample:32,sample_format:hound::SampleFormat::Float};
+        let mut wav=hound::WavWriter::create(&path,spec).unwrap();
+        for _ in 0..64_000 {wav.write_sample(0.25f32).unwrap();wav.write_sample(0.25f32).unwrap();}
+        wav.finalize().unwrap();
+        let source=Instrument {path:dir.path().join("source.nki"),groups:vec![Group::default()],
+            zones:vec![Zone {sample:path.clone(),..Zone::default()}],..Instrument::default()};
+        let bank=Bank::load_bare(&source).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX; dsp.installed_generation[0]=7;
+        dsp.rack.parts[0].reset(48_000.); dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
+        let params=SamplerParams::new();
+        let mut on=EventList::with_capacity(1);
+        on.push(Event::new(0,EventBody::NoteOn {group:0,channel:0,note:60,velocity:127}));
+        let none=EventList::with_capacity(0); let transport=TransportInfo::default();
+        let mut output=EventList::with_capacity(8);
+        let mut render=|dsp:&mut Dsp,events:&EventList| {
+            let (mut left,mut right)=([0.;128],[0.;128]); let mut channels=[&mut left[..],&mut right[..]];
+            let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+            let mut cx=ProcessContext::new(&transport,48_000.,128,&mut output).with_process_mode(moose::core::ProcessMode::Offline);
+            let mut status=ProcessStatus::Normal;
+            assert_eq!(allocations(|| {status=Sampler::process(dsp,&params,&mut buffer,events,&mut cx);}),0);
+            (status,left,right)
+        };
+        let (status,left,right)=render(&mut dsp,&on);
+        assert!(matches!(status,ProcessStatus::Error),"missing streamed audio must fail an offline render");
+        assert_eq!((left,right),([0.;128],[0.;128]));
+        let failure=dsp.stream_failure.unwrap();
+        assert_eq!((failure.part,failure.generation,failure.error.sample),(0,7,0));
+        assert!(matches!(failure.error.kind,crate::engine::StreamErrorKind::Decode|crate::engine::StreamErrorKind::Unavailable));
+        let diagnostic=params.shared.diagnostic_audio.pop().expect("stream failure forces an audio snapshot");
+        assert_eq!(diagnostic.stream_failure,Some(failure));
+        assert_eq!(diagnostic.parts[0].stream_error,Some(failure));
+        assert!(matches!(render(&mut dsp,&none).0,ProcessStatus::Error),"a host ignoring Error must not receive later success");
+        let resident=|level| Bank::from_samples(vec![Group::default()],vec![Zone::default()],
+            vec![(PathBuf::new(),Sample {rate:48_000,frames:vec![[level;2];4096]})]).unwrap();
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(resident(0.)))); dsp.installed_generation[0]=8;
+        assert!(matches!(render(&mut dsp,&on).0,ProcessStatus::Error),"installing another source does not reset a failed export");
+        assert_eq!(dsp.stream_failure,Some(failure),"diagnostics must retain the failed source's generation");
+        assert_eq!(allocations(|| {Sampler::reset(&mut dsp,&params,&AudioConfig::new(48_000.,128));}),0);
+        let (status,left,right)=render(&mut dsp,&on);
+        assert!(matches!(status,ProcessStatus::Normal),"genuinely silent resident PCM is successful after explicit reset");
+        assert_eq!((left,right),([0.;128],[0.;128]));
+        assert!(dsp.stream_failure.is_none() && dsp.stream_errors.iter().all(Option::is_none));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(resident(0.25))));
+        assert!(matches!(render(&mut dsp,&on).0,ProcessStatus::Normal));
+        let (_,left,right)=render(&mut dsp,&none);
+        assert!(left.iter().chain(&right).any(|sample|sample.abs()>0.01),"recovered known source must actually sound");
+    }
+
+    #[test]
+    fn exact_pressure_and_brightness_keep_same_pitch_owners_audibly_precise_without_heap() {
+        use moose::core::{ExactEvent, ExactEventBody, ExactNoteAddress, ExactNoteKind};
+        use crate::modulation::{ModAssignment, ModSource, ModTarget};
+        let address = |id| ExactNoteAddress::from_raw_signed(0,4,60,id);
+        let expression = |id, value, kind| match kind {
+            0 => ExactEventBody::NoteExpression { expression_id:5,address:address(id),value },
+            1 => ExactEventBody::NoteExpression { expression_id:6,address:address(id),value },
+            2 => ExactEventBody::DetailedPolyPressure { address:address(id),pressure:value as f32 },
+            _ => ExactEventBody::NormalizedNoteExpression { expression_id:5,address:address(id),value },
+        };
+        for kind in 0..4 {
+            for (mode,script) in [
+                (0,None),
+                (1,Some("on init\nend on")),
+                (2,Some("on init\ndeclare ui_slider $seen(0,127)\nend on\non poly_at\n$seen := %POLY_AT[$POLY_AT_NUM]\nwait(1000)\nend on")),
+                (3,Some("on init\ndeclare ui_slider $seen(0,127)\nend on\non poly_at\n$seen := %POLY_AT[$POLY_AT_NUM]\nif ($seen < 127)\nignore_controller\nend if\nend on")),
+            ] {
+                let scripted = script.is_some();
+                let params = SamplerParams::new();
+                let group = import::Group { mods:vec![ModAssignment { cc_default: None,
+                    name:"CONTINUOUS_VOLUME".into(),
+                    source:if kind==0 || kind==3 { ModSource::MidiCc(74) } else { ModSource::MonoAftertouch },
+                    target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None,
+                }], ..Default::default() };
+                let bank = Bank::from_samples(vec![group],vec![import::Zone::default()],vec![(PathBuf::new(),
+                    crate::audio::Sample { rate:48000,frames:vec![[0.25;2];64000] })]).unwrap();
+                let mut dsp = Dsp::default();
+                dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
+                if let Some(script) = script {
+                    let (runtime,errors) = crate::ksp::Runtime::with_scripts(&[script],
+                        &mut crate::ksp::LogEngine::new(Vec::new(),48000.),8,Vec::new());
+                    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+                    dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(runtime)));
+                }
+                let mut on = EventList::with_capacity(8);
+                for (id,pan) in [(100,0.),(101,1.)] {
+                    let note = if kind>=2 { ExactEventBody::DetailedNote { kind:ExactNoteKind::On,address:address(id),velocity:0.8,tuning:0.,length:None } }
+                        else { ExactEventBody::Note { kind:ExactNoteKind::On,address:address(id),velocity:0.8 } };
+                    let pan = if kind>=2 { ExactEventBody::NormalizedNoteExpression { expression_id:1,address:address(id),value:pan } }
+                        else { ExactEventBody::NoteExpression { expression_id:1,address:address(id),value:pan } };
+                    on.try_push_exact(ExactEvent::new(0,note)).unwrap();
+                    on.try_push_exact(ExactEvent::new(0,pan)).unwrap();
+                    on.try_push_exact(ExactEvent::new(0,expression(id,1.,kind))).unwrap();
+                }
+                let none = EventList::with_capacity(0);
+                let mut midi_out = EventList::with_capacity(32);
+                let transport = TransportInfo::default();
+                let mut process = |dsp:&mut Dsp,events:&EventList| {
+                    let (mut left,mut right) = ([0.;128],[0.;128]);
+                    let mut channels = [&mut left[..],&mut right[..]];
+                    let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                    let mut cx = ProcessContext::new(&transport,48000.,128,&mut midi_out);
+                    assert_eq!(allocations(|| { Sampler::process(dsp,&params,&mut buffer,events,&mut cx); }),0);
+                    let rms = |pcm:&[f32]| (pcm.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>()/pcm.len() as f64).sqrt();
+                    [rms(&left),rms(&right)]
+                };
+                process(&mut dsp,&on);
+                for _ in 0..24 { process(&mut dsp,&none); }
+                let full = process(&mut dsp,&none);
+                assert!(full[0]>0.01 && full[1]>0.01,"kind={kind} scripted={scripted}: fixture inaudible");
+                let values: [f64;2] = [0.5001,0.5030];
+                assert_eq!((values[0]*127.).round(),(values[1]*127.).round());
+                let mut precise = EventList::with_capacity(4);
+                for (id,value) in [(100,values[0]),(101,values[1])] {
+                    precise.try_push_exact(ExactEvent::new(0,expression(id,value,kind))).unwrap();
+                }
+                process(&mut dsp,&precise);
+                for _ in 0..24 { process(&mut dsp,&none); }
+                let actual = process(&mut dsp,&none);
+                for channel in 0..2 {
+                    let expected = if kind==2 && mode==3 { 1. }
+                        else if kind==2 { f64::from(values[channel] as f32) } else { values[channel] };
+                    assert!((actual[channel]/full[channel]-expected).abs()<1e-4,
+                        "kind={kind} mode={mode} channel={channel}: audiblevalue={} expected={expected}",actual[channel]/full[channel]);
+                }
+                let expected_ratio = if kind==2 && mode==3 { 1. } else { values[0]/values[1] };
+                assert!((actual[0]/actual[1]-expected_ratio).abs()<1e-4,"same-pitch expression owners merged");
+                if mode>=2 {
+                    let seen = &dsp.rack.parts[0].instrument().unwrap().script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_VALUE"];
+                    assert_eq!(*seen,crate::ksp::Value::Int(if kind==2 { 64 } else { 0 }),
+                        "native pressure callbacks must retain their explicit MIDI1 projection; CLAP expression has its own contract");
+                }
+                let mut malformed = EventList::with_capacity(4);
+                for value in [f64::NAN,f64::INFINITY,-0.1,1.1] {
+                    malformed.try_push_exact(ExactEvent::new(0,expression(100,value,kind))).unwrap();
+                }
+                let unchanged = process(&mut dsp,&malformed);
+                assert!((unchanged[0]-actual[0]).abs()<1e-6 && (unchanged[1]-actual[1]).abs()<1e-6,
+                    "malformed exact control changed accepted owner state");
+                assert_eq!(dsp.unsupported_host_expression,4);
+                assert_eq!(dsp.rack.parts[0].instrument().unwrap().cc_state()[4][74],0,"exact brightness escaped into channel CC state");
+            }
+        }
+    }
+
+    #[test]
+    fn midi2_physical_controls_keep_same_projection_values_audibly_distinct_without_heap() {
+        use crate::modulation::{ModAssignment,ModSource,ModTarget};
+        let encode = |value:f64| (value * f64::from(u32::MAX)).round() as u32;
+        for kind in 0..4 {
+            for (mode,script) in [
+                (0,None),
+                (1,Some("on init\nend on")),
+                (2,Some("on init\nend on\non controller\nwait(1000)\nend on")),
+                (3,Some("on init\nend on\non controller\nif ($CC_NUM = $VCC_PITCH_BEND)\nif ($PITCH_BEND < 8191)\nignore_controller\nend if\nelse\nif (%CC[$CC_NUM] < 127)\nignore_controller\nend if\nend if\nend on")),
+            ] {
+                for exact_wire in [false,true] {
+                let params = SamplerParams::new();
+                let group = import::Group { mods:vec![ModAssignment { cc_default: None,
+                    name:"PHYSICAL_CONTROL_VOLUME".into(),
+                    source:match kind { 0 => ModSource::MidiCc(11),1 => ModSource::MonoAftertouch,2 => ModSource::PitchBend,_ => ModSource::MidiCc(74) },
+                    target:ModTarget::Volume,intensity:1.,invert:false,lag_ms:0,shaper:None,
+                }],..Default::default() };
+                let mut dsp = Dsp::default();
+                dsp.until_poll = usize::MAX;
+                dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![group],vec![import::Zone::default()],
+                    vec![(PathBuf::new(),crate::audio::Sample { rate:48000,frames:(0..64000).map(|n| if kind==3 { [(std::f32::consts::TAU*750.*n as f32/48000.).sin()*0.25;2] } else { [0.25;2] }).collect() })]).unwrap())));
+                // Both physical channels route to logical home zero. Accepted
+                // control provenance must still reach only its original voices.
+                if let Some(source) = script {
+                    let (runtime,errors) = Runtime::with_scripts(&[source],&mut crate::ksp::LogEngine::new(Vec::new(),48000.),8,Vec::new());
+                    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+                    dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(runtime)));
+                }
+                let control = |channel,value| match kind {
+                    0 => EventBody::ControlChange2 { group:0,channel,cc:11,value },
+                    1 => EventBody::ChannelPressure2 { group:0,channel,pressure:value },
+                    2 => EventBody::PitchBend2 { group:0,channel,value },
+                    _ => EventBody::PerNoteCC { group:0,channel,note:60,cc:74,value,registered:true },
+                };
+                let mut on = EventList::with_capacity(8);
+                for (channel,id,pan) in [(4,100,0.),(7,101,1.)] {
+                    let address = ExactNoteAddress::from_raw_signed(0,channel,60,id);
+                    if kind==3 {
+                        on.push(Event::on_port(0,0,EventBody::ControlChange2 { group:0,channel:channel as u8,cc:74,value:u32::MAX }));
+                    } else { on.push(Event::on_port(0,0,control(channel as u8,u32::MAX))); }
+                    on.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address,velocity:0.8 })).unwrap();
+                    on.try_push_exact(ExactEvent::new(0,ExactEventBody::NoteExpression { expression_id:1,address,value:pan })).unwrap();
+                }
+                let none = EventList::with_capacity(0);
+                let transport = TransportInfo::default();
+                let mut output = EventList::with_capacity(4);
+                let mut process = |events:&EventList,port:u8| {
+                    dsp.rack.controls[0].port=port;
+                    let (mut left,mut right) = ([0.;128],[0.;128]);
+                    let mut channels = [&mut left[..],&mut right[..]];
+                    let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,128);
+                    let mut cx = ProcessContext::new(&transport,48000.,128,&mut output);
+                    assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,events,&mut cx); }),0);
+                    [left,right].map(|pcm| (pcm.into_iter().map(|v| f64::from(v).powi(2)).sum::<f64>()/128.).sqrt())
+                };
+                process(&on,0);
+                for _ in 0..32 { process(&none,0); }
+                let full = process(&none,0);
+                assert!(full.iter().all(|v| *v>0.01),"control fixture must sound");
+                if kind==3 {
+                    let mut other_port = EventList::with_capacity(1);
+                    other_port.push(Event::on_port(0,1,control(4,0)));
+                    let unchanged = process(&other_port,1);
+                    for channel in 0..2 {
+                        assert!((unchanged[channel]-full[channel]).abs()<1e-6,
+                            "other port changed an exact owner without its own brightness override");
+                    }
+                }
+                let raw = if kind==2 { [encode(0.50001),encode(0.50002)] }
+                    else { [encode(0.5001),encode(0.5030)] };
+                let shift = if kind==2 { 18 } else { 25 };
+                assert_eq!(raw[0]>>shift,raw[1]>>shift,"values must share their original wire projection");
+                let mut edit = EventList::with_capacity(2);
+                for (channel,value) in [(4,raw[0]),(7,raw[1])] {
+                    let companion = Event::on_port(0,0,control(channel,value));
+                    if exact_wire {
+                        let word = match kind { 0 => 0x40b0_0b00,1 => 0x40d0_0000,2 => 0x40e0_0000,_ => 0x4000_3c4a } | (u32::from(channel)<<16);
+                        let token = edit.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Ump { port:0,
+                            packet:moose::core::events::RawUmp::new([word,value,0,0],2).unwrap() })).unwrap();
+                        edit.try_push_exact_companion(token,companion).unwrap();
+                    } else { edit.push(companion); }
+                }
+                process(&edit,0);
+                for _ in 0..32 { process(&none,0); }
+                let actual = process(&none,0);
+                let expected = raw.map(|raw| if mode==3 && kind!=3 { if kind==2 { f64::from(u32::MAX)/4294967296. } else { 1. } }
+                    else if kind==2 { f64::from(raw)/4294967296. }
+                    else { f64::from(raw)/f64::from(u32::MAX) });
+                let full_source = if kind==2 { f64::from(u32::MAX)/4294967296. } else { 1. };
+                for channel in 0..2 {
+                    assert!((actual[channel]/full[channel]-expected[channel]/full_source).abs()<5e-7,
+                        "kind={kind} raw={exact_wire} mode={mode} channel={channel}: full-resolution value was narrowed or ignored callback bypassed: {} expected={}",actual[channel]/full[channel],expected[channel]);
+                }
+                assert!((actual[0]/actual[1]-expected[0]/expected[1]).abs()<5e-7,
+                    "physical channels lost independent control values");
+                if kind==3 {
+                    // Reassign the part's input port while its old exact roots
+                    // remain resident. A new port's per-note value must not
+                    // retarget those roots through channel/key masking.
+                    let mut other_port = EventList::with_capacity(2);
+                    let companion = Event::on_port(0,1,control(4,0));
+                    if exact_wire {
+                        let token = other_port.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Ump { port:1,
+                            packet:moose::core::events::RawUmp::new([0x4004_3c4a,0,0,0],2).unwrap() })).unwrap();
+                        other_port.try_push_exact_companion(token,companion).unwrap();
+                    } else { other_port.push(companion); }
+                    let unchanged = process(&other_port,1);
+                    for channel in 0..2 {
+                        assert!((unchanged[channel]-actual[channel]).abs()<1e-6,
+                            "new input port retargeted an old exact owner");
+                    }
+                }
+                let mut invalid = EventList::with_capacity(32);
+                for body in [control(20,0),
+                    EventBody::ControlChange2 { group:0,channel:4,cc:128,value:0 },
+                ] { invalid.push(Event::on_port(0,0,body)); }
+                if kind==3 {
+                    for (channel,note) in [(20,60),(4,188)] {
+                        for body in [
+                            EventBody::PerNotePitchBend { group:0,channel,note,value:u32::MAX },
+                            EventBody::PolyPressure2 { group:0,channel,note,pressure:0 },
+                            EventBody::PerNoteCC { group:0,channel,note,cc:7,value:0,registered:true },
+                            EventBody::PerNoteCC { group:0,channel,note,cc:10,value:0,registered:true },
+                            EventBody::PerNoteCC { group:0,channel,note,cc:74,value:0,registered:true },
+                        ] { invalid.push(Event::on_port(0,0,body)); }
+                    }
+                    // A raw packet with the reserved high note bit set must not
+                    // be masked into note60 by its decoded companion.
+                    for (word,value,body) in [
+                        (0x4064_bc00,u32::MAX,EventBody::PerNotePitchBend { group:0,channel:4,note:60,value:u32::MAX }),
+                        (0x40a4_bc00,0,EventBody::PolyPressure2 { group:0,channel:4,note:60,pressure:0 }),
+                        (0x4004_bc07,0,EventBody::PerNoteCC { group:0,channel:4,note:60,cc:7,value:0,registered:true }),
+                        (0x4004_bc0a,0,EventBody::PerNoteCC { group:0,channel:4,note:60,cc:10,value:0,registered:true }),
+                        (0x4004_bc4a,0,EventBody::PerNoteCC { group:0,channel:4,note:60,cc:74,value:0,registered:true }),
+                    ] {
+                        let token = invalid.try_push_exact_token(ExactEvent::new(0,ExactEventBody::Ump { port:0,
+                            packet:moose::core::events::RawUmp::new([word,value,0,0],2).unwrap() })).unwrap();
+                        invalid.try_push_exact_companion(token,Event::on_port(0,0,body)).unwrap();
+                    }
+                    for cc in [7,10,74] {
+                        invalid.push(Event::on_port(0,0,EventBody::PerNoteCC { group:0,channel:4,note:60,cc,value:0,registered:false }));
+                    }
+                }
+                let unchanged = process(&invalid,0);
+                for channel in 0..2 {
+                    assert!((unchanged[channel]-actual[channel]).abs()<1e-6,
+                        "malformed channel/index altered accepted PCM");
+                }
+                assert_eq!(dsp.unsupported_host_expression,if kind==3 { 17 } else { 2 },
+                    "malformed addresses reject at ingress");
+                assert_eq!(dsp.rack.parts[0].unsupported_native_controls(),if kind==3 { 3 } else { 0 },
+                    "valid assignable indices have no default DSP mapping");
+                assert_eq!(dsp.rack.parts[0].instrument().unwrap().cc_state()[4][74],if kind==3 { 127 } else { 0 },"per-note brightness escaped into physical channel state");
+                }
+            }
+        }
     }
 
     #[test]
@@ -7535,7 +8512,7 @@ end on"#;
             dsp.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];4096] })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
             let mut on=EventList::with_capacity(4);
             on.try_push_exact(ExactEvent::new(64,ExactEventBody::DetailedNote {
                 kind:ExactNoteKind::On,address,velocity:0.8,tuning:0.,length:Some(length) })).unwrap();
@@ -7562,7 +8539,7 @@ end on"#;
             else { reference=Some(pcm); }
             assert_eq!(allocations(|| { render(&mut dsp,&none); }),0);
             assert!(dsp.rack.parts[0].host_key_held(4,60),"length hint released the exact host owner");
-            assert!(dsp.rack.parts[0].voice_census().iter().any(|v| !v.released));
+            assert!(dsp.rack.parts[0].instrument().unwrap().voice_census().iter().any(|v| !v.released));
             assert_eq!(allocations(|| { render(&mut dsp,&off); }),0);
             assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close the owner");
             assert_eq!(dsp.unsupported_host_expression,0);
@@ -7584,11 +8561,11 @@ end on"#;
             dsp.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000, frames:(0..24000).map(|n| [0.2+n as f32/240000.;2]).collect() })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
             if scripted {
                 let script="on note\nignore_event($EVENT_ID)\nwait(1000)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,-1)\nend on";
                 let (rt,errors)=Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::new(Vec::new(),48000.),0,Vec::new());
-                assert!(errors.iter().all(Option::is_none)); dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+                assert!(errors.iter().all(Option::is_none)); dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
             }
             dsp.align.plan.on=holding; dsp.align.plan.transport_only=false;
             dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
@@ -7622,7 +8599,7 @@ end on"#;
             let earliest=16+usize::from(holding)*480+usize::from(scripted)*48;
             let first_sound=first_sound.expect("valid nonzero VST3 tuning silenced the note");
             assert!((earliest..earliest+32).contains(&first_sound),"offset/alignment/script wait lost: {first_sound} vs {earliest}");
-            let voices=dsp.rack.parts[0].voice_census();
+            let voices=dsp.rack.parts[0].instrument().unwrap().voice_census();
             assert_eq!(voices.len(),2,"duplicate ID created or retuned a root");
             for semitones in [2.5,-3.5] {
                 let expected=2f64.powf(semitones/12.);
@@ -7634,7 +8611,7 @@ end on"#;
                 let pattern=HostPattern { port:0,channel:4,key:60,id:42,clap:false };
                 assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Tune(4.25)),0,0,holding,48000.)),0);
                 for _ in 0..4 { assert_eq!(allocations(|| { render(&mut dsp,&none); }),0); }
-                let voices=dsp.rack.parts[0].voice_census();
+                let voices=dsp.rack.parts[0].instrument().unwrap().voice_census();
                 for semitones in [4.25,-3.5] {
                     assert_eq!(voices.iter().filter(|v| (v.step-2f64.powf(semitones/12.)).abs()<1e-6).count(),1,
                         "later owner expression changed its same-key neighbor");
@@ -7660,7 +8637,7 @@ end on"#;
                 form1:0.5,inharmonic:0.5,..Default::default() }),..Default::default() };
             let bank=Bank::from_samples(vec![group],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];49152] })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
             let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
             let mut on=EventList::with_capacity(1);
             on.try_push_exact(ExactEvent::new(16,ExactEventBody::DetailedNote {
@@ -7680,7 +8657,7 @@ end on"#;
             };
             for block in 0..8 {
                 assert_eq!(allocations(|| render(&mut dsp,if block==0 { &on } else { &none })),0);
-                let voices=dsp.rack.parts[0].voice_census();
+                let voices=dsp.rack.parts[0].instrument().unwrap().voice_census();
                 assert_eq!(voices.len(),1,"finite onset tuning was rejected");
                 // The existing sample traversal cap and overflow-safe wavetable
                 // clock bound actual motion, independently of the cached ratio.
@@ -7702,7 +8679,7 @@ end on"#;
         for (part,size) in [(0,256),(1,24000)] {
             dsp.rack.parts[part].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];size] })]).unwrap();
-            dsp.rack.parts[part].set_bank(Some(Box::new(bank)));
+            dsp.rack.parts[part].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
         }
         let address=|id| ExactNoteAddress::from_raw_signed(0,4,60,id);
         let mut on=EventList::with_capacity(4);
@@ -7725,7 +8702,7 @@ end on"#;
             Sampler::process(&mut dsp,&params,&mut buffer,&on,&mut cx);
             Sampler::process(&mut dsp,&params,&mut buffer,&reuse,&mut cx);
         }),0);
-        let voices=dsp.rack.parts[1].voice_census();
+        let voices=dsp.rack.parts[1].instrument().unwrap().voice_census();
         assert!(voices.iter().any(|v| v.released && v.step>1.9));
         assert!(voices.iter().any(|v| !v.released && (v.step-1.).abs()<0.01),"old-id expression changed the new same-key note");
         assert!(params.shared.heard[60].load(Ordering::Relaxed)>0,"old key-up cleared the newer host key");
@@ -7770,17 +8747,129 @@ end on"#;
         let transport=TransportInfo::default(); let mut output=EventList::with_capacity(1);
         let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
         assert_eq!(allocations(|| {
-            feed_host_input(&mut dsp,&params,In::HostOn(first,100,0.),0,0,false,48000.);
-            feed_host_input(&mut dsp,&params,In::HostOn(second,100,0.),0,0,false,48000.);
+        feed_host_input(&mut dsp,&params,In::HostOn(first,crate::midi::Velocity::from_midi1(100),0.),0,0,false,48000.);
+        feed_host_input(&mut dsp,&params,In::HostOn(second,crate::midi::Velocity::from_midi1(100),0.),0,0,false,48000.);
             feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.);
-            finish_host_notes(&mut dsp,&mut cx,127);
+            finish_host_notes(&mut dsp,&mut cx,128);
             assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
             assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
             cx.output_events.clear();
-            finish_host_notes(&mut dsp,&mut cx,127);
+            finish_host_notes(&mut dsp,&mut cx,128);
             assert_eq!(dsp.host_note_end_rejections,1);
             assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
         }),0);
+    }
+
+    #[test]
+    fn exact_note_end_at_exclusive_eof_retries_next_block_at_zero_without_heap() {
+        use crate::{audio::Sample, import::{Group,Zone}};
+        let params = SamplerParams::new();
+        // Sampler::process applies the host attack parameter to each engine;
+        // configure that source rather than an engine field it overwrites.
+        params.attack.set_value(0.0001);
+        let mut dsp = Dsp::default();
+        dsp.until_poll = usize::MAX;
+        dsp.rack.parts[0].reset(48000.);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
+            vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.25;2];16] })]).unwrap())));
+        let address = ExactNoteAddress::from_raw_signed(0,4,60,99);
+        let mut input = EventList::with_capacity(4);
+        input.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address,velocity:0.8 })).unwrap();
+        input.try_push_exact(ExactEvent::new(1,ExactEventBody::Note { kind:ExactNoteKind::Off,address,velocity:0.5 })).unwrap();
+        let none = EventList::with_capacity(0);
+        let transport = TransportInfo::default();
+        let mut output = EventList::with_capacity(4);
+        let mut process = |events:&EventList,output:&mut EventList| {
+            let (mut left,mut right) = ([0.;16],[0.;16]);
+            let mut channels = [&mut left[..],&mut right[..]];
+            let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,16);
+            let mut cx = ProcessContext::new(&transport,48000.,16,output);
+            assert_eq!(allocations(|| { Sampler::process(&mut dsp,&params,&mut buffer,events,&mut cx); }),0);
+            left
+        };
+        let first = process(&input,&mut output);
+        assert!(first.iter().any(|x| x.abs()>0.001),"known sixteen-frame source must sound");
+        assert!(output.lossless_iter().all(|e| !matches!(e,LosslessEventRef::Exact(e)
+            if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))),
+            "exclusive EOF was clamped into the last audible sample");
+        process(&none,&mut output);
+        let ends: Vec<_> = output.lossless_iter().filter_map(|e| match e {
+            LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address:a,.. } if *a==address) => Some(e.sample_offset()),
+            _ => None,
+        }).collect();
+        assert_eq!(ends,[0],"boundary note end must occur once at the next block's offset zero");
+    }
+
+    #[test]
+    fn rejected_finite_note_end_keeps_its_timestamp_through_later_physical_stop() {
+        use crate::{audio::Sample, engine::HostNote, import::{Group,Zone}};
+        for scripted in [false,true] { for same_block_stop in [false,true] { for held_until_stop in [false,true] {
+        if held_until_stop && !same_block_stop { continue; }
+        let terminal = if held_until_stop {48} else {16};
+        let params = SamplerParams::new();
+        params.attack.set_value(0.0001);
+        let mut dsp = Dsp::default();
+        dsp.until_poll = usize::MAX;
+        dsp.rack.parts[0].reset(48000.);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(Bank::from_samples(vec![Group::default()],
+            vec![Zone::default()], vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.25;2];16] })]).unwrap())));
+        if scripted {
+            let (rt, errors) = crate::ksp::Runtime::with_scripts(&["on note\nend on\non release\nend on"],
+                &mut crate::ksp::LogEngine::default(),0,Vec::new());
+            assert!(errors.iter().all(Option::is_none));
+            dsp.rack.parts[0].instrument_mut().unwrap().set_script(Some(Box::new(rt)));
+        }
+        let owner = HostNote { port:0,channel:4,key:60,id:109,clap:true };
+        let address = ExactNoteAddress::from_raw_signed(0,4,60,109);
+        let mut onset = EventList::with_capacity(3);
+        onset.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address,velocity:0.8 })).unwrap();
+        if !held_until_stop {
+            onset.try_push_exact(ExactEvent::new(1,ExactEventBody::Note { kind:ExactNoteKind::Off,address,velocity:0.5 })).unwrap();
+        }
+        if same_block_stop {
+            onset.push(Event::on_port(48,0,EventBody::ControlChange { group:0,channel:4,cc:120,value:0 }));
+        }
+        if held_until_stop {
+            onset.try_push_exact(ExactEvent::new(48,ExactEventBody::Note { kind:ExactNoteKind::Off,address,velocity:0.5 })).unwrap();
+        }
+        let mut stop = EventList::with_capacity(1);
+        stop.push(Event::on_port(8,0,EventBody::ControlChange { group:0,channel:4,cc:120,value:0 }));
+        let none = EventList::with_capacity(0);
+        let transport = TransportInfo::default();
+        let mut rejected = EventList::with_capacity(0);
+        let mut output = EventList::with_capacity(2);
+        let process = |dsp:&mut Dsp, events:&EventList, output:&mut EventList| {
+            let (mut left,mut right) = ([0.;64],[0.;64]);
+            let mut channels = [&mut left[..],&mut right[..]];
+            let mut buffer = AudioBuffer::from_slices_checked(&[],&mut channels,64);
+            let mut cx = ProcessContext::new(&transport,48000.,64,output);
+            assert_eq!(allocations(|| { Sampler::process(dsp,&params,&mut buffer,events,&mut cx); }),0);
+            left
+        };
+        let first = process(&mut dsp,&onset,&mut rejected);
+        assert!(first[..16].iter().any(|x| x.abs()>0.001));
+        assert!(first[16..].iter().all(|x| *x==0.),"finite source must end at authored frame sixteen");
+        assert_eq!(dsp.host_note_end_rejections,1);
+        assert!(dsp.rack.parts[0].host_note_present(owner));
+        assert!(!dsp.rack.parts[0].host_note_pending(owner));
+        assert_eq!(dsp.rack.parts[0].host_note_end_at(owner),Some(terminal),
+            "a held root keeps its later physical stop; an early Off ends with its source");
+        assert!(process(&mut dsp,&stop,&mut rejected).iter().all(|x| *x==0.));
+        assert_eq!(dsp.host_note_end_rejections,2);
+        assert_eq!(dsp.rack.parts[0].host_note_end_at(owner),Some(terminal),
+            "physical stop at frame72 re-dated an already complete rejected NOTE_END");
+        assert!(process(&mut dsp,&none,&mut output).iter().all(|x| *x==0.));
+        let ends:Vec<_> = output.lossless_iter().filter_map(|e| match e {
+            LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address:a,.. } if *a==address) => Some(e.sample_offset()),
+            _ => None,
+        }).collect();
+        assert_eq!(ends,[0],"past terminal frame retries once at the next available offset zero");
+        assert!(!dsp.rack.parts[0].host_note_present(owner));
+        output.clear();
+        process(&mut dsp,&none,&mut output);
+        assert!(output.lossless_iter().all(|e| !matches!(e,LosslessEventRef::Exact(e)
+            if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
+        }}}
     }
 
     #[test]
@@ -7789,7 +8878,7 @@ end on"#;
         let params=SamplerParams::new(); let mut dsp=Dsp::default();
         dsp.rack.parts[0].reset(48000.);
         let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];32] })]).unwrap();
-        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(Box::new(bank)));
         dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
         let note=HostNote { port:0,channel:4,key:60,id:10,clap:true };
         let pattern=HostPattern { port:0,channel:4,key:60,id:10,clap:true };
@@ -7797,23 +8886,23 @@ end on"#;
         let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
         let (mut left,mut right)=([0.;64],[0.;64]);
         assert_eq!(allocations(|| {
-            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,true,48000.);
+        feed_host_input(&mut dsp,&params,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),0,0,true,48000.);
             feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,96,true,48000.);
             feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Gain(0.)),0,240,true,48000.);
             dsp.align.release(600,&mut dsp.rack,&mut dsp.routers);
-            dsp.rack.parts[0].render(&mut left,&mut right);
-            finish_host_notes(&mut dsp,&mut cx,63);
+            dsp.rack.parts[0].instrument_mut().unwrap().render(&mut left,&mut right);
+            finish_host_notes(&mut dsp,&mut cx,64);
             assert_eq!(dsp.rack.parts[0].active_voices(),0);
             assert!(dsp.align.host_note_waiting(note),"delayed old expression lost its owner pin");
             assert!(dsp.rack.parts[0].host_note_present(note));
-            assert!(!dsp.rack.parts[0].admit_host_note(note),"same ID became reusable before delayed work completed");
+            assert!(!dsp.rack.parts[0].instrument_mut().unwrap().admit_host_note(note),"same ID became reusable before delayed work completed");
             assert!(!cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
             dsp.align.release(720,&mut dsp.rack,&mut dsp.routers);
-            finish_host_notes(&mut dsp,&mut cx,63);
+            finish_host_notes(&mut dsp,&mut cx,64);
             assert!(!dsp.align.host_note_waiting(note));
             assert!(!dsp.rack.parts[0].host_note_present(note));
-            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,false,48000.);
-            dsp.rack.parts[0].render(&mut left,&mut right);
+        feed_host_input(&mut dsp,&params,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),0,0,false,48000.);
+            dsp.rack.parts[0].instrument_mut().unwrap().render(&mut left,&mut right);
             assert!(left.iter().any(|sample| sample.abs()>1e-6),"old gain expression leaked into reused host ID");
         }),0);
     }
@@ -7867,7 +8956,7 @@ end on"#;
             };
             let sample = Sample { rate: 48000, frames: vec![[0.5, 0.25]; 100] };
             let bank = Bank::from_samples(vec![Group::default()], vec![zone], vec![(PathBuf::new(), sample)]);
-            dsp.rack.parts[slot].set_bank(Some(Box::new(bank.unwrap())));
+            dsp.rack.parts[slot].instrument_mut().unwrap().set_bank(Some(Box::new(bank.unwrap())));
             dsp.rack.controls[slot].channel = channel;
         }
         let mut outputs = vec![vec![0f32; 256]; 2];
@@ -7927,7 +9016,7 @@ end on"#;
             }),
             ..Zone::default()
         };
-        dsp.rack.parts[1].set_bank(Some(Box::new(
+        dsp.rack.parts[1].instrument_mut().unwrap().set_bank(Some(Box::new(
             Bank::from_samples(
                 vec![group],
                 vec![zone],
@@ -8013,7 +9102,7 @@ end on"#;
     #[test]
     #[ignore = "requires the owner's local Vista library"]
     fn worker_loads_and_removes_real_rack_parts() {
-        let p = SamplerParams::new();
+        let p = Arc::new(SamplerParams::new());
         let path = Path::new(import::LIBRARY_ROOT)
             .join("Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki")
             .to_string_lossy()
@@ -8034,6 +9123,14 @@ end on"#;
             },
         ];
         Load.run(&p);
+        assert!(p.shared.view.lock().unwrap().parts[0].wallpaper.is_none(),
+            "instrument loading keeps editor artwork lazy");
+        p.request_visual_assets(0, VisualDemand { wallpaper: true, ..Default::default() });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while p.shared.view.lock().unwrap().parts[0].visual_worker && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
         assert!(
             p.shared.view.lock().unwrap().parts[0].wallpaper.is_some(),
             "Vista named NKR wallpaper loads on the worker"
@@ -8068,8 +9165,9 @@ end on"#;
         let mut cx =
             ProcessContext::new(&transport, 48000., 2048, &mut outgoing).with_bus_routing(routing);
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
-        assert!(dsp.rack.parts[0].bank().is_some() && dsp.rack.parts[1].bank().is_some());
+        assert!(dsp.rack.parts[0].instrument().unwrap().bank().is_some() && dsp.rack.parts[1].instrument().unwrap().bank().is_some());
         for part in &dsp.rack.parts[..2] {
+            let part = part.instrument().unwrap();
             assert_eq!(part.bank().unwrap().zones().len(), 2000, "file-handle pressure must not discard harp zones");
         }
         for ch in [0, 2] {
@@ -8085,11 +9183,11 @@ end on"#;
             &EventList::with_capacity(0),
             &mut cx,
         );
-        assert!(dsp.rack.parts[0].bank().is_none());
-        assert!(dsp.rack.parts[1].bank().is_some());
+        assert!(dsp.rack.parts[0].instrument().unwrap().bank().is_none());
+        assert!(dsp.rack.parts[1].instrument().unwrap().bank().is_some());
         assert!(dsp.rack.parts[1].active_voices() > 0);
         // Scripts run on the audio thread; their persistent values reach the host state.
-        assert!(dsp.rack.parts[1].script().is_some());
+        assert!(dsp.rack.parts[1].instrument().unwrap().script().is_some());
         Load.run(&p);
         Sampler::process(
             &mut dsp,
@@ -8114,7 +9212,7 @@ end on"#;
                 &mut cx,
             );
             assert!(dsp.script_epoch[1] > epoch);
-            assert!(dsp.rack.parts[1].bank().is_some() && dsp.rack.parts[1].script().is_some());
+            assert!(dsp.rack.parts[1].instrument().unwrap().bank().is_some() && dsp.rack.parts[1].instrument().unwrap().script().is_some());
             Load.run(&p);
             Sampler::process(
                 &mut dsp,
@@ -8144,7 +9242,7 @@ end on"#;
             &mut cx,
         );
         assert!(p.shared.ready.is_empty());
-        assert!(dsp.rack.parts[1].bank().is_some());
+        assert!(dsp.rack.parts[1].instrument().unwrap().bank().is_some());
     }
     #[test]
     #[ignore = "requires the owner's local Chorus multi"]
@@ -8304,7 +9402,7 @@ end on"
         assert!(errors.is_empty(), "{errors:?}");
         let mut dsp = Dsp::default();
         let p = SamplerParams::new();
-        let e = &mut dsp.rack.parts[0];
+        let e = dsp.rack.parts[0].instrument_mut().unwrap();
         e.set_bank(Some(Box::new(Bank::from_samples(groups, zones, samples).unwrap())));
         e.set_script(rt);
         let fx = i.fx.processor(e.rate() as f32, MAX_BLOCK);
@@ -8369,7 +9467,7 @@ end on"
             let mut dsp = Dsp::default();
             let p = SamplerParams::new();
             for (slot, pad) in [(0, 480), (1, 1440)] {
-                dsp.rack.parts[slot].set_bank(Some(late_bank(&[(0, 127, pad)])));
+                dsp.rack.parts[slot].instrument_mut().unwrap().set_bank(Some(late_bank(&[(0, 127, pad)])));
                 dsp.rack.controls[slot].channel = slot as i16;
                 dsp.rack.controls[slot].output = slot as u8;
             }
@@ -8480,7 +9578,7 @@ end on"
             let mut dsp = Dsp::default();
             let p = SamplerParams::new();
             // Soft notes play the 5 ms zone, loud ones the 40 ms zone.
-            dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 64, 240), (65, 127, 1920)])));
+            dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(late_bank(&[(0, 64, 240), (65, 127, 1920)])));
             dsp.rack.controls[0].channel = -1;
             dsp.routers[0].set_route(Route::new("arts.nki", &articulate, &Mpe::default()));
             dsp.align.plan = plan(&selection);
@@ -8605,8 +9703,8 @@ end on"
     fn growing_to_129_parts_preserves_notes_and_releases_high_keyboard_targets_without_heap_work() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
-        dsp.rack.parts[0].note_on(0, 59, 100);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.rack.parts[0].instrument_mut().unwrap().note_on(0, 59, 100);
         dsp.align.plan.on = true;
         dsp.align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.));
         dsp.align.arrive(&mut dsp.rack, &mut dsp.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
@@ -8639,7 +9737,7 @@ end on"
         let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routing);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
         assert_eq!(dsp.rack.parts.len(), 129);
-        assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
+        assert!(dsp.rack.parts[0].instrument().unwrap().key_down(0, 59), "growth preserves held notes");
         assert_eq!(dsp.rack.parts[0].active_voices(), 1);
         assert_eq!(dsp.align.next_due(), Some(480), "growth preserves queued notes");
         p.shared.sync_overrides(&edited);
@@ -8650,22 +9748,22 @@ end on"
         p.shared.scope.source.store(129, Ordering::Relaxed);
         p.shared.press_key(128, 60, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts[128].key_down(0, 60));
+        assert!(dsp.rack.parts[128].instrument().unwrap().key_down(0, 60));
         assert_eq!(dsp.rack.tap, Some(128), "high part scope is distinct from the master sentinel");
         assert!(p.shared.part(128).unwrap().meter.iter().any(|m| f32::from_bits(m.load(Ordering::Relaxed)) > 0.));
         p.shared.release_key(60);
         p.shared.scope.source.store(SCOPE_MASTER, Ordering::Relaxed);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(!dsp.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
+        assert!(!dsp.rack.parts[128].instrument().unwrap().key_down(0, 60), "part 128 is not the old key-owner sentinel");
         assert_eq!(dsp.rack.tap, None, "master scope remains independent of part count");
         p.shared.press_key(EVERY_PART, 61, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts[0].key_down(0, 61) && dsp.rack.parts[128].key_down(0, 61));
+        assert!(dsp.rack.parts[0].instrument().unwrap().key_down(0, 61) && dsp.rack.parts[128].instrument().unwrap().key_down(0, 61));
         dsp.rack.controls[128].channel = 15;
         p.shared.release_key(61);
         dsp.until_diagnostics = 0;
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(!dsp.rack.parts[128].key_down(0, 61), "release uses the saved targets despite route changes");
+        assert!(!dsp.rack.parts[128].instrument().unwrap().key_down(0, 61), "release uses the saved targets despite route changes");
         drain_audio_diagnostics(&p);
         let audio = p.shared.diagnostic_latest.lock().unwrap().clone().unwrap();
         assert_eq!(audio.parts.len(), 129);
@@ -8685,7 +9783,7 @@ end on"
         assert_eq!(p.shared.diagnostic_audio.len(), 2);
         p.shared.panic.store(true, Ordering::Release);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts.iter().all(|e| (0..16).all(|ch| !e.key_down(ch, 59) && !e.key_down(ch, 61))));
+        assert!(dsp.rack.parts.iter().all(|e| (0..16).all(|ch| !e.instrument().unwrap().key_down(ch, 59) && !e.instrument().unwrap().key_down(ch, 61))));
         assert_eq!(allocations(|| {
             for _ in 0..128 { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }
         }), 0);
@@ -8764,10 +9862,10 @@ end on"
     fn diagnostics_audio_handoff_is_bounded_and_reports_held_channel_state() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
-        dsp.rack.parts[0].note_on(2, 60, 100);
-        dsp.rack.parts[0].cc(2, 64, 127);
-        dsp.rack.parts[0].cc(2, 66, 127);
+        dsp.rack.parts[0].instrument_mut().unwrap().set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.rack.parts[0].instrument_mut().unwrap().note_on(2, 60, 100);
+        dsp.rack.parts[0].instrument_mut().unwrap().cc(2, 64, 127);
+        dsp.rack.parts[0].instrument_mut().unwrap().cc(2, 66, 127);
         dsp.installed_generation[0] = 41;
         p.shared.part(0).unwrap().generation.store(42, Ordering::Relaxed);
         let mut outputs = vec![vec![0f32; 128]; 2];

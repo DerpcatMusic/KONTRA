@@ -25,8 +25,8 @@ pub struct BParFX(pub StructuredObject);
 
 /// Slot state from the BParFX private data (22 bytes, version 0x50).
 ///
-/// Layout verified against 1,700 local slots:
-/// `u32 effect_type, u32 0, u8 0, u8 bypass, f32 output_gain, f32 dry_level, i32 -1`.
+/// Native v0x50 reader layout:
+/// `u32 effect_type, u8 flag, u32 reserved, u8 bypass, f32 output_gain, f32 dry_level, i32 output_channel`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BParFXParams {
     /// Kontakt's internal effect enum (not the serialization ID): 2 compressor,
@@ -37,6 +37,10 @@ pub struct BParFXParams {
     pub output_gain: f32,
     /// Linear level of the unprocessed signal mixed back in.
     pub dry_level: f32,
+    /// Saved output tag; -1 returns to the instrument.
+    /// Native routing matches this against the signed output-record tag.
+    /// This is not a persistent unique identity or a host output index.
+    pub output_channel: i32,
 }
 
 impl BParFX {
@@ -58,14 +62,15 @@ impl BParFX {
         }
         let mut r = Cursor::new(data);
         let effect_type = r.read_u32_le()?;
-        let _reserved = r.read_u32_le()?;
         let _flag = r.read_u8()?;
+        let _reserved = r.read_u32_le()?;
         let bypass = r.read_u8()? != 0;
         Ok(BParFXParams {
             effect_type,
             bypass,
             output_gain: r.read_f32_le()?,
             dry_level: r.read_f32_le()?,
+            output_channel: r.read_i32_le()?,
         })
     }
 }

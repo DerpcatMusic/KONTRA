@@ -20,6 +20,324 @@ fn gainer(gain: f32) -> Effect {
     effect(Kind::Gainer, Params::Gainer(params::Gainer { gain }))
 }
 
+#[cfg(feature = "plugin")]
+#[test]
+fn waited_ksp_rack_output_and_group_send_writes_keep_their_actual_pcm_timestamps() {
+    use crate::{
+        engine::{Bank, Engine, effects, load_scripts},
+        engine::{HostNote, HostPattern},
+        import::{Group, Instrument, Zone},
+        midi::Velocity,
+    };
+    // These are stimuli shared by both hosts. The reference has no waits:
+    // its exterior host renders the preceding PCM before delivering each CC.
+    let first = "set_engine_par($ENGINE_PAR_EFFECT_BYPASS,1,-1,0,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN,300000,-1,0,$NI_MAIN_BUS)\nset_engine_par($ENGINE_PAR_SENDLEVEL_0,800000,0,7,-1)\nset_controller(7,80)\nset_controller(10,32)";
+    let second = "set_engine_par($ENGINE_PAR_EFFECT_BYPASS,0,-1,0,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_EFFECT_BYPASS,1,-1,0,$NI_MAIN_BUS)\nset_engine_par($ENGINE_PAR_VOLUME,500000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_PAN,750000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_SENDLEVEL_0,100000,0,7,-1)\nset_controller(7,127)\nset_controller(10,96)";
+    let third = "set_engine_par($ENGINE_PAR_EFFECT_BYPASS,0,-1,0,$NI_MAIN_BUS)\nset_engine_par($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN,600000,-1,0,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_PAN,250000,-1,-1,-1)\nset_engine_par($ENGINE_PAR_SENDLEVEL_0,0,0,7,-1)\nset_controller(10,64)";
+    let waited = format!(
+        "on init\nend on\non controller\nif ($CC_NUM=1)\nwait(500)\n{first}\nwait(1000)\n{second}\nwait(500)\n{third}\nend if\nend on"
+    );
+    let exterior = format!(
+        "on init\nend on\non controller\nif ($CC_NUM=2)\n{first}\nend if\nif ($CC_NUM=3)\n{second}\nend if\nif ($CC_NUM=4)\n{third}\nend if\nend on"
+    );
+    let make = |script: &str| {
+        let mut tap = effect(
+            Kind::SendLevels,
+            Params::SendLevels(params::SendLevels {
+                sends: vec![0.25],
+                outputs: Vec::new(),
+            }),
+        );
+        tap.slot = 7;
+        let group = Group {
+            amp_split_slot: Some(0),
+            fx: Chain { slots: vec![tap] },
+            ..Default::default()
+        };
+        let instrument = Instrument {
+            groups: vec![group.clone(), Group::default()],
+            scripts: vec![script.replacen(
+                "on init",
+                "on init\nset_engine_par($ENGINE_PAR_OUTPUT_CHANNEL,2,1,-1,-1)",
+                1,
+            )],
+            fx: ProgramFx {
+                insert: Chain {
+                    slots: vec![gainer(2.)],
+                },
+                send: Chain {
+                    slots: vec![gainer(1.5)],
+                },
+                main: Chain {
+                    slots: vec![gainer(0.75)],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let frames: Vec<[f32; 2]> = (0..4096)
+            .map(|i| {
+                let phase = std::f64::consts::TAU * i as f64 / 200.;
+                [
+                    (0.02 * phase.sin() + 0.006 * (2. * phase).sin()) as f32,
+                    (0.013 * (phase + 0.4).sin()) as f32,
+                ]
+            })
+            .collect();
+        let direct_frames = (0..4096)
+            .map(|i| {
+                let phase = std::f64::consts::TAU * i as f64 / 137.;
+                [
+                    (0.007 * (phase + 0.2).sin()) as f32,
+                    (0.004 * (2. * phase - 0.3).sin()) as f32,
+                ]
+            })
+            .collect();
+        let mut engine = Engine::default();
+        engine.reset(f64::from(SR));
+        engine.attack = 0.;
+        engine.release = 0.001;
+        engine.set_bank(Some(Box::new(
+            Bank::from_samples(
+                instrument.groups.clone(),
+                vec![
+                    Zone::default(),
+                    Zone {
+                        group: 1,
+                        sample: "direct-output".into(),
+                        ..Default::default()
+                    },
+                ],
+                vec![
+                    (
+                        std::path::PathBuf::new(),
+                        Sample {
+                            rate: SR as u32,
+                            frames,
+                        },
+                    ),
+                    (
+                        "direct-output".into(),
+                        Sample {
+                            rate: SR as u32,
+                            frames: direct_frames,
+                        },
+                    ),
+                ],
+            )
+            .unwrap(),
+        )));
+        let (runtime, errors) = load_scripts(&instrument, Vec::new(), f64::from(SR));
+        assert!(errors.is_empty(), "{errors:?}");
+        engine.set_fx(effects(&instrument, runtime.as_deref(), SR));
+        engine.set_script(runtime);
+        engine
+    };
+    fn render(
+        engine: &mut Engine,
+        pcm: &mut [[f32; 2]],
+        direct: &mut [[f32; 2]],
+        partition: &[usize],
+    ) {
+        assert_eq!(pcm.len(), direct.len());
+        direct.fill([0.; 2]);
+        let (mut at, mut block) = (0, 0);
+        while at < pcm.len() {
+            let len = partition[block % partition.len()].min(pcm.len() - at);
+            let (mut left, mut right) = ([0.; 128], [0.; 128]);
+            assert_eq!(
+                crate::plugin::tests::allocations(|| {
+                    engine.render(&mut left[..len], &mut right[..len]);
+                    engine.mark_host_notes();
+                }),
+                0,
+                "waited FX rendering allocated or freed"
+            );
+            for i in 0..len {
+                pcm[at + i] = [left[i], right[i]];
+            }
+            // Read before the next render starts a new direct-output block.
+            // These samples bypass the instrument insert/main racks; the
+            // exterior oracle preserves that routing contract independently.
+            if let Some((_, left, right)) = engine.fx().direct_outs(len).find(|(out, ..)| *out == 2)
+            {
+                for i in 0..len {
+                    direct[at + i] = [left[i], right[i]];
+                }
+            }
+            at += len;
+            block += 1;
+        }
+    }
+    let exact = HostNote {
+        port: 0,
+        channel: 4,
+        key: 60,
+        id: 901,
+        clap: true,
+    };
+    let off = HostPattern {
+        port: 0,
+        channel: 4,
+        key: 60,
+        id: 901,
+        clap: true,
+    };
+    type Capture = (
+        [[f32; 2]; 256],
+        [[f32; 2]; 512],
+        [[f32; 2]; 256],
+        [[f32; 2]; 512],
+        u64,
+    );
+    let mut complete: Option<Capture> = None;
+    for partition in [&[128][..], &[1, 7, 31, 127][..]] {
+        let (mut actual, mut reference, mut untouched) =
+            (make(&waited), make(&exterior), make("on init\nend on"));
+        for engine in [&mut actual, &mut reference, &mut untouched] {
+            assert_eq!(
+                crate::plugin::tests::allocations(|| {
+                    assert!(engine.host_note_on_velocity(exact, 4, 60, Velocity::FULL, 0.));
+                }),
+                0
+            );
+            render(engine, &mut [[0.; 2]; 512], &mut [[0.; 2]; 512], partition);
+        }
+        let (mut pcm, mut expected, mut old) = ([[0.; 2]; 256], [[0.; 2]; 256], [[0.; 2]; 256]);
+        let (mut direct, mut direct_expected, mut direct_old) =
+            ([[0.; 2]; 256], [[0.; 2]; 256], [[0.; 2]; 256]);
+        assert_eq!(
+            crate::plugin::tests::allocations(|| actual.cc_from(4, 4, 1, 127)),
+            0
+        );
+        render(&mut actual, &mut pcm, &mut direct, partition);
+        // Exterior boundaries are independently specified in samples. They
+        // correspond to500us, then1000us, then500us at48kHz, inside128.
+        for (start, end, controller) in [
+            (0, 24, None),
+            (24, 72, Some(2)),
+            (72, 96, Some(3)),
+            (96, 256, Some(4)),
+        ] {
+            if let Some(controller) = controller {
+                assert_eq!(
+                    crate::plugin::tests::allocations(|| reference.cc_from(4, 4, controller, 127)),
+                    0
+                );
+            }
+            render(
+                &mut reference,
+                &mut expected[start..end],
+                &mut direct_expected[start..end],
+                partition,
+            );
+        }
+        render(&mut untouched, &mut old, &mut direct_old, partition);
+        assert!(
+            direct
+                .iter()
+                .zip(direct_expected)
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6)),
+            "direct output lost or overwrote an earlier24/72/96 interval in the same128-frame render"
+        );
+        assert!(
+            direct[..24]
+                .iter()
+                .zip(&direct_old[..24])
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 1e-7)),
+            "later event intervals changed the untouched direct-output prefix"
+        );
+        for (start, end) in [(0, 24), (24, 72), (72, 96), (96, 128)] {
+            assert!(
+                direct[start..end]
+                    .iter()
+                    .any(|frame| frame.iter().any(|sample| sample.abs() > 1e-4)),
+                "direct output interval{start}..{end} must retain an audible source"
+            );
+        }
+        assert!(
+            pcm.iter()
+                .zip(expected)
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6)),
+            "queued rack/output/send writes changed PCM before or after their exterior timestamps"
+        );
+        assert!(
+            pcm[..24]
+                .iter()
+                .zip(&old[..24])
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 1e-7)),
+            "postprocessing applied a future insert/main/output parameter to the pre-event prefix"
+        );
+        assert!(
+            pcm[24..]
+                .iter()
+                .zip(&old[24..])
+                .any(|(a, b)| [0, 1].into_iter().any(|ch| (a[ch] - b[ch]).abs() > 1e-5)),
+            "FX/output/send changes must have a real audible consequence"
+        );
+        let (mut tail, mut reference_tail) = ([[0.; 2]; 512], [[0.; 2]; 512]);
+        let (mut direct_tail, mut direct_reference_tail) = ([[0.; 2]; 512], [[0.; 2]; 512]);
+        for engine in [&mut actual, &mut reference] {
+            assert!(engine.host_note_pending(exact));
+            assert_eq!(
+                crate::plugin::tests::allocations(|| engine.host_note_off(off)),
+                0
+            );
+        }
+        render(&mut actual, &mut tail, &mut direct_tail, partition);
+        render(
+            &mut reference,
+            &mut reference_tail,
+            &mut direct_reference_tail,
+            partition,
+        );
+        assert!(
+            direct_tail
+                .iter()
+                .zip(direct_reference_tail)
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6))
+        );
+        assert!(
+            direct_tail[128..].iter().all(|frame| *frame == [0.; 2]),
+            "direct source layer must release before the original exact owner ends"
+        );
+        assert!(
+            tail.iter()
+                .zip(reference_tail)
+                .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6))
+        );
+        assert!(
+            tail[128..].iter().all(|frame| *frame == [0.; 2]),
+            "gainers and sends must settle silent after exact Off"
+        );
+        assert_eq!(actual.host_note_at(0), Some((exact, false)));
+        assert_eq!(
+            actual.host_note_at(1),
+            None,
+            "FX intervals cannot create extra exact roots"
+        );
+        let ended = actual.host_note_end_at(exact).unwrap();
+        assert_eq!(Some(ended), reference.host_note_end_at(exact));
+        assert!(
+            ended >= 768 && ended < 896,
+            "exact owner ends on its authored release clock"
+        );
+        if let Some((old_pcm, old_tail, old_direct, old_direct_tail, old_end)) = complete {
+            assert!(
+                pcm.iter()
+                    .zip(old_pcm)
+                    .chain(tail.iter().zip(old_tail))
+                    .chain(direct.iter().zip(old_direct))
+                    .chain(direct_tail.iter().zip(old_direct_tail))
+                    .all(|(a, b)| [0, 1].into_iter().all(|ch| (a[ch] - b[ch]).abs() < 2e-6)),
+                "whole versus irregular callback PCM changed"
+            );
+            assert_eq!(ended, old_end);
+        }
+        complete = Some((pcm, tail, direct, direct_tail, ended));
+    }
+}
+
 fn convolution(ir: &[f32]) -> Effect {
     let bytes = {
         let mut b: Vec<u8> = [-1.0f32, 0.0, 0.0, 1.0, 20.0, SR * 0.5, 1.0, 20.0, SR * 0.5, -1.0]
@@ -741,13 +1059,10 @@ fn reverb_effect_is_finite_with_hostile_input() {
 }
 
 #[test]
-fn tail_rings_through_silence_then_idles() {
+fn tail_rings_through_silence() {
     let mut ir = vec![0.0; 300];
     ir[250] = 1.0;
     let mut c = chain(vec![convolution(&ir)]);
-    let (mut l, mut r) = (vec![1e-7; 64], vec![1e-7; 64]);
-    c.process(&mut l, &mut r);
-    assert_eq!(l[0], 1e-7, "a fresh chain has nothing ringing, so it sleeps");
     let mut block = |first: f32| {
         let mut l = vec![0.0; 64];
         l[0] = first;
@@ -762,22 +1077,15 @@ fn tail_rings_through_silence_then_idles() {
         (out[250] - 1.0).abs() < 1e-5,
         "the echo sounds after the input fell silent"
     );
-    for _ in 0..3 {
-        block(0.0);
-    }
-    // Silent longer than the IR: below-threshold input passes untouched.
-    assert_eq!(block(1e-7)[0], 1e-7);
 }
 
-/// A tail sleeps once it is below −120 dBFS, which a quiet input reaches
-/// long before the IR ends: its chain costs nothing sooner, and what it
-/// skips is inaudible.
 #[test]
-fn quiet_tails_sleep_sooner() {
+fn quiet_tails_keep_the_complete_response() {
     // A second of −60 dB/s decay.
-    let ir: Vec<f32> = (0..48_000).map(|k| 0.001f32.powf(k as f32 / SR) * 1e-5).collect();
-    // Frames until the chain sleeps (and passes its silent input through).
-    let rings = |click: f32| {
+    let ir: Vec<f32> = (0..48_000)
+        .map(|k| 0.001f32.powf(k as f32 / SR) * 1e-5)
+        .collect();
+    let render = |click: f32| {
         let mut c = chain(vec![convolution(&ir)]);
         let mut l = vec![0.0; ir.len() + 64];
         l[0] = click;
@@ -785,12 +1093,97 @@ fn quiet_tails_sleep_sooner() {
         for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
             c.process(l, r);
         }
-        l.iter().rposition(|&x| x != 0.0).map_or(0, |i| i + 1)
+        l
     };
-    let (loud, quiet) = (rings(1.0), rings(1e-5));
-    assert!(loud >= ir.len() && quiet * 3 < loud, "quiet {quiet} frames, loud {loud}");
-    let rest = ir[quiet..].iter().map(|x| x.abs()).sum::<f32>() * 1e-5;
-    assert!(rest < 1e-6, "the skipped tail could reach {rest}");
+    let (loud, quiet) = (render(1.0), render(1e-5));
+    for (i, (&actual, &expected)) in quiet.iter().zip(&loud).enumerate() {
+        let expected = expected * 1e-5;
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "quiet tail changed at {i}: {actual} vs {expected}"
+        );
+    }
+    assert!(quiet[ir.len() - 1] > 0.5 * ir[ir.len() - 1] * 1e-5);
+}
+
+#[test]
+fn quiet_input_keeps_effect_processing_with_downstream_boost() {
+    let mut slots = vec![convolution(&[0.5])];
+    slots.extend((0..4).map(|_| gainer(16.0)));
+    let mut c = chain(slots);
+    let (mut l, mut r) = ([1e-7; 64], [1e-7; 64]);
+    c.process(&mut l, &mut r);
+    let expected = 1e-7 * 0.5 * 16.0f32.powi(4);
+    assert!(
+        l.iter().chain(&r).all(|x| (*x - expected).abs() < 1e-6),
+        "quiet input bypassed the authored effects: {} vs {expected}",
+        l[0]
+    );
+}
+
+#[test]
+fn quiet_delayed_tail_survives_downstream_boost() {
+    let mut ir = vec![0.0; 4096];
+    ir[0] = 1.0;
+    ir[3000] = 2.5e-8;
+    let mut slots = vec![convolution(&ir)];
+    slots.extend((0..4).map(|_| gainer(16.0)));
+    let mut c = chain(slots);
+    let (mut l, mut r) = (vec![0.0; 4160], vec![0.0; 4160]);
+    l[0] = 0.25;
+    r[0] = 0.25;
+    for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+        c.process(l, r);
+    }
+    let expected = 0.25 * ir[3000] * 16.0f32.powi(4);
+    assert!(
+        (l[3000] - expected).abs() < 1e-6 && (r[3000] - expected).abs() < 1e-6,
+        "quiet delayed reflection was discarded: {:?} vs {expected}",
+        (l[3000], r[3000])
+    );
+}
+
+#[test]
+fn quiet_bus_tail_survives_downstream_boost() {
+    let mut ir = vec![0.0; 4096];
+    ir[0] = 1.0;
+    ir[3000] = 2.5e-8;
+    let mut c = ProgramFx {
+        buses: vec![super::Bus {
+            index: 0,
+            name: String::new(),
+            volume: 1.0,
+            pan: 0.0,
+            output: -1,
+            chain: Chain {
+                slots: vec![convolution(&ir)],
+            },
+        }],
+        main: Chain {
+            slots: (0..4).map(|_| gainer(16.0)).collect(),
+        },
+        ..Default::default()
+    }
+    .processor(SR, 64);
+    let mut reflection = [0.0; 2];
+    for block in 0..65 {
+        if block == 0 {
+            let (l, r) = c.bus_input(0, 0..64).unwrap();
+            l[0] = 0.25;
+            r[0] = 0.25;
+        }
+        let (mut l, mut r) = ([0.0; 64], [0.0; 64]);
+        c.mix_buses(&mut l, &mut r);
+        c.process(&mut l, &mut r);
+        if block == 3000 / 64 {
+            reflection = [l[3000 % 64], r[3000 % 64]];
+        }
+    }
+    let expected = 0.25 * ir[3000] * 16.0f32.powi(4);
+    assert!(
+        reflection.iter().all(|x| (*x - expected).abs() < 1e-6),
+        "quiet bus reflection was discarded: {reflection:?} vs {expected}"
+    );
 }
 
 fn chunk(id: u16, data: Vec<u8>) -> Vec<u8> {

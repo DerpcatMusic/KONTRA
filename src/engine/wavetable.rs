@@ -6,8 +6,8 @@ use crate::audio::{Frame, Pcm};
 
 pub(super) const CYCLE: usize = 2048;
 
-/// Until their native laws are proven, active phase forms, randomized starts
-/// and the modulation oscillator retain the importer's unsupported warning.
+/// Traced phase and sample forms are supported. Sync readout, randomized
+/// starts and the modulation oscillator retain the importer's warning.
 pub(super) fn supported(source: &crate::import::Wavetable, tracking: bool) -> bool {
     tracking && form_supported(source.form1_type) && form_supported(source.form2_type)
         && source.inharmonic_mode == 0 && source.mod_type == 0
@@ -16,17 +16,103 @@ pub(super) fn supported(source: &crate::import::Wavetable, tracking: bool) -> bo
         && source.form1.is_finite() && source.form2.is_finite()
 }
 
-pub(super) fn form_supported(kind: i32) -> bool { matches!(kind, 0 | 16) }
+pub(super) fn form_supported(kind: i32) -> bool {
+    matches!(kind, 0 | 4..=23 | 27..=33)
+}
 
-/// ASYM2MP moves the cycle midpoint while keeping both endpoints fixed.
-/// Native shared phase-form routine: 140567aa0, switch16→140567e4d.
+/// Native bipolar sample forms 140ce6eb0, after interpolation and morph.
+/// Both slots use the original oscillator phase, not the warped read phase.
+fn shape(sample: f32, phase: f32, amount: f32, kind: i32) -> f32 {
+    let amount = amount.clamp(0., 1.);
+    match kind {
+        18 => ((amount * amount * 8. + 1.) * sample).clamp(-1., 1.),
+        19 => {
+            let folded = (amount * amount * 3.75 + 0.25) * sample + 0.25;
+            ((folded - folded.round()).abs() - 0.25) * 4.
+        }
+        20..=23 if ((4 * (kind - 19)) as f32 * phase) as i32 % 2 == 1 =>
+            (1. - amount) * sample,
+        27 => {
+            let shifted = if phase < 0.5 { sample - amount } else { sample + amount };
+            if shifted < -1. { shifted + 2. }
+            else if shifted > 1. { shifted - 2. }
+            else { shifted }
+        }
+        _ => sample,
+    }
+}
+
+/// Native shared phase-form routine 140567aa0. Constants and branch order
+/// follow the float operations in that switch, including mixed precision at
+/// the asymmetric midpoint and the quantizer's downward endpoint bias.
+/// Sync forms also enter this switch, but their separate readout modes have
+/// not been traced, so they are not admitted by form_supported.
 fn warp(phase: f32, amount: f32, kind: i32) -> f32 {
-    if kind != 16 { return phase; }
-    let offset = (amount.clamp(0., 1.) - 0.5) * 1.96;
-    if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
-        phase / (1. + offset)
-    } else {
-        (phase - 1.) / (1. - offset) + 1.
+    let amount = amount.clamp(0., 1.);
+    let bend_positive = || (1. - (phase * std::f32::consts::PI).cos()) * 0.5;
+    let bend_negative = || ((phase - 0.5) + phase - 0.5).asin() * std::f32::consts::FRAC_1_PI + 0.5;
+    let asymmetric = |offset: f32| {
+        if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
+            phase / (1. + offset)
+        } else {
+            (phase - 1.) / (1. - offset) + 1.
+        }
+    };
+    match kind {
+        4 => phase + (bend_positive() - phase) * amount,
+        5 => phase + (bend_negative() - phase) * amount,
+        6 => {
+            let target = if amount < 0.5 { bend_positive() } else { bend_negative() };
+            phase + (target - phase) * ((amount - 0.5) + amount - 0.5).abs()
+        }
+        7 => {
+            let value = phase / (1. - amount * 0.9375);
+            if value >= 1. { 0. } else { value }
+        }
+        8 => asymmetric(-amount * 0.9),
+        9 => asymmetric(amount * 0.9),
+        10 => asymmetric((amount - 0.5) * 1.8),
+        14 => asymmetric(-amount * 0.98),
+        15 => asymmetric(amount * 0.98),
+        16 => asymmetric((amount - 0.5) * 1.96),
+        11 => {
+            let flip = if amount < 0.5 {
+                phase < amount + amount
+            } else {
+                f64::from(phase) >= (f64::from(amount) - 0.5) + f64::from(amount) - 0.5
+            };
+            if flip { 1. - phase } else { phase }
+        }
+        12 => {
+            let folded = if phase > 0.5 { 1. - phase } else { phase };
+            let width = amount * 0.8182 + 0.08182;
+            if folded < width * 0.5 {
+                folded / width
+            } else {
+                (folded - 0.500001) / (1. - width) + 1.
+            }
+        }
+        13 => {
+            let levels = 2f64.powf(f64::from((1. - amount) * 15. + 1.)) as u64 as f32;
+            ((phase * levels).round() / levels - 0.00001).max(0.)
+        }
+        17 if amount == 0. => phase,
+        17 if amount == 1. => 1. - phase,
+        17 => {
+            let split = 1. - amount;
+            if phase < split { phase / split } else { (amount - (phase - split)) / amount }
+        }
+        28 => phase.powf(amount * 9. + 1.),
+        29 => 1. - (1. - phase).powf(amount * 9. + 1.),
+        30 if amount < 0.5 => 1. - (1. - phase).powf((0.5 - amount) * 18. + 1.),
+        30 => phase.powf((amount - 0.5) * 18. + 1.),
+        31..=33 => {
+            let bend = match kind { 31 => amount * -0.9, 32 => amount * 0.9,
+                _ => (amount - 0.5) * 1.8 };
+            let denominator = (phase - 0.5).abs() * (bend * 4.) - bend - 1.;
+            (0.5 / denominator) * ((phase + phase - 1.) * (bend - 1.)) + 0.5
+        }
+        _ => phase,
     }
 }
 
@@ -74,6 +160,15 @@ impl Table {
         }
     }
 
+    /// Generate each frame at the phase planned by the voice's pitch clocks.
+    pub fn render_positions(self, data: &Pcm, source: &crate::import::Wavetable,
+        phase: f64, positions: &[u64], out: &mut [Frame]) {
+        for (&position, frame) in positions.iter().zip(out) {
+            let phase = (phase + position as f64 / super::voice::FIXED_ONE).rem_euclid(CYCLE as f64);
+            self.render(data, source, phase, 0., std::slice::from_mut(frame));
+        }
+    }
+
     fn render_frames(
         self,
         read: impl Fn(usize) -> Frame,
@@ -89,15 +184,19 @@ impl Table {
         let lo = self.first + lo * CYCLE;
         let hi = self.first + hi * CYCLE;
         for frame in out {
-            let read_phase = warp(warp((phase / CYCLE as f64) as f32,
-                source.form1, source.form1_type), source.form2, source.form2_type) as f64 * CYCLE as f64;
+            let original_phase = (phase / CYCLE as f64) as f32;
+            let read_phase = warp(warp(original_phase,
+                source.form1, source.form1_type), source.form2, source.form2_type) as f64;
+            let read_phase = read_phase.rem_euclid(1.) * CYCLE as f64;
             let a = Self::read(&read, lo, read_phase);
             let b = if lo == hi || blend == 0. {
                 a
             } else {
                 Self::read(&read, hi, read_phase)
             };
-            *frame = std::array::from_fn(|c| a[c] + (b[c] - a[c]) * blend);
+            *frame = std::array::from_fn(|c| shape(shape(a[c] + (b[c] - a[c]) * blend,
+                original_phase, source.form1, source.form1_type),
+                original_phase, source.form2, source.form2_type));
             phase = (phase + step).rem_euclid(CYCLE as f64);
         }
         phase
@@ -160,7 +259,8 @@ mod tests {
         for (_, data) in formats() {
             for position in [0., 0.375, 1.] {
                 for (form1_type, form1, form2_type, form2) in [(0, 0., 0, 0.),
-                    (16, 0., 0, 0.), (16, 0.5, 0, 0.), (16, 1., 16, 0.75)] {
+                    (16, 0., 0, 0.), (16, 0.5, 0, 0.), (16, 1., 16, 0.75),
+                    (18, 0.5, 19, 1.), (20, 0.5, 27, 0.25), (23, 1., 18, 1.)] {
                     let source = crate::import::Wavetable { position, form1_type, form1,
                         form2_type, form2, ..Default::default() };
                     let (mut actual, mut reference) = ([[0.;2];128], [[0.;2];128]);
@@ -173,6 +273,78 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn sample_forms_follow_native_bipolar_endpoints_and_phase_boundaries() {
+        for (kind, amount, sample, phase, expected) in [
+            (18, 0., 0.5, 0., 0.5), (18, 0.5, 0.25, 0., 0.75),
+            (18, 0.5, -0.5, 0., -1.), (18, 1., 0.5, 0., 1.),
+            (19, 0., -1., 0., -1.), (19, 0., 1., 0., 1.),
+            (19, 1., 0.125, 0., 0.), (19, 1., 0.1875, 0., -1.),
+            (19, 1., -0.1875, 0., 1.), (19, 1., -0.3125, 0., -1.),
+            (20, 0.5, 0.8, 0.25 - f32::EPSILON, 0.8),
+            (20, 0.5, 0.8, 0.25, 0.4), (20, 0.5, 0.8, 0.5, 0.8),
+            (21, 1., -0.8, 0.125, 0.), (22, 0.5, 0.8, 0.125, 0.4),
+            (23, 1., 0.8, 0.0625, 0.),
+            (27, 0.5, -1., 0.25, 0.5), (27, 0.5, 1., 0.5, -0.5),
+            (27, 0.5, -0.5, 0.25, -1.), (27, 0.5, 0.5, 0.5, 1.),
+        ] {
+            assert!((shape(sample, phase, amount, kind) - expected).abs() < 1e-6,
+                "form {kind}, amount {amount}, sample {sample}, phase {phase}");
+        }
+        for kind in [0, 4, 17, 18, 19, 20, 21, 22, 23, 27, 33] {
+            assert!(form_supported(kind));
+        }
+        for kind in [-1, 1, 2, 3, 24, 25, 26, 34] {
+            assert!(!form_supported(kind));
+        }
+    }
+
+    #[test]
+    fn sample_forms_compose_after_morph_and_keep_original_phase_across_fragments() {
+        let data = Pcm::F32(vec![[0.2, -0.6]; CYCLE].into_iter()
+            .chain(vec![[0.8, 0.2]; CYCLE]).collect());
+        let table = Table::new(0, CYCLE * 2).unwrap();
+        let source = crate::import::Wavetable { position: 0.5, form1_type: 18,
+            form1: 0.5, form2_type: 19, form2: 1., ..Default::default() };
+        let mut out = [[0.; 2]; 16];
+        table.render(&data, &source, 0., 128., &mut out);
+        // The morphed [.5,-.2] is saturated to [1,-.6], then folded to [0,-.4].
+        // Shaping each cycle before morph would instead produce [.8,.8].
+        for frame in out { assert!(frame[0].abs() < 1e-6 && (frame[1] + 0.4).abs() < 1e-6); }
+        let reversed = crate::import::Wavetable { form1_type: 19, form1: 1.,
+            form2_type: 18, form2: 0.5, ..source };
+        table.render(&data, &reversed, 0., 0., &mut out[..1]);
+        assert!(out[0][0].abs() < 1e-6 && (out[0][1] - 1.).abs() < 1e-6);
+
+        let source = crate::import::Wavetable { position: 0.5, form1_type: 4,
+            form1: 1., form2_type: 20, form2: 0.5, ..Default::default() };
+        let expected = [1., 1., 1., 1., 0.5, 0.5, 0.5, 0.5,
+            1., 1., 1., 1., 0.5, 0.5, 0.5, 0.5];
+        let end = table.render(&data, &source, 0., 128., &mut out);
+        let mut fragmented = [[0.; 2]; 16];
+        let mut phase = 0.;
+        let mut at = 0;
+        for n in [1, 3, 7, 5] {
+            phase = table.render(&data, &source, phase, 128., &mut fragmented[at..at+n]);
+            at += n;
+        }
+        assert_eq!(phase, end);
+        assert_eq!(fragmented, out);
+        for (frame, gain) in out.iter().zip(expected) {
+            assert!((frame[0] - 0.5 * gain).abs() < 1e-6);
+            assert!((frame[1] + 0.2 * gain).abs() < 1e-6);
+        }
+        let wrap = crate::import::Wavetable { form1_type: 20, form1: 0.5,
+            form2_type: 27, form2: 0.25, ..source };
+        table.render(&data, &wrap, 0., 128., &mut out);
+        // Original phase halves select wrap direction even with another form active.
+        for (i, frame) in out.iter().enumerate() {
+            let shift = if i < 8 { -0.25 } else { 0.25 };
+            assert!((frame[0] - (0.5 * expected[i] + shift)).abs() < 1e-6);
+            assert!((frame[1] - (-0.2 * expected[i] + shift)).abs() < 1e-6);
         }
     }
 
@@ -300,6 +472,6 @@ mod tests {
         }
         assert!(supported(&crate::import::Wavetable { form1_type: 16, form1: 0.5,
             inharmonic: 0.5, inharmonic_mode: 0, ..Default::default() }, true));
-        assert!(!supported(&crate::import::Wavetable { form1_type: 17, ..Default::default() }, true));
+        assert!(!supported(&crate::import::Wavetable { form1_type: 24, ..Default::default() }, true));
     }
 }

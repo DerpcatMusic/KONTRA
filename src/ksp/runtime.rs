@@ -13,6 +13,7 @@ use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, 
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
 use super::{HostState, Interface, KeyState, Value};
 use anyhow::{Context as _,Result, bail};
+use crate::midi::{Control, ControlTarget, reset_controller_value};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -43,20 +44,6 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrumen
     compiled.retain(|_, p| p.strong_count() > 0);
     compiled.insert(key, Arc::downgrade(&program));
     Ok(program)
-}
-
-/// MIDI RP-015 mandatory defaults; None preserves a controller and parameter values.
-/// Extra controllers restore their authored on-init device default, or zero if
-/// unspecified. Scripts use these extra CCs for internal dynamics and expression.
-/// https://midi.org/response-to-reset-all-controllers
-pub(crate) fn reset_controller_value(cc: u8, initial: Option<u8>) -> Option<u8> {
-    match cc {
-        0 | 7 | 10 | 32 | 70..=79 | 91..=95 | 120..=127 => None,
-        11 | 98..=101 => Some(127),
-        1 | 64..=67 | 128 | 129 => Some(0),
-        2..=119 => Some(initial.unwrap_or(0)),
-        _ => None,
-    }
 }
 
 pub const MAX_SLOTS: usize = 5;
@@ -222,10 +209,12 @@ pub struct Live {
     /// Script slot of `interface`; retained across allocation-free refreshes.
     pub slot: usize,
     pub interface: Option<Interface>,
+    pub exposed_controls: Vec<super::ExposedControl>,
     /// Every key; unset names and colors are empty.
     pub keys: BTreeMap<u8, KeyState>,
     /// Preallocated rows recycled when script menus change visibility.
     menu_spares: Vec<Vec<(String, i32)>>,
+    native_menu_spares: Vec<Vec<(String, i32)>>,
     control_revisions: Vec<u64>,
     control_value_revisions: Vec<u64>,
     interface_revision: u64,
@@ -255,6 +244,8 @@ impl PartialEq for Live {
             && self.interface == other.interface && self.keys == other.keys
             && self.menu_spares == other.menu_spares && self.control_revisions == other.control_revisions
             && self.control_value_revisions == other.control_value_revisions
+            && self.exposed_controls == other.exposed_controls
+            && self.native_menu_spares == other.native_menu_spares
     }
 }
 
@@ -264,17 +255,21 @@ pub struct Event {
     pub live: bool,
     pub note: i32,
     pub velocity: i32,
+    pub onset_velocity: crate::midi::Velocity,
+    pub release_velocity: Option<crate::midi::Velocity>,
+    started_at: u64,
+    released_at: Option<u64>,
     pub channel: u8,
     pub owner: Option<(u8, u8)>,
     pub input_channel: Option<u8>,
     pub host_note: Option<crate::engine::HostRef>,
+    pub per_note: Option<crate::engine::PerNoteInput>,
     pub frozen_expression: Option<crate::engine::Expression>,
     pub pars: [i32; 16],
+    pub script_mods: [i32; crate::engine::SCRIPT_MOD_SOURCES],
     pub volume: i32,
     pub tune: i32,
     pub pan: i32,
-    /// Initial engine mapping, distinguishing an unmapped active event from a finished voice.
-    pub zone: i32,
     pub sample_offset_us: i64,
     pub length: NoteLength,
     pub groups: GroupMask,
@@ -293,8 +288,15 @@ pub struct Event {
     /// `play_note(..., -1)`: released with its parent.
     pub follows_parent: bool,
     pub ignored: bool,
+    /// Per-event native source completion request; newborn children start clear.
+    pub force_completion: bool,
+    /// Native history is captured before the first downstream note callback.
+    note_history_observed: bool,
     pub release_ignored: bool,
     pub at_engine: bool,
+    /// Terminal forwarding clears logical note ownership, independently of
+    /// physical-key metadata, waiting callbacks and the retained audio alias.
+    released_to_engine: bool,
     pub voice: Option<EventId>,
     /// A delayed note-off keeps whole-sample rows alive under pool pressure.
     release_scheduled: bool,
@@ -307,6 +309,8 @@ pub struct Event {
     pub silenced: bool,
     /// MIDI key still down.
     pub held: bool,
+    /// Physical root capture, independent of an attack voice or exact host ID.
+    input_sostenuto: bool,
     /// Next MIDI event on the same input channel/key, oldest first.
     next_input: i32,
     pub fade_in_us: i32,
@@ -318,16 +322,21 @@ impl Event {
         live: false,
         note: 0,
         velocity: 0,
+        onset_velocity: crate::midi::Velocity::ZERO,
+        release_velocity: None,
+        started_at: 0,
+        released_at: None,
         channel: 0,
         owner: None,
         input_channel: None,
         host_note: None,
+        per_note: None,
         frozen_expression: None,
         pars: [0; 16],
+        script_mods: [0; crate::engine::SCRIPT_MOD_SOURCES],
         volume: 0,
         tune: 0,
         pan: 0,
-        zone: -1,
         sample_offset_us: 0,
         length: NoteLength::UntilNoteOff,
         groups: GroupMask::all(),
@@ -341,8 +350,11 @@ impl Event {
         child_count: 0,
         follows_parent: false,
         ignored: false,
+        force_completion: false,
+        note_history_observed: false,
         release_ignored: false,
         at_engine: false,
+        released_to_engine: false,
         voice: None,
         release_scheduled: false,
         callbacks: 0,
@@ -350,6 +362,7 @@ impl Event {
         cleanup: false,
         silenced: false,
         held: false,
+        input_sostenuto: false,
         next_input: 0,
         fade_in_us: 0,
     };
@@ -358,23 +371,44 @@ impl Event {
         (id as u32 & ((1 << EVENT_INDEX_BITS) - 1)) as usize
     }
 
+    /// A deliberate script velocity write replaces the original precise value.
+    pub(super) fn set_velocity(&mut self, value: i32) {
+        self.velocity = value.clamp(1, 127);
+        self.onset_velocity = crate::midi::Velocity::from_midi1(self.velocity as u8);
+    }
+
     /// The event as the engine sees it; `id` is its KSP event ID.
+    pub(super) fn active(&self, engine: &dyn KspEngine) -> bool {
+        self.live && !self.silenced && (self.callbacks > 0
+            || (!self.released_to_engine && (self.held || !self.at_engine || self.length != NoteLength::Sample))
+            || self.voice.is_some_and(|voice| engine.voice_active(voice)))
+    }
+
     fn spec(&self, id: i32) -> NoteSpec<'_> {
         NoteSpec {
             event: id,
+            script_mods: &self.script_mods,
             channel: self.channel,
             owner: self.owner,
             input_channel: self.input_channel,
             host_note: self.host_note,
+            input_root: self.source < 0,
+            input_sostenuto: self.input_sostenuto,
+            per_note: self.per_note,
             frozen_expression: self.frozen_expression,
             note: self.note.clamp(0, 127) as u8,
             velocity: self.velocity.clamp(i32::from(self.host_note.is_none()), 127) as u8,
+            onset_velocity: self.onset_velocity,
+            release_velocity: self.release_velocity,
             sample_offset_us: self.sample_offset_us,
             length: self.length,
             volume_mdb: self.volume,
             tune_mc: self.tune,
             pan: self.pan,
             groups: &self.groups,
+            group_start_applied: self.at_engine,
+            native_release: false,
+            force_completion: self.force_completion,
         }
     }
 }
@@ -394,16 +428,19 @@ impl Events {
         }
     }
 
-    fn alloc(&mut self) -> Option<i32> {
+    fn alloc(&mut self, engine: &dyn KspEngine) -> Option<i32> {
         let i = match self.free.pop_front() {
             Some(i) => i,
-            // ponytail: linear scan, only when the pool is full. Sample-length notes stay
-            // live until released because the engine does not report voice ends.
+            // ponytail: reclaim finished aliases only under pool pressure;
+            // add an end-notification index if this bounded scan dominates.
             None => {
                 let i = self
                     .slots
                     .iter()
-                    .position(|e| e.live && e.callbacks == 0 && !e.release_scheduled && e.at_engine && e.length == NoteLength::Sample && !(e.source < 0 && e.held))?;
+                    .position(|e| e.live && e.callbacks == 0 && !e.release_scheduled
+                        && e.at_engine && !e.held
+                        && (e.length == NoteLength::Sample || e.released_to_engine)
+                        && e.voice.is_none_or(|voice| !engine.voice_active(voice)))?;
                 i as u32
             }
         };
@@ -436,7 +473,7 @@ impl Events {
         if let Some(e) = self.get_mut(id).filter(|e| e.live) {
             // A script can stop a MIDI voice before the physical key lets go.
             // Keep its event/link and callback row until key-up and callback completion.
-            if e.callbacks > 0 || (e.source < 0 && e.held) {
+            if e.callbacks > 0 || (e.source < 0 && e.held) || (!e.silenced && e.voice.is_some()) {
                 e.recycle_pending = true;
                 return;
             }
@@ -488,12 +525,17 @@ pub enum Work {
         input_channel: Option<u8>,
         cc: u8,
         value: i32,
+        control: Control,
+        target: ControlTarget,
+        native_standard_handled: bool,
+        raw_received: bool,
         slot: u8,
     },
-    /// Internal MIDI 2.0 messages, generated by a preceding script slot.
+    /// Native wire notification or message generated by a preceding script slot.
     NoteController {
         channel: u8,
         input_channel: Option<u8>,
+        native_note_control: Option<(crate::engine::PerNoteInput, crate::midi::NoteControl)>,
         controller: i32,
         note: u8,
         value: i32,
@@ -504,11 +546,15 @@ pub enum Work {
         input_channel: Option<u8>,
         note: u8,
         value: i32,
+        host_pressure: Option<(crate::engine::HostRef, crate::midi::ControlValue)>,
+        input_pressure: Option<(crate::engine::PerNoteInput, crate::midi::ControlValue)>,
+        apply_poly_pressure: bool,
         slot: u8,
     },
     Rpn {
         channel: u8,
         input_channel: Option<u8>,
+        native_parameter: Option<crate::midi::NativeParameter>,
         nrpn: bool,
         address: i32,
         value: i32,
@@ -566,6 +612,8 @@ pub struct Env {
     /// Sample time at the start of the current block, and the offset within it.
     pub now: u64,
     pub offset: u32,
+    /// Most recent event per key; retained callbacks use their own event clock.
+    note_clocks: [Option<(i32, u64, Option<u64>)>; 128],
     pub sample_rate: f64,
     pub tempo: f64,
     pub transport: bool,
@@ -629,6 +677,7 @@ impl Env {
             timer_seq: 0,
             now: 0,
             offset: 0,
+            note_clocks: [None; 128],
             sample_rate: 48_000.0,
             tempo: 120.0,
             transport: false,
@@ -738,12 +787,53 @@ impl Env {
         }
     }
 
+    fn start_note_clock(&mut self, id: i32) {
+        let now = self.clock();
+        if let Some(e) = self.events.get_mut(id) {
+            e.started_at = now;
+            if let Some(clock) = self.note_clocks.get_mut(e.note as usize) {
+                *clock = Some((id, now, None));
+            }
+        }
+    }
+
+    fn note_duration(&self, event: i32, key: usize) -> i32 {
+        let timing = self.events.get(event).filter(|e| e.note == key as i32)
+            .map(|e| (e.started_at, e.released_at))
+            .or_else(|| self.note_clocks[key].map(|(_, start, stop)| (start, stop)));
+        timing.map_or(0, |(start, stop)| self.micros(stop.unwrap_or_else(|| self.clock()).saturating_sub(start)) as i32)
+    }
+
+    pub(super) fn refresh_note_durations(&self, prog: &Program, state: &mut SlotState, event: i32) {
+        // Ordinary backing cells keep indexed and bulk reads consistent. Cost
+        // is bounded to 128 cells per resume/note edit, only if declared.
+        if let Some(v) = prog.sys_arrays[SysArray::NoteDuration as usize] {
+            let base = prog.vars[v as usize].slot as usize;
+            for key in 0..128 { state.mem.ints[base + key] = self.note_duration(event, key); }
+        }
+    }
+
     pub fn queue(&mut self, w: Work) {
+        // Freeze before a release callback waits or forwards to another slot.
+        if let Work::Release { event, .. } = w {
+            let now = self.clock();
+            if let Some(e) = self.events.get_mut(event) {
+                let stopped = *e.released_at.get_or_insert(now);
+                if let Some(Some((id, _, stop))) = self.note_clocks.get_mut(e.note as usize)
+                    && *id == event { stop.get_or_insert(stopped); }
+            }
+        }
         if self.work.len() < WORK_CAPACITY {
             self.work.push_back(w);
         } else {
             self.note("KSP event queue full; event dropped");
         }
+    }
+
+    pub(super) fn queue_control(&mut self, channel: u8, input_channel: Option<u8>, slot: u8,
+        target: ControlTarget, control: Control, native_standard_handled: bool, raw_received: bool) {
+        let (cc, value) = control.legacy();
+        self.queue(Work::Controller { channel, input_channel, cc, value, control, target, native_standard_handled, raw_received, slot });
     }
 
     fn timer(&mut self, at: u64, kind: TimerKind) -> bool {
@@ -795,6 +885,7 @@ impl Env {
     /// Create a note event for `play_note` in `slot`, queued for the next slot.
     pub fn play_note(
         &mut self,
+        engine: &dyn KspEngine,
         slot: u8,
         parent: i32,
         channel: u8,
@@ -804,17 +895,18 @@ impl Env {
         offset_us: i32,
         duration_us: i32,
     ) -> i32 {
-        let Some(id) = self.events.alloc() else {
+        let Some(id) = self.events.alloc(engine) else {
             self.note("KSP event pool exhausted; play_note ignored");
             return 0;
         };
         let parent_state = self
             .events
             .get(parent)
-            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner, p.input_channel, p.host_note));
+            .map(|p| (p.groups, p.released & (1 << slot) != 0, p.frozen_expression, p.owner, p.input_channel, p.host_note, p.per_note,
+                (p.velocity, p.onset_velocity, p.release_velocity)));
         let e = self.events.get_mut(id).expect("fresh event");
         e.note = note;
-        e.velocity = velocity;
+        e.set_velocity(velocity);
         e.channel = channel;
         e.input_channel = input_channel;
         e.sample_offset_us = i64::from(offset_us);
@@ -828,21 +920,27 @@ impl Env {
             NoteLength::UntilNoteOff
         };
         e.follows_parent = duration_us < 0 && parent_state.is_some();
-        if let Some((groups, _, expression, owner, input_channel, host_note)) = parent_state {
+        if let Some((groups, _, expression, owner, input_channel, host_note, per_note, (parent_velocity, onset, release))) = parent_state {
             e.input_channel = input_channel;
             e.host_note = host_note;
+            e.per_note = per_note;
             e.groups = groups;
             e.frozen_expression = expression;
+            // A library cloning its incoming legacy velocity keeps the original
+            // precision. An authored different velocity is an explicit replacement.
+            if velocity == parent_velocity { e.onset_velocity = onset; }
+            e.release_velocity = release;
             // Following notes keep the input key even when a script transposes
             // them. Independent timed/one-shot notes have their own lifetime.
             if e.follows_parent { e.owner = owner; }
         }
+        self.start_note_clock(id);
         self.queue(Work::Note {
             event: id,
             slot: slot + 1,
         });
         match parent_state {
-            Some((_, true, _, _, _, _)) if duration_us < 0 => self.queue(Work::Release {
+            Some((_, true, _, _, _, _, _, _)) if duration_us < 0 => self.queue(Work::Release {
                 event: id,
                 slot: slot + 1,
             }),
@@ -1136,6 +1234,18 @@ impl Runtime {
                 let menu = dynamic_menu
                     && prog.vars[control.var as usize].ui.as_deref() == Some("ui_menu");
                 control.prepare(text_bytes, menu);
+                let var = &prog.vars[control.var as usize];
+                control.midi.resize(var.len.unwrap_or(1) as usize, None);
+                control.midi_key = format!("@KONTRA/MIDI/{}", var.name);
+                if let Some(Value::IntArray(values)) = self.env.persisted
+                    .get(state.index as usize)
+                    .and_then(|saved| saved.get(&control.midi_key))
+                {
+                    for (target, value) in control.midi.iter_mut().zip(values) {
+                        *target = (0..2048).contains(value)
+                            .then(|| ((*value / 128) as u8, (*value % 128) as u8));
+                    }
+                }
                 if prog.vars[control.var as usize].ui.as_deref() == Some("ui_file_selector") {
                     for par in [b::CONTROL_PAR_FILEPATH, b::CONTROL_PAR_BASEPATH] {
                         let path = control.str_mut(par).unwrap();
@@ -1376,6 +1486,17 @@ impl Runtime {
                     .collect()
             })
             .collect();
+        for (state, values) in self.states.iter().zip(&mut saved) {
+            for control in &state.ui.controls {
+                if !control.midi_key.is_empty() {
+                    values.insert(control.midi_key.clone(), Value::IntArray(
+                        control.midi.iter().map(|mapping| {
+                            mapping.map_or(-1, |(channel, cc)| i32::from(channel) * 128 + i32::from(cc))
+                        }).collect(),
+                    ));
+                }
+            }
+        }
         // Room for strings to grow before `refresh_persistence` must cut them.
         each_text(&mut saved, |t| t.reserve(t.len().max(SNAPSHOT_SLACK)));
         saved
@@ -1423,11 +1544,146 @@ impl Runtime {
                     (at.item, at.at) = (at.item + 1, 0);
                 }
             }
+            while let Some(control) = state.ui.controls.get(at.midi_item) {
+                if let Some(Value::IntArray(values)) = saved[at.slot].get_mut(&control.midi_key) {
+                    while at.midi_at < values.len().min(control.midi.len()) {
+                        if left == 0 {
+                            return false;
+                        }
+                        let value = control.midi[at.midi_at]
+                            .map_or(-1, |(channel, cc)| i32::from(channel) * 128 + i32::from(cc));
+                        at.changed |= std::mem::replace(&mut values[at.midi_at], value) != value;
+                        at.midi_at += 1;
+                        left -= 1;
+                    }
+                }
+                at.midi_at = 0;
+                at.midi_item += 1;
+            }
+            at.midi_item = 0;
             (at.slot, at.item) = (at.slot + 1, 0);
         }
         true
     }
 
+    /// Build the native parameter registry off-thread. First slot wins name collisions.
+    pub fn exposed_controls(&self) -> Vec<super::ExposedControl> {
+        if !self.states.iter().any(|s| s.ui.exposed) { return Vec::new(); }
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for (slot, state) in self.states.iter().enumerate() {
+            for (control, mut descriptor) in state.ui.interface(&self.programs[slot], &state.mem).controls.into_iter().enumerate() {
+                let identifier = descriptor.variable.chars().skip(1).collect::<String>();
+                if !seen.insert(identifier.clone()) { continue; }
+                let c=&state.ui.controls[control];
+                let prog=&self.programs[slot];
+                for (par,source) in c.props.iter().chain(&c.spare_text.iter().map(|(par,text)|(*par,super::ui::Prop::Str(text.clone()))).collect::<Vec<_>>()) {
+                    if let Some(name)=prog.symbol_name(*par) {
+                        let target=descriptor.properties.entry(name.into()).or_insert_with(||match source {super::ui::Prop::Str(_)=>Value::Text(String::new()),_=>Value::IntArray(Vec::new())});
+                        if let (Value::Text(t),super::ui::Prop::Str(source))=(target,source){t.reserve(source.capacity().saturating_sub(t.len()));}
+                    }
+                }
+                for name in ["$CONTROL_PAR_LABEL","$CONTROL_PAR_TEXT","$CONTROL_PAR_HELP"] {descriptor.properties.entry(name.into()).or_insert_with(||Value::Text(String::with_capacity(1024)));}
+                for value in descriptor.properties.values_mut() { each_text_in(value, &mut |text| {text.reserve(1024usize.saturating_sub(text.len()));}); }
+                descriptor.menu=c.menu.iter().map(|item|(item.text.clone(),item.value)).collect();
+                let menu_visible=c.menu.iter().map(|item|item.visible).collect();
+                out.push(super::ExposedControl { slot, control, identifier, menu_visible, midi_learn: state.ui.learn.filter(|(c, _)| *c == control).map(|(_, index)| index), descriptor });
+            }
+        }
+        out
+    }
+
+    pub fn update_level_meters(&mut self, read: impl Fn([i32; 4]) -> Option<f32>) {
+        for (state, program) in self.states.iter_mut().zip(&self.programs) {
+            for control in &state.ui.controls {
+                let Some(attachment) = control.meter else { continue; };
+                let value = read(attachment).unwrap_or(0.);
+                let value = if value.is_finite() { (value.clamp(0., 2147.) * 1_000_000.).round() as i32 } else { 0 };
+                let slot = program.vars[control.var as usize].slot as usize;
+                if state.mem.ints[slot] != value { state.mem.ints[slot] = value; self.changes += 1; }
+            }
+        }
+    }
+    pub fn native_midi_learn(&mut self, slot: usize, control: usize, index: usize, active: bool) -> bool {
+        let Some(state) = self.states.get(slot) else { return false; };
+        let Some(c) = state.ui.controls.get(control) else { return false; };
+        if !self.states.iter().any(|s| s.ui.exposed) || index >= c.midi.len() || self.programs[slot].vars[c.var as usize].ty == Ty::Str { return false; }
+        if active {
+            for state in &mut self.states { state.ui.learn = None; }
+            self.states[slot].ui.learn = Some((control, index));
+        } else if self.states[slot].ui.learn == Some((control, index)) { self.states[slot].ui.learn = None; }
+        self.changes += 1;
+        true
+    }
+    fn native_midi(&mut self, engine: &mut dyn KspEngine, control: Control) {
+        let Some(channel) = self.env.input.input_channel else { return; };
+        let (cc, value) = match control {
+            Control::Cc(cc, value) if cc < 120 => (cc, f64::from(value.normalized())),
+            Control::Cc14 { cc, value, .. } if cc < 120 => (cc, f64::from(value.normalized())), _ => return,
+        };
+        for slot in 0..self.states.len() {
+            if let Some((control, index)) = self.states[slot].ui.learn.take() {
+                self.states[slot].ui.controls[control].midi[index] = Some((channel, cc));
+                self.changes += 1;
+            }
+            for control in 0..self.states[slot].ui.controls.len() {
+                let length = self.states[slot].ui.controls[control].midi.len();
+                for index in 0..length {
+                    let c = &self.states[slot].ui.controls[control];
+                    if c.midi[index] != Some((channel, cc)) { continue; }
+                    let number = if !c.menu.is_empty() {
+                        let count = c.menu.iter().filter(|item| item.visible).count();
+                        if count == 0 { continue; }
+                        let row = (value * count.saturating_sub(1) as f64).round() as usize;
+                        f64::from(c.menu.iter().filter(|item| item.visible).nth(row).unwrap().value)
+                    } else {
+                        let bound = |par, default| match c.get(par) { Some(super::ui::Prop::Int(n)) => f64::from(*n), _ => default };
+                        let lo = bound(b::CONTROL_PAR_MIN_VALUE, 0.);
+                        lo + value * (bound(b::CONTROL_PAR_MAX_VALUE, 1.) - lo)
+                    };
+                    self.native_control(engine, slot, control, index, number);
+                }
+            }
+        }
+    }
+    pub fn native_ui_entry(&self) -> Option<&str> {
+        self.states.iter().find(|s| !s.ui.native_ui.is_empty()).map(|s| s.ui.native_ui.as_str())
+    }
+
+    /// Writes use prepared numeric bindings; they never look up a string on audio.
+    pub fn native_control(&mut self, engine: &mut dyn KspEngine, slot: usize, control: usize, index: usize, value: f64) -> bool {
+        if !value.is_finite() || !self.states.iter().any(|s| s.ui.exposed) { return false; }
+        let Some(state) = self.states.get_mut(slot) else { return false; };
+        let Some(c) = state.ui.controls.get(control) else { return false; };
+        let v = c.var;
+        let prog = self.programs[slot].clone();
+        let var = &prog.vars[v as usize];
+        if index >= var.len.unwrap_or(1) as usize || var.poly { return false; }
+        let range = |p| match c.get(p) { Some(super::ui::Prop::Int(n)) => Some(f64::from(*n)), _ => None };
+        let value = match (range(b::CONTROL_PAR_MIN_VALUE), range(b::CONTROL_PAR_MAX_VALUE)) {
+            (Some(a), Some(z)) => value.clamp(a.min(z), a.max(z)), _ => value,
+        };
+        match var.ty {
+            Ty::Int => state.mem.ints[var.slot as usize + index] = value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            Ty::Real => state.mem.reals[var.slot as usize + index] = value,
+            Ty::Str => return false,
+        }
+        self.changes += 1;
+        self.dispatch_ui_control(engine, slot, v);
+        true
+    }
+
+    pub fn native_text(&mut self, engine:&mut dyn KspEngine, slot:usize, control:usize, index:usize, text:&str)->bool {
+        if !self.states.iter().any(|s|s.ui.exposed){return false;}
+        let Some(state)=self.states.get_mut(slot) else{return false;};
+        let Some(c)=state.ui.controls.get(control) else{return false;};
+        let v=c.var;let var=&self.programs[slot].vars[v as usize];
+        if var.ty!=Ty::Str || var.poly || index>=var.len.unwrap_or(1) as usize {return false;}
+        let target=&mut state.mem.strs[var.slot as usize+index];
+        if text.len()>target.capacity(){return false;}
+        target.clear();target.push_str(text);
+        self.changes+=1;self.dispatch_ui_control(engine,slot,v);true
+    }
     pub fn interface(&self, slot: usize) -> Interface {
         let mut interface = self.states[slot].ui.interface(&self.programs[slot], &self.states[slot].mem);
         // Wallpaper is instrument-wide: the last slot assigning it wins.
@@ -1518,6 +1774,16 @@ impl Runtime {
                 spare
             }).collect()
         });
+        let mut exposed_controls=self.exposed_controls();
+        let native_menu_spares=exposed_controls.iter_mut().map(|binding| {
+            let c=&self.states[binding.slot].ui.controls[binding.control];
+            let total=c.menu.len()+c.spare_menu.len();
+            let bytes=c.menu.iter().chain(&c.spare_menu).map(|m|m.text.capacity()).max().unwrap_or(1024);
+            for (text,_) in &mut binding.descriptor.menu {text.reserve(bytes.saturating_sub(text.len()));}
+            binding.descriptor.menu.reserve(total.saturating_sub(binding.descriptor.menu.len()));
+            binding.menu_visible.reserve(total.saturating_sub(binding.menu_visible.len()));
+            let mut spare=Vec::with_capacity(total);spare.resize_with(total.saturating_sub(binding.descriptor.menu.len()),||(String::with_capacity(bytes),0));spare
+        }).collect();
         let text = || String::with_capacity(SNAPSHOT_SLACK);
         let keys = (0..128)
             .map(|n| {
@@ -1541,6 +1807,8 @@ impl Runtime {
             interface_current: true,
             slot: slot.unwrap_or(0),
             interface,
+            exposed_controls,
+            native_menu_spares,
             keys,
             menu_spares,
             control_revisions: slot.map_or_else(Vec::new, |s| self.states[s].ui.controls.iter().map(|c| c.revision).collect()),
@@ -1598,6 +1866,65 @@ impl Runtime {
             if at.item != usize::MAX {
                 return false;
             }
+        }
+        let mut left = budget;
+        while at.native_item < live.exposed_controls.len() {
+            if left == 0 { return false; }
+            let binding = &mut live.exposed_controls[at.native_item];
+            let state = &self.states[binding.slot];
+            let prog = &self.programs[binding.slot];
+            let c = &state.ui.controls[binding.control];
+            let learn = state.ui.learn.filter(|(control, _)| *control == binding.control).map(|(_, index)| index);
+            if std::mem::replace(&mut binding.midi_learn, learn) != learn { live.interface_revision = live.interface_revision.wrapping_add(1); at.changed = true; }
+            let var = &prog.vars[c.var as usize];
+            let len = var.len.unwrap_or(1) as usize;
+            let end = len.min(at.native_at.saturating_add(left));
+            if let Some(value) = binding.descriptor.properties.get_mut("$CONTROL_PAR_VALUE") {
+                if refresh_range(&state.mem, var, value, at.native_at..end) {
+                    live.interface_revision = live.interface_revision.wrapping_add(1);
+                    at.changed = true;
+                }
+            }
+            left = left.saturating_sub(end - at.native_at);
+            if end < len { at.native_at = end; return false; }
+            at.native_at = 0;
+            for (par, source) in &c.props {
+                let Some(name) = prog.symbol_name(*par) else { continue; };
+                let Some(target) = binding.descriptor.properties.get_mut(name) else { continue; };
+                let changed = match (source, target) {
+                    (super::ui::Prop::Int(n), Value::Int(v)) => std::mem::replace(v, *n) != *n,
+                    (super::ui::Prop::Int(n), target) if matches!(&*target,Value::IntArray(values) if values.is_empty())=>{*target=Value::Int(*n);true},
+                    (super::ui::Prop::Str(s), Value::Text(v)) => copy_text(v, s), _ => false,
+                };
+                if changed { live.interface_revision = live.interface_revision.wrapping_add(1); at.changed = true; }
+            }
+            for (par, index, source) in &c.indexed {
+                // Keys were serialized off audio; matching numeric suffixes avoids formatting here.
+                let Some(name) = prog.symbol_name(*par) else { continue; };
+                for (key, target) in &mut binding.descriptor.properties {
+                    if !key.starts_with(name) || key.as_bytes().get(name.len()) != Some(&b'[') { continue; }
+                    if key.get(name.len()+1..key.len().saturating_sub(1)).and_then(|s| s.parse::<usize>().ok()) != Some(*index) { continue; }
+                    let changed = match (source, target) {
+                        (super::ui::Prop::Int(n), Value::Int(dst)) => std::mem::replace(dst, *n) != *n,
+                        (super::ui::Prop::Str(text), Value::Text(dst)) => copy_text(dst, text), _ => false,
+                    };
+                    if changed { live.interface_revision = live.interface_revision.wrapping_add(1); at.changed = true; }
+                    break;
+                }
+            }
+            let spare=&mut live.native_menu_spares[at.native_item];
+            let menu=&mut binding.descriptor.menu;
+            let mut changed=false;
+            while menu.len()>c.menu.len(){let mut item=menu.pop().unwrap();item.0.clear();spare.push(item);binding.menu_visible.pop();changed=true;}
+            while menu.len()<c.menu.len() && !spare.is_empty(){menu.push(spare.pop().unwrap());binding.menu_visible.push(false);changed=true;}
+            for ((target,visible),source) in menu.iter_mut().zip(&mut binding.menu_visible).zip(&c.menu){
+                changed|=copy_text(&mut target.0,&source.text);
+                changed|=std::mem::replace(&mut target.1,source.value)!=source.value;
+                changed|=std::mem::replace(visible,source.visible)!=source.visible;
+            }
+            left=left.saturating_sub(c.menu.len()+c.props.len());
+            if changed {live.interface_revision=live.interface_revision.wrapping_add(1);at.changed=true;}
+            at.native_item += 1;
         }
         let mut keys_changed = false;
         for (note, key) in &mut live.keys {
@@ -1692,26 +2019,44 @@ impl Runtime {
 
     /// Physical input ownership can differ from the channel the script sees.
     pub(crate) fn note_on_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8) {
-        if velocity == 0 { return self.note_off_from(engine, at, owner, note); }
+        if velocity == 0 {
+            return self.note_off_from_velocity(engine, at, owner, note, crate::midi::Velocity::from_midi1(64));
+        }
         self.note_on_host(engine, at, owner, note, velocity, None);
     }
 
     pub(crate) fn note_on_host(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: u8, host_note: Option<crate::engine::HostRef>) {
+        self.note_on_host_velocity(engine, at, owner, note, crate::midi::Velocity::from_midi1(velocity), host_note);
+    }
+
+    pub(crate) fn note_on_from_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: crate::midi::Velocity) {
+        self.note_on_host_velocity(engine, at, owner, note, velocity, None);
+    }
+
+    pub(crate) fn note_on_host_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: crate::midi::Velocity, host_note: Option<crate::engine::HostRef>) {
+        self.note_on_owned_velocity(engine, at, owner, note, velocity, host_note, None);
+    }
+
+    pub(crate) fn note_on_owned_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8,
+        velocity: crate::midi::Velocity, host_note: Option<crate::engine::HostRef>, per_note: Option<crate::engine::PerNoteInput>) {
         self.advance(engine, at);
         let note = note.min(127);
         if !self.env.hide_cleanup_keys { self.set_sys(SysArray::KeyDown, note as usize, 1); }
-        let Some(id) = self.env.events.alloc() else {
+        let Some(id) = self.env.events.alloc(engine) else {
             self.env.note("KSP event pool exhausted; note dropped");
             return;
         };
         let e = self.env.events.get_mut(id).expect("fresh event");
         e.note = i32::from(note);
-        e.velocity = i32::from(velocity);
+        e.velocity = i32::from(if host_note.is_some() { velocity.midi1() } else { velocity.midi1().max(1) });
+        e.onset_velocity = velocity;
         e.channel = self.env.input.channel;
         e.owner = Some((owner.min(15), note));
         e.input_channel = Some(owner.min(15));
         e.host_note = host_note;
+        e.per_note = per_note;
         e.held = true;
+        self.env.start_note_clock(id);
         let keys = &mut self.env.input.keys[owner.min(15) as usize][note as usize];
         if keys.1 == 0 {
             keys.0 = id;
@@ -1725,6 +2070,14 @@ impl Runtime {
     }
 
     pub(crate) fn note_off_host(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef, owner: u8, note: u8) {
+        self.release_host(engine, host_note, owner, note, None);
+    }
+
+    pub(crate) fn note_off_host_velocity(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef, owner: u8, note: u8, velocity: crate::midi::Velocity) {
+        self.release_host(engine, host_note, owner, note, Some(velocity));
+    }
+
+    fn release_host(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef, owner: u8, note: u8, velocity: Option<crate::midi::Velocity>) {
         self.advance(engine, 0);
         let (mut id, mut previous) = (self.env.input.keys[owner as usize][note as usize].0, 0);
         while id != 0 {
@@ -1736,7 +2089,8 @@ impl Runtime {
                 if self.env.input.keys[owner as usize][note as usize].1 == id { self.env.input.keys[owner as usize][note as usize].1 = previous; }
                 let e = self.env.events.get_mut(id).unwrap();
                 e.next_input = 0; e.held = false;
-                if e.frozen_expression.is_none() { e.frozen_expression = engine.release_expression(0, e.voice, e.channel, note); }
+                if e.release_velocity.is_none() { e.release_velocity = velocity; }
+                if e.frozen_expression.is_none() { e.frozen_expression = engine.release_expression(0, e.voice, e.channel, e.input_channel, note); }
                 self.env.queue(Work::Release { event: id, slot: 0 });
                 break;
             }
@@ -1754,6 +2108,7 @@ impl Runtime {
         for work in &self.env.work {
             if let Work::Note { event, .. } | Work::Release { event, .. } = *work
                 && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.host_note) { visit(r); }
+            if let Work::PolyAt { host_pressure: Some((r, _)), .. } = *work { visit(r); }
         }
         for Reverse(timer) in &self.env.timers {
             if let TimerKind::Release { event, .. } = timer.kind
@@ -1764,6 +2119,33 @@ impl Runtime {
                 if let Some(r) = e.host_note { visit(r); }
             }
         }
+        for t in &self.threads {
+            if t.live && let Some((r, _)) = t.ctx.host_pressure { visit(r); }
+        }
+    }
+
+    pub(crate) fn visit_per_notes(&self, mut visit: impl FnMut(crate::engine::PerNoteRef)) {
+        for work in &self.env.work {
+            if let Work::Note { event, .. } | Work::Release { event, .. } = *work
+                && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.per_note) { visit(r.controls); }
+            match *work {
+                Work::NoteController { native_note_control: Some((input, _)), .. }
+                | Work::PolyAt { input_pressure: Some((input, _)), .. } => visit(input.controls),
+                _ => {}
+            }
+        }
+        for Reverse(timer) in &self.env.timers {
+            if let TimerKind::Release { event, .. } = timer.kind
+                && let Some(r) = self.env.events.get(event).filter(|e| e.live).and_then(|e| e.per_note) { visit(r.controls); }
+        }
+        for e in &self.env.events.slots {
+            if e.live && (e.held || e.callbacks > 0 || (!e.at_engine && !e.ignored && !e.silenced)) {
+                if let Some(r) = e.per_note { visit(r.controls); }
+            }
+        }
+        for t in &self.threads {
+            if t.live && let Some(r) = t.ctx.per_note { visit(r.controls); }
+        }
     }
 
     pub fn note_off(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8) {
@@ -1771,6 +2153,14 @@ impl Runtime {
     }
 
     pub(crate) fn note_off_from(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8) {
+        self.release_input(engine, at, owner, note, None);
+    }
+
+    pub(crate) fn note_off_from_velocity(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: crate::midi::Velocity) {
+        self.release_input(engine, at, owner, note, Some(velocity));
+    }
+
+    fn release_input(&mut self, engine: &mut dyn KspEngine, at: u32, owner: u8, note: u8, velocity: Option<crate::midi::Velocity>) {
         self.advance(engine, at);
         let note = note.min(127);
         let row=owner.min(15) as usize;
@@ -1787,8 +2177,9 @@ impl Runtime {
                 last=id;
             } else {
                 e.held = false;
+                if e.release_velocity.is_none() { e.release_velocity = velocity; }
                 if e.frozen_expression.is_none() {
-                    e.frozen_expression = engine.release_expression(at, e.voice, e.channel, note);
+                    e.frozen_expression = engine.release_expression(at, e.voice, e.channel, e.input_channel, note);
                 }
                 self.env.queue(Work::Release { event: id, slot: 0 });
             }
@@ -1817,35 +2208,53 @@ impl Runtime {
         false
     }
 
+    /// Captured library delivery of live physical roots, including waits and
+    /// released roots retained by their voices. Controller ownership is physical.
+    pub(crate) fn input_deliveries(&self) -> [u16; 16] {
+        let mut channels = [0; 16];
+        for event in self.env.events.slots.iter().filter(|event| event.live && event.source < 0) {
+            if let Some(input) = event.input_channel {
+                channels[input.min(15) as usize] |= 1 << event.channel.min(15);
+            }
+        }
+        channels
+    }
+
     /// Cut existing note/input work, retaining physically held event rows.
     /// CC120 stops sound; actual key-up still clears authored note state.
     /// UI, listener and service callbacks retain their prepared state and timers.
-    pub fn all_sound_off(&mut self, channel_mask: u16) {
-        self.cancel_sound(channel_mask, None, false);
+    pub fn all_sound_off(&mut self, engine: &mut dyn KspEngine, channel_mask: u16) {
+        self.cancel_sound(engine, channel_mask, None, false);
     }
 
-    pub(crate) fn all_sound_off_from(&mut self, input_mask: u16) -> u16 {
-        self.cancel_sound(u16::MAX, Some(input_mask), false)
+    pub(crate) fn all_sound_off_from(&mut self, engine: &mut dyn KspEngine, input_mask: u16) -> u16 {
+        self.cancel_sound(engine, u16::MAX, Some(input_mask), false)
     }
 
     /// Host Panic/reset releases physical notes to clear authored legato buffers.
     /// Sound is cut independently by the host. Cleanup retains the ordinary
     /// callback budget, ignores waits and cannot generate replacement notes.
     pub(crate) fn cleanup_notes(&mut self, engine: &mut dyn KspEngine) {
-        self.cancel_sound(u16::MAX, None, true);
+        self.cancel_sound(engine, u16::MAX, None, true);
         self.settle(engine);
     }
 
-    fn cancel_sound(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
-        self.cancel_sound_host(channel_mask, input_mask, cleanup, None)
+    pub(crate) fn cleanup_notes_from(&mut self, engine: &mut dyn KspEngine, inputs: u16) -> u16 {
+        let affected = self.cancel_sound(engine, u16::MAX, Some(inputs), true);
+        self.settle(engine);
+        affected
+    }
+
+    fn cancel_sound(&mut self, engine: &mut dyn KspEngine, channel_mask: u16, input_mask: Option<u16>, cleanup: bool) -> u16 {
+        self.cancel_sound_host(engine, channel_mask, input_mask, cleanup, None)
     }
 
     pub(crate) fn choke_host_note(&mut self, engine: &mut dyn KspEngine, host_note: crate::engine::HostRef) {
-        self.cancel_sound_host(u16::MAX, None, true, Some(host_note));
+        self.cancel_sound_host(engine, u16::MAX, None, true, Some(host_note));
         self.settle(engine);
     }
 
-    fn cancel_sound_host(&mut self, channel_mask: u16, input_mask: Option<u16>, cleanup: bool, host_note: Option<crate::engine::HostRef>) -> u16 {
+    fn cancel_sound_host(&mut self, engine: &mut dyn KspEngine, channel_mask: u16, input_mask: Option<u16>, cleanup: bool, host_note: Option<crate::engine::HostRef>) -> u16 {
         if channel_mask == 0 { return 0; }
         let mut affected = 0;
         let selected = |channel: u8, input_channel: Option<u8>| channel_mask & (1 << channel.min(15)) != 0
@@ -1888,11 +2297,21 @@ impl Runtime {
             e.recycle_pending = !keep_key && (!e.cleanup || e.released & 1 != 0 && e.recycle_pending);
         }
         let events = &self.env.events;
-        self.env.work.retain(|w| match *w {
+        let at = self.env.offset;
+        self.env.work.retain(|w| {
+            let keep = match *w {
             Work::Note { event, .. } => events.get(event).is_some_and(|e| !selected_event(e)),
             Work::Release { event, .. } => events.get(event).is_some_and(|e| !selected_event(e) || e.cleanup),
-            Work::Controller { channel, input_channel, .. } | Work::PolyAt { channel, input_channel, .. }
-                | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => host_note.is_some() || !selected(channel, input_channel),
+            Work::PolyAt { channel, input_channel, host_pressure, .. } => {
+                if let Some(selected) = host_note { host_pressure.is_none_or(|(r, _)| r != selected) }
+                else { !selected(channel, input_channel) }
+            }
+            Work::Controller { channel, input_channel, .. } | Work::Rpn { channel, input_channel, .. } | Work::NoteController { channel, input_channel, .. } => host_note.is_some() || !selected(channel, input_channel),
+            };
+            if !keep && let Work::PolyAt { host_pressure: Some((r, _)), .. } = *w {
+                engine.host_callback_finished(at, r);
+            }
+            keep
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
@@ -1915,7 +2334,7 @@ impl Runtime {
                     if self.env.timers.len() >= TIMER_CAPACITY {
                         self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
                         self.threads[i].ctx.forward = Forward::None;
-                        self.finish(i as u16);
+                        self.finish(engine, i as u16);
                     } else {
                         self.env.timer(self.env.clock(), TimerKind::Resume { thread: i as u16, generation });
                     }
@@ -1923,6 +2342,7 @@ impl Runtime {
                 continue;
             }
             if !(self.env.events.get(t.ctx.event).is_some_and(|e| selected_event(e))
+                || t.ctx.host_pressure.is_some_and(|(r, _)| host_note == Some(r))
                 || host_note.is_none() && input && selected(t.ctx.channel, t.ctx.input_channel)) { continue; }
             let ctx = t.ctx;
             if matches!(ctx.kind, Kind::Cb(Callback::Controller)) {
@@ -1934,7 +2354,7 @@ impl Runtime {
                 self.write_sys(ctx.slot, SysArray::CcTouched, ctx.cc as usize, i32::from(touched));
             }
             self.threads[i].ctx.forward = Forward::None;
-            self.finish(i as u16);
+            self.finish(engine, i as u16);
         }
         for i in 0..self.env.events.slots.len() {
             let e = &self.env.events.slots[i];
@@ -1967,7 +2387,7 @@ impl Runtime {
             TimerKind::Listener { .. } => true,
         });
         self.env.stop_waits.retain(|(id, _)| threads.iter().any(|t| t.live && t.ctx.callback_id == *id));
-        if host_note.is_none() && self.env.cleaning { self.env.hide_cleanup_keys = true; }
+        if host_note.is_none() && input_mask.is_none() && self.env.cleaning { self.env.hide_cleanup_keys = true; }
         for note in 0..128 {
             let held = !self.env.hide_cleanup_keys && self.env.input.keys.iter().any(|channel| channel[note].0 != 0);
             self.set_sys(SysArray::KeyDown, note, i32::from(held));
@@ -2007,22 +2427,60 @@ impl Runtime {
         self.changes += 1;
     }
 
+    /// Physical CC121 releases capture even when a library ignores its
+    /// synthesized CC66 notification. Other physical inputs retain theirs.
+    pub(crate) fn clear_input_sostenuto(&mut self, inputs: u16) {
+        for event in self.env.events.slots.iter_mut().filter(|event| event.live && event.source < 0) {
+            if inputs & (1 << event.input_channel.unwrap_or(event.channel)) != 0 {
+                event.input_sostenuto = false;
+            }
+        }
+    }
+
     /// Fence older performance-controller callbacks without canceling keys,
     /// note/release callbacks, UI edits or unrelated MIDI channels.
-    pub(crate) fn cancel_performance_controllers(&mut self, channels: u16) {
-        let selected = |channel: u8, cc: u8| channels & (1 << channel.min(15)) != 0
-            && reset_controller_value(cc, None).is_some();
-        self.env.work.retain(|w| match *w {
-            Work::Controller { channel, cc, .. } => !selected(channel, cc),
-            Work::PolyAt { channel, .. } => !selected(channel, 129),
+    pub(crate) fn cancel_performance_controllers(&mut self, engine: &mut dyn KspEngine, inputs: u16) {
+        self.cancel_controllers(engine, inputs, false, None);
+    }
+
+    pub(crate) fn cancel_performance_controllers_on_port(&mut self, engine: &mut dyn KspEngine, inputs: u16, port: u8) {
+        self.cancel_controllers(engine, inputs, false, Some(port));
+    }
+
+    /// MPE reassignment invalidates every pending physical member control.
+    pub(crate) fn cancel_mpe_controllers(&mut self, engine: &mut dyn KspEngine, inputs: u16) {
+        self.cancel_controllers(engine, inputs, true, None);
+    }
+
+    fn cancel_controllers(&mut self, engine: &mut dyn KspEngine, inputs: u16, all: bool, port: Option<u8>) {
+        let input_selected = |input: Option<u8>| input.is_some_and(|input| inputs & (1 << input) != 0);
+        let selected = |input: Option<u8>, cc: u8| input_selected(input)
+            && (all || reset_controller_value(cc, None).is_some());
+        let pressure_selected = |input: Option<u8>, pressure: Option<(crate::engine::PerNoteInput, crate::midi::ControlValue)>| {
+            selected(input, 129) && pressure.is_none_or(|(input, _)| !all && port.is_none_or(|port| input.address.port == port))
+        };
+        let at = self.env.offset;
+        self.env.work.retain(|w| {
+            let keep = match *w {
+            Work::Controller { input_channel, control, .. } => !selected(input_channel, control.reset_controller_number()),
+            Work::PolyAt { input_channel, input_pressure, .. } => !pressure_selected(input_channel, input_pressure),
+            Work::Rpn { input_channel, .. } => !input_selected(input_channel),
             _ => true,
+            };
+            if !keep && let Work::PolyAt { host_pressure: Some((r, _)), .. } = *w {
+                engine.host_callback_finished(at, r);
+            }
+            keep
         });
         for i in 0..self.threads.len() {
             let t = &self.threads[i];
-            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.channel, t.ctx.cc as u8)
-                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && selected(t.ctx.channel, 129)) { continue; }
+            if !t.live || !(t.ctx.kind == Kind::Cb(Callback::Controller) && selected(t.ctx.input_channel,
+                t.ctx.performance_control.map_or(t.ctx.cc as u8, |(_, control)| control.reset_controller_number()))
+                || t.ctx.kind == Kind::Cb(Callback::PolyAt) && pressure_selected(t.ctx.input_channel, t.ctx.input_pressure)
+                || matches!(t.ctx.kind, Kind::Cb(Callback::Rpn | Callback::Nrpn))
+                    && input_selected(t.ctx.input_channel)) { continue; }
             self.threads[i].ctx.forward = Forward::None;
-            self.finish(i as u16);
+            self.finish(engine, i as u16);
         }
         let threads = &self.threads;
         self.env.timers.retain(|Reverse(t)| match t.kind {
@@ -2040,9 +2498,40 @@ impl Runtime {
         self.cc(engine, at, cc.min(127), i32::from(value));
     }
 
+    /// Stage received wire CC and its decoded parameter together. Script-generated
+    /// parameter messages use `rpn` directly and never re-enter wire decoding.
+    pub(crate) fn received_control(&mut self, engine: &mut dyn KspEngine, control: Control,
+        parameter: Option<crate::midi::ParameterValue>, native_standard_handled: bool) {
+        self.advance(engine, 0);
+        self.native_midi(engine, control);
+        self.queue_received_control(control, native_standard_handled);
+        let channel = self.env.input.channel;
+        let input_channel = self.env.input.input_channel;
+        if let Some(parameter) = parameter {
+            self.env.queue(Work::Rpn { channel, input_channel, nrpn: !parameter.registered,
+                native_parameter: None, address: i32::from(parameter.address), value: i32::from(parameter.value), slot: 0 });
+        }
+        self.settle(engine);
+    }
+
+    pub(crate) fn control_from(&mut self, engine: &mut dyn KspEngine, at: u32, control: Control) {
+        self.advance(engine, at);
+        self.native_midi(engine, control);
+        self.queue_received_control(control, false);
+        self.settle(engine);
+    }
+
+    fn queue_received_control(&mut self, control: Control, native_standard_handled: bool) {
+        let (cc, value) = control.legacy();
+        self.env.input.cc[cc as usize] = value;
+        if cc == b::VCC_PITCH_BEND as u8 { self.env.input.pitch_bend = value; }
+        let input_channel = self.env.input.input_channel;
+        self.env.queue_control(self.env.input.channel, input_channel, 0,
+            input_channel.map_or(ControlTarget::Authored, ControlTarget::Physical), control, native_standard_handled, true);
+    }
+
     /// Pitch bend, -8192..8191.
     pub fn pitch_bend(&mut self, engine: &mut dyn KspEngine, at: u32, value: i32) {
-        self.env.input.pitch_bend = value.clamp(-8192, 8191);
         self.cc(
             engine,
             at,
@@ -2056,19 +2545,74 @@ impl Runtime {
     }
 
     fn cc(&mut self, engine: &mut dyn KspEngine, at: u32, cc: u8, value: i32) {
-        self.advance(engine, at);
-        self.env.input.cc[cc as usize] = value;
-        self.env.queue(Work::Controller { channel: self.env.input.channel, input_channel: self.env.input.input_channel, cc, value, slot: 0 });
-        self.settle(engine);
+        if let Some(control) = Control::from_legacy(cc, value) { self.control_from(engine, at, control); }
     }
 
     pub fn poly_pressure(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, value: u8) {
+        self.received_poly_pressure(engine, at, note, i32::from(value), None, true);
+    }
+
+    pub(crate) fn poly_pressure_host(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8,
+        value: crate::midi::ControlValue, host_note: crate::engine::HostRef) {
+        self.received_poly_pressure(engine, at, note, i32::from(value.midi1()), Some((host_note, value)), true);
+    }
+
+    pub(crate) fn poly_pressure_input(&mut self, engine: &mut dyn KspEngine, at: u32, input: crate::engine::PerNoteInput, note: u8,
+        value: crate::midi::ControlValue) {
+        self.advance(engine, at);
+        self.env.queue(Work::PolyAt { channel: self.env.input.channel, input_channel: self.env.input.input_channel,
+            note, value: i32::from(value.midi1()), host_pressure: None, input_pressure: Some((input, value)), apply_poly_pressure: true, slot: 0 });
+        self.settle(engine);
+    }
+
+    pub(crate) fn native_note_controller(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8,
+        input: crate::engine::PerNoteInput, payload: crate::midi::NoteControl) {
+        self.advance(engine, at);
+        self.env.queue(Work::NoteController {
+            channel: self.env.input.channel,
+            input_channel: self.env.input.input_channel,
+            native_note_control: Some((input, payload)),
+            controller: payload.script_controller(),
+            note,
+            value: payload.script_value(),
+            slot: 0,
+        });
+        self.settle(engine);
+    }
+
+    pub(crate) fn poly_pressure_derived(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8,
+        value: crate::midi::ControlValue) {
+        self.received_poly_pressure(engine, at, note, i32::from(value.midi1()), None, false);
+    }
+
+    fn received_poly_pressure(&mut self, engine: &mut dyn KspEngine, at: u32, note: u8, value: i32,
+        host_pressure: Option<(crate::engine::HostRef, crate::midi::ControlValue)>, apply_poly_pressure: bool) {
         self.advance(engine, at);
         self.env.queue(Work::PolyAt {
             channel: self.env.input.channel,
             input_channel: self.env.input.input_channel,
             note: note.min(127),
-            value: i32::from(value),
+            value,
+            host_pressure,
+            input_pressure: None,
+            apply_poly_pressure,
+            slot: 0,
+        });
+        self.settle(engine);
+    }
+
+    /// Native MIDI2 negotiation is applied at ingress; this notification keeps
+    /// its full wire value while scripts observe the explicit 14-bit projection.
+    pub(crate) fn received_native_parameter(&mut self, engine: &mut dyn KspEngine, at: u32,
+        parameter: crate::midi::NativeParameter) {
+        self.advance(engine, at);
+        self.env.queue(Work::Rpn {
+            channel: self.env.input.channel,
+            input_channel: self.env.input.input_channel,
+            native_parameter: Some(parameter),
+            nrpn: !parameter.registered,
+            address: i32::from(parameter.address),
+            value: parameter.script_value(),
             slot: 0,
         });
         self.settle(engine);
@@ -2086,6 +2630,7 @@ impl Runtime {
         self.env.queue(Work::Rpn {
             channel: self.env.input.channel,
             input_channel: self.env.input.input_channel,
+            native_parameter: None,
             nrpn,
             address: i32::from(address),
             value: i32::from(value),
@@ -2158,8 +2703,13 @@ impl Runtime {
             state.mem.ints[var.slot as usize] = value;
             self.changes += 1;
         }
+        self.dispatch_ui_control(engine, slot, v);
+    }
+
+    fn dispatch_ui_control(&mut self, engine: &mut dyn KspEngine, slot: usize, v: super::compile::VarId) {
+        let prog = &self.programs[slot];
         let entry = prog.ui_callbacks[v as usize];
-        let ui_id = state.ui.var_id(v);
+        let ui_id = self.states[slot].ui.var_id(v);
         let mut ctx = Ctx::new(slot as u8, Kind::Cb(Callback::UiControls));
         ctx.ui_id = ui_id;
         self.spawn_cb(engine, slot as u8, Callback::UiControls, ctx);
@@ -2294,18 +2844,44 @@ impl Runtime {
 
     /// Finish the current block: resume every callback due before its end.
     pub fn process(&mut self, engine: &mut dyn KspEngine, frames: u32) {
+        self.begin_process(engine);
+        self.run_timers(engine, self.env.now + u64::from(frames));
+        self.finish_process(frames);
+    }
+
+    /// Install bounded completions and settle retained work once per render.
+    pub(crate) fn begin_process(&mut self, engine: &mut dyn KspEngine) {
         self.install_array_jobs(256);
-        let end = self.env.now + u64::from(frames);
         // What the last settle left for later (see `settle`).
         if self.env.cleaning || self.env.pgs_changed || !self.env.async_done.is_empty() || self.env.async_ready {
             self.settle(engine);
         }
-        self.run_timers(engine, end);
+    }
+
+    /// Next actionable timer within this render, with overdue work at the
+    /// current DSP boundary. Exhausted fuel must not stall the audio clock.
+    pub(crate) fn next_due(&self, frames: u32) -> Option<u32> {
+        if self.env.block_fuel == 0 { return None; }
+        let at = self.env.timers.peek()?.0.at.saturating_sub(self.env.now)
+            .max(u64::from(self.env.offset));
+        (at < u64::from(frames)).then_some(at as u32)
+    }
+
+    /// Preceding DSP has completed: dispatch this boundary inclusively, while
+    /// retaining the outer render's time origin and callback offsets.
+    pub(crate) fn process_at(&mut self, engine: &mut dyn KspEngine, at: u32) {
+        self.env.offset = at;
+        self.run_timers_floor(engine, self.env.now + u64::from(at) + 1, at);
+        self.env.offset = at;
+    }
+
+    /// Advance the outer clock and replenish a standalone budget exactly once.
+    pub(crate) fn finish_process(&mut self, frames: u32) {
         if self.env.block_fuel == 0 {
             self.env
                 .note("KSP instruction budget exhausted for a block; callbacks deferred");
         }
-        self.env.now = end;
+        self.env.now += u64::from(frames);
         self.env.offset = 0;
         if !self.audio_block {
             self.env.block_fuel = BLOCK_FUEL;
@@ -2318,12 +2894,16 @@ impl Runtime {
     }
 
     fn run_timers(&mut self, engine: &mut dyn KspEngine, until: u64) {
+        self.run_timers_floor(engine, until, 0);
+    }
+
+    fn run_timers_floor(&mut self, engine: &mut dyn KspEngine, until: u64, minimum_offset: u32) {
         while let Some(&Reverse(t)) = self.env.timers.peek() {
             if t.at >= until || self.env.block_fuel == 0 {
                 break;
             }
             self.env.timers.pop();
-            self.env.offset = t.at.saturating_sub(self.env.now) as u32;
+            self.env.offset = (t.at.saturating_sub(self.env.now) as u32).max(minimum_offset);
             match t.kind {
                 TimerKind::Resume { thread, generation } => {
                     let th = &mut self.threads[thread as usize];
@@ -2531,6 +3111,11 @@ impl Runtime {
                     }
                     return;
                 }
+                if !std::mem::replace(&mut e.note_history_observed, true)
+                    && (0..=127).contains(&e.note)
+                {
+                    engine.observe_note(self.env.offset, e.note as u8);
+                }
                 if slot >= slots {
                     return self.play(engine, event);
                 }
@@ -2539,6 +3124,7 @@ impl Runtime {
                     Some(_) => {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Note));
                         ctx.event = event;
+                        ctx.per_note = self.env.events.get(event).and_then(|e| e.per_note);
                         ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
                         ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
@@ -2563,14 +3149,18 @@ impl Runtime {
                     self.env.cleaning = true;
                 }
                 if e.frozen_expression.is_none() {
-                    e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.note.clamp(0, 127) as u8);
+                    e.frozen_expression = engine.release_expression(self.env.offset, e.voice, e.channel, e.input_channel, e.owner.map_or(e.note.clamp(0, 127) as u8, |(_, key)| key));
                 }
                 if let Some((voice, expression)) = e.voice.zip(e.frozen_expression) {
                     engine.freeze_expression_from(self.env.offset, e.channel, e.input_channel, voice, expression);
                 }
                 if slot >= slots {
-                    if let Some(v) = e.voice.take() {
-                        engine.note_off(self.env.offset, v, &e.spec(event));
+                    if !e.released_to_engine {
+                        let active = e.active(engine);
+                        e.released_to_engine = true;
+                        if active && let Some(v) = e.voice {
+                            engine.note_off(self.env.offset, v, &e.spec(event));
+                        }
                     }
                     return self.env.events.free(event);
                 }
@@ -2587,10 +3177,12 @@ impl Runtime {
                 let children = e.children;
                 let count = e.child_count as usize;
                 let expression = e.frozen_expression;
+                let release_velocity = e.release_velocity;
                 for &child in &children[..count] {
                     if let Some(c) = self.env.events.get_mut(child)
                         .filter(|c| c.follows_parent && c.origin == slot + 1) {
                         if c.frozen_expression.is_none() { c.frozen_expression = expression; }
+                        if c.release_velocity.is_none() { c.release_velocity = release_velocity; }
                         self.env.queue(Work::Release {
                             event: child,
                             slot: slot + 1,
@@ -2601,6 +3193,7 @@ impl Runtime {
                     Some(_) => {
                         let mut ctx = Ctx::new(slot, Kind::Cb(Callback::Release));
                         ctx.event = event;
+                        ctx.per_note = self.env.events.get(event).and_then(|e| e.per_note);
                         ctx.channel = self.env.events.get(event).map_or(0, |e| e.channel);
                         ctx.input_channel = self.env.events.get(event).and_then(|e| e.input_channel);
                         ctx.poly_row = Event::index(event) as u32;
@@ -2615,9 +3208,19 @@ impl Runtime {
                     }),
                 }
             }
-            Work::Controller { channel, input_channel, cc, value, slot } => {
+            Work::Controller { channel, input_channel, cc, value, control, target, native_standard_handled, raw_received, slot } => {
+                if !raw_received { engine.receive_library_control(channel, control); }
                 if slot >= slots {
-                    return engine.controller_from(self.env.offset, channel, input_channel, cc, value);
+                    if matches!(control, crate::midi::Control::Cc(66 | 121, _)) {
+                        let (capture, up) = engine.pedal_root_control_from(self.env.offset, channel, input_channel, target, control);
+                        for event in self.env.events.slots.iter_mut().filter(|event| event.live && event.source < 0) {
+                            let input = event.input_channel.unwrap_or(event.channel);
+                            if up & (1 << input) != 0 { event.input_sostenuto = false; }
+                            else if event.held && capture & (1 << input) != 0 { event.input_sostenuto = true; }
+                        }
+                        return;
+                    }
+                    return engine.performance_control_from(self.env.offset, channel, input_channel, target, control, native_standard_handled);
                 }
                 self.write_sys(slot, SysArray::Cc, cc as usize, value);
                 self.write_sys(slot, SysArray::CcTouched, cc as usize, 1);
@@ -2627,34 +3230,45 @@ impl Runtime {
                 ctx.cc = i32::from(cc);
                 ctx.value = value;
                 ctx.forward = Forward::Controller;
+                ctx.performance_control = Some((target, control));
+                ctx.native_standard_handled = native_standard_handled;
+                ctx.raw_received = true;
                 if !self.spawn_cb(engine, slot, Callback::Controller, ctx) {
                     self.write_sys(slot, SysArray::CcTouched, cc as usize, 0);
-                    self.env.queue(Work::Controller {
-                        channel,
-                        input_channel,
-                        cc,
-                        value,
-                        slot: slot + 1,
-                    });
+                    self.env.queue_control(channel, input_channel, slot + 1, target, control, native_standard_handled, true);
                 }
             }
-            Work::NoteController { channel, input_channel, controller, note, value, slot } => {
-                // Kontakt only exposes these messages to subsequent scripts,
-                // not as native modulation or MIDI 1.0 MPE input.
-                if slot >= slots { return; }
+            Work::NoteController { channel, input_channel, native_note_control, controller, note, value, slot } => {
+                if slot >= slots {
+                    if let Some((input, payload)) = native_note_control {
+                        engine.native_note_controller(self.env.offset, input, payload);
+                    }
+                    return;
+                }
                 let mut ctx = Ctx::new(slot, Kind::Cb(Callback::NoteController));
                 ctx.channel = channel;
                 ctx.input_channel = input_channel;
                 ctx.cc = controller;
+                ctx.native_note_control = native_note_control;
+                ctx.per_note = native_note_control.map(|(input, _)| input);
                 ctx.note = i32::from(note);
                 ctx.value = value;
                 ctx.forward = Forward::NoteController;
                 if !self.spawn_cb(engine, slot, Callback::NoteController, ctx) {
-                    self.env.queue(Work::NoteController { channel, input_channel, controller, note, value, slot: slot + 1 });
+                    self.env.queue(Work::NoteController { channel, input_channel, native_note_control, controller, note, value, slot: slot + 1 });
                 }
             }
-            Work::PolyAt { channel, input_channel, note, value, slot } => {
+            Work::PolyAt { channel, input_channel, note, value, host_pressure, input_pressure, apply_poly_pressure, slot } => {
                 if slot >= slots {
+                    if !apply_poly_pressure { return; }
+                    if let Some((input, value)) = input_pressure {
+                        engine.per_note_pressure(self.env.offset, input, value);
+                    } else if let Some((r, value)) = host_pressure {
+                        engine.host_pressure(self.env.offset, r, value);
+                    } else {
+                        engine.poly_pressure_from(self.env.offset, channel, input_channel, note,
+                            crate::midi::ControlValue::from_midi1(value.clamp(0,127) as u8));
+                    }
                     return;
                 }
                 self.write_sys(slot, SysArray::PolyAt, note as usize, value);
@@ -2664,12 +3278,19 @@ impl Runtime {
                 ctx.note = i32::from(note);
                 ctx.value = value;
                 ctx.forward = Forward::PolyAt;
+                ctx.host_pressure = host_pressure;
+                ctx.input_pressure = input_pressure;
+                ctx.per_note = input_pressure.map(|(input, _)| input);
+                ctx.apply_poly_pressure = apply_poly_pressure;
                 if !self.spawn_cb(engine, slot, Callback::PolyAt, ctx) {
                     self.env.queue(Work::PolyAt {
                         channel,
                         input_channel,
                         note,
                         value,
+                        host_pressure,
+                        input_pressure,
+                        apply_poly_pressure,
                         slot: slot + 1,
                     });
                 }
@@ -2677,6 +3298,7 @@ impl Runtime {
             Work::Rpn {
                 channel,
                 input_channel,
+                native_parameter,
                 nrpn,
                 address,
                 value,
@@ -2689,6 +3311,7 @@ impl Runtime {
                 let mut ctx = Ctx::new(slot, Kind::Cb(cb));
                 ctx.channel = channel;
                 ctx.input_channel = input_channel;
+                ctx.native_parameter = native_parameter;
                 ctx.cc = address;
                 ctx.value = value;
                 ctx.forward = Forward::Rpn { nrpn };
@@ -2696,6 +3319,7 @@ impl Runtime {
                     self.env.queue(Work::Rpn {
                         channel,
                         input_channel,
+                        native_parameter,
                         nrpn,
                         address,
                         value,
@@ -2712,10 +3336,14 @@ impl Runtime {
         let Some(e) = self.env.events.get_mut(event) else {
             return;
         };
-        e.at_engine = true;
+        if !e.at_engine {
+            e.groups = engine.note_groups(e.channel, e.note.clamp(0, 127) as u8, e.groups);
+            e.at_engine = true;
+        }
+        let marked = e.force_completion;
         let voice = engine.play_note(at, &e.spec(event));
         e.voice = voice;
-        e.zone = voice.and_then(|v| engine.voice_zone(v)).unwrap_or(-1);
+        if marked && voice.is_none() { e.silenced = true; }
         if let (Some(v), true) = (voice, e.fade_in_us > 0) {
             engine.fade_from(
                 at,
@@ -2726,6 +3354,9 @@ impl Runtime {
                     duration_us: e.fade_in_us,
                 },
             );
+        }
+        if marked && voice.is_none() {
+            self.env.note("will_never_terminate marked note admission failed");
         }
     }
 
@@ -2794,8 +3425,18 @@ impl Runtime {
 
     fn resume(&mut self, engine: &mut dyn KspEngine, i: u16) {
         self.changes += 1;
+        let ctx = &self.threads[i as usize].ctx;
+        if let Some((_, value)) = ctx.input_pressure
+            && let Ok(note) = usize::try_from(ctx.note)
+            && note < 128 {
+            // Native per-note pressure survives MPE reassignment.
+            // Restore only this callback's delivered key in its own slot;
+            // other input sources may share that key between resumptions.
+            self.write_sys(ctx.slot, SysArray::PolyAt, note, i32::from(value.midi1()));
+        }
         let t = &mut self.threads[i as usize];
         let slot = t.ctx.slot as usize;
+        self.env.refresh_note_durations(&self.programs[slot], &mut self.states[slot], t.ctx.event);
         let budget = self
             .env
             .block_fuel
@@ -2829,7 +3470,7 @@ impl Runtime {
             }
         }
         match result {
-            Ok(Yield::Done) => self.finish(i),
+            Ok(Yield::Done) => self.finish(engine, i),
             Ok(Yield::Wait(at)) => {
                 let t = &mut self.threads[i as usize];
                 t.waiting = true;
@@ -2858,12 +3499,12 @@ impl Runtime {
                 if self.threads[i as usize].ctx.cleanup {
                     self.env.note("KSP Panic cleanup instruction limit; state notification incomplete");
                 }
-                self.finish(i);
+                self.finish(engine, i);
             }
             Ok(Yield::OutOfFuel | Yield::OutOfTime) => {
                 if self.threads[i as usize].ctx.cleanup && self.env.timers.len() >= TIMER_CAPACITY {
                     self.env.note("KSP Panic cleanup resume queue full; state notification canceled");
-                    self.finish(i);
+                    self.finish(engine, i);
                     return;
                 }
                 // Block budget spent: continue at the start of the next block.
@@ -2885,12 +3526,15 @@ impl Runtime {
                 self.env.fault_action = action;
                 self.env.fault(slot as u8, pc, f.0);
                 self.env.fault_action = None;
-                self.finish(i);
+                self.finish(engine, i);
             }
         }
     }
 
-    fn finish(&mut self, i: u16) {
+    fn finish(&mut self, engine: &mut dyn KspEngine, i: u16) {
+        let ctx = self.threads[i as usize].ctx;
+        let host_note = ctx.host_pressure.map(|(r, _)| r)
+            .or_else(|| self.env.events.get(ctx.event).and_then(|e| e.host_note));
         self.yielded(i);
         let t = &mut self.threads[i as usize];
         let event = t.ctx.event;
@@ -2902,6 +3546,7 @@ impl Runtime {
             e.callbacks -= 1;
             if e.callbacks == 0 && e.recycle_pending { self.env.events.free(event); }
         }
+        if let Some(r) = host_note { engine.host_callback_finished(self.env.offset, r); }
     }
 
     /// First yield of a callback: pass its event on unless the script ignored it.
@@ -2950,14 +3595,8 @@ impl Runtime {
             Forward::Controller => {
                 let cc = ctx.cc as u8;
                 self.write_sys(ctx.slot, SysArray::CcTouched, cc as usize, 0);
-                if !ctx.ignore_controller {
-                    self.env.queue(Work::Controller {
-                        channel: ctx.channel,
-                        input_channel: ctx.input_channel,
-                        cc,
-                        value: ctx.value,
-                        slot: next,
-                    });
+                if !ctx.ignore_controller && let Some((target, control)) = ctx.performance_control {
+                    self.env.queue_control(ctx.channel, ctx.input_channel, next, target, control, ctx.native_standard_handled, ctx.raw_received);
                 }
             }
             Forward::NoteController => {
@@ -2965,6 +3604,7 @@ impl Runtime {
                     self.env.queue(Work::NoteController {
                         channel: ctx.channel,
                         input_channel: ctx.input_channel,
+                        native_note_control: ctx.native_note_control,
                         controller: ctx.cc,
                         note: ctx.note as u8,
                         value: ctx.value,
@@ -2979,6 +3619,9 @@ impl Runtime {
                         input_channel: ctx.input_channel,
                         note: ctx.note as u8,
                         value: ctx.value,
+                        host_pressure: ctx.host_pressure,
+                        input_pressure: ctx.input_pressure,
+                        apply_poly_pressure: ctx.apply_poly_pressure,
                         slot: next,
                     });
                 }
@@ -2988,6 +3631,7 @@ impl Runtime {
                     self.env.queue(Work::Rpn {
                         channel: ctx.channel,
                         input_channel: ctx.input_channel,
+                        native_parameter: ctx.native_parameter,
                         nrpn,
                         address: ctx.cc,
                         value: ctx.value,
@@ -3105,7 +3749,11 @@ pub(super) fn refresh_range(
 /// Where an incremental refresh stands; start from the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Refresh {
+    midi_item: usize,
+    midi_at: usize,
     value_revision: u64,
+    native_item: usize,
+    native_at: usize,
     slot: usize,
     item: usize,
     at: usize,

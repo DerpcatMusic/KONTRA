@@ -52,7 +52,9 @@ fn performance_view_loads_hierarchy_defaults_callbacks_and_resource_cache_identi
     assert_eq!(ui.controls[2].menu,vec![("First \"quoted\"".into(),42)]);
     assert_eq!(ui.controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,0,17,0]));
     assert_eq!(ui.controls[4].properties["$CONTROL_PAR_VALUE"],Value::Text("Exact \"name\"\nC:\\folder".into()));
-    assert!(first.diagnostics().iter().any(|d| d.contains("scripted native UI execution is unavailable")));
+    assert_eq!(first.native_ui_entry(),Some("main"));
+    assert_eq!(ui.native_ui,"main");
+    assert!(first.diagnostics().is_empty(),"{:?}",first.diagnostics());
     first.ui_control(&mut engine,0,2,42);
     assert_eq!(first.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(42));
     assert_eq!(first.interface(0).controls[3].properties["$CONTROL_PAR_VALUE"],Value::IntArray(vec![0,42,17,0]));
@@ -210,22 +212,28 @@ fn unsupported_stretch_limits_do_not_abort_the_performance_ui() {
 
 #[test]
 fn auxiliary_meter_setup_preserves_the_rest_of_init() {
-    let ui = initialize("on init\nmake_perfview\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,-1,0,-1)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nend on", 0, 8).unwrap();
+    let source = "on init\nmake_perfview\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,-1,0,-1)\ndeclare ui_switch $play\nset_text($play,\"Play\")\nend on";
+    let mut engine = LogEngine::new(Vec::new(),48000.);
+    let (mut rt,errors) = Runtime::with_scripts(&[source],&mut engine,8,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    rt.update_level_meters(|attachment| {assert_eq!(attachment,[-1,-1,0,-1]);Some(0.25)});
+    let ui = rt.interface(0);
     assert_eq!(ui.controls.len(), 2);
     assert_eq!(prop(&ui, 1, "$CONTROL_PAR_TEXT"), "Play");
-    assert!(
-        ui.diagnostics
-            .iter()
-            .any(|d| d.contains("meter attachments are unavailable"))
-    );
+    assert_eq!(prop(&ui,0,"$CONTROL_PAR_VALUE"),"250000");
+    assert!(ui.diagnostics.is_empty(),"{:?}",ui.diagnostics);
     let wrong = initialize("on init\ndeclare ui_label $label(1,1)\nattach_level_meter(get_ui_id($label),-1,-1,0,-1)\nend on", 0, 8).unwrap_err();
     assert!(wrong.to_string().contains("requires a ui_level_meter"));
     // Documented named chains are symbolic identities, not bus indices.
-    for chain in ["$NI_LEVEL_METER_MAIN", "$NI_LEVEL_METER_GROUP", "$NI_LEVEL_METER_INSERT", "15"] {
+    for (chain,identity) in [("$NI_LEVEL_METER_MAIN",-2), ("$NI_LEVEL_METER_GROUP",-3), ("$NI_LEVEL_METER_INSERT",-1), ("15",15)] {
         let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\ndeclare ui_switch $ready\n$ready := 1\nend on");
-        let ui = initialize(&source,0,8).unwrap();
+        let (mut rt,errors) = Runtime::with_scripts(&[&source],&mut engine,8,Vec::new());
+        assert!(errors.iter().all(Option::is_none),"{errors:?}");
+        rt.update_level_meters(|attachment| {assert_eq!(attachment,[-1,0,0,identity]);Some(0.5)});
+        let ui = rt.interface(0);
         assert_eq!(prop(&ui,1,"$CONTROL_PAR_VALUE"),"1");
-        assert!(ui.diagnostics.iter().any(|d|d.contains("meter attachments are unavailable")));
+        assert_eq!(prop(&ui,0,"$CONTROL_PAR_VALUE"),"500000");
+        assert!(ui.diagnostics.is_empty(),"{:?}",ui.diagnostics);
     }
     for chain in ["$NI_LEVEL_METER_UNKNOWN", "16"] {
         let source = format!("on init\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter),-1,0,0,{chain})\nend on");
@@ -1386,7 +1394,7 @@ fn wait_resumes_sample_accurately() {
 
 #[test]
 fn a_released_parent_survives_its_waiting_note_callback() {
-    let script = "on note\nif ($EVENT_NOTE = 60)\nignore_event($EVENT_ID)\nwait(10000)\nplay_note(72,100,0,-1)\nend if\nend on";
+    let script = "on note\nignore_event($EVENT_ID)\nif ($EVENT_NOTE = 60)\nwait(10000)\nplay_note(72,100,0,-1)\nend if\nend on";
     let mut rig = Rig::new(&[script]);
     rig.on(0,60).off(0,60);
     // Reuse every pool row before the original callback resumes. Its event
@@ -1444,7 +1452,7 @@ end on"#]);
     rig.rt.note_on_from(&mut rig.engine, 0, 5, 60, 100);
     rig.rt.controller(&mut rig.engine, 0, 1, 90);
     rig.engine.calls.clear();
-    rig.rt.all_sound_off(1 << 2);
+    rig.rt.all_sound_off(&mut rig.engine, 1 << 2);
     assert!(rig.rt.key_down_from(5, 2, 60), "sound-off retains held physical roots");
     assert!(rig.rt.key_down_from(5, 7, 60));
     assert!(rig.engine.calls.is_empty(), "cancellation must not forward or release events");
@@ -1464,7 +1472,7 @@ end on"#]);
     rig.rt.ui_control(&mut rig.engine, 0, 0, 0);
     assert_eq!(rig.rt.env.input.cc[64], 127);
     rig.engine.calls.clear();
-    rig.rt.all_sound_off(u16::MAX);
+    rig.rt.all_sound_off(&mut rig.engine, u16::MAX);
     rig.rt.reset_controllers(None);
     assert_eq!(rig.rt.env.events.live_count(), 3, "physical rows survive sound-off until actual key-up");
     assert_eq!(rig.rt.env.input.cc[64], 0);
@@ -1483,7 +1491,7 @@ end on"#]);
     rig.rt.set_midi_channel(2);
     rig.on(0, 60).block(1024);
     assert!(rig.engine.calls.iter().any(|c| matches!(c, EngineCall::PlayNote { channel: 2, note: 72, .. })));
-    rig.rt.all_sound_off(u16::MAX);
+    rig.rt.all_sound_off(&mut rig.engine, u16::MAX);
     assert_eq!(rig.rt.env.events.live_count(), 4);
     rig.rt.cleanup_notes(&mut rig.engine);
     assert_eq!(rig.rt.env.events.live_count(), 0);
@@ -1585,8 +1593,9 @@ end on"#;
     assert_eq!(rig.log(), ["off v3@409"], "zero is immediate and cancels the duration timer");
     assert!(rig.rt.diagnostics().is_empty());
 
-    // Whole-sample notes normally permit row recycling under pool pressure.
-    // Their explicitly scheduled release must retain its original generation.
+    // Metadata-only Sample rows without an Engine alias may be reclaimed.
+    // The timed admitted note must retain its original generation among them;
+    // actual audio completion/recycling is covered by the Engine PCM fixture.
     let mut rig = Rig::new(&[source, downstream]);
     rig.rt.set_midi_channel(7);
     rig.on(0,64);
@@ -1596,7 +1605,7 @@ end on"#;
     rig.engine.calls.reserve(64);
     assert_eq!(crate::plugin::tests::allocations(|| {
         for _ in 0..super::runtime::EVENT_CAPACITY {
-            let other = rig.rt.env.play_note(0,0,2,None,65,100,0,0);
+        let other = rig.rt.env.play_note(&rig.engine,0,0,2,None,65,100,0,0);
             assert_ne!(other,0);
             rig.rt.env.events.get_mut(other).unwrap().at_engine = true;
             rig.rt.env.work.clear();
@@ -1635,24 +1644,21 @@ fn event_par_array_addresses_the_current_event() {
 }
 
 #[test]
-fn sample_length_notes_stay_addressable_and_recycle() {
+fn a_logging_engine_without_source_completion_cannot_recycle_active_sample_aliases() {
     let script = "on init\ndeclare $id\nend on\non note\nignore_event($EVENT_ID)\n$id := play_note($EVENT_NOTE, 100, 0, 0)\nwait(1)\nmessage(event_status($id))\nend on";
     let mut rig = Rig::new(&[script]);
     rig.on(0, 60).block(64);
     assert_eq!(rig.rt.last_message(), "1");
-    // One-shots are never released, yet the pool keeps working past its capacity.
+    // LogEngine has no audio source/EOF and reports every admitted alias active.
+    // Exhaustion must preserve those aliases; real source recycling is covered
+    // by the complete PCM Engine fixture.
     for i in 0..5000 {
         rig.on(0, (i % 100) as u8).off(0, (i % 100) as u8).block(64);
     }
-    assert!(
-        rig.rt.diagnostics().is_empty(),
-        "{:?}",
-        rig.rt.diagnostics()
-    );
-    assert_eq!(
-        rig.log().iter().filter(|c| c.starts_with("play")).count(),
-        5001
-    );
+    assert!(rig.rt.diagnostics().iter().any(|d| d.contains("KSP event pool exhausted")),
+        "{:?}", rig.rt.diagnostics());
+    assert!(rig.log().iter().filter(|c| c.starts_with("play")).count()
+        <= super::runtime::EVENT_CAPACITY);
 }
 
 #[test]
@@ -1661,7 +1667,7 @@ fn zone_id_reports_no_mapping_and_zero_once_the_event_is_gone() {
     let mut rig = Rig::new(&[script]);
     rig.on(0, 60);
     // No voice before the event reaches the engine.
-    assert_eq!(rig.rt.last_message(), "0");
+    assert_eq!(rig.rt.last_message(), "-1");
     rig.block(64);
     assert_eq!(rig.rt.last_message(), "-1");
     // A later note sees the released one as gone.
@@ -2079,9 +2085,15 @@ fn display_of_a_hypothetical_engine_value() {
 
 #[test]
 fn ui_and_debugger_commands_are_accepted() {
-    let ui = initialize("on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter), -1, -1, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on", 0, 0).unwrap();
+    let source = "on init\ndeclare ui_waveform $w(6,6)\ndeclare ui_xy ?xy[2]\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\nattach_level_meter(get_ui_id($meter), -1, -1, 0, -1)\nwatch_var($l)\nwatch_array_idx(?xy, 0)\nset_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0.5, 0)\nset_text($l, get_ui_wf_property($w, $UI_WF_PROP_PLAY_CURSOR, 0) & get_control_par_real_arr(get_ui_id(?xy), $CONTROL_PAR_VALUE, 0))\nend on";
+    let mut engine = LogEngine::new(Vec::new(),48000.);
+    let (mut rt,errors) = Runtime::with_scripts(&[source],&mut engine,0,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    rt.update_level_meters(|attachment| {assert_eq!(attachment,[-1,-1,0,-1]);Some(0.5)});
+    let ui = rt.interface(0);
     assert_eq!(prop(&ui, 2, "$CONTROL_PAR_TEXT"), "00.5");
-    assert!(ui.diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{:?}", ui.diagnostics);
+    assert_eq!(prop(&ui,3,"$CONTROL_PAR_VALUE"),"500000");
+    assert!(ui.diagnostics.is_empty(),"{:?}",ui.diagnostics);
     assert!(!ui.diagnostics.iter().any(|d| d.starts_with("Unsupported")), "{:?}", ui.diagnostics);
 }
 
@@ -2198,9 +2210,19 @@ fn built_in_state_variables() {
     assert_eq!(prop(&ui, 0, "$CONTROL_PAR_TEXT"), "0044 111");
     assert!(rig.rt.diagnostics().is_empty(), "{:?}", rig.rt.diagnostics());
     rig.on(0, 60).on(0, 72).block(64);
-    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "201");
+    assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "200", "LogEngine owns no rendered sample voices");
     rig.off(0, 72).block(64);
     assert_eq!(prop(&rig.rt.interface(0), 0, "$CONTROL_PAR_TEXT"), "1");
+}
+
+
+#[test]
+fn total_voice_count_requires_an_actual_multi_instrument_owner() {
+    let mut rig = Rig::new(&["on init\nmessage($PLAYED_VOICES_TOTAL)\nend on\non note\nmessage($PLAYED_VOICES_TOTAL)\nend on"]);
+    assert_eq!(rig.rt.last_message(), "0");
+    rig.on(0, 60).on(0, 61).block(64);
+    assert_eq!(rig.rt.last_message(), "0");
+    assert_eq!(rig.rt.diagnostics().iter().filter(|d| d.contains("PLAYED_VOICES_TOTAL unavailable")).count(), 1);
 }
 
 #[test]
@@ -2210,11 +2232,12 @@ fn sine_era_framework_in_slot_two() {
     let first = "on init\ndeclare $x\nend on";
     let second = "function style\nset_control_par(get_ui_id($meter), $CONTROL_PAR_BG_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OFF_COLOR, 0)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR, 0FF00h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_OVERLOAD_COLOR, 0FF0000h)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_PEAK_COLOR, 0FFFFFFh)\nset_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL, 1)\nattach_level_meter(get_ui_id($meter), -1, -1, 0, 1)\nend function\nfunction build\ncall style\n$voices := get_voice_limit($NI_VL_TMPRO_STANDARD)\nset_engine_par($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, 500000, -1, 0, $NI_BUS_OFFSET + 1)\nend function\non init\ndeclare ui_label $l(1,1)\ndeclare ui_level_meter $meter\ndeclare ui_waveform $wave(6,6)\ndeclare $id\ndeclare $voices\ncall build\nset_text($l, get_control_par(get_ui_id($meter), $CONTROL_PAR_ON_COLOR) & \" \" & get_control_par(get_ui_id($meter), $CONTROL_PAR_VERTICAL) & \" \" & $voices)\nend on\non note\n$id := load_ir_sample(\"Hall.wav\", 0, $NI_BUS_OFFSET + 1)\nwait_async($id)\nadd_text_line($l, \"ir \" & $NI_ASYNC_EXIT_STATUS & get_engine_par_disp($ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN, -1, 0, $NI_BUS_OFFSET + 1))\nend on";
     let mut engine = LogEngine::new(vec!["a".into(), "b".into(), "c".into()], 48_000.0);
-    let (rt, errors) = Runtime::with_scripts(&[first, second], &mut engine, 8, Vec::new());
+    let (mut rt, errors) = Runtime::with_scripts(&[first, second], &mut engine, 8, Vec::new());
     assert!(errors.iter().all(Option::is_none), "{errors:?}");
     let diagnostics = rt.diagnostics();
-    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
-    assert!(diagnostics.iter().any(|d| d.contains("KSP level meter attachments are unavailable")), "{diagnostics:?}");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    rt.update_level_meters(|attachment| {assert_eq!(attachment,[-1,-1,0,1]);Some(0.75)});
+    assert_eq!(prop(&rt.interface(1),1,"$CONTROL_PAR_VALUE"),"750000");
     assert!(diagnostics.iter().any(|d| d.contains("Time Machine Pro is unavailable")), "{diagnostics:?}");
     let mut rig = Rig { rt, engine };
     assert_eq!(prop(&rig.rt.interface(1), 0, "$CONTROL_PAR_TEXT"), "65280 1 0");
@@ -2899,7 +2922,7 @@ end on"#;
     rig.rt.set_midi_channel(7);
     rig.on(0,60);
     rig.engine.calls.clear();
-    rig.rt.all_sound_off(1<<2);
+    rig.rt.all_sound_off(&mut rig.engine, 1<<2);
     assert_eq!(rig.rt.env.events.live_count(),2,"held physical rows remain addressable");
     assert!(rig.rt.key_down_from(2,2,60));
     assert!(rig.rt.key_down_from(7,7,60));
@@ -2924,7 +2947,7 @@ fn a_waiting_ignored_release_finishes_state_cleanup_after_sound_off() {
     let last = "on init\ndeclare ui_label $info(1,1)\nend on\non release\nset_text($info,\"last cleaned\")\nend on";
     let mut rig = Rig::new(&[first,last]);
     rig.on(0,60).off(0,60);
-    rig.rt.all_sound_off(u16::MAX);
+    rig.rt.all_sound_off(&mut rig.engine, u16::MAX);
     rig.block(64);
     assert_eq!(prop(&rig.rt.interface(0),0,"$CONTROL_PAR_TEXT"),"first cleaned");
     assert_eq!(prop(&rig.rt.interface(1),0,"$CONTROL_PAR_TEXT"),"last cleaned");
@@ -3041,4 +3064,253 @@ fn ms_and_beat_listeners_retain_independent_phase_through_disable_retune_and_tra
     rig.block(5759);
     assert_eq!(rig.rt.interface(0).controls[1].properties["$CONTROL_PAR_VALUE"],Value::Int(3),"MS retuning and transport do not postpone the existing beat deadline");
     assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn legacy_ms_listener_disable_initializes_and_can_be_reenabled() {
+    // Captured Metropolis Ark initialization disables both timers before
+    // subscribing to transport. Its MS sentinel is -1 rather than zero.
+    let source = r#"on init
+declare ui_slider $ms(0,10000)
+declare ui_slider $beat(0,10000)
+declare ui_slider $transport(0,10000)
+declare ui_slider $mode(0,1)
+declare ui_label $initialized(1,1)
+set_listener($NI_SIGNAL_TIMER_BEAT,0)
+set_listener($NI_SIGNAL_TIMER_MS,-1)
+set_listener($NI_SIGNAL_TRANSP_START,1)
+set_listener($NI_SIGNAL_TRANSP_STOP,1)
+set_text($initialized,"ready")
+set_listener($NI_SIGNAL_TIMER_BEAT,4)
+end on
+on listener
+select($NI_SIGNAL_TYPE)
+case $NI_SIGNAL_TIMER_MS
+inc($ms)
+case $NI_SIGNAL_TIMER_BEAT
+inc($beat)
+case $NI_SIGNAL_TRANSP_START
+inc($transport)
+case $NI_SIGNAL_TRANSP_STOP
+inc($transport)
+end select
+end on
+on ui_control($mode)
+if ($mode=1)
+change_listener_par($NI_SIGNAL_TIMER_MS,1000)
+else
+change_listener_par($NI_SIGNAL_TIMER_MS,-1)
+end if
+end on"#;
+    let initialized = initialize(source,0,0).unwrap();
+    assert_eq!(prop(&initialized,4,"$CONTROL_PAR_TEXT"),"ready");
+    assert!(!initialized.listeners.contains_key("$NI_SIGNAL_TIMER_MS"));
+    let mut rig = Rig::new(&[source]);
+    let counts = |rt: &Runtime| (0..3).map(|i|rt.interface(0).controls[i].properties["$CONTROL_PAR_VALUE"].clone()).collect::<Vec<_>>();
+    rig.block(6001);
+    assert_eq!(counts(&rig.rt),vec![Value::Int(0),Value::Int(1),Value::Int(0)]);
+    rig.rt.set_host_transport(&mut rig.engine,true,120.,0.,(4,4));
+    rig.rt.ui_control(&mut rig.engine,0,3,1);
+    rig.block(97);
+    assert_eq!(counts(&rig.rt),vec![Value::Int(2),Value::Int(1),Value::Int(1)]);
+    rig.rt.ui_control(&mut rig.engine,0,3,0);
+    rig.rt.set_host_transport(&mut rig.engine,false,120.,0.,(4,4));
+    rig.block(5903);
+    assert_eq!(counts(&rig.rt),vec![Value::Int(2),Value::Int(2),Value::Int(2)],"disabling MS cancels its pending timer and preserves the beat deadline");
+    assert!(!rig.rt.interface(0).listeners.contains_key("$NI_SIGNAL_TIMER_MS"));
+    rig.rt.ui_control(&mut rig.engine,0,3,1);
+    rig.block(49);
+    assert_eq!(counts(&rig.rt),vec![Value::Int(3),Value::Int(2),Value::Int(2)]);
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    for (signal, value) in [("$NI_SIGNAL_TIMER_MS",-2),("$NI_SIGNAL_TIMER_MS",999),("$NI_SIGNAL_TIMER_BEAT",-1),("$NI_SIGNAL_TRANSP_START",-1)] {
+        assert!(initialize(&format!("on init\nset_listener({signal},{value})\nend on"),0,0).is_err());
+    }
+}
+
+#[test]
+fn note_duration_freezes_each_same_key_release_across_waits() {
+    let source = "on init\ndeclare polyphonic $index\ndeclare $count\ndeclare %before[2]\ndeclare %after[2]\ndeclare %found[2]\nmake_persistent(%before)\nmake_persistent(%after)\nmake_persistent(%found)\nend on\non release\n$index := $count\ninc($count)\n%before[$index] := %NOTE_DURATION[$EVENT_NOTE]\n%found[$index] := search(%NOTE_DURATION,%NOTE_DURATION[$EVENT_NOTE])\nwait(1000)\n%after[$index] := %NOTE_DURATION[$EVENT_NOTE]\nend on";
+    for fragmented in [false, true] {
+        let mut rig = Rig::new(&[source]);
+        rig.on(0,60).block(240).on(0,60).block(240).off(0,60);
+        if fragmented { for _ in 0..64 { rig.block(1); } }
+        else { rig.block(64); }
+        let saved = rig.rt.persistence();
+        assert_eq!(saved[0]["%before"],Value::IntArray(vec![10_000,5_000]));
+        assert_eq!(saved[0]["%after"],Value::IntArray(vec![10_000,5_000]));
+        assert_eq!(saved[0]["%found"],Value::IntArray(vec![60,60]));
+        assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    }
+}
+
+#[test]
+fn note_duration_generated_events_start_at_their_own_creation() {
+    let first = "on note\nignore_event($EVENT_ID)\nwait(5000)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,3000)\nend on";
+    let second = "on init\ndeclare $duration\nmake_persistent($duration)\nend on\non release\n$duration := %NOTE_DURATION[$EVENT_NOTE]\nwait(1000)\n$duration := %NOTE_DURATION[$EVENT_NOTE]\nend on";
+    let mut rig = Rig::new(&[first,second]);
+    rig.on(0,60).block(480);
+    assert_eq!(rig.rt.persistence()[1]["$duration"],Value::Int(3000));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn note_duration_rejects_direct_and_bulk_writes() {
+    for write in ["%NOTE_DURATION[60] := 1", "sort(%NOTE_DURATION,0)",
+        "get_event_ids(%NOTE_DURATION)", "load_array(%NOTE_DURATION,0)",
+        "load_array_str(%NOTE_DURATION,\"duration.nka\")", "make_persistent(%NOTE_DURATION)",
+        "read_persistent_var(%NOTE_DURATION)"] {
+        let source = format!("on init\n{write}\nend on");
+        let (_, errors) = Runtime::with_scripts(&[source],&mut LogEngine::default(),0,Vec::new());
+        assert!(errors.iter().flatten().any(|e| e.contains("read-only")),"{write}: {errors:?}");
+    }
+}
+
+#[test]
+fn note_duration_selects_actual_release_sample_audio_after_wait_and_pedal() {
+    use crate::{audio::Sample, engine::{Bank,Engine}, import::{Group,Zone}};
+    fn player(selector: &str) -> Engine {
+        let source = format!("on init\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on\non note\ndisallow_group($ALL_GROUPS)\nallow_group(0)\nend on\non release\nignore_event($EVENT_ID)\nwait(1000)\ndisallow_group($ALL_GROUPS)\n{selector}\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,0)\nend on");
+        let groups = vec![Group::default();3];
+        let zones = (0..3).map(|group| Zone {group, sample: format!("{group}.wav").into(), ..Zone::default()}).collect();
+        let samples = [0.,0.125,-0.25].into_iter().enumerate().map(|(i,value)|
+            (format!("{i}.wav").into(),Sample {rate:48_000,frames:vec![[value;2];4096]})).collect();
+        let bank = Bank::from_samples(groups,zones,samples).unwrap();
+        let (rt,errors) = Runtime::with_scripts(&[source],&mut LogEngine::new(vec!["a".into(),"b".into(),"c".into()],48_000.),0,Vec::new());
+        assert!(errors.iter().all(Option::is_none),"{errors:?}");
+        assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());
+        let mut e = Engine::default(); e.set_bank(Some(Box::new(bank)));e.set_script(Some(Box::new(rt)));e
+    }
+    for (hold,group) in [(240,1),(960,2)] {
+        let mut actual = player("if (%NOTE_DURATION[$EVENT_NOTE]>10000)\nallow_group(2)\nelse\nallow_group(1)\nend if");
+        let mut oracle = player(&format!("allow_group({group})"));
+        let (mut a,mut b,mut x,mut y) = ([0.;64],[0.;64],[0.;64],[0.;64]);
+        let mut exercise = || {
+            for e in [&mut actual,&mut oracle] { e.cc(0,64,127);e.note_on(0,60,100); }
+            for _ in 0..hold/16 {
+                actual.render(&mut a[..16],&mut b[..16]);oracle.render(&mut x[..16],&mut y[..16]);
+            }
+            actual.note_off(0,60);oracle.note_off(0,60);
+            // Pedal holds the native release; scripted tails use physical duration.
+            actual.render(&mut a,&mut b);oracle.render(&mut x,&mut y);
+            actual.cc(0,64,0);oracle.cc(0,64,0);
+            actual.render(&mut a,&mut b);oracle.render(&mut x,&mut y);
+        };
+        #[cfg(feature="plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| exercise()),0);
+        #[cfg(not(feature="plugin"))]
+        exercise();
+        assert_eq!(a,x,"selected PCM differs from independently authored release group {group}");
+        assert_eq!(b,y);
+        assert!(a.iter().any(|sample| sample.abs()>0.001),"selected release must be audible");
+        assert!(actual.voice_census().iter().any(|voice| voice.group == group),"wrong release group selected");
+        assert!(actual.script().unwrap().diagnostics().is_empty(),"{:?}",actual.script().unwrap().diagnostics());
+    }
+}
+
+#[test]
+fn note_duration_generated_cross_key_edits_refresh_indexed_and_bulk_reads_immediately() {
+    let source = "on init\ndeclare $before\ndeclare $after\ndeclare $found\nmake_persistent($before)\nmake_persistent($after)\nmake_persistent($found)\nend on\non controller\n$before := %NOTE_DURATION[60]\nplay_note(60,100,0,0)\n$after := %NOTE_DURATION[60]\n$found := search(%NOTE_DURATION,5000)\nend on";
+    let mut rig = Rig::new(&[source]);
+    rig.on(0,60).block(240);
+    rig.rt.controller(&mut rig.engine,0,1,127);
+    let saved = rig.rt.persistence();
+    assert_eq!(saved[0]["$before"],Value::Int(5000));
+    assert_eq!(saved[0]["$after"],Value::Int(0));
+    assert_eq!(saved[0]["$found"],Value::Int(-1));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+}
+
+#[test]
+fn authored_poly_aftertouch_reaches_later_slots_with_wait_ignore_and_validation() {
+    let send = "on init\ndeclare ui_switch $send\ndeclare $own\nmake_persistent($own)\nend on\non ui_control($send)\nset_poly_at(60,64)\nset_poly_at(61,32)\nend on\non poly_at\ninc($own)\nend on";
+    let filter = "on poly_at\nif ($POLY_AT_NUM=61)\nignore_controller\nelse\nwait(1000)\nend if\nend on";
+    let receive = "on init\ndeclare $count\ndeclare $value\nmake_persistent($count)\nmake_persistent($value)\nend on\non poly_at\ninc($count)\n$value := %POLY_AT[$POLY_AT_NUM]\nend on";
+    let mut rig = Rig::new(&[send,filter,receive]);
+    rig.rt.ui_control(&mut rig.engine,0,0,1);
+    rig.block(49);
+    let saved = rig.rt.persistence();
+    assert_eq!(saved[0]["$own"],Value::Int(0));
+    assert_eq!(saved[2]["$count"],Value::Int(1));
+    assert_eq!(saved[2]["$value"],Value::Int(64));
+    assert!(rig.rt.diagnostics().is_empty(),"{:?}",rig.rt.diagnostics());
+    let error = initialize("on init\nset_poly_at(60,64)\nend on",0,0).unwrap_err();
+    assert!(error.to_string().contains("initialization"),"{error:#}");
+    let mut rig = Rig::new(&["on note\nset_poly_at(-1,64)\nset_poly_at(60,128)\nend on",receive]);
+    rig.on(0,60);
+    assert_eq!(rig.rt.persistence()[1]["$count"],Value::Int(0));
+    assert!(rig.rt.diagnostics().iter().any(|d| d.contains("set_poly_at: note or value out of range")));
+}
+
+#[test]
+fn authored_poly_aftertouch_drives_real_scripted_voice_audio_without_heap() {
+    use crate::{audio::Sample, engine::{Bank,Engine}, import::{Group,Zone}};
+    let send = "on init\ndeclare ui_switch $send\nend on\non ui_control($send)\nset_poly_at(60,64)\nend on";
+    let receive = "on init\ndeclare %notes[128]\nend on\non note\n%notes[$EVENT_NOTE] := $EVENT_ID\nend on\non poly_at\nignore_controller\nif (%POLY_AT[$POLY_AT_NUM]=64)\nchange_vol(%notes[$POLY_AT_NUM],-12000,0)\nend if\nend on";
+    let (rt,errors) = Runtime::with_scripts(&[send,receive],&mut LogEngine::new(vec!["sample".into()],48000.),0,Vec::new());
+    assert!(errors.iter().all(Option::is_none),"{errors:?}");
+    let bank = Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(Default::default(),Sample {rate:48000,frames:vec![[0.25;2];8192]})]).unwrap();
+    let mut e = Engine::default();e.set_bank(Some(Box::new(bank)));e.set_script(Some(Box::new(rt)));
+    let (mut left,mut right) = ([0.;512],[0.;512]);
+    e.note_on(0,60,100);e.render(&mut left,&mut right);
+    let before = left[511];
+    assert!(before.abs()>0.01);
+    assert_eq!(crate::plugin::tests::allocations(|| {e.ui_control(0,0,1);e.render(&mut left,&mut right);}),0);
+    let expected = 10_f32.powf(-12./20.);
+    assert!((left[511]/before-expected).abs()<1e-5,"generated pressure did not drive authored voice gain: {}",left[511]/before);
+    assert!(e.script().unwrap().diagnostics().is_empty(),"{:?}",e.script().unwrap().diagnostics());
+}
+
+#[test]
+fn derived_mpe_poly_aftertouch_preserves_authored_audio_and_canonical_pressure() {
+    use crate::{audio::Sample, engine::{Bank,Engine}, import::{Group,Zone},
+        midi::{Control,ControlValue}, modulation::{ModAssignment,ModSource,ModTarget}};
+    for ignore in [false,true] {
+        let actual_script = format!("on init\ndeclare %notes[128]\nend on\non note\n%notes[$EVENT_NOTE] := $EVENT_ID\nend on\non poly_at\n{}\nif ($POLY_AT_NUM=60 and %POLY_AT[$POLY_AT_NUM]=64)\nwait(1000)\nchange_vol(%notes[$POLY_AT_NUM],-12000,0)\nend if\nend on",if ignore {"ignore_controller"} else {""});
+        // Independently apply the same authored gain through an ordinary callback.
+        // Its unrelated CC does not alter the pressure modulation source. Both
+        // scripts handle poly_at, disabling the separate native pressure gain.
+        let oracle_script = "on init\ndeclare %notes[128]\nend on\non note\n%notes[$EVENT_NOTE] := $EVENT_ID\nend on\non poly_at\nend on\non controller\nif ($CC_NUM=20)\nignore_controller\nwait(1000)\nchange_vol(%notes[60],-12000,0)\nend if\nend on";
+        let setup = |script:&str| {
+            let group = Group {mods:vec![ModAssignment { cc_default: None,name:"PRESSURE_VOLUME".into(),
+                source:ModSource::MonoAftertouch,target:ModTarget::Volume,intensity:1.,
+                invert:false,lag_ms:0,shaper:None}],..Group::default()};
+            let zones = [(60,-1.),(64,1.)].map(|(key,pan)| Zone {
+                low_key:key,high_key:key,root:key,pan,..Zone::default()}).to_vec();
+            let bank = Bank::from_samples(vec![group],zones,vec![(Default::default(),
+                Sample {rate:48000,frames:vec![[0.25;2];8192]})]).unwrap();
+            let (rt,errors) = Runtime::with_scripts(&[script],&mut LogEngine::new(vec!["sample".into()],48000.),0,Vec::new());
+            assert!(errors.iter().all(Option::is_none),"{errors:?}");
+            let mut e = Engine::default();e.reset(48000.);e.attack=0.0001;
+            e.set_bank(Some(Box::new(bank)));e.set_script(Some(Box::new(rt)));
+            e.set_mpe_zone(Some((0,(1<<1)|(1<<2))));
+            e.control_from(0,0,Control::Pressure(ControlValue::new(0.73).unwrap()));
+            e.control_from(0,1,Control::Pressure(ControlValue::new(0.5001).unwrap()));
+            e.control_from(0,2,Control::Pressure(ControlValue::new(0.503).unwrap()));
+            e.note_on_from(0,1,60,100);e.note_on_from(0,2,64,100);
+            e
+        };
+        let (mut actual,mut oracle) = (setup(&actual_script),setup(oracle_script));
+        let (mut left,mut right,mut x,mut y) = ([0.;512],[0.;512],[0.;512],[0.;512]);
+        actual.render(&mut left,&mut right);oracle.render(&mut x,&mut y);
+        assert_eq!((left,right),(x,y),"both references start with the same native pressure policy");
+        let (before_left,before_right) = (left[511],right[511]);
+        assert!(before_left.abs()>0.01 && before_right.abs()>0.01);
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            // Preserve Router's existing derived-before-original event order.
+            actual.mpe_poly_pressure_from(0,1,60,ControlValue::new(0.5001).unwrap());
+            actual.control_from(0,1,Control::Pressure(ControlValue::new(0.5001).unwrap()));
+            oracle.control_from(0,1,Control::Cc(20,ControlValue::from_midi1(1)));
+            actual.render(&mut left,&mut right);oracle.render(&mut x,&mut y);
+        }),0);
+        assert!(left.iter().zip(x).chain(right.iter().zip(y)).all(|(a,b)|(a-b).abs()<1e-6),
+            "derived callback changed accepted manager/member pressure: ignore={ignore}, before=({before_left},{before_right}), final actual=({},{}), oracle=({},{}), first={:?}, diagnostics={:?}",
+            left[511],right[511],x[511],y[511],
+            left.iter().zip(x).chain(right.iter().zip(y)).enumerate().find(|(_, (a,b))|(*a-*b).abs()>=1e-6),
+            actual.script().unwrap().diagnostics());
+        assert!((left[511]/before_left-10_f32.powf(-12./20.)).abs()<1e-5,
+            "derived callback did not apply authored gain: ignore={ignore}");
+        assert!((right[511]/before_right-1.).abs()<1e-5,
+            "derived callback crossed the other physical input: ignore={ignore}");
+        assert!(actual.script().unwrap().diagnostics().is_empty(),"{:?}",actual.script().unwrap().diagnostics());
+    }
 }

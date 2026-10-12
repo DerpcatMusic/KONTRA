@@ -1705,7 +1705,7 @@ public:
         if (!processOk) {
             if (g_cb->finish_output_events)
                 g_cb->finish_output_events(ctx, 3 /* kOutputInvalid */);
-            return kResultOk;
+            return kResultFalse;
         }
 
         enum OutputEventResult : uint32_t {
@@ -2777,9 +2777,8 @@ static IUnitInfoVtbl g_unitinfo_vtbl = {
 // --- NoteExpressionController vtable functions ---
 #define NEXP(self) (com_from_note_expression(self)->impl)
 
-// The predefined VST3 note-expression types moose bridges to per-note
-// MIDI 2.0 events (PerNoteCC 7/10/1/11/74 and PerNotePitchBend for
-// tuning). Order is the enumeration order hosts see. Flags value 1 is
+// The predefined VST3 note-expression types the consumer handles through
+// exact note IDs. Order is the enumeration order hosts see. Flags value 1 is
 // the SDK's kIsBipolar. Volume's domain is `plain = 20 * log(4 *
 // norm)` per the SDK, so its no-change default is unity gain at 0.25,
 // not 1.0 (which is +12 dB).
@@ -2793,9 +2792,6 @@ static const struct {
     {0, "Volume",     "Vol",  0.25, 0},
     {1, "Pan",        "Pan",  0.5,  1},
     {2, "Tuning",     "Tun",  0.5,  1},
-    {3, "Vibrato",    "Vibr", 0.0,  0},
-    {4, "Expression", "Expr", 1.0,  0},
-    {5, "Brightness", "Bri",  0.5,  0},
 };
 static const int32 kNumNoteExpressionTypes =
     (int32)(sizeof(g_note_expression_types) / sizeof(g_note_expression_types[0]));

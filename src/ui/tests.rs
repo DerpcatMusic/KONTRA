@@ -1766,6 +1766,11 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
         view.parts[0].instrument = Some(Arc::new(import::Instrument {
             path: path.into(),
             name: "Solo".into(),
+            program: Default::default(),
+            native_program_private: None,
+            sampling_profile: Default::default(),
+            default_key_switch: None,
+            transpose: 0,
             groups: Vec::new(),
             zones: Vec::new(),
             warnings: Vec::new(),
@@ -1781,6 +1786,44 @@ fn scripted_part(script: &str) -> Arc<SamplerParams> {
         }));
     }
     p
+}
+
+#[test]
+fn canonical_windows_instrument_paths_keep_performance_controls_visible() {
+    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato,\"Legato\")\nmove_control_px($legato,10,10)\nend on";
+    for (selected, imported) in [
+        (r"C:\Main\Library\Violins.nki", r"\\?\C:\Main\Library\Violins.nki"),
+        (r"\\server\Library\Violins.nki", r"\\?\UNC\server\Library\Violins.nki"),
+    ] {
+        let p = scripted_part(script);
+        p.selection.write().unwrap().parts[0].path = selected.into();
+        {
+            let mut view = p.shared.view.lock().unwrap();
+            let mut instrument = Arc::try_unwrap(view.parts[0].instrument.take().unwrap())
+                .unwrap_or_else(|_| panic!("the test owns its instrument"));
+            instrument.path = imported.into();
+            view.parts[0].instrument = Some(Arc::new(instrument));
+        }
+        let mut h = Harness::new(&p, 1180., 760.);
+        h.idle(3);
+        assert!(h.ui.scene().unwrap().surface("ksp-0-0").is_some(),
+            "canonical path {imported} must show the loaded performance controls");
+        h.press("ksp-0-0");
+        assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1));
+
+        p.selection.write().unwrap().parts[0].program = 1;
+        h.idle(3);
+        assert!(h.ui.scene().unwrap().surface("ksp-0-0").is_none(),
+            "a different selected program must not show stale controls");
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts[0].program = 0;
+            selection.parts[0].path = r"C:\Other\Violins.nki".into();
+        }
+        h.idle(3);
+        assert!(h.ui.scene().unwrap().surface("ksp-0-0").is_none(),
+            "a replacement instrument must not show the previous controls");
+    }
 }
 
 /// Synthetic callback publication follows production's immutable snapshots.
@@ -1984,6 +2027,50 @@ fn the_original_view_edits_the_script_and_switches() {
     h.press("menu-item-0");
     assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
     assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
+}
+
+pub(crate) fn asset_restoration_harness(p: &Arc<SamplerParams>, mut published: impl FnMut(u8)) {
+    let path = p.shared.view.lock().unwrap().parts[0].instrument.as_ref().unwrap().path.to_string_lossy().into_owned();
+    p.selection.write().unwrap().parts.push(Part { path, ..Default::default() });
+    let mut h = Harness::new(p, 1180., 760.);
+    let capture = |h: &mut Harness, name: &str| {
+        let Some(dir) = std::env::var_os("KONTRA_ASSET_PROOF_DIR") else { return };
+        // Capture the settled scene, after the closing menu animation.
+        h.idle(12);
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h_px) = (h.size.width as u16, h.size.height as u16);
+        let rgba = pixels(&h.ui, w, h_px);
+        let file = std::fs::File::create(dir.join(format!("{name}.png"))).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), u32::from(w), u32::from(h_px));
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.write_header().unwrap().write_image_data(&rgba).unwrap();
+    };
+    let frame = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
+    assert_eq!((frame.size.width, frame.size.height), (16.,16.));
+    let knob = center(&h.ui, "kpv-0-0");
+    // A square16px slider is below the24px knob threshold: its authored
+    // default behavior is horizontal, unlike the40px knob fixture above.
+    for x in [0., 4., 8.] { h.tick(pointer(Point::new(knob.x + x, knob.y), true)); }
+    h.tick(pointer(Point::new(knob.x + 8., knob.y), false));
+    h.idle(3);
+    let value = control_value(p, 0);
+    assert!(matches!(value, crate::ksp::Value::Int(n) if n > 37), "actual horizontal drag must raise the bound slider");
+    capture(&mut h, "original");
+    for (item, mode) in [(1,3), (2,2), (0,1)] {
+        h.press("view-0");
+        h.press(&format!("menu-item-{item}"));
+        h.idle(3);
+        assert_eq!(p.selection.read().unwrap().parts[0].view, mode);
+        published(mode);
+        h.idle(3);
+        match mode { 3 => capture(&mut h, "vectorized"), 2 => capture(&mut h, "kontra"), _ => {} }
+        assert_eq!(control_value(p, 0), value, "view changes preserve the bound control value");
+        assert!(h.ui.scene().unwrap().surface(if mode == 2 { "ksp-0-0" } else { "kpv-0-0" }).is_some());
+    }
+    let restored = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
+    assert_eq!((restored.size.width, restored.size.height), (16.,16.));
+    assert_eq!((restored.x, restored.y), (frame.x, frame.y));
 }
 
 #[test]

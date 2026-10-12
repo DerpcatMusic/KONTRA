@@ -39,13 +39,14 @@ use moose_core::midi::{
 #[cfg(test)]
 use moose_core::midi::{downconvert_to_midi1, per_note_bend_from_semitones};
 use moose_core::plugin::PluginRuntime;
+use moose_core::process::ProcessStatus;
 use moose_core::rt::{RtSection, audit};
 use moose_core::snapshot::SnapshotSlot;
 use moose_core::state;
 use moose_core::tasks::AnyTaskSpawner;
 use moose_core::wrapper::{
     ParamCStrings, PluginCell, SharedPlugin, copy_c_str, default_io_channels, enter_plugin,
-    find_bus_layout, log_missing_bus_layout, run_audio_block, run_extern_callback_with,
+    find_bus_layout, log_missing_bus_layout, run_audio_block_with, run_extern_callback_with,
     run_register, save_extra, shared_plugin,
 };
 use moose_params::MidiSource;
@@ -1244,7 +1245,7 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
     process_mode: i32,
 ) -> u32 {
     let nf = num_frames as usize;
-    let ok = run_audio_block::<P>("VST3", || unsafe {
+    let ok = run_audio_block_with::<P, _>("VST3", false, || unsafe {
         // Shared `&Vst3Instance` (never a whole-struct `&mut`) - the audio
         // scratch is reached through its ownership cell, so a concurrent
         // host-thread `&*ctx` (param reads, GUI) can't alias us.
@@ -1266,7 +1267,7 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
             audio.event_list.clear();
             audio.output_events.clear();
             audio.output_events.clear_overflow();
-            return;
+            return true;
         }
 
         // Take ownership of the plugin for the whole block: an
@@ -1462,13 +1463,16 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
             param_infos: &inst.param_infos,
             min_subblock_samples: inst.min_subblock_samples,
         };
-        process_chunked_with_bus_routing(
+        let status = process_chunked_with_bus_routing(
             &mut *plugin,
             inst.params_arc.as_ref() as &dyn Params,
             &mut audio_buffer,
             chunk_args,
             bus_routing,
         );
+        if status == ProcessStatus::Error {
+            return false;
+        }
         scr.output_events.ensure_sorted_by_offset();
         // End the `audio_buffer` borrow before reaching back into scratch.
         let _ = audio_buffer;
@@ -1491,9 +1495,10 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
             ffi::moose_vst3_mark_restart(ctx, K_LATENCY_CHANGED);
         }
         inst.tail_cache.store(plugin.tail(), Ordering::Relaxed);
+        true
     });
     if !ok {
-        // Panic in plugin.process() - zero outputs so the host
+        // Panic or explicit process failure - zero outputs so the host
         // doesn't keep playing whatever stale samples were in the
         // buffer when DSP died.
         unsafe {
