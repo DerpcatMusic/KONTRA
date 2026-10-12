@@ -9,7 +9,7 @@ snapshot rows explicitly remain unverified; their source and dirty bytes are
 preserved by the coordinator before checkout deletion.
 
 No build, Cargo, compiler, protected instrument, sample library or native plugin
-was invoked by this recovery agent. Final Rustfmt parsing checked36changed Rust sources with zero syntax failures;
+was invoked by this recovery agent. Final Rustfmt parsing checked 36 changed Rust sources with zero syntax failures;
 `git diff --check` passed. These are source checks, not execution or native
 acceptance. All code changes were made in the assigned isolated worktree.
 
