@@ -7076,3 +7076,117 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
         }
     }
 }
+
+#[test]
+fn v1_modulation_bars_follow_live_key_and_velocity_of_the_watched_part_group() {
+    use crate::sound::edits::Tap;
+    use sampler_ir as I;
+    use std::sync::atomic::Ordering::Relaxed;
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.shared.ensure_parts(2);
+    p.shared.editor_watch.store(0, Relaxed);
+    let atoms = p.shared.part(0).unwrap();
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group::default());
+    for source in [I::ModulationSource::Velocity, I::ModulationSource::Key] {
+        i.modulators.push(I::Modulator {
+            scope: I::Scope::Voice,
+            source,
+        });
+        i.routes.push(I::Route::new(
+            I::ModulatorRef(i.modulators.len() - 1),
+            I::Target::Amplitude,
+            I::Depth::Normalized(1.),
+        ));
+    }
+    let mut zone = I::Zone::new(I::AssetRef(0));
+    zone.group = Some(I::GroupRef(0));
+    zone.routes = vec![I::RouteRef(0), I::RouteRef(1)];
+    i.zones.push(zone);
+    let render = |slot| {
+        let ui = settle(800., 160., |_| super::chain::modulation(&p, slot, &i, 0));
+        pixels(&ui, 800, 160)
+    };
+    let empty = render(0);
+    let tap = |group, note, velocity| {
+        Tap {
+            group,
+            note,
+            velocity,
+            phase: 0,
+            level: 0.5,
+        }
+        .pack()
+    };
+    atoms.editor_taps[0].store(tap(0, 24, 32), Relaxed);
+    let low = render(0);
+    atoms.editor_taps[0].store(tap(0, 24, 100), Relaxed);
+    let velocity = render(0);
+    assert!(
+        low != velocity,
+        "changing the watched voice velocity changes its live source bar"
+    );
+    atoms.editor_taps[0].store(tap(0, 96, 100), Relaxed);
+    let high = render(0);
+    assert!(
+        velocity != high,
+        "changing the watched voice key changes its live source bar"
+    );
+    atoms.editor_taps[0].store(tap(1, 96, 100), Relaxed);
+    assert!(
+        empty == render(0),
+        "voices of another group do not light this group's bars"
+    );
+    atoms.editor_taps[0].store(0, Relaxed);
+    p.shared.part(1).unwrap().editor_taps[0].store(tap(0, 96, 100), Relaxed);
+    assert!(
+        empty == render(0),
+        "voices of another part do not light this part's bars"
+    );
+    atoms.editor_taps[0].store(tap(0, 96, 100), Relaxed);
+    p.shared.editor_watch.store(1, Relaxed);
+    assert!(
+        empty == render(0),
+        "a former probe owner's cached taps are not displayed"
+    );
+    assert!(
+        high == render(1),
+        "the watched second part reads its own voice taps"
+    );
+}
+
+#[test]
+fn v1_modulation_inventory_includes_primary_amplitude_envelope_once() {
+    use sampler_ir as I;
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut i = I::Instrument::default();
+    i.groups = vec![I::Group::default(), I::Group::default()];
+    for _ in 0..2 {
+        i.modulators.push(I::Modulator {
+            scope: I::Scope::Voice,
+            source: I::ModulationSource::Envelope(I::Envelope::default()),
+        });
+    }
+    for (group, amplitude) in [(0, 0), (0, 0), (1, 1), (0, usize::MAX)] {
+        let mut zone = I::Zone::new(I::AssetRef(0));
+        zone.group = Some(I::GroupRef(group));
+        zone.amplitude = Some(I::ModulatorRef(amplitude));
+        zone.routes.push(I::RouteRef(usize::MAX));
+        i.zones.push(zone);
+    }
+    let ui = settle(800., 160., |_| super::chain::modulation(&p, 0, &i, 0));
+    let text = ui
+        .scene()
+        .unwrap()
+        .surfaces()
+        .filter_map(|s| s.text_value.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        text.iter().filter(|s| **s == "Envelope").count(),
+        1,
+        "the primary amplitude envelope shared by this group's zones is inventoried once"
+    );
+    assert_eq!(text.iter().filter(|s| **s == "Volume").count(), 1);
+    assert_eq!(text.iter().filter(|s| **s == "+100%").count(), 1);
+    assert!(!text.contains(&"Nothing modulates this group."));
+}
