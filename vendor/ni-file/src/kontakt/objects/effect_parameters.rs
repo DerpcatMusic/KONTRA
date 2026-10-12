@@ -68,7 +68,7 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
             ("sync_flag", 'b'),
         ],
         0x19 => &[
-            ("param_0", 'f'),
+            ("mode", 'i'),
             ("threshold_db", 'f'),
             ("ratio", 'f'),
             ("attack_ms", 'f'),
@@ -77,14 +77,14 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
         ],
         0x1a => &[("flag_0", 'b'), ("flag_1", 'b')],
         0x1c => &[("in_gain_db", 'f'), ("release_ms", 'f')],
-        0x1d => &[("param_0", 'f'), ("param_1", 'f')],
-        0x1e => &[("param_0", 'f'), ("drive", 'f'), ("damping", 'f')],
+        0x1d => &[("param_0", 'f'), ("mode", 'i')],
+        0x1e => &[("mode", 'i'), ("drive", 'f'), ("damping", 'f')],
         0x1f => &[("spread", 'f'), ("pan", 'f'), ("pseudo_stereo", 'b')],
         0x20 => &[
             ("bits", 'f'),
             ("frequency", 'f'),
+            ("flag_2", 'b'),
             ("noise_level", 'f'),
-            ("flag_3", 'b'),
             ("noise_color", 'f'),
         ],
         0x21 => &[
@@ -112,7 +112,7 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
             ("input", 'f'),
             ("attack", 'f'),
             ("sustain", 'f'),
-            ("smooth", 'f'),
+            ("mode", 'i'),
         ],
         0x44 => &[
             ("lf_gain", 'f'),
@@ -167,6 +167,38 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
     })
 }
 
+// Native typed-reader framing. Names and physical laws remain unassigned.
+fn extended_schema(module: u16, version: u16) -> Option<&'static str> {
+    Some(match (module, version) {
+        (0x15, 0x50) => "fffff",               // Reverb
+        (0x4d, 0x10) => "ffffffbb",            // Jump
+        (0x56, 0x10) => "ffffffb",             // DStortion
+        (0x5b, 0x51) => "fffffffffbbbfffb",    // Phasis
+        (0x5c, 0x51) => "ffffffffffbiiifffb",  // Flair
+        (0x5d, 0x51) => "fffffffbbi",          // Choral
+        (0x60, 0x51) => "fffffffiiiib",        // Supercharger
+        (0x63, 0x10) => "ffffffbbbfffb",       // PsycheDelay
+        (0x65, 0x10) => "iffffffffffffbbfffb", // Raum
+        (0x66, 0x10) => "iffffffffffb",        // Bite
+        (0x68, 0x10) => "fffffffffffffbbbbbi", // Freak
+        (0x69, 0x10) => "iiffffb",             // VibratoChorus
+        (0x6a, 0x10) => "fffffffbf",           // WowFlutter
+        (0x72, 0x1) => "ffffbbbb",             // Gater
+        (0x74, 0x1) => "ffffbbb",              // ReverseGrain
+        (0x5a, 0x10) => "iffffffffffbbbfffb",
+        (0x5a, 0x11) => "iffffffffffbbbfffbffffb",
+        (0x5a, 0x12) => "iffffffffffbbbfffbffffbfffffffffb",
+        _ => return None,
+    })
+}
+const FIELD_NAMES: [&str; 40] = [
+    "param_0", "param_1", "param_2", "param_3", "param_4", "param_5", "param_6", "param_7",
+    "param_8", "param_9", "param_10", "param_11", "param_12", "param_13", "param_14", "param_15",
+    "param_16", "param_17", "param_18", "param_19", "param_20", "param_21", "param_22", "param_23",
+    "param_24", "param_25", "param_26", "param_27", "param_28", "param_29", "param_30", "param_31",
+    "param_32", "param_33", "param_34", "param_35", "param_36", "param_37", "param_38", "param_39",
+];
+
 struct Reader<'a>(&'a [u8]);
 impl Reader<'_> {
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
@@ -196,17 +228,46 @@ impl EffectParameters {
     /// Unknown IDs return None; recognized layouts must consume the entire payload.
     /// Floats/bytes retain exact bits; consumers validate physical ranges separately.
     pub fn read(module: u16, version: u16, public: &[u8]) -> Result<Option<Self>, Error> {
+        if module == 0x1d && version != 0x80 {
+            return Ok(None);
+        }
         let mut r = Reader(public);
         let mut fields = Vec::new();
         let mut push = |name, value| fields.push(EffectField { name, value });
-        if let Some(layout) = effect_layout(module) {
+        if let Some(schema) = extended_schema(module, version) {
+            for (index, kind) in schema.bytes().enumerate() {
+                push(
+                    FIELD_NAMES[index],
+                    match kind {
+                        b'b' => EffectValue::Byte(r.take::<1>()?[0]),
+                        b'i' => EffectValue::Integer(r.integer()?),
+                        _ => EffectValue::Float(r.float()?),
+                    },
+                );
+            }
+        } else if let Some(mut layout) = effect_layout(module) {
+            if version == 0x50 {
+                layout = &layout[..match module {
+                    0x10 | 0x14 => 4,
+                    0x11 => 3,
+                    0x12 => 5,
+                    _ => layout.len(),
+                }];
+            }
+            if module == 0x46 {
+                layout = &layout[..match version {
+                    0x10 => 7,
+                    0x11 => 8,
+                    _ => layout.len(),
+                }];
+            }
             for &(name, kind) in layout {
                 push(
                     name,
-                    if kind == 'b' {
-                        EffectValue::Byte(r.take::<1>()?[0])
-                    } else {
-                        EffectValue::Float(r.float()?)
+                    match kind {
+                        'b' => EffectValue::Byte(r.take::<1>()?[0]),
+                        'i' => EffectValue::Integer(r.integer()?),
+                        _ => EffectValue::Float(r.float()?),
                     },
                 );
             }
@@ -288,6 +349,12 @@ impl EffectParameters {
                 _ => return Ok(None),
             }
         }
+        if module == 0x44 && version == 0x11 {
+            push("param_12", EffectValue::Float(r.float()?));
+            push("param_13", EffectValue::Float(r.float()?));
+            push("flag_14", EffectValue::Byte(r.take::<1>()?[0]));
+            push("flag_15", EffectValue::Byte(r.take::<1>()?[0]));
+        }
         if !r.0.is_empty() {
             return Err(Error::Static("Trailing FX parameter bytes"));
         }
@@ -312,11 +379,19 @@ mod tests {
             for (i, &(_, kind)) in layout.iter().enumerate() {
                 if kind == 'b' {
                     bytes.push(0xa5);
+                } else if kind == 'i' {
+                    bytes.extend((i as i32 + 17).to_le_bytes());
                 } else {
                     bytes.extend((i as f32 + 0.25).to_le_bytes());
                 }
             }
-            let parsed = EffectParameters::read(module, 0x50, &bytes)
+            let version = match module {
+                0x1d => 0x80,
+                0x10 | 0x11 | 0x12 | 0x14 => 0x51,
+                0x46 => 0x12,
+                _ => 0x50,
+            };
+            let parsed = EffectParameters::read(module, version, &bytes)
                 .unwrap()
                 .unwrap();
             for (i, field) in parsed.fields.iter().enumerate() {
@@ -325,16 +400,83 @@ mod tests {
                     field.value,
                     if layout[i].1 == 'b' {
                         EffectValue::Byte(0xa5)
+                    } else if layout[i].1 == 'i' {
+                        EffectValue::Integer(i as i32 + 17)
                     } else {
                         EffectValue::Float(i as f32 + 0.25)
                     }
                 );
             }
             for end in 0..bytes.len() {
-                assert!(EffectParameters::read(module, 0x50, &bytes[..end]).is_err());
+                assert!(EffectParameters::read(module, version, &bytes[..end]).is_err());
             }
             bytes.push(0);
-            assert!(EffectParameters::read(module, 0x50, &bytes).is_err());
+            assert!(EffectParameters::read(module, version, &bytes).is_err());
+        }
+    }
+    #[test]
+    fn native_extended_layouts_preserve_field_types_and_complete_boundaries() {
+        for (module, version) in [
+            (0x15, 0x50),
+            (0x4d, 0x10),
+            (0x56, 0x10),
+            (0x5b, 0x51),
+            (0x5c, 0x51),
+            (0x5d, 0x51),
+            (0x60, 0x51),
+            (0x63, 0x10),
+            (0x65, 0x10),
+            (0x66, 0x10),
+            (0x68, 0x10),
+            (0x69, 0x10),
+            (0x6a, 0x10),
+            (0x72, 0x1),
+            (0x74, 0x1),
+            (0x5a, 0x10),
+            (0x5a, 0x11),
+            (0x5a, 0x12),
+        ] {
+            let schema = extended_schema(module, version).unwrap();
+            let mut bytes = Vec::new();
+            let mut expected = Vec::new();
+            for (index, kind) in schema.bytes().enumerate() {
+                expected.push(match kind {
+                    b'b' => {
+                        bytes.push(0xa5);
+                        EffectValue::Byte(0xa5)
+                    }
+                    b'i' => {
+                        let n = -(index as i32) - 17;
+                        bytes.extend(n.to_le_bytes());
+                        EffectValue::Integer(n)
+                    }
+                    _ => {
+                        let n = index as f32 + 0.25;
+                        bytes.extend(n.to_le_bytes());
+                        EffectValue::Float(n)
+                    }
+                });
+            }
+            let params = EffectParameters::read(module, version, &bytes)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                params
+                    .fields
+                    .iter()
+                    .map(|f| f.value.clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for end in 0..bytes.len() {
+                assert!(EffectParameters::read(module, version, &bytes[..end]).is_err());
+            }
+            bytes.push(0);
+            assert!(EffectParameters::read(module, version, &bytes).is_err());
+            assert_eq!(
+                EffectParameters::read(module, 0xffff, &bytes).unwrap(),
+                None
+            );
         }
     }
     #[test]
