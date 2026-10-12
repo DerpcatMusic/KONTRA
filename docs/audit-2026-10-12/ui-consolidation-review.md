@@ -107,3 +107,34 @@ Focused targets are:
 The geometry pixel witness uses authored temporary textures and the current
 KONTRA renderer. It establishes local producer/painter behavior only. None of
 these targets is a native Kontakt/Falcon comparison.
+
+## Integrated-source follow-up review
+
+The post-integration review preserved the coordinator's `256dad72` `to_bits`
+hashes; the follow-up edits touch mapping/query code, authored regressions and
+this receipt only. Geometry still accumulates signed parent offsets: the
+independent nested example (-10.25,-20.5)+(3.5,4.25)+(2.5,5.125) resolves to
+(-4.25,-11.125), without integer truncation or rejecting an offscreen position.
+UVI traversal uses raw object identity/current parent and authored child order;
+sparse publication distinguishes absent, explicit empty and reordered paint
+lists. Generated Layout compares paint order and fractional structure. IR paint
+runs hash fractional placement, asset epoch/version and numeric draft revision;
+generated retained widgets include draft revision too. Face publication bumps
+asset epoch, while completed prepared images/fonts change asset version.
+
+One actual mapping seam remained: directly focused named group/articulation
+controls did not inhabit the virtual list's row focus namespace. Activation is
+now read before transferring focus to that row, enabling arrow/End navigation
+and construction of distant destinations without changing control/source IDs.
+The 54,216-zone workbench regression additionally clicks a named row, navigates
+to groups 1 and 188, verifies the final source inspector, bounds mounted rows,
+and reopens the same selection. Queries now always read the index-owned source;
+invalid MIDI/group queries cannot panic or alias the internal all-group bounds
+slot. The empty/invalid query regression separately exercises empty IR, real
+empty groups, the no-group identity, out-of-range IDs and invalid MIDI bytes.
+Instrument admission still validates authored key ranges and group references;
+this query fix does not silently remap malformed source metadata.
+
+These follow-up regressions are authored, not executed by this agent. Rustfmt
+parsing and `git diff --check` remain the available local validation; the
+coordinator owns compilation and runtime results.
