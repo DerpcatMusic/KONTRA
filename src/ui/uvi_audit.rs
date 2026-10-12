@@ -105,7 +105,7 @@ fn complete_editor(path: &str, program: &str) {
 }
 
 #[test]
-#[ignore = "installed bank and approved KONTRA_UVI_READER required"]
+#[ignore = "installed UVI bank required"]
 fn complete_bartok_original_editor_fits_the_scene_and_paints() {
     complete_editor(
         "/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs",
@@ -114,7 +114,7 @@ fn complete_bartok_original_editor_fits_the_scene_and_paints() {
 }
 
 #[test]
-#[ignore = "installed bank and approved KONTRA_UVI_READER required"]
+#[ignore = "installed UVI bank required"]
 fn complete_clarinet_original_editor_fits_the_scene_and_paints() {
     complete_editor(
         "/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-AClarinet.ufs",

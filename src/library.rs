@@ -92,7 +92,7 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
-    /// Additional v2 preferences, including the UVI reader path.
+    /// Additional v2 preferences not interpreted by this version.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
@@ -1162,12 +1162,12 @@ mod tests {
     #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"version":2,"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"future_preference":"retained","ui_scale":1.5}"#).unwrap();
         let settings = super::Settings::load(&path).unwrap();
         settings.save(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(saved["uvi_reader"], "/x/UVIWorkstationx64.exe");
+        assert_eq!(saved["future_preference"], "retained");
         assert_eq!(saved["ui_scale"], 1.5);
     }
 
@@ -1529,7 +1529,7 @@ fn v2_settings_reject_legacy_and_unversioned_files() {
         std::fs::write(&path, json).unwrap();
         assert!(Settings::load(&path).is_none(), "only the version-2 document is accepted");
     }
-    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"uvi_reader":"old-reader"}"#).unwrap();
+    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"future_preference":"retained"}"#).unwrap();
     let settings = Settings::load(&path).unwrap_or_default();
     assert_eq!(settings, Settings::default(), "legacy fields never seed v2 defaults");
     settings.save(&path).unwrap();
