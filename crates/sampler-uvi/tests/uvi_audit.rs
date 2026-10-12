@@ -1,5 +1,5 @@
-//! Authored conformance repros. Known failures are opt-in, so the audit does
-//! not break normal CI: cargo test -p sampler-uvi --test uvi_audit -- --ignored.
+//! Authored conformance regressions, exercised in normal CI. The original
+//! 2026-10-08 audit probes were verified green and promoted on 2026-10-12.
 use sampler_uvi::script::{Command, Config, ScriptHost};
 
 fn host(script: &str, saved: &str) -> ScriptHost {
@@ -18,7 +18,6 @@ fn host(script: &str, saved: &str) -> ScriptHost {
 }
 
 #[test]
-#[ignore = "audit: postEvent must preserve the incoming voice id"]
 fn forwarded_note_keeps_identity() {
     let mut h = host("function onNote(e) result = postEvent(e) end", "");
     h.note_on(42, 60, 100, 0);
@@ -26,7 +25,6 @@ fn forwarded_note_keeps_identity() {
 }
 
 #[test]
-#[ignore = "audit: delayed postEvent returns the id of the eventual voice"]
 fn delayed_event_returns_its_actual_voice_id() {
     let mut h = host("function onNote(e) result = postEvent(e, 10) end", "");
     h.note_on(42, 60, 100, 0);
@@ -40,14 +38,12 @@ fn delayed_event_returns_its_actual_voice_id() {
 }
 
 #[test]
-#[ignore = "audit: releaseVoice must return false for a nonexistent voice"]
 fn release_nonexistent_voice_is_false() {
     let h = host("result = releaseVoice(987654)", "");
     assert_eq!(h.global_text("result"), "false");
 }
 
 #[test]
-#[ignore = "audit: positional table form includes all eleven arguments"]
 fn playnote_numeric_table_keeps_layer_and_oscillator() {
     let mut h = host(
         "playNote{60, 100, 0, 1, nil, nil, 0.5, -0.2, 2, nil, 3}",
@@ -66,7 +62,6 @@ fn playnote_numeric_table_keeps_layer_and_oscillator() {
 }
 
 #[test]
-#[ignore = "audit: pitch callback field is bend"]
 fn pitch_callback_exposes_bend() {
     let mut h = host("function onPitchBend(e) result = e.bend end", "");
     h.pitch_bend(0.5, 0);
@@ -74,7 +69,6 @@ fn pitch_callback_exposes_bend() {
 }
 
 #[test]
-#[ignore = "audit: program callback field is program"]
 fn program_callback_exposes_program() {
     let mut h = host("function onProgramChange(e) result = e.program end", "");
     h.program_change(7, 0);
@@ -82,7 +76,6 @@ fn program_callback_exposes_program() {
 }
 
 #[test]
-#[ignore = "audit: isNoteHeld is local to the triggering note"]
 fn note_held_does_not_follow_another_key() {
     let mut h = host(
         "function onNote(e) if e.note == 60 then wait(10); result = isNoteHeld() end end",
@@ -96,7 +89,6 @@ fn note_held_does_not_follow_another_key() {
 }
 
 #[test]
-#[ignore = "audit: spawned thread has no originating note context"]
 fn spawn_does_not_inherit_release_wait() {
     let mut h = host(
         "function onNote(e) spawn(function() waitForRelease(); result = true end) end",
@@ -108,7 +100,6 @@ fn spawn_does_not_inherit_release_wait() {
 }
 
 #[test]
-#[ignore = "audit: spawn order must remain FIFO with three or more tasks"]
 fn spawn_runs_in_creation_order() {
     let h = host(
         "result = ''; spawn(function() result = result .. 'a' end); spawn(function() result = result .. 'b' end); spawn(function() result = result .. 'c' end)",
@@ -118,7 +109,6 @@ fn spawn_runs_in_creation_order() {
 }
 
 #[test]
-#[ignore = "audit: positional widgets are persistent by default"]
 fn positional_widget_restores_saved_value() {
     let h = host(
         "local k = Knob('K', 0, 0, 10); function onInit() result = k.value end",
@@ -128,7 +118,6 @@ fn positional_widget_restores_saved_value() {
 }
 
 #[test]
-#[ignore = "audit: nil widget changed must be nil, not an inert callable table"]
 fn unset_widget_changed_is_nil() {
     let h = host(
         "local k = Knob('K', 0, 0, 10); result = (k.changed == nil)",
@@ -138,7 +127,6 @@ fn unset_widget_changed_is_nil() {
 }
 
 #[test]
-#[ignore = "audit: parameterDefinitions have numeric ids, correct defaults and ranges"]
 fn filter_definition_uses_catalog_range() {
     let h = host(
         "for _, d in ipairs(Program.inserts[1].parameterDefinitions) do if d.name == 'Freq' then result = d.max; idtype = type(d.id) end end",
@@ -149,14 +137,12 @@ fn filter_definition_uses_catalog_range() {
 }
 
 #[test]
-#[ignore = "audit: omitted XML attributes still use engine defaults"]
 fn omitted_gain_defaults_to_unity() {
     let h = host("result = Program.layers[1]:getParameter('Gain')", "");
     assert_eq!(h.global_text("result"), "1");
 }
 
 #[test]
-#[ignore = "audit: XML booleans must read back as booleans"]
 fn parameter_boolean_type_is_preserved() {
     let xml = "<UVI4><Program Bypass='0'><EventProcessors><ScriptProcessor><script>result = type(Program:getParameter('Bypass'))</script></ScriptProcessor></EventProcessors></Program></UVI4>";
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
@@ -173,7 +159,6 @@ fn connections_do_not_fabricate_entries() {
 }
 
 #[test]
-#[ignore = "audit: program.part and synthesis children are exposed"]
 fn synthesis_tree_aliases_exist() {
     let h = host(
         "result = (Program.part == Program.parent and Program.part ~= nil and Program.synthChildren ~= nil and Program.children ~= nil and Program.eventProcessors ~= nil)",
@@ -225,7 +210,6 @@ fn missing_load_data_does_not_call_callback() {
 }
 
 #[test]
-#[ignore = "audit: stopped host beat position must not advance with engine time"]
 fn stopped_transport_beat_is_not_elapsed_time() {
     let mut h = host("function onController(e) result = getBeatTime() end", "");
     h.transport(false);
@@ -235,14 +219,12 @@ fn stopped_transport_beat_is_not_elapsed_time() {
 }
 
 #[test]
-#[ignore = "audit: undefined globals retain Lua nil semantics"]
 fn undefined_global_remains_nil_even_when_called_later() {
     let h = host("result = (Missing == nil); if false then Missing() end", "");
     assert_eq!(h.global_text("result"), "true");
 }
 
 #[test]
-#[ignore = "audit: UVI provides bit.band rather than only Luau bit32"]
 fn uvi_bit_library_is_available() {
     let h = host("result = bit.band(7, 3)", "");
     assert_eq!(h.global_text("result"), "3");
@@ -297,7 +279,6 @@ fn input(key: u8) -> sampler_core::Input {
 }
 
 #[test]
-#[ignore = "audit: generated and physical ids must never collide"]
 fn driver_noteoff_closes_original_physical_note() {
     let h = host("function onNote(e) playNote(e.note, e.velocity, 0) end", "");
     let mut driver = sampler_uvi::scripted::Driver::new(h, vec![], 48000);
@@ -312,7 +293,6 @@ fn driver_noteoff_closes_original_physical_note() {
 }
 
 #[test]
-#[ignore = "audit: repeated same-key inputs each receive their own release"]
 fn driver_releases_both_repeated_notes() {
     let h = host("function onNote(e) end", "");
     let mut driver = sampler_uvi::scripted::Driver::new(h, vec![], 48000);
@@ -327,7 +307,6 @@ fn driver_releases_both_repeated_notes() {
 }
 
 #[test]
-#[ignore = "audit: oscillator writes must reach the engine, not just a Lua overlay"]
 fn oscillator_gain_emits_an_engine_write() {
     let mut h = host(
         "Program.layers[1].keygroups[1].oscillators[1]:setParameter('Gain', 0.5)",
@@ -337,7 +316,6 @@ fn oscillator_gain_emits_an_engine_write() {
 }
 
 #[test]
-#[ignore = "audit: distinct keygroups cannot alias the same layer parameter"]
 fn keygroup_writes_keep_distinct_scopes() {
     let xml = "<UVI4><Program><Layers><Layer><Keygroups><Keygroup/><Keygroup/></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script>for _, k in ipairs(Program.layers[1].keygroups) do k:setParameter('Gain', 0.5) end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
     let mut h = ScriptHost::new(xml, (), Config::default()).unwrap();
@@ -347,7 +325,6 @@ fn keygroup_writes_keep_distinct_scopes() {
 }
 
 #[test]
-#[ignore = "audit: fade layer argument must select different layer voices"]
 fn fade_layer_argument_is_preserved() {
     let mut h = host("fade(42, 0.5, 100, 1); fade(42, 0.5, 100, 2)", "");
     let commands = h.take_commands();
@@ -355,7 +332,6 @@ fn fade_layer_argument_is_preserved() {
 }
 
 #[test]
-#[ignore = "audit: change immediate argument must control smoothing"]
 fn change_immediate_flag_is_preserved() {
     let mut h = host(
         "changeTune(42, 1, false, false); changeTune(42, 1, false, true)",
@@ -366,7 +342,6 @@ fn change_immediate_flag_is_preserved() {
 }
 
 #[test]
-#[ignore = "audit: Table positional constructor must preserve default and range"]
 fn table_positional_constructor_preserves_values() {
     let h = host(
         "local t = Table('T', 2, 0.25, -1, 1, false); result = t:getValue(1); lo = t.min",
@@ -377,7 +352,6 @@ fn table_positional_constructor_preserves_values() {
 }
 
 #[test]
-#[ignore = "audit: Table setValue has a third notify argument"]
 fn table_setvalue_can_suppress_callback() {
     let h = host(
         "local t = Table{'T', 2, 0, 0, 1}; result = 0; function t:changed(i) result = result + 1 end; t:setValue(1, 0.5, false)",
@@ -387,7 +361,6 @@ fn table_setvalue_can_suppress_callback() {
 }
 
 #[test]
-#[ignore = "audit: persistent can be disabled after constructing a widget"]
 fn persistent_false_assignment_prevents_restore() {
     let h = host(
         "local k = Knob{'K', 0, 0, 10}; k.persistent = false; function onInit() result = k.value end",
@@ -397,7 +370,6 @@ fn persistent_false_assignment_prevents_restore() {
 }
 
 #[test]
-#[ignore = "audit: public Event.ControlChange must match delivered controllers"]
 fn public_controlchange_event_constant_exists() {
     let mut h = host(
         "function onController(e) result = (e.type == Event.ControlChange) end",
@@ -408,7 +380,6 @@ fn public_controlchange_event_constant_exists() {
 }
 
 #[test]
-#[ignore = "audit: custom JSON <state> must invoke onLoad"]
 fn custom_saved_state_invokes_onload() {
     let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><state>{"counter":42}</state><script>loaded = false; function onLoad(data) assert(data.counter == 42); loaded = true end</script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
@@ -416,7 +387,6 @@ fn custom_saved_state_invokes_onload() {
 }
 
 #[test]
-#[ignore = "audit: automatic ScriptData is not custom onLoad data"]
 fn automatic_scriptdata_does_not_invoke_onload() {
     let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><ScriptData counter='42'/><script>loaded = false; function onLoad(data) loaded = true end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
@@ -424,7 +394,6 @@ fn automatic_scriptdata_does_not_invoke_onload() {
 }
 
 #[test]
-#[ignore = "audit: bypassed ScriptProcessors must not replace live callbacks"]
 fn bypassed_processor_does_not_swallow_notes() {
     let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script>function onNote(e) postEvent(e) end</script></ScriptProcessor><ScriptProcessor Bypass='1'><script>function onNote(e) end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
     let mut h = ScriptHost::new(xml, (), Config::default()).unwrap();
