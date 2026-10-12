@@ -312,6 +312,11 @@ impl Translation {
                                 && number(*c, "Gain", 1.0).is_ok_and(|g| g != 0.0))
                         })
                         .collect();
+                    // A rack sums its active branches. Removing every silent
+                    // branch must leave zero, rather than the unprocessed input.
+                    if chains.is_empty() {
+                        out.push(ir::Processor::Gain(ir::Gain::Linear(0.0)));
+                    }
                     for (n, chain) in chains.iter().enumerate() {
                         let off = live && number(*chain, "Bypass", 0.0)? != 0.0;
                         let gain = ir::Gain::Linear(if off {
