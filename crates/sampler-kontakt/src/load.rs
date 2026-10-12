@@ -894,7 +894,10 @@ fn compile_ui_initialized(
                         value: w.message.clone(),
                         reason: ir::Reason::NotModeled,
                     }));
-                names.push(behavior.name.clone());
+                names.push((
+                    behavior.slot.map_or(index, usize::from),
+                    behavior.name.clone(),
+                ));
                 compiled.push(script);
             }
             Err(error) => instrument.unsupported.push(ir::Unsupported {
@@ -907,9 +910,24 @@ fn compile_ui_initialized(
     }
     let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
-    for (script, name) in compiled.iter().zip(&names) {
+    for (script, (slot, name)) in compiled.iter().zip(&names) {
         match script.ui(&picture) {
-            Ok(ui) => interfaces.push(ui),
+            Ok(ui) => {
+                // A successful projection can still omit source UI meaning. Keep
+                // those gaps in the same report exposed by the playable loader.
+                instrument
+                    .unsupported
+                    .extend(ui.unsupported.iter().map(|u| ir::Unsupported {
+                        location: match u.widget {
+                            Some(widget) => format!("script slot {slot} {name} widget {}", widget.0),
+                            None => format!("script slot {slot} {name}"),
+                        },
+                        feature: format!("script interface: {}", u.feature),
+                        value: u.value.clone(),
+                        reason: ir::Reason::NotModeled,
+                    }));
+                interfaces.push(ui);
+            }
             Err(e) => instrument.unsupported.push(ir::Unsupported {
                 location: name.clone(),
                 feature: "script interface".into(),
@@ -1452,6 +1470,37 @@ fn script_folders(file: Option<&std::path::Path>) -> [String; 4] {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn successful_interface_projection_keeps_unsupported_widget_features_in_load_report() {
+        let mut instrument = ir::Instrument::default();
+        instrument.behaviors.push(ir::Behavior {
+            name: "Projection".into(),
+            language: ir::Language::Ksp,
+            slot: Some(5),
+            state: vec![],
+            requires: vec![],
+            source: "on init\n declare ui_knob $Cut(0, 100, 1)\n set_control_par(get_ui_id($Cut), $CONTROL_PAR_HIDE, $HIDE_PART_MOD_LIGHT)\nend on".into(),
+        });
+        let (scripts, interfaces, _) = compile_ui(&mut instrument, &Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        let projected = interfaces[0]
+            .unsupported
+            .iter()
+            .find(|u| u.feature == "$HIDE_PART_MOD_LIGHT")
+            .expect("the successful UI projection must record the missing feature");
+        assert_eq!(projected.widget, Some(sampler_ui_ir::WidgetRef(0)));
+        assert!(
+            instrument.unsupported.iter().any(|u| {
+                u.location == "script slot 5 Projection widget 0"
+                    && u.feature == "script interface: $HIDE_PART_MOD_LIGHT"
+                    && u.value == projected.value
+                    && u.reason == ir::Reason::NotModeled
+            }),
+            "a successful projection must retain its UI gap in the instrument load report"
+        );
+    }
 
     #[test]
     fn initialization_warnings_keep_physical_script_slot_line_and_index() {
