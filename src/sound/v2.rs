@@ -1147,6 +1147,12 @@ fn widget_value(
 }
 
 impl V2Core {
+    /// Read the loaded part's actual shared-core diagnostic counters.
+    /// Available to ordinary offline witnesses as well as scan builds.
+    pub fn runtime_stats(&self, part: usize) -> Option<sampler_core::RuntimeStats> {
+        Some(self.parts.get(part)?.as_ref()?.runtime.stats())
+    }
+
     pub(crate) fn release_all_notes(&mut self) {
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
@@ -1230,7 +1236,7 @@ impl Default for V2Core {
 #[cfg(feature = "shots")]
 impl V2Core {
     pub fn scan_runtime_stats(&self, part: usize) -> Option<sampler_core::RuntimeStats> {
-        Some(self.parts.get(part)?.as_ref()?.runtime.stats())
+        self.runtime_stats(part)
     }
     pub fn scan_record_selections(&mut self, part: usize, enabled: bool) {
         if let Some(Some(p)) = self.parts.get_mut(part) {
