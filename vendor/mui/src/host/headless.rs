@@ -39,15 +39,18 @@ static TIME: AtomicU64 = AtomicU64::new(0);
 /// The host's clock, which a headless editor animates by in place of the
 /// wall's: frames stay the same however fast or slow they are made.
 pub fn set_time(seconds: f64) {
-    TIME.store(seconds.max(0.).to_bits(), Ordering::Release);
+    if Duration::try_from_secs_f64(seconds.max(0.)).is_ok() {
+        TIME.store(seconds.max(0.).to_bits(), Ordering::Release);
+    }
 }
 
 /// The time since the host's clock started, once [`claim`]ed (zero until
 /// it first sets one); `None` in a windowed process, which keeps the wall's.
 pub fn time() -> Option<Duration> {
-    CLAIMED
-        .load(Ordering::Acquire)
-        .then(|| Duration::from_secs_f64(f64::from_bits(TIME.load(Ordering::Acquire))))
+    CLAIMED.load(Ordering::Acquire).then(|| {
+        Duration::try_from_secs_f64(f64::from_bits(TIME.load(Ordering::Acquire)))
+            .unwrap_or(Duration::ZERO)
+    })
 }
 
 /// A window crate's `open`, first: `true` when the process [`claim`]ed
@@ -57,6 +60,7 @@ pub fn offer<V: View + Send + 'static>(shared: &Arc<Mutex<Shared<V>>>, size: (u3
         return false;
     }
     let ui = std::mem::take(&mut lock(shared).ui);
+    ui.release_thread_memos();
     *OFFERED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Headless {
         ui,
         view: Box::new(Parked(Arc::clone(shared))),
@@ -110,6 +114,17 @@ impl<V: View> View for Parked<V> {
 mod tests {
     use super::*;
     use crate::prelude::*;
+
+    #[test]
+    fn invalid_headless_time_keeps_the_last_representable_clock() {
+        set_time(0.25);
+        for seconds in [f64::INFINITY, f64::MAX] {
+            set_time(seconds);
+            assert_eq!(TIME.load(Ordering::Acquire), 0.25f64.to_bits());
+        }
+        set_time(-1.);
+        assert_eq!(TIME.load(Ordering::Acquire), 0f64.to_bits());
+    }
 
     struct Label(&'static str);
     impl View for Label {
