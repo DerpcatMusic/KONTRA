@@ -3647,19 +3647,24 @@ pub(crate) mod tests {
     #[test]
     fn loader_hands_parts_over_and_the_audio_thread_installs_them() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tone.wav");
+        let sample = dir.path().join("tone.wav");
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 48000,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        let mut w = hound::WavWriter::create(&sample, spec).unwrap();
         for i in 0..48000 {
             w.write_sample(((i as f32 * 0.05).sin() * 20000.0) as i16)
                 .unwrap();
         }
         w.finalize().unwrap();
+        // Plain WAV loads have no imported instrument metadata. Exercise the
+        // production instrument reader and its worker index with an authored
+        // UVI program referencing the small synthetic sample above.
+        let path = dir.path().join("tone.uvip");
+        std::fs::write(&path, r#"<UVI4><Program Name="Authored worker mapping"><Layers><Layer Name="Tone"><Keygroups><Keygroup Name="C4" LowKey="0" HighKey="108"><Oscillators><SamplePlayer SamplePath="tone.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#).unwrap();
         let params = SamplerParams::new();
         params.selection.write_unpoisoned().parts = vec![Part {
             path: path.display().to_string(),
