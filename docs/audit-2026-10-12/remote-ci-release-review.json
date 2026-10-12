@@ -1,0 +1,1015 @@
+{
+  "schema": 1,
+  "baseline": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+  "review": "Parent remote-only CI/release source reconciliation",
+  "validation": {
+    "ci_policy_tests": {
+      "exit_code": 0
+    },
+    "macos_packaging_mock_tests": {
+      "exit_code": 0
+    },
+    "nightly_policy_mock_tests": {
+      "exit_code": 0
+    },
+    "native_macos_notarization": "NOT_RUN"
+  },
+  "rows": [
+    {
+      "ref": "refs/remotes/origin/audit/w8-playback-template-20261008",
+      "tip": "7ba9c05e5940c23ede7df48febc8c76d305de534",
+      "same_name_local": "4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca",
+      "ancestor_of_main": false,
+      "subject": "WIP port from v1 0cb7a8a0:src/engine/map.rs compact region playback templates",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/tests/source.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/tests/source.rs"
+      ],
+      "source_resolution": "retain_current_compact_playback_template",
+      "scope": "Earlier WIP predecessor of local4ef0d62d, reviewed separately in backend source supplement",
+      "current_evidence": [
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/source.rs"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/ci/lean-verified-snapshots",
+      "tip": "7a8e4596492336396fa2660d17cf89cde6a3b4ba",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "ci: streamline verification and gate changed-code snapshots",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/check_workflows.sh",
+        ".github/scripts/ci_changes.py",
+        ".github/scripts/test_ci.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".gitignore",
+        "Cargo.toml",
+        "README.md",
+        "docs/CI.md",
+        "rust-toolchain.toml"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        "rust-toolchain.toml"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/check_workflows.sh",
+        ".github/scripts/ci_changes.py",
+        ".github/scripts/test_ci.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".gitignore",
+        "Cargo.toml",
+        "README.md",
+        "docs/CI.md"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/workflows/ci.yml:33",
+        ".github/scripts/ci_changes.py",
+        ".github/scripts/test_ci.py"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/docs/alpha-feature-downloads",
+      "tip": "0bffcd077fff771169162091e4fd14c5c2e3827e",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "docs: retain portable macOS download links",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "README.md"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "README.md"
+      ],
+      "source_resolution": "retain_current_readme_policy",
+      "scope": "Older editorial/download presentation superseded by current README and validated universal download policy",
+      "current_evidence": [
+        "README.md",
+        ".github/workflows/check_nightly.py:27"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/docs/public-readme-minimal",
+      "tip": "b111a009d237c7c12c85d1725e1dfc1e263a0781",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "docs: reduce README to essentials and compact status table",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "README.md"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "README.md"
+      ],
+      "source_resolution": "retain_current_readme_policy",
+      "scope": "Older editorial/download presentation superseded by current README and validated universal download policy",
+      "current_evidence": [
+        "README.md",
+        ".github/workflows/check_nightly.py:27"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/feat/universal-macos-installer",
+      "tip": "8ee22069adc8c61f7b8c32920dcdef7fa4ea92a4",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Ship one signed notarized universal Mac installer alongside nightly archives",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/macos_signing_keychain.sh",
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/package_macos.py",
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_ci.py",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "README.md",
+        "tools/licenses.py"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        ".github/scripts/macos_signing_keychain.sh"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/package_macos.py",
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_ci.py",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "README.md",
+        "tools/licenses.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/package_macos.py:55",
+        ".github/scripts/package_macos.sh:8",
+        ".github/workflows/nightly.yml"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/absent-nightly-refs",
+      "tip": "006ff01ce5cba89f998fbc8a078ca3631c41c450",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "fix(ci): skip absent nightly refs before deletion",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/workflows/publish_nightly.py:41"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/idempotent-macos-certificates",
+      "tip": "1e2ccf3901e006fda7c9f55ade91674997a81bef",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Handle bundled Developer ID intermediates without hiding import failures",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/macos_signing_keychain.sh:30"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/latest-download-policy",
+      "tip": "dc3a0bafd3c65a7a2644bdb78f8ecb79d3f22275",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "fix(ci): remove abandoned managed nightly drafts",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/workflows/publish_nightly.py:139"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/macos-notary-phases-0.3.141",
+      "tip": "d13fe362139465815e031836c58d846f6e409e00",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Expose safe macOS signing phases without hiding failures",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py",
+        "SOURCE_COMMIT"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py",
+        "SOURCE_COMMIT"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/notarize_macos.sh:17"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/macos-package-types",
+      "tip": "a294a1bdeb2dc54a77e27429a1e7bcccc8c24d9d",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "fix: register macOS plugin package types without FinderInfo",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/check_macos_bundles.swift",
+        ".github/scripts/macos_installer/postinstall",
+        ".github/scripts/macos_package_preflight.swift",
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/package_macos.py",
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "README.md",
+        "release-fixes.json"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        ".github/scripts/check_macos_bundles.swift",
+        ".github/scripts/macos_installer/postinstall",
+        ".github/scripts/macos_package_preflight.swift"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/package_macos.py",
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "README.md",
+        "release-fixes.json"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/package_macos.py:27",
+        ".github/scripts/macos_package_preflight.swift",
+        ".github/scripts/macos_installer/postinstall"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/macos-signing-keychain",
+      "tip": "baef99e10b9c3a0049e3f3492ea98cf7c15400b0",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Fix macOS signing keychain selection and Developer ID chain validation",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/macos_signing_keychain.sh:9",
+        ".github/scripts/macos_signing_keychain.sh:50"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/nightly-verification-030306",
+      "tip": "c0bffdd219140629817b1bbac1838e40e710c66f",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Repair nightly verification isolation and cold-build deadline",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/ci.yml",
+        "src/diagnostics.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/ci.yml",
+        "src/diagnostics.rs"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/workflows/ci.yml:92",
+        ".github/scripts/test_ci.py:105"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/per-format-nightly-manifests",
+      "tip": "bfa55565acdf87f33def501d3951992741090aed",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "fix(ci): preserve per-format nightly build identities",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "docs/CI.md"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "docs/CI.md"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        "build.rs:177",
+        ".github/workflows/publish_nightly.py:215"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/portable-license-preflight",
+      "tip": "cc5049375ff7d7351ed2c55c1a6d4c561dad4114",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Verify universal installer rollback on the native runner",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/nightly.yml"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/nightly.yml"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py",
+        ".github/workflows/nightly.yml"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/fix/readable-installer-signatures",
+      "tip": "10bc65655d55af79e5751313252200ab98760022",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Make installed macOS signature resources readable by normal users",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/package_macos.sh",
+        ".github/scripts/test_package_macos.py"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/scripts/package_macos.sh:35",
+        ".github/scripts/package_macos.py:134"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/integration/remaining-fixes-pr34-pr40-20261011",
+      "tip": "72d4f2244773747a4455038eb79bfa576afbbf45",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "fix(kontakt): accept empty saved numeric arrays when opening libraries",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "crates/sampler-kontakt/src/library.rs",
+        "crates/sampler-kontakt/src/persistence.rs",
+        "crates/sampler-kontakt/tests/persistence.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        "crates/sampler-kontakt/src/persistence.rs",
+        "crates/sampler-kontakt/tests/persistence.rs"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        "crates/sampler-kontakt/src/library.rs"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        "crates/sampler-kontakt/src/persistence.rs",
+        "crates/sampler-kontakt/tests/persistence.rs"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.115",
+      "tip": "373db46a1d4dc49b68abedc3df4ce4425891a834",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Restore matched Windows DX12 interfaces in the locked release graph",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "Cargo.lock",
+        "SOURCE_COMMIT"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "Cargo.lock",
+        "SOURCE_COMMIT"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.123",
+      "tip": "5d6133c4f90524188d1924d0571bf74f10b7688d",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Remove generated Python bytecode from the source snapshot",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/__pycache__/release_notes.cpython-314.pyc"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/__pycache__/release_notes.cpython-314.pyc"
+      ],
+      "source_resolution": "generated_bytecode_not_reintroduced",
+      "scope": "Deleted generated Python bytecode; current ignore rules and source tree keep it excluded",
+      "current_evidence": [
+        ".gitignore"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.148",
+      "tip": "bd8c02a8cc56fe91c92cb472601c57df3c8f3fd4",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Release 0.3.148: native envelopes, saved LFO phase and visible crash receipts",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/release_notes.py",
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "release-fixes.json",
+        "src/engine/ahdsr.rs",
+        "src/engine/bank.rs",
+        "src/engine/lfo.rs",
+        "src/engine/lfo_volume.rs",
+        "src/engine/mod.rs",
+        "src/engine/params.rs",
+        "src/engine/voice.rs",
+        "src/import.rs",
+        "src/modulation.rs",
+        "src/support.rs",
+        "src/support/report.rs",
+        "src/ui/audit.rs",
+        "src/ui/logs.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/MOOSE-PATCHES.md",
+        "vendor/moose-clap/src/lib.rs",
+        "vendor/moose-vst3/shim/vst3_shim.cpp",
+        "vendor/moose-vst3/tests/editor_attach.cpp",
+        "vendor/ni-file/src/kontakt/objects/envelope.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        "SOURCE_COMMIT",
+        "tools/export-public.sh",
+        "vendor/moose-vst3/tests/editor_attach.cpp"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/release_notes.py",
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "release-fixes.json",
+        "src/engine/ahdsr.rs",
+        "src/engine/bank.rs",
+        "src/engine/lfo.rs",
+        "src/engine/lfo_volume.rs",
+        "src/engine/mod.rs",
+        "src/engine/params.rs",
+        "src/engine/voice.rs",
+        "src/import.rs",
+        "src/modulation.rs",
+        "src/support.rs",
+        "src/support/report.rs",
+        "src/ui/audit.rs",
+        "src/ui/logs.rs",
+        "tests/playback.rs",
+        "vendor/MOOSE-PATCHES.md",
+        "vendor/moose-clap/src/lib.rs",
+        "vendor/moose-vst3/shim/vst3_shim.cpp",
+        "vendor/ni-file/src/kontakt/objects/envelope.rs"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.64",
+      "tip": "f34c419b97ea033127a45463833c2ed9bf26b15d",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Ship 0.3.64 with reviewed compatibility fixes and complete release notes",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "docs/COMPATIBILITY.md",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/artwork.rs",
+        "src/creator/nki.rs",
+        "src/diagnostics.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/overrides.rs",
+        "src/engine/params.rs",
+        "src/engine/rack.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/fx/blocks.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/import.rs",
+        "src/ksp/builtins.rs",
+        "src/ksp/calls.rs",
+        "src/ksp/mod.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/ui.rs",
+        "src/ksp/vm.rs",
+        "src/main.rs",
+        "src/modulation.rs",
+        "src/playback_audit.rs",
+        "src/plugin.rs",
+        "src/ui/audit.rs",
+        "src/ui/fitted.rs",
+        "src/ui/panel.rs",
+        "src/ui/perf_view.rs",
+        "src/ui/tests.rs",
+        "src/ui/viz.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/mui-baseview/src/lib.rs",
+        "vendor/mui-baseview/src/tests.rs",
+        "vendor/ni-file/src/kontakt/objects/bparam_array_ext_mod_32.rs",
+        "vendor/ni-file/src/kontakt/objects/group.rs",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs",
+        "vendor/ni-file/src/kontakt/objects/snapshot.rs",
+        "vendor/ni-file/src/kontakt/objects/snapshot_group.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "docs/COMPATIBILITY.md",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/artwork.rs",
+        "src/creator/nki.rs",
+        "src/diagnostics.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/overrides.rs",
+        "src/engine/params.rs",
+        "src/engine/rack.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/fx/blocks.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/import.rs",
+        "src/ksp/builtins.rs",
+        "src/ksp/calls.rs",
+        "src/ksp/mod.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/ui.rs",
+        "src/ksp/vm.rs",
+        "src/main.rs",
+        "src/modulation.rs",
+        "src/playback_audit.rs",
+        "src/plugin.rs",
+        "src/ui/audit.rs",
+        "src/ui/fitted.rs",
+        "src/ui/panel.rs",
+        "src/ui/perf_view.rs",
+        "src/ui/tests.rs",
+        "src/ui/viz.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/mui-baseview/src/lib.rs",
+        "vendor/mui-baseview/src/tests.rs",
+        "vendor/ni-file/src/kontakt/objects/bparam_array_ext_mod_32.rs",
+        "vendor/ni-file/src/kontakt/objects/group.rs",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs",
+        "vendor/ni-file/src/kontakt/objects/snapshot.rs",
+        "vendor/ni-file/src/kontakt/objects/snapshot_group.rs"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.83",
+      "tip": "eff7a05718df58b9e599d8ba38d5af4253b022aa",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Release 0.3.83 with reviewed processing, metadata and notarized Mac delivery",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/test_ci.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "docs/COMPATIBILITY.md",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/creator/nki.rs",
+        "src/diagnostics.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/params.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/engine/wavetable.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/fx/tests.rs",
+        "src/import.rs",
+        "src/ksp/builtins.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/ui.rs",
+        "src/modulation.rs",
+        "src/plugin.rs",
+        "src/ui/audit.rs",
+        "src/ui/fitted.rs",
+        "src/ui/perf_view.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/moose-mui/src/editor.rs",
+        "vendor/moose-vst3/shim/vst3_shim.cpp",
+        "vendor/moose-vst3/tests/editor_attach.cpp",
+        "vendor/mui-baseview/src/lib.rs",
+        "vendor/mui-baseview/src/tests.rs",
+        "vendor/ni-file/src/kontakt/objects/group.rs",
+        "vendor/ni-file/src/kontakt/objects/internal_mod.rs",
+        "vendor/ni-file/src/kontakt/objects/lfo.rs",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/scripts/notarize_macos.sh",
+        ".github/scripts/test_ci.py",
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/publish_nightly.py",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "docs/COMPATIBILITY.md",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/creator/nki.rs",
+        "src/diagnostics.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/params.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/engine/wavetable.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/fx/tests.rs",
+        "src/import.rs",
+        "src/ksp/builtins.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/ui.rs",
+        "src/modulation.rs",
+        "src/plugin.rs",
+        "src/ui/audit.rs",
+        "src/ui/fitted.rs",
+        "src/ui/perf_view.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/moose-mui/src/editor.rs",
+        "vendor/moose-vst3/shim/vst3_shim.cpp",
+        "vendor/moose-vst3/tests/editor_attach.cpp",
+        "vendor/mui-baseview/src/lib.rs",
+        "vendor/mui-baseview/src/tests.rs",
+        "vendor/ni-file/src/kontakt/objects/group.rs",
+        "vendor/ni-file/src/kontakt/objects/internal_mod.rs",
+        "vendor/ni-file/src/kontakt/objects/lfo.rs",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/0.3.96",
+      "tip": "301eb13e3ca89b5407433bb2a5957bdfd63c9548",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Release 0.3.96 with reviewed modulation, note ownership and async fixes",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/release_notes.py",
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "docs/FALCON_FORMAT_GROUNDWORK.md",
+        "docs/FALCON_RUNTIME_UI_GROUNDWORK.md",
+        "docs/RUST_CRATE_PARITY_AUDIT.md",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/engine/audit.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/host_notes.rs",
+        "src/engine/lfo.rs",
+        "src/engine/map.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/params.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/fx/blocks.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/fx/tests.rs",
+        "src/import.rs",
+        "src/ksp/calls.rs",
+        "src/ksp/engine.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/vm.rs",
+        "src/modulation.rs",
+        "src/plugin.rs",
+        "src/timing.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "tools/inspect_uvi.py",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        "docs/FALCON_FORMAT_GROUNDWORK.md",
+        "docs/FALCON_RUNTIME_UI_GROUNDWORK.md",
+        "docs/RUST_CRATE_PARITY_AUDIT.md",
+        "tools/inspect_uvi.py"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/release_notes.py",
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "SOURCE_COMMIT",
+        "release-fixes.json",
+        "src/articulate.rs",
+        "src/engine/audit.rs",
+        "src/engine/bank.rs",
+        "src/engine/filter.rs",
+        "src/engine/host_notes.rs",
+        "src/engine/lfo.rs",
+        "src/engine/map.rs",
+        "src/engine/mod.rs",
+        "src/engine/native_state.rs",
+        "src/engine/params.rs",
+        "src/engine/script.rs",
+        "src/engine/voice.rs",
+        "src/fx/blocks.rs",
+        "src/fx/mod.rs",
+        "src/fx/params.rs",
+        "src/fx/processor.rs",
+        "src/fx/tests.rs",
+        "src/import.rs",
+        "src/ksp/calls.rs",
+        "src/ksp/engine.rs",
+        "src/ksp/runtime.rs",
+        "src/ksp/tests.rs",
+        "src/ksp/vm.rs",
+        "src/modulation.rs",
+        "src/plugin.rs",
+        "src/timing.rs",
+        "tests/playback.rs",
+        "tools/export-public.sh",
+        "vendor/ni-file/src/kontakt/objects/modulation.rs"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/kontra-0.3.444-final-20261011",
+      "tip": "a040ec7b0bac4470d9bf8c0c6f8b079d3bf9ecf9",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Stamp 0.3.446 for validated compact diagnostics and scalable NKA files",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "release-fixes.json"
+      ],
+      "tip_changed_paths_equal_to_main": [
+        "CHANGELOG.md",
+        "release-fixes.json"
+      ],
+      "tip_changed_paths_differ_from_main": [
+        "Cargo.lock",
+        "Cargo.toml"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/mac-universal-only",
+      "tip": "60e454e3c1e6a724640091ac5a4730198055843c",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Ship only the universal macOS installer",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py",
+        "README.md"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        ".github/workflows/check_nightly.py",
+        ".github/workflows/publish_nightly.py",
+        "README.md"
+      ],
+      "source_resolution": "retain_current_successor",
+      "scope": "Named behavior/source comparison; not whole snapshot equivalence",
+      "current_evidence": [
+        ".github/workflows/publish_nightly.py:253",
+        "README.md"
+      ]
+    },
+    {
+      "ref": "refs/remotes/origin/release/v2-kontra",
+      "tip": "f6c4887602d43c481bcf3fb565ee8431b972d88b",
+      "same_name_local": null,
+      "ancestor_of_main": false,
+      "subject": "Lock gpu-allocator to windows 0.62 so wgpu-hal 30's DX12 backend compiles on Windows",
+      "reachable_from_local_branches": false,
+      "tip_changed_paths": [
+        "Cargo.lock"
+      ],
+      "tip_changed_paths_equal_to_main": [],
+      "tip_changed_paths_differ_from_main": [
+        "Cargo.lock"
+      ],
+      "source_resolution": "retain_current_release_and_scoped_parity_recoveries",
+      "scope": "Historical package/version/lockfiles preserved, no dependency downgrade; historical v1 behavior not wholesale equated with v2",
+      "current_evidence": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "docs/audit-2026-10-12/backend-v1-ownership-recovery.md",
+        "docs/audit-2026-10-12/consolidation-uvi-core-scopes.json"
+      ]
+    }
+  ],
+  "boundary": "Concrete named successors or current editorial/dependency policy. Historical full v1 equivalence and native/cross-platform acceptance are not inferred."
+}
