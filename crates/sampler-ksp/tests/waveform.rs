@@ -3,11 +3,15 @@
 use sampler_ksp::model::{Request, Value};
 
 fn compile(body: &str) -> sampler_ksp::Script {
-    sampler_ksp::compile(
+    sampler_ksp::compile_with(
         &format!("on init declare ui_waveform $w(1,1) {body} end on"),
         48000,
         sampler_ksp::Limits::LIBRARY,
         &[],
+        &sampler_ksp::Environment {
+            zones: [(27, [0, 0, 127]), (91, [0, 0, 127])].into(),
+            ..Default::default()
+        },
     )
     .unwrap()
 }
@@ -115,7 +119,6 @@ fn waveform_setter_requires_four_operands_despite_vendor_getter_example() {
 }
 
 #[test]
-#[ignore = "UNIMPLEMENTED: init waveform getter has no owned property state; NOT_RUN"]
 fn waveform_init_getter_roundtrip_requirement() {
     let script = compile(
         "declare ui_table %read[4](1,1,1000000)
