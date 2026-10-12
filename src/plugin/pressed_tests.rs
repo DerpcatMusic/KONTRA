@@ -334,3 +334,46 @@ fn explicit_panic_hard_cuts_held_notes_and_tails() {
             .all(|v| v.load(Ordering::Relaxed) == 0)
     );
 }
+
+#[test]
+fn exact_host_release_adapter_keeps_clap_f64_and_vst3_f32_velocity() {
+    for velocity in [0., 0.23456789, 1.] {
+        for vst3 in [false, true] {
+            let address = ExactNoteAddress::from_raw_signed(0, 2, 60, 17);
+            let body = if vst3 {
+                ExactEventBody::DetailedNote {
+                    kind: ExactNoteKind::Off,
+                    address,
+                    velocity: velocity as f32,
+                    tuning: 0.,
+                    length: None,
+                }
+            } else {
+                ExactEventBody::Note {
+                    kind: ExactNoteKind::Off,
+                    address,
+                    velocity,
+                }
+            };
+            let mut events = EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0, body)).unwrap();
+            let Some(ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, value), _)) =
+                exact_host_input(events.exact_get(0).unwrap())
+            else {
+                panic!("lost physical release velocity")
+            };
+            assert_eq!(
+                value,
+                if vst3 {
+                    f64::from(velocity as f32)
+                } else {
+                    velocity
+                }
+            );
+            assert_eq!(
+                (pattern.channel, pattern.key, pattern.id, pattern.clap),
+                (2, 60, 17, !vst3)
+            );
+        }
+    }
+}

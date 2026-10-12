@@ -42,6 +42,7 @@ enum Message {
     Off {
         id: u64,
         key: u8,
+        velocity: u8,
         at_ms: f64,
     },
     In {
@@ -109,9 +110,9 @@ fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>)
                 host.set_time(at_ms);
                 host.note_on(id, key, velocity, 0);
             }
-            Message::Off { id, key, at_ms } => {
+            Message::Off { id, key, velocity, at_ms } => {
                 host.set_time(at_ms);
-                host.note_off(id, key, 64, 0);
+                host.note_off(id, key, velocity, 0);
             }
             Message::In { input, at_ms } => {
                 host.set_time(at_ms);
@@ -421,7 +422,12 @@ impl Script for ScriptThread {
 
     fn note_off(&mut self, id: u64, key: u8) {
         let at_ms = self.time_ms;
-        self.enqueue(Message::Off { id, key, at_ms });
+        self.enqueue(Message::Off { id, key, velocity: 64, at_ms });
+    }
+
+    fn note_off_velocity(&mut self, id: u64, key: u8, velocity: u8) {
+        let at_ms = self.time_ms;
+        self.enqueue(Message::Off { id, key, velocity, at_ms });
     }
 
     fn input(&mut self, input: HostInput) {

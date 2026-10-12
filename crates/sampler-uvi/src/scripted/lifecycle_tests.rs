@@ -229,3 +229,49 @@ fn midi_release_pairs_the_physical_note_across_same_key_channels() {
     assert!(!rt.key_down(first).unwrap());
     assert!(driver.held[&60].is_empty());
 }
+
+#[test]
+fn normalized_physical_release_keeps_core_precision_and_script_velocity_projection() {
+    let (mut rt, mut driver) = fixture(
+        "function onNote(e) postEvent(e) end function onRelease(e) seen=e.velocity end",
+        true,
+    );
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    let physical = rt.note_on(input, 60, 0.87654321).unwrap();
+    driver.note_on(&mut rt, physical, 60, 0.87654321).unwrap();
+    driver
+        .note_off_note_velocity(&mut rt, physical, 60, Some(0.23456789))
+        .unwrap();
+    assert_eq!(
+        rt.release_context(physical).unwrap().key.unwrap().velocity,
+        Some(0.23456789)
+    );
+    assert_eq!(driver.host.global_text("seen"), "30");
+}
+
+#[test]
+fn retired_parent_play_is_never_reinterpreted_as_a_generated_root() {
+    let (mut rt, mut driver) = fixture("", true);
+    let command = Play {
+        id: 71,
+        parent: Some(70),
+        at_ms: 0.,
+        key: 60,
+        velocity: 127,
+        duration_ms: Some(0.),
+        layers: Default::default(),
+        osc: None,
+        vol: 1.,
+        pan: 0.,
+        tune: 0.,
+    };
+    driver.play(&mut rt, &command, false).unwrap();
+    assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
+}

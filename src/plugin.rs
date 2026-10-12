@@ -2643,7 +2643,8 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
                     port,
                 )
             }
-            ExactNoteKind::Off => ExactInput::Routed(CoreEvent::NoteOff(pattern), 0),
+            ExactNoteKind::Off if (0.0..=1.0).contains(&velocity) =>
+                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), 0),
             ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), 0),
             _ => ExactInput::Unsupported,
         }
@@ -2829,7 +2830,7 @@ fn feed_exact_input(
                 s.end_rejections += 1;
             }
         }
-        CoreEvent::NoteOff(pattern) | CoreEvent::Choke(pattern) => {
+        CoreEvent::NoteOff(pattern) | CoreEvent::NoteOffVelocity(pattern, _) | CoreEvent::Choke(pattern) => {
             for key in (0..128u8).filter(|key| pattern.key == -1 || pattern.key == i32::from(*key))
             {
                 let held = (0..16).any(|channel| s.core.key_held(channel, key));
