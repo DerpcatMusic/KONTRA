@@ -1,0 +1,369 @@
+{
+  "baseline_commit": "11ca186dbeb1f1fc5714e36614ce92e979eb55f6",
+  "generated_at_utc": "2026-10-12T10:37:01.137238+00:00",
+  "interpretation": "Source-audit dispositions; candidate ports need focused current validation. No existing worktree was mutated.",
+  "decisions": [
+    {
+      "path": "/mnt/Windows11/DEV_PROJECTS/Repos/KONTAKTO",
+      "branch": "refs/heads/docs/concise-readme-status",
+      "head": "58c4c715639077bba633bcfe24a421c1f169f3d0",
+      "disposition": "preserve-v1-source",
+      "reason": "Large staged/unstaged native-engine ownership, MIDI/MPE, shared envelope/LFO, HQ streaming and rack timeline changes. Intent of leaving dirty is unknown.",
+      "changed_files": 238,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/audit-load-v1",
+      "branch": "refs/heads/audit/load-v1-probe-20261008",
+      "head": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+      "disposition": "isolated-probe",
+      "reason": "Numeric load timers, ignored publication/audio probe, forced old cache identity; preserve audit-only context.",
+      "changed_files": 8,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/audit-ui-v1-probe",
+      "branch": "refs/heads/audit/ui-v1-probe-20261008",
+      "head": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+      "disposition": "isolated-probe",
+      "reason": "Ignored idle/UI frame measurement.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/audit-uvi-ui-probe",
+      "branch": "DETACHED",
+      "head": "24c70a25031243d002e24c661c1afbb1408653aa",
+      "disposition": "isolated-probe",
+      "reason": "Untracked UVI resource-failure category fixture.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/decipher-readers-v1",
+      "branch": "refs/heads/feat/decipher-readers-v1",
+      "head": "4bffbb18b867b0a8e84b435d11684784b237693c",
+      "disposition": "partly-integrated",
+      "reason": "Binary-state framing and exact-bound test now in v2 crypto; other monolith/subtree changes require scoped comparison.",
+      "changed_files": 7,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/decipher-readers-v2",
+      "branch": "refs/heads/feat/decipher-readers-v2",
+      "head": "2fb8c926dd39bb7ac26a84d4806f42de14b6630e",
+      "disposition": "largely-integrated",
+      "reason": "Reader/FX-error test families current; five dirty files raw-identical to baseline.",
+      "changed_files": 14,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-dsp",
+      "branch": "refs/heads/v2/diagnose-vista-649",
+      "head": "847a2c50f21031647f08537576c5e5264e6ecb10",
+      "disposition": "isolated-probe",
+      "reason": "Untracked frozen-vector EQ verifier.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-load",
+      "branch": "refs/heads/v2/w8-load-attribution-resume",
+      "head": "039da7cd1da075548ec2da724e41ab69518e331d",
+      "disposition": "test-review",
+      "reason": "Typed table-capture retention regressions and ignored idle/reopen measurement; implementation comparison pending.",
+      "changed_files": 2,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-uvi-discovery",
+      "branch": "refs/heads/v2/fix-uvi-discovery",
+      "head": "72bb976744762435ab726f0a00908f47d9f470c5",
+      "disposition": "superseded",
+      "reason": "Old workstation-reader discovery/preferences superseded by native namespace implementation.",
+      "changed_files": 13,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-viewmodel-base",
+      "branch": "DETACHED",
+      "head": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
+      "disposition": "isolated-probe",
+      "reason": "Ignored real-editor/UI frame measurement.",
+      "changed_files": 2,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-w12-gate",
+      "branch": "refs/heads/v2/fix-w12-gate",
+      "head": "23b8e94f9bd0a9f3cc49c9730529a26d66fa1cb9",
+      "disposition": "unproven-test-assumption",
+      "reason": "Always AND_NOT test has no native oracle; official Always no-op/end-marker meaning does not establish donor expectation.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-w12-vista-pacific-resources",
+      "branch": "refs/heads/v2/w12-vista-pacific-resources",
+      "head": "68052b42beb3c3aa828f36db05e23a3a78e895de",
+      "disposition": "superseded",
+      "reason": "Current read_table/read_item implements bounded metadata/member reads and preserves duplicate stored IDs; do not port old read_index/read_member names.",
+      "changed_files": 5,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-w13-product-parity",
+      "branch": "refs/heads/v2/w13-product-parity",
+      "head": "cb728a1cc804f3e75d60c8435728ab4f01ef16b5",
+      "disposition": "candidate-ui-port",
+      "reason": "Primary-envelope inventory and watched-part/group live key/velocity bars absent baseline; handoff says two targeted tests passed but root no-run/push pending after quiet request.",
+      "changed_files": 4,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-widget-gate",
+      "branch": "refs/heads/v2/fix-widget-gate",
+      "head": "235ac3eb918a6e77d26b101e6a0418d40d7c48c1",
+      "disposition": "candidate-measurement-port",
+      "reason": "Attribute persistence to widget binding rather than unrelated timer changes; current compatibility and schema validation pending.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-decipher-dsp",
+      "branch": "refs/heads/v2/gpt-decipher-dsp",
+      "head": "aa3430d61ebcccb2f3e98e66b57aeba61cdf5392",
+      "disposition": "isolated-probe",
+      "reason": "Metadata-only DSP census expansion.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-format-fxmod",
+      "branch": "refs/heads/v2/gpt-format-fxmod",
+      "head": "b7f6af0bf7bd24876418fead74e57a8afa786af6",
+      "disposition": "reader-research-review",
+      "reason": "Extended primitive-layout reader/schema census needs comparison to current typed readers.",
+      "changed_files": 5,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-format-legacy-baseline",
+      "branch": "DETACHED",
+      "head": "fb456b41cbf3034c7a1bf7f6f75ed1bfbc77542f",
+      "disposition": "isolated-probe",
+      "reason": "Untracked supplemental legacy/header/version/resource census.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-uvi-ui-baseline",
+      "branch": "DETACHED",
+      "head": "699758abb71726163439e8303ab45a3fe779fed4",
+      "disposition": "isolated-probe",
+      "reason": "Survey-only widget property inventory and UI health example.",
+      "changed_files": 2,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/integration7-source-draft",
+      "branch": "refs/heads/pi/integration7-source-draft",
+      "head": "4fcb6cb7edaabc9f6086649d0e85b22eb09b2867",
+      "disposition": "preserve-conflicted-cherry-pick",
+      "reason": "CHERRY_PICK_HEAD d057af736d48cdbc0af0fca7293756b16a00a252; unmerged sampler-ksp/lower.rs; successors exist current.",
+      "changed_files": 13,
+      "operations": {
+        "CHERRY_PICK_HEAD": "d057af736d48cdbc0af0fca7293756b16a00a252"
+      }
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/inv-load-speed",
+      "branch": "refs/heads/v2/load-speed",
+      "head": "fb456b41cbf3034c7a1bf7f6f75ed1bfbc77542f",
+      "disposition": "isolated-probe",
+      "reason": "Ignored plugin-load timing fixture.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/inv-load-speed-v1",
+      "branch": "DETACHED",
+      "head": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+      "disposition": "isolated-probe",
+      "reason": "Frozen-v1 ignored plugin-load timing fixture.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/ksp-rpn-deferred-fixture-successor-review",
+      "branch": "DETACHED",
+      "head": "2a243bcfa2262abb789265aa0951fd2a85854023",
+      "disposition": "preserve-unexplained-deletions",
+      "reason": "2,299 staged deletions without operation marker; original intent unknown; never replay the deletion set.",
+      "changed_files": 2299,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/linux-native-library-openers",
+      "branch": "refs/heads/v2/linux-native-library-openers",
+      "head": "608a20a1687a501e161d80af72280639c122fbc3",
+      "disposition": "superseded",
+      "reason": "Native namespace implementation/tests current; three dirty files identical baseline.",
+      "changed_files": 18,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5",
+      "branch": "refs/heads/pi/perf-acceptance-round5",
+      "head": "559c6915e27379140a34355441cfedffeffab101",
+      "disposition": "generated-evidence",
+      "reason": "Nine cache inputs/measurement artifacts; preserve receipt context.",
+      "changed_files": 9,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3-5eaa5083",
+      "branch": "refs/heads/feat/kontakt-falcon-parity",
+      "head": "11ca186dbeb1f1fc5714e36614ce92e979eb55f6",
+      "disposition": "current-audit",
+      "reason": "New task worktree is separate from 39 historical dirty worktrees.",
+      "changed_files": 11,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-80fe786b",
+      "branch": "refs/heads/feat/inspect-daw-compatibility",
+      "head": "0cb7a8a0b4d43086596a64c77320caa1b26d6d98",
+      "disposition": "partly-integrated-research",
+      "reason": "Nine documents exactly copied to docs/re; others require content comparison.",
+      "changed_files": 28,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/t3code-e50b9147",
+      "branch": "refs/heads/refactor/rust-audio-engine",
+      "head": "7448dd153b1b25a978b2508b4bbee9be75dc3406",
+      "disposition": "partly-integrated",
+      "reason": "Renderer fallback/backend regressions current; v1 arithmetic/native adapter residuals require separate review.",
+      "changed_files": 18,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/v2-ksp-frontend",
+      "branch": "refs/heads/v2/ksp-frontend",
+      "head": "4425732469cad99547431df07005f221261557cd",
+      "disposition": "isolated-probe",
+      "reason": "Untracked v1 KSP corpus compile/init baseline example.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/v2-simd-dsp",
+      "branch": "refs/heads/v2/dsp-kernels",
+      "head": "ddad588e74e3b811943ae5592aadb006a6b6f335",
+      "disposition": "superseded-approximation",
+      "reason": "Old slot-filter and AR approximations are unmeasured in donor; retain newer kernels.",
+      "changed_files": 6,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/v2-uvi-fix",
+      "branch": "refs/heads/fix/uvi-programs-play",
+      "head": "082a10538c626cbd02c36816a0a51547735111a9",
+      "disposition": "scanner-experiment",
+      "reason": "Script-playable key scan uses one mutable host across keys; validate independence before relying on output.",
+      "changed_files": 2,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w14-browser",
+      "branch": "refs/heads/v2/w14-filter-344",
+      "head": "54d668626613e8c400e3b42fad60e39a76df4e5f",
+      "disposition": "test-review",
+      "reason": "Older browser redesign/query/banner regressions; current presentation compatibility pending.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w14-browser-main-attribution",
+      "branch": "refs/heads/v2/w14-main-attribution-383",
+      "head": "eb55fa78dffe03356322e38dc59628f1508b9ae5",
+      "disposition": "isolated-probe",
+      "reason": "Browser work counters/allocation and installed-catalog timing.",
+      "changed_files": 4,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-baseline-5fc",
+      "branch": "DETACHED",
+      "head": "5fc362f355c764fd043510b3ff8f031a45328e11",
+      "disposition": "largely-integrated",
+      "reason": "Deterministic Luau-budget tests/limits current; CPU witness example identical; thread instrumentation needs comparison.",
+      "changed_files": 5,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-eq",
+      "branch": "refs/heads/v2/w15-eq-controls",
+      "head": "ada2634d2290160cc7397fc9970602f3d03a4f3e",
+      "disposition": "isolated-probe",
+      "reason": "Untracked synthetic PCM/KSP piano-release routing example.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-harp-shipping",
+      "branch": "refs/heads/v2/w15-harp-shipping",
+      "head": "f199980d68ddef02634f07109a33de5bbe3470cd",
+      "disposition": "isolated-probe",
+      "reason": "Ignored installed-Harp compaction fixture.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-vista-harp",
+      "branch": "refs/heads/v2/w15-vista-harp",
+      "head": "afe58f31a817027e89ead59ffdfd61d9559cc4b0",
+      "disposition": "superseded-draft",
+      "reason": "Disconnected AR/phaser kernel drafts; donor says numerical admission pending.",
+      "changed_files": 7,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w5-conflux-red",
+      "branch": "DETACHED",
+      "head": "54d9a5c5da45ada122694bde78e3b4aaf36dc731",
+      "disposition": "integrated-tests",
+      "reason": "Marked event selectors, menu getter and zone source identity regressions current.",
+      "changed_files": 3,
+      "operations": {}
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w6-envmod",
+      "branch": "refs/heads/v2/w6-v1-voice-evaluator",
+      "head": "051c11c0aa245f6c119a78b438b0ef8261ac0f49",
+      "disposition": "research-draft",
+      "reason": "Voice-evaluator contract document explicitly says no timed runs/builds.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-worktrees/w12-dsp-recount",
+      "branch": "refs/heads/v2/w12-dsp-recount",
+      "head": "5172a9ef00935f0c463b8ff2fb65e2632c032c8e",
+      "disposition": "isolated-probe",
+      "reason": "Ignored installed-native-filter metadata fixture.",
+      "changed_files": 1,
+      "operations": {}
+    },
+    {
+      "path": "/mnt/Windows11/DEV_WORKSPACE/kontra-worktrees/w14-bank-status-layout-394",
+      "branch": "refs/heads/v2/w14-bank-status-layout-394",
+      "head": "a3689f330712d5effa5c447d998be11d0d0b251e",
+      "disposition": "test-review",
+      "reason": "Library name/status row assertion; compare current presentation first.",
+      "changed_files": 1,
+      "operations": {}
+    }
+  ]
+}
