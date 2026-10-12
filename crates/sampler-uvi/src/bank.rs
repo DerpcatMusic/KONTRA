@@ -534,6 +534,10 @@ mod tests {
     }
 
     fn clear_bank_fixture() -> (Vec<u8>, Vec<u8>) {
+        clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"Our clear fixture\"/></UVI4>")
+    }
+
+    fn clear_bank_fixture_with_xml(xml: &[u8]) -> (Vec<u8>, Vec<u8>) {
         fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
             let pointer = bytes.len() as u64 + 8;
             bytes.extend((payload.len() as u64).to_le_bytes());
@@ -543,7 +547,6 @@ mod tests {
         fn point(bytes: &mut [u8], at: u64, value: u64) {
             bytes[at as usize..at as usize + 8].copy_from_slice(&value.to_le_bytes());
         }
-        let xml = b"<UVI4><Program Name=\"Our clear fixture\"/></UVI4>";
         let mut bytes = vec![0; 320];
         bytes[..4].copy_from_slice(b"UFS2");
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
@@ -642,6 +645,38 @@ mod tests {
         assert!(
             bank.program("preset.uvip").is_err(),
             "metadata census must refuse content-protected programs"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn decoded_program_translation_matches_bank_read_and_promotes_script_writes() {
+        let xml = br#"<UVI4><Program Name="P"><ControlSignalSources><ConstantModulation Name="Macro 1" Value="0.25"/></ControlSignalSources><EventProcessors><ScriptProcessor><script>function onController(e) Program.modulations['Macro 1']:setParameter('Value', 1) end</script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+        let (bytes, _) = clear_bank_fixture_with_xml(xml);
+        let path = std::env::temp_dir().join(format!(
+            "kontra-decoded-program-{}-{}.ufs",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        let bank = Bank::open(&path).unwrap();
+        let decoded = bank.program("preset.uvip").unwrap().0;
+        let reread = crate::translate_program(&bank, "preset.uvip").unwrap();
+        let reused = crate::translate_decoded_program(&bank, "preset.uvip", decoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&reread).unwrap(),
+            serde_json::to_value(&reused).unwrap()
+        );
+        assert!(
+            reused
+                .uvi_script_sources
+                .as_ref()
+                .unwrap()
+                .xml
+                .contains("ScriptLive=")
         );
         std::fs::remove_file(path).unwrap();
     }
