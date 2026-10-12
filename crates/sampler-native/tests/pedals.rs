@@ -275,6 +275,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         .iter()
         .any(|z| z.trigger != sampler_ir::Trigger::Attack);
     let limits = limits(&loaded.plan, setup.voices, setup.fixed);
+    let mut scripts = loaded.scripts;
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
     // As a host plays instruments: steal at capacity rather than reject.
     rt.set_voice_stealing(Some(Stealing::for_limits(RATE as u32, setup.voices)))
@@ -361,6 +362,23 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
                 (msg, result) => run.other.push((frame, msg, result)),
             }
         }
+        // Service the script host outbox even without an editor. A large
+        // authored UI refresh must not hold up musical commands behind it.
+        rt.drain_effects(|effect| {
+            assert_ne!(
+                effect.service,
+                sampler_core::MIDI_SERVICE,
+                "MIDI service requires a host"
+            );
+            assert_ne!(
+                effect.service,
+                sampler_core::ARRAY_FILE_SERVICE,
+                "array-file service requires a host"
+            );
+            let instance = effect.instance.expect("script UI effect owner");
+            scripts[usize::from(instance.0)].apply_ui_effect(effect);
+            true
+        });
         // Observe every live note before its owner can retire.
         for played in &mut run.played {
             let Some(id) = played.id else { continue };
@@ -1177,9 +1195,8 @@ mod vista_3_cellos {
 /// so it runs the scenarios where LFO voices matter, with a large pool.
 mod analog_strings {
     use super::*;
-    // Bound, its scripts are silent (they rely on %KEY_DOWN, %CC_TOUCHED,
-    // sort and computed find_mod, not maintained or executed by sampler-ksp
-    // yet): exercise the native layers.
+    // Authored scripts own the notes and pedals. Their UI outbox is serviced
+    // by the same headless host loop that observes musical lifetimes.
     const SETUP: Setup = Setup {
         voices: 4096,
         owned: true,
