@@ -1,0 +1,1120 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>KONTRA Library Inspector</title>
+  <style>
+  :root {
+    --bg: #1b1b1b;
+    --panel: #252525;
+    --raised: #303030;
+    --field: #101010;
+    --text: #e8e8e8;
+    --muted: #b5b5b5;
+    --rule: #484848;
+    --error: #ff9a94;
+    --focus: #ddd;
+    font: 13px/1.5 "Noto Sans",system-ui,sans-serif;
+    color-scheme: dark;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+  }
+  button,
+  input,
+  select {
+    font: inherit;
+    color: inherit;
+    background: var(--field);
+    border: 1px solid var(--rule);
+    border-radius: 1px;
+    padding: 7px 10px;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:hover,
+  button[aria-selected=true] {
+    background: var(--raised);
+  }
+  button:disabled {
+    opacity: .5;
+    cursor: default;
+  }
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: #505050;
+    color: #fff;
+  }
+  input {
+    caret-color: var(--focus);
+  }
+  a {
+    color: inherit;
+    text-underline-offset: 3px;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+  }
+  h2 {
+    font-size: 14px;
+    margin: 0 0 10px;
+  }
+  p {
+    margin: 0 0 12px;
+    max-width: 75ch;
+  }
+  small,
+  .muted {
+    color: var(--muted);
+  }
+  code,
+  pre,
+  .source-line,
+  .numeric {
+    font-family: ui-monospace,monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+  }
+  header {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header p {
+    margin: 0;
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .toolbar input {
+    flex: 1;
+    min-width: 160px;
+  }
+  .toolbar select {
+    max-width: 100%;
+    min-width: 220px;
+    flex: 2;
+  }
+  .file-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 12px;
+    border: 1px solid var(--rule);
+    cursor: pointer;
+  }
+  .file-label:focus-within {
+    outline: 2px solid var(--focus);
+  }
+  .file-label input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+  }
+  .workspace {
+    padding: 18px 20px;
+  }
+  .path {
+    overflow-wrap: anywhere;
+    font-size: 15px;
+    margin-bottom: 5px;
+  }
+  .stages {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 18px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 14px;
+  }
+  .stage {
+    min-width: 120px;
+  }
+  .stage b {
+    display: block;
+    font-weight: 500;
+  }
+  .stage span {
+    color: var(--muted);
+  }
+  .failed,
+  .Fault,
+  .Unsupported,
+  .Stub {
+    color: var(--error);
+  }
+  .scope {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--rule);
+    margin: 20px 0 18px;
+    overflow: auto;
+  }
+  .tabs button {
+    border: none;
+    white-space: nowrap;
+    padding: 10px 14px;
+    background: transparent;
+  }
+  .tabs button[aria-selected=true] {
+    box-shadow: inset 0 -2px var(--text);
+    background: var(--panel);
+  }
+  .filters {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .filters input {
+    flex: 1;
+    min-width: 160px;
+  }
+  .table-wrap {
+    overflow: auto;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    text-align: left;
+  }
+  th {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  td,
+  th {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  td:first-child,
+  th:first-child {
+    padding-left: 0;
+  }
+  td:last-child,
+  th:last-child {
+    padding-right: 0;
+  }
+  td small {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  td button {
+    border: 0;
+    background: none;
+    text-align: left;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  td button:hover {
+    background: transparent;
+    color: #fff;
+  }
+  .issue-detail {
+    max-width: 60ch;
+  }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+    gap: 20px;
+  }
+  .pane {
+    min-width: 0;
+  }
+  .code-box {
+    background: var(--field);
+    padding: 16px;
+    border-radius: 1px;
+    max-height: 560px;
+    overflow: auto;
+  }
+  .source-line {
+    display: flex;
+    white-space: pre;
+    line-height: 1.7;
+    font-size: 12px;
+    min-width: max-content;
+  }
+  .source-line.selected {
+    background: var(--raised);
+  }
+  .line-number {
+    position: sticky;
+    left: 0;
+    min-width: 56px;
+    text-align: right;
+    background: var(--field);
+    border: none;
+    border-right: 1px solid var(--rule);
+    border-radius: 0;
+    color: var(--muted);
+    padding: 0 12px 0 0;
+    margin-right: 12px;
+  }
+  .line-number:hover {
+    background: var(--raised);
+  }
+  .binding {
+    border-bottom: 1px solid var(--rule);
+    padding: 10px 0;
+  }
+  .binding:first-child {
+    padding-top: 0;
+  }
+  .binding code {
+    display: block;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    margin: 6px 0;
+  }
+  .binding small {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+  .empty {
+    max-width: 75ch;
+    padding: 18px 0;
+  }
+  .empty p:last-child {
+    margin: 0;
+  }
+  .notice {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .error-message {
+    color: var(--error);
+    padding: 0 20px;
+  }
+  details {
+    border-bottom: 1px solid var(--rule);
+    padding: 12px 0;
+  }
+  summary {
+    cursor: pointer;
+  }
+  details pre {
+    padding: 14px 0;
+  }
+  .properties {
+    display: grid;
+    grid-template-columns: minmax(130px,1fr) minmax(0,3fr);
+    gap: 8px 20px;
+    margin: 0;
+  }
+  .properties dt {
+    color: var(--muted);
+  }
+  .properties dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--field);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #555;
+    border: 2px solid var(--field);
+  }
+  @media (max-width:680px) {
+    header {
+      display: block;
+      padding: 14px 16px;
+    }
+    header p {
+      margin-top: 5px;
+    }
+    .toolbar,
+    .workspace,
+    .footer {
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+    .split {
+      grid-template-columns: minmax(0,1fr);
+    }
+    .toolbar select {
+      min-width: 0;
+      width: 100%;
+      flex-basis: 100%;
+    }
+    td,
+    th {
+      padding: 8px 7px;
+    }
+    .owner-column {
+      display: none;
+    }
+    .stage {
+      min-width: 100px;
+    }
+    .code-box {
+      max-height: 380px;
+    }
+    .properties {
+      grid-template-columns: minmax(90px,1fr) minmax(0,2fr);
+    }
+  }
+  @media (prefers-reduced-motion:no-preference) {
+    .selected {
+      transition: background-color .16s ease-out;
+    }
+  }
+  </style>
+  <header>
+    <h1>KONTRA Library Inspector</h1>
+    <p
+      class="muted">Source → translation → UI, with the evidence kept in view.</p>
+  </header>
+  <div class="toolbar">
+    <label
+      class="file-label">Open reports<input id="files" type="file" multiple accept=".json,.jsonl,application/json" aria-label="Open inspection reports"></label>
+    <input id="librarySearch" type="search"
+      placeholder="Filter inspected libraries"
+      aria-label="Filter inspected libraries">
+    <select id="items" aria-label="Inspected instrument"
+      disabled><option>No reports opened</option></select>
+    <button id="clear" disabled>Clear memory</button>
+  </div>
+  <p id="error" class="error-message" role="alert"></p>
+  <main id="main" class="workspace">
+    <div class="empty">
+      <h2>Inspect a library without opening the plugin</h2>
+      <p>Open a JSON report from <code>corpus-health inspect</code>, or start <code>tools/library-inspector.py</code> to inspect a file and view it here.</p>
+      <p
+        class="muted">The default report contains structural metadata and static script bindings. Initialization is optional. Audio, runtime callbacks and native equivalence remain unverified until separately measured.</p>
+    </div>
+  </main>
+  <div
+    class="footer">Reports stay in this browser’s memory. No uploads, analytics or external assets. Source text appears only when explicitly requested during inspection.</div>
+  <script>
+  "use strict";
+  const state = {
+    reports: [],
+    item: 0,
+    tab: "problems",
+    script: 0,
+    line: 1,
+    issueFilter: "",
+    severity: "all",
+    structure: "groups",
+  };
+  const $ = (id) => document.getElementById(id);
+  function node(tag, text, cls) {
+    const n = document.createElement(tag);
+    if (text !== undefined) n.textContent = String(text);
+    if (cls) n.className = cls;
+    return n;
+  }
+  function add(parent, ...children) {
+    for (const c of children) if (c) parent.append(c);
+    return parent;
+  }
+  function asArray(v) {
+    return Array.isArray(v) ? v : [];
+  }
+  function json(v) {
+    return JSON.stringify(v, null, 2);
+  }
+  function shortPath(p) {
+    return String(p || "Unnamed item").split(/[\\/]/).slice(-3).join("/");
+  }
+  function documentList(value) {
+    return Array.isArray(value) ? value : [value];
+  }
+  function validate(value) {
+    for (const r of documentList(value)) {
+      if (
+        !r || r.format !== "kontra-library-inspector" || r.schema !== 1 ||
+        !r.item || !Array.isArray(r.stages) || !Array.isArray(r.scripts)
+      ) throw Error("Expected a KONTRA Library Inspector schema 1 report.");
+    }
+    return documentList(value);
+  }
+  function loadReports(value) {
+    state.reports.push(...validate(value));
+    state.item = state.reports.length - 1;
+    state.script = 0;
+    state.line = 1;
+    $("error").textContent = "";
+    updateItems();
+    render();
+  }
+  window.KontraInspector = {
+    loadReports,
+    validate,
+    getReport: () => state.reports[state.item],
+  };
+  function updateItems() {
+    const sel = $("items"), query = $("librarySearch").value.toLowerCase();
+    sel.replaceChildren();
+    state.reports.forEach((r, i) => {
+      const label = shortPath(r.item.path) +
+        (r.item.program !== null && r.item.program !== undefined
+          ? " · " + r.item.program
+          : "");
+      if (!label.toLowerCase().includes(query)) return;
+      const opt = node("option", label);
+      opt.value = String(i);
+      opt.selected = i === state.item;
+      sel.append(opt);
+    });
+    sel.disabled = !sel.options.length;
+    $("clear").disabled = !state.reports.length;
+    if (!sel.options.length) {
+      sel.append(
+        node(
+          "option",
+          state.reports.length ? "No items match" : "No reports opened",
+        ),
+      );
+    }
+  }
+  function properties(values) {
+    const dl = node("dl", undefined, "properties");
+    for (const [k, v] of Object.entries(values || {})) {
+      add(
+        dl,
+        node("dt", k.replaceAll("_", " ")),
+        node("dd", typeof v === "object" ? json(v) : v),
+      );
+    }
+    return dl;
+  }
+  function issues(r) {
+    const out = asArray(r.diagnostics).map((d) => ({
+      ...d,
+      status: d.status || d.category || "Finding",
+      name: d.feature || d.category || "Diagnostic",
+      detail: d.detail || "",
+      line: d.span?.line || null,
+    }));
+    for (const s of r.scripts) {
+      for (const c of asArray(s.constructs)) {
+        if (c.status !== "Implemented") {
+          out.push({
+            ...c,
+            script_id: s.id,
+            stage: "static binding",
+            line: c.span?.line || 1,
+          });
+        }
+      }
+    }
+    const seen = new Set();
+    return out.filter((d) => {
+      const key = d.script_id
+        ? `${d.script_id}:${d.span?.start}:${d.span?.end}:${d.name}:${d.status}`
+        : json(d);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  function showIssue(issue) {
+    const r = state.reports[state.item],
+      index = r.scripts.findIndex((s) => s.id === issue.script_id);
+    if (index >= 0) {
+      state.script = index;
+      state.line = issue.line || 1;
+      state.tab = "source";
+      render();
+      $("sourceContent")?.querySelector(".selected")?.scrollIntoView({
+        block: "nearest",
+      });
+    }
+  }
+  function render() {
+    const r = state.reports[state.item];
+    if (!r) return;
+    const root = $("main");
+    root.replaceChildren();
+    add(
+      root,
+      node("div", r.item.path, "path"),
+      node(
+        "p",
+        `${r.item.kind} · ${
+          r.mode?.initialize ? "Initialization requested" : "Static inspection"
+        } · ${r.status || "unknown"}`,
+        "muted",
+      ),
+    );
+    const stages = node("div", undefined, "stages");
+    for (const s of r.stages) {
+      const d = node("div", undefined, "stage");
+      add(
+        d,
+        node("b", s.name),
+        node("span", s.status, s.status === "failed" ? "failed" : ""),
+      );
+      d.title = s.scope || "";
+      stages.append(d);
+    }
+    root.append(stages);
+    const e = r.evidence || {};
+    root.append(
+      node(
+        "p",
+        `Runtime: ${e.runtime || "not recorded"} · Audio: ${
+          e.audio || "not recorded"
+        } · Native equivalence: ${
+          e.native_equivalence || "unknown"
+        }. Binding availability is not proof that a source line executed.`,
+        "scope",
+      ),
+    );
+    const tabs = node("div", undefined, "tabs");
+    tabs.setAttribute("role", "tablist");
+    const entries = [
+      ["problems", "Problems (" + issues(r).length + ")"],
+      ["source", "Source & lowering"],
+      ["converted", "Converted structure"],
+      ["ui", "UI projection"],
+      ["metadata", "Source metadata"],
+    ];
+    for (const [id, label] of entries) {
+      const b = node("button", label);
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", String(id === state.tab));
+      b.id = `tab-${id}`;
+      b.tabIndex = id === state.tab ? 0 : -1;
+      b.setAttribute("aria-controls", "inspection-panel");
+      b.onclick = () => {
+        state.tab = id;
+        render();
+      };
+      b.onkeydown = (event) => {
+        const index = entries.findIndex((entry) => entry[0] === id);
+        let next;
+        if (event.key === "ArrowRight") next = (index + 1) % entries.length;
+        if (event.key === "ArrowLeft") {
+          next = (index + entries.length - 1) % entries.length;
+        }
+        if (event.key === "Home") next = 0;
+        if (event.key === "End") next = entries.length - 1;
+        if (next !== undefined) {
+          event.preventDefault();
+          state.tab = entries[next][0];
+          render();
+          $(`tab-${state.tab}`).focus();
+        }
+      };
+      tabs.append(b);
+    }
+    root.append(tabs);
+    const content = node("section");
+    content.id = "inspection-panel";
+    content.setAttribute("role", "tabpanel");
+    content.setAttribute("aria-labelledby", `tab-${state.tab}`);
+    root.append(content);
+    ({
+      problems: renderProblems,
+      source: renderSource,
+      converted: renderConverted,
+      ui: renderUi,
+      metadata: renderMetadata,
+    }[state.tab] || renderProblems)(content, r);
+  }
+  function renderProblems(root, r) {
+    const filters = node("div", undefined, "filters"), query = node("input");
+    query.type = "search";
+    query.placeholder = "Search feature, reason or owner";
+    query.setAttribute("aria-label", "Filter problems");
+    query.value = state.issueFilter;
+    const severity = node("select");
+    severity.setAttribute("aria-label", "Problem status");
+    for (const s of ["all", ...new Set(issues(r).map((issue) => issue.status))]) {
+      const o = node("option", s === "all" ? "All findings" : s);
+      o.value = s;
+      o.selected = s === state.severity;
+      severity.append(o);
+    }
+    add(filters, query, severity);
+    root.append(filters);
+    const body = node("div");
+    root.append(body);
+    function rows() {
+      body.replaceChildren();
+      const q = query.value.toLowerCase();
+      state.issueFilter = query.value;
+      state.severity = severity.value;
+      const found = issues(r).filter((d) =>
+        (severity.value === "all" || d.status === severity.value) &&
+        json(d).toLowerCase().includes(q)
+      );
+      if (!found.length) {
+        add(
+          body,
+          node(
+            "p",
+            issues(r).length
+              ? "No findings match this filter."
+              : "No recorded static findings. Runtime behavior and native equivalence are still unverified.",
+            "empty",
+          ),
+        );
+        return;
+      }
+      const table = node("table"), head = node("tr");
+      for (
+        const title of [
+          "Status / location",
+          "Feature and reason",
+          "Implementation / reference",
+        ]
+      ) head.append(node("th", title));
+      head.lastChild.className = "owner-column";
+      table.append(add(node("thead"), head));
+      const tbody = node("tbody");
+      for (const d of found.slice(0, 500)) {
+        const tr = node("tr"),
+          loc = node("td"),
+          detail = node("td", undefined, "issue-detail"),
+          owner = node("td", undefined, "owner-column");
+        add(loc, node("span", d.status, d.status), node("small", d.stage || ""));
+        if (d.script_id) {
+          const b = node("button", `${d.script_id}:${d.line || 1}`);
+          b.onclick = () => showIssue(d);
+          loc.append(b);
+        } else {loc.append(
+            node("small", d.location || "No source coordinate recorded"),
+          );}
+        add(detail, node("div", d.name), node("small", d.detail));
+        add(
+          owner,
+          node("small", d.owner || "Owner not recorded"),
+          node("small", d.spec || "Reference not recorded"),
+        );
+        add(tr, loc, detail, owner);
+        tbody.append(tr);
+      }
+      add(table, tbody);
+      add(
+        body,
+        node(
+          "p",
+          `${found.length} findings${
+            found.length > 500 ? " · first 500 shown; narrow the filter" : ""
+          }`,
+          "notice",
+        ),
+        add(node("div", undefined, "table-wrap"), table),
+      );
+    }
+    query.oninput = rows;
+    severity.onchange = rows;
+    rows();
+  }
+  function renderSource(root, r) {
+    if (!r.scripts.length) {
+      root.append(
+        node(
+          "p",
+          "No script slots were recorded. Source metadata may still contain the program structure.",
+          "empty",
+        ),
+      );
+      return;
+    }
+    state.script = Math.min(state.script, r.scripts.length - 1);
+    const choose = node("select");
+    choose.setAttribute("aria-label", "Script slot");
+    r.scripts.forEach((s, i) => {
+      const o = node(
+        "option",
+        `${s.id} · ${s.title || s.lang}${s.bypassed ? " · bypassed" : ""}`,
+      );
+      o.value = i;
+      o.selected = i === state.script;
+      choose.append(o);
+    });
+    choose.onchange = () => {
+      state.script = Number(choose.value);
+      state.line = 1;
+      render();
+    };
+    const s = r.scripts[state.script];
+    const goToLine = node("input");
+    goToLine.type = "number";
+    goToLine.min = "1";
+    goToLine.value = String(state.line);
+    goToLine.setAttribute("aria-label", "Go to source line");
+    goToLine.title = "Go to source line";
+    if (typeof s.source === "string") {
+      goToLine.max = String(s.source.split("\n").length);
+    }
+    goToLine.onchange = () => {
+      const line = Number(goToLine.value);
+      if (
+        Number.isInteger(line) && line >= 1 &&
+        (!goToLine.max || line <= Number(goToLine.max))
+      ) {
+        state.line = line;
+        render();
+      }
+    };
+    add(root, add(node("div", undefined, "filters"), choose, goToLine));
+    root.append(
+      node(
+        "p",
+        `${s.source_len || 0} source bytes · ${
+          asArray(s.constructs).length
+        } classified constructs · ${
+          asArray(s.lowered).length
+        } lowering records. Source offsets are byte offsets; line numbers are one-based.`,
+        "notice",
+      ),
+    );
+    const split = node("div", undefined, "split"),
+      left = node("div", undefined, "pane"),
+      right = node("div", undefined, "pane");
+    add(split, left, right);
+    root.append(split);
+    add(left, node("h2", "Library source"));
+    const box = node("div", undefined, "code-box");
+    box.id = "sourceContent";
+    if (typeof s.source !== "string") {
+      add(
+        box,
+        node("p", "Source text was not included in this report."),
+        node(
+          "p",
+          "Run the memory-only launcher with --source to see original code. Coordinates and bindings remain available here.",
+          "muted",
+        ),
+      );
+    } else {
+      const lines = s.source.split("\n"),
+        lo = Math.max(0, Math.min(state.line - 120, lines.length - 600)),
+        hi = Math.min(lines.length, lo + 600);
+      if (lo > 0) {
+        box.append(
+          node(
+            "p",
+            `Lines 1–${lo} outside this window. Select a problem to jump to its line.`,
+            "notice",
+          ),
+        );
+      }
+      for (let i = lo; i < hi; i++) {
+        const row = node(
+            "div",
+            undefined,
+            "source-line" + (i + 1 === state.line ? " selected" : ""),
+          ),
+          number = node("button", String(i + 1), "line-number");
+        number.setAttribute("aria-label", `Inspect line ${i + 1}`);
+        number.onclick = () => {
+          state.line = i + 1;
+          render();
+        };
+        add(row, number, node("span", lines[i]));
+        box.append(row);
+      }
+      if (hi < lines.length) {
+        box.append(
+          node(
+            "p",
+            `${lines.length - hi} more lines. Select a problem to jump.`,
+            "notice",
+          ),
+        );
+      }
+    }
+    left.append(box);
+    add(
+      right,
+      node("h2", `Kontra bindings · line ${state.line}`),
+      node(
+        "p",
+        "These are actual frontend lowering records and classified host bindings. They do not show observed execution or prove native DSP equivalence.",
+        "notice",
+      ),
+    );
+    const constructs = asArray(s.constructs).filter((c) =>
+        c.span?.line === state.line
+      ),
+      lowered = asArray(s.lowered).filter((c) => c.span?.line === state.line);
+    if (!constructs.length && !lowered.length) {
+      right.append(
+        node(
+          "p",
+          "No binding record for this line. Unclassified text is not a success verdict.",
+          "empty",
+        ),
+      );
+    }
+    for (const c of constructs) {
+      const d = node("div", undefined, "binding");
+      add(
+        d,
+        node(
+          "div",
+          `${c.name} · ${
+            c.status === "Implemented" ? "Binding available" : c.status
+          }`,
+          c.status,
+        ),
+        node("small", c.detail || "No additional detail recorded."),
+        node("small", c.owner || "Owner not recorded"),
+        node("small", c.spec || "Reference not recorded"),
+      );
+      right.append(d);
+    }
+    for (const l of lowered) {
+      const d = node("div", undefined, "binding");
+      for (const op of asArray(l.ops)) d.append(node("code", op));
+      right.append(d);
+    }
+    if (!s.source) {
+      const lines = [
+          ...new Set(
+            [...asArray(s.constructs), ...asArray(s.lowered)].map((c) =>
+              c.span?.line
+            ).filter(Boolean),
+          ),
+        ].sort((a, b) => a - b),
+        nav = node("div", undefined, "filters");
+      for (const l of lines.slice(0, 100)) {
+        const b = node("button", `Line ${l}`);
+        b.onclick = () => {
+          state.line = l;
+          render();
+        };
+        nav.append(b);
+      }
+      left.append(nav);
+    }
+  }
+  function renderConverted(root, r) {
+    const c = r.converted || {};
+    add(
+      root,
+      node("p", `Conversion: ${c.status || "not recorded"}. ${c.scope || ""}`),
+    );
+    if (c.status !== "ok") {
+      root.append(
+        node(
+          "p",
+          "This report does not contain a successful product conversion. Static script lowering remains inspectable separately.",
+          "muted",
+        ),
+      );
+      return;
+    }
+    root.append(properties(c.summary));
+    const kinds = [
+      "groups",
+      "zones",
+      "chains",
+      "modulators",
+      "routes",
+      "controls",
+      "ownership",
+    ].filter((k) => Array.isArray(c[k]));
+    const select = node("select"), search = node("input");
+    select.setAttribute("aria-label", "Converted structure kind");
+    search.type = "search";
+    search.placeholder = "Filter converted records";
+    search.setAttribute("aria-label", "Filter converted records");
+    if (!kinds.includes(state.structure)) state.structure = kinds[0];
+    for (const k of kinds) {
+      const o = node("option", `${k} (${c[k].length})`);
+      o.value = k;
+      o.selected = k === state.structure;
+      select.append(o);
+    }
+    const results = node("div");
+    add(root, add(node("div", undefined, "filters"), select, search), results);
+    function show() {
+      state.structure = select.value;
+      results.replaceChildren();
+      const records = asArray(c[state.structure]).map((value, index) => ({
+        value,
+        index,
+      })).filter((v) =>
+        json(v.value).toLowerCase().includes(search.value.toLowerCase())
+      );
+      if (!records.length) {
+        results.append(node("p", "No matching converted records.", "empty"));
+      }
+      for (const { value, index } of records.slice(0, 100)) {
+        const d = node("details");
+        add(
+          d,
+          node(
+            "summary",
+            `${state.structure} ${index} · ${
+              value?.name || value?.kind || value?.target || "record"
+            }`,
+          ),
+          node("pre", json(value)),
+        );
+        results.append(d);
+      }
+      results.prepend(
+        node(
+          "p",
+          `${records.length} matching records${
+            records.length > 100 ? " · first 100 shown; narrow the filter" : ""
+          }`,
+          "notice",
+        ),
+      );
+    }
+    select.onchange = show;
+    search.oninput = show;
+    show();
+  }
+  function renderUi(root, r) {
+    const u = r.ui || {};
+    add(
+      root,
+      node(
+        "p",
+        `UI projection: ${u.status || "not evaluated"}. ${u.scope || ""}`,
+      ),
+      node(
+        "p",
+        "A projected UI model records authored controls and layout. It does not verify rendered pixels, asset decoding, gesture callbacks, or v1/v2 visual equivalence.",
+        "notice",
+      ),
+    );
+    for (const [i, value] of asArray(u.interfaces).entries()) {
+      const d = node("details");
+      add(
+        d,
+        node(
+          "summary",
+          value.title || value.name || value.id || `Interface ${i}`,
+        ),
+        node("pre", json(value)),
+      );
+      root.append(d);
+    }
+    if (!asArray(u.interfaces).length) {
+      root.append(
+        node(
+          "p",
+          "No UI projection was recorded. Inspect script findings for unsupported UI calls, missing linked resources and initialization failures.",
+          "empty",
+        ),
+      );
+    }
+  }
+  function renderMetadata(root, r) {
+    const m = r.metadata || {};
+    for (const [key, value] of Object.entries(m)) {
+      const d = node("details");
+      add(
+        d,
+        node("summary", key.replaceAll("_", " ")),
+        node("pre", typeof value === "string" ? value : json(value)),
+      );
+      root.append(d);
+    }
+    if (!Object.keys(m).length) {
+      root.append(node("p", "No source metadata was recorded.", "empty"));
+    }
+  }
+  $("files").onchange = async (event) => {
+    try {
+      const parsed = [];
+      for (const f of event.target.files) {
+        if (f.size > 64 * 1024 * 1024) {
+          throw Error(`${f.name}: report exceeds the 64 MiB viewer limit.`);
+        }
+        const text = await f.text();
+        let value;
+        try {
+          value = JSON.parse(text);
+        } catch {
+          value = text.split(/\r?\n/).filter((l) => l.trim()).map((l) =>
+            JSON.parse(l)
+          );
+        }
+        parsed.push(...validate(value));
+      }
+      loadReports(parsed);
+    } catch (e) {
+      $("error").textContent = e.message;
+    }
+    event.target.value = "";
+  };
+  $("items").onchange = () => {
+    state.item = Number($("items").value);
+    state.script = 0;
+    state.line = 1;
+    render();
+  };
+  $("librarySearch").oninput = updateItems;
+  $("clear").onclick = () => {
+    state.reports = [];
+    state.item = 0;
+    $("librarySearch").value = "";
+    $("error").textContent = "";
+    updateItems();
+    $("main").replaceChildren(
+      node(
+        "p",
+        "Inspection reports and source text have been cleared from this view.",
+        "empty",
+      ),
+    );
+  };
+  if (
+    location.protocol !== "file:" &&
+    /^\/[A-Za-z0-9_-]{32}\/$/.test(location.pathname)
+  ) {
+    fetch(new URL("report", location.href), { cache: "no-store" }).then((r) => {
+      if (!r.ok) throw Error("No preloaded report");
+      return r.json();
+    }).then(loadReports).catch(() => {});
+  }
+  </script>
+</html>
