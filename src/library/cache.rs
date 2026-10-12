@@ -147,6 +147,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_bank_metadata_is_retried_without_a_file_change() {
+        let dir = std::env::temp_dir().join(format!("kontra-null-bank-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (bank, index) = (dir.join("Bank.ufs"), dir.join("index.json"));
+        std::fs::write(&bank, b"same bank").unwrap();
+        let mut cache = Cache::default();
+        assert!(cache.memo(&bank, || None).is_none());
+        cache.save(Some(&index)).unwrap();
+        let mut cache = Cache::load(Some(&index));
+        let value = Metadata::Bank(vec!["Presets/Piano.uvip".into()]);
+        assert_eq!(cache.memo(&bank, || Some(value.clone())), Some(value.clone()));
+        assert_eq!((cache.stats.changed, cache.stats.reads), (0, 1));
+        cache.save(Some(&index)).unwrap();
+        assert_eq!(Cache::load(Some(&index)).memo(&bank, || panic!("repaired metadata must be persisted")), Some(value));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn persisted_metadata_skips_reads_and_invalidates_changed_removed_and_corrupt_files() {
         let dir = std::env::temp_dir().join(format!("kontra-catalog-cache-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

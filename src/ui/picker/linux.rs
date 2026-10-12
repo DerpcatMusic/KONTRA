@@ -119,6 +119,9 @@ impl State {
     pub(super) fn start(&self, ask: Ask, answer: Arc<Answer>) -> bool {
         let operation = Arc::new(Operation::default());
         *lock(&answer.current) = Some(Arc::clone(&operation));
+        if let Ask::UviReader(Some(path)) = ask {
+            return self.work(answer, operation, move || Some(super::reader_selected(path)));
+        }
         if let Ask::Reveal(path) = ask {
             return self.work(answer, operation, move || {
                 Some(Picked::Revealed(crate::ui::menu::reveal(&path)))
@@ -213,6 +216,7 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
     let open = DialogKind::OpenFile { multiple: false };
     let folder = DialogKind::PickFolder { multiple: false };
     let (title, kind, directory, filter): (_, _, _, Option<(&str, Vec<String>)>) = match ask {
+        Ask::UviReader(_) => ("Locate your installed UVI Workstation or Falcon", open, None, None),
         Ask::Samples { out } => ("A folder of WAV or AIFF samples", folder, Some(out.clone()), None),
         Ask::Folder { from, single } => (
             if *single {
@@ -262,6 +266,7 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
 fn selected(ask: Ask, path: Option<PathBuf>) -> Option<Picked> {
     let path = path?;
     Some(match ask {
+        Ask::UviReader(_) => super::reader_selected(path),
         Ask::Samples { out } => super::created(path, out),
         Ask::Folder { single, .. } => Picked::Folder(path, single),
         Ask::Artwork { library } => Picked::Artwork {
