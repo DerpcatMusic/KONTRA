@@ -45,6 +45,11 @@ fn stage(report: &mut Value, name: &str, status: &str, scope: &str, owner: &str)
     report["stages"].as_array_mut().unwrap().push(json!({
         "name": name, "status": status, "scope": scope, "owner": owner
     }));
+    if status == "failed" {
+        report["status"] = json!("failed");
+    } else if status == "partial" && report["status"] == "ok" {
+        report["status"] = json!("partial");
+    }
 }
 
 fn diagnostic(report: &mut Value, stage: &str, category: &str, detail: &str, owner: &str) {
@@ -248,7 +253,16 @@ fn source_program(
                     Ok(Some(bytes)) => {
                         view["bytes"] = json!(bytes.len());
                         match sampler_ksp::nckp::parse(&bytes) {
-                            Ok(_) => view["parse_status"] = json!("ok"),
+                            Ok((_, skipped)) => {
+                                view["parse_status"] = json!("ok");
+                                let omitted_fields = skipped.iter().filter(|warning|
+                                    sampler_ksp::nckp::omitted_field(warning).is_some()).count();
+                                view["skipped"] = json!({
+                                    "total": skipped.len(),
+                                    "omitted_source_fields": omitted_fields,
+                                    "unsupported_control_types": skipped.len() - omitted_fields
+                                });
+                            }
                             Err(error) => {
                                 view["parse_status"] = json!("failed");
                                 view["parse_detail"] = json!(error);
@@ -587,7 +601,16 @@ fn kontakt(opts: &Options, report: &mut Value) {
                     .iter_mut()
                     .find(|s| s["id"] == frontend.id)
                 {
+                    let rejected = frontend.constructs.iter().any(|construct| {
+                        construct.name.starts_with("@syntax")
+                            && matches!(construct.status, sampler_parity::Status::Unsupported | sampler_parity::Status::Fault)
+                    });
+                    frontend_ok &= !rejected;
                     let mut frontend = serde_json::to_value(frontend).unwrap();
+                    existing["compiler"] = json!({
+                        "status": if rejected {"failed"} else {"ok"},
+                        "scope": "KSP source frontend and callback lowering without on init execution"
+                    });
                     for key in ["tokens", "constructs", "lowered"] {
                         existing[key] = frontend.as_object_mut().unwrap().remove(key).unwrap();
                     }
@@ -635,26 +658,117 @@ fn kontakt(opts: &Options, report: &mut Value) {
             return;
         }
     };
+    let init_faults = converted.script_init_faults();
+    let script_id = |slot: usize| -> Value {
+        report["scripts"]
+            .as_array()
+            .and_then(|scripts| scripts.iter().find(|script| {
+                script["program"].as_u64() == Some(index as u64)
+                    && script["slot"].as_u64() == Some(slot as u64)
+            }))
+            .map_or(Value::Null, |script| script["id"].clone())
+    };
+    let init_records: Vec<_> = init_faults.iter().map(|fault| {
+        let slot = fault.slot.map_or(fault.behavior_index, usize::from);
+        (slot, script_id(slot))
+    }).collect();
+    for (fault, (slot, script_id)) in init_faults.iter().zip(&init_records) {
+        diagnostic(report, "initialize", "KspInitializationFault",
+            "KONTRA KSP initialization rejected this script; authored error payload omitted",
+            "crates/sampler-ksp/src/lib.rs");
+        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+        entry["feature"] = json!(fault.error.builtin.unwrap_or("KSP initialization"));
+        entry["location"] = json!(format!("script slot {slot}"));
+        entry["script_id"] = script_id.clone();
+        entry["program"] = json!(index);
+        entry["slot"] = json!(slot);
+        entry["behavior_index"] = json!(fault.behavior_index);
+        entry["span"] = json!({
+            "start": fault.error.offset,
+            "end": fault.error.offset,
+            "line": fault.error.line,
+            "column": fault.error.column
+        });
+        entry["kind"] = json!(format!("{:?}", fault.error.kind));
+        ephemeral_error(report, &fault.error);
+    }
+    report["evidence"]["initialization"] = json!({
+        "status": if init_faults.is_empty() {"ok"} else {"failed"},
+        "scope": "KONTRA KSP on init of the selected translated program; native behavior unverified",
+        "script_count": converted.instrument.behaviors.len(),
+        "fault_count": init_faults.len()
+    });
     stage(
         report,
         "initialize",
-        "ok",
+        if init_faults.is_empty() { "ok" } else { "failed" },
         "Product translation executes KSP init; may read/decode convolution impulse resources, no sample playback",
         "crates/sampler-kontakt/src/library.rs",
     );
+    let expected_scripts = converted.instrument.behaviors.len();
+    let unsupported_before = converted.instrument.unsupported.len();
     let (scripts, faces, _) = converted.compile_ui(&sampler_kontakt::Options {
         library: Some(opts.path.clone()),
         mpe: None,
         ..Default::default()
     });
+    let new_unsupported = &converted.instrument.unsupported[unsupported_before..];
+    let projection_faults = new_unsupported.iter().filter(|gap| {
+        gap.feature == "script" || gap.feature == "script interface"
+    }).count();
+    let projection_gaps = new_unsupported.iter().filter(|gap| {
+        gap.feature.starts_with("script interface:") || gap.feature == "native interface"
+    }).count();
+    let resource_gaps = converted.instrument.unsupported.iter().filter(|gap| {
+        gap.feature == "performance view" || gap.feature == "performance view control"
+    }).count();
+    for gap in new_unsupported.iter().filter(|gap| {
+        gap.feature == "script" || gap.feature.starts_with("script interface")
+            || gap.feature == "native interface"
+    }) {
+        diagnostic(report, "ui_projection",
+            if gap.feature == "script" || gap.feature == "script interface" {"ProjectionFault"} else {"NotModeled"},
+            "KONTRA UI projection omitted an authored feature or script; authored value omitted",
+            "crates/sampler-kontakt/src/load.rs");
+        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+        entry["feature"] = json!(gap.feature);
+        entry["location"] = json!(gap.location);
+        if opts.source {
+            entry["detail"] = json!(gap.value);
+            entry["detail_scope"] = json!("ephemeral authored diagnostic; omitted from source-free reports");
+        }
+    }
+    for gap in converted.instrument.unsupported.iter().filter(|gap| {
+        gap.feature == "performance view" || gap.feature == "performance view control"
+    }) {
+        diagnostic(report, "ui_projection", "NotModeled",
+            "Native performance view resource was unavailable or had omitted controls or fields; authored value omitted",
+            "crates/sampler-kontakt/src/load.rs");
+        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+        entry["feature"] = json!(gap.feature);
+        entry["location"] = json!(gap.location);
+        if opts.source {
+            entry["detail"] = json!(gap.value);
+            entry["detail_scope"] = json!("ephemeral authored diagnostic; omitted from source-free reports");
+        }
+    }
+    let lost_projection = scripts.len() < expected_scripts || faces.len() < scripts.len();
+    let ui_status = if expected_scripts != 0 && faces.is_empty() && lost_projection {
+        "failed"
+    } else if lost_projection || projection_faults != 0 || projection_gaps != 0 || resource_gaps != 0
+        || faces.iter().any(|face| !face.unsupported.is_empty()) {
+        "partial"
+    } else {
+        "ok"
+    };
     stage(
         report,
         "ui_projection",
-        "ok",
+        ui_status,
         "Product UI projection consumes translated KSP init state; deferred live persistence callbacks are not activated",
         "crates/sampler-kontakt/src/load.rs",
     );
-    report["ui"] = json!({"status":"ok","scope":"Initialized model only; no native renderer, resource pixels, gestures or live callbacks","interfaces":interfaces(&faces)});
+    report["ui"] = json!({"status":ui_status,"scope":"Initialized model only; no native renderer, resource pixels, gestures or live callbacks","interfaces":interfaces(&faces)});
     instrument(
         report,
         &converted.instrument,
@@ -1159,6 +1273,83 @@ mod tests {
         }
     }
 
+    fn scripted_nki(temp: &Temp, source: &str) -> PathBuf {
+        use ni_file::{
+            kontakt::{Chunk, KontaktChunks},
+            nis::{ItemContainer, ItemData, ItemDataHeader, ItemHeader},
+        };
+        let item = |domain_id: [u8; 4], item_id: u32, data: Vec<u8>| {
+            let base = ItemData {
+                header: ItemDataHeader { length: 0, domain_id: *b"NISD", item_id: 1, version: 1 },
+                inner: None,
+                data: 1u32.to_le_bytes().to_vec(),
+            };
+            ItemContainer {
+                header: ItemHeader {
+                    length: 0, magic: b"hsin".to_vec(), header_flags: 0,
+                    reserved: 0, uuid: vec![0; 16],
+                },
+                data: ItemData {
+                    header: ItemDataHeader { length: 0, domain_id, item_id, version: 1 },
+                    inner: (item_id != 1).then_some(Box::new(base)),
+                    data,
+                },
+                children: vec![], child_headers: vec![], trailing_data: vec![],
+            }
+        };
+        let mut script = vec![0, 0x50, 0];
+        script.extend((source.len() as u32).to_le_bytes());
+        script.extend(source.as_bytes());
+        script.extend([0; 3]);
+        script.extend(0u32.to_le_bytes());
+        script.extend(u32::MAX.to_le_bytes());
+        script.extend(0u32.to_le_bytes());
+        let mut children = Vec::new();
+        for child in [
+            Chunk { id: 0x33, data: vec![0; 4] },
+            Chunk { id: 0x34, data: vec![0; 4] },
+            Chunk { id: 6, data: script },
+        ] {
+            child.write(&mut children).unwrap();
+        }
+        let mut program = vec![1];
+        program.extend(0xafu16.to_le_bytes());
+        program.extend(0u32.to_le_bytes());
+        program.extend(70u32.to_le_bytes());
+        program.extend([0; 70]);
+        program.extend((children.len() as u32).to_le_bytes());
+        program.extend(children);
+        let mut table = 2u16.to_le_bytes().to_vec();
+        table.extend([0; 12]);
+        let mut preset = Vec::new();
+        KontaktChunks(vec![Chunk { id: 0x28, data: program }, Chunk { id: 0x4b, data: table }])
+            .write(&mut preset).unwrap();
+        let mut chunk = 1u32.to_le_bytes().to_vec();
+        chunk.extend(0u32.to_le_bytes());
+        chunk.extend(1u32.to_le_bytes());
+        chunk.extend((preset.len() as u64).to_le_bytes());
+        chunk.extend(preset);
+        let mut chunk_item = Vec::new();
+        item(*b"NISD", 0x6d, chunk).write(&mut chunk_item).unwrap();
+        let mut subtree = 1u32.to_le_bytes().to_vec();
+        subtree.push(0);
+        subtree.extend(chunk_item);
+        let mut encryption = item(*b"NISD", 0x74, vec![1, 0, 0, 0, 0]);
+        encryption.data.inner = Some(Box::new(item(*b"NISD", 0x73, subtree).data));
+        let mut root = item(*b"NIK4", 3, vec![]);
+        root.children.push(encryption);
+        root.child_headers.push([0; 12]);
+        let mut repository = item(*b"NISD", 0x76, vec![]);
+        repository.children.push(root);
+        repository.child_headers.push([0; 12]);
+        let path = temp.0.join("Scripted.nki");
+        let mut bytes = Vec::new();
+        repository.write(&mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        sampler_kontakt::read_chunks(&path).unwrap();
+        path
+    }
+
     const XML: &str = r#"<Program Name="Authored"><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="missing.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers><Inserts><UnmodeledFixture/></Inserts><EventProcessors><ScriptProcessor><script><![CDATA[function onInit() error("PRIVATE_DO_NOT_EXECUTE") end]]></script></ScriptProcessor></EventProcessors></Program>"#;
 
     #[test]
@@ -1275,7 +1466,7 @@ mod tests {
         let temp = Temp::new();
         let xml = "<Program><EventProcessors><ScriptProcessor><script><![CDATA[function onInit(\nend]]></script></ScriptProcessor></EventProcessors></Program>";
         let report = inspect(&fixture(&temp, xml, false));
-        assert_eq!(report["status"], "partial");
+        assert_eq!(report["status"], "failed");
         assert_eq!(report["scripts"][0]["compiler"]["status"], "failed");
         assert_eq!(
             report["scripts"][0]["compiler"]["source_language"],
@@ -1428,6 +1619,81 @@ mod tests {
     }
 
     #[test]
+    fn scripted_nki_frontend_rejection_marks_compiler_stage_failed() {
+        let temp = Temp::new();
+        let path = scripted_nki(&temp, "on init\n declare $broken(\nend on");
+        let opts = Options { path, ..Default::default() };
+        let report = inspect(&opts);
+        let frontend = report["stages"].as_array().unwrap().iter()
+            .find(|stage| stage["name"] == "source_frontend").unwrap();
+        assert_eq!(frontend["status"], "failed");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["scripts"][0]["compiler"]["status"], "failed");
+        assert!(report["scripts"][0]["constructs"].as_array().unwrap().iter()
+            .any(|construct| construct["name"].as_str().unwrap_or("").starts_with("@syntax")));
+    }
+
+    #[test]
+    fn scripted_nki_init_fault_keeps_physical_source_location_and_failed_ui() {
+        let temp = Temp::new();
+        let path = scripted_nki(&temp, "on init\n declare $signal := 1\n declare $value := -1\n change_listener_par($signal,$value)\nend on");
+        let opts = Options { path, initialize: true, ..Default::default() };
+        let mut report = base(&opts, "kontakt");
+        kontakt(&opts, &mut report);
+        let stage_status = |name| report["stages"].as_array().unwrap().iter()
+            .find(|stage| stage["name"] == name).unwrap()["status"].clone();
+        assert_eq!(stage_status("source_frontend"), "ok", "{:?}", report["scripts"][0]["constructs"]);
+        assert_eq!(stage_status("initialize"), "failed");
+        assert_eq!(stage_status("ui_projection"), "failed");
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["ui"]["status"], "failed");
+        assert!(report["ui"]["interfaces"].as_array().unwrap().is_empty());
+        let fault = report["diagnostics"].as_array().unwrap().iter()
+            .find(|entry| entry["category"] == "KspInitializationFault").unwrap();
+        assert_eq!(fault["script_id"], "ksp:slot0");
+        assert_eq!(fault["program"], 0);
+        assert_eq!(fault["slot"], 0);
+        assert_eq!(fault["span"]["line"], 4);
+        assert!(fault["span"]["start"].as_u64().unwrap() > 0);
+        assert!(fault["span"]["column"].as_u64().unwrap() > 0);
+        assert_eq!(report["evidence"]["initialization"]["fault_count"], 1);
+        assert!(!report.to_string().contains("invalid listener"));
+    }
+
+    #[test]
+    fn scripted_nki_ui_omission_marks_projection_partial() {
+        let temp = Temp::new();
+        let source = "on init\n declare ui_knob $Cut(0,100,1)\n set_control_par(get_ui_id($Cut),$CONTROL_PAR_HIDE,$HIDE_PART_MOD_LIGHT)\nend on";
+        let path = scripted_nki(&temp, source);
+        let opts = Options { path, initialize: true, ..Default::default() };
+        let mut report = base(&opts, "kontakt");
+        kontakt(&opts, &mut report);
+        assert_eq!(report["ui"]["status"], "partial");
+        assert_eq!(report["status"], "partial");
+        assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
+            entry["stage"] == "ui_projection" && entry["feature"] == "script interface: $HIDE_PART_MOD_LIGHT"));
+    }
+
+    #[test]
+    fn skipped_nckp_fields_mark_initialized_ui_partial() {
+        let temp = Temp::new();
+        let view_dir = temp.0.join("Resources/performance_view");
+        std::fs::create_dir_all(&view_dir).unwrap();
+        let view = r#"{"value":{"performanceView":{"controls":[{"index":3,"value":{"common":{"id":"Cut"},"text":{"font":{"custom":"PRIVATE_CUSTOM_FONT"}}}},{"index":999,"value":{"common":{"id":"Unknown"}}}]}}}"#;
+        std::fs::write(view_dir.join("Piano.nckp"), view).unwrap();
+        let path = scripted_nki(&temp, "on init\n load_performance_view(\"Piano\")\nend on");
+        let opts = Options { path, initialize: true, ..Default::default() };
+        let mut report = base(&opts, "kontakt");
+        kontakt(&opts, &mut report);
+        assert_eq!(report["evidence"]["initialization"]["status"], "ok");
+        assert_eq!(report["ui"]["status"], "partial");
+        assert_eq!(report["status"], "partial");
+        assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
+            entry["stage"] == "ui_projection" && entry["feature"] == "performance view control"));
+        assert!(!report.to_string().contains("PRIVATE_CUSTOM_FONT"));
+    }
+
+    #[test]
     fn physical_empty_and_bypassed_slots_have_unique_multi_coordinates() {
         use ni_file::kontakt::{Chunk, StructuredObject};
         let temp = Temp::new();
@@ -1472,7 +1738,7 @@ mod tests {
         let view_dir = temp.0.join("Resources/performance_view");
         std::fs::create_dir_all(&view_dir).unwrap();
         let view =
-            r#"{"value":{"performanceView":{"size":{"width":800,"height":500},"controls":[]}}}"#;
+            r#"{"value":{"performanceView":{"size":{"width":800,"height":500},"controls":[{"index":3,"value":{"common":{"id":"Cut"},"text":{"font":{"custom":"PRIVATE_CUSTOM_FONT"}}}},{"index":999,"value":{"common":{"id":"Unknown"}}}]}}}"#;
         std::fs::write(view_dir.join("Piano.nckp"), view).unwrap();
         let source = "on init\n load_performance_view(\"Piano\")\nend on";
         let mut data = vec![0, 0x50, 0];
@@ -1501,6 +1767,7 @@ mod tests {
         assert_eq!(original["slot"], 0);
         assert_eq!(original["path"], "Resources/performance_view/Piano.nckp");
         assert_eq!(original["parse_status"], "ok");
+        assert_eq!(original["skipped"], json!({"total":2,"omitted_source_fields":1,"unsupported_control_types":1}));
         assert_eq!(original["source"], view);
 
         let opts = Options {

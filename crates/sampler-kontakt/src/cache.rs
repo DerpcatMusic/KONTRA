@@ -201,6 +201,7 @@ fn load_from(
         locations: head.locations.into_owned(),
         samples,
         initialized: Some(crate::load::ScriptInit {
+            faults: vec![None; states.len()],
             states,
             control_values: head.control_values,
             resources: Some(resources),
@@ -263,14 +264,14 @@ fn store_in(
     kontakt: &mut Kontakt,
     recipes: &[ImpulseRecipe],
 ) {
-    // Behavior carries source-language text and saved script state. A product
-    // cache must never persist either from a decoded/protected instrument.
+    // Behaviors, initialized states, and typed init faults can carry authored
+    // script text. A product cache must never persist any of these payloads.
     // A source-free instrument can still use the metadata cache.
     if !kontakt.instrument.behaviors.is_empty()
         || kontakt
             .initialized
             .as_ref()
-            .is_some_and(|init| !init.states.is_empty())
+            .is_some_and(|init| !init.states.is_empty() || !init.faults.is_empty())
     {
         return;
     }
@@ -493,6 +494,7 @@ mod tests {
             initialized: Some(crate::load::ScriptInit {
                 control_values: Vec::new(),
                 states: Vec::new(),
+                faults: Vec::new(),
                 resources: None,
             }),
         }
@@ -615,6 +617,18 @@ mod tests {
             !absent.exists(),
             "script initialization state must not create a cache entry"
         );
+        let init = k.initialized.as_mut().unwrap();
+        init.states.clear();
+        init.faults = vec![Some(sampler_ksp::Error {
+            offset: 0,
+            line: 1,
+            column: 1,
+            kind: sampler_ksp::Kind::Error,
+            builtin: None,
+            message: "PRIVATE_KSP_FAULT_NOT_FOR_DISK".into(),
+        })];
+        store_in(&absent, &preset, 0, &mut k, &[]);
+        assert!(!absent.exists(), "script init fault must not create a cache entry");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("unrelated"), b"keep").unwrap();
         store_in(&dir, &preset, 0, &mut k, &[]);

@@ -732,7 +732,16 @@ pub fn take_script_init_runs() -> usize {
 pub(crate) struct ScriptInit {
     pub control_values: Vec<(sampler_core::ControlId, i32)>,
     pub states: Vec<Option<Result<sampler_ksp::Initialized, String>>>,
+    pub faults: Vec<Option<sampler_ksp::Error>>,
     pub resources: Option<Resources>,
+}
+
+/// A positioned KSP failure retained from the translated instrument's own initialization.
+#[derive(Clone, Debug)]
+pub struct ScriptInitFault {
+    pub behavior_index: usize,
+    pub slot: Option<u8>,
+    pub error: sampler_ksp::Error,
 }
 
 pub(crate) fn initialize_scripts(
@@ -744,6 +753,7 @@ pub(crate) fn initialize_scripts(
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
+    let mut faults = vec![None; instrument.behaviors.len()];
     let states = instrument
         .behaviors
         .iter()
@@ -802,7 +812,10 @@ pub(crate) fn initialize_scripts(
                     &environment,
                 )
                 .inspect(|initialized| midi_object = initialized.midi_object().clone())
-                .map_err(|e| e.to_string())
+                .map_err(|e| {
+                    faults[index] = Some(e.clone());
+                    e.to_string()
+                })
             })
         })
         .collect();
@@ -810,6 +823,7 @@ pub(crate) fn initialize_scripts(
     ScriptInit {
         control_values: control_values.to_vec(),
         states,
+        faults,
         resources: resources.map(std::cell::RefCell::into_inner),
     }
 }
@@ -828,6 +842,27 @@ pub fn compile_ui(
 }
 
 impl Kontakt {
+    /// Positioned faults from the KSP initialization performed during translation.
+    /// Read this before [`Kontakt::compile_ui`] consumes the initialized state.
+    pub fn script_init_faults(&self) -> Vec<ScriptInitFault> {
+        let Some(initialized) = &self.initialized else {
+            return Vec::new();
+        };
+        initialized
+            .faults
+            .iter()
+            .enumerate()
+            .filter_map(|(behavior_index, error)| {
+                let behavior = self.instrument.behaviors.get(behavior_index)?;
+                Some(ScriptInitFault {
+                    behavior_index,
+                    slot: behavior.slot,
+                    error: error.as_ref()?.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// Project the UI from a translated instrument, reusing its script init
     /// state once. A different set of host control values reinitializes it.
     pub fn compile_ui(
