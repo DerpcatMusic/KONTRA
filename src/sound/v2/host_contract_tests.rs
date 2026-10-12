@@ -114,8 +114,32 @@ fn anonymous_host_starts_stack_but_duplicate_named_tuples_remain_owned() {
         "duplicate named tuple cannot acquire a second owner"
     );
     core.event(0, Event::NoteOffVelocity(pattern(named), 0.25));
-    core.render(256);
-    assert_eq!(core.end_block(256, &mut |_| false), 1);
+    // Core renders at most MAX_BLOCK frames per call. A 256-frame tail
+    // therefore spans two host blocks; it must remain owned halfway through.
+    core.render(MAX_BLOCK);
+    assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(), 128);
+    assert_eq!(core.voices().active, 4);
+    let mut deliveries = 0;
+    assert_eq!(
+        core.end_block(MAX_BLOCK, &mut |_| {
+            deliveries += 1;
+            false
+        }),
+        0
+    );
+    assert_eq!(deliveries, 0, "a sounding release has no NOTE_END");
+    core.render(MAX_BLOCK);
+    assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(), 256);
+    assert_eq!(core.voices().active, 3);
+    assert_eq!(
+        core.end_block(MAX_BLOCK, &mut |note| {
+            assert_eq!(note, named);
+            deliveries += 1;
+            false
+        }),
+        1
+    );
+    assert_eq!(deliveries, 1);
     core.event(0, on(named));
     assert_eq!(
         core.held.len(),
@@ -132,6 +156,11 @@ fn anonymous_host_starts_stack_but_duplicate_named_tuples_remain_owned() {
         0
     );
     assert_eq!(ended, 1);
+    core.end_block(0, &mut |_| {
+        ended += 1;
+        true
+    });
+    assert_eq!(ended, 1, "accepted NOTE_END is delivered exactly once");
     core.event(0, on(named));
     assert_eq!(
         core.held.len(),
@@ -238,10 +267,17 @@ fn exact_host_choke_cancels_deferred_note_work_before_it_can_write_or_restart() 
     let host = note(0, 23);
     core.event(0, on(host));
     core.event(0, Event::Choke(pattern(host)));
-    for _ in 0..16 {
-        core.render(512);
-        core.end_block(512, &mut |_| true);
+    let mut ended = 0;
+    for _ in 0..64 {
+        core.render(MAX_BLOCK);
+        core.end_block(MAX_BLOCK, &mut |note| {
+            assert_eq!(note, host);
+            ended += 1;
+            true
+        });
     }
+    assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(), 8192);
+    assert_eq!(ended, 1);
     let knob = sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(0, "$late").0);
     assert_eq!(core.control_value(0, knob), Some(0.));
     assert_eq!(core.voices().active, 0);
