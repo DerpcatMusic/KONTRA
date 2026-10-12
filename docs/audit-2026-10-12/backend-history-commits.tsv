@@ -1,0 +1,575 @@
+commit	date	subject
+c4525f338a4bdcd04214f39f75be03856bdc5dab	2026-10-12	Report Kontakt compiler and initialization faults in inspector
+2042bb9abb16677a9b32e6892f87f1fd762b35e4	2026-10-12	Reuse translated Kontakt init for inspector UI
+8436238226ffa53a58bb94a5e40eeade5db25db7	2026-10-12	Make compact Kontakt source inspection linear and memory bounded
+a2060e066e001506d25c5db171681bf79117cd32	2026-10-12	fix: keep Kontakt script source out of product cache
+4c5f37dfb985a4c56744ca6f1859f923ddb6df09	2026-10-12	Retain Kontakt source resource and UI projection diagnostics
+faa678e54c6769935c80e9f144729e8112d8885b	2026-10-12	Disable Kontakt product cache reads and writes during scans
+3310d56d3c18057709dd39549faf18cdf54e8eae	2026-10-12	Service headless KSP UI effects so musical callbacks can finish
+f7b89517177ef3d9786095c560c308a32c907955	2026-10-12	Fix warm KSP folder lookup and installed Kontakt test discovery
+11ca186dbeb1f1fc5714e36614ce92e979eb55f6	2026-10-11	UI mapping, diagnostics, Scripts tab, Kontakt/UVI parity and perf fixes (#59)
+deed6aa1c4f96c5791e016aed3a010394f29be26	2026-10-11	test: exercise unknown runtime folder selectors and format intent probe
+e3fca8c4fd79667f7267ac741e0df49c3bbcde7b	2026-10-11	fix: name Kontakt diagnostic effects targets and physical script slots
+ad812fd506929845c988c60ea405fe3e499330a8	2026-10-11	docs: distinguish survey keyswitch metadata gaps from KSP execution
+bbcaa782d5bedc9670607c2139e4800f590f4d53	2026-10-11	fix(ksp): lower host folder strings in live callbacks
+c7da734b41e96234173a8f066d9169a7a5ae5373	2026-10-11	Admit zero-weight Multi before the weighted sine subset
+b35febc5e8419194370cff9750bd0ecbce6c8d51	2026-10-11	Reserve stream page storage before heap-guarded worker service
+11981562d17196367c3cba9c35a565aa5bfe02f3	2026-10-11	Preserve native synced Phaser low-tempo fallback
+73a49604841c1a899e68d4ab5da66fa1eea9cb10	2026-10-11	Wire live Kontakt Shape Drive and Damping to physical slots
+f81f640fdeaf83cf9072b89f765ce9c913288169	2026-10-11	Execute saved instrument bus pan through native stereo balance
+64b7612a853523f6ef8d627ce1a95224cfcd6cf3	2026-10-11	Preserve native convolution Auto Gain energy precision
+34bb7a9e2932a316dbb34575cc955d6213e9bde7	2026-10-11	Implement Kontakt Enhanced compressor detector and saved integer mode
+0ced2b5631fe5b044a925fd1b40850dd7950c7f2	2026-10-11	Implement native legacy Phaser oscillator and four allpasses
+66dddb227986228e67c16955dcd3c8b0b8257f29	2026-10-11	Implement saved Phaser filter type 13 with native allpasses
+c53a1305b27fd0652d506ef67ec4cf2f878556c7	2026-10-11	Replace Formant I proxy with native parallel bandpasses
+9dc8fd3c3fcf28b3041417748160bd51b3ce6835	2026-10-11	Prove saved Inverter flags through native assignment
+9fcadcfd0aecb7a298ec6bc10e1abc5aadeac71f	2026-10-11	Implement native Morphology HP/BP/Notch output selectors
+391c6036c450b1500046889486768d45aac3382a	2026-10-11	Respect embedded source fallback in Kontakt parity reports
+71cd3945ce2bfebb87d30334c675a81a94f6a105	2026-10-11	Align vendor constant metadata with existing opaque resolution
+5aad73f29792979ad52997eafc253328ac792c77	2026-10-11	Include declaration effects and correct existing UI binding metadata
+e161cf6dd7bde16a2cd23c8babbadcae07b82a98	2026-10-11	port from v1 0cb7a8a0:src/engine/voice.rs freeze live loop geometry throughout release
+80cd91a2b9a4234c6d164d64f17a37329a5f254b	2026-10-11	modulation: complete the paged source Playback fixture initializer
+06cdce65cbc8f81401a0951df54e20e65560c3a7	2026-10-11	modulation: adapt the KSP offset Playback fixture to the saved crossfade field
+31f9aab8112de19719cbbb2444492e3156956b3f	2026-10-11	modulation: update complete Playback test fixtures for saved loop crossfades
+bd8d486edf40557fc7ea54356bf4d0bcee4f503e	2026-10-11	modulation: anchor absolute phase lanes on private free-running LFOs
+ef47928bdf54d27c6c5f0c502a10aaf7b37d4f46	2026-10-11	port from v1 0cb7a8a0:src/engine/map.rs constrained live loop modulation
+f59e1a97c4139da56420b881bfd2b3dae5e94792	2026-10-11	Keep corpus caches compact and replace report revisions atomically
+0007a5fa179fc92ef8702270a104daa9dc9848da	2026-10-11	Kontakt drive FX: honor init writes and label native processors
+292221c252f381eca78050ccf105737659d2fcd8	2026-10-11	Validate final lowered programs and correct single-instrument report IDs
+618e8ee9e7dae08091af5f8c3e502b3f81c9e505	2026-10-11	Kontakt Classic Saturation is stateless on instrument buses
+c404fa2beeec8bca6c66946949196c152e1dbba3	2026-10-11	Use resolved KSP calls and statement spans; keep gap metadata conservative
+71ef759ef2225849725a9a3f8232015c62372145	2026-10-11	Kontakt AR: report original-instruction vector null and bound host evidence
+7d046b216e7c07a07349447feb99b4de9f3c6f29	2026-10-11	port from v1 0cb7a8a0:src/fx/blocks.rs native Kontakt Distortion
+563309251938be357d251ee594ffb38059b42c09	2026-10-11	port from v1 0cb7a8a0:src/fx/blocks.rs Classic Saturation into Kontakt voice and bus chains
+3c3fdc9358f24b5956288e14507ac03a1ac591e7	2026-10-11	Add source-free KSP parity reports, ledger, evaluator coverage and CLI
+8a4c7e2d340dcacf0c0340d4b04dfc5a8c656407	2026-10-11	Remove interrupted UI diagnostic probes
+871a8af219f970f2c68c77c334b94a77157010d8	2026-10-11	modulation: checkpoint source phase consumer and published processor routing
+ac4226c2ba4a6239ab90b3faf89bc98e8f334ae1	2026-10-11	perf: native loop slots keep geometric stream demand (no per-frame walk on the audio thread)
+17b97ef7966cd45a5a587d84a1f23e5a532e9cd1	2026-10-11	Kontakt AR filters (saved types 100..=108): admit the native FilterDJ kernel
+c41949e921e951a5e6704ee5950e152a1e785b3a	2026-10-11	UI/diagnostics: scan services script I/O and drains effects, Horns unit labels, NICNT stub lookups, setter mismatch message
+82afc8ab48d5afea782826daf4a9fbeaea0d4874	2026-10-11	Kontakt Ladder LP1..LP3 (types 30-32, Morphology v0x95 ladder): read an earlier stage of the LP4 loop
+b9ff60a16c311d3390fe6abd598b90c973f9a9bd	2026-10-11	perf: lazy stream pool pages, small resident note params, no per-entry code rescans
+4bc260890ebbba3b2c5dc423bcb26ac5c7fbfc5a	2026-10-11	Kontakt EQ: measured band law (centre gain 2x displayed dB, alpha = sin(w0) sinh(ln2 oct))
+93916d2dcb5a2bb026a57f887d4fa2593a6bbf48	2026-10-11	Kontakt: saved host/CC automation of script switches (ui_switch ordinals)
+8cd610aabdfd46a4a5a8090ecf45c04c7b33aef4	2026-10-11	Loops may start before the sample start; crossfade room is the file, not the played range
+38db030eb70760e2311e3ac641fda229d0bbfbe7	2026-10-11	KSP: get_scale, get_scale_name, subscribe_async and set_global_key/scale; Conflux Midi Player loads
+374c0859ba9e039a8d9a50ee83d392f113fb445d	2026-10-11	UVI ThreeBandShelves: first-order shelves with a shared mid level
+92d3fe8f6dbc765805200685e76c7513e621fe84	2026-10-11	KSP: get_folder, output_channel_name and $NUM_OUTPUT_CHANNELS in on init
+c1711898637a5168184192fdf85cad83dbb87e05	2026-10-11	UVI: bipolar ScriptEventModulation keeps negative script values
+f66e49e6e614d71556e87ea0bb5bbde0b1846fc8	2026-10-11	Kontakt: DFD source mode is a sampler, specific script warning classes, survey examples
+fcb45544896c020177c832474df8bd1cee7995b8	2026-10-11	KSP: vendor constant catalog, fade_out/change_vol on many events, GroupsSelected, INST_LIB metadata
+afc95bedfb4b5855b57bc16296a311600b9b96a3	2026-10-11	UVI: live GainMatrix, AuxEffect gain/bypass, ThreeBandShelves and DigitalEq controls, Bypass in rack and voice chains
+68286fa91207314ab47030d7c27b57a84d5782f4	2026-10-11	Drain script UI effects every editor frame, settle scan snapshots, drop dead counter
+6cab13d02a6fe65cbfb96ab8f294865afaeeb52a	2026-10-11	Back-pressure the script effect outbox instead of dropping UI effects
+01d1d3379349c2c0e179550a43c2df6f2053cdc4	2026-10-11	Compact diagnostics and scale NKA arrays for the final release (#58)
+78e8948bb461e6f5d0d3f5c8143d9c569735a043	2026-10-11	Fix step-envelope edits, script arrays and stale artwork completion (#57)
+b0fd738565552c4152389aab37977ca313dbd05c	2026-10-11	Prepare 0.3.439 compatibility fixes and retained library UI (#56)
+52005c2bd59bce5a67878b161382ed6f023458ad	2026-10-11	fix(kontakt): accept empty saved numeric arrays when opening libraries
+341e4ca4745e4bb26d633e49d51d45c6e57a61dc	2026-10-11	fix(ksp): sort string arrays in callbacks
+f9678885b17a23fba81a3a9e2d403d7db762bd08	2026-10-11	fix: preserve authored step curves when retiming envelope stages
+95b3c0e1b904731194b7549360d95a3b86749865	2026-10-11	fix(kontakt): accept empty saved numeric arrays when opening libraries
+b64d9d80accf77e183235f83aa56717c2cb3146b	2026-10-11	fix(ksp): sort string arrays in callbacks
+4955b8f85bd395067242d3b1e873decdd8a341a3	2026-10-11	fix: preserve authored step curves when retiming envelope stages
+34bd1580e35ceb34af0d52e92044874be62a8d3f	2026-10-11	test: prove function return preserves deferred child edits
+5dfdfa9327199820b84c34ddf68e2fda2673c366	2026-10-11	test: correct event zone release fixtures
+fde356073c49a70d71070ffab49a0680f829a6fe	2026-10-11	test: prove function return preserves deferred child edits
+64bdfa0ac711cd3526aa25896c0df8017f7afbc1	2026-10-11	test: correct event zone release fixtures
+43fa5d26cadc1b08aa1892dcf7f7b8ca7867028d	2026-10-10	fix(kontakt): apply init-only group EQ band gain writes
+4b3d0265e5ad4dfa5a318b516c45611ce4c18ed0	2026-10-10	test(ksp): correct event zone overflow witness
+b35d472ca69cbbd2a2b8816b68350bd2e8fdb9a3	2026-10-10	test(ksp): correct event zone overflow witness
+4b1ec82752c493f38ab7e3fc5e350439137cac00	2026-10-10	test(ksp): retain owned display text before borrowing it
+192bba39ad0661e0c942701ac92ff1b2aaa89b09	2026-10-10	fix(ksp): preserve display Ext value and address operands
+f4bedf3b0ff77c267d8f6ebd30950f7f7d036889	2026-10-10	test(ksp): specify scoped exits across stages waits and preemption
+ded9fddeeb1f1ddc29ddcddedd7e51b94c9765f7	2026-10-10	fix(ksp): return from function exit without ending its callback
+fb607b3fed506782db83d5f374d4122ef9a45d1f	2026-10-10	fix(ksp): evaluate real sgn operand once without narrowing
+570135a4c227dcc234e742d308abc5d1cf9e1ae5	2026-10-10	fix(ksp): report highest physical event zone and live no-zone sentinel
+2b69772c90c611a511bae8d1c9678836ffcb0a28	2026-10-10	fix(ksp): validate listener contexts and timer ranges
+956bccbc509a4c0e47812628e9ba8da6dd94f668	2026-10-10	fix(ksp): validate array equality and bound search to storage
+42ebc8da805629294aa7882ea7c39349777c15bb	2026-10-10	fix(ksp): bound NKA snapshot slots by per-job payload
+01a5bde95517fe873a69c465a0e1ad95cf0484bb	2026-10-10	fix(ksp): bound NKA snapshot slots by per-job payload
+d903ae378d9a6cfbfc02c6f0df9f1f23a21279e9	2026-10-10	fix(kontakt): report malformed effect payload framing at physical slots
+f123e2d1cf473c937726677b1228c75366bf85d3	2026-10-10	Read named NICNT resources by selected bounded item range
+f994ead30a38358783db168d03856674c0b19073	2026-10-10	Preserve opaque resource TOC fields and use bounded member IDs
+f97a8e2101afd4028eae1f5b70ef9614ed89fcea	2026-10-10	Retain original Kontakt modulation wire records in importer IR
+6b69c9b065645a07a4d450dcbbd65022c2eb258b	2026-10-10	fix(ni-file): reject unconsumed program and group-list framing
+dff99bbb074dfa259caa3c32a3ca85300ff6c015	2026-10-10	Read named NICNT resources by selected bounded item range
+ff60de20eeae95fdd736f3b064325d1ef9f6a84c	2026-10-10	test(ksp): honor terminal and NKA callback contracts in RPN fixtures
+08b226a23399285f1b2b15cf22b9ce8d187c8aec	2026-10-10	test(ksp): honor terminal and NKA callback contracts in RPN fixtures
+725be531fb05a9e11b2ced680d6bb0f6345a3b35	2026-10-10	fix(ni-file): reject unconsumed program and group-list framing
+58d5f64661db18a81cbd11f3a039bc96b17c5fb5	2026-10-10	Retain original Kontakt modulation wire records in importer IR
+41ec1c1e5943ae0e4c4b67d20415c376102a1d20	2026-10-10	Preserve opaque resource TOC fields and use bounded member IDs
+331abab9bdaf33577468f9f272f3e1bec97d0027	2026-10-10	fix(kontakt): report malformed effect payload framing at physical slots
+34869c0e4cc64d6c756a1954427da0271f5f379e	2026-10-10	fix(ksp): reserve waveform selectors after loading performance view
+a7c422677d7dd4c95c6426972ea5cee746a04005	2026-10-10	Fix legacy AHDSR authored-state capture
+d9ebe5c41fbc5db74d8a25b9e35ee8ef2c3fad55	2026-10-10	test(ksp): give RPN fixture its exact candidate budget
+eff5198d32006aaae48c00116ee4a70a21865235	2026-10-10	fix(ksp): reserve waveform selectors after loading performance view
+5d9ea1e638eb7572b38232170ce9fbbc1fa9e029	2026-10-10	Fix legacy AHDSR authored-state capture
+b21a424a314200be147485934b2c9c45b8370cfc	2026-10-10	test(ksp): give RPN fixture its exact candidate budget
+8d48f785706ff54920e3b46ad92fa114dcfbf953	2026-10-10	fix(ksp): validate listener contexts and timer ranges
+4492c873d9168e24d1ec59f71d36c222cb506f4a	2026-10-10	fix(ksp): validate array equality and bound search to storage
+abcf098587660b3d22b2b40f9884320fb3633fb4	2026-10-10	fix(ksp): report highest physical event zone and live no-zone sentinel
+7b19dde4f55d9f62fc4752a3368cc2b452d40870	2026-10-10	fix(kontakt): apply init-only group EQ band gain writes
+c40a41d87ec6f807e8db236fe9831f58132021fd	2026-10-10	test(ksp): retain owned display text before borrowing it
+23683f0032a8cb2d29239919d24e931c601c1309	2026-10-10	fix(ksp): preserve display Ext value and address operands
+1f0d1cfefa305c7958dd2d0bb8467ed9ae278f12	2026-10-10	test(ksp): specify scoped exits across stages waits and preemption
+7ac37b54014152ff58acd29b89232ad806e8c474	2026-10-10	fix(ksp): return from function exit without ending its callback
+7792bb8194134cf802a8a121d0bf9b93973cd335	2026-10-10	fix(ksp): evaluate real sgn operand once without narrowing
+93dad7882992ef6a63bfcfd7e432c644dfd9d60d	2026-10-10	fix(ksp): preserve display Ext value and address operands
+7abcf606db1bb085f06c047d8ca9dcc187e7f0b6	2026-10-10	fix(waveform): reject malformed state and preserve scalar projection order
+c8c0f610ebf8d49cab921d5b235094f032aaa995	2026-10-10	test(ksp): specify scoped exits across stages waits and preemption
+360b14f698051d5300de7a8da96bbba746cd4eb3	2026-10-10	fix(ksp): return from function exit without ending its callback
+1cdac230b0b51e28db5843ae1a45d02865228e0b	2026-10-10	fix(waveform): reject malformed state and preserve scalar projection order
+e6e265c6ecb244c943f3c5a4518efd14bd17a8db	2026-10-10	feat(ksp): admit owned waveform state and bounded UI projection
+54c4dd897d5fd7d6ede2fc050cc74d4da060160e	2026-10-10	fix(ksp): evaluate real sgn operand once without narrowing
+a06a30c3f236ca3c7e68e12f6335c90c98a34275	2026-10-10	fix(ksp): decode waveform setter index before value
+c3a78e978fed981d665f48b0eb50cd68e6c313dc	2026-10-10	test: separate deferred RPN FIFO from PGS requeue interleaving
+c9bad79c63ac7f4e59891cfc5f04c7b070ed3e31	2026-10-10	fix: guard parameter bindings across stage schema replacement
+8d48279343d78903ebabac869a260b6ef9a6637a	2026-10-10	feat(ksp): add bounded runtime RPN and NRPN stage delivery
+fb62361207f8f8449d951e1b373062fc9866df1e	2026-10-10	test: discard revisions in matching core modulation heap guards
+937ae8d0de7a022b20eafd6e3ab241d12de4473d	2026-10-10	test: discard control revisions in modulation heap guards
+d057af736d48cdbc0af0fca7293756b16a00a252	2026-10-10	feat(ksp): admit owned waveform state and bounded UI projection
+c6cf5a3da69ed8c72541e5402376430711891501	2026-10-10	test: separate deferred RPN FIFO from PGS requeue interleaving
+e6710e4e04c2404123a730d5b7977afa6a68c679	2026-10-10	fix: guard parameter bindings across stage schema replacement
+a09157e92151250a1e9dcaf88ffa16c0be6a0570	2026-10-10	fix(ksp): decode waveform setter index before value
+967ea34cf33f4646d873616688311ab4ac9b1bd5	2026-10-10	test: discard revisions in matching core modulation heap guards
+3839fb9355c9e11dcc214782be406ce5f125e8f7	2026-10-10	test: discard control revisions in modulation heap guards
+3cc0f94ea625715028897d4611c0d477ccfed724	2026-10-10	feat(ksp): add bounded runtime RPN and NRPN stage delivery
+0ca0591215a7ae3eb5e0ab3ee22fbc6986992e16	2026-10-10	fix: preserve compiled modulation control identities across schema changes
+275494599eb9b3f9758e7c63a99827ea1ef382b0	2026-10-10	fix: preserve compiled modulation control identities across schema changes
+98c20bb29162582fe2fd95215a27d2b81531cc9c	2026-10-10	test: witness imported live pitch depth in production PCM
+091b621aaadb9b22f7f9441beaf3034c5ba17d6b	2026-10-10	fix: connect bounded internal modulation controls to production routes
+8971ef48a0fcb7b2fcb0d2ee0e842d468bb0c283	2026-10-10	fix: preserve declared exponential control endpoints exactly
+d1b7283b7050b533c5d10e181ce7fe0b0cbfad17	2026-10-10	test: cover exact exponential control endpoints and queued UVI cutoff
+ee994c5b2133eb016e303d7690c1e3627e0f6c86	2026-10-10	test: assert NCKP values through the real control state
+c4fd26fd0a2f1dab3780d3c8b711c302f2713f53	2026-10-10	test: witness imported live pitch depth in production PCM
+d49ab53e59ab240278bab051e49c61bf604063b5	2026-10-10	fix: connect bounded internal modulation controls to production routes
+10c29088a85776f50f395d5d58ec4ba87d3eb465	2026-10-10	fix: preserve declared exponential control endpoints exactly
+76d7682d5f17fc4aca2cb387939109b087a0489b	2026-10-10	test: cover exact exponential control endpoints and queued UVI cutoff
+4a22450db8b18c6cc8b2f15d67e8327c6c902ccb	2026-10-10	test: assert NCKP values through the real control state
+a15abb08b3f1c57f75f70a3eae716b4fff92a711	2026-10-10	fix(ksp): discover performance resources from parsed literal init calls
+8bbbbb978e5ad09b62373f88cee447b71f70ba3d	2026-10-10	fix(ksp): discover performance resources from parsed literal init calls
+09aa4a8576b3104f495475678a051dbbcf473aa8	2026-10-10	test: require nonzero changed audio in active parallel fade window
+06aeae88f2c04699844e3a471391a52f0f0b7f56	2026-10-10	fix: consume nonlinear fades in plain mixing and correct regression fixtures
+ef9a21440b0dbbd501cc7678d62a7ac973c05a15	2026-10-10	test: require nonzero changed audio in active parallel fade window
+8eedf4c6ebb76e25da6ae0243e5c7f71233abdeb	2026-10-10	feat: implement typed explicit-path NKA init and worker service
+63a05d3745ef0ab4b5f8a1ee51feeebbe4590d8f	2026-10-10	fix: consume nonlinear fades in plain mixing and correct regression fixtures
+63178224f27e566aaaf05e91adb15b0ae23de91a	2026-10-10	feat: implement typed explicit-path NKA init and worker service
+76f626ee5d76f9bf0e3c618afab6321328a2cf72	2026-10-10	Authored controls, native scripts and sound resources (0.3.429)
+8b19cd156a50887592144184b3be0b355ab72a4f	2026-10-10	test(fades): align script witnesses with sample-end clock and reuse heap guard
+f84dc407d15278d657e6f19d7932ff86652b5497	2026-10-10	test(ksp): expose nonlinear fade interpolation inside gain cells
+78ed2e1c2a8959830741c24d5bcb69edd9aa1efa	2026-10-10	feat(core): prepare sample-clock Kontakt fade curves with legacy linear path
+9aaee155feb0f69405142bbf20ebc8f23192b030	2026-10-10	feat(ksp): propagate documented fade curve selectors
+70005b680de9fffa2e218a9d6edc4e448b1925e8	2026-10-10	test(fades): align script witnesses with sample-end clock and reuse heap guard
+b897df90963127071eeecb3ce52cd522111db5fa	2026-10-10	test(ksp): expose nonlinear fade interpolation inside gain cells
+7327daa51a381778f63f8149d87915913249d565	2026-10-10	feat(core): prepare sample-clock Kontakt fade curves with legacy linear path
+1544be8afb0262245f3bb9e24f8a9d6909f39378	2026-10-10	feat(ksp): propagate documented fade curve selectors
+12475a0d731b89af515ee1f43c5b23175ed67813	2026-10-10	feat(core): prepare sample-clock Kontakt fade curves with legacy linear path
+9da42c031f86e610734db7386e32ad79c4552ed8	2026-10-10	test(ksp): expose nonlinear fade interpolation inside gain cells
+9fe764e4dcb3e876f82a1d19e2656cf8fe02ffe6	2026-10-10	feat(ksp): propagate documented fade curve selectors
+1665f4a1cfc2d4811897b26620d81a5b11cc3e0c	2026-10-10	test(dsp): compare isolated AR runtime to natural native wrapper checkpoints
+b8f7c77cf065d0b117c9ea31b90e194d0c0c5df6	2026-10-10	fix(ksp): dispatch dynamic menu property getters
+c0a87619f02cfd1939b6ea547b329db8e29a0aec	2026-10-10	test(dsp): compare isolated AR runtime to natural native wrapper checkpoints
+51e0b9e78d543acfed1392c623119a312ae8e5cb	2026-10-10	fix(dsp): prepare request-priority AR runtime behind test-only gate
+759a1b38d4045398cc92537da427c7bdf546bd52	2026-10-10	Keep pinned wavetable field in the combined streaming regression fixture
+a39b07f5fc9d37a9a06719a7ab6238a1e7e9429c	2026-10-10	fix(ksp): dispatch dynamic menu property getters
+b1d7f9bcc3970f7a61983a861547993a867c120d	2026-10-10	Bound cold-head reload accounting to one serialized asset scan
+6aa53daf1799d08c5551e1deb549c57e00287354	2026-10-10	fix(dsp): prepare request-priority AR runtime behind test-only gate
+618c7fdcf9d224fa6d62e8774d52b12a91912ee0	2026-10-10	Bound cold-head reload accounting to one serialized asset scan
+f0b5d42df764f72d5c2c31da43d0a7ac5f8b3345	2026-10-10	test(dsp): preserve native AR numerical checkpoints without playback admission
+e5865efd6a805697ac2874324cedc207205a004e	2026-10-10	fix(dsp): preserve two-pole AR detector sum order
+a6c86b926bd58cf44bf73ab4f8b78b38b6ac5b84	2026-10-10	fix(dsp): preserve native AR adaptation rounding before admission
+92214ea6c31bdeb1ea2ca787d6b0c994f73760a3	2026-10-10	test(dsp): preserve native AR numerical checkpoints without playback admission
+a37b1a1c350446b3b3a61559b5e14430174e0a83	2026-10-10	port from v1 0cb7a8a0:src/ksp/compile.rs PGS callback alias
+a82f17470a01c17553abb4c97b06383b0f10f349	2026-10-10	test: retain underscored PGS callback alias contracts
+2252a3a869d50a10f0b894f22bad2460357885ca	2026-10-10	fix(dsp): preserve two-pole AR detector sum order
+2bb15b6f2b5be0c7d2875a15e0d9ebf2c9d01351	2026-10-10	fix(dsp): preserve native AR adaptation rounding before admission
+c7e43d27fc1d8bc0c9c36a401d484cf336ca49fd	2026-10-10	port from v1 0cb7a8a0:src/ksp/compile.rs PGS callback alias
+2288c42aa61918732ecad43d0dc8bb47d168af33	2026-10-10	test: retain underscored PGS callback alias contracts
+3145bdc24ed649508fdad4f0562dd78dcf5506e9	2026-10-10	adapt resource filmstrip size fixture to shared fractional Size
+9ef8ba4a1c1df5120fd97c16ba7eb08d379bce61	2026-10-10	preserve current zero-height keyswitch normalization guard with float bounds
+40028b11b49044ed4dd2cbd0d63952d5ea4afaed	2026-10-10	adapt scanner bounds and final geometry fixture literals to f64
+1f940ea15bed6f634ca1c3bf98b0e471152b80c1	2026-10-10	carry fractional shared UI geometry through renderer and integer Kontakt producers
+d69516bd41935250bd666f72cd53b999d4e430f4	2026-10-10	port from v1 0cb7a8a0:src/ksp/ui.rs performance intent into shared UI IR
+d03edd0176c51def14a8c2f8b16c20d21173c8f1	2026-10-10	Keep native zone getter instructions within the shared bytecode budget
+448cfaa59ded9ebf086aa796036f6505b20e67d7	2026-10-10	fix(dsp): retain and play saved Digital Multi fades
+8c206006a751353382683f4492185bddd96a21c9	2026-10-10	Measure fold witness inside the same wide dispatch as production
+1028173025ab7b7b8ca1417c9ebae3ee0b401cf8	2026-10-10	port from v1 0cb7a8a0:src/engine/voice.rs preserve AVX lanes through stereo fold
+d4060bd29abc7672c9d1b97d44a6f426d2caf7f9	2026-10-10	fix(kontakt): retain authored impulse tables in legacy multis
+4ba4b8cd2a5f9819a439d7f4faf4843bfab8bf98	2026-10-10	test(kontakt): validate hierarchical NKR fixture before fallback assertion
+c016691509195c153bf417019623fc8f2affe403	2026-10-10	port from v1 0cb7a8a0:src/import.rs authored NKR impulse fallback
+5c1e911dbf330c6969e475aae62417f0de4a21ca	2026-10-10	test(kontakt): reproduce omitted authored NKR impulse resolution (HOLD)
+957dc065bd6c826d0b2218ff5a2d2f6fe1694185	2026-10-10	fix(core): evaluate both per-target Kontakt ID25 intensity laws
+6440ac23d563c6904b9eb663cc5a6cb8c27bb20a	2026-10-10	Verify native normalized LFO frequency and physical source lanes
+1d350a83dcc629dadd9d74493f67e8c185a1af52	2026-10-10	Retain original Kontakt control descriptors for whole-voice admission
+29011aeb288c6d7540d188c3515900c49238c424	2026-10-10	port from v1 0cb7a8a0:src/ksp/runtime.rs global UI callback dispatch
+eeca9c6c230d463e35213e38e7c4803a8703e15a	2026-10-10	test: retain native global UI callback order and context contracts
+683d55765b81b5f9a79fb06ff7a89f0a09795349	2026-10-10	port from v1 0cb7a8a0:src/ksp/calls.rs evaluated UI setter arguments
+d10f6768d2d133c413a77df194841a2ae37881d1	2026-10-10	test: retain menu text and append read-modify-write transport parity
+bf0e17d375aacb0e3c22e8a634cd828e16a0c4aa	2026-10-10	test: retain UI text and XY read-modify-write transport parity
+4dfbddccac51429e73d8d9c03f83186334a2db46	2026-10-10	test: prevent UI state and transport from reevaluating setter arguments
+546b02960af0fd7ecee69cf04a566a25d280ce98	2026-10-10	port from v1 0cb7a8a0:src/ksp/calls.rs UI readback and host-tempo waits
+ff0714b94e4476d1537404e1494c9add102116dc	2026-10-10	test: read authored UI metadata through computed IDs
+9c9ab6c32bf3b69fa8a0ca42465d85a24684157e	2026-10-10	test: verify UI text transport agrees with callback readback
+420297d26d14c1b3ee2041ab000ed26b4b095c5f	2026-10-10	test: distinguish authored menu values from UI selection indices
+7efd5edcad284a06438563728c0b6f9051d88fac	2026-10-10	test: supply source-zone fixture metadata before parity assertions
+4cec760f6102671a797019d11a8d9cad5ef34bea	2026-10-10	test: retain authored font identifiers in KSP UI initialization
+337bea3e0ea7b52def71c7b98fa1e951e3bc580d	2026-10-10	test: cover real indexed UI getter callback parity
+42d3647b99425a01467545032a608d51d296b9a6	2026-10-10	test: inventory v1 KSP parity and exercise authored UI readback
+999537347e32375e8089c6e182b7090c19a88b12	2026-10-10	port from v1 0cb7a8a0:src/ksp/ui.rs performance intent into shared UI IR
+621e496c473bdad671a202f3e9b0d809472e8b4b	2026-10-10	preserve current zero-height keyswitch normalization guard with float bounds
+8bb8b8262d63d0464da5faf87024da3781d7c588	2026-10-10	adapt scanner bounds and final geometry fixture literals to f64
+a6b5137bf55ad4bf4ee3dc24f77e97a9bb069972	2026-10-10	Keep failed metadata in the existing stat-keyed catalog cache
+b32566399a9a67130f8158091372fdb60107d54a	2026-10-10	carry fractional shared UI geometry through renderer and integer Kontakt producers
+83bf836a03eba27ea6d98a0693edbdc4e9199b3d	2026-10-10	adapt scanner bounds and final geometry fixture literals to f64
+dc01dea015e1a993a4be9544285e08c382f6f681	2026-10-10	port from v1 0cb7a8a0:src/ksp/ui.rs performance intent into shared UI IR
+4cc0e6dec735615a68e5aa936182c7db56893db4	2026-10-10	carry fractional shared UI geometry through renderer and integer Kontakt producers
+83ad4d23ede50415e65eef6faab26712fdde1321	2026-10-10	Script state, UVI MIDI and library/editor fixes (0.3.403) (#53)
+2ea4dc1c8fbb52c493c7f41c515cbb247c2e21c0	2026-10-10	port from v1 0cb7a8a0:src/ksp/runtime.rs global UI callback dispatch
+5340a42570af7303f5d974b848b0f8ee78676453	2026-10-10	place v1 stereo fold behind the safe sampler-simd boundary
+039da7cd1da075548ec2da724e41ab69518e331d	2026-10-10	docs: record trusted bounded callback ordering verification
+d293ade0e18b4645589ae9c48821bc07f38e77d7	2026-10-10	test: retain native global UI callback order and context contracts
+6fa559d42083c0cf6e253ac655d7536696715236	2026-10-10	fix(core): evaluate both per-target Kontakt ID25 intensity laws
+4c21903ce059b7d5e9094c5f5238925d0b995686	2026-10-10	port from v1 0cb7a8a0:src/engine/filter.rs register stereo fold into polyphase kernel
+4c9b0e62808e32249f054cfc32534fac14014952	2026-10-10	port from v1 0cb7a8a0:src/ksp/calls.rs evaluated UI setter arguments
+8a47821150528c60c6794e92cb81e7f48bfbf530	2026-10-10	port from v1 0cb7a8a0:src/ksp/ui.rs performance intent into shared UI IR
+4e949aca255a624fdd305cdc177b0119fef09ae1	2026-10-10	test: time-bound long straight callbacks without losing progress
+853a1a3498f760d1414e9c13fe66511845fef4f5	2026-10-10	test: retain menu text and append read-modify-write transport parity
+c250646e9eda0d422d3a23e03737506ee5380935	2026-10-10	fix: install bounded callback allowance before host events
+afe58f31a817027e89ead59ffdfd61d9559cc4b0	2026-10-10	test: preserve bus owners in the dry Harp parity fixture
+c91e9297146a8b4a24103a82a2e994acab3600fd	2026-10-10	test: retain UI text and XY read-modify-write transport parity
+d7ea2f4e364429b22c3bff225193e98ffdfa63be	2026-10-10	test: prevent UI state and transport from reevaluating setter arguments
+f630f08fd3000453debe313e04c1a689aa4be553	2026-10-10	fix(core): retain v1 static onset values in native module follow
+c4e922bafee6a75458412350f325b1965e36d3a6	2026-10-10	fix(kontakt): retain authored impulse tables in legacy multis
+d6c24fbc20139ca896be98402b0a1716e2050faa	2026-10-10	test(core): match v1 affine oracle to production control fragments
+8de3b77b0e43f01b1246ca62976875e4ce0d2027	2026-10-10	record shipping Harp load regression and fixture-only panic receipt
+a3689f330712d5effa5c447d998be11d0d0b251e	2026-10-10	Keep failed metadata in the existing stat-keyed catalog cache
+cfc98cd6f271b699197b357539a04d5a71cf4cba	2026-10-10	test(kontakt): validate hierarchical NKR fixture before fallback assertion
+5adabb50ae4bce7f0a393e957587ad75f06dfaef	2026-10-10	Verify native normalized LFO frequency and physical source lanes
+99c04de3fac015a3357183d817946e0b3762f838	2026-10-10	fix Harp null fixture zone and asset compaction
+2eae738290b3d89c20412ce39db4afc5fe06364d	2026-10-10	test(core): cover Flex-only synthetic gate admission
+0158aefa70e91e8df0891c1407687fe874a40c3a	2026-10-10	port from v1 0cb7a8a0:src/engine/voice.rs production control owner
+f2c59e2c6f7e60660d869fd5aae7fe99fab4c640	2026-10-10	port from v1 0cb7a8a0:src/ksp/calls.rs UI readback and host-tempo waits
+4cb3d39a61c1d905d4ac7e31b2ee751453b87d84	2026-10-10	port from v1 0cb7a8a0:src/import.rs authored NKR impulse fallback
+6ebb92ec87c3580db3fb5e93bbeccf87c5230e63	2026-10-10	test: read authored UI metadata through computed IDs
+9ef1c52ff69b15aa2b614c71c3187411a283f6b0	2026-10-10	test: verify UI text transport agrees with callback readback
+4fe9b5e9d581abf77af52395dae7441fe9af1ec0	2026-10-10	test: distinguish authored menu values from UI selection indices
+fee28276ba3cf8f1f73fb609b8e7bc88b47aff7a	2026-10-10	Retain original Kontakt control descriptors for whole-voice admission
+c1d8f2cadfce686bad0d564b967f08f1f05ae41d	2026-10-10	Retain original Kontakt control descriptors for whole-voice admission
+f9ae17df82e776650cc2052876dc28d37d026680	2026-10-10	test: supply source-zone fixture metadata before parity assertions
+41c306306cb6057e02b115113f9446bf9f9ac27f	2026-10-10	test(core): require v1 ordinary controls in lowered production voice
+0d3699a832ddb4f008fc93ee4e579e9ce15bd240	2026-10-10	test: retain authored font identifiers in KSP UI initialization
+1d9ed57774cbfc5f96e05c9df79710cbdcbb3891	2026-10-10	test: cover real indexed UI getter callback parity
+d982bfe2629cccc65ba2c9749756e78c2b1e9988	2026-10-10	test: inventory v1 KSP parity and exercise authored UI readback
+2b010f131a9014366d41c508c394042bc4c48599	2026-10-10	test(kontakt): reproduce omitted authored NKR impulse resolution (HOLD)
+67b6bfc6cc093ebb33842c13c8501859521e4983	2026-10-10	fix: prepare coherent persistence from compact addresses
+49a99dfb8ff565a1077bc0c774ec4aeff362f00b	2026-10-10	test Harp mode3 against frozen v1 sampler dispatch
+83629b69fc2e9d1e852aa1f9960ae743d5be3acf	2026-10-09	Reject preset browsers as articulation choice lists
+c7c6cd69b5c2b71badef3d37b4a4d8f3e0f2f5ff	2026-10-09	Use authored key names for existing note-labelled articulations
+e53256e17f27d43d27ae17ee411d11fc5b5ccc7b	2026-10-09	Release KONTRA 0.3.393: loading, sound, scripting and editor fixes
+a444ed473e65be84caa81e1f4f3ccda72f48a4d9	2026-10-09	fix held EQ portability with one SSE2 kernel and runtime oracle coefficients
+9724e119cf5a8809b264fc210d4e23504044f432	2026-10-09	fix held EQ portability with one SSE2 kernel and runtime oracle coefficients
+85d15c65047684e4041e907b4659995eef37ad91	2026-10-09	prefer exact FileContainer member paths before suffix lookup
+0ec480ebf64a4cbf0fd4b79f7b2a5aad8cc3f920	2026-10-09	reconcile READY batch 383 interfaces and formatting
+1adf79d0bab8dc1468d7f5f39826094dd928f2c1	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs legacy highpass slots and cutoff routes
+aaa90ffb8d0620c262313c665e1b869bee6e4bf4	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs legacy lowpass slots and cutoff span
+d86b19618075b35b1e69f2a4feafb36e8c44dca8	2026-10-09	fix: route UVI MIDI attacks and host releases through Lua identity
+8091ac23bd1c0dba2b91f342745a7f372e82fe78	2026-10-09	fix: refresh coherent script snapshots only for changed cells
+f5d75b34c57d79184e3446f00146b13e26e9d7a5	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs changed-value capture guards
+0bc1759ae3aa4785e01116e392fa26c976d6ab47	2026-10-09	fix(kontakt): retain measured zero-delay Digital Multi sine sources
+c0999b4862374aea2027a3c314184d69398700d0	2026-10-09	Port admitted Kontakt wavetable playback from v1
+f1a067a1c9fbb72a72312838f2163a42d6311333	2026-10-09	Use the checked AIFF layout for full and embedded sample decoding
+4b2bb7f6ef4d3d6baeebec2112477b73c822f1a7	2026-10-09	Keep synthetic Kontakt fixtures compatible with embedded sample preparation
+35ded542766c80e2e614515b1aa2e5409d652611	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs live wavetable settings
+d8f1c6237eb774934b3a1914ee0bf0a698571c4c	2026-10-09	port from v1 0cb7a8a0:src/engine.rs native primary envelope into production voices
+323c5ccdf44fbeb7796ea70afdd9408dd3239fde	2026-10-09	fix: refresh coherent script snapshots only for changed cells
+484baae4c20f83e7eed9ab7b42bda54aa5b3e816	2026-10-09	fix(kontakt): retain measured zero-delay Digital Multi sine sources
+d7bdd7702dd40578fb2353370f0fb8bd44a7eb4e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs legacy highpass slots and cutoff routes
+c3cb7aa9ed351352901ea34d02517150b47700cc	2026-10-09	test(core): require pinned native amplitude in lowered production voices
+a70594ce7d163169aac7ed01d37d6a938790b993	2026-10-09	Use the existing PNG byte slice in resource regression
+7839c31f47d29e670e622b1ca32d2c890c876bfa	2026-10-09	Reconcile Kontakt resource and sample worker integration
+0833711d0b17b13631aa46d2d934f2a0d3a2caa2	2026-10-09	fix: route UVI MIDI attacks and host releases through Lua identity
+26ea80797948c9340dc89bdf5235248b1affb528	2026-10-09	Reject preset browsers as articulation choice lists
+8ffb95bb5496de6efb9867c905b2a824cd2ceacb	2026-10-09	Defer the new Conflux wavetable lane to the next batch
+026d7e9603c134e61e4d487976eb17d218089427	2026-10-09	Port admitted Kontakt wavetable playback from v1
+6885c2907f8f065b01666299950672ba200db8bd	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs changed-value capture guards
+3bec224dadc64832c77b0b9680b01bfdd4e08e8d	2026-10-09	Retain scheduled persistence callbacks in cached initialization
+61158054b809bb89f650e6659b32798517a33c21	2026-10-09	Port admitted Kontakt wavetable playback from v1
+a123ef2271baae25ecd8088edbd342fffbc84dff	2026-10-09	Use authored key names for existing note-labelled articulations
+415cb38384444d0a5ea7a251064afbf0270371ab	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs legacy lowpass slots and cutoff span
+851368593114af5869711c487b9d7ec7cf10f257	2026-10-09	fix literal LFO oracle import after public control API export
+2bbf561b0251fca459be5e051897ae45178833a5	2026-10-09	port from v1 0cb7a8a0:src/modulation.rs preserve raw AHDSR admission and native setter arithmetic
+2bf703018908bc78c79173fb9ebb1e9431f38dc8	2026-10-09	test raw AHDSR setters survive prepared voice lowering before native arithmetic port
+fe04f49b8fc49b4c729548b92696896a73277a4e	2026-10-09	Format integrated diagnostic probes
+2ecad6b0a230bac29edfdf3a25dbff3608baf3b9	2026-10-09	fix literal LFO oracle import after public control API export
+39e2c1f6365d657708078e2d8da229386180afaf	2026-10-09	fix(load-audit): distinguish sample resources from unsupported features
+de97eccead9ac21819ea9fda4949665d731c4af9	2026-10-09	port from v1 0cb7a8a0:src/modulation.rs preserve raw AHDSR admission and native setter arithmetic
+100f098a24f1846c99988e8a59964fe4d4588c69	2026-10-09	Reconcile native diagnostic ownership and format the combined sweep
+38dacabff6c3f5c761f30cf13d65833f75296d83	2026-10-09	Retain engine context and legacy sample ownership across cached loads
+05034e28375cea8f92448df2c5cebe77abebf613	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs Conflux callback builtins
+e64b09c71f4e94694d2f9a15dc40693b549106cb	2026-10-09	test: persistence restore publication remains allocation-free
+cbaefc38ff00f78b7cbb3962e5200acdb4447292	2026-10-09	fix: skip unchanged persistent snapshots on the audio thread
+ffaa05e91048bd53cfa4bded023424fadecf739b	2026-10-09	Preserve current voice admission and RAM-only source handoff records
+63c9ef8a6b37537c86b0fc48616c18e2a76bf179	2026-10-09	Keep final high-rate source diagnostics after resampler rejection
+061dab7f01ab3841720a2664e2db9b26b422c23a	2026-10-09	Keep rejected page-pool diagnostics without runtime changes
+c781f784009d10c6c446bc99eb9b099901bfdd00	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs held two-frame EQ and cache fused mix controls
+cfb5c34a79c716c228070a1f63eae5334696643f	2026-10-09	test frozen v1 two-frame EQ section null including odd fragments
+9ba224abec15fbfda53c118f7a8cd6e29cde49b8	2026-10-09	test v1 whole voice held EQ and rack mix control-read budgets
+487f4ab38fffb4278b62948050aefcbec9d2973f	2026-10-09	Port pinned v1 voice control evaluator and filter source bridge
+182485f827b27ddb55005431474cf7cd77c91112	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs authored engine getter fallback
+3bb384bc551d27c9a32d49eba26479fa4648babc	2026-10-09	test raw AHDSR setters survive prepared voice lowering before native arithmetic port
+92f95a0b89e8750efd0954cbb9d3a2e18e29883c	2026-10-08	load: measure cached native restoration separately from validation
+3e2f5dab087923858d810bb18d43b7275576c985	2026-10-08	port from v1 0cb7a8a0:src/cache.rs compact zone tables
+ed3b39f6c25d555d38b1300d42284916287bd9c0	2026-10-08	port from v1 0cb7a8a0:src/cache.rs into v2 load path
+df0859d1c3781ea202051cb9ded3ce9da2ac1ff6	2026-10-08	Capture cached KSP init with native owned state entries
+864ed89d16a29f9c0162d26fe9657ffd0298707d	2026-10-08	Count scanner initializer runs across production loader workers
+7f42c05a7af7b673d562a799f61c9691ebc07feb	2026-10-08	Initialize restored Kontakt controls once and record restored-state gate evidence
+03a42a366223e37b7c1d8f50ec481a9925390c82	2026-10-08	perf(core): port from v1 0cb7a8a0:src/fx/processor.rs settled slot coefficients
+6496f19908633e8525b15394251d883c348dcb55	2026-10-09	Port pinned v1 voice control evaluator and filter source bridge
+27d7ccb0a88b41ae0c318876fffdb0afe95bcc6e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs held two-frame EQ and cache fused mix controls
+f5c4c702540fd5bf8e7f790ac5092c703e5a590c	2026-10-08	perf(core): render script and gain-pitch ramps through native voice lanes
+5294ee8d8ca2fc1ec98241544f44f9b2cc77e86a	2026-10-08	Project only addressed voice filters; retain CPU and underrun hold
+acdffcffcef83a77795f826da198e4b5ecb626bd	2026-10-08	Skip exact neutral filter-factor exponentiation; retain CPU hold
+4507cb1e214d777ef1ee8812df64b9a3718cc36c	2026-10-09	Port pinned v1 voice control evaluator and filter source bridge
+0c1d7a7fb964cafc35a07c3c492832f6939f0e64	2026-10-08	Bound decode priority selection and wake returned storage
+8488d43ad828f0589ab1e02ca95ee1b87b6f49ec	2026-10-08	port from v1 0cb7a8a0:src/engine/mod.rs free stream slots
+a90b3f025d0e86000cadcdabf9b533d176101f92	2026-10-08	Remove sorted page-index shifts from audio admission
+a79b70fc80e0e63b16b8c2514b1111843ebdfde9	2026-10-08	Record full admission gate and page-index scaling probe
+01f315ffd999402b5d5606e9d5e307db9ec9392b	2026-10-08	Bound stream admission with live credits and lock-free residency
+e068dd99ba539e78d6a684a35410299045ca64ad	2026-10-08	Unify streamed voice admission and storage budgets
+e4f28f23ea635a333d9fac27c2c4bdc5d0563c05	2026-10-08	KSP: init group volume/pan/tune writes reach the runtime; dynamic engine parameter dispatch (audit KSP-01, KSP-06)
+bb96bc7f207da34a688546f2ce36e6901193bad7	2026-10-09	test frozen v1 two-frame EQ section null including odd fragments
+ec9e84531b5857dc64f75e02e61bd02ba0da6df3	2026-10-08	Kontakt UI: keep lookup inside its library and detect Komplete loads
+500a1d67cb14851c4b7a1ceca25e4eb8b2c3e7af	2026-10-08	Kontakt UI: resume census shards and route NICNT resources
+d3b6d73abc6975bdd5ede0fd352a0a16098d669c	2026-10-08	Kontakt UI: add corpus census and repair scalar recall and passive rendering
+8495acbee8e08cf1e878ae6edd04c76d4df41bea	2026-10-08	feat(kontakt): load FileContainer presets and embedded sample audio
+07a612ba9c9934c1a5a4796a630603b4fcc7fb83	2026-10-08	fix: preserve Kontakt bus extensions and unknown FX child identity
+bb62da7710ad5c72c8428e9c6c4acb9311b5b86e	2026-10-08	fix: retain Kontakt FX and modulation state and correct signed depth
+b994803de615ea0399f9d9c443b9948671f70a02	2026-10-08	Shard persistence validation and distinguish master corpus counts
+93a053cedd6bd48b24eaaedbc91c84948455740e	2026-10-08	Decode typed Kontakt saved-variable records
+b946e85b21240d48db66f6e4aeaa352601dcdb46	2026-10-09	test: keep default Content sample discovery outside Wine
+5dcd2c6b504940ee75d46b61d03516188bd9ad43	2026-10-06	test(access): record passing feature-on and feature-off checks
+23081b4dbf9c42fe96f267129f890b7b5baa7783	2026-10-06	fix(ni-file): recognize bounded plaintext picture layouts
+b64c0e3de2df7ae3f3159a595ee78f591b5957a8	2026-10-06	fix(ni-file): recognize validated clear NKR pictures
+ab587c82b80ac83f4bbf4416d4d7e6e70a370431	2026-10-06	fix(kontakt): resolve owned player Content samples in multis
+2f5c691cd226dfe8635d0218bfd2a2d77bda8126	2026-10-06	test(kontakt): verify installed encrypted NKR picture buffers
+4b1b7d6280da2d78c08891b18078c0881b45bcdc	2026-10-06	test(kontakt): gate installed protected checks on library access
+f25486cce3884dce27dbbaabaf3f558b204081b2	2026-10-09	test v1 whole voice held EQ and rack mix control-read budgets
+9e81c4a46e749a0c469902e61bd6934438db7d00	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs authored engine getter fallback
+506a3f1144ba46feda09278aebb5fa25698ecfb0	2026-10-09	Guard native Cutoff lowering across expanded chains and update coverage caller
+08ff4247e12b3b6a44247567c5386981d05fe191	2026-10-09	perf(core): port v1 envelope skip and indexed shaper paths
+97d75f686276f07c3acc46296d23aa29a7713fd1	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs local modulation rows
+faa8d9ab45a39e978f8475a554bb806458d7b1e0	2026-10-09	test(core): bound voice filter projection to addressed stages
+3825ea7a1fbb62b818cc8e74f1119a8c83e0062e	2026-10-09	test(core): expose repeated envelope levels and uniform shaper searches
+cf4b9a7e0b3692915fd7dabccc2bd3695062ef60	2026-10-09	port from v1 0cb7a8a0:src/import.rs: cache archive paths for one load
+eb55fa78dffe03356322e38dc59628f1508b9ae5	2026-10-09	Fix Kontakt readers, callback persistence and piano release (0.3.381) (#51)
+de4ee128b3e2264a832ffb3fb30d6e53561304de	2026-10-09	Preserve synchronous init MIDI waits and finish scheduler gate
+00ee00cf73a0d57622bc994ac10930ec3b5ad347	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs wait-capable load callbacks
+0d4af3f168f8ca91a05c4a23fa1bd8e52a1c813b	2026-10-09	test(core): bound native rate resolution per render run
+32179b759bca11486042c825d8317347c6a01627	2026-10-09	port from v1 0cb7a8a0:src/import.rs: cache archive paths for one load
+22e4492780de00889e15184c619d0fd0088cb380	2026-10-09	fix(core): bound native runs and preserve v1 whole-step taps
+6556184c12d7c5cceadb97da84ad0c7f67c43af2	2026-10-09	perf(core): port v1 envelope skip and indexed shaper paths
+49b23a1e836bb9fe593788dda216aa3861745e6e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs local modulation rows
+4ed2474fd9ad0da3c516e41acbf76e187bded533	2026-10-09	test(core): bound voice filter projection to addressed stages
+0e38851ebd5814672a9f8b17ac0f44e744b83e7b	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs fused realtime Hermite mix
+8c2b7acbd157c7a689b33f10aea7c4c6ed7f4bd2	2026-10-09	test(core): expose repeated envelope levels and uniform shaper searches
+c44a9e8a06e41fab89468e19b42993bc644e62c1	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs native interior windows
+7584228ee6ac66dbdde1ee23905c7f7318da715d	2026-10-09	test(core): require native loop interiors to reuse block windows
+de80f091f0ca23b98874526c34e06ca7c8858542	2026-10-09	test: report sample lookup allocation bytes
+f8ad46a83cea5efe73acb08f270a87b4d5ccd0df	2026-10-09	port from v1 0cb7a8a0:src/import.rs: format only resolved archive members
+c0d6fa50c6c91e8b933ca4990c1daa59fc642917	2026-10-09	test: bound temporary allocation in loose sample source lookup
+4506e4d524e57b52027a4aa677acab53c786ef75	2026-10-09	test(core): require v1 realtime Hermite interpolation through three octaves
+22ed6732de38c859afbc14c8c738f83ee6b2cebf	2026-10-09	port from v1 0cb7a8a0:src/ksp/compile.rs legacy current-event parameter array
+9295c22059693f09654aa889a73680d87ed80b4f	2026-10-09	port from v1 0cb7a8a0:src/ksp/compile.rs legacy current-event parameter array
+f480d7726a13d897e8a5eac87cee0814ba71e26c	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs computed event parameter getters
+179c167426f4f1d310a6144a8abf905b9933136d	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs computed event parameter getters
+5e046c5386583d4cf502c822e8db44a04f144eb7	2026-10-09	Reset continuous callback preemption age after admitted MIDI waits
+6496bb9554b2d9074b13b36e1a8d772f98474d3f	2026-10-09	Reset continuous callback preemption age after admitted MIDI waits
+82259207e65c0ebd33273321090ba2434a0f06f2	2026-10-09	Retain W5 host-budget callback wait regressions for scheduler integration
+17db79059d1286598d7fc0f46a685f950d304efe	2026-10-09	Retain W5 host-budget callback wait regressions for scheduler integration
+e70d6053bad8d3e28963059a40017c3f02c710bb	2026-10-09	port from v1 0cb7a8a0:src/ksp/compile.rs legacy current-event parameter array
+46bfa562c84c34df2af3d578b0bae9ec26ef020f	2026-10-09	port from v1 0cb7a8a0:src/ksp/calls.rs computed event parameter getters
+09ad87874d7872c0ed53eccfb168e59b2fa076f4	2026-10-09	Guard native Cutoff lowering across expanded chains and update coverage caller
+8a77091dfa5aad26e466ad33dd59f99950495d01	2026-10-09	Align zone reference fixtures with verified sample presence layouts
+b46a253c02566a0a426c9fec2e4e73fb64037c6b	2026-10-09	Preserve synchronous init MIDI waits and finish scheduler gate
+d944178ccbaadc7ce6882f1070a95038dd51e238	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs wait-capable load callbacks
+6a1e031c1d3011c97d42202d89ed025323dcc726	2026-10-09	test: report sample lookup allocation bytes
+cf79b2cfa7653c926b34435c0c21302555649b48	2026-10-09	port from v1 0cb7a8a0:src/import.rs: format only resolved archive members
+56693d1dd40faf9420f7f2dcff35d34857616672	2026-10-09	Preserve synchronous init MIDI waits and finish scheduler gate
+f100684379e84283202870fe93418dc5dc7d0f24	2026-10-09	fix(kontakt): close consolidated reader and diagnostic privacy guards
+b6f226ed20f4ad1d5b21fa4122b03b1f5be3b78a	2026-10-09	test(diagnostics): guard unsupported FX payload privacy (HOLD)
+e119a52fddadb5f03f9472172daec4c57daa7699	2026-10-09	test(kontakt): consolidate superseded W6 reader cases (HOLD)
+892f2aaf02f707009fca779afe7fbc423d8c82e6	2026-10-09	test: bound temporary allocation in loose sample source lookup
+bd485fe5c760d4280ddb7427dddd85e7c27c7a80	2026-10-09	fix(kontakt): close consolidated reader and diagnostic privacy guards
+97f61e690096cb8b3fc6bc5cfefb85b024023fff	2026-10-09	Keep merged DSP fixtures compatible with modulation and descriptor roles
+c06fd53aa4664426bc8ea7ec7a0086c166911e54	2026-10-09	Register live compressor controls and typed descriptor roles
+30194eae12ac5f77c0d28b3cec38296bc5cf54d4	2026-10-09	feat(core): expose playback compressor transfer curve off audio
+bfa451f674ef56f50ab4e055c957eb054445326d	2026-10-09	style(core): format frozen kernel oracles
+e7065fc570dbc98e2739e1fa10e3c765cba5a216	2026-10-09	refactor(core): share remaining scalar and batched DSP sample kernels
+18b05aff0641e01d9176b7cd37965c5ba5b8f1e9	2026-10-09	test(core): freeze Stereo pseudo delay and smoothing state
+4d68a0755ae0c5ba13a35d52a84c916664be89d9	2026-10-09	test(core): freeze remaining scalar and batched DSP arithmetic
+c46b3df09b4c47768c78ebb8c75be76087e44bdc	2026-10-09	fix: retain persistence revision on retirement backpressure
+c9a97dc6b31c8ceed93be598aedec7a37548a36a	2026-10-09	test: persistence restore publication remains allocation-free
+3621d5781be917b980823f2f4a5ff09da350336b	2026-10-09	fix: skip unchanged persistent snapshots on the audio thread
+af04a095eebf2c149dda9fbbe3cce6d7ee317027	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs generated note scheduling
+a371c8dac39813949a969e3c6b698965638b7fb1	2026-10-09	fix(kontakt): distinguish bounded v11 layouts and validate tester revisions
+f7d4ae51506e66471d45d5acfe997eeac75a3f2c	2026-10-09	fix(kontakt): decode revisioned arrays and sample-less zones (HOLD checks)
+b20929f7fc8a51862ff997fc670141cf4c6f9561	2026-10-09	fix(kontakt): read legacy AHDSR revision 0x10
+8470d51a642803ca65305828564a7e68b07e300e	2026-10-09	fix: accept repeated NKX directory members without losing case variants
+4cae68ed03b248e20dc825bc2ef677cf43a257dc	2026-10-09	test: reproduce NKX case-folded directory collisions
+66b4e7dd550472063bc680d30f874af36f1ff925	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs wait-capable load callbacks
+00a254eafe877503ac0f94e2715de9bb59b0e989	2026-10-09	perf(core): prepare realtime sinc banks across the supported pitch range
+359dc24546c1ab0f20e228042b961b62748439d8	2026-10-09	test(core): require prepared realtime taps above twofold pitch
+7cfcac68ee78519965ebdc10d6b587f4b7ff6ca6	2026-10-09	fix(core): key Daft cache by exact control bits
+9d689b3ee19c7ee1d9f8aca2a1318b7c061c316b	2026-10-09	perf(core): reuse identical Daft coefficients within a block
+d6e91f1cb51cec28fd613164e0a65d951f9096af	2026-10-09	test(core): freeze Daft processing and count settled coefficient work
+49e9f16c4874b715bab701924df76ea12741445b	2026-10-09	Keep the integrated modulation schema during registry reconciliation
+493a57cbcffbcd7dab929d4f21d85242aed3c90e	2026-10-09	Preserve validated project saves while admitting registered DSP owners
+4b8a82934c4dde6528c84293b6afa7da261adc65	2026-10-09	test(diagnostics): guard unsupported FX payload privacy (HOLD)
+f3519531222b9ba9f7f776f4e7ac3de6a169e43a	2026-10-09	test(kontakt): consolidate superseded W6 reader cases (HOLD)
+0d3aa5937989525f75ce7ce49f927edb4020fec1	2026-10-09	Fix first editor presentation and UVI discovery (0.3.355)
+544fb72b5daf6260cc87b4d63d76e5757e3df8a6	2026-10-09	Register live compressor controls and typed descriptor roles
+7bc29b2186e090166fbb2b6f76674c0c59d3fb02	2026-10-09	fix(kontakt): distinguish bounded v11 layouts and validate tester revisions
+c49a329e05a3519a92d3e5af60e5da02af761532	2026-10-09	port from v1 0cb7a8a0:src/ksp/runtime.rs generated note scheduling
+fae6047e60000ee3530d2e352196608be6374103	2026-10-09	fix: accept repeated NKX directory members without losing case variants
+4fb8bd5f1f6d42e03f13b7bb1982c5da8c762020	2026-10-09	fix(kontakt): decode revisioned arrays and sample-less zones (HOLD checks)
+be23aabefffbad5ca925ea40cb1f9be875fc3c7a	2026-10-09	test: reproduce NKX case-folded directory collisions
+c1359117652bbdfd9fae01bebf9df0fe71389929	2026-10-09	fix(kontakt): read legacy AHDSR revision 0x10
+ee8b7454dbe6a5b01f25e84249741d3b664a4428	2026-10-09	Read legacy v0x10 AHDSR envelopes (Atmoraffe, TrueStrike 2)
+79d495db480c5cb4397071d5e08857fb01a379ac	2026-10-09	Read legacy v0x10 AHDSR envelopes (Atmoraffe, TrueStrike 2)
+ac3b55a79c66f4f85eaaf61710663da758ff0c6f	2026-10-09	fix: decode versioned Kontakt arrays, names, envelopes and snapshots
+d372a4f90cc98aa5375925a83be24acc5565ba9b	2026-10-09	test: reproduce tester Kontakt reader version gaps
+7f4fce9945ed06564327a508b8946d24e614fe72	2026-10-09	Adapt the coverage probe to physical EQ routing
+7867220c530b110e40726ceaad971cb5258430c1	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: normalized EQ frequency and bandwidth owners
+0ad6b3f9ee6e8de4eaa2add0fd70ad6bcf196eda	2026-10-09	Reset continuous callback preemption age after admitted MIDI waits
+5592510e64630e433f4607c2f43d1ff49cf489d3	2026-10-09	fix: retain persistence revision on retirement backpressure
+c6db49416b47db798d1a60f044544162e23ee29e	2026-10-09	test: persistence restore publication remains allocation-free
+034a4e4fc29d81fcaf45082e4c27641334be2d2a	2026-10-09	fix: skip unchanged persistent snapshots on the audio thread
+0be6d5d62d3c8863da80bfadf7e523bf76f05d55	2026-10-09	Wire immutable effect snapshots and typed DSP lane admission
+b2fe9e7793297f5be1c0aae778dbf3d890a42b0b	2026-10-09	feat(core): expose playback compressor transfer curve off audio
+d11c9d35d3fb741c79a9dd69fb3952c42c449a3f	2026-10-09	docs: record native resampling port scope and deferred gates
+e8f407e624eeeaa5bdb84d8548a597cff2fe9c7a	2026-10-09	docs: record sparse modulation port scope and deferred gates
+3dc82bc95210c1f910d130b8290dc4e79c05defa	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs native interior windows
+7a0b8262e95ed67f99f5b6b6c8c2ddc2085f03fc	2026-10-09	test(core): require native loop interiors to reuse block windows
+c49d58621c0c777ffd9e27203709229220d085cb	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: normalized EQ frequency and bandwidth owners
+5d71710bca2d4068b0925e2b3b682e6338aba3ee	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs local modulation rows
+f85c388cf42428b34a279d3f15b950ad88d6ca9e	2026-10-09	test(core): bound voice filter projection to addressed stages
+60c33d9c6ba98c5364ac9e305f3860c2544ec598	2026-10-09	Keep periodic script callbacks alive across intentional waits
+8be442c78e024723e070e39a65dd488f14285a3e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: live EQ gain owners and physical band routes
+64537a61a51e792d883885ea56944f6d463ca3c7	2026-10-09	Keep generic per-voice filter projection outside shared coefficient caches
+ad5cd9d4712478b22dfb215793eef231446140b9	2026-10-09	modulation: compile open addresses onto per-voice parameter lanes
+ebf437a415dcd564e86a6c055ebca8cf710f01be	2026-10-09	port from v1 0cb7a8a0:src/fx/processor.rs settled slot coefficients
+2e8c193bfef3b9698128087ee4932c6b83e257ed	2026-10-09	test(core): bound settled slot ramp work per block
+85d1407fbbd54e9a9be02e96f0d8d74e86ba88a3	2026-10-09	style(core): format frozen kernel oracles
+494bb08855b5b6af191b4bdd7253675c5d167209	2026-10-09	refactor(core): share remaining scalar and batched DSP sample kernels
+a4c9e2cd79359cf1a404e0531fdab99173e299d4	2026-10-09	test(core): freeze Stereo pseudo delay and smoothing state
+a6b17c704ca9221bcecdcdf4fa4b8367968ba9be	2026-10-09	test(core): freeze remaining scalar and batched DSP arithmetic
+27fdb0e1e56c41d9c880312871fce2185a4272b9	2026-10-09	Release 0.3.344: native Falcon opening and integrated playback/UI fixes (#47)
+2b9d50659a5b92f7910a3ff1c9aa0a7346878516	2026-10-09	port from v1 0cb7a8a0:src/engine/params.rs: share immutable zone chains
+146a8f899d5240a70134f2c1922291e04f76d3b9	2026-10-09	refactor(core): share scalar and batched biquad sample math
+777d1e7199c1dc47a1007e232ca73d4f9e1fe0e2	2026-10-09	Advance widget gate on the engine clock and attribute script preemption
+6cd368a811f6e76ee21da9dfd078603029de2d0c	2026-10-09	Reject unpublished MIDI jobs before completion or capture
+96b53b995e7f32ce1031660c210f17f693848e07	2026-10-09	Implement shared KSP MIDI-object commands and host file completions
+e3cca70ab70d0cdcc8804662fd8858d8558b1774	2026-10-09	port from v1 0cb7a8a0:src/engine/mod.rs pre-insert part Tone placement
+81db45a3d46257a29a70e88492e98b455bbfe8ea	2026-10-09	Release 0.3.326: native recall, UI, UVI and DSP fixes (#43)
+fdf6d4e016c89e68266ac4543b6af424460307f3	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: live EQ gain owners and physical band routes
+d66faea30aae723f9a3061d12facb445bf21d95c	2026-10-09	refactor(core): share scalar and batched biquad sample math
+235ac3eb918a6e77d26b101e6a0418d40d7c48c1	2026-10-09	Keep periodic script callbacks alive across intentional waits
+d1a58fbf3e76d2e38fdf81d8d74fe598c63129d0	2026-10-09	refactor(core): share scalar and batched biquad sample math
+df5001886b26efcdbe9e166b669bae8a0ee45f60	2026-10-09	Advance widget gate on the engine clock and attribute script preemption
+b2bd75994b311bbb3195dab2cf4f17deb1a3b344	2026-10-09	Keep generic per-voice filter projection outside shared coefficient caches
+56a315dcdd219730a0fc54fd71082e0334f0e863	2026-10-09	Reject unpublished MIDI jobs before completion or capture
+427e3e46f37914e9595d19ad73069d3f87d792a7	2026-10-09	modulation: compile open addresses onto per-voice parameter lanes
+9988ee59a13e36e85a75a504c78e520977d9f7f0	2026-10-09	Implement shared KSP MIDI-object commands and host file completions
+8db2eef66735151295de9c4c764bc009cf644803	2026-10-09	fix: retire source-owned UVI script notes after sample completion
+ba537b6f246cf8fc9cdc1f06de8a855ef4fc9276	2026-10-09	fix: retire source-owned UVI script notes after sample completion
+5e5b7fb043c79f8ad3673faca4a8a95a9d848f75	2026-10-09	port from v1 0cb7a8a0:src/plugin.rs global Attack Release Tone controls
+6409d105f730e2b5235f18cdfd5021ad5425b4a8	2026-10-09	classify embedded KSP semantic faults without authored text
+de1087e95eaf9a04e50a8c44f3e8109191fb5ec1	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs: reuse settled modulation results
+99a26f66e52bf7058fa4a82e3fc6efd70c4d5655	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes
+38d64fde68dbf1f523cf7174b855a5df1e3e4f1e	2026-10-09	execute authored zero-weight Multi LFO sources
+b76e6d52f899d00e1ed1868fca2cd23b1848e3b3	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Ladder and Daft cutoff
+1dc37ff49d324a380d223ad8b683a55cacf25b2f	2026-10-09	port from v1 0cb7a8a0:src/engine/mod.rs route keyboard controls to the loaded MPE manager
+90e3532e80507140801450d4d64272f0f9ee71d7	2026-10-09	Restore persistence callbacks in the instrument context
+5172a9ef00935f0c463b8ff2fb65e2632c032c8e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes
+87a5e33f43a56a61e7090218d6baaa17ec14e204	2026-10-09	execute authored zero-weight Multi LFO sources
+42062adcc9b0aa87ab3858626a85a10421904d42	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes
+ed07a54938db5717103ae81eb45a60a0fc6dc66f	2026-10-09	port from v1 0cb7a8a0:src/engine/params.rs: share immutable zone chains
+646cde06abcfedce5f2b22dcd66319094107a408	2026-10-09	Release KONTRA 0.3.306 alpha: integrated native, playback and memory fixes (#41)
+1e14ef337c584bfb1e30134e0b349a008afb731f	2026-10-09	execute authored zero-weight Multi LFO sources
+59a86c89675e898c5e53dbc8b8764320f2d7d2fe	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs: reuse settled modulation results
+3a849db5a4e872093cec523608d756d6b85f1a59	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Ladder and Daft cutoff
+ec4a79bb066fada05af8b4ddfcda1d5907a28c9e	2026-10-09	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Ladder and Daft cutoff
+329606f74c40bec51f659517ee85bc53df483b07	2026-10-09	classify embedded KSP semantic faults without authored text
+629c55af2b8ab3a6e3191ffb73e6ef794c28dae2	2026-10-09	Restore persistence callbacks in the instrument context
+98e92f9fc1ad4be5b1c3ec64fde84d03c69af09f	2026-10-09	trial: adapt v1 stream head budget to 128 MiB
+29897195152c28e82230f2a791d1bd1b04b3fdfe	2026-10-09	fix: reserve voice-ring memory in lazy head reload budget
+f4ccc7f9605bc2965cfe7ceb1094e9aefc0425ca	2026-10-09	port from v1 0cb7a8a0:src/fx/blocks.rs: prepared LoFi voice and bus DSP
+3755a007ca4c5867ad9f21bd11a37e66b3286d5d	2026-10-09	port from v1 0cb7a8a0:src/engine/filter/models.rs: Formant I voice and bus sections
+2b558f503e969e1e6c83818a10a047e3b3c23dd7	2026-10-09	fix Kontakt authored pan routes to use the shared voice consumer
+d09741f98da1c2b616c8335fbb1b2584e9a35727	2026-10-09	feat: measure native slot targets and independently audit sample families
+4db5a70fcf95925f8b7c1ec4aebc7ac09fff61d8	2026-10-08	feat: inventory authored DSP slots and trace admitted source families
+d4574125a4131e524978a07c765344cbc1db2eea	2026-10-09	port from v1 0cb7a8a0:src/fx/blocks.rs: prepared LoFi voice and bus DSP
+f6116b1bd3a46adc59a5c8112b2e78eb75fc6d30	2026-10-09	port from v1 0cb7a8a0:src/engine/filter/models.rs: Formant I voice and bus sections
+8f7980f5d13c348ec49ea4851f9b2c988b19dfb1	2026-10-09	fix Kontakt authored pan routes to use the shared voice consumer
+1eaf3b68e7b879ef9a08ebb5a8732194abca23ee	2026-10-09	Verify controller pitch-cache invalidation and exact signal witnesses
+2252f665ce62c04cd86560e1a7e11556298187fe	2026-10-09	port from v1 0cb7a8a0:src/ui/viz.rs native ladder readout and response
+c46143393375a840238205d980e9bef83f27ada0	2026-10-09	port from v1 0cb7a8a0:src/ksp/vm.rs
+44ba9d2c60539f1803baf206043cc4f007eeb4df	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs: cache unchanged modulation pitch ratio
+8b1af747ffbdcd7575534d6743650be86e458f9f	2026-10-09	feat: measure native slot targets and independently audit sample families
+368d2654d6aec540255fe7f21cbd0366ed936a80	2026-10-09	port from v1 0cb7a8a0:src/audio.rs predictive preload packing
+f33480b73d2cfff515a48b1a5c52cf6d27971eca	2026-10-09	port from v1 0cb7a8a0:src/ui/viz.rs native ladder readout and response
+4c26a197ea7a99f0108b5e50e4f06583caa2242c	2026-10-09	port from v1 0cb7a8a0:src/engine/voice.rs: stage cubic frames in vector columns
+b29ed992c2d5919210be31b1bdacc278b15d1caf	2026-10-09	port from v1 0cb7a8a0:src/engine/bank.rs: construct group envelopes once
+7956e97e0e255ea75e210f6dcc57029706210da7	2026-10-09	port from v1 0cb7a8a0:src/engine/bank.rs: construct group envelopes once
+c413a6ddf97265a0e1973cdd51229d0e542eb519	2026-10-09	fix: drive keyboard lights from engine gates and release notes on transport stop
+602c80b4971d9c5784b13362265576fa68070459	2026-10-09	fix: drive keyboard lights from engine gates and release notes on transport stop
+0b4ef845495fe16d30bd945147417c038877b8dc	2026-10-08	port from v1 0cb7a8a0:src/engine/map.rs: compact region playback templates
+e3e0b3cc0bdaa5189f3535911bcffe445d2b6f4e	2026-10-08	fix(ksp): discard ignored source events without fabricated key-up
+d826303fe712fcd1f8003f35f0658255f41acc81	2026-10-08	port from v1 0cb7a8a0:src/engine/stream.rs backfill purged onset heads
+ac8c0ac6cb5710e025191c312bec0114ec7f00bb	2026-10-08	port from v1 0cb7a8a0:src/ui/editor.rs adapt W4 Sound editor to 3f49 (HOLD)
+4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca	2026-10-08	port from v1 0cb7a8a0:src/engine/map.rs: compact region playback templates
+009a1366d99cdfde0b49c832f96a1e343ce62c8e	2026-10-08	port from v1 0cb7a8a0:src/engine/stream.rs wire source-time voice rings
+f14e0d20f70a6f86e818a379ad9750beaa99f374	2026-10-08	feat: inventory authored DSP slots and trace admitted source families
+799d6a3b3eb40548ba7210454711ccaabd1dbccf	2026-10-08	port from v1 0cb7a8a0:src/ksp/compile.rs share function code and unpadded constants
+5e57099a6edee2dc14cc88c43410215b6ad0146d	2026-10-08	port from v1 0cb7a8a0:src/engine/stream.rs wire voice rings and resident onsets (HOLD draft)
+00f844211cf652fb1db9013dbd6e30b402dbdc3b	2026-10-08	port from v1 0cb7a8a0:src/engine/params.rs controller-reachable preload offsets
+a6a5166d7e5f771959b72581f9e216cae8bfdbc1	2026-10-08	port from v1 0cb7a8a0:src/ui/editor.rs adapt W4 Sound editor to 3f49 (HOLD)
+b4ae3c088fcf024b7fbbee5fe173b952daf2daeb	2026-10-08	fix(ksp): discard ignored source events without fabricated key-up
+5755d56ebc5f95e727ab98f3dc33703794f53255	2026-10-08	Preserve released staccato notes through a cold onset hold
+ee7af138c78e05f84fca45c59555041b5190685b	2026-10-08	End held cold onsets at their lifecycle boundary
+fddd6036dcc87c145f4318f683d533ec840692f9	2026-10-08	Hold an unpreloaded onset until its requested source window arrives
+6d29a40b0daae18a16ef5a645f502e9c35b29374	2026-10-08	Measure callback and function code ownership during KSP lowering
+a713301c2217abd0f45795a69b03f43fc56ee6b7	2026-10-08	probe: retain complete Analog allocation stacks and stage boundaries
+55fbdf0f1e5a87fce726d4944734d6b5fb796dfa	2026-10-08	Preserve released staccato notes through a cold onset hold
+1d4e2911ccc7212435c27049c411ba5d950115d8	2026-10-08	Preserve released staccato notes through a cold onset hold
+741854ea6d0811936c89bfdda02d1b674327dd9a	2026-10-08	End held cold onsets at their lifecycle boundary
+ba262bee852f6b7d2ff7d947797524647c7e93b6	2026-10-08	Share immutable script texts before constructing live mutable banks
+c8175a481727514db8aa71b0b3258dcb66ac1487	2026-10-08	End held cold onsets at their lifecycle boundary
+6f51d817dc389e33d92208ea6a12fbc29caa785d	2026-10-08	Share immutable script texts before constructing live mutable banks
+4417ba4e66e98ef09d7b650de0b25b70ce224139	2026-10-08	port from v1 0cb7a8a0:src/ksp/runtime.rs: tag pending note-page pressure
+718fcc4af471dc6fb57f260498c16b7b86d79aa4	2026-10-08	port from v1 0cb7a8a0:src/engine/params.rs controller-reachable preload offsets
+aaa789184c579c74a083ef7eafaf9e0ae83d200b	2026-10-08	Hold an unpreloaded onset until its requested source window arrives
+1776dd461c4e1faf2c6df02bc9305ecd177a10a5	2026-10-08	Hold an unpreloaded onset until its requested source window arrives
+480b2f1dac80d74a0799800c74b2495e0b6baf98	2026-10-08	Share immutable script texts before constructing live mutable banks
+5a7c10dec8fbec19e5014b1f890aaf1ce000fd2a	2026-10-08	port from v1 0cb7a8a0:src/ksp/runtime.rs: start at 4096 note parameters
+3078797d9963a4ede4f5e44ec1930922f286484e	2026-10-08	Tie note growth pressure to the capacity audio observed
+e012a5f90c2370c13d0c026958f04cd1e0b2c268	2026-10-08	Reject fixed polyphony page pool and restore d75 streaming
+efd636f5f601e1ae41cdb44a43a711bf79dec3ac	2026-10-08	Start note parameters at v1 capacity and grow pages off audio
+5e303d1b4a5df959a719a50cb8b1a9e1503efdb4	2026-10-08	Start note parameters at v1 capacity and grow pages off audio
+9f3c6f96547f7a22783eca6d0dd0ffed17bdd382	2026-10-08	load: measure cached native restoration separately from validation
+02587b2b6139acaf25909658c899a0d12f565fb5	2026-10-08	port from v1 0cb7a8a0:src/cache.rs compact zone tables
+cad9d3e495222efd943360b1af205ded3ebd1e99	2026-10-08	port from v1 0cb7a8a0:src/cache.rs into v2 load path
+8dd796fd6055bebfd7f21c28f763f860a0aeaf1b	2026-10-08	Capture cached KSP init with native owned state entries
+bc9923a8bf90b8ddf572be293d63e8398347e048	2026-10-08	Count scanner initializer runs across production loader workers
+6f51dd071ecb63b2cc5def48658f72917c90b042	2026-10-08	Initialize restored Kontakt controls once and record restored-state gate evidence
+bf18a290a55a3dca7864b0c11d6fa1dbc5ff1afe	2026-10-08	Start note parameters at v1 capacity and grow pages off audio
+ad50802b737b5d92c271726949a9f3974db17af3	2026-10-08	Start note parameters at v1 capacity and grow pages off audio
+56f1822b076edc33fe909d5b6e0762dd950f66ac	2026-10-08	port from v1 0cb7a8a0:src/engine/bank.rs authored stream polyphony
+8b2929cd953038a9f4faf98717d826d53c0da0f0	2026-10-08	port from v1 0cb7a8a0:src/engine/filter.rs nonzero modulation deltas
+142733125c393d722816b781cf3a29112cc2fb0b	2026-10-08	revert(core): reject resampler parts that fail original-instrument tails
+124ca53a1f7558f43f749a4daa744259f5eb1678	2026-10-08	perf(core): split control-side row preparation from rejected high-rate bank
+50b2b8db94faabdc29b8e6d0adb6a7386a226011	2026-10-08	perf(core): keep narrow resampling lookup inline
+07d274ad7fded744b908b3443170b8cd23a9edd6	2026-10-08	docs(cpu): retain high-rate matrix failures and CPU hold
+242533130c8b02ed6bacc5cd9b6d8e25e8e2781f	2026-10-08	fix(core): retain deferred attacks through callback preemption
+4c3c8f07fc4d674b6b9c1b2408effd622359ecda	2026-10-08	perf(core): prepare high-rate realtime resampling off audio
+23186092e709008fcf2f24dd69b749d8973873be	2026-10-08	fix(core): retain deferred attacks through callback preemption
