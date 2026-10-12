@@ -1,7 +1,7 @@
 # Kontakt and Falcon parity audit
 
 This audit integrates scoped recoveries and correctness fixes on
-`feat/kontakt-falcon-parity`, and adds an offline source/conversion/UI workbench.
+`main`, and adds an offline source/conversion/UI workbench.
 Native Kontakt and UVI Falcon/Workstation are the reference. Native equivalence
 remains unknown until a versioned native comparison establishes it.
 
@@ -11,6 +11,8 @@ remains unknown until a versioned native comparison establishes it.
   initialization and audio evidence, failures, and validation receipts.
 - [Offline inspector](../library-inspector.md): run the workbench, inspect original
   code and lowering, and navigate ownership, UI omissions and implementation gaps.
+- [Main consolidation](main-consolidation.md): final historical source resolutions,
+  preservation and cleanup receipts.
 - [Worktree recovery](worktree-recovery.md): every branch/worktree disposition,
   preserved dirty work, actual recovered changes and reasons for deferred merges.
 - [Native loader design](loader-design.md): current transaction boundaries,
