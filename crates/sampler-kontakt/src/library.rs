@@ -628,6 +628,10 @@ fn translate(
         if !zone.sample_present {
             continue;
         } // Authored empty zone, no sample to resolve.
+        if let Some(range) = &zone.unreachable {
+            out.unsupported(&format!("zone {index}"), "unreachable zone", range, ir::Reason::InvalidValue);
+            continue; // No MIDI note can trigger it.
+        }
         let name = table.get(&(zone.file as u32)).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} sample is absent from the file table"
@@ -3302,6 +3306,9 @@ struct RawZone {
     loops: Vec<ni_file::kontakt::objects::Loop>,
     loop_slots: Vec<u8>,
     source: ir::kontakt::Zone,
+    /// Set when no MIDI note can trigger the zone: its whole stored velocity
+    /// or key range lies outside 0..=127. Describes the range for diagnostics.
+    unreachable: Option<String>,
 }
 
 /// Complete physical order, independent of source/sample/playback admission.
@@ -3407,6 +3414,106 @@ mod empty_zone_tests {
     }
 }
 
+#[cfg(test)]
+mod zone_range_tests {
+    use std::io::Cursor;
+
+    /// A v0x9a sampled zone record in group 3 with file 0, gain 1 and tune 1.
+    fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
+        let mut public = vec![0u8; 82];
+        public[12..14].copy_from_slice(&velocities[0].to_le_bytes());
+        public[14..16].copy_from_slice(&velocities[1].to_le_bytes());
+        public[16..18].copy_from_slice(&keys[0].to_le_bytes());
+        public[18..20].copy_from_slice(&keys[1].to_le_bytes());
+        public[28..30].copy_from_slice(&root.to_le_bytes());
+        public[30..34].copy_from_slice(&1f32.to_le_bytes());
+        public[38..42].copy_from_slice(&1f32.to_le_bytes());
+        public[43] = 1; // v0x9a prefix byte 1: a sample is present
+        let mut record = 3u32.to_le_bytes().to_vec(); // owning group
+        record.extend([1, 0x9a, 0]); // structured object, version 0x009a
+        record.extend(0u32.to_le_bytes()); // private data length
+        record.extend(u32::try_from(public.len()).unwrap().to_le_bytes());
+        record.extend(public);
+        record.extend(0u32.to_le_bytes()); // children length
+        record
+    }
+
+    fn read(record: &[u8]) -> Result<super::RawZone, String> {
+        super::raw_zone(&mut Cursor::new(record))
+    }
+
+    #[test]
+    fn in_range_zone_is_unchanged() {
+        let zone = read(&sampled([1, 127], [36, 81], 60)).unwrap();
+        assert!(zone.sample_present);
+        assert_eq!(zone.unreachable, None);
+        assert_eq!((zone.keys, zone.velocities, zone.root), ([36, 81], [1, 127], 60));
+    }
+
+    #[test]
+    fn zone_above_the_velocity_range_is_unreachable_not_an_error() {
+        let zone = read(&sampled([139, 139], [40, 40], 40)).unwrap();
+        assert_eq!(zone.unreachable.as_deref(), Some("velocity 139..=139; keys 40..=40; group 3"));
+    }
+
+    #[test]
+    fn zone_below_the_key_range_is_unreachable() {
+        let zone = read(&sampled([1, 127], [-20, -1], 60)).unwrap();
+        assert_eq!(zone.unreachable.as_deref(), Some("key -20..=-1; velocities 1..=127; group 3"));
+    }
+
+    #[test]
+    fn zone_partly_outside_still_fails_until_checked_against_kontakt() {
+        let error = read(&sampled([100, 200], [36, 81], 60)).err().unwrap();
+        assert_eq!(error, "high velocity 200 is outside 0..=127");
+    }
+
+    #[test]
+    fn range_boundaries_at_the_edge_of_midi() {
+        let unreachable = |v: [i16; 2]| read(&sampled(v, [36, 81], 60)).unwrap().unreachable.is_some();
+        assert!(!unreachable([0, 0]));
+        assert!(!unreachable([127, 127]));
+        assert!(unreachable([128, 128]));
+        assert!(unreachable([-1, -1]));
+        assert!(unreachable([i16::MIN, -1]));
+        assert!(unreachable([128, i16::MAX]));
+        // Straddling an edge is partly reachable: still an error, not a skip.
+        assert!(read(&sampled([-1, 0], [36, 81], 60)).is_err());
+        assert!(read(&sampled([127, 128], [36, 81], 60)).is_err());
+        // Inverted and outside: not reported as unreachable.
+        assert!(read(&sampled([200, 100], [36, 81], 60)).is_err());
+    }
+
+    #[test]
+    fn inverted_range_is_still_an_error() {
+        let error = read(&sampled([100, 50], [36, 81], 60)).err().unwrap();
+        assert!(error.starts_with("inverted range"), "{error}");
+    }
+
+    #[test]
+    fn out_of_range_root_is_still_an_error() {
+        let error = read(&sampled([1, 127], [36, 81], 200)).err().unwrap();
+        assert_eq!(error, "root 200 is outside 0..=127");
+    }
+
+    #[test]
+    #[ignore = "needs an installed instrument: KONTRA_TEST_UNREACHABLE_NKI=/path/to/instrument.nki"]
+    fn installed_instrument_with_unreachable_zones_loads() {
+        let path = std::env::var_os("KONTRA_TEST_UNREACHABLE_NKI").expect("set KONTRA_TEST_UNREACHABLE_NKI");
+        let source = crate::read(std::path::Path::new(&path)).unwrap();
+        let unreachable: Vec<_> = source
+            .instrument
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "unreachable zone")
+            .collect();
+        for u in &unreachable {
+            eprintln!("{}: {}", u.location, u.value);
+        }
+        assert!(!unreachable.is_empty(), "expected at least one unreachable-zone diagnostic");
+    }
+}
+
 /// Layout from the v1 importer: the owning group, then a structured zone whose
 /// public data is start, end, start-modulation range, velocity and key ranges,
 /// four crossfade widths, root, gain, pan, tune and (v0x9a+) six unknown bytes
@@ -3455,12 +3562,32 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             .filter(|v| *v < 128)
             .ok_or(format!("{what} {value} is outside 0..=127"))
     };
-    let (lk, hk, lv, hv) = (
-        midi(lk, "low key")?,
-        midi(hk, "high key")?,
-        midi(lv, "low velocity")?,
-        midi(hv, "high velocity")?,
-    );
+    // A sampled zone whose whole stored velocity or key range lies outside
+    // 0..=127 cannot be triggered by any MIDI note, so it never sounds. It is
+    // kept for diagnostics instead of failing the instrument (spec §3.5;
+    // checked against Kontakt 8 in docs/kontra-notes/a1-kontakt-reference.md).
+    // A range only partly outside still fails below until Kontakt's
+    // behaviour for it has been observed.
+    let outside = |lo: i16, hi: i16| lo <= hi && (lo > 127 || hi < 0);
+    let unreachable = if !sample_present {
+        None
+    } else if outside(lv, hv) {
+        Some(format!("velocity {lv}..={hv}; keys {lk}..={hk}; group {group}"))
+    } else if outside(lk, hk) {
+        Some(format!("key {lk}..={hk}; velocities {lv}..={hv}; group {group}"))
+    } else {
+        None
+    };
+    let (lk, hk, lv, hv) = if unreachable.is_some() {
+        (0, 0, 0, 0)
+    } else {
+        (
+            midi(lk, "low key")?,
+            midi(hk, "high key")?,
+            midi(lv, "low velocity")?,
+            midi(hv, "high velocity")?,
+        )
+    };
     if lk > hk || lv > hv {
         return Err(format!(
             "inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"
@@ -3504,6 +3631,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         source,
         loop_slots: loops.slots,
         loops: loops.items,
+        unreachable,
     })
 }
 
