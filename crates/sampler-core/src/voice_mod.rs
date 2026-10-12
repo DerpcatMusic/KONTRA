@@ -105,6 +105,10 @@ pub enum ModTarget {
     Cutoff,
     /// Every voice-chain state-variable filter's Q × 10^(depth·v / 20).
     Resonance,
+    /// The cutoff of the chain filter tagged slot `n` ([`crate::Processor::ModulatedFilter`]) only.
+    CutoffOf(u8),
+    /// The Q of the chain filter tagged slot `n` only.
+    ResonanceOf(u8),
     /// A per-voice low-pass, open (bypassed) at 0, closing by depth·v semitones
     /// below the open cutoff when the sum is negative.
     Tone,
@@ -350,12 +354,20 @@ impl VoiceModulation {
             }
             let reaches =
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
+            let slotted = program.routes.iter().any(|r| {
+                matches!(r.target, ModTarget::CutoffOf(k) | ModTarget::ResonanceOf(k) if usize::from(k) < crate::FILTER_SLOTS)
+            });
+            if program.routes.iter().any(|r| {
+                matches!(r.target, ModTarget::CutoffOf(k) | ModTarget::ResonanceOf(k) if usize::from(k) >= crate::FILTER_SLOTS)
+            }) {
+                return Err(Error::InvalidInput);
+            }
             compiled.push(Program {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 sources,
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
-                filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
+                filter: slotted || reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
                 routes: program.routes.into_boxed_slice(),
@@ -581,7 +593,7 @@ pub(crate) struct Outputs {
     pub gains: [f32; 2],
     pub pitch: f64,
     /// Cutoff and Q factors for the voice chain's state-variable filters.
-    pub filter: [f64; 2],
+    pub filter: crate::FilterFactors,
     /// Semitones below the tone filter's open cutoff; 0 bypasses it.
     pub tone: f64,
 }
@@ -591,7 +603,7 @@ impl Default for Outputs {
         Self {
             gains: [1.0; 2],
             pitch: 0.0,
-            filter: [1.0; 2],
+            filter: [[1.0; 2]; crate::FILTER_SLOTS + 1],
             tone: 0.0,
         }
     }
@@ -910,6 +922,7 @@ impl VoiceModState {
         let mut out = Outputs::default();
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
+        let mut slots = [[0.0; 2]; crate::FILTER_SLOTS];
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
         for (route, lagged) in p.routes.iter().zip(lagged) {
             let bipolar = p.bipolar[route.source];
@@ -932,6 +945,8 @@ impl VoiceModState {
                 ModTarget::Pitch => out.pitch += d * v,
                 ModTarget::Cutoff => cutoff += d * v,
                 ModTarget::Resonance => resonance += d * v,
+                ModTarget::CutoffOf(k) => slots[usize::from(k)][0] += d * v,
+                ModTarget::ResonanceOf(k) => slots[usize::from(k)][1] += d * v,
                 ModTarget::Tone => out.tone += d * v,
                 ModTarget::SampleStart => {}
             }
@@ -943,7 +958,10 @@ impl VoiceModState {
             (gain * (1.0 + pan.min(0.0))) as f32,
         ];
         if p.filter {
-            out.filter = [(cutoff / 12.0).exp2(), 10f64.powf(resonance / 20.0)];
+            out.filter[0] = [(cutoff / 12.0).exp2(), 10f64.powf(resonance / 20.0)];
+            for (k, [c, q]) in slots.into_iter().enumerate() {
+                out.filter[1 + k] = [(c / 12.0).exp2(), 10f64.powf(q / 20.0)];
+            }
         }
         out.tone = if p.tone { out.tone.min(0.0) } else { 0.0 };
         out
