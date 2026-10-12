@@ -1,0 +1,9 @@
+corpus-health: give scripted programs time to finish their own release samples
+
+Intent (VWinds hornScript3, Bb Clarinet): at note-off the script fades the sustain voice
+(Fade kill) and plays release layer 4 plus a key-0 breath noise on layer 2, both
+duration 0 one-shots that last over a second. The rig's 0.5 s tail judged them stuck;
+the Player shows voices=0 and silence by second 2. Scripted tail is now 4 s.
+Also adds survey aids KONTRA_DUMP, KONTRA_LIVE and release command traces.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
