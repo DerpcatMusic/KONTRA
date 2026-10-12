@@ -1,2 +1,0 @@
-# Keep the patched MPL source asset identical across platform checkouts.
-vendor/symphonia-format-riff/** text=auto eol=lf
