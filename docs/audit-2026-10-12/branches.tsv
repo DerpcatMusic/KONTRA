@@ -1,0 +1,696 @@
+branch	tip	upstream	date	graph_tip_only	graph_baseline_only	exact_tree_current	tip_scope_current	different_paths	subject
+archive/w8-pre-d75-20261008	cf93b6a9f41186bee51d99be5d460f431d32caf0		2026-10-08	960	19	False	False	1615	WIP share immutable script initial texts before gate-base rebase
+archive/w8-template-pre-onset-20261008	944386681a6a626f40a8a139d3234cc2117ebf63		2026-10-08	1057	19	False	False	1599	WIP port from v1 0cb7a8a0:src/engine/map.rs compact region playback templates
+audit/cpu-20261008	63f6423b5b35a92bb774704efaeaabe0f0b84cc5	origin/audit/cpu-20261008	2026-10-08	709	19	False	False	1783	Audit v2 audio CPU and storage streaming against v1
+audit/dsp-20261008	3ea7a97b36309ebc0a2eed9f973240c9887a54c2	origin/audit/dsp-20261008	2026-10-08	709	19	False	False	1880	Audit DSP coverage and native reference fidelity
+audit/falcon-runtime-ui-groundwork	f20a30bb62faff88396717478a37ac80ce667049		2026-10-02	936	72	False	True	2360	Audit Rust crate reuse against concrete parity gaps
+audit/integration-20261008	1f3a9a7dd621a634644d296d537a0065a11fc377	origin/audit/integration-20261008	2026-10-08	709	19	False	False	1869	docs: audit v2 integration, delivery and pending branch work
+audit/kontakt-20261008	3b10802707a90b9138c103b50f352b623f13557f	origin/audit/kontakt-20261008	2026-10-08	715	19	False	False	1870	docs: record installed shared UVI onset handoff
+audit/ksp-20261008	1fe450a66c88f6ee2d6c382a84ec4d25d7144409	origin/audit/ksp-20261008	2026-10-08	719	19	False	False	1877	docs: record completed Kontakt KSP phases and Dolce handoff
+audit/load-20261008	2c672c26cfcc200348f6f4346b9eb171d7378e24	origin/audit/load-20261008	2026-10-08	712	19	False	False	1872	docs: explain shared-scanner Conflux load and RSS regression by stage
+audit/load-v1-probe-20261008	0cb7a8a0b4d43086596a64c77320caa1b26d6d98		2026-10-05	0	24	False	False	2194	Merge pull request #33 from DerpcatMusic/fix/mui-visibility-browser-reveal-20261005
+audit/review-v2-rust-implementation	0cb7a8a0b4d43086596a64c77320caa1b26d6d98		2026-10-05	0	24	False	False	2194	Merge pull request #33 from DerpcatMusic/fix/mui-visibility-browser-reveal-20261005
+audit/ui-20261008	3daacecf500bb4b1d77c32e3cf53ea10f373ae98	origin/audit/ui-20261008	2026-10-08	711	19	False	False	1871	Record Conflux confirmation timing and visual limitations
+audit/ui-census-20261008	a3d9894b7a4f6aa4b74e2e5b6103c90937395401		2026-10-08	1023	19	False	False	1627	audit: publish complete paired 1494-item Original UI census
+audit/ui-census-v1-scanner-20261008	238d33b4ab7cd1a28cbfba85e014338181e0959a		2026-10-08	7	24	False	False	2191	scanner: observe final KSP host keyboard and reset semantics
+audit/ui-loop-20261008	982100c90d92ab31e127a542495d7ff45d86a3dd	origin/audit/ui-loop-20261008	2026-10-08	713	19	False	False	1869	Record shared Conflux scanner rerun after disk recovery
+audit/ui-params-20261008	f3242f451ce245a12ebe9fc99a64402572f2a8cd	origin/audit/ui-params-20261008	2026-10-08	716	19	False	False	1871	docs(audit): separate Native checkpoint from historical params evidence
+audit/ui-render-20261008	661bd9d214041aa44d442525aaef0021daa77767	origin/audit/ui-render-20261008	2026-10-08	717	19	False	False	1870	docs(audit): distinguish masked resource errors from absence
+audit/ui-v1-probe-20261008	0cb7a8a0b4d43086596a64c77320caa1b26d6d98		2026-10-05	0	24	False	False	2194	Merge pull request #33 from DerpcatMusic/fix/mui-visibility-browser-reveal-20261005
+audit/ui-widgets-20261008	c7781195f02910500577032741c061768eadf781	origin/audit/ui-widgets-20261008	2026-10-08	712	19	False	False	1872	audit(ui): use shared scanner counts and mark corpus sweep pending
+audit/uvi-20261008	0fe4d1570d62c2f5252472b89a226291e8b0a9cb	origin/audit/uvi-20261008	2026-10-08	717	19	False	False	1874	audit(uvi): classify first bounded load timeout in partial sweep
+audit/uvi-v1-scanner-20261008	026bdbb49f29a5ad752b3470a5f6f64a20a8957d	origin/audit/uvi-v1-scanner-20261008	2026-10-08	1267	72	False	False	2400	scan(uvi): align onset clocks and paint concurrently with audio
+audit/w10-v1-uvi-cpu-20261009	bd5a88a42f3090a9d37c10a25009d3af916ce6ab	origin/audit/w10-v1-uvi-cpu-20261009	2026-10-09	1265	72	False	False	2403	Add separate pinned v1 UVI CPU audit adapter
+audit/w5-rss-base-prof	3f49a9a109220c95546596e37204b5b2faa829b7		2026-10-08	1049	19	False	False	1603	test: use typed resource reads in host font witness
+audit/w5-v1-code-receipt	fbd8748bb1ddd6abb9f8350fbb4d1e2c727a7473		2026-10-08	1	24	False	False	2195	Add numeric-only frozen v1 KSP code receipt adapter
+audit/w8-3f49-rss-20261008	5e7071d505322c6b5e174e3c6ed93fd73da12e44		2026-10-08	1051	19	False	False	1601	port from v1 0cb7a8a0:src/engine/mod.rs: size startup voice and event arenas
+audit/w8-52438-template-before-20261008	52438eb49b3d9daa45e88eeead48f610c9dfaa95		2026-10-08	1056	19	False	False	1599	fix: audition playable notes after script keyswitch keyboard resets
+audit/w8-analog-owners-3f49-20261008	a713301c2217abd0f45795a69b03f43fc56ee6b7		2026-10-08	1052	19	False	False	1601	probe: retain complete Analog allocation stacks and stage boundaries
+audit/w8-chain-seeded-c39	bb36f954b4661038366ae1051f52e0fc0b5f25ba	origin/audit/w8-chain-seeded-c39	2026-10-09	1156	19	False	False	1564	audit: seed and synchronize UVI offline PCM witnesses
+audit/w8-d75-rss-before-20261008	c0dbf2365d3677fbe510657920200a5267d0c606		2026-10-08	1055	19	False	False	1604	Serialize current engine-value metadata in cached load state
+audit/w8-d75-rss-note-20261008	3078797d9963a4ede4f5e44ec1930922f286484e		2026-10-08	1057	19	False	False	1604	Tie note growth pressure to the capacity audio observed
+audit/w8-load-v1-stages-20261008	2f51deec854bfc7338bfccb54db6339d8400ce9d		2026-10-08	1	24	False	False	2195	bench: compare v1 cold and warm load stages with v2
+audit/w8-load-v1-uvi-stages-20261008	3b4a47a5f04c445df55388c307ecadb231d79ad8	origin/audit/w8-load-v1-uvi-stages-20261008	2026-10-08	1266	72	False	False	2400	audit: measure pinned v1 UVI onset before UI preparation
+audit/w8-playback-template-20261008	4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca		2026-10-08	1057	19	False	False	1598	port from v1 0cb7a8a0:src/engine/map.rs: compact region playback templates
+audit/w8-release-load-326	cd3b6d358e8249292f0d94023cf776856984e75f	origin/audit/w8-release-load-326	2026-10-09	1205	17	False	False	1556	audit: retain completed load cells and avoid state export collisions
+audit/w8-rss-ready-20261008	480b2f1dac80d74a0799800c74b2495e0b6baf98		2026-10-08	1057	19	False	False	1603	Share immutable script texts before constructing live mutable banks
+audit/w9-v1-cpu-adapter-20261008	41a4a5d81ca42146960c2d4d16171f92f3b21a33		2026-10-08	2	24	False	False	2196	audit(v1): record CLI equivalence and profile-only sequence epoch
+audit/w9-v1-stream-schedules-20261008	f77d801924367bbc651f65803f0026cb80007cfd		2026-10-09	3	24	False	False	2195	test: add shared stream challenge schedules to pinned v1 adapter
+backup/stray-gpt-merges-0216	4f01e5007dbb5828fa0060d530df6c8bf896872e		2026-10-08	725	20	False	False	1858	Merge v2/gpt-format-legacy into integrate/core-v2
+backup/stray-gpt-merges-0226	a5649c2925d653ea9ffb62e8c8a5e74ccb541d4d		2026-10-08	730	20	False	False	1849	Fix format_survey/uvi_audit_corpus against merged APIs
+chore/mui-main-ready	503477f584c2e119238be4314107f7e05fc4a030	origin/main	2026-10-10	0	4	False	True	398	docs: align and emphasize Patreon donate button
+codex/alternating-loops	434718703e1c10c8e6f807d086ff6edcd74746b2		2026-10-02	672	72	False	False	2384	Record combined and actual Una Corda loop validation
+codex/analog-active-ui-audit	d850a7fae3b23b55247856d2f78b105b07c2c205		2026-10-02	892	72	False	False	2362	test(ui): capture actual initialized views with existing high DPI painter
+codex/analog-animation-audit	d6d52079e334bc2c568d286e1000bfaccc5f9e20		2026-10-02	876	72	False	False	2362	test(ui): require visible authored callback benchmark targets
+codex/analog-control-parity-f63	807f035f8ce2bcef9dcb6b8dfefc99611394e41c		2026-10-02	714	72	False	False	2384	Preserve native group Amplifier insert split metadata
+codex/analog-control-refresh-cost	2ed4b0679f390423191f1f6c3610f6a4bc8d3727		2026-10-02	714	72	False	False	2384	Leave KSP table revisions current when indexed integers are unchanged
+codex/analog-filter-census-f4	cc849f10a6fd30c5034a767979cc082b12b49d41		2026-10-02	690	72	False	False	2383	Measure notch pass bands by normalized signal power
+codex/analog-lfo-amplitude-candidate	f7ea6587565861b011d2d76d905cb0e04dfc8038		2026-10-02	856	72	False	False	2361	fix(engine): honor verified saved internal envelope bypass
+codex/analog-lfo-source	1cebe4b3307999c79c3907e418de5c0e845ad57a		2026-10-02	856	72	False	False	2361	fix(import): retain verified native internal source bypass
+codex/analog-script-performance	e4f266fd5266a24cdad950c5dd2be236b8b34128		2026-10-02	548	72	False	False	2386	Resume stopped KSP waits and honor continued cleanup semantics
+codex/analog-slider-input	7a63205492dee9a415bb3d006bfde7f47ce79668		2026-10-02	538	72	False	False	2386	Align native fader pointer motion with visible thumb travel
+codex/analog-ui-performance	05d02e253569b79fd7c8c8a9251d8b8889a45ed7		2026-10-02	537	72	False	False	2386	Add opt-in staged real-instrument CPU and GPU UI benchmark
+codex/analog-visual-parity	cab8d8bc4aa58be7a5ad3e07417898dfe62d084b		2026-10-02	539	72	False	False	2386	fix(ui): render authored wallpaper pixel windows from full atlases
+codex/artwork-resampling	aca27df80857562cd446f8fcf1a1b0c95dfbd0a7		2026-10-02	818	72	False	False	2361	Preserve fractional image coverage and transparent sprite edges
+codex/audit-patch-recorder	3a36b64721769d5c9398bc7d396c91072ae3e0a2		2026-10-02	815	72	False	False	2361	Preserve load diagnostic bursts and report audit delivery status
+codex/automatic-crash-reports	16e911c37566f840f6476434fa675d98765ab1a7		2026-10-03	970	72	False	False	2354	Cancel metadata collection and verify consecutive crash retention
+codex/bitmap-font-parity	9439421cebcc377bd7a12467911a946d7b9cc979		2026-10-02	644	72	False	False	2384	Expose opt-in bitmap glyph counts in the real UI audit
+codex/browser-efficiency	38fc978de0921bb4e43ca9e699436ba4d285dd3b		2026-10-02	492	72	False	False	2391	Keep browser UI rows separate from cached preset rows
+codex/cancel-outside-pointer-restore	781e8e0f0045e3b13b175fe3ada61f7767c0407f		2026-10-02	684	72	False	False	2383	Cancel delayed pointer restoration when leaving an editor
+codex/cc120-physical-ownership	87d694c46b11ff4c447197e170c5dc83a13e43e4		2026-10-02	843	72	False	False	2361	Complete All Sound Off ownership cleanup for physical inputs
+codex/cc120-release-ownership	bac5e8a9ca33f75b5552a6a62334c318affaed0e		2026-10-02	831	72	False	False	2361	Cancel held voice ownership immediately on All Sound Off
+codex/changelog-heading-aliases	3a878bf5388c3739dc97288bb58899ef1ccab6ff		2026-10-03	1073	72	False	False	2344	ci: retain versioned changelog categories and release limits
+codex/channel-controller-scope	c63d89e6829fc9530d6696d64128655626e181f6		2026-10-02	842	72	False	False	2361	Preserve authored controller emission policy through waits
+codex/channel-domain-inputs	b5718a64c673a394225ef9ae04b583f79c94befd		2026-10-02	840	72	False	False	2361	Expose performance views in canonical callback fixtures
+codex/channel-domains	67e0a8f093477ed0074442924bfff301e1fa9df2		2026-10-02	722	72	False	False	2384	Prove scalar store remap across an empty array declaration
+codex/channel-listener-audit	27adc432a90a702606e81d20b3c0ae5741156c60		2026-10-02	949	72	False	True	2360	Audit Rust crate reuse against concrete parity gaps
+codex/channel-listener-scope	72a5670f22c166858af1e3288978f847e5481f18		2026-10-02	845	72	False	False	2361	Keep canonical and performance listener subscriptions in their own scope
+codex/channel-native-scope	0d7cfa448d587bdd5b11c0918d1b4435d4f15ed7		2026-10-02	841	72	False	False	2361	Separate canonical group settings from performance event domains
+codex/channel-origin	490e2885a2eb1fd3bcf9a251ffe0a1ea2ae0d8f3		2026-10-02	494	72	False	False	2391	Use rejected callbacks to test failed-slot condition isolation
+codex/channel-queued-scope	8aaee962a2279f780b36e7ace77a0f3c94544101		2026-10-02	843	72	False	False	2361	Carry canonical callback scope through queued controller and RPN work
+codex/channel-route-owner	01d36e6b1c19d32d0d451a53571f05aea3512704		2026-10-02	828	72	False	False	2361	Preserve physical note-off ownership after channel mode changes
+codex/channel-state-isolation	4c29b45501cc08708ebc0aaeab5155ae996f0ec8		2026-10-02	689	72	False	False	2383	Share immutable UI revision ownership across script runtimes
+codex/channel-unmapped-controller	9712a609f08846c82a974de20ad9a720e2ee568f		2026-10-03	851	72	False	False	2361	Retain common IR outcomes for scoped delayed subscribers
+codex/ci-integration	4fef911d0dc5b92f04f26b933377b7b4190c5964		2026-10-02	533	72	False	False	2386	ci: integrate verified snapshot gates and lean PR checks
+codex/ci-pedal-cleanup	84504d6127372a2242bc2b8890f2ef3a66fe6106		2026-10-02	630	72	False	False	2384	Continue cleanup past completed middle release slots
+codex/ci-target-provenance	1f6513438b8b92f1bc408eded04ce1ac8607edee		2026-10-03	1066	72	False	True	2344	docs: isolate worktree build targets and freeze release proof
+codex/classic-saturation-validation	6bf086eb9df9c9425152974d2789ed5bbc958a34		2026-10-02	955	72	False	False	2360	Apply native Classic Saturation transfer curve
+codex/closed-control-drag	a21276f69f8817cc95e0d2afc317b7acac6f828e		2026-10-02	681	72	False	False	2383	Keep closed control drags aligned across device scales
+codex/compatibility-checklist	11b4060fc0a1354cf36900ccabf9f4022b3717f2		2026-10-02	739	72	False	False	2381	docs: track generic compatibility gaps and validation boundaries
+codex/compatibility-checkpoint	91e0ff72b30d46dbd5a8742a2fa61e32146951e1		2026-10-02	789	72	False	False	2361	Refresh compatibility evidence and mark next batch validation pending
+codex/conflux-dynamic-metadata	99bdc379fafc2b40d58961248d092d659f222578		2026-10-02	877	72	False	False	2362	Use registered identities for prepared dynamic metadata
+codex/conflux-format-boundary	595a5d17510c209fb29244ee885f74f291d0cba2		2026-10-02	721	72	False	False	2383	Decode Kontakt 8 flat filename tables and explicit effect slots
+codex/conflux-native-filter-115	b534d453461c42dd61c91796c8166435fccea3da		2026-10-03	997	72	False	False	2353	fix: preserve native signed Ladder Gain and report transition limits
+codex/conflux-native-ui	4da706400d69a41d31cc0cec167144f8b6a5bdd0	origin/codex/conflux-native-ui	2026-10-04	1097	72	False	False	2349	Render legacy NativeUI packages and bridge KSP controls
+codex/conflux-sample-resolution	8dd906f1f4b17c62a3c62ba63e57932c517f471e		2026-10-02	807	72	False	False	2361	Resolve library-root archive samples from nested instrument folders
+codex/conflux-source-layout	538eeb558edecab16d8ee24a10fcd15710cf5cc0		2026-10-02	739	72	False	False	2381	Inspect bounded source identities and report unsupported Kontakt 8 wavetable playback
+codex/conflux-zone-combined	114b3ccab96e28d1ae96238d5060d596449b350f		2026-10-03	995	72	False	False	2353	Preserve restore freshness and budget during zone bank publication
+codex/conflux-zone-services	6d6f230ad3c3bc2f94ad06ff8a20155e142bbbc3		2026-10-03	964	72	False	False	2361	Honor synchronous init zone edits before bank publication
+codex/constant-loop-consumer	9ef18b105e81f5afcaf07f14631b33f2346e20ce		2026-10-02	936	72	False	False	2362	feat(diagnostics): expose applied loop window and physical cursor
+codex/constant-loop-validation	b83ed44e4a8cbcc361dacee0c8d1d5795c2813ab		2026-10-02	940	72	False	False	2363	fix(audio): preserve saved LFO clock across planning fragments
+codex/container-buffer-read	cac7be0e60b5c05650f4f3ed623dabfcadd7e949		2026-10-02	721	72	False	False	2384	fix(import): preserve container decoder boundaries in load errors
+codex/contradiction-amplitude	fd00cd4f7d61708837f7980211a8538d75261ac6		2026-10-02	930	72	False	False	2362	Make covered-source archives reproducible across Mac architecture jobs
+codex/control-display-parity	ee434b897ded67dc579a1316c68ad64137ae17a2		2026-10-02	588	72	False	False	2385	Keep menu-selected picture names as native slider captions
+codex/control-parity	6bfc9c879e2640c99d1b3d86ec011bba717f238c		2026-10-02	491	72	False	False	2391	Apply scripted filter EQ and stereo controls to instrument racks
+codex/core-parity-next	131302bbc866690a08c0d7b12456deb20ec51134		2026-10-03	966	72	False	False	2360	Seed restore regression epochs through the production allocator
+codex/core-test-allocation	7cfb6d5f3e84df770484e9d17cf0ea0cd90a32d9		2026-10-03	1095	72	False	False	2348	Share allocation assertions with core unit tests without plugin features
+codex/core-timing-introspection	d9975648c31fefb1a42dbf0004eab9679dd8bd4c		2026-10-03	1104	72	False	False	2349	Declare existing plugin requirement on Solo GUI-discovery integration test
+codex/core-uvi-integration-20261005	834c56ff9960a21e0483b126c66dbb720d26bb05		2026-10-05	1097	72	False	False	2477	Checkpoint ongoing core and MIDI refactor before UVI integration
+codex/core-uvi-ui-verified-20261005	ce94add200f7d69d38e538c0241d7d3bf4a39da3		2026-10-05	1271	25	False	False	2471	Selectively merge PR33 native bridges into the core/UVI integration
+codex/core-uvi-verified-20261005	acc3532e240a964aeca16707728d0da0b44ac15a		2026-10-05	1270	72	False	False	2533	Merge UVI with typed rack and retained instrument-bank ownership
+codex/crash-audit-115	4410e3c90f1c50e9e90b5b1407575c7b3432c50b		2026-10-03	995	72	False	False	2352	Exercise report permits across actual detached worker completion
+codex/crash-completion-115	49bbc50d593f53b1dae932c6817ff1d752fe1231		2026-10-03	1037	72	False	False	2348	Continue confirmed crash uploads after acknowledged cleanup and upload permit release
+codex/crash-completion-review-115	52f361d8c5422c126edbb22bf384d394310d5fcd		2026-10-03	1038	72	False	False	2348	Resume a confirmed incident adopted before the previous worker releases its permit
+codex/crash-drain-115	f0f6546a348cec39e62481dc0520be3808df066f		2026-10-03	1036	72	False	False	2348	Adopt current keyed evidence and conditionally preserve stronger same-incident proof
+codex/crash-manual-status-115	f2ab6e2c32c8905ce8df3d13e8f019b2b7c94086		2026-10-03	1065	72	False	False	2345	Persist truthful manual-export crash report status
+codex/crash-observability-115	20b30ec5850294b63bb5c1122d942a2495acc185		2026-10-03	1035	72	False	False	2348	Keep crash incidents in separate durable queue files and preserve legacy migration originals
+codex/crash-oversize-disposition-115	311eae5fbbd5ce3fc266f50a8a39fcf7c1048ded		2026-10-03	1063	72	False	False	2345	Retain oversized automatic reports for manual export without blocking the queue
+codex/crash-oversize-review-115	aad6d153b77a2f3f4452e375ab883819ea122a88		2026-10-03	1064	72	False	False	2345	Continue once after a terminal oversized report disposition
+codex/crash-provenance-115	e5d50893050cfca9490aa3b072d4f41ee115efe3		2026-10-03	1060	72	False	False	2345	Use recorded incident metadata in automatic crash reports
+codex/crash-receipt-visibility	bd10e942e9983faf66bbf2f01a1d4e79c088f543		2026-10-03	1082	72	False	False	2344	Show cached crash report receipts above Logs filters
+codex/crash-recorded-process-115	bab4f2168b1da8e2cc44f28c99487d5160886502		2026-10-03	1061	72	False	False	2345	Fall back to the recorded incident host process
+codex/crash-restart-lifecycle-115	4a4f5ca7765668c5adcd4928a20ca092be373578		2026-10-03	1066	72	False	False	2345	Verify crash report restart recovery through actual registration lifecycle
+codex/crash-retirement-test-barrier	82495ceefb5320fbba83364b2ab55791842203ba		2026-10-03	1039	72	False	False	2348	Wait for actual failed queue retirement before releasing its test publisher lock
+codex/crash-stable-evidence-115	d4e3ebddd23c82c2b8f1de4bbcb5929095eb7981		2026-10-03	1062	72	False	False	2345	Keep automatic crash evidence stable across reopening contexts
+codex/crash-windows-signatures-141	e8dad7081eb788fabf348de17744d44f3ddb19de		2026-10-03	1071	72	False	False	2344	fix: match native signature helpers to production and test callers
+codex/current-library-captures	fd00cd4f7d61708837f7980211a8538d75261ac6		2026-10-02	930	72	False	False	2362	Make covered-source archives reproducible across Mac architecture jobs
+codex/delay-sync-validation	2e6466ac2663ee5d7277573ed4d582ad9c07d251		2026-10-03	997	72	False	False	2352	Retain delay fixture buffers outside counted processing closure
+codex/delay-time-law	b63e0b26d35ddd22a8c2afe27bac6f25514bcfa5		2026-10-03	972	72	False	False	2360	Persist coupled physical Delay caches through prepared native snapshots
+codex/delay-zone-restore-validation	8458e844476737e995bb88bf926b7e4234024914		2026-10-03	1023	72	False	False	2349	Accept eight scoped core fixes after coherent gates and advance version to 0.3.123
+codex/diagnostic-core	9e41a316bd5cca2b3c1dc2b10f46ca58da69b870		2026-10-02	509	72	False	False	2390	Include orphan journal rotations in retention and support exports
+codex/diagnostic-hooks	1a6720d187e027a645f896977209b62896de088a		2026-10-02	509	72	False	False	2390	Throttle streaming decode diagnostics per bounded source identity
+codex/diagnostic-panel	5dc24f376c3107c165ec6a2a3a6edff1780ca366		2026-10-02	514	72	False	False	2390	Account for fractional log row font metrics offscreen
+codex/diagnostic-visibility	a43530cdbc2208b95fce3276fa0b1404a8475517		2026-10-02	579	72	False	False	2385	Preserve actionable load failures and document diagnostic coverage
+codex/distortion-damping-96	6072c8719ae1340362932386a1cd03ea0fab3c8a		2026-10-03	961	72	False	False	2360	Apply native steady-state Distortion Damping filter law
+codex/distortion-dc-101	f633e22023589de181ac1b814b06f820fa7fa05e		2026-10-03	963	72	False	False	2360	Use native SIMD sum order for Distortion DC rejection
+codex/docs-async-nka	bec2c20cb9aa85d6e667e979519af2d2c913e643		2026-10-02	650	72	False	False	2384	Document verified async preset reads and scoped font and planning support
+codex/docs-font-write-proof	526de21a68f77f54e256a18457d1e658a5713416		2026-10-02	656	72	False	False	2384	docs: record verified bitmap fonts and explicit NKA writes
+codex/docs-late-ui-harps	58849001c1d35d3d6db3fe7ee1788da946bee04a		2026-10-02	637	72	False	False	2383	Document delayed caption publication and verified harp release voices
+codex/docs-latest-parity	4d3726846dac94c95a06499dc72fa17d0c2d00bf		2026-10-02	611	72	False	False	2385	Show the complete build identity in About
+codex/docs-overlay-replacement	1aae29176c563b7879b56a81fa2faf4980d01aa8		2026-10-02	661	72	False	False	2384	docs: scope replacement proof and scalar edit measurements
+codex/docs-verified-playback	6e83e532cb973ad1523edd1c7728b4d51ac1b2f6		2026-10-02	625	72	False	False	2384	Record verified fresh-note recovery and explicit LFO playback limits
+codex/dynamic-rack	159c5a2ec544766d825e8204a408ce7d5cc823a1		2026-10-02	721	72	False	False	2384	Remove the rack part cap with prepared storage and viewport rows
+codex/dynamic-rack-ui	ddfa727e9a24feb7b05902d02c5dc8ec5833ca01		2026-10-02	723	72	False	False	2384	Capture browser catalog Arcs independently of edited frame
+codex/emotional-piano-access	744f96c262dda8533f8209de45151f08c4bcd992		2026-10-02	751	72	False	False	2382	Explain encrypted preset access lookup and accept XML field whitespace
+codex/eq-display-parity	64f3128159adfcb0afcd5945a4499e51e129b2f5		2026-10-02	685	72	False	False	2383	Display Solid G-EQ gains using the shared DSP conversion
+codex/excerpt-redaction-fix	7abef791aac1781e440fe6cdc2d20ec968d2a78b		2026-10-02	777	72	False	False	2369	Read source excerpts from serialized diagnostic event data
+codex/explicit-ahd-only	91c7268b18c07ec710a027ac9cd56b2f2afd702f		2026-10-02	808	72	False	False	2361	Check AHD symbol through the exported parameter-name API
+codex/export-123-fixtures	fe6b90983623cbf07fb8753180c17d263f8aa20a		2026-10-03	1026	72	False	False	2349	Keep accepted 0.3.123 fixes in the generated Fixed release notes
+codex/external-v103	89bcdf635ad39081c6e5460dc37103af671cd140		2026-10-02	884	72	False	False	2362	Describe wavetable quality limitations for every native setting
+codex/factory-snapshot-loader	5686c13d95f406a8759e540af2dcd9dc0312b0e1		2026-10-02	699	72	False	False	2383	Assert rejected snapshot retains source generation and installed epoch
+codex/falcon-compatibility	8f3c04cf1a445a72b585f8e4b5b05ab604a6672e		2026-10-02	936	72	False	False	2361	Enforce UVIP XML trust bounds while constructing the tree
+codex/fast-development	252cb115c2ad42c0fbf5ba69b521150ec5d468e0		2026-10-03	1095	72	False	False	2347	Allow core feature scope for exact library development tests
+codex/file-format	01c7ec676c32c877680b77399f4e48305d760cf1		2026-10-02	491	72	False	False	2390	Add lossless NIS container writing and keyed subtree encoding
+codex/filter-effect-parity	f5db6ab327dfd263d8b87743dc129664638fcbbb		2026-10-02	549	72	False	False	2384	Check Daft proxy stability across cutoff and resonance sweeps
+codex/format-record-audit	7be1b5bd382ddd90733ce06575cabe7b95a4eaab		2026-10-02	631	72	False	False	2384	Write Kontakt envelope records without losing opaque metadata
+codex/global-editor-preferences	294bb9f596fba330ce8d655b075bdd97dd05c833		2026-10-02	721	72	False	False	2383	Persist global editor size and add independent UI zoom preferences
+codex/group-insert-pipeline-8883	d3d7373f354787761d7d54939728469d012e8a81		2026-10-02	766	72	False	False	2381	Apply native Classic Saturation transfer curve
+codex/group-inverter	d9592b564133a9b6123671cb5127e432f751b04f		2026-10-02	688	72	False	False	2384	Document actual native Inverter field-mapping limits
+codex/group-start-conditions	37475ad4721097d1e576f83b2905de71bff9ceeb		2026-10-02	769	72	False	False	2372	Preserve native group start records through import and NKI writing
+codex/harp-native-release	cb8f56e7bc9ffd38d0302b167305f85ba12a5a7f		2026-10-02	630	72	False	False	2384	test(engine): select automatic release group in system flag fixture
+codex/harp-release-fixture	11b43fc04963303439b84af0e7e0d583d2dc96e8		2026-10-02	637	72	False	False	2383	test(engine): wait for generated release zone identity handoff
+codex/header-art-visibility	7218ea8479a100efd2e3b804c00a1ac504089458		2026-10-02	721	72	False	False	2384	Make rack header artwork slightly more visible
+codex/headless-script-context	5fbd616e38d9cd4ac376545ae68334d3a3c87c79		2026-10-02	831	72	False	False	2361	Retain runtime fault actions and source context in headless diagnostics
+codex/host-delay-damping-validation	55a0572e0ab7c9e7c1673668a5ad14fc3f219bba		2026-10-03	992	72	False	False	2352	Accept fourteen scoped fixes after frozen gates and advance version to 0.3.115
+codex/host-note-ownership	d0267370fd02096d50b0a30db09cec8ef66647f3		2026-10-02	879	72	False	False	2363	Keep articulation switch notes separate from exact host input ownership
+codex/host-ownership-validation	301d720a10aba6405cc18887cc32465a7c9c65dd		2026-10-02	910	72	False	False	2363	Keep articulation switch notes separate from exact host input ownership
+codex/import-scaling	65e20235911a981eb3d615f9cb90ae46739cafdd		2026-10-02	713	72	False	False	2384	Decode large sample file tables once per import
+codex/info-diagnostic-summary	1463536aa0e45742ef8b472ac44fd2a82fdf8c9e		2026-10-02	583	72	False	False	2385	Expose retained diagnostic counts and late failure causes in Info
+codex/init-fault-context-fixture	e7738020807fe6657cceca8e18e529c98ae1c7f1		2026-10-02	842	72	False	False	2361	Require init callback context in keyboard fault regression
+codex/internal-lfo	c8310134002e52d3d18ac816340a81fbc136223d		2026-10-02	612	72	False	False	2385	Bound observed LFO rate inference and record unresolved clock semantics
+codex/internal-modulation	66a3fc9fb619efb47cbd8491bedd2169e1c318a4		2026-10-02	546	72	False	False	2384	Check pitch envelopes reach the audio resampler
+codex/internal-modulation-continuation	30fbcdf6e4d358440ae28879d6b7d4170605607c		2026-10-02	581	72	False	False	2385	Route legacy pitch-envelope intensity with inferred cubic scaling
+codex/ir-size-state-validation	d6eda072f0bfd7c283f767db8ac46191c1978591		2026-10-02	921	72	False	False	2363	Merge commit '3476899' into codex/ir-size-state-validation
+codex/ir-split-validation	0c8fb0a0bf83e5974f685f2a0f384e2281f47851		2026-10-02	908	72	False	False	2362	Prepare explicit unit-size convolution early and late filters
+codex/ksp-async-array-writes	196f34a19142306a5714a5b1f9142085138f63db		2026-10-02	652	72	False	False	2384	Write KSP preset arrays atomically through bounded background jobs
+codex/ksp-async-arrays	5e8df1ac187b6317d0eb39139a4e8746ebafa459		2026-10-02	634	72	False	False	2385	Expect dense retained numeric table snapshots in array regression
+codex/ksp-cc120-lifetime	8be80519f30faf8fdd0330334e7db71bd1a9cfdd		2026-10-02	603	72	False	False	2385	Preserve physical note cleanup and routing across MIDI sound-off
+codex/ksp-compat	83905e32d6faeba83c1641e5ceee852a99f16a1b		2026-10-02	494	72	False	False	2391	Honor KSP native sustain and release system-script conditions
+codex/ksp-control-gap	7b185f621617a60eb1c45d7f8602fafeda00da7d		2026-10-02	625	72	False	False	2384	Exercise control text capacity independently of bounded string variables
+codex/ksp-device-default-fixture	987697bdc30fd96f19742b6c09a19c73669e83bb		2026-10-02	619	72	False	False	2385	Use real script initialization in controller default regression
+codex/ksp-host-read-parity	d6ce28c1b15589010252c540ecfac9b7e3380c6b		2026-10-02	506	72	False	False	2390	Report actual KSP event zone identity across mapped and missing samples
+codex/ksp-host-transport	32bee895690c3abc246a257395be6d644cc7b927		2026-10-02	672	72	False	False	2384	Use host time signature for KSP bar durations and sync rates
+codex/ksp-independent-listeners	4fc9f113235c79258efb49fa868fe5ad21af0c80		2026-10-02	750	72	False	False	2382	Accept documented symbolic level-meter chain selectors
+codex/ksp-init-rpn	64edee6b4954a928f3c5aaf1df67a22002ee81f4		2026-10-02	721	72	False	False	2384	Forward init RPN messages after receiving script slots initialize
+codex/ksp-menu-index-getter	f4f02888eefd7ef1dc50a35e7c52429b3349085a		2026-10-02	834	72	False	False	2361	Restore native persisted menus by entry position
+codex/ksp-native-ui-resource	1baf1be240e53a25f26ce9e9e6ced79196c37612		2026-10-02	728	72	False	False	2385	Accept Creator Tools null lists for empty exported menus
+codex/ksp-note-controller	f68c0327777be60f41209d5dc482fe7d2ed48635		2026-10-02	659	72	False	False	2384	Implement internal KSP per-note controller callbacks
+codex/ksp-panic-cleanup	bace8d125299ebb6da4d405fccd0fbe05f023edb		2026-10-02	593	72	False	False	2385	Cover Panic physical cleanup after a downstream script release
+codex/ksp-post-panic-silence	28bc85ee9097e8a1ea77a5e49bcd17e52dc0e5dc		2026-10-02	608	72	False	False	2385	test: cover authored controller defaults after panic and resets
+codex/ksp-string-boundary	564e353e8c0d73b9ca37054347d889d6326330db		2026-10-02	720	72	False	False	2384	Record retained UI controls and complete group drive slots
+codex/ksp-zero-fixture-ed34	fa0849f74000471cb97aed5311635ac1f5a0d169		2026-10-03	1015	72	False	False	2353	test: isolate note tracing allocations and retain genuine math faults
+codex/ksp-zero-math	93452d0512663624a621b09cf44527e070fb687b		2026-10-03	1002	72	False	False	2353	Match native silent integer zero-divisor semantics
+codex/ladder-control-clock-123	c74afac5d34b351899f6f5e0526f6fcfba6e0821		2026-10-03	999	72	False	False	2353	Snapshot Ladder targets consistently after local reset
+codex/ladder-core-validation	cabde651d5c3696ad8ce205423b3564952c45068		2026-10-03	1026	72	False	False	2350	Retain debug formatting for prepared Ladder voice state
+codex/ladder-legacy-cutoff-clock	ce1d7ccbc8c4f89ebbf2cffdae98a0f4191e9fce		2026-10-03	1000	72	False	False	2353	Preserve versioned native Ladder cutoff clock mode
+codex/ladder-modulation-cadence	d64b24917f1a657e5d2fa297147d4346c0a09135		2026-10-03	1001	72	False	False	2353	Rearm enabled Ladder modulation targets on persistent control ticks
+codex/late-ui-metadata	695eb47a09ff20257290e84ee56f869d4f55647c		2026-10-02	628	72	False	False	2384	Keep the inactive scalar guard borrowed during activation
+codex/legacy-filter-intensity	d63a9b17494ddb73acd884e1954289de73f90879		2026-10-02	836	72	False	False	2361	Route legacy AHDSR cutoff intensity through measured cubic depth
+codex/legacy-reverb-audit	e8dad7081eb788fabf348de17744d44f3ddb19de		2026-10-03	1071	72	False	False	2344	fix: match native signature helpers to production and test callers
+codex/legacy-reverb-native	368e41dec0cbcdc833fe4b1549f6b7a407ff7772		2026-10-03	1076	72	False	False	2346	Process saved legacy Reverb with prepared native delay network
+codex/lfo-format	2c50102fd8f7ddc71ebfa0ffd47de6f84fd8e777		2026-10-02	619	72	False	False	2385	Decode and losslessly write packed Kontakt LFO records
+codex/lfo-source-namespace	9c76376f28a8ad1c10a2e7e88cd29e52c58b0727		2026-10-02	941	72	False	False	2363	fix(import): separate insert targets from pitch LFO source slots
+codex/library-name-reveal	776877ba82cb41096f32a69c1136b1b605abc77a		2026-10-02	746	72	False	False	2382	Add persistent library display names and validate native Reveal paths
+codex/library-night-sweep	c6e84fb538cf7da26b6d4d864c565d323db04606		2026-10-02	540	72	False	False	2384	Apply compatible compact snapshot group effects and modulation
+codex/linux-render-init	ddb451e07ddd55b10a6675716a22897e9ae6225d		2026-10-02	881	72	False	False	2362	Open VST3 editor on attachment without waiting for audio activation
+codex/linux-startup-diagnostics	7859c5bc7ed30b2ed2b143efb2e0fc0852f8343e		2026-10-03	1096	72	False	False	2281	feat(gui): record the first native presentation boundary
+codex/live-lfo-validation	b5d0a4739b3465f963f886469f7a87842d6c3baa		2026-10-02	951	72	False	False	2360	feat(audio): apply native intensity writes to admitted pitch LFO targets
+codex/live-pitch-lfo-bypass	02a666ccb665c85ee7e0ebd543c363b81923e4cb		2026-10-03	1014	72	False	False	2353	fix: apply live bypass to admitted native pitch LFO sources
+codex/live-primary-ahdsr	c446a6c7b041eb98c86d6f8c7d61720682bcdf15		2026-10-03	1105	72	False	False	2349	Prove rejected phase setter executions through their distinct fallback records
+codex/live-publication	f7204619731b899fea37b2c874060b304b574320		2026-10-02	556	72	False	False	2385	Publish and recycle live script views directly from editor frames
+codex/live-request-epoch	3c10c69dba56a3008f7d208df59abbb0f467ac3d		2026-10-02	659	72	False	False	2384	Keep source epochs on lent script views and snapshots
+codex/live-revisions	4e12cc1f5fb7efc2d3fb47e168fb231fd5d4022a		2026-10-02	579	72	False	False	2385	fix(ui): publish idle script changes before redraw checks
+codex/load-detail-inventory	d83d6fdd154fe752cfaf861663d3b40b9e001221		2026-10-02	843	72	False	False	2361	Preserve bulky load inventories in bounded journal chunks
+codex/load-warning-journal	46c00c2d3e327204454645ca6a9dfde5016429db		2026-10-02	807	72	False	False	2361	Journal load warnings beyond bounded report examples
+codex/lofi-frequency-law	fb7bae574aa9e179d043af5d792dc44d4f61bc8c		2026-10-02	826	72	False	False	2361	Correct native LoFi frequency direction without claiming calibrated parity
+codex/log-row-hit	71a01e66e000cc0faf2d51a374e5d00d1700591f		2026-10-02	800	72	False	False	2361	Select diagnostic event rows when their text is clicked
+codex/logs-compact	f325093f975f77745a13c2e60c9d02cb3403c58d		2026-10-02	724	72	False	False	2384	Own event detail text before updating the Logs query
+codex/logs-export-race	41dd88b032d61182f8a7b2bda6bb9651cd407fd8		2026-10-02	722	72	False	False	2384	Replace cached loading placeholders after instrument failure
+codex/logs-ux-refine	e8dad7081eb788fabf348de17744d44f3ddb19de		2026-10-03	1071	72	False	False	2344	fix: match native signature helpers to production and test callers
+codex/macos-bundle-recognition	eed738fae090178b78666b48a5ceaafc7dde2361		2026-10-03	960	72	False	False	2360	Preserve macOS plugin package flags and gate native discovery
+codex/macos-editor-lifecycle	faf04d855b011d73e3709d7a1fafb562513329c3		2026-10-03	972	72	False	False	2359	Track attached VST3 view ownership independently of creation
+codex/macos-package-types-private	85a04956ebbf268c4c979ced48681b528c02ddb8		2026-10-03	996	72	False	False	2349	docs: scope 0.3.115 length-hint evidence to direct Rust admission
+codex/manual-crash-export-2f	718e167737487e499c45b4d3de37d10004a0daf6		2026-10-03	1048	72	False	False	2346	Report archived journal identity mismatches and bound export ownership metadata
+codex/midi-audit-d7	d5404bb21e40a50bb43da8566dee8d929f1cc563		2026-10-03	991	72	False	False	2352	fix: preserve held note expression destinations across routing changes
+codex/modern-cutoff-depth	3d7527f82b0fcdd6bdea6a6f3a3c418690989c9f		2026-10-02	893	72	False	False	2362	Use prepared group modulation table in cutoff gate
+codex/modern-filter-records	8ca2ff8ab4ccbc1604d2fa43ca8278f4d9459cbf		2026-10-03	994	72	False	False	2352	Decode and preserve versioned Ladder filter records
+codex/modern-pitch-depth	3154d4454c786885c0e67439c9dc15fa0e70e4de		2026-10-02	843	72	False	False	2361	Decode modern signed pitch depth with corroborated cubic law
+codex/modulation-slot-recovery	5f231bea0c2b4b174d26d99c9889eadfee9189c0		2026-10-02	798	72	False	False	2361	Retain readable modulation siblings when ordinary import rejects one slot
+codex/module-envelope-controls	628ca1334a50a6f9ffc438ca95dce7c9df2c85c9		2026-10-02	725	72	False	False	2384	docs: record actual module envelope callback validation boundaries
+codex/morphology-source-boundary	3801b2e4f44f9ba15865b7fa3062034019d24663		2026-10-02	815	72	False	False	2361	Decode and preserve modern v3 snapshot and v4 compact source records
+codex/mpe-pedals	1b6a6288543abb2404d226fb57defba633a4888d		2026-10-02	492	72	False	False	2391	Apply negotiated MPE sensitivity to manager channel notes
+codex/native-capture-slot	220b9054b2c8465014c007c451ee41c4b5ea3d63		2026-10-02	715	72	False	False	2384	Leave KSP table revisions current when indexed integers are unchanged
+codex/native-clap-midi	221f50648ed52c148976218723718b3b66dca0e0		2026-10-03	1026	72	False	True	2345	test: assert exported MPE input ports preserve ordinary MIDI output
+codex/native-editor-lifecycle	b7b459d7a96db4b4c265009a76af3be29d5c592b		2026-10-02	848	72	False	False	2361	Persist native GPU errors across device rebuilds safely
+codex/native-engine-state	683b2730bb1887f2087c6c661575e896359e093a		2026-10-02	704	72	False	False	2384	Capture the decoded native value already applied by the engine
+codex/native-lfo	649066a694ba9f55763f420f84c472a5fea0e9ea		2026-10-02	887	72	False	False	2362	fix(import): decode LFO waveform-specific payloads and versions
+codex/native-lua-runtime	f9830c67f507ca04daaa097ed9a361c1350b1867		2026-10-03	1164	72	False	False	2359	test(native-ui): retain full Ring annulus winding and inner radius
+codex/native-lua-ui	3c806173e132091f14c45e931a049a9a9d16f8ec		2026-10-02	908	72	False	False	2369	Bound component nesting and reject incomplete DSL names explicitly
+codex/native-lua-validation	ea5cd87a988cbaaffcc55bfb3668a29680d8e921		2026-10-03	1168	72	False	False	2355	merge: synchronize Native UI candidate with accepted 0.3.142 metadata
+codex/native-midi-audit	682dabc06c7a854f64980da163c89afbbf40dc36		2026-10-03	995	72	False	True	2351	test: verify native onset tuning against independent tone frequency
+codex/native-midi-input	eac5dba8b88061c716003f7244ccdfd6c2adc929		2026-10-03	968	72	False	False	2360	Admit optional VST3 note length hints without shortening host ownership
+codex/native-module-bypass	c68b8e61d6c91dea217fd1630097b0e126c57ec6		2026-10-02	856	72	False	False	2361	Initialize pitch and module envelopes from saved source bypass
+codex/native-parent-contract-141	71b640dd4589ba9b23b16d26dfd88347b22dea9f		2026-10-03	1072	72	False	False	2343	fix: validate native editor parent representations before attachment
+codex/native-primary-ahdsr	a7c13ceb378935bca5a029d60b49db2e0c34cc54		2026-10-03	1078	72	False	False	2346	Include propagated target rounding in AHDSR reference bound
+codex/native-primary-ahdsr-validation	990a75c8688c4164e9b7d4f6d357fd882da1ea43		2026-10-03	1091	72	False	False	2344	Keep router-state recovery checks independent of native admission warnings
+codex/native-shaper-layout	6a782c6f3538561a5d78a3bff0230cc03be45e44		2026-10-02	906	72	False	False	2362	Read wavetable modulation targets without a module slot byte
+codex/native-ui-discovery	80c5465956d3b3d432b202601cc3dc0f14a7e911		2026-10-02	938	72	False	False	2369	Resolve native UI entries with explicit language and target metadata
+codex/native-ui-drop	d7676564bd8257c6a703620f6ec87c2a706eaba1		2026-10-03	1178	72	False	False	2357	feat(native-ui): map bounded Spacer to existing MUI surplus layout
+codex/native-ui-journal-isolation	25897ccd64b68d5a1ca977221d78684524fcde14		2026-10-03	1114	72	False	False	2359	test(diagnostics): isolate global journal contract in subprocess
+codex/native-ui-lua-probe	68b777eef273477c918a8b78b9687e8f202db4a3		2026-10-02	837	72	False	False	2364	Add executable native UI Lua module and connection feasibility probe
+codex/native-ui-rotation-adapter	4ced974d2c3e2b5bc1b9dccdcbc18662b8964e59		2026-10-03	1115	72	False	False	2359	feat(native-ui): adapt subtree rotation and captured local pointer pose
+codex/native-ui-timing	3f539f9fcb0b806ce30b2efdf67d979aa19a3fca		2026-10-02	671	72	False	False	2383	Capture bounded opt-in native UI callback timings off thread
+codex/native-vector-assets	7b3423d68771d63e8e03bb983819fae0091f3a4b		2026-10-03	945	72	False	False	2363	Pin MUI readonly current-pointer accessor for native hover events
+codex/native-wavetable-source	db85397e69e75f166c449203abbde738e4d774f1		2026-10-02	842	72	False	False	2361	Test wavetable constants through public KSP initialization
+codex/next-public-export-review	db68c12ea8d0d326a7e50fe4eaa6ef324fb252a8		2026-10-03	969	72	False	False	2360	Review timed-note fixtures and labelled executable validation digest for export
+codex/nextshipping-ledger	d289917ca01befa2af49fc857632079ec0335420		2026-10-02	837	72	False	False	2361	Advance to 0.3.64 with seventeen reviewed semantic corrections
+codex/nightly-critical-path	378e39094318ef27da2be6dbc68fc14428117e44		2026-10-02	848	72	False	False	2361	Overlap nightly packages with release checks and avoid duplicate main CI
+codex/nightly-format-manifests	520f104863dfcb87395301216e281cbaecf6bae2		2026-10-02	538	72	False	False	2386	fix(ci): skip absent nightly refs before deletion
+codex/nightly-keychain-fix	8311e3319dca9070d196e0b022fc9bbbaa5f582f		2026-10-02	907	72	False	False	2362	Handle bundled Developer ID intermediates without hiding import failures
+codex/nightly-notarization	2022c4d306115538135ef35d5fd4ade578df2599		2026-10-02	894	72	False	False	2362	Accept wrapped base64 certificates while validating encoded contents
+codex/nightly-utf8-notices	bbee8df35a8bdd817eb4971fc4b19e06e88b5744		2026-10-02	783	72	False	False	2361	Read generated license JSON as UTF-8 on Windows
+codex/nis-copy-efficiency	5d3b5971198d13a67590470b3bfeef889b11b44a		2026-10-02	507	72	False	False	2390	Reuse validated NIS container during file detection
+codex/nkx-directory-diagnostics	ea161ac8399daa214345088741e684cec888e84b		2026-10-02	724	72	False	False	2384	fix(nkx): report directory signatures and read boundaries
+codex/notary-phase-diagnostics	7dcd30455ffe1fa1edba43ede81d413eee58ddb7		2026-10-03	1072	72	False	False	2344	ci: expose safe macOS signing phase failures
+codex/note-off-offset	8775d97522791ee86775e8266a17fc930c03eee8		2026-10-03	959	72	False	False	2360	Honor KSP optional note-off offsets with retained event timing
+codex/offline-release-tails	43f07b3cc43756dc118e1610d78427049acd6ed7		2026-10-02	751	72	False	False	2382	fix(render): retain release tails during offline overload
+codex/original-ui-text	2aec43871d31edc5c20c01867cded535f6078cc6		2026-10-02	537	72	False	False	2386	Respect original control font colors and state inheritance
+codex/parser-compat-reported	1e79e3ddaa95dadc3e416197db072e1902fff2c1		2026-10-03	958	72	False	False	2360	Document bounded Falcon groundwork and current LFO playback limits
+codex/pending-114-public-audit	5d9b492126264ea804c9b86c7e760dd5078fbd98		2026-10-03	988	72	False	False	2352	Draft pending runtime outcomes and preserve BUFFR distribution notices
+codex/pending-115-ledger	66239187aae5d0257c7c59f5ad71c78fedcfaf40		2026-10-03	992	72	False	False	2352	Accept fourteen scoped fixes after frozen gates and advance version to 0.3.115
+codex/pending-release-ledger	631c70d5b8f34c817603c48632779da5caf3c6e8		2026-10-02	819	72	False	False	2361	Advance to 0.3.47 for eleven validated compatibility fixes
+codex/per-note-brightness	7881307ef93f581da0fa15a4185e16fd8fb146ee		2026-10-02	843	72	False	False	2361	Keep registered per-note brightness in its retained voice expression
+codex/per-note-brightness-ingress	57ce315557603724dee1d0d8a3a4f143a65ece0b		2026-10-02	854	72	False	False	2361	Apply per-note brightness to native voice start-only modulation
+codex/performance-background	ebcd1fd342aca6a1d02a7379789cf869bcd9dd63		2026-10-02	825	72	False	False	2361	Retain authored performance-view background colors through live publication
+codex/performance-hardening	c446a6c7b041eb98c86d6f8c7d61720682bcdf15		2026-10-03	1105	72	False	False	2349	Prove rejected phase setter executions through their distinct fallback records
+codex/persistence-unlocked	1fedf8a3bb98b7dd0c428c18a74d1a71a23696d7		2026-10-02	791	72	False	False	2361	Keep unmatched snapshot copies alive until selection unlocks
+codex/playback-ab	5a5c68a2c419120bb0d298ccc1ca2d8246f75bbe		2026-10-02	505	72	False	False	2390	Account for reviewed synthetic KSP regressions in public export
+codex/playback-night-sweep	3007f4d41ea1c765f5fe97bb396d1ca378808985		2026-10-02	551	72	False	True	2386	Review muted fresh voices separately from residual effect tails
+codex/plugin-owned-panic-context	817eea7a9f87aaabddcd9609f81b8636f22890cf		2026-10-03	1091	72	False	False	2344	Retain plugin-owned caught editor panic context
+codex/popup-hover-backdrop	3fc08ee0b677b7d8fe3a607e827e817930d809bc		2026-10-02	684	72	False	False	2383	Let popup menus own hover and outside dismissal clicks
+codex/popup-hover-fixture	9b69011990a1ce222fd7108e6c2aa9dbc5a62aac		2026-10-02	686	72	False	False	2383	Provide authored artwork for the popup view-selector fixture
+codex/preset-header-row	08f4a8d07ffbd2a0ca3b6e43a1618675cad2b23e		2026-10-02	722	72	False	False	2384	Keep snapshot categories in owned menu labels
+codex/preset-replacement-state	870c1fca3c6314d3354f2af0dfd1db37aebc3b54		2026-10-02	662	72	False	False	2384	Attach preset helper comments to their functions
+codex/public96-export-review	3f29d1ea883e8a343d03c1c01e5d98d8b1833b48		2026-10-03	957	72	False	False	2360	Review authored callback fixtures and omit two public example checksums from export
+codex/rack-empty-drop	79f6fc3bcb4c48495c58a4c18a71d2c84fbe16bc		2026-10-02	721	72	False	False	2384	Append browser drops anywhere in the rack empty canvas
+codex/rack-tail-geometry	5843155b66756d67e7204773e83d2283141e6416		2026-10-02	746	72	False	False	2382	Keep rack welcome drop area and scrollbar gutter stable
+codex/rack-viewport-virtualization	e5d22bb712bc5e986137089364204c525706574d		2026-10-02	737	72	False	False	2384	Dispatch queued keyboard input before checking rack growth
+codex/reference-format-audit	f95235358cfcaa2c0670c81a776288aa749c0a35		2026-10-02	671	72	False	False	2384	Add lossless native Kontakt filename table records
+codex/release-changelog	18c68a01ffd5a8369ccfb50ecdaa271ac57aba52		2026-10-02	726	72	False	False	2384	Record validated 0.3.23 fixes and bounded migration scope
+codex/release-note-mono-fast-path	86cdb699ee03af94508c894d70bfbe4782c982fe		2026-10-02	826	72	False	False	2361	Skip Note Mono tail scans for inactive banks
+codex/release-retention	0c685ffaa536f70a16bcd1dbcc634e6d90d2cede		2026-10-02	510	72	False	False	2390	Preserve stable source tags when pruning release downloads
+codex/release-trigger-note-mono	7c09b821feb5ed4ba43e509c63aab18ff07fccab		2026-10-02	815	72	False	False	2361	Preserve and apply release-trigger Note Mono
+codex/replacement-fixture-input	5b55afe81e43dcc92ae8cfe460f0fd090f442c60		2026-10-02	669	72	False	False	2384	Drive replacement fixture through a visible preset navigation control
+codex/reported-format-next	7aeb016f30b54f486598ca764ff230b866ee61d9		2026-10-03	1024	72	False	False	2349	Keep filename mapping independent of optional calendar dates
+codex/reporter-release-draft	12904ee25bf5338f6f0dde7b2ca9d989e96c2de6		2026-10-03	1069	72	False	False	2344	release: accept scoped reporter and Ladder outcomes for 0.3.141
+codex/reporting-final-validation	e8dad7081eb788fabf348de17744d44f3ddb19de		2026-10-03	1071	72	False	False	2344	fix: match native signature helpers to production and test callers
+codex/reporting-provenance-docs	55317c2ca6bd50a01d59f325110ff5f09baf0fd8		2026-10-03	1053	72	False	False	2345	Document support journal provenance and separate local export privacy from pending service storage
+codex/resource-ownership	1fd1380ee0f64078880e649e8b5f9336ed12e814		2026-10-03	1174	72	False	False	2356	Keep resource discovery within its instrument library owner
+codex/responsive-rack-header	166e50c17515cf15e025ee301adeae58dd403b64		2026-10-02	784	72	False	False	2361	Give responsive header fixture authored artwork for its view selector
+codex/restore-freshness-96	69304c5a33fc4772ae2d07e19c44137a7b867660		2026-10-03	960	72	False	False	2360	Seed restore regression epochs through the production allocator
+codex/reverb-time-display	782b00914b1b957baa445327ebad33e2f764df18		2026-10-02	652	72	False	False	2384	Display scripted reverb time through the effective DSP decay law
+codex/revision-owner-paged	4f0f24288af2ece2088ea6ab89d995138b330e28		2026-10-02	689	72	False	False	2383	Share sparse UI revision ownership across script runtimes
+codex/same-frame-writes	33b77c133331954411bdbc7f05da15cc1b24348a		2026-10-02	678	72	False	False	2383	Index same-sample parameter writes without audio-thread allocation
+codex/sample-traversal-parity	c446a6c7b041eb98c86d6f8c7d61720682bcdf15		2026-10-03	1105	72	False	False	2349	Prove rejected phase setter executions through their distinct fallback records
+codex/saved-lfo-fade	b8885133bd4a0a9523e7ad00e37a40a1f46ee2ff		2026-10-03	960	72	False	False	2360	fix(engine): render proven saved legacy pitch LFO fade-in
+codex/saved-lfo-phase	28ce8a579e8773fc39bcc219a523d3c428e9c072		2026-10-03	1076	72	False	False	2345	Apply saved cycle phase to admitted retriggered sine LFOs
+codex/saved-lfo-pitch	7b93fa535663369ee331f3239a74caa037379e76		2026-10-02	939	72	False	False	2363	feat(audio): apply native intensity writes to admitted pitch LFO targets
+codex/saved-sine-volume	184d803f4e9c59764817baf11a224d463d6db3db		2026-10-03	1029	72	False	False	2350	Gate sine-volume writes after render and verify decoded amplifier placement
+codex/saved-sine-volume-141-validation	1f1836a156f96ee8e18652e771c49c2d6744cd4c		2026-10-03	1092	72	False	False	2344	Accept primary AHDSR and visible crash receipts as 0.3.148
+codex/screenshot-prepared-fixture	6ca7ccab9076252d2dfcc5a546c45f01e7fa5a38		2026-10-03	1093	72	False	False	2344	Prepare screenshot rack variants only when selected
+codex/script-excerpt-diagnostics	870537f3dc45d6bcc200087dc9c52fb0be978de3		2026-10-02	753	72	False	False	2382	Fix source excerpt regression lease and report serialization
+codex/script-slot-ui	d82f6c7e3849934ec8137b7fe5008a4df40fddd9		2026-10-02	752	72	False	False	2382	Use imported tab helper for performance page selectors
+codex/service-controller-home	8925028fa0c9ae6da73d97cef6bbbe70fcc32394		2026-10-02	836	72	False	False	2361	Route ownerless script controllers through the configured part home
+codex/signed-intensity-alias	7007e7514f3346a13978007159411bdc9fdef38d		2026-10-02	928	72	False	False	2363	Annotate signed target readback fixture values
+codex/snapshot-base-binding	69f6fd8766f516654fa47ddb8eff97a9e4a48763		2026-10-02	834	72	False	False	2361	Bind template-named snapshots and apply explicit modulation removals
+codex/snapshot-modern-layout	35c0f39d5b4bcb1eeb858f1d19aa93c29c57e96e		2026-10-02	808	72	False	False	2361	Decode counted native modulation arrays with 64 external slots
+codex/support-cap-honesty	24d12998cd2609a3daa636dc32640e9f181d0a7e		2026-10-02	724	72	False	False	2384	fix(diagnostics): count KSP faults omitted by the location cap
+codex/support-core-reviewed	2f1572c8628e4e200392a8b62b9e62160eea6cb7		2026-10-03	1046	72	False	False	2346	Report acknowledged queue cleanup failures and correct omitted-slot fixture
+codex/support-parser-mpe-validation	c0f1d578aefc7cc835f9e885475a42381509ea0a		2026-10-03	1043	72	False	False	2346	Enforce support service JSON upload limit before network delivery
+codex/target-depth-polarity	84d3ddcc28a5afcaafe17fdb590706a0ddc07228		2026-10-02	826	72	False	False	2361	Decode Kontakt external modulation v0x104 with opaque footer retention
+codex/transistor-distortion-96	6c963845b32c915e28b01fe84f3747a409544575		2026-10-03	960	72	False	False	2360	Apply native Transistor Distortion scalar transfer curve
+codex/tube-distortion-96	334265511f83c847bf46d9eb80d482a03a808bdf		2026-10-03	959	72	False	False	2360	Apply native Tube Distortion scalar transfer curve
+codex/ui-auto-fit	0c691ed86087c56d791cbb41c10e5cbd741d9b0a		2026-10-02	610	72	False	False	2385	Parse UI benchmark metadata following the libtest prefix
+codex/ui-cost-partition	0896cd5da5c88589cb953430f6e011f534f4cf67		2026-10-02	630	72	False	False	2383	Count retained interface array cells in UI cost reports
+codex/ui-dependency-revisions	7f53de472a6f29a1def48a84cf39a2e077bc55b7		2026-10-02	671	72	False	False	2384	Invalidate performance views by published revisions instead of property scans
+codex/ui-graph-parity	76b3227c08d3f339f28f9b17a825345e6b474d0c		2026-10-02	689	72	False	False	2383	Preserve broad pictured value displays in vectorized views
+codex/ui-integration-fix	b68501fa03074d66a7feb502f33f78d7d582d2ea		2026-10-02	536	72	False	False	2386	Keep hidden Logs panes idle and update app menu fixtures
+codex/ui-library-sweep	1577b173d7c93c938532b2786f6f84510633f996		2026-10-02	552	72	False	False	2384	Require callback publication coverage in the UI probe
+codex/ui-observer-pump	5d85d15d7169a3d3bec86292cf389c4a2c86a381		2026-10-02	580	72	False	False	2385	Identify the actual callback target separately from direct frame edits
+codex/ui-optimistic-overlay	54860eb13785b3727494b86e5e562d870321a31f		2026-10-02	655	72	False	False	2384	Draw optimistic control values without copying script snapshots
+codex/ui-row-publication	010789f49f4239284319a33e451c0768ff1a4a55		2026-10-02	661	72	False	False	2384	Keep the static reuse fixture free of temporary string writes
+codex/ui-section-lag	d661045451939458a513422774788ded8c5738a4		2026-10-02	713	72	False	False	2384	Retain unchanged Original controls across live row publications
+codex/ui-selection-cost	f4d797476b607d3e3fa0519e7f6d887246a2649f		2026-10-02	688	72	False	False	2383	Document pointer isolation and consistent EQ gain captions
+codex/ui-sharpness-audit	dc82d0f91d67349b73edec69a2e96295ab0b5d0b		2026-10-03	1085	72	False	False	2344	test: distinguish opt-in cold CPU cache from warm observer frames
+codex/ui-snapshot-reuse	27530d5c949b9397e784f1d0e2bea385bc0cf026		2026-10-02	650	72	False	False	2384	Avoid retaining an unused live publication interface Arc
+codex/universal-macos-installer	08de72fd65d6ac98ba3686358bfb2f3c7dff2a87		2026-10-02	922	72	False	False	2363	Make signed installer bundle resources readable by normal users
+codex/universal-nightly	d798bc47fb22db5fada0d7f37ac61926683672a8		2026-10-02	916	72	False	False	2361	Retain reviewed processing and version-specific fixes in release notes
+codex/uvi-latest-integration	4bffbb18b867b0a8e84b435d11684784b237693c	origin/codex/uvi-latest-integration	2026-10-05	1264	72	False	False	2399	feat(mapping): add owned dry sample preview and record remaining parity gaps
+codex/uvi-linux-compatibility	9d69ae0b62a1ec73e85a70f50e73a6d016e0fb0a		2026-10-03	974	72	False	False	2390	feat(uvi): split audio endpoint and extend measured DSP
+codex/vector-plan-work	7e9abced65e101227bc6386e057cf8e45e228e6e		2026-10-02	638	72	False	False	2383	Remove unused Vectorized switch marks and catalog wrapper
+codex/version-workflow	b08378378afd671618a23a478b2a6ff75f3abbff		2026-10-02	509	72	False	False	2389	docs(build): declare the pinned framework minimum accurately
+codex/void-linux-portability	e31a6028d96c9f03e5db3e4991a72175fd09d48b		2026-10-02	834	72	False	False	2361	Retain GPU startup causes and diagnose Linux embedding
+codex/vst3-tuning-onset	6a7ebc5934b2bfc1d7349ca598b83f4abaaa9e65		2026-10-03	972	72	False	False	2360	Render zero-rate integer taps without a zero-stride iterator
+codex/wait-async-completion	aeaf340bbb88f293b9060008fcd3efdc88eafd48		2026-10-02	908	72	False	False	2362	Wait for worker-backed KSP async operations to finish
+codex/wait-async-validation	53363885924dd8758041edfe5c4955d1f4d4a902		2026-10-02	911	72	False	False	2362	Wait for worker-backed KSP async operations to finish
+codex/wallpaper-resource-formats	3897fb7ebda4db29412b907cab5b767027c5987a		2026-10-02	724	72	False	False	2383	Resolve declared JPEG resource names with shared image decoding
+codex/wav-pcm-fmt	48a13665148d5afdb41e539682c7850761f77788		2026-10-02	761	72	False	False	2372	fix(audio): decode extended PCM WAVE format descriptors
+codex/windows-allocator-lockpair	ed244da3e2bfe62a76fb38b17f0c14e75844c7e7		2026-10-03	993	72	False	False	2352	Restore gpu-allocator Windows ABI pairing with both wgpu-hal versions
+codex/windows-renderer-stability	a6009f9cc690d974cfa3bfbd0107b7217a19d648		2026-10-02	789	72	False	False	2361	Preserve native surface failures and persist GPU init stages
+codex/windows-renderer-startup	083a0fd5c336d95111a47c693508cecb00f183d1		2026-10-02	713	72	False	False	2384	Default Windows renderer to DX12 and persist GPU startup diagnostics
+codex/zero-phase-depth	20900fb3a794095e948e644cdbf5214b561251f0		2026-10-03	1092	72	False	False	2344	Admit proven neutral saved phase modifiers and reject unsupported live writes
+codex/zero-phase-fixture	1e874ab13aeab5e93ee36e416c6725168181a271		2026-10-03	1105	72	False	False	2349	Prove rejected phase setter executions through their distinct fallback records
+codex/zone-fixture-identity-c810	6e7ef7163bbb9077e2b9e71a4a06d7e32a5caee8		2026-10-03	1004	72	False	False	2353	Expect stable zero-based source IDs in loop and release fixtures
+codex/zone-mapping-diagnostics	5ba3ef5f3898a360c71a9c35bf5149cf4a7988ee		2026-10-02	789	72	False	False	2361	fix(import): identify rejected zone mapping fields
+codex/zone-midi-next-validation	c810865cd14abf7c650abfc1e507adb6924b2bb1		2026-10-03	1003	72	False	False	2353	Retain absent native flag in authored filter fixtures
+codex/zone-skip-causes	ed9474009a49e224158d564795a527f8c86adeb3		2026-10-02	726	72	False	False	2384	fix(diagnostics): serialize typed zone skip counters
+conflux-native-primitive-retention-20261010	8799d9cb47d5607e0ff1474078404bec172a8708		2026-10-10	158	7	False	False	240	perf(ui): retain proven pure native primitive subtrees
+conflux-native-retention-review-fixes-20261010	ca0dad4ccef87196e574aa7e525872981c23b80a		2026-10-10	173	7	False	False	232	fix(ui): bound native retention and preserve eager size reads
+dbg/pedals-proto	02d433849ecfa7705ba5dab7274ea7c7c3a477bb		2026-10-06	212	24	False	False	2041	DBG proto held_silent (never push)
+diag-copy-specific	1f56b07de477a7ec50d32a1317a351d248f921f5		2026-10-11	3	1	False	False	182	Carry lua/ksp fault text into diagnostics events
+docs/concise-readme-status	58c4c715639077bba633bcfe24a421c1f169f3d0	origin/docs/concise-readme-status	2026-10-03	1096	72	False	False	2342	docs: make README feature inventory reference prominent
+docs/kontra-roadmap-site	b5b814f2b2b0190b6e78083c29cf117e0133bca9	origin/docs/kontra-roadmap-site	2026-10-10	2	9	False	True	450	fix(site): keep support caveats readable on mobile
+docs/plan-v2-architecture	5cc338826760b692a6031d4e2983aeb2b53ded15		2026-10-06	123	28	False	True	2261	Revert freeze note; v2 continues per user direction
+feat/decipher-readers-v1	4bffbb18b867b0a8e84b435d11684784b237693c		2026-10-05	1264	72	False	False	2399	feat(mapping): add owned dry sample preview and record remaining parity gaps
+feat/decipher-readers-v2	2fb8c926dd39bb7ac26a84d4806f42de14b6630e		2026-10-07	490	24	False	False	1942	Read UVI4 state frames, clear UFS names and bounded NI members
+feat/inspect-daw-compatibility	0cb7a8a0b4d43086596a64c77320caa1b26d6d98		2026-10-05	0	24	False	False	2194	Merge pull request #33 from DerpcatMusic/fix/mui-visibility-browser-reveal-20261005
+feat/kontakt-falcon-parity	11ca186dbeb1f1fc5714e36614ce92e979eb55f6		2026-10-11	0	0	True	True	0	UI mapping, diagnostics, Scripts tab, Kontakt/UVI parity and perf fixes (#59)
+feat/kontakt-uvi-library-support	c1359117652bbdfd9fae01bebf9df0fe71389929	origin/feat/kontakt-uvi-library-support	2026-10-09	1	13	False	False	1477	fix(kontakt): read legacy AHDSR revision 0x10
+fix/analog-zero-output-gain	779c529101c5335d9a59e09c0bad437b417c6268	origin/fix/analog-zero-output-gain	2026-10-07	462	24	False	False	1984	EQ slots count the stored output gain only when a script wrote it (corpus: 12,917 of 12,918 store unity)
+fix/browser-search-red-followup-20261010	b7c5713b84e4422bfae61501c2e496a7d1120c1d		2026-10-10	205	4	False	True	197	fix(ui): reveal selected library after search
+fix/conflux-glyph-recovery-font-20261010	3ee53d398af995f58e357eab048f5922d8cc6ff5		2026-10-10	177	7	False	False	231	fix(ui): recover glyph settling and invalidate changed scene fonts and grid
+fix/conflux-ir-ground-key-20261010	f42b397fba5c3eb7fbf51b59230061a1cae2ea33		2026-10-10	169	7	False	False	232	fix(ui): invalidate retained IR ground on field color changes
+fix/conflux-native-actual-red-20261010	64c12da404dfae9f62595c0bea2a9a6d07e51728		2026-10-10	176	7	False	False	232	fix(ui): settle retained glyph hinting and witness native frame budgets
+fix/function-exit-note-flush-red-20261010	fde356073c49a70d71070ffab49a0680f829a6fe		2026-10-11	205	4	False	True	199	test: prove function return preserves deferred child edits
+fix/knob-drag-vector-kind	1c2072ca69913fe9e193a4d97143ba7ba9eebea1		2026-10-11	4	1	False	False	178	Retain idle KSP widgets in MUI memo runs and skip unchanged picture preparation
+fix/kontakt-fx-parity	fe10c5db0fa6b9e889b681d79181a85ca6194299		2026-10-11	60	1	False	True	131	Kontakt FX: record continuation evidence and measurement blockers
+fix/ksp-display-ext-next-operand	93dad7882992ef6a63bfcfd7e432c644dfd9d60d		2026-10-10	131	9	False	False	330	fix(ksp): preserve display Ext value and address operands
+fix/latest-mui-20261004	1a1931dc904c6edb91c723ef9dfd70407d3ef55e	origin/fix/latest-mui-20261004	2026-10-04	5	29	False	False	2319	Use constrained MUI browser panes and Linux portal dialogs
+fix/library-preset-search-20261010	cd92bfd08577aafee7f338cb0d04ae369f401c8b		2026-10-10	185	7	False	False	220	fix(ui): split library and preset search
+fix/mui-ui-diagnostics	f2bf971e31d861e3a15f6e7ecc642ce42fedd734	origin/fix/mui-ui-diagnostics	2026-10-09	5	19	False	False	1852	Wait for embedded X11 teardown before releasing host parents
+fix/nightly-font-licenses-030344	625ece996d810a7a3208ab71d27dd9925c02df29	origin/fix/nightly-font-licenses-030344	2026-10-09	1	14	False	True	1478	Accept shipped UI font licenses in Nightly notice bundles
+fix/nightly-notes-limit-030306	b5cd9cee46a5a4fbb987b2e0eebcdc5287d00274	origin/fix/nightly-notes-limit-030306	2026-10-09	1204	17	False	False	1558	Preserve complete release notes beyond GitHub body limits
+fix/original-view-ksp-visibility	68286fa91207314ab47030d7c27b57a84d5782f4		2026-10-11	2	1	False	False	180	Drain script UI effects every editor frame, settle scan snapshots, drop dead counter
+fix/restart-tripping-thread	1a9f7b5e787032fb64d66986e606893f7a0a9436		2026-10-09	0	17	False	False	1566	Fix cold explicit-target packaging for 0.3.306 (#42)
+fix/settings-keep-unknown	af77fb290b7a660dc8bf0e6bef7734f13f6bae64	origin/fix/settings-keep-unknown	2026-10-08	700	20	False	False	1869	Keep settings this version does not know when saving
+fix/ui-mapping-controls	86effda4af0c1458c2181bbfbb0d278ea011fc63	origin/fix/ui-mapping-controls	2026-10-11	150	1	True	True	0	docs(uvi): verify AO authored images with one scanner render
+fix/uvi-programs-play	082a10538c626cbd02c36816a0a51547735111a9	origin/integrate/core-v2	2026-10-08	694	20	False	False	1871	corpus-health: give scripted programs time to finish their own release samples
+fix/uvi-restore-order	0d9069377ed3b2247c145bc6ae8210a1c2ce8971	origin/integrate/core-v2	2026-10-08	649	24	False	False	1898	corpus-health: pick the covered key nearest middle C for scripted programs; CH_KEY override
+fix/v1-midi-ingress	ee4d07c9aff9bc3ddf339e336c99ccba531a5695	origin/fix/v1-midi-ingress	2026-10-06	2	24	False	False	2194	Format the MIDI 2.0 controller translation
+fix/v1-terminal-retry-and-persistence-snapshot	0ab033aaee1495370c9a64b1939e9f8fa6442088	origin/fix/v1-terminal-retry-and-persistence-snapshot	2026-10-06	2	24	False	False	2194	fix(ksp): save persistent state from one callback boundary
+fix/waveform-source-blockers	8d188747ca910faeea3348174ffbe518e1e27b9b		2026-10-10	136	9	False	True	309	docs(waveform): pin blocker fixes and source-only regression evidence
+gpt/parity-luau	7c29f7cc11b788ed24340fa5d5c555f2313d8829		2026-10-11	57	1	False	False	122	Keep synthetic parent and uncatalogued module references visible
+gpt/script-view	96a09b37285585fdf614433fa691bed644971f33		2026-10-11	58	1	False	False	123	Keep script inspection aligned with runtime coverage faults
+handoff/k8-format	725be531fb05a9e11b2ced680d6bb0f6345a3b35		2026-10-10	147	7	False	True	244	fix(ni-file): reject unconsumed program and group-list framing
+handoff/k8-ui-resources	41ec1c1e5943ae0e4c4b67d20415c376102a1d20		2026-10-10	147	7	False	False	247	Preserve opaque resource TOC fields and use bounded member IDs
+handoff/pi-conflux-k8-effects	331abab9bdaf33577468f9f272f3e1bec97d0027		2026-10-10	147	7	False	False	246	fix(kontakt): report malformed effect payload framing at physical slots
+handoff/pi-conflux-k8-ui-profiler	2d7b3a94e8d3d40f36866268d6071f88ecc49cb2		2026-10-10	148	7	False	False	245	Seed Conflux IR audit values and checkpoint timings before callback assertions
+integrate-ksp-old	6baac1bb50eb9046b6b15ae814659299cbb08967		2026-10-07	649	24	False	False	1883	Merge v2/ksp-runtime-engine-par e79c7dfc
+integrate/core-v2	49af64389c6fc15088a0dec272e8e6a35eda1c11	origin/integrate/core-v2	2026-10-10	1663	8	False	True	400	Record the independent published 403 installed-file update accurately
+kontakt-parity	7936b65ccbdd51fb8c876c5ebae448224f73c8e5		2026-10-01	452	72	False	False	2399	Ignore stale patch timing measurements
+logs-context-polish	f0516d1937bd03f85383f29dde8d578c64f2269a		2026-10-03	1074	72	False	False	2344	ui: invalidate Logs filter cache for replacement journal history
+main	1f1836a156f96ee8e18652e771c49c2d6744cd4c		2026-10-03	1092	72	False	False	2344	Accept primary AHDSR and visible crash receipts as 0.3.148
+parity/medium-dsp-20261011	6bc6c224e05942fe507977d177d3062686d96dcc		2026-10-11	211	4	False	False	193	docs: hand off source-only step envelope regression
+parity/medium-ksp-20261011	b64d9d80accf77e183235f83aa56717c2cb3146b		2026-10-11	210	4	False	False	194	fix(ksp): sort string arrays in callbacks
+parity/medium-library-open-20261011	95b3c0e1b904731194b7549360d95a3b86749865		2026-10-11	210	4	False	False	192	fix(kontakt): accept empty saved numeric arrays when opening libraries
+parity/medium-next-batch-20261011	52005c2bd59bce5a67878b161382ed6f023458ad		2026-10-11	215	4	False	False	190	fix(kontakt): accept empty saved numeric arrays when opening libraries
+parity/medium-ni-file-20261011	7971dcc468bf44ef3b5d800128732176ef88ace5		2026-10-11	209	4	False	False	194	"Revert ""Update MUI git siblings and preserve Windows DXC pin"""
+parity/medium-ui-20261011	deade24f3b35ca94e137ed7330f795ed73ee5e3f		2026-10-11	210	4	False	False	194	Reject stale art completions before pending request removal
+parity/medium-uvi-20261011	14f89598df96797c207722fbe36f02b31d2a2575		2026-10-11	210	4	False	False	194	fix(uvi): return nil for absent parameter connections
+pending/mui-stability-65ab5-20261011	81b86f9f1b443a1ee4a53623248d8488d3c634d8		2026-10-11	208	4	False	False	196	Update MUI git siblings and preserve Windows DXC pin
+perf/rss-vista-load	ac4226c2ba4a6239ab90b3faf89bc98e8f334ae1		2026-10-11	53	1	False	False	131	perf: native loop slots keep geometric stream demand (no per-frame walk on the audio thread)
+perf/ui-gpu-limits	50b9ee71a95f6fe1f00adbe03b74470be0ea323f		2026-10-11	9	1	False	False	178	Component-level memo with tracked reads, lowered-El cache, event index, one-shot GPU retry
+perf/v1-block-voice-dsp	7210cb968bd3d6e8b2a0ce5b79b035d4f71cb4b6	origin/perf/v1-block-voice-dsp	2026-10-06	1	24	False	False	2195	Add a high-polyphony voice DSP benchmark example (WIP baseline)
+pi-audit/roadmap-next-20261010	13c044d6f9f80576507521a2dc6521e9aad7d9c5		2026-10-10	145	9	False	True	270	docs(waveform): pin blocker fixes and source-only regression evidence
+pi-parity-release-event-playpos-20261010	201e80bdc7e9fbdeef7831f6909f83f83a2e805b		2026-10-10	146	9	False	False	272	audit(event-playpos): pin CURRENT13 clock plan and synthetic fixtures
+pi-parity-release-listener-20261010	8d48f785706ff54920e3b46ad92fa114dcfbf953		2026-10-10	146	9	False	False	265	fix(ksp): validate listener contexts and timer ranges
+pi-parity-release-pgs-string-20261010	13c044d6f9f80576507521a2dc6521e9aad7d9c5		2026-10-10	145	9	False	True	270	docs(waveform): pin blocker fixes and source-only regression evidence
+pi-parity-release/event-zone-20261010	abcf098587660b3d22b2b40f9884320fb3633fb4		2026-10-10	146	9	False	False	269	fix(ksp): report highest physical event zone and live no-zone sentinel
+pi-parity/uvi-lanes-13c044d6-20261010	f697c32a7c803be887a53bccb967d056c95e9d9d		2026-10-10	146	9	False	False	274	audit(uvi): characterize queue readback and design prepared-lane acknowledgement
+pi-release-430-modulation-fix	5d9ea1e638eb7572b38232170ce9fbbc1fa9e029		2026-10-10	147	7	False	True	245	Fix legacy AHDSR authored-state capture
+pi-release-430-waveform-fix	eff5198d32006aaae48c00116ee4a70a21865235		2026-10-10	147	7	False	False	247	fix(ksp): reserve waveform selectors after loading performance view
+pi/conflux-analog-capacity-diagnosis-20261010	0918d8204bf9a334aa33fc471291b9cd69e89042		2026-10-10	169	7	False	False	234	docs: pin Analog Strings capacity diagnosis blocker
+pi/conflux-authored-projection-retention-20261010	5cb4af2c9d069ce9880a15c766556f6d04e940df		2026-10-10	158	7	False	False	240	perf(ui): retain authored source projections per face
+pi/conflux-glyph-validation-20261010	304076d15708437117aef6d75b39832cd5efb290		2026-10-10	176	7	False	False	232	fix(ui): settle retained glyph hinting and witness native frame budgets
+pi/conflux-ir-decoration-retention-20261010	637adc5c90f0b55577da2888c382bf0bb61da4c3		2026-10-10	164	7	False	False	233	perf(ui): retain pure IR decoration and generated layout
+pi/conflux-k8-conflux-hotpaths-fe86caf4	2de79788494b329247cfe593d8670c5bdd99c0e5		2026-10-10	147	7	False	False	249	docs: trace Conflux interface hotpaths and measurement boundaries
+pi/conflux-k8-modulation-20261010	58d5f64661db18a81cbd11f3a039bc96b17c5fb5		2026-10-10	147	7	False	False	245	Retain original Kontakt modulation wire records in importer IR
+pi/conflux-k8-next-20261010	ff60de20eeae95fdd736f3b064325d1ef9f6a84c		2026-10-10	156	7	False	True	240	test(ksp): honor terminal and NKA callback contracts in RPN fixtures
+pi/conflux-k8-resource-id-followup-20261010	dff99bbb074dfa259caa3c32a3ca85300ff6c015		2026-10-10	148	7	False	False	246	Read named NICNT resources by selected bounded item range
+pi/conflux-k8-validation-20261010	d903ae378d9a6cfbfc02c6f0df9f1f23a21279e9		2026-10-10	162	7	False	False	233	fix(kontakt): report malformed effect payload framing at physical slots
+pi/conflux-native-retained-validation-20261010	35139a99c2b8f5426987de42f6cd9a14bd3799a7		2026-10-10	172	7	False	False	232	perf(ui): retain proven pure native primitive subtrees
+pi/conflux-nka-snapshot-pool-fix-20261010	35139a99c2b8f5426987de42f6cd9a14bd3799a7		2026-10-10	172	7	False	False	232	perf(ui): retain proven pure native primitive subtrees
+pi/conflux-nka-snapshot-pool-successor-20261010	01a5bde95517fe873a69c465a0e1ad95cf0484bb		2026-10-10	173	7	False	False	232	fix(ksp): bound NKA snapshot slots by per-job payload
+pi/conflux-recovery-validation-20261010	e5b559d37ebc7da3f6ac4670378a7d130048b193		2026-10-10	178	7	False	False	231	test(ui): pin existing MUI dev dependencies for framework pixel checks
+pi/conflux-release-ledger-430-20261010	4c431090377d1fdba2f39c8b60ba18efdea9fda6		2026-10-10	159	7	False	False	240	test(ui): gate optional native diagnostics in audit
+pi/conflux-retained-cohort-validation-20261010	ab54e89a4fc93128c4f4b78b771d9dca653e83ce		2026-10-10	171	7	False	False	232	Prepare hit-test geometry before NativeUI event callback witness
+pi/conflux-retained-event-validation-20261010	dcb3f8b25fcf5ee8bc797f728d1788fa5916155b		2026-10-10	169	7	False	False	232	Measure lazy NativeUI event payload creation directly
+pi/conflux-retained-layer-validation-20261010	2799df958eac916cba41edecddac2c79cd9c807f		2026-10-10	168	7	False	False	232	perf(ui): retain pure IR decoration and generated layout
+pi/conflux-retained-successor-validation-20261010	d1d6376993597e218b48abbc04fb168c16805a30		2026-10-10	174	7	False	False	232	fix(ui): bound native retention and preserve eager size reads
+pi/conflux-retained-ui-20261010	b045c8eec729ec50dd3946f463822059fe95fba6		2026-10-10	181	7	False	False	229	test(ui): include vendored framework in shared workspace for pixel regressions
+pi/conflux-rpn-two-red-followup-20261010	3753b964695ccc5ee65c17478bebff454f25e691		2026-10-10	151	7	False	False	245	docs: hand off source-only RPN RED fixture corrections
+pi/integration-round3	9075da681fbca5019640619822a4540bfd2a57a1		2026-10-10	103	9	False	True	384	docs: record release-admission RED GREEN and next combined prerequisite
+pi/integration-round4-20261010	366515c96b583747d1bd77c881b1f6909e86cf0d		2026-10-10	115	9	False	True	365	docs: bind final fade evidence to nonzero parallel witness
+pi/integration-round5	bac3c616824cf26e2a888c09cb21433b727d9079		2026-10-10	120	9	False	True	352	docs: pin own synthetic performance admission and v1 custody gaps
+pi/integration7-reviewed-waveform-composition	13c044d6f9f80576507521a2dc6521e9aad7d9c5		2026-10-10	145	9	False	True	270	docs(waveform): pin blocker fixes and source-only regression evidence
+pi/integration7-source-draft	4fcb6cb7edaabc9f6086649d0e85b22eb09b2867		2026-10-10	141	9	False	False	287	docs(ksp): pin waveform requirements and unimplemented runtime gates
+pi/integration7-source-successor	d6d4cd6d8edd1ab48c089892e3e2d3600bdcd5a3		2026-10-10	143	9	False	True	277	docs(ksp): pin waveform admission contract and source-only receipts
+pi/ksp-display-ext-text-fixture-fix	c40a41d87ec6f807e8db236fe9831f58132021fd		2026-10-10	152	9	False	False	259	test(ksp): retain owned display text before borrowing it
+pi/ksp-following-reviewed-three-fixes	18c5e31217a8c960b24e68ce2bf0717f8881c774		2026-10-10	151	9	False	True	259	docs(ksp): pin following three-fix composition and source-only custody
+pi/ksp-function-exit-next	48bb0479b314c5a86535d3b45483ef6815afc933		2026-10-10	133	9	False	True	325	docs: pin function exit source spec and no-build audit evidence
+pi/ksp-host-transport-429e	a7443758424004cde01951b92ca617745b29b4c2		2026-10-10	92	9	False	True	396	docs: pin KSP host transport evidence and following-cycle gates
+pi/ksp-real-sgn-once-next	54c4dd897d5fd7d6ede2fc050cc74d4da060160e		2026-10-10	131	9	False	False	329	fix(ksp): evaluate real sgn operand once without narrowing
+pi/ksp-rpn-consumer-next	b557602b540ab2e2b45875d4ec1fec1e38e8e587		2026-10-10	132	9	False	True	320	docs: hand back RPN source custody and unresolved stage identity review
+pi/ksp-rpn-deferred-fixture-fix	c86b841f4ba3bc3322ba876b06f170bc79a17d4d		2026-10-10	136	9	False	True	296	docs: hand back bounded deferred RPN fixture correction
+pi/ksp-rpn-lifecycle-fix	273504189d92656e4444552e1c5d8ff548f4c2c2		2026-10-10	134	9	False	True	306	docs: hand back bounded RPN lifecycle source and pending review gates
+pi/modulation-control-remap-fix	f1ea356b0a93fc23cc9d2a866e6ac31fd37b9280		2026-10-10	130	9	False	True	331	docs: pin schema remap source evidence and pending combined validation
+pi/modulation-fixture-compile-fix	5f60978a0cc21bfe518906b6f600d4f857d9e62a		2026-10-10	133	9	False	True	327	docs: pin modulation fixture syntax successor and frozen RED receipts
+pi/native-fade-fix-round4	0950ea4e19bb09274ea4d6b3d925b49eaf5c2120		2026-10-10	107	9	False	True	379	docs: bind final fade evidence to nonzero parallel witness
+pi/native-pair-round3	a464ac5d124c6cf4b0a1cf145b5e09b39f527041		2026-10-10	95	9	False	True	394	docs: pin paired fade batch and verified explicit-path NKA follow-up
+pi/nckp-resource-name-fix	1b6280a2b64b5d8097f10cdc31df7feaa97116c3		2026-10-10	105	9	False	True	380	docs: pin NCKP scanner native-spec evidence and unrun validation targets
+pi/nckp-round6-fix	b216cde9a5b9fd9bd4230e0b63ba90b7e365035b		2026-10-10	122	9	False	True	349	docs: pin NCKP value test correction evidence and next gate
+pi/nka-explicit-path-round3	f75294639af9bd1e32c71b7c6b5e62d5b866e2c7		2026-10-10	91	9	False	True	393	docs: pin NKA candidate evidence and unrun integration gates
+pi/parity-release-arrays-20261010	4492c873d9168e24d1ec59f71d36c222cb506f4a		2026-10-10	146	9	False	False	268	fix(ksp): validate array equality and bound search to storage
+pi/parity-release-following-freeze-01a125c0	bfd0fb18ea0cc4ab1baa203599850564098b04f0		2026-10-10	146	9	False	False	277	docs(ksp): freeze reviewed following stack source and test plan
+pi/parity-release-legacy-delay-20261010-1219	13c044d6f9f80576507521a2dc6521e9aad7d9c5		2026-10-10	145	9	False	True	270	docs(waveform): pin blocker fixes and source-only regression evidence
+pi/parity-release-legacy-eq-20261010	7b19dde4f55d9f62fc4752a3368cc2b452d40870		2026-10-10	146	9	False	False	267	fix(kontakt): apply init-only group EQ band gain writes
+pi/parity-release-multichannel-20261010	da8de86213a508d97f98d7c0284ac6b8b90bf114		2026-10-10	146	9	False	False	273	docs(multichannel): pin CURRENT13 channel-loss seams and staged admission fixtures
+pi/parity-release/event-zone-ezr1-20261010	b35d472ca69cbbd2a2b8816b68350bd2e8fdb9a3		2026-10-10	147	9	False	False	267	test(ksp): correct event zone overflow witness
+pi/parity-release/event-zone-redfix-20261010	64bdfa0ac711cd3526aa25896c0df8017f7afbc1		2026-10-11	205	4	False	True	198	test: correct event zone release fixtures
+pi/perf-acceptance-next	38322e9589d2c88da11eaff3e28d2a5a585d3cea		2026-10-10	83	9	False	True	403	docs: pin next-batch comparable performance inputs and admission limits
+pi/perf-acceptance-round5	559c6915e27379140a34355441cfedffeffab101		2026-10-10	116	9	False	True	362	docs: pin own synthetic performance admission and v1 custody gaps
+pi/perf-admission-round4	60f5742c07526b14ab24894a13457b99a41ea523		2026-10-10	86	9	False	True	398	docs: record release-admission RED GREEN and next combined prerequisite
+pi/perf-host-takeover	3d4c9659a4bec3c6c97126bffb5404a9147a2f50		2026-10-10	7	10	False	True	501	Pin cold-head reload source and Kontakt reference limitations
+pi/production-modulation-next	c579d4a92cddb1a4d8c22312bf860cb02c38a87f		2026-10-10	118	9	False	True	355	docs: pin production modulation source scope and pending gates
+pi/release-430-rpn-fix-20261010	b21a424a314200be147485934b2c9c45b8370cfc		2026-10-10	147	7	False	False	247	test(ksp): give RPN fixture its exact candidate budget
+pi/uvi-loaddata-async-20261010	c27a6a869244d0175e8d76702302358a225f9771		2026-10-10	106	9	False	True	381	docs(uvi): pin loadData contract evidence and next-batch validation request
+pi/uvi-setter-consistency-next	b465a00820a6ed87fffc3f1d03cadbc95f7dfdd8		2026-10-10	117	9	False	True	359	docs(uvi): pin setter admission evidence and deferred regressions
+pi/uvi-setter-round6-fix	3312c4d25e119d937ed04934d55e65c542bcf177		2026-10-10	123	9	False	True	348	docs: pin UVI endpoint fault diagnosis and future combined validation
+pi/waveform-operands-round11	d1fb71954431d858f4437d1fb8492db820d68f18		2026-10-10	132	9	False	False	326	docs(ksp): pin waveform requirements and unimplemented runtime gates
+pi/waveform-runtime-round12	d247e0550b7ce2019d837d7e5c391ee85bb8c687		2026-10-10	134	9	False	True	316	docs(ksp): pin waveform admission contract and source-only receipts
+private/central-shipping-integration-e2129bcb6dc2	e95968eebe8eb0b0824ca39536672efc29eaf501		2026-10-02	784	72	False	False	2361	Merge captured central user work with KONTRA 0.3.23 shipping source
+private/central-user-capture-e2129bcb6dc2	e2129bcb6dc2587ecb0b61304c6e7fa9ebf637cd		2026-10-02	724	72	False	False	2377	Capture central user changes before private shipping integration
+re/w7-vectors-20261008	d773d2146d2a31fe52b85d9256598571479bfeab	origin/re/w7-vectors-20261008	2026-10-08	726	19	False	False	1851	docs(re): verify Kontakt automation framing and address bounds
+refactor/rust-audio-engine	7448dd153b1b25a978b2508b4bbee9be75dc3406		2026-10-05	1309	25	False	False	2509	fix(ui): observe ancestor mapping before visibility snapshots
+release/integrated-20261010	20a94f87f4ba1997dfe43507260c19838c65fee1		2026-10-11	210	4	False	False	194	Prepare 0.3.439 with nine validated compatibility fixes
+release/pi-parity-0.3.430-20261010	fe86caf4256121d0b5a0ef3eff5964d2aa61aa07		2026-10-10	146	7	False	False	247	Release 0.3.430 source composition over current main
+t3code/kontakt-plugin-replacement-review	bb7dca94d965ad098ab81132aafb40cb1559f332		2026-10-01	279	72	False	False	2390	Merge fx SIMD: partitioned convolution, silent-block skip, AVX2 reverb lanes, faster NCW decode
+takeover/dsp-20261010	12475a0d731b89af515ee1f43c5b23175ed67813		2026-10-10	1600	10	False	False	466	feat(core): prepare sample-clock Kontakt fade curves with legacy linear path
+takeover/native-ksp-20261010	58c0e3b1a7254d6cbeae3ac5b67c3c12743b7c82		2026-10-10	1615	11	False	False	470	docs: hand off native script source and pending validation
+test/v1-audio-thread-heap-guard	1f8dcabb96f5a5da8e0f4ba966ee7dac4261a850	origin/test/v1-audio-thread-heap-guard	2026-10-06	1	24	False	False	2195	test(engine): WIP audio-thread heap guard at realistic polyphony
+tools/kontra-scan	9dcf05e59cbc67e45c56872e1418817693150085	origin/tools/kontra-scan	2026-10-08	710	19	False	False	1865	Extend shared scanner with safe script phases and matched auditions
+tools/kontra-scan-native-20261008	356159761f99151e17ff66b344e5b5708139c6ed		2026-10-08	930	19	False	False	1626	tools: observe Native frontend and font results in current scanner
+tools/kontra-scan-native-9993-20261008	7a1f69d918381b9644b4f986ded3996496e6103a		2026-10-08	1002	19	False	False	1619	scanner: explain partial multi admission in load reason
+tools/kontra-scan-onset-20261008	01178ba443e2b409c23282509f57d35a60753c36		2026-10-08	718	19	False	False	1862	tools: install UVI onset provenance and disable persistent PCM cache
+uvi-ui-lua-fixes	e07103277a2d64729427365987891cd44b55e39b		2026-10-11	6	1	False	False	182	UVI: DigitalEq Bandwidth and GainScale reach the DSP, a node placed on several chains is one control, chain editor names the new processor parameters
+v2/block-voice-dsp	e1568f704aa44e583891b829f6260529adce1197		2026-10-06	128	28	False	False	2261	Resample pitched-up voices from pre-decimated octave levels
+v2/corpus-health	f82202e9ab639bb04c4ad1c829805bbab5036c6b	origin/v2/corpus-health	2026-10-08	662	23	False	False	1872	corpus-health: record selected groups, sample start, direction, loop and velocity layer per probed note; heuristic suspect flags and column
+v2/diagnose-dolce-9993	91056971635af61d8dcd365f673198c95fd9b8c5		2026-10-08	1004	19	False	False	1617	diagnose frozen Dolce envelope mute with shared signal graph
+v2/diagnose-vista-649	847a2c50f21031647f08537576c5e5264e6ecb10	origin/v2/diagnose-vista-649	2026-10-08	1026	19	False	True	1016	verify Vista recovery with normal note-end retirement
+v2/dsp-kernels	ddad588e74e3b811943ae5592aadb006a6b6f335	origin/v2/dsp-kernels	2026-10-08	700	20	False	False	1870	Coverage: ladder records are parsed
+v2/expression	24576d61a1555bc7849685f4c366dcaf6a871fa6	origin/v2/expression	2026-10-06	58	24	False	False	2126	docs(modulation): grid-aligned control points
+v2/expression-2	c24ee373442ae8168a21ca90a4dc6a1f19ce0722	origin/v2/expression-2	2026-10-07	615	24	False	True	1911	v1_runner: accept corpus-health list output
+v2/expression-2-midi	67efc66da15196b5d2a301897195f2fbe0ee967a	origin/v2/expression-2-midi	2026-10-06	144	24	False	False	2052	test(native): KONTRA_PROBE diagnostic for silent patches
+v2/expression-2-pedal	71463ac5fa5d4f4f41654e896142a7d22b54cd05	origin/v2/expression-2-pedal	2026-10-06	152	24	False	False	2053	test(pedals): Una Corda scenarios on the native path; substitute scripts always bind
+v2/expression-2-uvi	af50e6386374d283194bb43ed6d622f49d4043fc	origin/v2/expression-2-uvi	2026-10-07	474	24	False	False	1981	fix(uvi): restore saved widget values between the script body and onInit (airKnob 0 must reach onInit's default), survey ranges and cc1 retry
+v2/expression-artic	aefab35f8e145594a5f230f350feb41872af32a1	origin/v2/expression-artic	2026-10-06	37	24	False	False	2126	test(native): real Afflatus CC driver path; Prepared::switching; docs
+v2/expression-pedal	b2dcb074b63d87418821baf5199672fe4bfb0ba1	origin/v2/expression-pedal	2026-10-06	32	24	False	False	2128	test(native): split the pedal suite per scenario; add same-instant, channel-mode and scripted pedal cases
+v2/expression-uvi	e173ed570ee36d8598422bc03015b2b044bc9b1f	origin/v2/expression-uvi	2026-10-06	34	24	False	False	2128	refactor(uvi): modulation sources need no consumed-node marks
+v2/fix-art-poison-final-344	c126abf0ac27cb4edbc0d92b6debcdcb1112bcb6	origin/v2/fix-art-poison-final-344	2026-10-09	1248	13	False	False	1467	Recover later Original art after decoder permit poison
+v2/fix-art-worker-poison	51f52e44e440dcecb1286c2ffe56e63e25282cb5		2026-10-09	1251	13	False	False	1468	WIP recover common codec permit after a prior decode panic
+v2/fix-atmoraffe-ahdsr-v10	79d495db480c5cb4397071d5e08857fb01a379ac	origin/v2/fix-atmoraffe-ahdsr-v10	2026-10-09	1268	13	False	False	1460	Read legacy v0x10 AHDSR envelopes (Atmoraffe, TrueStrike 2)
+v2/fix-audition-picker	cc6ac0e8689e05e19127ebe2c2cc456def1d19c5	origin/v2/fix-audition-picker	2026-10-08	1050	19	False	False	1602	fix: audition playable notes after script keyswitch keyboard resets
+v2/fix-cpu	142733125c393d722816b781cf3a29112cc2fb0b	origin/v2/fix-cpu	2026-10-08	1030	19	False	False	1020	revert(core): reject resampler parts that fail original-instrument tails
+v2/fix-dsp	bbb143bf55cd270b99ba501abcf315b8c42384f8	origin/v2/fix-dsp	2026-10-08	1008	19	False	True	1615	docs(dsp): record cold-hold red-green and targeted compile evidence
+v2/fix-editor-cycles-344	bd0c5bf1dcfee19a2a49bb7151da6db2d8bdcec5		2026-10-09	1260	13	False	False	1466	Release unused GNU allocator pages after editor destruction
+v2/fix-editor-cycles-ready-344	1be3cfa680d0acf10071a4766ca89dd0196d8f04		2026-10-09	1260	13	False	True	1465	Document verified close and reopen render ownership regression
+v2/fix-editor-memory-344	845d82aedf5344e22e946f9b5f20a0ee864e70a8		2026-10-09	1255	13	False	True	1466	Document verified editor memory fixes and unknown retained RSS comparison
+v2/fix-editor-panic-344	7374252228b03ab4c29138b34ef1a4cbcf080d8b		2026-10-09	1248	13	False	False	1469	WIP capture first panics and recover poisoned editor state
+v2/fix-first-present-344	e2c6c47ca737d25632febad98348c251ad9d47b1	origin/v2/fix-first-present-344	2026-10-09	1245	13	False	False	1470	Recover GPU overflow and repaint newly shown editors
+v2/fix-gpu-damage-326	15c75ce961e96dc7a7193aa4465b1a0b514ff347	origin/v2/fix-gpu-damage-326	2026-10-09	1203	17	False	False	1538	WIP: preserve full-editor GPU allocation witnesses before restart recovery
+v2/fix-keyswitch	27b51c6d6ccdf17a394115737311e7ac0cf1fd14	origin/v2/fix-keyswitch	2026-10-08	722	19	False	False	1844	Show the effective articulation trigger in the performance header
+v2/fix-kfl2-nkx-directory	fae6047e60000ee3530d2e352196608be6374103	origin/v2/fix-kfl2-nkx-directory	2026-10-09	1207	17	False	False	1555	fix: accept repeated NKX directory members without losing case variants
+v2/fix-ksp-ignore-event	b4ae3c088fcf024b7fbbee5fe173b952daf2daeb		2026-10-08	1050	19	False	False	1603	fix(ksp): discard ignored source events without fabricated key-up
+v2/fix-ksp-rss	404436e6d87c08164e0727ed4edc2a669c60d36e	origin/v2/fix-ksp-rss	2026-10-09	1052	19	False	False	1603	docs: record KSP shared-code RSS and open Dolce CPU acceptance
+v2/fix-ksp-rss-dolce	00db89af4332aa35fb9767e21eb75e8296d06ee7	origin/v2/fix-ksp-rss-dolce	2026-10-09	1055	19	False	True	1602	docs: park CPU attribution and retain Conflux disclosure
+v2/fix-ksp-sema-coverage	d60ab2f69fa16d2a18bf02fb7f1cbb16915e4dea	origin/v2/fix-ksp-sema-coverage	2026-10-09	1061	19	False	True	1599	docs: record quiet Areia snapshot timing and scanner gates
+v2/fix-ksp-service	970c7870d1d165b3d3ec82060e8952e034780912	origin/v2/fix-ksp-service	2026-10-08	1002	19	False	False	1617	Test Dolce envelope initialization with deterministic host streaming
+v2/fix-load	5e7071d505322c6b5e174e3c6ed93fd73da12e44	origin/v2/fix-load	2026-10-08	1051	19	False	False	1601	port from v1 0cb7a8a0:src/engine/mod.rs: size startup voice and event arenas
+v2/fix-load-cache-20261008	5a7c10dec8fbec19e5014b1f890aaf1ce000fd2a		2026-10-08	1056	19	False	False	1603	port from v1 0cb7a8a0:src/ksp/runtime.rs: start at 4096 note parameters
+v2/fix-original-art-344	82ee93c0b869b3fbff596566fde6079b0a2cdaa0		2026-10-09	1246	13	False	False	1469	port from v1 0cb7a8a0:src/engine/script.rs
+v2/fix-poison-final-344	97438d89749d5c428bd47a59a39717e060be99bd	origin/v2/fix-poison-final-344	2026-10-09	1247	13	False	False	1468	Recover poisoned editor state and capture the first Rust panic
+v2/fix-render	0fe7d5b6cf3a22978a36f805614ba2e9d6a3f022	origin/v2/fix-render	2026-10-08	1025	19	False	False	1615	Gate bounded Native image requests and typed resource failures
+v2/fix-render-bindings-ready	4b9039e3587ffd63137988093f6e9665d825745b	origin/v2/fix-render-bindings-ready	2026-10-08	1050	19	False	False	1603	fix: preserve native typed values and keep unmatched bindings inert
+v2/fix-render-budget	ec4d4c3fb40dfb07f51fcca315ebb040ca5ce241	origin/v2/fix-render-budget	2026-10-09	1057	19	False	False	1603	fix: bound Native UI evaluation by work rather than scheduler time
+v2/fix-render-canvas-ready	dd943398abbd2b9397c30baade36ab2f8beabd54	origin/v2/fix-render-canvas-ready	2026-10-09	1051	19	False	False	1603	fix(ui): budget deferred native Canvas painting independently
+v2/fix-render-caption-ready	f3c96317f88662bc39272af44a4b6a7428976644	origin/v2/fix-render-caption-ready	2026-10-09	1052	19	False	False	1603	fix(ui): preserve string property types on disconnected native controls
+v2/fix-render-census	0d8b84c74aa79f97ef8661502630a6e7be057643		2026-10-08	1002	19	False	False	1611	Supply requested Assistant Regular host font and separate scanner font failures
+v2/fix-render-census-324	1a905fca0214d3b739d1f9c707d465614a0b62fc		2026-10-09	1191	17	False	False	1558	Verify authored release sample completion beyond the former quick tail window
+v2/fix-render-census-release	e75c28223fb57eb4cb3728be447207f126b88b2f	origin/main	2026-10-09	5	18	False	False	1566	fix: retain partial scanner work on operational timeout
+v2/fix-render-meter	06aa4d35a94c5fe303ced7aae5705bd5b822c45d		2026-10-08	1030	19	False	False	1615	WIP: preserve resource authority and native paint investigation
+v2/fix-render-meter-wip	0964bcec4288d532850bf8202237623a05fdb13a		2026-10-08	1031	19	False	False	1615	WIP retain per-program resource authority and conservative KSP fallback
+v2/fix-render-paint	b3fb43b4b09d08434ac5b4fb4fb4e4b1a64b8f1e		2026-10-09	1053	19	False	False	1603	WIP: retain numeric Vista probe while native paint check waits
+v2/fix-render-resources	5fd1d1798d4534c599d8a8c38db7e4648a069947	origin/v2/fix-render-resources	2026-10-09	1056	19	False	False	1603	docs: park absent Vista and Pacific images with complete numeric inventory
+v2/fix-render-stack	16acebb8e56bf54281ca984e6e1ce60adf8d298d	origin/v2/fix-render-stack	2026-10-08	1029	19	False	False	1615	Gate iterative Native lowering on 2 MiB stacks and unchanged PNGs
+v2/fix-render-vista	d103dd387eadf9dfdfebed9235a815e304985486	origin/v2/fix-render-vista	2026-10-09	1054	19	False	False	1603	wip: refine numeric missing-picture origin inventory
+v2/fix-render-vista-triage	3b21ec9c88c29452cc241986e7012a7a781e7a89		2026-10-09	1052	19	False	False	1603	WIP: prepare numeric Vista resource resolution probe
+v2/fix-render-worker	49edd26e69e087db84346b99ee94fb284bf9cc74	origin/v2/fix-render-worker	2026-10-09	1055	19	False	False	1603	wip: refine numeric missing-picture origin inventory
+v2/fix-selection	99e4e0c86e4596bab6c228fd0c7f1dfe41399254	origin/v2/fix-selection	2026-10-08	831	19	False	False	1797	fix(core): retain deferred attacks through callback preemption
+v2/fix-settings-parity	f68aad09bafc8d190854f7e5d26d6ae4f1bf304f	origin/v2/fix-settings-parity	2026-10-10	1621	10	False	False	471	Merge published 5498 normalization for owned CHORUS readback
+v2/fix-tester-reader-versions	ac3b55a79c66f4f85eaaf61710663da758ff0c6f	origin/integrate/core-v2	2026-10-09	1246	13	False	False	1479	fix: decode versioned Kontakt arrays, names, envelopes and snapshots
+v2/fix-uvi	0be9aa7b8bc41257980c455f1ecb1e93a4ea00fb	origin/v2/fix-uvi	2026-10-09	1011	19	False	False	1610	audit: seed and synchronize UVI offline PCM witnesses
+v2/fix-uvi-bank-diagnostics	24966c074a472fbe88207615a52f30dee4780a7c	origin/v2/fix-uvi-bank-diagnostics	2026-10-09	1159	19	False	False	1566	Show grouped unsupported UVI bank diagnostics in the browser
+v2/fix-uvi-discovery	72bb976744762435ab726f0a00908f47d9f470c5		2026-10-09	1158	19	False	False	1566	Align DX12 allocator Windows types with the pinned WGPU backends
+v2/fix-uvi-open	a88b86ed87bfdd1a95bd02106e9dcc90c3c7644e	origin/v2/fix-uvi-open	2026-10-09	1208	17	False	False	1556	audit(uvi): expose optional nonblocking owner progress
+v2/fix-uvi-release-lifecycle	ba537b6f246cf8fc9cdc1f06de8a855ef4fc9276	origin/v2/fix-uvi-release-lifecycle	2026-10-09	1159	19	False	False	1566	fix: retire source-owned UVI script notes after sample completion
+v2/fix-uvi-scan-344	6df342507c67c24a3c3de94e7881cb4bf3fc2315	origin/v2/fix-uvi-scan-344	2026-10-10	36	13	False	False	1473	docs: retain UVI geometry and authored traversal READY receipts
+v2/fix-viewmodel	8b7c9c48129f629d855bf7a9157bbe7fe86ec778	origin/v2/fix-viewmodel	2026-10-10	1615	10	False	False	478	adapt existing caption size assertion to fractional geometry
+v2/fix-w12-gate	23b8e94f9bd0a9f3cc49c9730529a26d66fa1cb9	origin/v2/fix-w12-gate	2026-10-09	1062	19	False	True	1591	docs(audit): record cached EQ candidate recount and ranked remaining targets
+v2/fix-widget-gate	235ac3eb918a6e77d26b101e6a0418d40d7c48c1	origin/v2/fix-widget-gate	2026-10-09	1069	19	False	False	1596	Keep periodic script callbacks alive across intentional waits
+v2/fix-widgets	b1da7fa172f475a931b8eeb5f0e2be7cc6284d12	origin/v2/fix-widgets	2026-10-10	1609	10	False	False	475	test(waveform): measure source amplitude without assuming audibility
+v2/gpt-decipher-dsp	aa3430d61ebcccb2f3e98e66b57aeba61cdf5392	origin/v2/gpt-decipher-dsp	2026-10-08	695	21	False	True	1867	Verify legacy EQ sample history and block-dependent control smoothing
+v2/gpt-decipher-persist	6ae158204b2972fd756a868652d0f68151249cb9	origin/v2/gpt-decipher-persist	2026-10-08	693	21	False	True	1867	Shard persistence validation and distinguish master corpus counts
+v2/gpt-format-fxmod	b7f6af0bf7bd24876418fead74e57a8afa786af6	origin/integrate/core-v2	2026-10-08	696	20	False	False	1866	fix: preserve Kontakt bus extensions and unknown FX child identity
+v2/gpt-format-gaps	56ca1e44a79c46bdc3cc0c77bd69907d01b7bf1f	origin/v2/gpt-format-gaps	2026-10-08	696	20	False	False	1861	fix(kontakt): measure nested program references and retain declaration coverage
+v2/gpt-format-legacy	df7e322f00a50b4dba6920f3e8c601618f2a3fdd	origin/v2/gpt-format-legacy	2026-10-08	696	20	False	False	1865	test(kontakt): count every program in the legacy format probe
+v2/gpt-format-objects	cadd1a679075150ddef62160700f2e5305587310	origin/v2/gpt-format-objects	2026-10-08	701	20	False	False	1868	Clarify loop repeat tuning and KSP enum conversion boundaries
+v2/gpt-kontakt-ui	cda4ce2312ba44535c8b489f30ead55bc773c8c7	origin/integrate/core-v2	2026-10-08	696	21	False	False	1868	Kontakt UI: checkpoint v1 parity, persisted header view and popup work
+v2/gpt-kontakt-ui-v1-bench	0cb7a8a0b4d43086596a64c77320caa1b26d6d98		2026-10-05	0	24	False	False	2194	Merge pull request #33 from DerpcatMusic/fix/mui-visibility-browser-reveal-20261005
+v2/gpt-ksp-audit	a1446ec6be0162371948cef412dc9e9d0383e6fe	origin/v2/gpt-ksp-audit	2026-10-08	694	21	False	True	1867	docs(ksp): publish ranked behavioral audit and verified contract failures
+v2/gpt-uvi-audit	da3be219e4b70c278fb4d29edbe693367dadca27	origin/v2/gpt-uvi-audit	2026-10-08	694	21	False	False	1868	Add resumable UVI audit shards and state/bypass conformance repros
+v2/gpt-uvi-ui	24c70a25031243d002e24c661c1afbb1408653aa	origin/v2/gpt-uvi-ui	2026-10-08	693	21	False	False	1869	Honor UVI mapper positions and constructor defaults
+v2/kontakt-inserts	22a7231abc549c81da7da68cf0e36718cd146bb5	origin/v2/kontakt-inserts	2026-10-06	166	24	False	False	2047	Map Kontakt SV filter kinds 52/54/55/57 with the measured cutoff and resonance laws
+v2/kontakt-reference	7d15e5b899aa77b5fada0e5fb81caaba332b07a5	origin/integrate/core-v2	2026-10-08	701	20	False	True	1851	Probe: Una Cotton re-probe on integrate (91.7% same-sample), GUI-shot step in session_probe
+v2/ksp-coverage	6355d3afe32e2fd72cca289f28d47561532f637a	origin/v2/ksp-coverage	2026-10-07	418	24	False	False	1991	get_event_par reads another event's key and velocity; pin pending played notes during preflight; Una and Barbarian level probes (ignored)
+v2/ksp-frontend	4425732469cad99547431df07005f221261557cd	origin/v2/ksp-frontend	2026-10-06	78	24	False	False	2117	KSP: %CC_TOUCHED and search over runtime system arrays
+v2/ksp-runtime-engine-par	aabc7c136a3300b13767b621a38abbca386b3c7c	origin/v2/ksp-runtime-engine-par	2026-10-08	657	24	False	False	1879	Trace probe: KONTRA_TRACE_LEN/EVERY
+v2/library-access	e46b2f39205b68470d5eb99488f276c4d07113e3	origin/v2/library-access	2026-10-06	43	24	False	False	2121	docs(access): record expanded repair-source search
+v2/linux-native-library-openers	608a20a1687a501e161d80af72280639c122fbc3		2026-10-09	1203	17	False	False	1558	Allow cold release-profile verification to finish on Linux CI
+v2/load-speed	fb456b41cbf3034c7a1bf7f6f75ed1bfbc77542f	origin/integrate/core-v2	2026-10-08	692	20	False	False	1870	Merge remote-tracking branch 'origin/main' into integrate/core-v2
+v2/midi-fixes	678804e449457a1d62cd783d8bccd812b230fd4f	origin/v2/midi-fixes	2026-10-06	124	28	False	False	2261	Fix UMP note attributes, bit-depth scaling and native batch overflow
+v2/pedals-scripts-on	3bb0ad735a1b5275ece7e21b9dd1ea1f5ab00f6a	origin/v2/pedals-scripts-on	2026-10-07	264	24	False	False	2036	Support the four user event parameters (set/get_event_par 0..3)
+v2/pi-integration-round6	66eaf072d12387012c3a17c13b4140310f59e985		2026-10-10	128	9	False	True	335	docs: pin production modulation source scope and pending gates
+v2/pi-integration-round6-successor	2a243bcfa2262abb789265aa0951fd2a85854023		2026-10-10	130	9	False	True	331	docs: pin schema remap source evidence and pending combined validation
+v2/pi-integration-takeover	429e7dff3ecb0f53aef32c43201ab796ccc8c28c		2026-10-10	89	9	False	True	400	docs: bound Native readback candidate claims and batch gates
+v2/pi-ui-browser-status-20261010	f1ecfb6e9cec6ce45ba5d73f847ec822f977574f		2026-10-10	1601	10	False	True	471	docs: bound Native readback candidate claims and batch gates
+v2/pi-ui-mapping-focus-next-20261010	146f747859fa2e04cee0bc66313bde623a24e7a8		2026-10-10	92	9	False	True	398	docs(ui): bind next Mapping keyboard source and prior batch receipts
+v2/pi-ui-takeover-20261010	3145bdc24ed649508fdad4f0562dd78dcf5506e9		2026-10-10	1591	11	False	False	515	adapt resource filmstrip size fixture to shared fractional Size
+v2/probe-widgets-load	6f8a430cee234b8c9560ab0ccd74e93fb18704c1		2026-10-08	720	19	False	False	1865	Merge shared scanner extension sources into scratch probe
+v2/product-spec	4d6738b44cc37614256b1e548b6ead4f6b73aa8c	origin/v2/product-spec	2026-10-06	20	24	False	True	2129	docs: record v2 product requirements
+v2/re-program-reader	6ba9fa72579c9ab2ac08c4409ca4f7c6eb314900	origin/v2/re-program-reader	2026-10-08	713	19	False	False	1847	test(kontakt): retain current wet and dry gain in recovered FX regression
+v2/release-packaging	635c1ea57e3679ca8f3f4e9b4f1a3c7c2156c539	origin/v2/release-packaging	2026-10-09	1	17	False	False	1558	Keep every nightly and ship readable notes with lean archives
+v2/semantic-ir	7d63e543b679ff6bdda5cab88b252e43342dd112	origin/v2/semantic-ir	2026-10-06	125	28	False	False	2261	feat(core): lower the semantic IR to prepared plans
+v2/semantic-ir-main	30a3b7782532c66a50fb9a170683b6e5cc50681c	origin/v2/semantic-ir-main	2026-10-06	22	24	False	False	2129	Merge remote-tracking branch 'origin/integrate/core-v2' into v2/semantic-ir-main
+v2/simd-voice-dsp	95fd47b1efda449e03dde6489ae9ac2a75f91d72	origin/v2/simd-voice-dsp	2026-10-06	34	24	False	False	2127	Size start guards from the kernel's read radius at each zone's step
+v2/simd-voice-dsp-wip	e7c1efca1948dceaccadb221cd2d6341f37c1cdd		2026-10-06	129	28	False	False	2261	wip: --case bench mode (moved to v2/simd-voice-dsp)
+v2/stream-storage	bd3b92efc682c363c2a55017e533036a5ed3ad18	origin/v2/stream-storage	2026-10-07	516	24	False	False	1940	perf: 2048 script behaviors by default (dense chords overflowed the 387-behavior plan sizing); log when underruns occur
+v2/test-art-gates-poison-344	09c08d8699c70818ef98fa29618bc624f5fd4b5e		2026-10-09	1249	13	False	False	1468	Add regression for poisoned common image codec permit
+v2/test-art-worker-poison-344	32a882def1aa2a736b46c19c0128486ff46dbfe3		2026-10-09	1248	13	False	False	1468	Add regression for poisoned shared art decode permit
+v2/test-editor-poison-344	a1f9d1df9f66968e05334b579b9443e2ade50af1		2026-10-09	1247	13	False	False	1469	Freeze failing editor poison recovery baseline
+v2/ui	a02a558d01c5c17bb1565d0b45ccb21d6037153f	origin/v2/ui	2026-10-06	98	24	False	True	2051	UI.md: record the answered questions as decisions
+v2/w0-format-gaps-a83	a83fd10693f006c64fa2b2bec8143d528bf238dc		2026-10-08	787	19	False	False	1673	Merge audited format metadata while retaining the verified Program reader
+v2/w0-native-provider	8f4c3c7c7f268003a40bd34b6eff1b478cbb1650	origin/v2/w0-native-provider	2026-10-09	1204	17	False	False	1555	Open UVI banks and PasswordV2 programs with the native provider
+v2/w0-next-native-batch	54d9a5c5da45ada122694bde78e3b4aaf36dc731	origin/v2/w0-next-native-batch	2026-10-09	1367	12	False	False	1424	Record completed 0.3.381 source gates and publication conditions
+v2/w0-picker-baseline-3f49	6c535950f2809f7bef8d5a2f8eecb738933685ce		2026-10-08	1050	19	False	False	1603	audit: observe articulation after the original 3f49 audition
+v2/w0-ready-383	5498e631cda929081f78cd8731c4a4614d6b9db6		2026-10-10	1594	10	False	False	472	release: accept ten tested fixes as 0.3.403 with grouped notes
+v2/w0-ready-next403	49af64389c6fc15088a0dec272e8e6a35eda1c11		2026-10-10	1663	8	False	True	400	Record the independent published 403 installed-file update accurately
+v2/w0-sweep-382	f199980d68ddef02634f07109a33de5bbe3470cd		2026-10-09	1562	11	False	True	511	Record post-review EQ portability and grouped release-note validation
+v2/w11-effect-route	f1989643ea9902944f14e4d483581e45e6f5d2a8	origin/v2/w11-effect-route	2026-10-09	1296	12	False	False	1458	Use the typed unity gain in the selected-effect fixture
+v2/w11-gestures-382	226b7ac763b10af2e2d49f75a5e7ee6a882d2290		2026-10-10	1581	11	False	False	510	test: bound idle numeric callbacks and retain default MUI drag behavior
+v2/w11-native-widget-adapter-parked	130ca84470ff3668051f14813c1ca54b9d06e330		2026-10-10	1576	11	False	False	517	WIP: park native widget adapter driver pending product policy
+v2/w12-dsp-recount	5172a9ef00935f0c463b8ff2fb65e2632c032c8e		2026-10-09	1060	19	False	False	1594	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes
+v2/w12-family-22ed	a9bd02446c053266e860ba13c83db046bfb38759		2026-10-09	1360	12	False	False	1429	Compare whole-instrument fingerprints against frozen v1
+v2/w12-family-e70	d292a7e95a1086dcb599e30bc3301a154782a29b		2026-10-09	1246	13	False	False	1474	fix(gate): reject invalid held-note playback and static parity evidence
+v2/w12-family-host-494	814b9b479aae8f5364af0ef160f2cd661cc7486f	origin/v2/w12-family-host-494	2026-10-09	1210	17	False	False	1552	Require matched source and frozen plugin in family comparisons
+v2/w12-format-revisions	7b604bb7b6e68dc02cd5f742116973f0f37c5346	origin/integrate/core-v2	2026-10-09	1252	13	False	True	1473	docs(kontakt): map all tester reader classes to READY witnesses
+v2/w12-pacific-trills	d292a7e95a1086dcb599e30bc3301a154782a29b	origin/integrate/core-v2	2026-10-09	1246	13	False	False	1474	fix(gate): reject invalid held-note playback and static parity evidence
+v2/w12-vista-pacific-resources	68052b42beb3c3aa828f36db05e23a3a78e895de	origin/v2/w12-vista-pacific-resources	2026-10-10	1570	11	False	True	507	docs(kontakt): record measured authored NKR impulse recovery
+v2/w13-clap-editor-rss	e0e1d35ff4fa99d4ecc7808b3f970030c602e7e5	origin/v2/w13-clap-editor-rss	2026-10-09	1287	12	False	True	1456	Mark live editor lifecycle tools READY after root no-run GREEN
+v2/w13-conflux-host-p0	44952fae360126f8da180d7129bc3fb98fd4462c		2026-10-10	3	10	False	False	507	test(host): prepare bounded editor cycles and numeric observations
+v2/w13-fixed-parent-393	14a7aeeb346754ae65c5fbacea1d81538788e097	origin/v2/w13-fixed-parent-393	2026-10-10	2	10	False	False	509	test(host): pin Xwayland parent size before editor map
+v2/w13-host-provenance-393	6c5da47e8431a7293f03d111b9833b8e6797fd78		2026-10-10	1	10	False	False	509	port from v1 0cb7a8a0:src/ui/menu.rs: restore sound and route shortcuts
+v2/w13-host-scheduling	d0c89ffba3034565ee1c530464d3065b6e81e3fc	origin/v2/w13-host-scheduling	2026-10-09	1289	12	False	False	1455	Record opt-in callback scheduler switches outside CPU acceptance
+v2/w13-parity-live-host	61ece41b94ae8fc257b8cfe0ed6fe1db66963fe7	origin/v2/w13-parity-live-host	2026-10-09	1064	19	False	True	1599	docs: bind settings parity and host preparation to frozen 0.3.326
+v2/w13-product-parity	cb728a1cc804f3e75d60c8435728ab4f01ef16b5	origin/v2/w13-product-parity	2026-10-09	1205	17	False	False	1556	port from v1 0cb7a8a0:src/ui/chain.rs: restore native group insert inventory
+v2/w13-report-settings	a591c594331b9e1b0d0d04c3ab5e9caca3ca5472	origin/v2/w13-report-settings	2026-10-09	1275	13	False	True	1458	Record unified Report and Settings runtime GREEN
+v2/w13-settings-dynamics-p0	237680ca5b1dcfe6765331bc12e707fcd63c3d81		2026-10-10	1622	10	False	False	471	ui(settings): move per-part dynamics start into Settings
+v2/w13-settings-parity-393	6c5da47e8431a7293f03d111b9833b8e6797fd78	origin/v2/w13-settings-parity-393	2026-10-10	1	10	False	False	509	port from v1 0cb7a8a0:src/ui/menu.rs: restore sound and route shortcuts
+v2/w13-standalone-crash	5a10d206d8b1bb439510ccf7ef81eebc563ddf6e	origin/v2/w13-standalone-crash	2026-10-09	1250	13	False	True	1476	Record standalone crash delivery runtime GREEN
+v2/w14-art-cache-access-394	13a154fe00da21d451db713be088188640113812		2026-10-10	1591	11	False	True	474	Invalidate cached artwork outcomes when protected reader state changes
+v2/w14-bank-status-layout-394	a3689f330712d5effa5c447d998be11d0d0b251e		2026-10-10	1590	11	False	False	475	Keep failed metadata in the existing stat-keyed catalog cache
+v2/w14-browser	5d834e24b55a0b5ad507ed641db38ad3400b8615	origin/v2/w14-browser	2026-10-09	1213	17	False	False	1558	WIP preserve popup red witness and current Sound guard adaptation
+v2/w14-browser-382	d34141a2806a6b599e9f6440f97448a4a985d167	origin/v2/w14-browser-382	2026-10-09	1	11	False	False	1424	Consolidate browser search and library banners
+v2/w14-browser-perf-383	ec921bce2ae6c3e758e3d0c95c63e2b649aa87e1	origin/v2/w14-browser-perf-383	2026-10-10	1593	11	False	False	477	port from v1 0cb7a8a0:src/ui/browser.rs: preserve cached order across category rebuilds
+v2/w14-cache-failures-393	a3689f330712d5effa5c447d998be11d0d0b251e		2026-10-10	1590	11	False	False	475	Keep failed metadata in the existing stat-keyed catalog cache
+v2/w14-chrome-ready	cdf0e183be0f44c2ed28e918bab6f9b02308fab9	origin/v2/w14-chrome-ready	2026-10-09	1202	17	False	False	1558	Polish chrome and restore the piano keyboard on the current Sound editor
+v2/w14-effects-344	4ff16464be4ac98538eefda9fd3ab200a40bf6e6	origin/v2/w14-effects-344	2026-10-09	1246	13	False	False	1478	Distill the repeated articulation heading into the count tooltip
+v2/w14-filter-344	54d668626613e8c400e3b42fad60e39a76df4e5f	origin/v2/w14-filter-344	2026-10-09	1261	13	False	False	1478	Distill scale and shared menu explanations into hover help
+v2/w14-filter-panel	c437880fbb859d04d166e08d89a4e7ade08acc5e		2026-10-09	1205	17	False	False	1526	WIP: preserve standalone filter descriptor fixture after app restart
+v2/w14-info-distill	28f11fdbc2d8d258ed3a504b437728131cd93d1a	origin/v2/w14-info-distill	2026-10-09	1204	17	False	False	1526	Remove the repeated instrument name from Info
+v2/w14-main-attribution-383	eb55fa78dffe03356322e38dc59628f1508b9ae5		2026-10-09	0	11	False	False	1424	Fix Kontakt readers, callback persistence and piano release (0.3.381) (#51)
+v2/w14-popup-capture	fcb62d6c25ad944966fd5b0269d9108e300cf204	origin/v2/w14-popup-capture	2026-10-09	1203	17	False	False	1526	Keep dropdown and picker wheel events inside their popup
+v2/w15-dsp	42062adcc9b0aa87ab3858626a85a10421904d42	origin/v2/w15-dsp	2026-10-09	1064	19	False	False	1594	port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes
+v2/w15-eq-controls	ada2634d2290160cc7397fc9970602f3d03a4f3e	origin/v2/w15-eq-controls	2026-10-09	1221	17	False	True	1552	Record Una release fix and current native Cutoff readback
+v2/w15-harp-shipping	f199980d68ddef02634f07109a33de5bbe3470cd		2026-10-09	1562	11	False	True	511	Record post-review EQ portability and grouped release-note validation
+v2/w15-modulation	51828387bce6a03d4913990742da85fa937eb5b6	origin/v2/w15-modulation	2026-10-09	1213	17	False	True	1557	docs: close registry PCM hold with W8 one-shot pairs
+v2/w15-vista-harp	afe58f31a817027e89ead59ffdfd61d9559cc4b0	origin/v2/w15-vista-harp	2026-10-10	1569	11	False	False	511	test: preserve bus owners in the dry Harp parity fixture
+v2/w3-editor-before-stable-344	af8890923c225caad4a813e7a04e99307fd68bc7		2026-10-09	1255	13	False	False	1467	Freeze pre-fix product with identical stable retained-editor instrumentation
+v2/w3-editor-rss-page-release-wip	bd0c5bf1dcfee19a2a49bb7151da6db2d8bdcec5		2026-10-09	1260	13	False	False	1466	Release unused GNU allocator pages after editor destruction
+v2/w3-native-observation-p0	140c89a3e2120cf75354d5150323edc69a9a0f42		2026-10-10	1589	11	False	False	514	observe native bridge publication and paint update copies with fixed numeric snapshots
+v2/w3-ui-load-parity-393	462a1ee89d18b45cdba192d113879bd43c02cfed	origin/v2/w3-ui-load-parity-393	2026-10-10	1574	11	False	True	510	docs: record eleven-library frozen v1 v2 paint comparison
+v2/w3-ui-projection-396	3145bdc24ed649508fdad4f0562dd78dcf5506e9		2026-10-10	1591	11	False	False	515	adapt resource filmstrip size fixture to shared fractional Size
+v2/w4-keyboard-midi-top-393	70caa6b7e3be2009a751fe1070716717360e5230		2026-10-10	1564	11	False	True	510	Reach MIDI 127 in the keyboard's final window
+v2/w4-keyswitch-382	26ea80797948c9340dc89bdf5235248b1affb528	origin/v2/w4-keyswitch-382	2026-10-09	2	11	False	False	1423	Reject preset browsers as articulation choice lists
+v2/w4-keyswitch-route-393	5af9bb160ed5ab9752201c023faa94f8d582b0bd		2026-10-10	1563	11	False	False	511	port from v1 0cb7a8a0:src/ui/keyboard.rs and retire learn on route changes
+v2/w4-mapping-p0	231ee68ec07775a8bec1632a180c791ade62f6d2		2026-10-10	1629	10	False	False	473	test: exercise distinct Mapping geometry and legacy rail keyboard focus
+v2/w5-conflux-builtins-381	0012f723020a15c614a560583de6b8f4d531f507	origin/v2/w5-conflux-builtins-381	2026-10-09	1369	12	False	False	1425	record Conflux builtin RED GREEN and production validation
+v2/w5-ksp-parity-394	86c8b0b3d619d390f1401dec2aa2697dfa85996e	origin/v2/w5-ksp-parity-394	2026-10-10	1604	11	False	False	474	docs: record READY UI argument and menu selection contracts
+v2/w5-persistence-scheduler	56693d1dd40faf9420f7f2dcff35d34857616672	origin/v2/w5-persistence-scheduler	2026-10-09	1254	13	False	False	1474	Preserve synchronous init MIDI waits and finish scheduler gate
+v2/w5-project-persistence	cbfbef9eb93b8b1de7040ab244da48dfe138857a	origin/integrate/core-v2	2026-10-09	1299	12	False	False	1457	test: compare all corpus persistent and UI values across host recall
+v2/w5-project-persistence-381	31b24985308f6fa80d6dfd80cc8a9595245cf72d	origin/v2/w5-project-persistence-381	2026-10-09	1371	12	False	True	1423	docs: distinguish settled recall from immediate callback snapshot
+v2/w5-tester-callback-fuel	ce714f75696ef22da6b92b549ad633ecf236a697	origin/integrate/core-v2	2026-10-09	1244	13	False	True	1478	Merge published 344 ancestry and font license packaging repair
+v2/w5-tester-callback-witness	0ad6b3f9ee6e8de4eaa2add0fd70ad6bcf196eda	origin/v2/w5-tester-callback-witness	2026-10-09	1252	13	False	False	1475	Reset continuous callback preemption age after admitted MIDI waits
+v2/w5-ui-global-callbacks-394	23c9c59dff109fea84b76a1a3cd15f8b684d2112	origin/v2/w5-ui-global-callbacks-394	2026-10-10	1607	11	False	True	472	docs: record GREEN global UI callback contracts
+v2/w5-wavetable-live-381	dd1dca32244a06f1522dd857d722835c8400a74c	origin/v2/w5-wavetable-live-381	2026-10-09	1371	12	False	False	1421	test: record live wavetable control gates and limits
+v2/w6-conflux-modfx-381	448cfaa59ded9ebf086aa796036f6505b20e67d7	origin/v2/w6-conflux-modfx-381	2026-10-10	1375	12	False	False	1415	fix(dsp): retain and play saved Digital Multi fades
+v2/w6-cpu-52438	7cea074b0b3edfc11fbb371bc0d373835edded8b	origin/v2/w6-cpu-52438	2026-10-09	1065	19	False	True	1594	docs: define shared modulation CPU budgets and dispatch acceptance
+v2/w6-cpu-accept-5fc362f3	5fc362f355c764fd043510b3ff8f031a45328e11		2026-10-09	1201	17	False	False	1558	Measure release draining with selection tracing outside the audio window
+v2/w6-daft-cache	7cfcac68ee78519965ebdc10d6b587f4b7ff6ca6		2026-10-09	1214	17	False	False	1557	fix(core): key Daft cache by exact control bits
+v2/w6-envmod-perf	051c11c0aa245f6c119a78b438b0ef8261ac0f49	origin/v2/w6-envmod-perf	2026-10-09	1274	12	False	True	1458	docs(audit): record quiet v1 envelope modulation port results
+v2/w6-universal-dsp	8e9ac50ba0ddd43d04e5c2ac7eaebbfb5553fb39	origin/v2/w6-universal-dsp	2026-10-09	1211	17	False	True	1556	docs(dsp): record green shared-kernel and compressor gates
+v2/w6-v1-voice-controls-381	4507cb1e214d777ef1ee8812df64b9a3718cc36c	origin/v2/w6-v1-voice-controls-381	2026-10-09	1368	12	False	False	1423	Port pinned v1 voice control evaluator and filter source bridge
+v2/w6-v1-voice-evaluator	051c11c0aa245f6c119a78b438b0ef8261ac0f49		2026-10-09	1274	12	False	True	1458	docs(audit): record quiet v1 envelope modulation port results
+v2/w7-lifecycle	242533130c8b02ed6bacc5cd9b6d8e25e8e2781f	origin/integrate/core-v2	2026-10-08	999	19	False	False	1617	fix(core): retain deferred attacks through callback preemption
+v2/w8-chain-sharing-c39	f8a570729dc667bd2387255590a77f91dd0240bd	origin/v2/w8-chain-sharing-c39	2026-10-09	1153	19	False	True	1564	docs: clear all five seeded UVI PCM holds for chain sharing
+v2/w8-envelope-batch-52438	7956e97e0e255ea75e210f6dcc57029706210da7	origin/v2/w8-envelope-batch-52438	2026-10-09	1058	19	False	False	1595	port from v1 0cb7a8a0:src/engine/bank.rs: construct group envelopes once
+v2/w8-load-attribution-resume	039da7cd1da075548ec2da724e41ab69518e331d	origin/v2/w8-load-attribution-resume	2026-10-10	1297	12	False	False	1460	docs: record trusted bounded callback ordering verification
+v2/w8-playback-template-52438	4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca	origin/v2/w8-playback-template-52438	2026-10-08	1057	19	False	False	1598	port from v1 0cb7a8a0:src/engine/map.rs: compact region playback templates
+v2/w8-zone-capacity-52438	da560b45217ae4b6e1b685fd1ac12672d72ba9e4		2026-10-09	1059	19	False	False	1595	wip: preserve isolated validated zone capacity probe
+v2/w9-cpu42-top3-5fc	49401fcef2ce3fc4e9671d94489f68d36e9a56aa	origin/v2/w9-cpu42-top3-5fc	2026-10-09	1205	17	False	False	1556	test(cpu): profile the audit sequence through frozen v1 CLAP
+v2/w9-dolce-p0-344	c3e8a590fcc0f3b23b48fbacc6a78c564e46b3ce	origin/v2/w9-dolce-p0-344	2026-10-09	6	13	False	True	1477	docs: record persistence RED GREEN and Harmonics before after
+v2/w9-horns-frames	6a2f68b2d77f2013321621aec1d72211438ad54e	origin/v2/w9-horns-frames	2026-10-10	1388	12	False	False	1422	Record frozen AVX correction gates; CPU acceptance remains pending
+v2/w9-late-onset-3f49	1d4e2911ccc7212435c27049c411ba5d950115d8	origin/v2/w9-late-onset-3f49	2026-10-08	1052	19	False	False	1603	Preserve released staccato notes through a cold onset hold
+v2/w9-v1-envmod-sparse-608	e8f407e624eeeaa5bdb84d8548a597cff2fe9c7a		2026-10-09	1210	17	False	False	1558	docs: record sparse modulation port scope and deferred gates
+v2/w9-v1-filter-port	c45ac1a24b7ba66266e9fb082f3a0db340b243b6		2026-10-08	1024	19	False	True	1614	Refresh accepted filter-port stage table and streaming comparison
+v2/w9-v1-fused-resample-5fc	0d4af3f168f8ca91a05c4a23fa1bd8e52a1c813b	origin/v2/w9-v1-fused-resample-5fc	2026-10-09	1215	17	False	False	1555	test(core): bound native rate resolution per render run
+v2/w9-v1-prefetch-port	ea08f3d21839a8b53ad7a48aada6387dcce4b4a2	origin/v2/w9-v1-prefetch-port	2026-10-08	1044	19	False	False	1609	Reject fixed-pool prefetch lead and restore d75 production horizon
+v2/w9-v1-resample-run-608	d11c9d35d3fb741c79a9dd69fb3952c42c449a3f		2026-10-09	1210	17	False	False	1558	docs: record native resampling port scope and deferred gates
+v2/w9-v1-slot-mix-608	a9e934aedddc5eca26573d65cceb834d49d9e5e5		2026-10-09	1210	17	False	False	1558	docs: rank CPU cost centres and stage one settled-slot port
+v2/w9-v1-stream-model-52438	e30383ada3939c6092837084b5bec596a5fe0ae0	origin/v2/w9-v1-stream-model-52438	2026-10-09	1067	19	False	True	1590	docs: record quiet 128 MiB streaming HOLD and W8 handoff
+v2/w9-v1-stream-model-port	5e57099a6edee2dc14cc88c43410215b6ad0146d	origin/v2/w9-v1-stream-model-port	2026-10-08	1052	19	False	False	1613	port from v1 0cb7a8a0:src/engine/stream.rs wire voice rings and resident onsets (HOLD draft)
+v2/w9-v1-stream-pool-port	e012a5f90c2370c13d0c026958f04cd1e0b2c268	origin/v2/w9-v1-stream-pool-port	2026-10-08	1046	19	False	False	1608	Reject fixed polyphony page pool and restore d75 streaming
+v2/w9-v1-whole-voice-381	f630f08fd3000453debe313e04c1a689aa4be553	origin/v2/w9-v1-whole-voice-381	2026-10-10	1390	12	False	False	1419	fix(core): retain v1 static onset values in native module follow
+w3/render-wip-822812aa	822812aaa85382bca013ddd31031c35a7758f1b9		2026-10-08	1001	19	False	False	1619	WIP merge owner-resolved integration resource Result API
+wip/orphan-engine-params	c95a1bdeef057dd02604f387df453b755c0a28aa		2026-09-30	189	72	False	False	2408	On worktree-agent-a32a5a4b0666c4050: wip-orphan
+wip/orphan-voice	9174e76cb37a65d051fc732b500249db373daa08		2026-09-30	185	72	False	False	2408	On worktree-agent-ad4098b19c340ea92: wip-orphan
+wip/w8-before-d75-20261008	cd090aac32b9f8d8d15d3ab654b444c9d012d53d		2026-10-08	1056	19	False	False	1604	WIP share immutable script initial texts before gate-base rebase
+worktree-agent-a0471e972fbdf64a9	e335126499c4f3265ac667cd76f648d0eb36bc93		2026-09-30	129	72	False	False	2406	Merge branch 'worktree-agent-af73f669d2143e22d' into kontakt-parity
+worktree-agent-a724dc47254e5d3a3	afd8e3d9f7112e08773ff6141b079d5506719ebf		2026-09-30	161	72	False	False	2407	WIP (stopped duplicate agent): partial, unverified
+worktree-agent-a9003a5e6e66baabf	87f1190c664dfb7becdbc6dec5c46d1eeb67a280		2026-10-11	51	1	False	False	138	Merge branch 'wp456-kontakt-parity' into fix/ui-mapping-controls
+worktree-agent-a937570fb7242048f	87f1190c664dfb7becdbc6dec5c46d1eeb67a280		2026-10-11	51	1	False	False	138	Merge branch 'wp456-kontakt-parity' into fix/ui-mapping-controls
+worktree-agent-ab86fd6cc9624b925	8714f79c39d56bca036b1cea2240008323bc1723		2026-09-30	161	72	False	False	2407	WIP (stopped duplicate agent): partial, unverified
+worktree-agent-ac49cf671469b3020	87f1190c664dfb7becdbc6dec5c46d1eeb67a280		2026-10-11	51	1	False	False	138	Merge branch 'wp456-kontakt-parity' into fix/ui-mapping-controls
+worktree-agent-ad4098b19c340ea92	e02f9d0dba6f688b4f5116069d4a8af2e5de469e		2026-09-30	183	72	False	False	2408	ui tests: sticky screenshot needs a second part
+wp123-uvi-parity	4f7cfeee0f9c532b105098cbad5257f745877020		2026-10-11	43	1	False	False	146	UI: name and draw the new first-order shelf filters
+wp456-kontakt-parity	93916d2dcb5a2bb026a57f887d4fa2593a6bbf48		2026-10-11	35	1	False	False	148	Kontakt: saved host/CC automation of script switches (ui_switch ordinals)
+wp7-wp8-ui-diag	75d27fac1c8fb6984fb30de42daf842f6fddcca5		2026-10-11	60	1	False	True	130	Drop unrelated multi-script corpus dumping changes
