@@ -429,7 +429,7 @@ mod tests {
         // One octave is Q 1.414; Q stays inside the catalog range.
         let (name, q) = effective("DigitalEq", "Bandwidth2", 1., |_| None);
         assert_eq!(name, "Q2");
-        assert!((q - 1.4142).abs() < 1e-3, "{q}");
+        assert!((q - std::f64::consts::SQRT_2).abs() < 1e-3, "{q}");
         assert!((0.018..0.04).contains(&q_for_octaves(10.)) && q_for_octaves(0.01) == 28.284);
         let (name, gain) = effective("DigitalEq", "Gain3", 6., |n| (n == "GainScale").then_some(0.5));
         assert_eq!((name.as_str(), gain), ("Gain3", 3.));
