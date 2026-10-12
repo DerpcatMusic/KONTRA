@@ -774,6 +774,17 @@ fn grip(ui: &Ui, id: &str, value: f64) -> bool {
     })
 }
 
+/// Keep mapped pointer capture in its own units after an authored semantic edit.
+pub fn rebase_drag(ui: &Ui, id: &str, value: f64) {
+    GRIPPED.with(|g| {
+        let mut g = g.borrow_mut();
+        let owner = std::ptr::from_ref(ui) as usize;
+        if ui.get(id).dragged || g.0 == owner && g.1 == id {
+            *g = (owner, id.to_owned(), value);
+        }
+    });
+}
+
 /// Whether the pointer hides now, as Kontakt's does: a knob, slider or
 /// number is being dragged. The window brings it back where it hid.
 pub fn pointer_hidden(ui: &Ui) -> bool {
@@ -781,6 +792,27 @@ pub fn pointer_hidden(ui: &Ui) -> bool {
         let g = g.borrow();
         g.0 == std::ptr::from_ref(ui) as usize && !g.1.is_empty() && ui.get(g.1.as_str()).held
     })
+}
+
+/// Modifier conventions selected by the authored interface's source format.
+#[derive(Clone, Copy)]
+pub enum GesturePolicy {
+    Kontakt,
+    Falcon,
+}
+impl GesturePolicy {
+    fn fine(self, mods: Mods) -> bool {
+        match self {
+            Self::Kontakt => mods.shift,
+            Self::Falcon => mods.ctrl || mods.cmd,
+        }
+    }
+    fn reset(self, mods: Mods) -> bool {
+        match self {
+            Self::Kontakt => mods.ctrl || mods.cmd,
+            Self::Falcon => mods.alt,
+        }
+    }
 }
 
 /// MUI starts a drag after its click threshold, but its first delta excludes
@@ -793,6 +825,7 @@ fn drag(
     range: &RangeInclusive<f64>,
     travel: f64,
     vertical: bool,
+    fine: bool,
 ) {
     let r = ui.get(id);
     if r.pressed {
@@ -813,7 +846,7 @@ fn drag(
             if first && travel.is_finite() && travel > 0. {
                 let missed = r.drag_total - r.drag_delta;
                 let d = if vertical { -missed.y } else { missed.x };
-                let fine = if r.mods.shift { FINE_DRAG } else { 1. };
+                let fine = if fine { FINE_DRAG } else { 1. };
                 if d.is_finite() {
                     raw = (raw + d * fine / travel * (range.end() - range.start())).clamp(
                         range.start().min(*range.end()),
@@ -821,12 +854,12 @@ fn drag(
                     );
                 }
             }
-            ui.drag(id, &mut raw, range.clone(), travel, vertical);
+            ui.drag_with_fine(id, &mut raw, range.clone(), travel, vertical, fine);
             g.2 = raw;
             *value = raw;
         });
     } else {
-        ui.drag(id, value, range.clone(), travel, vertical);
+        ui.drag_with_fine(id, value, range.clone(), travel, vertical, fine);
     }
 }
 
@@ -857,14 +890,41 @@ pub fn drive_widget(
     step: Option<f64>,
     double_reset: bool,
 ) -> bool {
+    drive_widget_with_policy(
+        ui,
+        id,
+        value,
+        range,
+        travel,
+        vertical,
+        reset,
+        step,
+        double_reset,
+        GesturePolicy::Kontakt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn drive_widget_with_policy(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut f64,
+    range: &RangeInclusive<f64>,
+    travel: f64,
+    vertical: bool,
+    reset: f64,
+    step: Option<f64>,
+    double_reset: bool,
+    policy: GesturePolicy,
+) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
     let bound = |v: f64| v.clamp(lo.min(hi), lo.max(hi));
     let step = step.filter(|s| s.is_finite() && *s > 0.);
     let r = ui.get(id);
-    drag(ui, id, value, range, travel, vertical);
+    drag(ui, id, value, range, travel, vertical, policy.fine(r.mods));
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
-        let notch = (hi - lo).abs() / if r.mods.shift { 500. } else { 50. };
+        let notch = (hi - lo).abs() / if policy.fine(r.mods) { 500. } else { 50. };
         let step = step.map_or(notch, |quantum| (notch / quantum).round().max(1.) * quantum);
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
@@ -888,7 +948,7 @@ pub fn drive_widget(
     } else {
         stepped(ui, id, value, range);
     }
-    if double_reset && r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
+    if double_reset && r.double_clicked || r.pressed && policy.reset(r.mods) {
         *value = bound(reset);
         GRIPPED.with(|g| g.borrow_mut().1.clear());
     }
