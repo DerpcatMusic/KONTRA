@@ -41,12 +41,27 @@ impl crate::Loaded {
 /// Inspect every physical script slot, including empty/bypassed slots, without
 /// resolving samples or executing on init. Linked script bytes stay in memory.
 pub fn read_parity_reports(path: &std::path::Path) -> Result<Vec<ScriptReport>, crate::LoadError> {
+    read_parity_reports_mode(path, false)
+}
+
+/// Source-only coverage for aggregate reports that discard token and lowered
+/// operation maps. Construct statuses and resource diagnostics are preserved.
+pub fn read_parity_reports_summary(
+    path: &std::path::Path,
+) -> Result<Vec<ScriptReport>, crate::LoadError> {
+    read_parity_reports_mode(path, true)
+}
+
+fn read_parity_reports_mode(
+    path: &std::path::Path,
+    summary: bool,
+) -> Result<Vec<ScriptReport>, crate::LoadError> {
     use ni_file::kontakt::objects::Program;
     let chunks = crate::read_chunks(path)?;
     if let Some(chunk) = chunks.find_first(0x28) {
         let program =
             Program::try_from(chunk).map_err(|e| crate::LoadError::decode(path, "program", e))?;
-        return program_reports(path, &program, "");
+        return program_reports_mode(path, &program, "", summary);
     }
     let chunk = chunks
         .find_first(3)
@@ -72,19 +87,30 @@ pub fn read_parity_reports(path: &std::path::Path) -> Result<Vec<ScriptReport>, 
             .iter()
             .enumerate()
         {
-            reports.extend(program_reports(
+            reports.extend(program_reports_mode(
                 path,
                 program,
                 &format!("program{slot}:{index}:"),
+                summary,
             )?);
         }
     }
     Ok(reports)
 }
+#[cfg(test)]
 fn program_reports(
     path: &std::path::Path,
     program: &ni_file::kontakt::objects::Program,
     prefix: &str,
+) -> Result<Vec<ScriptReport>, crate::LoadError> {
+    program_reports_mode(path, program, prefix, false)
+}
+
+fn program_reports_mode(
+    path: &std::path::Path,
+    program: &ni_file::kontakt::objects::Program,
+    prefix: &str,
+    summary: bool,
 ) -> Result<Vec<ScriptReport>, crate::LoadError> {
     use ni_file::kontakt::objects::BParScript;
     let mut resources = None;
@@ -151,20 +177,33 @@ fn program_reports(
                     Err(_) => view_gaps.push(("@performance-view".into(), "Requested performance view resource could not be read or resolved".into())),
                 }
             }
-            let mut report = sampler_ksp::parity_report_with(
-                &source,
-                &format!("ksp:{prefix}slot{slot}"),
-                &format!(
-                    "Script slot {slot}{}",
-                    if script.bypass { " (bypassed)" } else { "" }
-                ),
-                sampler_ksp::Limits::LIBRARY,
-                &sampler_ksp::Environment {
-                    performance_view,
-                    slot: slot.min(u8::MAX as usize) as u8,
-                    ..Default::default()
-                },
+            let id = format!("ksp:{prefix}slot{slot}");
+            let title = format!(
+                "Script slot {slot}{}",
+                if script.bypass { " (bypassed)" } else { "" }
             );
+            let environment = sampler_ksp::Environment {
+                performance_view,
+                slot: slot.min(u8::MAX as usize) as u8,
+                ..Default::default()
+            };
+            let mut report = if summary {
+                sampler_ksp::parity_report_summary_with(
+                    &source,
+                    &id,
+                    &title,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
+            } else {
+                sampler_ksp::parity_report_with(
+                    &source,
+                    &id,
+                    &title,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
+            };
             for (name, detail) in view_gaps {
                 let span = report.constructs.iter()
                     .find(|c| c.name == "load_performance_view")
@@ -243,6 +282,13 @@ mod tests {
                 std::fs::write(&resource, bytes).unwrap();
             }
             let report = super::program_reports(&path, &program, "").unwrap().pop().unwrap();
+            let summary = super::program_reports_mode(&path, &program, "", true)
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(summary.constructs, report.constructs);
+            assert!(summary.tokens.is_empty());
+            assert!(summary.lowered.is_empty());
             let gaps: Vec<_> = report.constructs.iter().filter(|c| c.name.starts_with("@performance-view")).collect();
             if expected.is_empty() {
                 assert!(gaps.is_empty(), "a valid resource must not acquire a resource failure");
