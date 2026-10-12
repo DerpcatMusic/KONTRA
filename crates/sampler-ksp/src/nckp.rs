@@ -9,6 +9,29 @@
 use crate::model::{MenuItem, PerformanceControl, PerformanceView, Value, WidgetKind};
 use serde_json::Value as Json;
 
+/// Canonical source keys currently omitted by the NCKP importer. These warnings
+/// contain no authored control names or values and can be retained in static reports.
+pub const OMITTED_FIELD_PREFIX: &str = "NCKP source field not imported: ";
+
+/// Recognize only importer-owned canonical field warnings. Unknown-control
+/// warnings include authored names and must never be copied into static reports.
+pub fn omitted_field(warning: &str) -> Option<&str> {
+    let field = warning.strip_prefix(OMITTED_FIELD_PREFIX)?;
+    matches!(
+        field,
+        "text.font.custom"
+            | "text.fonts.off"
+            | "text.fonts.on"
+            | "text.fonts.pressedOff"
+            | "text.fonts.pressedOn"
+            | "text.fonts.hoverOff"
+            | "text.fonts.hoverOn"
+            | "text.shiftOnPress"
+            | "steps.visible"
+    )
+    .then_some(field)
+}
+
 /// The single literal view requested in `on init`, so a host can read
 /// `Resources/performance_view/<name>.nckp` before compiling.
 /// Returns `None` for absent, malformed, nonliteral or multiple requests,
@@ -120,6 +143,7 @@ fn walk(
             skipped.push(format!("{path}: control type {}", c["index"]));
             continue;
         };
+        omitted_fields(v, kind, skipped);
         let prefix = match kind {
             WidgetKind::Table => '%',
             WidgetKind::TextEdit => '@',
@@ -130,6 +154,44 @@ fn walk(
         if kind == WidgetKind::Panel {
             walk(&v["controls"], &path, Some(&name), out, skipped);
         }
+    }
+}
+
+fn omitted_fields(v: &Json, kind: WidgetKind, warnings: &mut Vec<String>) {
+    let mut omitted = |field: &str| warnings.push(format!("{OMITTED_FIELD_PREFIX}{field}"));
+    if v["text"]["font"]["custom"]
+        .as_str()
+        .is_some_and(|name| !name.is_empty())
+    {
+        omitted("text.font.custom");
+    }
+    for state in [
+        "off",
+        "on",
+        "pressedOff",
+        "pressedOn",
+        "hoverOff",
+        "hoverOn",
+    ] {
+        if v["text"]["fonts"]
+            .get(state)
+            .is_some_and(|font| !font.is_null())
+        {
+            omitted(&format!("text.fonts.{state}"));
+        }
+    }
+    if v["text"]
+        .get("shiftOnPress")
+        .is_some_and(|shift| !shift.is_null())
+    {
+        omitted("text.shiftOnPress");
+    }
+    if kind == WidgetKind::Table
+        && v["steps"]
+            .get("visible")
+            .is_some_and(|visible| !visible.is_null())
+    {
+        omitted("steps.visible");
     }
 }
 
@@ -304,6 +366,55 @@ fn control(name: String, kind: WidgetKind, v: &Json, parent: Option<&str>) -> Pe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omitted_ui_fields_are_reported_without_changing_modeled_controls() {
+        let base = serde_json::json!({"value":{"performanceView":{"controls":[
+            {"index":3,"value":{"common":{"id":"Cut"},"value":{"min":0,"max":100,"default":12},"text":{"font":{"type":3,"custom":""}}}},
+            {"index":9,"value":{"common":{"id":"Steps"},"maxValue":1000,"steps":{"total":32}}}
+        ]}}});
+        let (modeled, warnings) = parse(&serde_json::to_vec(&base).unwrap()).unwrap();
+        assert!(warnings.is_empty());
+        let mut extra = base;
+        let controls = extra["value"]["performanceView"]["controls"]
+            .as_array_mut()
+            .unwrap();
+        let text = &mut controls[0]["value"]["text"];
+        text["font"]["custom"] = "PRIVATE_CUSTOM_FONT".into();
+        text["fonts"] = serde_json::json!({"off":{"type":1},"on":{"type":2},"pressedOff":{"type":3},"pressedOn":{"type":4},"hoverOff":{"custom":"PRIVATE_HOVER_FONT"},"hoverOn":{"type":6}});
+        text["shiftOnPress"] = false.into();
+        controls[1]["value"]["steps"]["visible"] = 8.into();
+        let (still_modeled, warnings) = parse(&serde_json::to_vec(&extra).unwrap()).unwrap();
+        assert_eq!(
+            modeled, still_modeled,
+            "reporting loss must not guess new UI conversion laws"
+        );
+        let fields: Vec<_> = warnings
+            .iter()
+            .filter_map(|w| w.strip_prefix(OMITTED_FIELD_PREFIX))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "text.font.custom",
+                "text.fonts.off",
+                "text.fonts.on",
+                "text.fonts.pressedOff",
+                "text.fonts.pressedOn",
+                "text.fonts.hoverOff",
+                "text.fonts.hoverOn",
+                "text.shiftOnPress",
+                "steps.visible"
+            ]
+        );
+        assert!(warnings.iter().all(|w| !w.contains("PRIVATE_")));
+        assert_eq!(
+            omitted_field(&format!(
+                "{OMITTED_FIELD_PREFIX}text.font.custom: control type 999"
+            )),
+            None
+        );
+    }
 
     #[test]
     fn nests_names_types_and_properties() {

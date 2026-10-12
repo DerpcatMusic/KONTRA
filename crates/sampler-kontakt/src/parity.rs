@@ -113,15 +113,44 @@ fn program_reports(
                     None => missing_link = source.trim().is_empty(),
                 }
             }
-            let performance_view = sampler_ksp::nckp::view_name(&source)
-                .and_then(|name| {
-                    resources
-                        .get_or_insert_with(|| crate::Resources::of(path))
-                        .read(&format!("Resources/performance_view/{name}.nckp"))
-                })
-                .and_then(|bytes| sampler_ksp::nckp::parse(&bytes).ok())
-                .map(|v| v.0)
-                .unwrap_or_default();
+            let mut performance_view = Default::default();
+            let mut view_gaps = Vec::new();
+            if let Some(name) = sampler_ksp::nckp::view_name(&source) {
+                let result = resources
+                    .get_or_insert_with(|| crate::Resources::of(path))
+                    .read_result(&format!("Resources/performance_view/{name}.nckp"));
+                // Resource/parser errors may contain authored paths or values. Keep
+                // the failure stage and source position, never those private bytes.
+                match result {
+                    Ok(Some(bytes)) => match sampler_ksp::nckp::parse(&bytes) {
+                        Ok((view, skipped)) => {
+                            performance_view = view;
+                            let mut fields = std::collections::BTreeSet::new();
+                            let mut control_types = 0;
+                            for warning in &skipped {
+                                match sampler_ksp::nckp::omitted_field(warning) {
+                                    Some(field) => { fields.insert(field); }
+                                    None => control_types += 1,
+                                }
+                            }
+                            for field in fields {
+                                view_gaps.push((format!("@performance-view-field:{field}"), format!(
+                                    "Requested performance view source field is not imported: {field}"
+                                )));
+                            }
+                            if control_types != 0 {
+                                view_gaps.push(("@performance-view".into(), format!(
+                                    "{} performance view control type(s) are unsupported and were omitted",
+                                    control_types
+                                )));
+                            }
+                        }
+                        Err(_) => view_gaps.push(("@performance-view".into(), "Requested performance view resource could not be parsed".into())),
+                    },
+                    Ok(None) => view_gaps.push(("@performance-view".into(), "Requested performance view resource was not found in the library".into())),
+                    Err(_) => view_gaps.push(("@performance-view".into(), "Requested performance view resource could not be read or resolved".into())),
+                }
+            }
             let mut report = sampler_ksp::parity_report_with(
                 &source,
                 &format!("ksp:{prefix}slot{slot}"),
@@ -136,6 +165,21 @@ fn program_reports(
                     ..Default::default()
                 },
             );
+            for (name, detail) in view_gaps {
+                let span = report.constructs.iter()
+                    .find(|c| c.name == "load_performance_view")
+                    .map(|c| c.span)
+                    .unwrap_or(sampler_parity::Span { start: 0, end: 0, line: 1 });
+                report.constructs.push(sampler_parity::Construct {
+                    span,
+                    kind: sampler_parity::ConstructKind::Syntax,
+                    name,
+                    status: sampler_parity::Status::Unsupported,
+                    detail,
+                    owner: Some("crates/sampler-ksp/src/nckp.rs".into()),
+                    spec: Some("docs/architecture-v2/KSP_PARITY.md".into()),
+                });
+            }
             if missing_link {
                 report.constructs.push(sampler_parity::Construct {
                     span: sampler_parity::Span {
@@ -159,29 +203,111 @@ fn program_reports(
 
 #[cfg(test)]
 mod tests {
+    fn program(source: &str, link: &str) -> ni_file::kontakt::objects::Program {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let mut data = vec![0, 0x50, 0];
+        data.extend((source.len() as u32).to_le_bytes());
+        data.extend(source.as_bytes());
+        data.extend([0; 3]);
+        data.extend(0u32.to_le_bytes());
+        data.extend(u32::MAX.to_le_bytes());
+        data.extend((link.len() as u32).to_le_bytes());
+        data.extend(link.as_bytes());
+        Program(StructuredObject {
+            version: 0xaf,
+            public_data: vec![0; 70],
+            private_data: Vec::new(),
+            children: vec![Chunk { id: 6, data }],
+        })
+    }
+
+    #[test]
+    fn performance_view_resource_failures_are_retained_without_authored_values() {
+        let root =
+            std::env::temp_dir().join(format!("parity-view-resources-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let views = root.join("Resources/performance_view");
+        std::fs::create_dir_all(&views).unwrap();
+        let path = root.join("Fixture.nki");
+        std::fs::write(&path, []).unwrap();
+        let source = "on init\n load_performance_view(\"PRIVATE_FIXTURE_NAME\")\nend on";
+        let program = program(source, "");
+        for (bytes, expected) in [
+            (None, "not found"),
+            (Some(b"PRIVATE_INVALID_RESOURCE_BYTES".as_slice()), "could not be parsed"),
+            (Some(br#"{"value":{"performanceView":{"controls":[{"index":999,"value":{"common":{"id":"PRIVATE_CONTROL_NAME"}}}]}}}"#.as_slice()), "control type"),
+            (Some(br#"{"value":{"performanceView":{"controls":[]}}}"#.as_slice()), ""),
+        ] {
+            let resource = views.join("PRIVATE_FIXTURE_NAME.nckp");
+            if let Some(bytes) = bytes {
+                std::fs::write(&resource, bytes).unwrap();
+            }
+            let report = super::program_reports(&path, &program, "").unwrap().pop().unwrap();
+            let gaps: Vec<_> = report.constructs.iter().filter(|c| c.name.starts_with("@performance-view")).collect();
+            if expected.is_empty() {
+                assert!(gaps.is_empty(), "a valid resource must not acquire a resource failure");
+            } else {
+                assert_eq!(gaps.len(), 1, "the requested resource failure must remain observable");
+                assert_eq!(gaps[0].status, sampler_parity::Status::Unsupported);
+                assert_eq!(gaps[0].span.line, 2);
+                assert_eq!(gaps[0].span.start as usize, source.find("load_performance_view").unwrap());
+                assert!(gaps[0].detail.contains(expected));
+                assert!(!gaps[0].detail.contains("PRIVATE_"));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn performance_view_field_losses_retain_each_canonical_key_and_source_span() {
+        let root = std::env::temp_dir().join(format!("parity-view-fields-{}", std::process::id()));
+        let views = root.join("Resources/performance_view");
+        std::fs::create_dir_all(&views).unwrap();
+        let path = root.join("Fixture.nki");
+        std::fs::write(&path, []).unwrap();
+        std::fs::write(views.join("PRIVATE_VIEW.nckp"), br#"{"value":{"performanceView":{"controls":[
+            {"index":3,"value":{"common":{"id":"PRIVATE_CONTROL"},"value":{"min":0,"max":100},"text":{"font":{"type":3,"custom":"PRIVATE_FONT"},"fonts":{"on":{"type":4}},"shiftOnPress":false}}},
+            {"index":9,"value":{"common":{"id":"PRIVATE_STEPS"},"steps":{"total":32,"visible":8}}}
+        ]}}}"#).unwrap();
+        let source = "on init\n load_performance_view(\"PRIVATE_VIEW\")\nend on";
+        let report = super::program_reports(&path, &program(source, ""), "")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let fields: Vec<_> = report
+            .constructs
+            .iter()
+            .filter(|c| c.name.starts_with("@performance-view-field:"))
+            .collect();
+        assert_eq!(
+            fields.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            [
+                "@performance-view-field:steps.visible",
+                "@performance-view-field:text.font.custom",
+                "@performance-view-field:text.fonts.on",
+                "@performance-view-field:text.shiftOnPress"
+            ]
+        );
+        for field in fields {
+            assert_eq!(field.status, sampler_parity::Status::Unsupported);
+            assert_eq!(field.span.line, 2);
+            assert_eq!(
+                field.span.start as usize,
+                source.find("load_performance_view").unwrap()
+            );
+            assert!(!field.detail.contains("PRIVATE_"));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn missing_link_uses_embedded_fallback_and_only_reports_absent_source() {
-        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
         let path = std::env::temp_dir().join(format!(
             "parity-missing-link-{}/Piano.nki",
             std::process::id()
         ));
         for source in ["", "on init message(1) end on"] {
-            let mut data = vec![0, 0x50, 0];
-            data.extend((source.len() as u32).to_le_bytes());
-            data.extend(source.as_bytes());
-            data.extend([0; 3]);
-            data.extend(0u32.to_le_bytes());
-            data.extend(u32::MAX.to_le_bytes());
-            let link = "Source.txt";
-            data.extend((link.len() as u32).to_le_bytes());
-            data.extend(link.as_bytes());
-            let program = Program(StructuredObject {
-                version: 0xaf,
-                public_data: vec![0; 70],
-                private_data: Vec::new(),
-                children: vec![Chunk { id: 6, data }],
-            });
+            let program = program(source, "Source.txt");
             let report = super::program_reports(&path, &program, "")
                 .unwrap()
                 .pop()
