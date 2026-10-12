@@ -14,7 +14,8 @@ pub(super) fn slots(out: &Translation, program: Node) -> Vec<Slot> {
     {
         if let (Some(owner), Some(source)) = (connection.parent(), connection.attribute("Source")) {
             if let Some(node) = source_node(owner, source) {
-                let failed = out.dropped_connections.contains(&connection.id());
+                let failed = out.dropped_connections.contains(&connection.id())
+                    || !out.visited_connections.contains(&connection.id());
                 *references.entry(node.id()).or_default() |= failed;
                 let targets = native_targets.entry(node.id()).or_default();
                 targets.push(target(connection, targets.len(), failed));
@@ -127,11 +128,14 @@ pub(super) fn slots(out: &Translation, program: Node) -> Vec<Slot> {
             targets: vec![target(
                 node,
                 0,
-                out.dropped_connections.contains(&node.id()),
+                out.dropped_connections.contains(&node.id())
+                    || !out.visited_connections.contains(&node.id()),
             )],
             disposition: if !enabled {
                 D::Dropped(R::SavedBypassNotInstantiated)
-            } else if out.dropped_connections.contains(&node.id()) {
+            } else if out.dropped_connections.contains(&node.id())
+                || !out.visited_connections.contains(&node.id())
+            {
                 D::Dropped(R::TargetsDropped)
             } else {
                 D::Approximated(R::NativeLawUnverified)
@@ -211,6 +215,10 @@ mod tests {
             rows.iter()
                 .all(|r| r.disposition == D::Dropped(R::TargetsDropped))
         );
+        assert!(rows.iter().all(|r| {
+            r.targets.len() == 1
+                && r.targets[0].disposition == D::Dropped(R::TargetsDropped)
+        }));
     }
 
     #[test]

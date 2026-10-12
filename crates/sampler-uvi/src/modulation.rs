@@ -249,6 +249,8 @@ impl Translation {
         out: &mut Modulation,
         frequency: Option<Law>,
     ) -> Result<Result<(), Gap>, String> {
+        #[cfg(feature = "scan")]
+        self.visited_connections.insert(connection.id());
         use ir::Reason::{NotModeled, UnknownLaw};
         if inert(connection)? {
             return Ok(Ok(()));
