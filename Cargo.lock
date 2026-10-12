@@ -4195,7 +4195,6 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "crc32fast",
- "dirs",
  "flate2",
  "libc",
  "mlua",

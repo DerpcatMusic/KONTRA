@@ -5,7 +5,7 @@ use sampler_uvi::{
 };
 
 #[test]
-#[ignore = "installed banks and approved KONTRA_UVI_READER required"]
+#[ignore = "installed UVI banks required"]
 fn visible_authored_images_resolve_and_count_missing_inactive_resources() {
     for (path, program) in [
         (
