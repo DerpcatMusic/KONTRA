@@ -863,8 +863,9 @@ fn uvi(opts: &Options, report: &mut Value) {
         "Falcon Lua source/modules classified and compiled for Luau syntax without execution; lowered entries are source mappings, native Lua semantics unverified",
         "crates/sampler-uvi/src/parity.rs",
     );
+    let xml_for_init = opts.initialize.then(|| xml.clone());
     let ir = if let Some(bank) = &bank {
-        sampler_uvi::translate_program(bank, program.as_ref().unwrap())
+        sampler_uvi::translate_decoded_program(bank, program.as_ref().unwrap(), xml)
     } else {
         sampler_uvi::translate_path(&opts.path).map(|p| p.instrument)
     };
@@ -896,7 +897,11 @@ fn uvi(opts: &Options, report: &mut Value) {
         }
     }
     if opts.initialize {
-        match sampler_uvi::script::ScriptHost::new_inspected(&xml, files, Default::default()) {
+        match sampler_uvi::script::ScriptHost::new_inspected(
+            xml_for_init.as_deref().unwrap(),
+            files,
+            Default::default(),
+        ) {
             Ok(host) => {
                 uvi_initialization(report, &host, &source_lines);
             }
