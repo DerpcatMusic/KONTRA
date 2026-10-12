@@ -356,6 +356,22 @@ pub(crate) fn slots(
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "numeric metadata only; requires KONTRA_W12_NATIVE_PATH"]
+    fn w12_requested_native_filter_metadata() {
+        let path = std::env::var_os("KONTRA_W12_NATIVE_PATH").expect("instrument path required");
+        let chunks = crate::read_chunks(std::path::Path::new(&path)).ok().expect("native container read failed");
+        let program = Program::try_from(chunks.find_first(0x28).expect("program absent")).ok().expect("native program decode failed");
+        let groups = GroupList::try_from(program.0.find_first(0x33).expect("groups absent")).ok().expect("native groups decode failed");
+        let array = groups.groups.get(208).expect("group208 absent").insert_fx().ok().expect("insert rack decode failed");
+        let slots = crate::effects::rack(&array, |slot, _| assert_ne!(slot, 0, "requested slot decode failed"));
+        let fx = slots.iter().find(|fx| fx.slot == 0).expect("insert0 absent");
+        let crate::effects::Params::Filter { kind, cutoff, resonance, extra } = fx.params().expect("filter controls decode failed") else { panic!("requested slot is not a filter") };
+        assert_eq!(kind, 33);
+        let gain = extra.first().expect("Gain absent");
+        println!("W12_NATIVE_FILTER group=208 slot=0 type={kind} version={} gain={gain:.10} cutoff={cutoff:.10} q={resonance:.10}", fx.version);
+    }
+
+    #[test]
     fn unknown_bypassed_effect_is_still_a_drop() {
         let fx = crate::effects::Slot {
             slot: 5,
