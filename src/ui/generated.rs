@@ -3,30 +3,30 @@ use super::{ir_view, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, WidgetRef};
 
-const SECTION_GAP: i32 = 16;
-const COLUMN_GAP: i32 = 4;
+const SECTION_GAP: f64 = 16.;
+const COLUMN_GAP: f64 = 4.;
 
 /// Split authored geometry into bands/columns. Store references, never copied control state.
 fn clusters(
     face: &ir::Interface,
     mut widgets: Vec<WidgetRef>,
     vertical: bool,
-    gap: i32,
+    gap: f64,
 ) -> Vec<Vec<WidgetRef>> {
     let bounds = |n| {
         let r = face.page_rect(n);
         if vertical {
-            (r.y, r.y + r.height as i32)
+            (r.y, r.y + r.height)
         } else {
-            (r.x, r.x + r.width as i32)
+            (r.x, r.x + r.width)
         }
     };
-    widgets.sort_by_key(|&n| bounds(n).0);
+    widgets.sort_by(|&a, &b| bounds(a).0.total_cmp(&bounds(b).0));
     let mut groups: Vec<Vec<WidgetRef>> = Vec::new();
-    let mut end = i32::MIN;
+    let mut end = f64::NEG_INFINITY;
     for n in widgets {
         let (start, bottom) = bounds(n);
-        if groups.is_empty() || start.saturating_sub(end) > gap {
+        if groups.is_empty() || start - end > gap {
             groups.push(Vec::new());
             end = bottom;
         } else {
@@ -64,11 +64,10 @@ fn name(face: &ir::Interface, n: WidgetRef) -> String {
         })
         .filter_map(|(i, w)| {
             let l = face.page_rect(WidgetRef(i));
-            let distance = (r.y - l.y - l.height as i32).abs();
-            (distance <= 24 && l.x < r.x + r.width as i32 && r.x < l.x + l.width as i32)
-                .then_some((distance, w))
+            let distance = (r.y - l.y - l.height).abs();
+            (distance <= 24. && l.x < r.x + r.width && r.x < l.x + l.width).then_some((distance, w))
         })
-        .min_by_key(|(d, _)| *d)
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
         .map(|(_, w)| clean(&w.text))
     {
         return label;
@@ -107,7 +106,7 @@ fn name(face: &ir::Interface, n: WidgetRef) -> String {
 
 // Only fields used by grouping, sizing and name/title inference. In particular,
 // values, bindings, meter telemetry, resources and local input are not retained.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq)]
 struct Structure {
     page: ir::PageRef,
     parent: Option<WidgetRef>,
@@ -184,6 +183,7 @@ pub(super) struct Layout {
     source: ir::Source,
     page: ir::PageRef,
     structure: Vec<Structure>,
+    paint_order: Option<Vec<WidgetRef>>,
     bands: Vec<Vec<Section>>,
 }
 
@@ -191,8 +191,13 @@ impl Layout {
     fn matches(&self, face: &ir::Interface, page: ir::PageRef) -> bool {
         self.source == face.source
             && self.page == page
+            && self.paint_order == face.paint_order
             && self.structure.len() == face.widgets.len()
-            && self.structure.iter().zip(&face.widgets).all(|(s, w)| s.matches(w))
+            && self
+                .structure
+                .iter()
+                .zip(&face.widgets)
+                .all(|(s, w)| s.matches(w))
     }
 
     fn new(face: &ir::Interface, page: ir::PageRef) -> Self {
@@ -206,44 +211,81 @@ impl Layout {
             let mut sections = Vec::new();
             for group in clusters(face, band, false, SECTION_GAP) {
                 let index = group[0].0;
-                let top = group.iter().map(|&n| face.page_rect(n).y).min().unwrap_or(0);
-                let left = group.iter().map(|&n| face.page_rect(n).x).min().unwrap_or(0);
-                let right = group.iter().map(|&n| {
-                    let r = face.page_rect(n);
-                    r.x + r.width as i32
-                }).max().unwrap_or(0);
-                let title = face.widgets.iter().enumerate()
-                    .filter(|(n, w)| matches!(w.kind, ir::Kind::Label) && face.visible(WidgetRef(*n)))
+                let top = group
+                    .iter()
+                    .map(|&n| face.page_rect(n).y)
+                    .reduce(f64::min)
+                    .unwrap_or(0.);
+                let left = group
+                    .iter()
+                    .map(|&n| face.page_rect(n).x)
+                    .reduce(f64::min)
+                    .unwrap_or(0.);
+                let right = group
+                    .iter()
+                    .map(|&n| {
+                        let r = face.page_rect(n);
+                        r.x + r.width
+                    })
+                    .reduce(f64::max)
+                    .unwrap_or(0.);
+                let title = face
+                    .widgets
+                    .iter()
+                    .enumerate()
+                    .filter(|(n, w)| {
+                        matches!(w.kind, ir::Kind::Label) && face.visible(WidgetRef(*n))
+                    })
                     .filter_map(|(n, w)| {
                         let r = face.page_rect(WidgetRef(n));
-                        let distance = top - r.y - r.height as i32;
-                        ((0..=24).contains(&distance) && r.x < right && r.x + r.width as i32 > left)
+                        let distance = top - r.y - r.height;
+                        ((0. ..=24.).contains(&distance) && r.x < right && r.x + r.width > left)
                             .then_some((distance, clean(&w.text)))
                     })
-                    .min_by_key(|(d, _)| *d)
+                    .min_by(|(a, _), (b, _)| a.total_cmp(b))
                     .map(|(_, text)| text)
                     .filter(|s| !s.is_empty());
-                let strips = clusters(face, group, false, COLUMN_GAP).into_iter().map(|mut strip| {
-                    strip.sort_by_key(|&n| face.page_rect(n).y);
-                    strip.into_iter().map(|n| {
-                        let knob = ir_view::knob_like(face, &face.widgets[n.0]);
-                        let (width, height) = match if knob { 2 } else { class(&face.widgets[n.0].kind) } {
-                            2 => (88., 80.),
-                            3 => (64., 140.),
-                            4 => (152., 32.),
-                            5 => (160., 96.),
-                            _ => (152., CONTROL),
-                        };
-                        Cell { widget: n, label: name(face, n), width, height }
-                    }).collect()
-                }).collect();
-                sections.push(Section { index, title, strips });
+                let strips = clusters(face, group, false, COLUMN_GAP)
+                    .into_iter()
+                    .map(|mut strip| {
+                        strip.sort_by(|&a, &b| face.page_rect(a).y.total_cmp(&face.page_rect(b).y));
+                        strip
+                            .into_iter()
+                            .map(|n| {
+                                let knob = ir_view::knob_like(face, &face.widgets[n.0]);
+                                let (width, height) = match if knob {
+                                    2
+                                } else {
+                                    class(&face.widgets[n.0].kind)
+                                } {
+                                    2 => (88., 80.),
+                                    3 => (64., 140.),
+                                    4 => (152., 32.),
+                                    5 => (160., 96.),
+                                    _ => (152., CONTROL),
+                                };
+                                Cell {
+                                    widget: n,
+                                    label: name(face, n),
+                                    width,
+                                    height,
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect();
+                sections.push(Section {
+                    index,
+                    title,
+                    strips,
+                });
             }
             bands.push(sections);
         }
         Self {
             source: face.source,
             page,
+            paint_order: face.paint_order.clone(),
             structure: face.widgets.iter().map(Structure::new).collect(),
             bands,
         }
@@ -260,7 +302,11 @@ pub fn view(
     values: &mut ir_view::Values,
     input: &mut ir_view::InputState,
 ) -> El {
-    if input.generated.as_ref().is_none_or(|layout| !layout.matches(face, page)) {
+    if input
+        .generated
+        .as_ref()
+        .is_none_or(|layout| !layout.matches(face, page))
+    {
         input.generated = Some(std::sync::Arc::new(Layout::new(face, page)));
     }
     // Clone only the descriptor Arc so widget_state can mutate input below.
@@ -282,33 +328,42 @@ pub fn view(
                     let label = &cell.label;
                     let place = (width.to_bits(), height.to_bits(), scale.to_bits());
                     // The cell's pictures are not drawn here, but the face's loads still key it.
-                    let built = ir_view::retained(ui, namespace, face, n, assets, ir_view::value_key(face, n, values), place, |ui| {
-                        col![
-                            caption(label.clone())
-                                .lines(1)
-                                .min_w(0)
-                                .fill(secondary())
-                                .tip(label.clone())
-                                .id(format!("{namespace}-caption-{}", n.0)),
-                            ir_view::widget_state(
-                                ui,
-                                namespace,
-                                face,
-                                n,
-                                &empty,
-                                ir::Presentation::Vector,
-                                scale,
-                                values,
-                                input,
-                                width,
-                                height
-                            )
-                        ]
-                        .gap(TIGHT)
-                        .align(Align::Stretch)
-                        .w(width)
-                        .shrink(0)
-                    });
+                    let built = ir_view::retained(
+                        ui,
+                        namespace,
+                        face,
+                        n,
+                        assets,
+                        ir_view::value_key(face, n, values),
+                        place,
+                        |ui| {
+                            col![
+                                caption(label.clone())
+                                    .lines(1)
+                                    .min_w(0)
+                                    .fill(secondary())
+                                    .tip(label.clone())
+                                    .id(format!("{namespace}-caption-{}", n.0)),
+                                ir_view::widget_state(
+                                    ui,
+                                    namespace,
+                                    face,
+                                    n,
+                                    &empty,
+                                    ir::Presentation::Vector,
+                                    scale,
+                                    values,
+                                    input,
+                                    width,
+                                    height
+                                )
+                            ]
+                            .gap(TIGHT)
+                            .align(Align::Stretch)
+                            .w(width)
+                            .shrink(0)
+                        },
+                    );
                     nodes += ir_view::node_count(&built);
                     if nodes > ir_view::FACE_NODES {
                         ir_view::warn_dropped(1);
@@ -389,19 +444,41 @@ mod tests {
 
     fn fixture() -> ir::Interface {
         let page = ir::PageRef(0);
-        let mut panel = ir::Widget::new("panel", page, ir::Rect::new(0, 0, 300, 180), ir::Kind::Panel);
+        let mut panel = ir::Widget::new(
+            "panel",
+            page,
+            ir::Rect::new(0, 0, 300, 180),
+            ir::Kind::Panel,
+        );
         panel.viewport = Some([0, 0]);
-        let mut label = ir::Widget::new("label", page, ir::Rect::new(0, 0, 80, 18), ir::Kind::Label);
+        let mut label =
+            ir::Widget::new("label", page, ir::Rect::new(0, 0, 80, 18), ir::Kind::Label);
         label.text = "Filter".into();
-        let mut knob = ir::Widget::new("$cutoffKnob", page, ir::Rect::new(0, 20, 80, 60), ir::Kind::Knob {
-            range: ir::Range { max: 100., default: 50., step: Some(1.), ..Default::default() },
-            display: Default::default(),
-        });
+        let mut knob = ir::Widget::new(
+            "$cutoffKnob",
+            page,
+            ir::Rect::new(0, 20, 80, 60),
+            ir::Kind::Knob {
+                range: ir::Range {
+                    max: 100.,
+                    default: 50.,
+                    step: Some(1.),
+                    ..Default::default()
+                },
+                display: Default::default(),
+            },
+        );
         knob.parent = Some(WidgetRef(0));
         knob.binding = ir::Binding::Control(ir::ControlId(1));
         ir::Interface {
             source: ir::Source::FalconLua,
-            pages: vec![ir::Page { size: ir::Size { width: 340, height: 220 }, ..Default::default() }],
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 340.0,
+                    height: 220.0,
+                },
+                ..Default::default()
+            }],
             widgets: vec![panel, label, knob],
             ..Default::default()
         }
@@ -411,7 +488,10 @@ mod tests {
     fn generated_shell_builds_reuse_layout_but_controls_and_scale_stay_live() {
         let face = fixture();
         let (mut ui, mut plain) = (super::super::theme::ui(), super::super::theme::ui());
-        let (mut input, mut other) = (ir_view::InputState::default(), ir_view::InputState::default());
+        let (mut input, mut other) = (
+            ir_view::InputState::default(),
+            ir_view::InputState::default(),
+        );
         let mut values = ir_view::Values::default();
         let mut other_values = ir_view::Values::default();
         let mut saved = None;
@@ -420,10 +500,22 @@ mod tests {
             values.insert(ir::ControlId(1), 20. + frame as f64 * 10.);
             other_values.clone_from(&values);
             let scale = if frame < 3 { 1. } else { 1.25 };
-            let root = view(&mut ui, "generated", &face, ir::PageRef(0), &Default::default(), scale, &mut values, &mut input);
+            let root = view(
+                &mut ui,
+                "generated",
+                &face,
+                ir::PageRef(0),
+                &Default::default(),
+                scale,
+                &mut values,
+                &mut input,
+            );
             let layout = input.generated.as_ref().unwrap();
             if let Some(ref old) = saved {
-                assert!(Arc::ptr_eq(old, layout), "value/scale changes must not regroup controls");
+                assert!(
+                    Arc::ptr_eq(old, layout),
+                    "value/scale changes must not regroup controls"
+                );
             } else {
                 saved = Some(layout.clone());
                 assert_eq!(layout.bands[0][0].title.as_deref(), Some("Filter"));
@@ -431,13 +523,36 @@ mod tests {
             }
             // Force the ordinary clustering/name/layout path on the oracle.
             other.generated = None;
-            let baseline = view(&mut plain, "generated", &face, ir::PageRef(0), &Default::default(), scale, &mut other_values, &mut other);
+            let baseline = view(
+                &mut plain,
+                "generated",
+                &face,
+                ir::PageRef(0),
+                &Default::default(),
+                scale,
+                &mut other_values,
+                &mut other,
+            );
             for (ui, root) in [(&mut ui, root), (&mut plain, baseline)] {
-                ui.frame(col![caption(format!("Shell {frame}")), root], Some(Size::new(340., 220.)), Input::default(), 1. / 60.).unwrap();
+                ui.frame(
+                    col![caption(format!("Shell {frame}")), root],
+                    Some(Size::new(340., 220.)),
+                    Input::default(),
+                    1. / 60.,
+                )
+                .unwrap();
             }
             let pixels = super::super::tests::pixels(&ui, 340, 220);
             assert_eq!(pixels, super::super::tests::pixels(&plain, 340, 220));
-            assert_eq!(ui.scene().unwrap().surface("generated-ir-2").unwrap().frame, plain.scene().unwrap().surface("generated-ir-2").unwrap().frame);
+            assert_eq!(
+                ui.scene().unwrap().surface("generated-ir-2").unwrap().frame,
+                plain
+                    .scene()
+                    .unwrap()
+                    .surface("generated-ir-2")
+                    .unwrap()
+                    .frame
+            );
             if frame == 0 {
                 first_pixels = Some(pixels);
             } else if frame == 1 {
@@ -445,13 +560,36 @@ mod tests {
             }
         }
         ui.focus("generated-ir-2");
-        for event in [Input { keys: vec![KeyPress { key: Key::Up, mods: Mods::default() }], ..Default::default() }, Input::default(), Input::default()] {
-            let root = view(&mut ui, "generated", &face, ir::PageRef(0), &Default::default(), 1.25, &mut values, &mut input);
-            ui.frame(root, Some(Size::new(340., 220.)), event, 1. / 60.).unwrap();
+        for event in [
+            Input {
+                keys: vec![KeyPress {
+                    key: Key::Up,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            },
+            Input::default(),
+            Input::default(),
+        ] {
+            let root = view(
+                &mut ui,
+                "generated",
+                &face,
+                ir::PageRef(0),
+                &Default::default(),
+                1.25,
+                &mut values,
+                &mut input,
+            );
+            ui.frame(root, Some(Size::new(340., 220.)), event, 1. / 60.)
+                .unwrap();
         }
         assert!(values[&ir::ControlId(1)] > 60.);
         assert!(!input.edits.is_empty());
-        assert!(Arc::ptr_eq(saved.as_ref().unwrap(), input.generated.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(
+            saved.as_ref().unwrap(),
+            input.generated.as_ref().unwrap()
+        ));
     }
 
     #[test]
@@ -459,19 +597,27 @@ mod tests {
         let face = fixture();
         let layout = Layout::new(&face, ir::PageRef(0));
         let changes: &[fn(&mut ir::Interface)] = &[
-            |f| f.widgets[0].rect.x += 1,
+            |f| f.widgets[0].rect.x += 1.0,
             |f| f.widgets[0].viewport = Some([1, 0]),
             |f| f.widgets[0].hidden = true,
             |f| f.widgets[2].parent = None,
             |f| f.widgets[2].page = ir::PageRef(1),
             |f| f.widgets[2].z += 1,
-            |f| f.widgets[2].rect.width += 1,
-            |f| f.widgets[2].kind = ir::Kind::Slider { range: Default::default(), orientation: ir::Orientation::Vertical },
+            |f| f.paint_order = Some(vec![]),
+            |f| f.widgets[2].rect.width += 1.0,
+            |f| {
+                f.widgets[2].kind = ir::Kind::Slider {
+                    range: Default::default(),
+                    orientation: ir::Orientation::Vertical,
+                }
+            },
             |f| f.widgets[1].text = "Resonance".into(),
             |f| f.widgets[2].text = "Cutoff".into(),
             |f| f.widgets[2].name = "$resonanceKnob".into(),
             |f| f.widgets[2].automation.name = Some("Frequency".into()),
-            |f| { f.widgets.pop(); },
+            |f| {
+                f.widgets.pop();
+            },
             |f| f.source = ir::Source::Ksp { slot: 0 },
         ];
         for change in changes {
@@ -485,6 +631,9 @@ mod tests {
         dynamic.widgets[0].opacity = 0.5;
         dynamic.widgets[2].value = Some(ir::Value::Real(75.));
         dynamic.widgets[2].binding = ir::Binding::Control(ir::ControlId(99));
-        assert!(layout.matches(&dynamic, ir::PageRef(0)), "these inputs belong to eager widget_state, not topology");
+        assert!(
+            layout.matches(&dynamic, ir::PageRef(0)),
+            "these inputs belong to eager widget_state, not topology"
+        );
     }
 }

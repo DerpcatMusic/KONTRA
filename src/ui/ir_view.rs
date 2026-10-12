@@ -494,8 +494,8 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
             sample(
                 &mut rgb,
                 img,
-                (x - r.x as f64) / r.width.max(1) as f64 * img.width as f64,
-                (y - r.y as f64) / r.height.max(1) as f64 * img.height as f64,
+                (x - r.x as f64) / r.width.max(1.) as f64 * img.width as f64,
+                (y - r.y as f64) / r.height.max(1.) as f64 * img.height as f64,
             );
         }
     }
@@ -605,7 +605,7 @@ pub fn resolved(face: &Interface) -> Interface {
 pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = usize>) {
     for p in &mut face.pages {
         if let Some(rows) = p.height_rows.take() {
-            p.size.height = rows * GRID_ROW_HEIGHT;
+            p.size.height = f64::from(rows * GRID_ROW_HEIGHT);
         }
     }
     for n in indices {
@@ -616,13 +616,13 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
         let label_bounds = if matches!(w.kind, Kind::Label)
             && (!w.auto_size || w.default_axes != [false; 2])
         {
-            [!w.default_axes[0] && w.rect.width > 0, !w.default_axes[1] && w.rect.height > 0]
+            [!w.default_axes[0] && w.rect.width > 0.0, !w.default_axes[1] && w.rect.height > 0.0]
         } else {
             [false; 2]
         };
         if let ir::Placement::Grid { column, row } = w.placement {
-            w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
-            w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
+            w.rect.x = f64::from((column as i32 - 1) * GRID.0 + GRID.2);
+            w.rect.y = f64::from((row as i32 - 1) * GRID.1 + GRID.3);
             w.placement = ir::Placement::Pixels;
         }
         if w.auto_size {
@@ -633,10 +633,10 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
                 w.default_axes
             };
             if axes[0] {
-                w.rect.width = defaults.0;
+                w.rect.width = f64::from(defaults.0);
             }
             if axes[1] {
-                w.rect.height = defaults.1;
+                w.rect.height = f64::from(defaults.1);
             }
             w.auto_size = false;
             w.default_axes = [false; 2];
@@ -764,14 +764,14 @@ pub fn view_state(
         }
         let r = face.page_rect(n);
         let intersects = |clip: ir::Rect| {
-            i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
-                && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
-                && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
-                && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
+            r.x < clip.x + clip.width
+                && r.y < clip.y + clip.height
+                && r.x + r.width > clip.x
+                && r.y + r.height > clip.y
         };
-        if r.width == 0
-            || r.height == 0
-            || !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height))
+        if r.width == 0.
+            || r.height == 0.
+            || !intersects(ir::Rect { x: 0., y: 0., width: p.size.width, height: p.size.height })
         {
             continue;
         }
@@ -961,7 +961,7 @@ fn within_budget(mut built: Vec<(El, usize, bool)>) -> Vec<El> {
 }
 
 /// The height declared by the script, after grid rows are resolved.
-pub fn height(face: &Interface, page: PageRef) -> u32 {
+pub fn height(face: &Interface, page: PageRef) -> f64 {
     face.pages[page.0].size.height
 }
 
@@ -2324,7 +2324,7 @@ pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Va
         let Some(page) = face.pages.first() else {
             return Err("no UI page".into());
         };
-        let scale = (1100. / f64::from(page.size.width.max(1))).min(1.);
+        let scale = (1100. / page.size.width.max(1.)).min(1.);
         let (width, height) = (
             (f64::from(page.size.width) * scale).ceil().clamp(1., 1100.) as u16,
             (f64::from(page.size.height) * scale)
@@ -2438,8 +2438,8 @@ mod page_layout_tests {
             source,
             pages: vec![ir::Page {
                 size: ir::Size {
-                    width: 100,
-                    height: 60,
+                    width: 100.0,
+                    height: 60.0,
                 },
                 ..Default::default()
             }],
@@ -2486,7 +2486,7 @@ mod page_layout_tests {
             path: format!("synthetic-{n}"),
             kind: ir::AssetKind::Image(ir::ImageMeta {
                 frames: 2,
-                size: Some(ir::Size { width: 4, height: 4 }),
+                size: Some(ir::Size { width: 4.0, height: 4.0 }),
                 stretch: [true; 2],
                 margins: ir::Margins { left: 1, right: 1, top: 1, bottom: 1 },
                 ..Default::default()
@@ -2598,7 +2598,7 @@ mod page_layout_tests {
         face.widgets[1].images[0].frame = Some(1);
         assets.epoch += 1; // the face changed, as Face::sync would note
         assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 8), 2);
-        face.widgets[0].rect.x += 3;
+        face.widgets[0].rect.x += 3.0;
         face.widgets[0].viewport = Some([1, 2]);
         face.widgets[0].opacity = 0.5;
         face.widgets[0].enabled = false;
@@ -2628,7 +2628,7 @@ mod page_layout_tests {
         assets.loaded.insert(0, Some(Arc::new(Picture::prepared(img, 1, 2, Some([1, 0, 3, 4])))));
         assets.version += 1; // what Assets::prepare would note
         assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 15), 2);
-        face.pages[0].size.width += 1;
+        face.pages[0].size.width += 1.0;
         assets.epoch += 1; // the face changed, as Face::sync would note
         assert_eq!(tick(&face, &assets, 2., Presentation::Vector, 16), 3);
     }
@@ -2637,7 +2637,7 @@ mod page_layout_tests {
     #[test]
     fn an_idle_face_is_retained_and_a_changed_value_rebuilds_one_run() {
         let mut face = Interface {
-            pages: vec![ir::Page { size: ir::Size { width: 400, height: 400 }, ..Default::default() }],
+            pages: vec![ir::Page { size: ir::Size { width: 400.0, height: 400.0 }, ..Default::default() }],
             ..Default::default()
         };
         for n in 0..(3 * RUN) as i32 {
@@ -2664,7 +2664,7 @@ mod page_layout_tests {
     #[test]
     fn retained_photo_does_not_skip_knob_menu_or_live_meter_reads() {
         let (mut face, mut assets) = photo_face();
-        face.pages[0].size = ir::Size { width: 240, height: 140 };
+        face.pages[0].size = ir::Size { width: 240.0, height: 140.0 };
         face.widgets.push(ir::Widget::new("menu", PageRef(0), ir::Rect::new(110, 10, 100, 24), Kind::Menu {
             items: vec![
                 ir::MenuItem { text: "First".into(), value: 10, visible: true },
@@ -2711,10 +2711,10 @@ mod page_layout_tests {
     #[test]
     fn authored_page_height_does_not_follow_off_page_controls() {
         let mut face = face(ir::Source::Ksp { slot: 0 });
-        assert_eq!(height(&face, PageRef(0)), 60);
-        face.pages[0].size.height = 80;
+        assert_eq!(height(&face, PageRef(0)), 60.);
+        face.pages[0].size.height = 80.0;
         face.widgets[1].hidden = true;
-        assert_eq!(height(&face, PageRef(0)), 80);
+        assert_eq!(height(&face, PageRef(0)), 80.);
     }
 
     #[test]
