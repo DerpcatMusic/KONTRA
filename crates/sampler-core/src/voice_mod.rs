@@ -342,6 +342,7 @@ enum Prepared {
 struct Program {
     native: Option<crate::whole_voice::Program>,
     native_controls: Box<[Option<([usize; 2], f64)>]>,
+    native_flex_control: Option<(f64, Option<[usize; 2]>)>,
     sources: Box<[Prepared]>,
     fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
@@ -403,6 +404,10 @@ impl VoiceModulation {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
             }
+            if let Some((_,Some(indices))) = program.native_flex_control {
+                resolve(indices[0])?;
+                resolve(indices[1])?;
+            }
         }
         for program in &mut self.programs {
             for (_, indices) in &mut program.controls {
@@ -410,6 +415,9 @@ impl VoiceModulation {
             }
             for (indices, _) in program.native_controls.iter_mut().flatten() {
                 *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            }
+            if let Some((_,Some(indices))) = &mut program.native_flex_control {
+                *indices = [resolve(indices[0])?,resolve(indices[1])?];
             }
         }
         Ok(())
@@ -682,11 +690,16 @@ impl VoiceModulation {
                     }
                 }
             }
+            let native_flex_control = native_program.as_ref().and_then(|native| {
+                let route = native.routes.iter().position(|r| matches!(r,crate::whole_voice::Route::Flex))?;
+                Some((program.routes[route].depth,controls.iter().find(|(index,_)| *index == route).map(|(_,ids)| *ids)))
+            });
             compiled.push(Program {
                 controls: controls.into_boxed_slice(),
                 fades,
                 native: native_program,
                 native_controls: native_controls.into_boxed_slice(),
+                native_flex_control,
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 cacheable: sources.iter().all(|s| {
                     matches!(
@@ -1369,12 +1382,10 @@ impl VoiceModState {
         state: &'a mut Option<crate::v1_voice_controls::ControlState>, controls: &[crate::ControlValue]) -> Option<crate::whole_voice::Render<'a>> {
         let program = &modulation.programs[self.program(voice)? as usize];
         let native = program.native.as_ref()?;
-        let flex_depth = native.routes.iter().position(|r| matches!(r, crate::whole_voice::Route::Flex)).map_or(1., |route| {
-            program.controls.iter().find(|(index,_)| *index == route).map_or(program.routes[route].depth, |(_, [depth,bypass])| {
-                match (controls[*depth],controls[*bypass]) {
-                    (crate::ControlValue::Real(depth),crate::ControlValue::Real(0.)) => depth,
-                    _ => 0.,
-                }
+        let flex_depth = program.native_flex_control.map_or(1., |(base,ids)| {
+            ids.map_or(base, |[depth,bypass]| match (controls[depth],controls[bypass]) {
+                (crate::ControlValue::Real(depth),crate::ControlValue::Real(0.)) => depth,
+                _ => 0.,
             })
         });
         Some(crate::whole_voice::Render { plan: &native.plan, state: state.as_mut()?, blocks: &self.native_blocks, flex_depth })
