@@ -14,7 +14,11 @@ cpu = ["dep:vello_cpu", "dep:glifo"]
 # sized pixmap loses more to thread hand-off than it gains.
 cpu-threads = ["cpu", "vello_cpu/multithreading"]
 
+software-window = ["cpu", "dep:softbuffer", "dep:raw-window-handle"]
+
 [dependencies]
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 mui-scene = { git = "https://github.com/Matari-Audio/MUI" }
 mui-weld = { git = "https://github.com/Matari-Audio/MUI" }
 mui-geometry = { git = "https://github.com/Matari-Audio/MUI" }

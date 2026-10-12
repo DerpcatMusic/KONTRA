@@ -34,6 +34,8 @@ pub use vello_common::{kurbo, peniko};
 pub use vello_cpu;
 #[cfg(feature = "gpu-effects")]
 mod classic;
+#[cfg(feature = "cpu")]
+pub mod software;
 #[cfg(feature = "gpu-effects")]
 pub use classic::Classic;
 #[cfg(feature = "gpu-effects")]

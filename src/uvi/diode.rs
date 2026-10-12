@@ -202,8 +202,8 @@ impl DiodeDcBlocker {
             let cross = p * a;
             for channel in 0..2 {
                 let state = &mut self.state[channel];
-                let mut groups = frames.chunks_exact_mut(4);
-                for group in &mut groups {
+                let (groups, remainder) = frames.as_chunks_mut::<4>();
+                for group in groups {
                     let [x0, x1, x2, x3] = std::array::from_fn(|i| group[i][channel]);
                     // Two-step one-pole recurrence, evaluated in native order.
                     let z0 = x0 * a + state[3] * cross + state[0] * square;
@@ -216,7 +216,7 @@ impl DiodeDcBlocker {
                     }
                     *state = [z2, z3, x2, x3];
                 }
-                for frame in groups.into_remainder() {
+                for frame in remainder {
                     let input = frame[channel];
                     let low_pass = (input - state[1]) * a + state[1];
                     frame[channel] = input - low_pass;
