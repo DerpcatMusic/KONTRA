@@ -2538,7 +2538,11 @@
     "640224a0",
     "2e030e6d",
     "45d8ad3c",
-    "7f845b75"
+    "7f845b75",
+    "e76b9bbe",
+    "6d47e24d",
+    "31b1ad8b",
+    "03226b59"
   ],
   "unresolved_major_scopes": [
     "fold-experiments",
@@ -2620,7 +2624,7 @@
       ],
       "historical_admission_boundary": "d8f1c623 is a separate native-primary checkpoint with v1/evaluator bit tests, not original-host sound acceptance. c7218f7b explicitly holds full native-control execution:477 feature omissions,four silent reports,unknown active-native admission after initialization and no clear CPU improvement. Current envelope setters/trace/control/retirement tests have later changes; simply replacing envelope.rs would regress them. Preserve donor and its numeric source oracle until independently admitted modern lifecycle/source identity tests and exact initialized overlays exist.",
       "historical_source_gap": "Current EnvelopeState runs generic frame-valued envelope curves; raw SourceAhdsr.native_amplitude metadata and v1 native evaluator are present but not joined to the production envelope owner. This is actual missing source, not a name-only discrepancy.",
-      "current_status": "Recovered into production as45d8ad3c+7f845b75; parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
+      "current_status": "Recovered into production as45d8ad3c+7f845b75; final live-control review repairs e76b9bbe+6d47e24d+03226b59, test projection correction31b1ad8b. Parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
       "current_code": [
         "crates/sampler-core/src/envelope.rs",
         "crates/sampler-core/src/whole_voice.rs",
@@ -2637,13 +2641,21 @@
         "lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths",
         "native_external_reads_live_depth_and_bypass_without_resetting_held_source",
         "initialized_envelope_overlay_declines_stale_raw_native_coefficients",
-        "native_control_state_keeps_physical_plan_ownership_across_replacement"
+        "native_control_state_keeps_physical_plan_ownership_across_replacement",
+        "native_flex_live_depth_and_bypass_keep_clock_and_primary_release_ownership",
+        "mutable_flex_without_a_raw_primary_keeps_the_shared_synthetic_gate_owner",
+        "native_external_bypass_keeps_lag_state_running_until_resume",
+        "native_external_indices_follow_a_replaced_physical_control_schema",
+        "post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owner",
+        "initialized_flex_route_transforms_keep_the_current_source_consumer"
       ],
       "remaining_contract_limits": [
         "Native host PCM/control cadence and current CPU/RSS are unknown; copied-v1 consumer oracle is distinguished from existing original-byte leaf fixtures.",
         "Native primary/ordinary raw coefficients require agreement with initialized AHDSR projection; frame/setter/Step overlays stay on the current owner.",
         "An unsupported active LFO, ambiguous physical mapping, secondary primary, arbitrary shaper, transformed/scaled route or unrepresentable original-unit depth declines the whole-control consumer. Shared existing source/route owners remain authoritative.",
-        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact."
+        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact.",
+        "AHDSR edits on already held voices are admission-only in existing generic and recovered native paths: Runtime::controlled_envelope versus Runtime::edit_controls_now/EngineLayers::envelope. Exact native active attack/hold/decay/release retiming requires a measured versioned lifecycle rule and active-state write consumer; future voices honor controlled values.",
+        "Mutable Flex without raw primary remains on the shared synthetic gate owner. Native unity-primary substitution cannot represent that independent release gate. Initialized Flex invert/shape/smoothing also stay on current source/route consumers."
       ]
     },
     {
@@ -2659,7 +2671,7 @@
       ],
       "historical_admission_boundary": "Latest own whole-controls handoff still requests trusted focused GREEN/area no-run/freeze/quiet. No successful final acceptance receipt found. Modern source-driven LFO phase routing,filter index sets,live control IDs and bipolar script sources must retain current owners. Source0158 admission also declines active LFO/ambiguous/new shapes and still lacks native initialized/live source mirror. Full branch replacement would remove newer sound controls/DSP; enable only after source-derived admission and current lifecycle/heap/growth tests.",
       "historical_source_gap": "Current ordinary primary/Flex/external modulation runs shared generic evaluator; donor introduces whole_voice.rs prepared ControlPlan and state/claim arrays, ordered native input projection, plus runtime admission counters. Not present in current production.",
-      "current_status": "Recovered into production as45d8ad3c+7f845b75; parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
+      "current_status": "Recovered into production as45d8ad3c+7f845b75; final live-control review repairs e76b9bbe+6d47e24d+03226b59, test projection correction31b1ad8b. Parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
       "current_code": [
         "crates/sampler-core/src/envelope.rs",
         "crates/sampler-core/src/whole_voice.rs",
@@ -2676,14 +2688,37 @@
         "lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths",
         "native_external_reads_live_depth_and_bypass_without_resetting_held_source",
         "initialized_envelope_overlay_declines_stale_raw_native_coefficients",
-        "native_control_state_keeps_physical_plan_ownership_across_replacement"
+        "native_control_state_keeps_physical_plan_ownership_across_replacement",
+        "native_flex_live_depth_and_bypass_keep_clock_and_primary_release_ownership",
+        "mutable_flex_without_a_raw_primary_keeps_the_shared_synthetic_gate_owner",
+        "native_external_bypass_keeps_lag_state_running_until_resume",
+        "native_external_indices_follow_a_replaced_physical_control_schema",
+        "post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owner",
+        "initialized_flex_route_transforms_keep_the_current_source_consumer"
       ],
       "remaining_contract_limits": [
         "Native host PCM/control cadence and current CPU/RSS are unknown; copied-v1 consumer oracle is distinguished from existing original-byte leaf fixtures.",
         "Native primary/ordinary raw coefficients require agreement with initialized AHDSR projection; frame/setter/Step overlays stay on the current owner.",
         "An unsupported active LFO, ambiguous physical mapping, secondary primary, arbitrary shaper, transformed/scaled route or unrepresentable original-unit depth declines the whole-control consumer. Shared existing source/route owners remain authoritative.",
-        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact."
+        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact.",
+        "AHDSR edits on already held voices are admission-only in existing generic and recovered native paths: Runtime::controlled_envelope versus Runtime::edit_controls_now/EngineLayers::envelope. Exact native active attack/hold/decay/release retiming requires a measured versioned lifecycle rule and active-state write consumer; future voices honor controlled values.",
+        "Mutable Flex without raw primary remains on the shared synthetic gate owner. Native unity-primary substitution cannot represent that independent release gate. Initialized Flex invert/shape/smoothing also stay on current source/route consumers."
       ]
     }
-  ]
+  ],
+  "final_owner_review": {
+    "verified_and_repaired": [
+      {
+        "bug": "Native Flex ignored held route depth/bypass and prematurely retired masked/partial Flex primary releases",
+        "fix": "e76b9bbe",
+        "prepared_indices": "6d47e24d"
+      },
+      {
+        "bug": "Native Flex admission silently ignored initialized inversion, shape and smoothing",
+        "fix": "03226b59"
+      }
+    ],
+    "parent_compile_feedback": "Route has smoothing, not lag: independent native external lag fixture corrected by31b1ad8b. No build run in this worktree.",
+    "source_review": "Generation/voice slot slab reset, growth transfer, serial/parallel claim paths, replacement source/control ownership and control schema remapping reviewed; regression execution remains parent-owned."
+  }
 }
