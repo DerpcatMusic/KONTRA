@@ -72,6 +72,16 @@ external source lag continues while bypassed, schema insertion remaps native
 indices, and post-prepare attack/curve/sustain writes choose the current owner
 for future starts rather than immutable saved coefficients.
 
+The final admission review also rejects initialized Flex inversion, transfer
+shape or smoothing. Those current route transformations are not represented by
+the native unity Flex multiplication. An independent regression removes only
+the raw Flex descriptor from its reference while preserving the current
+source/route transform and independently prepared primary; all three paths
+must match that current consumer through held and release rendering. Native
+Flex depth/bypass indices are compiled and remapped during preparation, with
+no per-render route search. The external lag regression aligns current
+`Route::smoothing` and physical `target.lag_ms` descriptors.
+
 AHDSR writes on already held voices remain an existing host boundary: both the
 old generic path and the recovered native path read controlled envelopes at
 voice admission. No official/versioned native rule for active attack retiming
