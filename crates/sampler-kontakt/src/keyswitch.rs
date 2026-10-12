@@ -955,6 +955,23 @@ end on
     }
 
     #[test]
+    fn native_always_keeps_its_compound_operator() {
+        let always = StartCriteriaParams {
+            mode: 0, next_criteria: 1, key_min: 0, key_max: 0,
+            controller: 0, cc_min: 0, cc_max: 0, cycle_class: 0,
+            slice_zone_idx: 0, slice_zone_slice_idx: 0, sequencer_only: false,
+        };
+        let key = StartCriteriaParams {mode: 1, next_criteria: 0, key_min: 12, key_max: 12, ..always};
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        translate(&mut instrument, &[("g0".into(), ir::GroupRef(0),
+            ni_file::kontakt::objects::StartCriteriaList {mask: 3, items: vec![always,key], ..Default::default()})]);
+        assert_eq!(instrument.groups[0].start.len(), 2, "Always AND_NOT key must retain its negation");
+        assert_eq!(instrument.groups[0].start[0].next, ir::StartJoin::AndNot);
+        assert_eq!(instrument.groups[0].start[1].slot, 1);
+    }
+
+    #[test]
     fn start_on_key_groups_become_native_articulations() {
         let criteria = |mode, low, high| StartCriteriaParams {
             mode,
