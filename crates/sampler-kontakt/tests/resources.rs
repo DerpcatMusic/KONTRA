@@ -98,6 +98,25 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         "a sibling library must not supply another instrument's missing picture"
     );
 
+    // A complete directory can prove absence even when another member is truncated.
+    let short = root.join("short.nicnt");
+    std::fs::write(&short, &nicnt[..nicnt.len() - 1]).unwrap();
+    let mut indexed = ResourceContainer::open(&short).unwrap();
+    assert_eq!(indexed.names(), [name]);
+    assert!(
+        indexed
+            .read("Resources/pictures/pic.png")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        indexed
+            .read("Resources/pictures/admin_bg.png")
+            .unwrap()
+            .is_none()
+    );
+    assert!(indexed.read("Resources/pictures/Wallpaper.png").is_err());
+
     // Invalid markers, exaggerated counts/ranges and truncated bodies are errors.
     for at in [0, 272, 632 + 904, 1544] {
         let mut corrupt = container.clone();

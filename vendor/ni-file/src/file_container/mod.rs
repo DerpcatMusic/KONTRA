@@ -41,6 +41,15 @@ impl NIFileContainer {
             .file_section_offset
             .checked_add(item.file_start_offset)
             .ok_or(Error::Static("NI FileContainer member offset overflow"))?;
+        let end = offset
+            .checked_add(item.file_size)
+            .ok_or(Error::Static("NI FileContainer member offset overflow"))?;
+        let position = reader.stream_position()?;
+        let length = reader.seek(std::io::SeekFrom::End(0))?;
+        reader.seek(std::io::SeekFrom::Start(position))?;
+        if end > length {
+            return Err(Error::Static("Truncated NI FileContainer member"));
+        }
         let size = usize::try_from(item.file_size)
             .map_err(|_| Error::Static("NI FileContainer member exceeds address space"))?;
         reader.seek(std::io::SeekFrom::Start(offset))?;
@@ -48,6 +57,22 @@ impl NIFileContainer {
     }
 
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+        let index = Self::read_index(&mut reader)?;
+        let position = reader.stream_position()?;
+        let length = reader.seek(std::io::SeekFrom::End(0))?;
+        reader.seek(std::io::SeekFrom::Start(position))?;
+        let end = index
+            .items
+            .last()
+            .map_or(0, |item| item.file_start_offset + item.file_size);
+        if index.file_section_offset + end > length {
+            return Err(Error::Static("Truncated NI FileContainer file section"));
+        }
+        Ok(index)
+    }
+
+    /// Index validated metadata; payload availability is checked when a member is read.
+    pub fn read_index<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         // NI FC MTD
         // Native Instruments FileContainer MetaData
         let mtd_magic = reader.read_bytes(16)?;
@@ -120,7 +145,7 @@ impl NIFileContainer {
         let _header_chunk = reader.read_bytes(592)?;
 
         let file_section_offset = reader.stream_position()?;
-        if offset != total_size || total_size > length.saturating_sub(file_section_offset) {
+        if offset != total_size || file_section_offset.checked_add(total_size).is_none() {
             return Err(Error::Static("Truncated NI FileContainer file section"));
         }
 
@@ -179,6 +204,19 @@ mod tests {
         assert!(container
             .read_member(Cursor::new(&bytes[..bytes.len() - 1]), 900, 4)
             .is_err());
+        // An unrelated short member must not erase a valid directory or intact member.
+        let short = &bytes[..bytes.len() - 1];
+        assert!(NIFileContainer::read(Cursor::new(short)).is_err());
+        let index = NIFileContainer::read_index(Cursor::new(short)).unwrap();
+        assert_eq!(index.items.len(), 2);
+        assert_eq!(
+            index.read_member(Cursor::new(short), 42, 3).unwrap(),
+            b"nki"
+        );
+        assert!(index.read_member(Cursor::new(short), 900, 7).is_err());
+        for end in 0..index.file_section_offset as usize {
+            assert!(NIFileContainer::read_index(Cursor::new(&bytes[..end])).is_err());
+        }
         for end in 0..bytes.len() {
             assert!(
                 NIFileContainer::read(Cursor::new(&bytes[..end])).is_err(),
