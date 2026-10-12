@@ -3302,7 +3302,9 @@ fn native_control_state_keeps_physical_plan_ownership_across_replacement() {
 fn native_external_bypass_keeps_lag_state_running_until_resume() {
     use sampler_core::{ControlValue, ControlWrite};
     let mut ir = controlled_native_external_fixture();
-    ir.routes[0].lag = ir::Time::Milliseconds(1000.);
+    // Keep the current IR projection and original physical descriptor aligned;
+    // native admission checks the route's compiled smoothing against saved lag.
+    ir.routes[0].smoothing = ir::Time::Milliseconds(1000.);
     ir.source_indices.modulators[1].settings.as_mut().unwrap().targets[0].lag_ms = 1000;
     let make = || Runtime::new(lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
     let mut masked = make();
