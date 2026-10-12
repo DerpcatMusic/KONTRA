@@ -6066,10 +6066,102 @@ mod tests {
         nodes: Vec<f32>,
     }
 
+    /// A headless host still owns the lossless KSP UI outbox. External jobs
+    /// require a service host; refuse them instead of discarding completion.
+    fn service_test_ui(core: &mut V2Core, scripts: &mut ScriptUi) {
+        let mut refused = None;
+        let plan = core.parts[0].as_ref().unwrap().runtime.active_plan();
+        core.take_effects(0, &mut |instance, effect| {
+            if matches!(
+                effect.service,
+                sampler_core::MIDI_SERVICE | sampler_core::ARRAY_FILE_SERVICE
+            ) {
+                refused = Some(effect.service);
+                return false;
+            }
+            let Some(owner) = scripts.views.get(instance) else {
+                refused = Some(effect.service);
+                return false;
+            };
+            if effect.plan != plan || owner.service(effect.service).is_none() {
+                refused = Some(effect.service);
+                return false;
+            }
+            scripts.apply(instance, effect);
+            true
+        });
+        assert!(
+            refused.is_none(),
+            "unsupported headless host service {refused:?}"
+        );
+    }
+
+    fn audition_controllers(core: &mut V2Core, controllers: &[(u8, u8)]) {
+        for &(cc, value) in controllers {
+            core.play(0, Event::midi1(0xb0, cc, value));
+        }
+    }
+
+    fn finite_test_block(core: &mut V2Core) -> f32 {
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
+        let peak = core
+            .render(128)
+            .buses
+            .iter()
+            .flat_map(|bus| bus.iter())
+            .flat_map(|c| &c[..128])
+            .fold(0f32, |peak, &sample| {
+                assert!(sample.is_finite(), "nonfinite offline test audio");
+                peak.max(sample.abs())
+            });
+        core.end_block(128, &mut |_| true);
+        peak
+    }
+
+    /// Give the Lua owner and lazy heads up to two audio seconds to produce an
+    /// actually audible note, retaining the existing 0.01 witness threshold.
+    fn uvi_test_onset(core: &mut V2Core, scripts: &mut ScriptUi) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut observed_peak = 0f32;
+        let mut source_peak = 0f32;
+        for _ in 0..750 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "UVI onset exceeded its wall deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let peak = finite_test_block(core);
+            observed_peak = observed_peak.max(peak);
+            core.take_node_peaks(0, &mut |_, peak| {
+                source_peak = source_peak.max(peak[0]).max(peak[1]);
+            });
+            service_test_ui(core, scripts);
+            if peak > 0.01 {
+                return true;
+            }
+        }
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        let performance = runtime.performance(0).unwrap();
+        eprintln!(
+            "UVI_ONSET peak={observed_peak} node_peak={source_peak} input_cc1={} effective_cc1={} input_cc11={} effective_cc11={} voice_taps={:?}",
+            runtime.input_controller(performance, 1).unwrap(),
+            runtime.controller(performance, 1).unwrap(),
+            runtime.input_controller(performance, 11).unwrap(),
+            runtime.controller(performance, 11).unwrap(),
+            core.voice_taps(0)
+        );
+        false
+    }
+
     /// Bound audio and wall time independently. Post-mix node meters verify
     /// gates without confusing downstream effect tails with a muted source.
     fn settled(
         core: &mut V2Core,
+        scripts: &mut ScriptUi,
         mix: &Mix,
         deadline: std::time::Instant,
         blocks: usize,
@@ -6113,6 +6205,7 @@ mod tests {
                 probe.nodes[node] = probe.nodes[node].max(peak[0]).max(peak[1]);
             });
             core.end_block(128, &mut |_| true);
+            service_test_ui(core, scripts);
             if stop_at_onset && probe.output > 1e-5 {
                 break;
             }
@@ -6120,8 +6213,30 @@ mod tests {
         probe
     }
 
-    fn mixer_note(core: &mut V2Core, key: u8, velocity: u8, id: i32) -> HostNote {
-        core.panic();
+    fn mixer_note(
+        core: &mut V2Core,
+        scripts: &mut ScriptUi,
+        mix: &Mix,
+        deadline: std::time::Instant,
+        key: u8,
+        velocity: u8,
+        id: i32,
+        controllers: &[(u8, u8)],
+    ) -> HostNote {
+        // A rack panic would cancel unfinished plan/on-init callbacks. Channel
+        // all-sound-off stops old note sources and preserves those plan owners.
+        core.play(0, Event::midi1(0xb0, 120, 0));
+        audition_controllers(core, controllers);
+        let _ = settled(core, scripts, mix, deadline, 32, false);
+        let part = core.parts[0].as_ref().unwrap();
+        let performance = part.runtime.performance(0).unwrap();
+        for &(cc, value) in controllers {
+            assert_eq!(
+                (part.runtime.input_controller(performance, cc).unwrap() >> 25) as u8,
+                value,
+                "the audition's admitted CC{cc} input"
+            );
+        }
         let note = HostNote {
             port: 0,
             channel: 0,
@@ -6140,7 +6255,13 @@ mod tests {
         note
     }
 
-    fn mixer_release(core: &mut V2Core, note: HostNote, mix: &Mix, deadline: std::time::Instant) {
+    fn mixer_release(
+        core: &mut V2Core,
+        scripts: &mut ScriptUi,
+        note: HostNote,
+        mix: &Mix,
+        deadline: std::time::Instant,
+    ) {
         core.event(
             0,
             Event::NoteOff(super::super::event::HostPattern {
@@ -6152,8 +6273,8 @@ mod tests {
             }),
         );
         // Advance the Lua owner and flush NOTE_END before the next fresh input.
-        let _ = settled(core, mix, deadline, 8, false);
-        core.panic();
+        let _ = settled(core, scripts, mix, deadline, 8, false);
+        core.play(0, Event::midi1(0xb0, 120, 0));
     }
 
     /// One installed program exercises actual onset, all-source mute, and two
@@ -6177,7 +6298,11 @@ mod tests {
             "{}: loading exceeded its separate 120-second budget",
             path.display()
         );
-        eprintln!("MIXER_LOAD program={} load_ms={} budget_ms=120000", path.display(), load_started.elapsed().as_millis());
+        eprintln!(
+            "MIXER_LOAD program={} load_ms={} budget_ms=120000",
+            path.display(),
+            load_started.elapsed().as_millis()
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let tree = &loaded.tree;
         let nodes: Vec<_> = (1..tree.nodes.len())
@@ -6210,13 +6335,12 @@ mod tests {
             nodes.len()
         );
         let mut core = V2Core::with_parts(1, 48000.);
+        let mut scripts = loaded.scripts;
         core.install(0, loaded.part);
-        core.play(0, Event::midi1(0xb0, 1, 100));
-        core.play(0, Event::midi1(0xb0, 11, 127));
-        core.play(0, Event::midi1(0xb0, 64, 0));
+        let mut controllers = vec![(1, 100), (11, 127), (64, 0)];
         for &(cc, _) in &loaded.report.decoded.dynamics {
             if !matches!(cc, 1 | 11 | 64) {
-                core.play(0, Event::midi1(0xb0, cc, 127));
+                controllers.push((cc, 127));
             }
         }
         let mut open = Mix::default();
@@ -6224,24 +6348,42 @@ mod tests {
         core.set_mix(&open);
         let mut heard = None;
         for (id, &key) in keys.iter().enumerate() {
-            let note = mixer_note(&mut core, key, velocity, id as i32 + 1);
+            let note = mixer_note(
+                &mut core,
+                &mut scripts,
+                &open,
+                deadline,
+                key,
+                velocity,
+                id as i32 + 1,
+                &controllers,
+            );
             // 750 × 128 frames = two audio seconds, allowing delayed Lua
             // admission and disk service while keeping a wall-clock deadline.
-            let probe = settled(&mut core, &open, deadline, 750, true);
+            let probe = settled(&mut core, &mut scripts, &open, deadline, 750, true);
             let active: Vec<_> = nodes
                 .iter()
                 .copied()
                 .filter(|&n| probe.nodes[n] > 1e-6)
                 .collect();
-            mixer_release(&mut core, note, &open, deadline);
+            mixer_release(&mut core, &mut scripts, note, &open, deadline);
             if probe.output > 1e-5 && !active.is_empty() {
                 heard = Some(key);
                 break;
             }
         }
         let key = heard.unwrap_or_else(|| panic!("{}: no onset at keys {keys:?}, velocity={velocity}, CC1=100 CC11=127; problems {:?}, samples {}, zones {}", path.display(), core.problems(0), loaded.report.decoded.samples, zones.len()));
-        let note = mixer_note(&mut core, key, velocity, 10);
-        let before_mute = settled(&mut core, &open, deadline, 750, true);
+        let note = mixer_note(
+            &mut core,
+            &mut scripts,
+            &open,
+            deadline,
+            key,
+            velocity,
+            10,
+            &controllers,
+        );
+        let before_mute = settled(&mut core, &mut scripts, &open, deadline, 750, true);
         assert!(
             before_mute.output > 1e-5,
             "fresh note did not sound before mute"
@@ -6250,15 +6392,24 @@ mod tests {
         for &n in &nodes {
             muted.nodes[0][n - 1].mute = true;
         }
-        let after_mute = settled(&mut core, &muted, deadline, 8, false);
+        let after_mute = settled(&mut core, &mut scripts, &muted, deadline, 8, false);
         assert!(
             nodes.iter().all(|&n| after_mute.nodes[n] == 0.),
             "muted {kind:?} nodes still pass post-mix audio"
         );
-        mixer_release(&mut core, note, &muted, deadline);
+        mixer_release(&mut core, &mut scripts, note, &muted, deadline);
         for case in 0..2 {
-            let note = mixer_note(&mut core, key, velocity, 20 + case as i32);
-            let onset = settled(&mut core, &open, deadline, 750, true);
+            let note = mixer_note(
+                &mut core,
+                &mut scripts,
+                &open,
+                deadline,
+                key,
+                velocity,
+                20 + case as i32,
+                &controllers,
+            );
+            let onset = settled(&mut core, &mut scripts, &open, deadline, 750, true);
             let active: Vec<_> = nodes
                 .iter()
                 .copied()
@@ -6285,7 +6436,7 @@ mod tests {
                 .collect();
             let mut solo = open.clone();
             solo.nodes[0][selected - 1].solo = true;
-            let probe = settled(&mut core, &solo, deadline, 8, false);
+            let probe = settled(&mut core, &mut scripts, &solo, deadline, 8, false);
             assert_eq!(
                 core.parts[0].as_ref().unwrap().audible.as_ref(),
                 expected.as_slice(),
@@ -6306,7 +6457,7 @@ mod tests {
             // The explicitly soloed node can still be muted. Check its own
             // post-fader signal, not a later aggregate effect-tail peak.
             solo.nodes[0][selected - 1].mute = true;
-            let silenced = settled(&mut core, &solo, deadline, 8, false);
+            let silenced = settled(&mut core, &mut scripts, &solo, deadline, 8, false);
             assert_eq!(
                 silenced.nodes[selected], 0.,
                 "muted solo node {selected} leaked audio"
@@ -6315,9 +6466,13 @@ mod tests {
                 "MIXER_PROBE selected={selected} source_peak={} output_peak={} exact_solo_mask=yes mute_peak=0",
                 probe.nodes[selected], probe.output
             );
-            mixer_release(&mut core, note, &solo, deadline);
+            mixer_release(&mut core, &mut scripts, note, &solo, deadline);
         }
-        assert_eq!(core.problems(0).offline_failures, 0, "offline sample service failed");
+        assert_eq!(
+            core.problems(0).offline_failures,
+            0,
+            "offline sample service failed"
+        );
     }
 
     #[test]
@@ -6434,10 +6589,19 @@ mod tests {
             loaded.report.missing
         );
         let stream = loaded.stream.clone().expect("UVI samples stream");
-        let (held, full) = (stream.resident_bytes(), loaded.report.decoded.full_bytes);
-        assert!(held > 0 && held < full, "{held} of {full} bytes resident");
+        // resident_bytes includes a fixed page pool, which may exceed a small
+        // bank's fully decoded sample size. Sparse heads are the comparison.
+        let pool = stream.report.pool_bytes as u64;
+        let full = loaded.report.decoded.full_bytes;
+        let heads = stream.resident_bytes().saturating_sub(pool);
+        assert!(
+            full > 0 && heads < full,
+            "{heads} sample-head bytes of {full}, pool={pool}"
+        );
         let mut core = V2Core::with_parts(1, 48000.0);
+        let mut scripts = loaded.scripts;
         core.install(0, loaded.part);
+        audition_controllers(&mut core, &[(1, 100), (11, 127), (64, 0)]);
         core.event(
             0,
             on(HostNote {
@@ -6448,16 +6612,44 @@ mod tests {
                 clap: true,
             }),
         );
-        // The script runs on its own thread: its note arrives within a few blocks.
-        let heard = (0..400).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            loud(&core.render(128), 0, 128)
-        });
+        let heard = uvi_test_onset(&mut core, &mut scripts);
         assert!(
             heard,
-            "the scripted program is silent: {:?} / {:?}",
+            "the scripted program did not meet the 0.01 onset witness: {:?} / {:?}",
             core.problems(0),
             core.voices()
+        );
+        let heads = stream.resident_bytes().saturating_sub(pool);
+        assert!(
+            heads > 0 && heads < full,
+            "sounding streamed sample heads: {heads} of {full}"
+        );
+        core.event(
+            0,
+            Event::NoteOff(HostPattern {
+                port: -1,
+                channel: -1,
+                key: 36,
+                id: -1,
+                clap: true,
+            }),
+        );
+        for _ in 0..250 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            _ = finite_test_block(&mut core);
+            service_test_ui(&mut core, &mut scripts);
+        }
+        let before = stream.resident_bytes();
+        let freed = stream.trim(0, core.clock(0));
+        let after = stream.resident_bytes();
+        assert!(
+            freed > 0 && after < before,
+            "purge freed={freed}, resident {before} -> {after}, pool={pool}"
+        );
+        assert!(after >= pool, "purge must preserve the fixed page pool");
+        assert_eq!(core.problems(0).offline_failures, 0);
+        eprintln!(
+            "UVI_TRAIT heads={heads} full={full} pool={pool} purge_before={before} purge_after={after} packed_freed={freed} audible=yes"
         );
     }
 
@@ -6566,7 +6758,9 @@ mod tests {
             loaded.report.missing
         );
         let mut core = V2Core::with_parts(1, 48000.0);
+        let mut scripts = loaded.scripts;
         core.install(0, loaded.part);
+        audition_controllers(&mut core, &[(1, 100), (11, 127), (64, 0)]);
         core.event(
             0,
             on(HostNote {
@@ -6577,14 +6771,10 @@ mod tests {
                 clap: true,
             }),
         );
-        // The script runs on its own thread: its note arrives within a few blocks.
-        let heard = (0..400).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            loud(&core.render(128), 0, 128)
-        });
+        let heard = uvi_test_onset(&mut core, &mut scripts);
         assert!(
             heard,
-            "the scripted program is silent: {:?} / {:?}",
+            "the scripted program did not meet the 0.01 onset witness: {:?} / {:?}",
             core.problems(0),
             core.voices()
         );
@@ -6600,9 +6790,14 @@ mod tests {
                 clap: true,
             }),
         );
-        (0..50).for_each(|_| _ = core.render(128));
-        let allocations = crate::plugin::tests::allocations(|| {
-            for (id, key) in [(2, 40), (3, 43), (4, 36)] {
+        for _ in 0..50 {
+            _ = finite_test_block(&mut core);
+            service_test_ui(&mut core, &mut scripts);
+        }
+        let mut allocations = 0;
+        let mut audible_notes = 0;
+        for (id, key) in [(2, 40), (3, 43), (4, 36)] {
+            allocations += crate::plugin::tests::allocations(|| {
                 core.event(
                     0,
                     on(HostNote {
@@ -6613,10 +6808,27 @@ mod tests {
                         clap: true,
                     }),
                 );
-                for _ in 0..60 {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    _ = core.render(128);
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut heard = false;
+            for _ in 0..750 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "warm scripted onset exceeded deadline"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                allocations += crate::plugin::tests::allocations(|| {
+                    heard |= finite_test_block(&mut core) > 0.01;
+                });
+                // Host presentation/model work remains outside audio counting.
+                service_test_ui(&mut core, &mut scripts);
+                if heard {
+                    break;
                 }
+            }
+            assert!(heard, "warm scripted key {key} stayed silent");
+            audible_notes += 1;
+            allocations += crate::plugin::tests::allocations(|| {
                 core.event(
                     0,
                     Event::NoteOff(HostPattern {
@@ -6627,9 +6839,20 @@ mod tests {
                         clap: true,
                     }),
                 );
+            });
+            for _ in 0..50 {
+                allocations += crate::plugin::tests::allocations(|| {
+                    _ = finite_test_block(&mut core);
+                });
+                service_test_ui(&mut core, &mut scripts);
             }
-        });
+        }
+        assert_eq!(audible_notes, 3);
         assert_eq!(allocations, 0, "the audio thread allocated or freed memory");
+        assert_eq!(core.problems(0).offline_failures, 0);
+        eprintln!(
+            "UVI_AUDIO_HEAP audible_notes={audible_notes} heap_calls={allocations} offline_failures=0"
+        );
     }
 
     #[test]
@@ -6656,7 +6879,9 @@ mod tests {
             )
             .unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
+        let mut scripts = loaded.scripts;
         core.install(0, loaded.part);
+        audition_controllers(&mut core, &[(1, 100), (11, 127), (64, 0)]);
         core.event(
             0,
             on(HostNote {
@@ -6668,31 +6893,41 @@ mod tests {
             }),
         );
         // Zero crossings of the left channel over `blocks` blocks, scripts given a moment each.
-        let crossings = |core: &mut V2Core, blocks: usize| {
+        let crossings = |core: &mut V2Core, scripts: &mut ScriptUi, blocks: usize| {
             let (mut n, mut last) = (0usize, 0.0f32);
             for _ in 0..blocks {
                 std::thread::sleep(std::time::Duration::from_millis(2));
+                core.begin_block(&BlockInfo {
+                    frames: 128,
+                    offline: true,
+                    ..Default::default()
+                });
                 let r = core.render(128);
                 for x in &r.buses[0][0][..128] {
+                    assert!(x.is_finite());
                     n += usize::from(last <= 0.0 && *x > 0.0);
                     last = *x;
                 }
+                core.end_block(128, &mut |_| true);
+                service_test_ui(core, scripts);
             }
             n
         };
-        let heard = (0..400).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            loud(&core.render(128), 0, 128)
-        });
+        let heard = uvi_test_onset(&mut core, &mut scripts);
         assert!(heard);
-        let before = crossings(&mut core, 150);
+        let before = crossings(&mut core, &mut scripts, 150);
         core.event(0, Event::Ump([0x40e0_0000, 0xffff_ffff]));
-        let after = crossings(&mut core, 150);
+        let after = crossings(&mut core, &mut scripts, 150);
         assert!(before > 20, "{before} crossings");
         // The default bend range is two semitones: about 12% higher.
         assert!(
             after as f64 > before as f64 * 1.05,
             "{before} crossings before the bend, {after} after"
+        );
+        assert_eq!(core.problems(0).offline_failures, 0);
+        eprintln!(
+            "UVI_PITCH crossings_before={before} crossings_after={after} ratio={} offline_failures=0",
+            after as f64 / before as f64
         );
     }
 
