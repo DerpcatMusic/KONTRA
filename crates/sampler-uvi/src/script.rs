@@ -1446,6 +1446,16 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
+        native.set(
+            "float",
+            lua.create_function(|_, value: f64| {
+                let value = value as f32;
+                if !value.is_finite() {
+                    return Err(mlua::Error::runtime("UVI widget value exceeds float32 range"));
+                }
+                Ok(f64::from(value))
+            })?,
+        )?;
         async_data::install(lua, shared)?;
         let s = shared.clone();
         globals.raw_set(
@@ -2991,7 +3001,7 @@ mod tests {
         });
         let host = ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Image('overlay.png'); Image('overlay.png'); Image('missing.png')</script></ScriptProcessor></EventProcessors></Program></UVI4>", files, Config::default()).unwrap();
         for _ in 0..2 {
-            assert_eq!(host.interface().widgets[0].rect.width, 720);
+            assert_eq!(host.interface().widgets[0].rect.width, 720.);
         }
         assert_eq!(reads.load(Ordering::Relaxed), 2, "cache successes and absence by resource path");
     }

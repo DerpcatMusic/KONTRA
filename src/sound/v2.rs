@@ -23,7 +23,7 @@ use anyhow::{Context, ensure};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use sampler_core::{
@@ -54,6 +54,10 @@ mod host_transport_tests;
 mod persistence;
 #[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod capture_tests;
+#[cfg(test)]
+mod host_contract_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -74,6 +78,9 @@ const WIRE: ChannelAddress = ChannelAddress {
 pub struct Part {
     runtime: Runtime,
     persistence: Option<persistence::Persistence>,
+    /// Changes to typed widget values, published by the audio owner.
+    widget_revision: Arc<AtomicU64>,
+    widget_state_revision: (u64, u64),
     tone: sampler_core::OutputLowPass,
     tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
@@ -83,6 +90,9 @@ pub struct Part {
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
     force_articulation_once: bool,
+    /// Internal wire identities keep distinct physical host tuples independent
+    /// after a part maps their channels to its single musical domain.
+    next_host_id: u32,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
     buses: Box<[Option<usize>]>,
@@ -243,30 +253,13 @@ impl Part {
                     .map(|value| (sampler_ui_ir::ControlId(w.id.0), value))
             })
             .collect();
-        let mut captures = std::collections::VecDeque::new();
-        let mut capture = Vec::new();
-        for widget in &widgets {
-            let len = match widget.storage {
-                sampler_core::WidgetStorage::Control(_) => 0,
-                sampler_core::WidgetStorage::Cells { len, .. }
-                | sampler_core::WidgetStorage::Texts { len, .. } => len,
-                sampler_core::WidgetStorage::FileSelection { .. } => 1,
-            };
-            for index in 0..len {
-                capture.push(sampler_core::WidgetEdit {
-                    id: widget.id,
-                    index,
-                    value: sampler_core::WidgetValue::Integer(0),
-                    interaction: Default::default(),
-                });
-                if capture.len() == sampler_core::WIDGET_EDIT_CAPACITY {
-                    captures.push_back(std::mem::take(&mut capture));
-                }
-            }
-        }
-        if !capture.is_empty() {
-            captures.push_back(capture);
-        }
+        // A table's scalar state is already projected above. Transfer only one bounded
+        // chunk at a time rather than retaining a Text-sized edit for every cell.
+        let captures = std::collections::VecDeque::from([
+            Vec::with_capacity(sampler_core::WIDGET_EDIT_CAPACITY),
+        ]);
+        let widget_revision = Arc::new(AtomicU64::new(0));
+        let widget_state_revision = runtime.script_state_revision(plan).map_err(core)?;
         let revision = runtime.control_revision(plan).unwrap_or(0);
         let context = ControlContext {
             performance: runtime.performance(0).map_err(core)?,
@@ -292,6 +285,11 @@ impl Part {
                 widget_values,
                 captures,
                 capturing: false,
+                capture_cursor: Some((0, 0)),
+                capture_start: (0, 0),
+                captured_revision: 0,
+                capturing_revision: 0,
+                widget_revision: widget_revision.clone(),
                 midi_requests: Default::default(),
                 array_worker: None,
                 revision,
@@ -300,12 +298,15 @@ impl Part {
                 persistence: None,
             }),
             runtime,
+            widget_revision,
+            widget_state_revision,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
             editor_offsets: None,
             persistence: None,
             mpe,
             force_articulation_once: false,
+            next_host_id: 0,
             tune: 0.0,
             buses: (0..count).map(|n| n.checked_sub(1)).collect(),
             tree,
@@ -441,6 +442,15 @@ impl Part {
         }
     }
 
+    fn publish_widget_revision(&mut self) {
+        if let Ok(revision) = self.runtime.script_state_revision(self.runtime.active_plan())
+            && revision != self.widget_state_revision
+        {
+            self.widget_state_revision = revision;
+            self.widget_revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
     /// Apply node settings to the runtime's buses.
     fn mix_nodes(&mut self, nodes: &[NodeMix]) {
         for (to, from) in self.nodes.iter_mut().zip(nodes) {
@@ -521,6 +531,11 @@ pub(crate) struct ControlIngress {
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
     captures: std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing: bool,
+    capture_cursor: Option<(usize, u32)>,
+    capture_start: (usize, u32),
+    captured_revision: u64,
+    capturing_revision: u64,
+    widget_revision: Arc<AtomicU64>,
     midi_requests: std::collections::VecDeque<sampler_core::ControlRequest>,
     array_worker: Option<array_file::Worker>,
     revision: u64,
@@ -782,16 +797,60 @@ impl ControlIngress {
     /// Existing 100 ms worker owns polling and recycles native capture buffers.
     pub(crate) fn refresh(&mut self) -> bool {
         let changed = self.settle();
+        let observed = self.widget_revision.load(Ordering::Acquire);
+        if !self.capturing && self.capture_cursor.is_none() && observed != self.captured_revision {
+            self.capture_cursor = Some((0, 0));
+            self.capturing_revision = observed;
+        }
         if !self.capturing
-            && let Some(output) = self.captures.pop_front()
+            && let Some(start) = self.capture_cursor
+            && let Some(mut output) = self.captures.pop_front()
         {
+            output.clear();
+            let (mut widget, mut index) = start;
+            while widget < self.widgets.len() && output.len() < sampler_core::WIDGET_EDIT_CAPACITY {
+                let definition = &self.widgets[widget];
+                let len = match definition.storage {
+                    sampler_core::WidgetStorage::Control(_) => 0,
+                    sampler_core::WidgetStorage::Cells { len, .. }
+                    | sampler_core::WidgetStorage::Texts { len, .. } => len,
+                    sampler_core::WidgetStorage::FileSelection { .. } => 1,
+                };
+                if index >= len {
+                    widget += 1;
+                    index = 0;
+                    continue;
+                }
+                output.push(sampler_core::WidgetEdit {
+                    id: definition.id,
+                    index,
+                    value: sampler_core::WidgetValue::Integer(0),
+                    interaction: Default::default(),
+                });
+                index += 1;
+                if index == len {
+                    widget += 1;
+                    index = 0;
+                }
+            }
+            if output.is_empty() {
+                self.capture_cursor = None;
+                self.captured_revision = self.capturing_revision;
+                self.captures.push_back(output);
+                return changed;
+            }
+            let next = (widget < self.widgets.len()).then_some((widget, index));
             let request = sampler_core::ControlRequest {
                 plan: self.plan,
                 expected_revision: None,
                 operation: sampler_core::ControlOperation::CaptureWidget(output),
             };
             match self.client.submit(request) {
-                Ok(_) => self.capturing = true,
+                Ok(_) => {
+                    self.capturing = true;
+                    self.capture_start = start;
+                    self.capture_cursor = next;
+                }
                 Err(rejected) => {
                     if let sampler_core::ControlOperation::CaptureWidget(output) =
                         rejected.command.operation
@@ -913,6 +972,11 @@ impl ControlIngress {
                     for edit in output.iter().take(count) {
                         changed |= self.accept_value(edit);
                     }
+                    if self.capture_cursor.is_none() {
+                        self.captured_revision = self.capturing_revision;
+                    }
+                } else {
+                    self.capture_cursor = Some(self.capture_start);
                 }
                 self.captures.push_back(output);
             }
@@ -1271,18 +1335,13 @@ fn wire(key: u8, external_id: Option<i32>) -> Input {
     }
 }
 
-/// A host note's owner on the wire, distinct from MIDI notes by its ID; notes
-/// without one (VST3) get a negative ID per channel. In an MPE zone it keeps
-/// its member channel.
-fn host_input(note: HostNote, mpe: bool) -> Input {
-    let id = if note.id >= 0 {
-        note.id
-    } else {
-        -1 - i32::from(note.channel)
-    };
+/// A host note's internal execution owner on the wire, distinct from MIDI
+/// notes. The physical tuple stays in Held; expressive members retain their
+/// channel in an MPE zone even when other input uses the part's manager.
+fn host_input(note: HostNote, mpe: bool, execution_id: i32) -> Input {
     Input {
         channel: if mpe { note.channel & 15 } else { WIRE.channel },
-        ..wire(note.key, Some(id))
+        ..wire(note.key, Some(execution_id))
     }
 }
 
@@ -1438,6 +1497,11 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         word as u8 & 127,
     );
     let channel = (word >> 16) as u8 & 15;
+    if kind == 4 && status == 0xb0 && sampler_midi::is_midi2_legacy_control(a) {
+        // No Lua/controller/articulation callback may reinterpret a deprecated
+        // MIDI 2.0 control as a MIDI 1.0 parameter or bank-select transaction.
+        return;
+    }
     if part.script.is_some() && matches!(kind, 2 | 4) && matches!(status, 0x80 | 0x90) {
         // Only incoming notes enter Lua; script-generated MIDI stays on the direct wire path.
         let mut words = [word, data];
@@ -1527,6 +1591,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 *overflow += 1;
                 return;
             }
+            if note.id != -1 && (held.iter().any(|h| h.part == index && h.note == note)
+                || part.consumed_hosts.contains(&note)) {
+                // Duplicate complete host tuples remain owned until NOTE_END.
+                return;
+            }
             // The driver sees the note as MIDI on its own channel.
             let key = u32::from(note.key & 127) << 8
                 | (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u32;
@@ -1541,7 +1610,21 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 return;
             }
-            let input = host_input(note, part.mpe_zone);
+            let mut input = None;
+            // Find a free internal ID within the bounded held-owner population.
+            // Input IDs are execution handles; Held retains the exact host tuple.
+            for _ in 0..=held.len() {
+                let id = part.next_host_id as i32;
+                part.next_host_id = part.next_host_id.wrapping_add(1) & i32::MAX as u32;
+                if !held.iter().any(|h| h.part == index && h.input.external_id == Some(id)) {
+                    input = Some(host_input(note, part.mpe_zone, id));
+                    break;
+                }
+            }
+            let Some(input) = input else {
+                *overflow += 1;
+                return;
+            };
             if let Some(script) = part.script.as_mut() {
                 // The scripts play the part's notes: the physical one is silent.
                 let velocity = velocity.clamp(0.0, 1.0);
@@ -1586,7 +1669,12 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 express(&mut part.runtime, id, |e| e.pitch_semitones += tune);
             }
         }
-        Event::NoteOff(pattern) | Event::Choke(pattern) => {
+        Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) | Event::Choke(pattern) => {
+            let velocity = match event {
+                Event::NoteOffVelocity(_, velocity) if (0.0..=1.0).contains(&velocity) => Some(velocity),
+                Event::NoteOffVelocity(_, _) => return,
+                _ => None,
+            };
             // Release consumed presses by the exact host identity captured at onset,
             // even if the mapping or driver changed while that key was down.
             let mut at = 0;
@@ -1607,10 +1695,14 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
-                if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off_note(&mut part.runtime, h.id, h.note.key);
+                if matches!(event, Event::Choke(_)) {
+                    let _ = part.runtime.cancel_input_note(h.id);
+                } else {
+                    if let Some(script) = part.script.as_mut() {
+                        let _ = script.note_off_note_velocity(&mut part.runtime, h.id, h.note.key, velocity);
+                    }
+                    let _ = part.runtime.note_off(h.input, velocity);
                 }
-                let _ = part.runtime.note_off(h.input, None);
             }
         }
         Event::Expression(pattern, expression) => {
@@ -1994,6 +2086,7 @@ impl V2Core {
         #[cfg(test)]
         let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
         for part in self.parts.iter_mut().flatten() {
+            part.publish_widget_revision();
             if let Some(state) = part.persistence.as_mut() {
                 state.publish(&mut part.runtime);
             }
@@ -2037,7 +2130,7 @@ impl V2Core {
     fn enqueue(&mut self, slot: usize, event: Event) {
         // Wildcards may also reach owners which predate alignment. Dispatch
         // only those exact tuples immediately; the scheduler retains its own holds.
-        if let Event::NoteOff(pattern) | Event::Choke(pattern) | Event::Expression(pattern, _) =
+        if let Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) | Event::Choke(pattern) | Event::Expression(pattern, _) =
             event
             && self.align.parts[slot].hosts().any(|n| pattern.matches(n))
         {
@@ -2064,6 +2157,7 @@ impl V2Core {
                     slot,
                     match event {
                         Event::NoteOff(_) => Event::NoteOff(p),
+                        Event::NoteOffVelocity(_, velocity) => Event::NoteOffVelocity(p, velocity),
                         Event::Choke(_) => Event::Choke(p),
                         Event::Expression(_, x) => Event::Expression(p, x),
                         _ => unreachable!(),

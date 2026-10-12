@@ -337,8 +337,8 @@ fn generated_specimen(p: &Arc<SamplerParams>) {
         pages: vec![ir::Page {
             name: "Extended performance editor page".into(),
             size: ir::Size {
-                width: 700,
-                height: 240,
+                width: 700.0,
+                height: 240.0,
             },
             ..Default::default()
         }],
@@ -910,7 +910,7 @@ fn a_five_thousand_widget_face_never_blanks_the_editor() {
     // in every view, with the whole player chrome around it.
     let mut face = ir::Interface {
         pages: vec![ir::Page {
-            size: ir::Size { width: 2000, height: 1600 },
+            size: ir::Size { width: 2000.0, height: 1600.0 },
             ..Default::default()
         }],
         ..Default::default()

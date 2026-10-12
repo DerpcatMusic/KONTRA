@@ -15,7 +15,7 @@ pub(crate) fn png_size(bytes: &[u8]) -> Option<sampler_ui_ir::Size> {
     let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
     let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
     (width > 0 && height > 0 && u64::from(width) * u64::from(height) <= (64 << 20) / 4)
-        .then_some(sampler_ui_ir::Size { width, height })
+        .then_some(sampler_ui_ir::Size { width: f64::from(width), height: f64::from(height) })
 }
 
 #[cfg(test)]
@@ -29,8 +29,8 @@ mod tests {
         assert_eq!(
             super::png_size(&png),
             Some(sampler_ui_ir::Size {
-                width: 720,
-                height: 18
+                width: 720.0,
+                height: 18.0
             })
         );
         assert_eq!(super::png_size(&png[..24]), None);

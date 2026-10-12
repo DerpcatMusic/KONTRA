@@ -234,6 +234,11 @@ impl Ingress {
                 )?;
                 Applied::Pedal
             }
+            Message::Control { index, .. }
+                if voice.version == Version::Midi2 && crate::is_midi2_legacy_control(index) =>
+            {
+                Applied::Ignored
+            }
             Message::Control { index, value } if index < 120 => {
                 runtime.dispatch_controller(
                     performance,
