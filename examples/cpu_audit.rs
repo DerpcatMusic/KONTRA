@@ -119,7 +119,7 @@ impl Player {
     }
     fn problems(&self) -> Value {
         let mut problems = serde_json::to_value(self.0.problems(0)).unwrap();
-        if let Some(stats) = self.0.scan_runtime_stats(0) {
+        if let Some(stats) = self.0.runtime_stats(0) {
             problems["v1_control_starts"] = stats.v1_control_starts.into();
             problems["v1_control_blocks"] = stats.v1_control_blocks.into();
         }
