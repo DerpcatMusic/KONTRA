@@ -84,6 +84,7 @@ pub use dsp::{
     StateVariableFilter,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
+mod whole_voice;
 mod envelope;
 pub mod v1_voice_controls;
 use envelope::EnvelopeState;

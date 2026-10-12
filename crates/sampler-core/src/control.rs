@@ -629,6 +629,7 @@ mod tests {
             }],
             vec![],
             vec![],
+            Vec::new(),
             |_| None,
             |id| Ok(if id == ControlId(1) { 0 } else { 9 }),
         )
