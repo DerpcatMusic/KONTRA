@@ -8,12 +8,17 @@ use crate::{
 
 const CHUNK_ID: u16 = 0x2b;
 
+/// An inline v0x60 voice-limit override, or the body of a 0x2b chunk.
 #[derive(Debug)]
-pub struct VoiceGroup;
+pub struct VoiceGroup {
+    pub voice_limit: super::VoiceLimit,
+}
 
 impl VoiceGroup {
-    pub fn read<R: ReadBytesExt>(mut _reader: R) -> Result<Self, Error> {
-        Ok(Self)
+    pub fn read<R: ReadBytesExt>(reader: R) -> Result<Self, Error> {
+        Ok(Self {
+            voice_limit: super::VoiceLimit::read_inline(reader)?,
+        })
     }
 }
 
@@ -28,7 +33,11 @@ impl std::convert::TryFrom<&Chunk> for VoiceGroup {
             }
             .into());
         }
-        let reader = Cursor::new(&chunk.data);
-        Self::read(reader)
+        let mut reader = Cursor::new(&chunk.data);
+        let group = Self::read(&mut reader)?;
+        if reader.position() != chunk.data.len() as u64 {
+            return Err(Error::Static("Trailing VoiceGroup chunk data"));
+        }
+        Ok(group)
     }
 }
