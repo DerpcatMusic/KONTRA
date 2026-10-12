@@ -1,10 +1,12 @@
 # Library access in v2
 
-Branch: `v2/library-access`. Access to installed protected content is behind
+Branch: `v2/linux-native-library-openers`. Access to installed protected content is behind
 `library-access`; disabling it retains APIs that return access-disabled errors.
 Library access state, decoded programs, pictures and sample data stay in memory.
-UVI reader values come from the user's hash-verified official installation;
-Kontakt access values come from the owning library's NICNT.
+Kontakt access values come from the owning library's NICNT. UVI UFS v3 and
+PasswordV2 namespaces are decoded natively; protected member keys are recovered
+from the bank's own encrypted content and verified before use. No Workstation
+executable, Wine installation or reader-path setting is needed.
 
 ## Picture resolver API
 
