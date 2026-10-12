@@ -1,5 +1,5 @@
 //! Aggregate DSP identities only; never writes decoded presets, scripts or samples.
-//! Run through kontakto-heavy: items.tsv CACHE_DIR START END. Each shard stops after 240 s.
+//! Run through kontakto-heavy: items.tsv CACHE_DIR START END [saved-only]. Each shard stops after 240 s.
 //! Cache contains per-item aggregate counts only; no decoded objects or paths.
 use ni_file::kontakt::{StructuredObject, objects::*};
 use sampler_ir as ir;
@@ -115,10 +115,12 @@ impl Census {
 }
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    assert!(args.len() == 5 || (args.len() == 6 && args[5] == "saved-only"), "items.tsv CACHE_DIR START END [saved-only]");
     let list = std::fs::read_to_string(args.get(1).expect("items.tsv")).unwrap();
     let cache = Path::new(args.get(2).expect("CACHE_DIR"));
     let start: usize = args.get(3).expect("START").parse().unwrap();
     let end: usize = args.get(4).expect("END").parse().unwrap();
+    let saved_only = args.get(5).is_some_and(|mode| mode == "saved-only");
     std::fs::create_dir_all(cache).unwrap();
     let started = Instant::now();
     let mut check = Census::default();
@@ -133,7 +135,8 @@ fn main() {
         let mut key = std::collections::hash_map::DefaultHasher::new();
         line.hash(&mut key);
         if let Ok(m) = path.metadata() { m.len().hash(&mut key); m.modified().ok().hash(&mut key); }
-        let header = format!("item-v1:{:016x}", key.finish());
+        // ponytail: metadata-only keys; use a fresh cache after parser changes.
+        let header = if saved_only { format!("saved-v1:{:016x}", key.finish()) } else { format!("item-v1:{:016x}", key.finish()) };
         let result = cache.join(format!("{file}.tsv"));
         let saved = std::fs::read_to_string(&result).ok();
         if let Some(saved) = saved.filter(|s| s.lines().next() == Some(header.as_str())) {
@@ -153,6 +156,7 @@ fn main() {
             match sampler_kontakt::read_multi(path) {
                 Ok(m) => for (index, (_, p)) in m.programs.iter().enumerate() {
                     census.add("programs", "parsed", file); census.program(p, file);
+                    if saved_only { census.add("programs", "IR not attempted", file); continue; }
                     match sampler_kontakt::read_program(path, index) {
                         Ok(k) => {census.add("programs", "IR", file); census.ir(&k.instrument, file);}
                         Err(_) => census.add("error", "IR multi", file),
@@ -165,10 +169,11 @@ fn main() {
                 Some(p) => { census.add("programs", "parsed", file); census.program(&p, file); }
                 None => census.add("error", "program read", file),
             }
-            match sampler_kontakt::read(path) {
+            if saved_only { census.add("programs", "IR not attempted", file); }
+            else { match sampler_kontakt::read(path) {
                 Ok(k) => { census.add("programs", "IR", file); census.ir(&k.instrument, file); }
                 Err(_) => census.add("error", "IR read", file),
-            }
+            }}
         }
         let mut saved = format!("{header}\n");
         for ((category, identity), (objects, _)) in &census.0 {
