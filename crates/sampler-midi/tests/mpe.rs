@@ -422,11 +422,11 @@ fn rpn_sensitivity_is_zone_wide_transactional_and_keeps_released_member_pitch() 
             );
             assert_eq!(
                 apply(&mut mpe, &mut rt, packet(0xb0, a, 38, 1)),
-                Ok(Applied::Unsupported)
+                Ok(Applied::Expression { owners: 2 })
             );
             assert_eq!(
                 apply(&mut mpe, &mut rt, packet(0xb0, a, 38, 0)),
-                Ok(Applied::Configuration)
+                Ok(Applied::Expression { owners: 2 })
             );
             // NRPN selection disables RPN data entry; null RPN does likewise.
             apply(&mut mpe, &mut rt, packet(0xb0, a, 99, 0)).unwrap();
@@ -1117,5 +1117,84 @@ fn script_owned_attacks_keep_mpe_expression_pairing_and_release() {
         assert!(!rt.key_down(note).unwrap());
         rt.render(&mut [[0.; 2]; 512]).unwrap();
         assert_eq!(rt.voice_count(), 0);
+    });
+}
+
+#[test]
+fn physical_rpn_coarse_fine_and_relative_steps_keep_literal_pitch_and_tail_ownership() {
+    // Independent values from preserved shared_primary_mpe_rpn_tests: physical
+    // selectors are separate, coarse data clears cents, and RP-018 steps one cent.
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut rt = runtime();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            apply(&mut mpe, &mut rt, bend(manager, 4096)).unwrap();
+            apply(&mut mpe, &mut rt, bend(member, 7168)).unwrap();
+            let tail = start(&mut mpe, &mut rt, member, 60);
+            apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
+            let active = start(&mut mpe, &mut rt, member, 61);
+            for (channel, cc) in [(member, 101), (manager, 101), (member, 100), (manager, 100)] {
+                apply(&mut mpe, &mut rt, packet(0xb0, channel, cc, 0)).unwrap();
+            }
+            for (channel, cc, value) in [
+                (member, 6, 12),
+                (member, 38, 50),
+                (manager, 6, 4),
+                (manager, 38, 25),
+            ] {
+                apply(&mut mpe, &mut rt, packet(0xb0, channel, cc, value)).unwrap();
+            }
+            assert_eq!(mpe.pitch_sensitivities(), (4.25, 12.5));
+            assert_eq!(expression(&rt, active).pitch_semitones, -3.6875);
+            assert_eq!(expression(&rt, tail).pitch_semitones, -8.125);
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 96, 99)).unwrap();
+            assert!((expression(&rt, active).pitch_semitones - -3.68875).abs() < 1e-12);
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 97, 127)).unwrap();
+            assert_eq!(mpe.pitch_sensitivities(), (4.25, 12.5));
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 38, 99)).unwrap();
+            apply(&mut mpe, &mut rt, packet(0xb0, member, 6, 8)).unwrap();
+            assert_eq!(mpe.pitch_sensitivities(), (4.25, 8.));
+            assert_eq!(expression(&rt, active).pitch_semitones, -3.125);
+            // Null and NRPN selectors must not reuse the last valid RPN0.
+            for (cc, value) in [
+                (101, 127),
+                (100, 127),
+                (6, 80),
+                (38, 99),
+                (96, 0),
+                (99, 0),
+                (98, 0),
+                (6, 90),
+            ] {
+                apply(&mut mpe, &mut rt, packet(0xb0, member, cc, value)).unwrap();
+            }
+            assert_eq!(mpe.pitch_sensitivities(), (4.25, 8.));
+            assert_eq!(expression(&rt, tail).pitch_semitones, -8.125);
+        });
+    }
+}
+
+#[test]
+fn midi2_registered_sensitivity_retains_cents_and_legacy_parameter_ccs_do_not_rebind_it() {
+    let mut rt = runtime();
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    let note = start(&mut mpe, &mut rt, 1, 60);
+    apply(&mut mpe, &mut rt, bend(1, 7168)).unwrap();
+    support::without_heap(|| {
+        let data = (12u32 << 25) | (50u32 << 18);
+        let words = [0x4321_0000, data];
+        mpe.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap())
+            .unwrap();
+        assert_eq!(mpe.pitch_sensitivities(), (2., 12.5));
+        assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
+        for cc in [0u8, 6, 32, 38, 98, 99, 100, 101] {
+            let words = [0x43b1_0000 | u32::from(cc) << 8, u32::MAX];
+            assert_eq!(
+                mpe.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap()),
+                Ok(Applied::Ignored)
+            );
+        }
+        assert_eq!(mpe.pitch_sensitivities(), (2., 12.5));
+        assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
     });
 }

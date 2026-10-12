@@ -25,6 +25,9 @@ pub trait Script {
     fn set_time(&mut self, ms: f64);
     fn note_on(&mut self, id: u64, key: u8, velocity: u8);
     fn note_off(&mut self, id: u64, key: u8);
+    fn note_off_velocity(&mut self, id: u64, key: u8, _velocity: u8) {
+        self.note_off(id, key)
+    }
     fn advance(&mut self, ms: f64);
     fn next_due(&mut self) -> Option<f64>;
     /// Append the commands issued since the last call to `out`.
@@ -77,6 +80,9 @@ impl Script for ScriptHost {
     }
     fn note_off(&mut self, id: u64, key: u8) {
         ScriptHost::note_off(self, id, key, 64, 0)
+    }
+    fn note_off_velocity(&mut self, id: u64, key: u8, velocity: u8) {
+        ScriptHost::note_off(self, id, key, velocity, 0)
     }
     fn advance(&mut self, ms: f64) {
         ScriptHost::advance(self, ms)
@@ -296,11 +302,21 @@ impl<S: Script> Driver<S> {
         let Some(id) = self.held.get_mut(&key).and_then(|ids| ids.pop_front()) else {
             return Ok(());
         };
-        self.release_id(rt, id, key)
+        self.release_id(rt, id, key, None)
     }
 
     /// Release the physical note paired by the MIDI adapter, across overlapping channels.
     pub fn note_off_note(&mut self, rt: &mut Runtime, note: NoteId, key: u8) -> Result<(), Error> {
+        self.note_off_note_velocity(rt, note, key, None)
+    }
+
+    /// Retain original normalized physical release velocity in the core and
+    /// its MIDI projection in the owning script callback.
+    pub fn note_off_note_velocity(&mut self, rt: &mut Runtime, note: NoteId, key: u8,
+        velocity: Option<f64>) -> Result<(), Error> {
+        if velocity.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
+            return Err(Error::InvalidInput);
+        }
         let Some(ids) = self.held.get_mut(&key) else {
             return Ok(());
         };
@@ -308,17 +324,19 @@ impl<S: Script> Driver<S> {
             return Ok(());
         };
         let id = ids.remove(at).unwrap();
-        self.release_id(rt, id, key)
+        self.release_id(rt, id, key, velocity)
     }
 
-    fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8) -> Result<(), Error> {
+    fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8,
+        velocity: Option<f64>) -> Result<(), Error> {
         self.host.set_time(self.now_ms(rt));
-        self.host.note_off(id, key);
+        self.host.note_off_velocity(id, key,
+            velocity.map_or(64, |v| (v * 127.).round() as u8));
         // Plays made by onRelease must not be linked to the closing gate.
         self.apply(rt, true)?;
         if let Some(note) = self.notes.get(&id).copied() {
             // A note whose voices already ended is gone; closing it is a no-op.
-            stale_ok(rt.key_up(note, None))?;
+            stale_ok(rt.key_up(note, velocity))?;
         }
         Ok(())
     }
@@ -666,6 +684,11 @@ impl<S: Script> Driver<S> {
         }
         let velocity = f64::from(play.velocity) / 127.0;
         let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
+        if play.parent.is_some() && parent.is_none() {
+            // A retired owner cannot turn its late command into an unlinked
+            // generated note after driver pruning or input cancellation.
+            return Ok(());
+        }
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
         let note = match parent {
             Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),

@@ -201,3 +201,35 @@ fn reset_all_controllers_centres_bend_and_clears_pressure() {
     apply(&mut ingress, &mut rt, &[bend(0, 16383)]);
     assert!(expression(&rt, later).pitch_semitones > 1.9, "range kept");
 }
+
+#[test]
+fn midi2_legacy_parameter_and_bank_ccs_are_ignored_before_channel_projection() {
+    let mut rt = runtime(2.0);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
+    support::without_heap(|| {
+        let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x4090_3c00, 0xffff_0000])
+        else {
+            panic!("note")
+        };
+        apply(&mut ingress, &mut rt, &[0x40e0_0000, 0x7000_0000]);
+        assert_eq!(expression(&rt, note).pitch_semitones, -0.25);
+        for cc in [0u8, 6, 32, 38, 98, 99, 100, 101] {
+            assert_eq!(
+                apply(
+                    &mut ingress,
+                    &mut rt,
+                    &[0x40b0_0000 | u32::from(cc) << 8, u32::MAX]
+                ),
+                Applied::Ignored
+            );
+        }
+        assert_eq!(expression(&rt, note).pitch_semitones, -0.25);
+        // The proper MIDI2 Registered Controller retains its cents field.
+        apply(
+            &mut ingress,
+            &mut rt,
+            &[0x4020_0000, (12u32 << 25) | (50u32 << 18)],
+        );
+        assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
+    });
+}

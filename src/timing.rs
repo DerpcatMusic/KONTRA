@@ -416,13 +416,13 @@ impl Scheduler {
         if let Some(row) = router.controller_of(ev) {
             self.art = row;
         }
-        if let In::HostOff(pattern) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
+        if let In::HostOff(pattern, _) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
             if !self.host.iter().any(|o| pattern.matches(o.note)) {
                 return Some(original);
             }
             for i in 0..self.host.len() {
                 let owner = self.host[i];
-                if !pattern.matches(owner.note) || (matches!(ev, In::HostOff(_)) && !owner.held) {
+                if !pattern.matches(owner.note) || (matches!(ev, In::HostOff(..)) && !owner.held) {
                     continue;
                 }
                 let pattern = crate::sound::event::HostPattern {
@@ -433,7 +433,10 @@ impl Scheduler {
                     clap: owner.note.clap,
                 };
                 let to = match ev {
-                    In::HostOff(_) => Event::NoteOff(pattern),
+                    In::HostOff(_, velocity) => match velocity {
+                        Some(velocity) => Event::NoteOffVelocity(pattern, velocity),
+                        None => Event::NoteOff(pattern),
+                    },
                     In::HostChoke(_) => Event::Choke(pattern),
                     In::HostExpression(_, x) => Event::Expression(pattern, x),
                     _ => unreachable!(),
@@ -444,7 +447,7 @@ impl Scheduler {
                     0
                 };
                 let due = (now + owner.hold).max(if owner.mono { self.last_on[lane] } else { 0 });
-                if matches!(ev, In::HostOff(_) | In::HostChoke(_)) {
+                if matches!(ev, In::HostOff(..) | In::HostChoke(_)) {
                     self.host[i].held = false;
                     if owner.held {
                         self.down[lane] = self.down[lane].saturating_sub(1);
@@ -565,7 +568,7 @@ impl Scheduler {
             }
             // Exact wildcard/old-ID events cannot borrow a newer key row's
             // hold. Queue after the preceding ingress so their owner exists.
-            In::HostOff(_) | In::HostChoke(_) | In::HostExpression(_, _) => {
+            In::HostOff(..) | In::HostChoke(_) | In::HostExpression(_, _) => {
                 let latest = if self.len > 0 {
                     self.at(self.len - 1).due
                 } else {
@@ -649,7 +652,7 @@ impl Scheduler {
     pub fn waiting(&self, note: crate::sound::event::HostNote) -> bool {
         (0..self.len).any(|i| match self.at(i).ev {
             Event::NoteOn { note: n, .. } => n == note,
-            Event::NoteOff(p) | Event::Choke(p) | Event::Expression(p, _) => p.matches(note),
+            Event::NoteOff(p) | Event::NoteOffVelocity(p, _) | Event::Choke(p) | Event::Expression(p, _) => p.matches(note),
             _ => false,
         })
     }
@@ -1066,7 +1069,7 @@ pub fn measure_request(
 #[derive(Clone, Copy)]
 pub(crate) enum In {
     HostOn(crate::sound::event::HostNote, u8, f64),
-    HostOff(crate::sound::event::HostPattern),
+    HostOff(crate::sound::event::HostPattern, Option<f64>),
     HostChoke(crate::sound::event::HostPattern),
     HostExpression(
         crate::sound::event::HostPattern,
@@ -1098,7 +1101,10 @@ impl In {
                 (velocity.clamp(0., 1.) * 127.).round().max(1.) as u8,
                 tune,
             ),
-            Event::NoteOff(p) => Self::HostOff(p),
+            Event::NoteOff(p) => Self::HostOff(p, None),
+            Event::NoteOffVelocity(p, velocity) if (0.0..=1.0).contains(&velocity) =>
+                Self::HostOff(p, Some(velocity)),
+            Event::NoteOffVelocity(_, _) => return None,
             Event::Choke(p) => Self::HostChoke(p),
             Event::Expression(p, x) => Self::HostExpression(p, x),
             Event::Ump([word, data]) => {
@@ -1287,6 +1293,20 @@ mod tests {
             mpe: false,
         }
     }
+    #[test]
+    fn normalized_host_release_velocity_survives_exact_alignment_and_key_reuse() {
+        let switching=sampler_core::Switching::default();
+        let router=router(&switching); let mut scheduler=Scheduler::default();
+        let note=HostNote { port:0,channel:2,key:60,id:17,clap:true };
+        let on=Event::NoteOn { note,velocity:0.87654321,tune:0. };
+        let pattern=HostPattern {port:0,channel:2,key:60,id:17,clap:true};
+        let off=Event::NoteOffVelocity(pattern,0.23456789);
+        assert_eq!(scheduler.arrive(on,0,&holds(0.,0.,10.),RATE,&router),None);
+        assert_eq!(scheduler.arrive(off,48,&holds(0.,0.,10.),RATE,&router),None);
+        assert_eq!(scheduler.pop_due(480),Some((on,NO_ART)));
+        assert_eq!(scheduler.pop_due(528),Some((off,NO_ART)));
+    }
+
     #[test]
     fn v1_exclusion_cancels_host_early_delivery_and_keeps_original_lateness() {
         let excluded = Timing {

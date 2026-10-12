@@ -268,3 +268,51 @@ index, followed by retained extension bytes. The master profile observes up to
 36 public bytes for `0x12`, versus 28 for `0x11`; string length contributes to
 these sizes, so the difference alone does not identify eight fixed new fields.
 The reader now keeps every byte after output instead of silently discarding it.
+
+
+## Native typed-reader follow-up
+
+The initial RE specification explicitly labels its fixed layouts as existing
+importer layouts, not newly verified complete schemas. Native typed readers
+expose several corrections. Evidence is the read-only engine export's RTTI
+`vtable-methods.csv`: slot 1 returns SerType, slot 2 returns current version,
+slot 8 reads versioned binary fields. Known Reverb/Delay IDs cross-check these
+identities. `FUN_142a780f0`, `FUN_142a78270` and `FUN_142a780c0` read float words,
+integer words and bytes respectively. Width/order facts are reimplemented in
+our reader; no native pseudocode is copied. The [reader index](KONTAKT_FX_MOD_READERS.tsv)
+records addresses, source lines and independently derived primitive layouts.
+`F/I/B` means float32/int32/byte in serialized order.
+
+| Object/version | Corrected order | Independent corpus evidence |
+| --- | --- | --- |
+| Lo-Fi `0x20/0x70` | `FFBFF` | 17 bytes; 339,069 records / 705 files |
+| Compressor `0x19/0x70` | `IFFFFB` | 21 bytes; 3,719 records / 808 files |
+| Distortion `0x1e/0x60` | `IFF` | 12 bytes; 339,070 records / 706 files |
+| Shaper `0x1d/0x80` | `FI` | 8 bytes; 339,428 records / 810 files |
+| Transient Master `0x43/0x10` | `FFFI` | 16 bytes; 103 records / 103 files |
+| Solid G-EQ `0x44/0x11` | v0x10 plus `FFBB` | 52 bytes; 12 records / 12 files |
+
+Reader VAs respectively `140d01f20`, `140d00850`, `140d00c60`, `140d02c30`,
+`140d03240`, `140d029f0`. ID `0x1d` is version-sensitive: the earlier native
+Surround Panner uses `0x70` with a different variable layout; `0x80` is Shaper.
+Compressor mode now remains an integer in executable translation. The former
+Lo-Fi flag position split a float and mixed subsequent bytes into wrong values.
+
+Fifteen additional fixed native layouts now decode: legacy Reverb, Jump,
+DStortion, Phasis, Flair, Choral, Supercharger, Psyche Delay, Raum, Bite, Freak,
+Vibrato Chorus, Wow/Flutter, Gater and Reverse Grain. Native SerType returns
+identify the last seven as `0x65/66/68/69/6a/72/74`; their names are established,
+not inferred from KSP list order. Every layout's complete expected byte length
+matches the independent master byte profile. Their `param_N` fields are typed
+serialized values with unassigned physical/KSP laws, and no new DSP is enabled.
+Unknown versions stay opaque.
+
+Replika `0x5a` uses one integer style code, ten float words, three bytes, timing
+metadata and versioned additions. Native readers `140d02250`, style reader
+`140a847f0` and timing reader `140ab5da0` establish 60/77/114 bytes at versions
+`0x10/0x11/0x12`. The corpus observes `0x12`, 114 bytes in 74 records / 72 files.
+Neutral typed fields retain these boundaries; sync words and parameter laws
+still need semantic binding. Solid Bus Comp versions `0x10/0x11/0x12` use
+25/26/30 bytes; the shorter legacy Delay/Chorus/Flanger/Phaser `0x50` forms
+omit the subsequent timing record. These absent versions have native framing
+and authored bounds tests, not corpus playback certification.

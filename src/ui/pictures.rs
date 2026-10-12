@@ -701,7 +701,7 @@ mod tests {
         std::fs::write(dir.join("Resources/pictures/strip.png"), &bytes).unwrap();
         let meta = ir::ImageMeta {
             frames: 128,
-            size: Some(ir::Size { width: 100, height: 100 }),
+            size: Some(ir::Size { width: 100.0, height: 100.0 }),
             ..Default::default()
         };
         let asset = ir::Asset {
