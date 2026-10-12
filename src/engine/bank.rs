@@ -519,6 +519,7 @@ impl Bank {
         };
         check()?;
         let mut issues = Issues::default();
+        let _span = crate::audit_load::Span::new("sample_preload_bank");
         let trace = Trace::new();
         resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
@@ -727,6 +728,7 @@ impl Bank {
     }
 
     pub fn load_bare_cancelable(instrument: &Instrument, canceled: &(dyn Fn() -> bool + Sync)) -> Result<Self> {
+        let _span = crate::audit_load::Span::new("sample_headers_bare_bank");
         anyhow::ensure!(!canceled(), "Instrument load canceled");
         let mut issues = Issues::default();
         let trace = Trace::new();
