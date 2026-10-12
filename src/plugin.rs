@@ -1920,4 +1920,55 @@ pub(crate) mod tests {
         assert_eq!(Play::Bend(8192).event(), CoreEvent::Ump([0x20e0_0040, 0]));
         assert_eq!(Play::Mod(64).event(), CoreEvent::midi1(0xb0, 1, 64));
     }
+    /// Plugin-path load probe (run by hand): `PROBE_PATH=… cargo test -- --ignored probe_load --nocapture`.
+    /// Prints one `PROBE {json}` line: first-playable and total wall time, loader trace, RSS/HWM.
+    #[test]
+    #[ignore]
+    fn probe_load() {
+        let Ok(path) = std::env::var("PROBE_PATH") else { return };
+        let program: u32 = std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let proc_kb = |key: &str| -> u64 {
+            std::fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .find_map(|l| l.strip_prefix(key)?.trim().trim_end_matches("kB").trim().parse().ok())
+                .unwrap_or(0)
+        };
+        let params = std::sync::Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
+        let rss0 = proc_kb("VmRSS:");
+        let t0 = Instant::now();
+        let worker = {
+            let p = params.clone();
+            std::thread::spawn(move || {
+                Load.run(&p);
+                t0.elapsed()
+            })
+        };
+        let mut first = None;
+        while !worker.is_finished() {
+            if first.is_none() && params.shared.view.lock().unwrap().parts[0].tree.is_some() {
+                first = Some((t0.elapsed(), proc_kb("VmRSS:")));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let total = worker.join().unwrap();
+        let first = first.unwrap_or((total, 0));
+        let (rss_done, hwm_done) = (proc_kb("VmRSS:"), proc_kb("VmHWM:"));
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let (rss_settled, hwm) = (proc_kb("VmRSS:"), proc_kb("VmHWM:"));
+        let trace = params.shared.view.lock().unwrap().parts[0].trace.as_deref().cloned();
+        let status = params.shared.view.lock().unwrap().parts[0].status.clone();
+        println!(
+            "PROBE {}",
+            serde_json::json!({
+                "path": path, "program": program, "status": status,
+                "first_playable_ms": first.0.as_secs_f64() * 1e3, "first_rss_mb": first.1 as f64 / 1024.,
+                "load_run_ms": total.as_secs_f64() * 1e3,
+                "rss0_mb": rss0 as f64 / 1024., "rss_done_mb": rss_done as f64 / 1024., "hwm_done_mb": hwm_done as f64 / 1024.,
+                "rss_settled_mb": rss_settled as f64 / 1024., "hwm_mb": hwm as f64 / 1024.,
+                "trace": trace,
+            })
+        );
+    }
 }
