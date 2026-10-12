@@ -34,7 +34,28 @@ assert compare(native,takes([1]*32))["reason"] == "source-outside-native-candida
 native=fixture();native["zones"][1]["low_velocity"]=101
 assert compare(native,takes([2]*32))["reason"] == "source-outside-native-candidates"
 native=fixture();native["groups"][0]["criteria"]=[{"mode":0,"next":1},{"mode":1,"key_min":24,"key_max":24}]
-assert compare(native,takes([1]*32))["reason"] == "source-outside-native-candidates"
+ambiguous=compare(native,takes([1]*32))
+assert ambiguous['verdict'] == 'UNKNOWN'
+assert ambiguous['reason'] == 'native-start-interior-always-requires-capture'
+# Interior Always has no documented native law under any join. Its presence
+# cannot turn an otherwise complete 32-take receipt into MATCH or MISMATCH.
+for join in [0,1,2]:
+ native=fixture();native['groups'][0]['criteria']=[{'mode':0,'next':join},{'mode':1,'key_min':24,'key_max':24}]
+ assert compare(native,takes([1]*32))['verdict'] == 'UNKNOWN'
+native=fixture();native['groups'][0]['criteria']=[{'mode':1,'key_min':24,'key_max':24,'next':0},{'mode':0,'next':1},{'mode':2,'controller':1,'cc_min':0,'cc_max':127}]
+assert compare(native,takes([1]*32))['reason'] == 'native-start-interior-always-requires-capture'
+# The documented terminal marker and its incoming join are not predicates.
+# Ordinary key/controller/cycle conditions still establish the same support.
+native=fixture()
+for group in native['groups']:
+ group['criteria'][-1]['next']=1
+ group['criteria'].append({'mode':0,'next':2})
+assert compare(native,takes([2,1]*16))['verdict'] == 'MATCH'
+# No criteria and a sole Always both mean ordinary unconditional admission.
+for rows in [[],[{'mode':0,'next':1}]]:
+ native=fixture();native['groups']=native['groups'][:1];native['zones']=native['zones'][:1]
+ native['groups'][0]['criteria']=rows
+ assert compare(native,takes([1]*32))['verdict'] == 'MATCH'
 native=fixture();native["zones"][0]["loops"]=[{"slot":2,"mode":2,"start":80,"length":40,"count":0,"alternating":True,"tuning":1.0}]
 assert compare(native,takes([1,2]*16))["reason"] == "loop-mismatch"
 print("native candidate, cursor, cycle and script boundary checks passed")
