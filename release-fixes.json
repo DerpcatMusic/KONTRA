@@ -4559,6 +4559,17 @@
       "validation": "Apple primary documentation distinguishes the upload ID/path acknowledgement from a later final status. The documented successful acknowledgement fails the pre-fix source. After the fix: 19 hermetic notarization tests, 4 universal-packaging mock tests and the full nightly signing/publication mock gate pass; upload is exactly once, matching-ID waits retry once on transport failure, and invalid IDs, failed submission, malformed successful results, boolean statusCode and rejection do not produce an Accepted result. No actual Apple/macOS notarization was run. Receipt: notarization-fix-review.json in the owned release-20261012 evidence directory.",
       "category": "Fixed",
       "release_note": "Handle Apple notarization upload acknowledgements correctly and wait for acceptance before publishing macOS packages."
+    },
+    {
+      "id": "apple-ticket-network-recovery",
+      "summary": "Retry proven transient Apple ticket connection loss during staple and validate while requiring both operations to succeed",
+      "source_commits": [
+        "2e400050f618fe3bcf5f469d289c5d67f7b9e0a6"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Recover from temporary Apple ticket connection loss during macOS stapling and validation without resubmitting notarization.",
+      "validation": "Hosted jobs retained actual Accepted submissions followed by NSURLErrorDomain Code=-1005 / exit68 failures, first during staple and then during validate after successful staple. Shared helper retries only that positively identified connection-loss failure, at most four attempts with 2/4/8-second backoff; unknown, timeout and invalid ticket/signature failures remain fatal. Seven focused hermetic retry tests and four universal-package test methods pass; full Nightly mock gate passes, including architecture DMG and universal PKG recovery separately for staple and validate, single submit/matching Accepted wait, no failed receipt publication, and credential-safe logs. Shell syntax and diff checks pass. Real Apple/macOS execution of this changed helper remains pending hosted CI; no native signing/ticket acceptance is inferred from mocks. Receipt: apple-ticket-network-review.json in owned release-20261012 evidence directory."
     }
   ]
 }

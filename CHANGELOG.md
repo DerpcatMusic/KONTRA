@@ -6,6 +6,16 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.451
+
+This snapshot retains the consolidation and compatibility changes recorded under 0.3.450 below.
+
+- Mac ticket stapling and validation recover from the observed temporary Apple connection loss with four bounded attempts. Both operations must succeed; Apple approval, signatures and Gatekeeper assessment remain required.
+- CI retains compiled first-party workspace files, including after packaging failures, while all existing source and native release checks still run.
+- Download notes accurately locate the separate CLAP, VST3 and standalone build details in `release-manifest.json`.
+
+The ticket correction passes seven focused recovery tests, the updated universal-package tests and the full local signing/publication mock gate. Tests cover recovery in both operations without another upload, bounded exhaustion, fatal invalid tickets and private-output suppression. Actual Apple ticket recovery for this corrected source remains subject to the hosted release checks. One newly accepted defect advances the patch from 450 to 451. The native parity limits recorded below still apply.
+
 ## 0.3.450
 
 This experimental snapshot includes the source consolidation reviewed on 2026-10-12, together with the previously recorded 0.3.430–0.3.446 compatibility changes.
