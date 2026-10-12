@@ -70,6 +70,11 @@ impl Shape {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// Saved Digital Multi sine; prepared native fade gains, separate from the linear `Lfo::fade`.
+    DigitalSine {
+        level: f64,
+        fade: crate::KontaktLfoFade,
+    },
     /// Signed bipolar peak, prepared in -1..=1.
     SineScaled(f64),
     /// Bipolar zero, including every phase, delay and fade state.
@@ -336,6 +341,7 @@ enum Prepared {
 
 struct Program {
     sources: Box<[Prepared]>,
+    fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
     breakpoints: Box<[Breakpoints]>,
@@ -465,8 +471,18 @@ impl VoiceModulation {
                 .map(|source| {
                     Ok(match *source {
                         ModSource::Lfo(lfo) => {
-                            if let LfoShape::SineScaled(level) = lfo.shape
+                            if let LfoShape::DigitalSine { level, .. }
+                            | LfoShape::SineScaled(level) = lfo.shape
                                 && !(-1.0..=1.0).contains(&level)
+                            {
+                                return Err(Error::InvalidInput);
+                            }
+                            if matches!(lfo.shape, LfoShape::DigitalSine { .. })
+                                && (lfo.delay != 0
+                                    || lfo.fade != 0
+                                    || !lfo.retrigger
+                                    || lfo.shared
+                                    || matches!(lfo.rate, LfoRate::Beats(_)))
                             {
                                 return Err(Error::InvalidInput);
                             }
@@ -631,8 +647,15 @@ impl VoiceModulation {
             if controls.windows(2).any(|b| b[0].0 == b[1].0) {
                 return Err(Error::InvalidInput);
             }
+            let fades = sources.iter().map(|s| match s {
+                Prepared::Lfo(Lfo { shape: LfoShape::DigitalSine { fade, .. }, .. }) => {
+                    Some(fade.gains())
+                }
+                _ => None,
+            }).collect();
             compiled.push(Program {
                 controls: controls.into_boxed_slice(),
+                fades,
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 cacheable: sources.iter().all(|s| {
                     matches!(
@@ -722,7 +745,10 @@ impl VoiceModulation {
             // Lfo and envelope values at the voice's first frame.
             let at_start = |index: usize| match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
-                    wave(lfo.shape, lfo.phase, seed ^ index as u64)
+                    let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
+                    program.fades[index].as_ref().map_or(signal, |gains| {
+                        f64::from(signal as f32 * gains[0])
+                    })
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
@@ -843,7 +869,7 @@ fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
     let cycle = phase.floor();
     let t = phase - cycle;
     match shape {
-        LfoShape::SineScaled(level) => {
+        LfoShape::DigitalSine { level, .. } | LfoShape::SineScaled(level) => {
             f64::from((t * std::f64::consts::TAU).sin() as f32 * level as f32)
         }
         LfoShape::Zero => 0.,
@@ -1392,14 +1418,20 @@ impl VoiceModState {
                         // ponytail: free cycles read absolute time, so a tempo change jumps phase.
                         (phases[i] + hz * clock.now as f64 / clock.rate, i as u64)
                     };
-                    let depth = if age < lfo.delay {
-                        0.0
-                    } else if lfo.fade == 0 {
-                        1.0
+                    // shortcut: gains use the shared 64-frame clock; W9 must certify native host timing.
+                    if let Some(gains) = &p.fades[i] {
+                        let gain = gains.get((age / 32) as usize).copied().unwrap_or(1.);
+                        f64::from(wave(lfo.shape, phase, seed) as f32 * gain)
                     } else {
-                        (f64::from(age - lfo.delay) / f64::from(lfo.fade)).min(1.0)
-                    };
-                    depth * wave(lfo.shape, phase, seed)
+                        let depth = if age < lfo.delay {
+                            0.0
+                        } else if lfo.fade == 0 {
+                            1.0
+                        } else {
+                            (f64::from(age - lfo.delay) / f64::from(lfo.fade)).min(1.0)
+                        };
+                        depth * wave(lfo.shape, phase, seed)
+                    }
                 }
                 Prepared::Envelope(e) => {
                     f64::from(self.envelope[voice * self.envelopes + e].advance(frames))
@@ -1715,6 +1747,63 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn digital_fade_rejects_unproven_clock_state_at_core_boundary() {
+        let valid = Lfo {
+            shape: LfoShape::DigitalSine {
+                level: -0.3,
+                fade: crate::KontaktLfoFade::from_saved(10., 48000.).unwrap(),
+            },
+            rate: LfoRate::Hertz(1.),
+            phase: 0.25,
+            delay: 0,
+            fade: 0,
+            retrigger: true,
+            shared: false,
+        };
+        let prepare = |lfo| {
+            VoiceModulation::new(
+                vec![ModProgram {
+                    sources: vec![ModSource::Lfo(lfo)],
+                    ..Default::default()
+                }],
+                vec![Some(0)],
+                vec![0],
+            )
+        };
+        assert!(prepare(valid).is_ok());
+        for invalid in [
+            Lfo { delay: 1, ..valid },
+            Lfo { fade: 1, ..valid },
+            Lfo {
+                retrigger: false,
+                ..valid
+            },
+            Lfo {
+                shared: true,
+                ..valid
+            },
+            Lfo {
+                rate: LfoRate::Beats(1.),
+                ..valid
+            },
+            Lfo {
+                phase: -0.1,
+                ..valid
+            },
+            Lfo {
+                shape: LfoShape::DigitalSine {
+                    level: f64::NAN,
+                    fade: crate::KontaktLfoFade::from_saved(10., 48000.)
+                        .unwrap(),
+                },
+                ..valid
+            },
+        ] {
+            assert!(prepare(invalid).is_err(), "{invalid:?}");
         }
     }
 

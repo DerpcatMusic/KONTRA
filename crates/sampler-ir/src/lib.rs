@@ -1300,6 +1300,9 @@ pub struct Lfo {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// Saved retriggered Digital Multi sine, with an unsynchronized false-mode fade.
+    /// `fade_ms` retains the original serialized milliseconds, not a linear ramp.
+    DigitalSine { level: f64, fade_ms: f32 },
     /// Sine with a signed bipolar peak in -1..=1; phase still starts at zero.
     SineScaled(f64),
     /// A zero-weight Multi remains a bipolar source, with output 0.
