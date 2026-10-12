@@ -252,10 +252,31 @@ thread_local! {
 }
 pub(super) static NEXT_UI: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+impl Ui {
+    /// Release this UI's retained trees on the thread that built them before
+    /// closing the editor or moving its model to another thread. Captures may
+    /// contain plugin closures whose destructors re-enter the memo table.
+    pub fn release_thread_memos(&self) {
+        let removed = TREES.try_with(|trees| {
+            let mut trees = trees.borrow_mut();
+            let keys: Vec<_> = trees
+                .keys()
+                .filter(|(ui, _)| *ui == self.me)
+                .copied()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| trees.remove(&key))
+                .collect::<Vec<_>>()
+        });
+        // Dropping captures while holding the RefCell borrow can panic when a
+        // capture owns another UI. Keep destruction outside the borrow.
+        drop(removed);
+    }
+}
+
 impl Drop for Ui {
     fn drop(&mut self) {
-        let me = self.me;
-        let _ = TREES.try_with(|t| t.borrow_mut().retain(|(ui, _), _| *ui != me));
+        self.release_thread_memos();
     }
 }
 
@@ -287,4 +308,76 @@ pub(super) fn placeholder(id: u64) -> El {
 /// The node at child-index `path` below `n`.
 pub(super) fn node_at<'a>(n: &'a mut El, path: &[usize]) -> &'a mut El {
     path.iter().fold(n, |n, &j| &mut n.children_mut()[j])
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn released_memos_rebuild_on_the_next_frame() {
+        let mut ui = Ui::default();
+        let mut builds = 0;
+        for frame in 0..3 {
+            if frame == 2 {
+                ui.release_thread_memos();
+            }
+            let tree = ui.memo("owner", 0, |_| {
+                builds += 1;
+                mui_scene::block(10., 10.)
+            });
+            ui.frame(tree, None, mui_input::Input::default(), 0.016)
+                .unwrap();
+            assert_eq!(builds, if frame == 2 { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn releasing_closing_and_dropping_memos_destroy_captures_outside_the_borrow() {
+        struct Capture(Rc<Cell<Option<bool>>>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.0
+                    .set(Some(TREES.with(|trees| trees.try_borrow_mut().is_ok())));
+            }
+        }
+        for operation in ["release", "close", "drop"] {
+            let mut ui = Ui::default();
+            let other = Ui::default();
+            let destroyed = Rc::new(Cell::new(None));
+            let capture = Capture(destroyed.clone());
+            let tree = mui_scene::canvas(move |_| {
+                let _ = &capture;
+                Vec::new()
+            });
+            TREES.with(|trees| {
+                let mut trees = trees.borrow_mut();
+                trees.insert((ui.me, 0), tree);
+                trees.insert((other.me, 0), mui_scene::block(1., 1.));
+            });
+            let owner = ui.me;
+            match operation {
+                "release" => ui.release_thread_memos(),
+                "close" => {
+                    ui.close();
+                }
+                _ => drop(ui),
+            }
+            assert_eq!(
+                destroyed.get(),
+                Some(true),
+                "{operation}: capture can re-enter"
+            );
+            TREES.with(|trees| {
+                let trees = trees.borrow();
+                assert!(!trees.keys().any(|(id, _)| *id == owner));
+                assert!(
+                    trees.contains_key(&(other.me, 0)),
+                    "another editor retains its memo"
+                );
+            });
+        }
+    }
 }
