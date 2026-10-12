@@ -78,7 +78,7 @@ fn language(lang: Lang) -> &'static str {
 }
 fn status(status: Status) -> (&'static str, &'static str, Color) {
     match status {
-        Status::Implemented => ("✓", "Implemented", Color::srgb(0.55, 0.85, 0.65)),
+        Status::Implemented => ("✓", "Binding available", Color::srgb(0.55, 0.85, 0.65)),
         Status::Approximate => ("≈", "Approximate", Color::srgb(0.52, 0.78, 1.)),
         Status::Stub => ("○", "Stub", Color::srgb(0.8, 0.65, 1.)),
         Status::Unsupported => ("✗", "Unsupported", Color::srgb(1., 0.51, 0.48)),
@@ -539,7 +539,7 @@ fn draw(ui: &mut Ui, state: &mut State, key: &str) -> El {
         ui,
         format!("{key}-gaps"),
         "Only gaps",
-        "Show non-implemented lines",
+        "Show binding gaps and recorded faults",
         state.gaps,
     );
     if gaps {
@@ -604,6 +604,10 @@ fn draw(ui: &mut Ui, state: &mut State, key: &str) -> El {
         col![
             row![field].pad((SPACE, TIGHT)).shrink(0),
             row(filters).gap(TIGHT).wrap().pad((SPACE, TIGHT)).shrink(0),
+            caption("Binding status · native behavior requires separate evidence")
+                .fill(secondary())
+                .pad((SPACE, TIGHT))
+                .shrink(0),
             code,
             caption(coverage)
                 .fill(secondary())
