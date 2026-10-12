@@ -10,6 +10,13 @@ pub use ingress::{Applied, ApplyError, BlockError, Ingress, TimedPacket};
 pub use mpe::{Mpe, Zone};
 pub use probe::{MpeResponse, centroid, mpe_response, spectral_ratio};
 
+/// MIDI 2.0 uses Program Change bank fields and Registered/Assignable
+/// Controller messages in place of these MIDI 1.0 control numbers. Keep raw
+/// packets observable, but never reinterpret them as MIDI 1.0 parameter writes.
+pub const fn is_midi2_legacy_control(index: u8) -> bool {
+    matches!(index, 0 | 6 | 32 | 38 | 98..=101)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {
     Midi1,

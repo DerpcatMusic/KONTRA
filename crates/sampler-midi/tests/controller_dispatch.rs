@@ -188,3 +188,18 @@ fn an_mpe_manager_remap_to_sustain_retains_the_entire_zone_scope() {
         });
     }
 }
+
+#[test]
+fn mpe_received_parameter_ccs_dispatch_their_original_physical_channel_once() {
+    let mut rt = runtime(false);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 4).unwrap();
+    support::without_heap(|| {
+        for (cc, value) in [(101u8, 0u8), (100, 0), (6, 12), (38, 50), (96, 0)] {
+            let words = [0x23b1_0000 | u32::from(cc) << 8 | u32::from(value)];
+            mpe.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap())
+                .unwrap();
+            assert_origin(&mut rt, [7, 3, 1]);
+        }
+        assert_eq!(mpe.pitch_sensitivities(), (2., 12.51));
+    });
+}
