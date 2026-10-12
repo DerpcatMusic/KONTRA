@@ -1,0 +1,4 @@
+feat(ksp): admit owned waveform state and bounded UI projection
+
+# Conflicts:
+#	crates/sampler-ksp/src/lower.rs
