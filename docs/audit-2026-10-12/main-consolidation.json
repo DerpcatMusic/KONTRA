@@ -14702,5 +14702,7 @@
     "Broad pictured Slider preservation in Vector and Solid G-EQ display/DSP law remain named historical contract gaps.",
     "Held active AHDSR retiming, exact v1 streaming throttles and HOLD/rejected ring/fused/fold experiments are not certified native equivalents."
   ],
-  "validation": "Central compiled suite2379passing with sole generated-coordinate ledger failure; coordinates regenerated without status/binding/detail changes. Final acceptance receipt will follow."
+  "validation": "Accepted: final central tests,doc checks,vendor/native host checks,CI Clippy,plugin+standalone+offline inspector builds; see main-consolidation-receipt.json",
+  "history_resolution_executed": true,
+  "physical_cleanup_executed": true
 }
