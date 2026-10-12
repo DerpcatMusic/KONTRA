@@ -412,30 +412,42 @@ fn store_in(
         prune(dir, CACHE_LIMIT);
     }
 }
+// Scanner/inspector runs retain decrypted metadata only in memory and must
+// observe fresh initialization. Defer directory discovery and all cache I/O
+// until this gate permits the operation.
+fn with_product_cache<T>(scan_active: bool, action: impl FnOnce() -> T) -> Option<T> {
+    if scan_active { None } else { Some(action()) }
+}
+
 pub(crate) fn load(
     path: &Path,
     program: u32,
     controls: &[(sampler_core::ControlId, i32)],
 ) -> Option<Kontakt> {
-    let _span = crate::audit::Span::new("preset_cache_lookup");
-    load_from(
-        &dirs::cache_dir()?.join("kontra/v2-instruments"),
-        path,
-        program,
-        controls,
-    )
-}
-pub(crate) fn store(path: &Path, program: u32, kontakt: &mut Kontakt, recipes: &[ImpulseRecipe]) {
-    let _span = crate::audit::Span::new("preset_cache_store");
-    if let Some(dir) = dirs::cache_dir() {
-        store_in(
-            &dir.join("kontra/v2-instruments"),
+    with_product_cache(std::env::var_os("KONTRA_SCAN_ACTIVE").is_some(), || {
+        let _span = crate::audit::Span::new("preset_cache_lookup");
+        load_from(
+            &dirs::cache_dir()?.join("kontra/v2-instruments"),
             path,
             program,
-            kontakt,
-            recipes,
-        );
-    }
+            controls,
+        )
+    })
+    .flatten()
+}
+pub(crate) fn store(path: &Path, program: u32, kontakt: &mut Kontakt, recipes: &[ImpulseRecipe]) {
+    let _ = with_product_cache(std::env::var_os("KONTRA_SCAN_ACTIVE").is_some(), || {
+        let _span = crate::audit::Span::new("preset_cache_store");
+        if let Some(dir) = dirs::cache_dir() {
+            store_in(
+                &dir.join("kontra/v2-instruments"),
+                path,
+                program,
+                kontakt,
+                recipes,
+            );
+        }
+    });
 }
 
 #[cfg(test)]
@@ -471,6 +483,48 @@ mod tests {
             }),
         }
     }
+    #[test]
+    fn scan_mode_never_reads_existing_product_cache() {
+        let f = Fixture::new();
+        let preset = f.0.join("fixture.nki");
+        std::fs::write(&preset, [0; 16]).unwrap();
+        let dir = f.0.join("cache");
+        let mut k = kontakt(&f.0);
+        with_product_cache(false, || store_in(&dir, &preset, 0, &mut k, &[]));
+        assert!(load_from(&dir, &preset, 0, &[]).is_some());
+        let reads = std::cell::Cell::new(0);
+        let result = with_product_cache(true, || {
+            reads.set(reads.get() + 1);
+            load_from(&dir, &preset, 0, &[])
+        })
+        .flatten();
+        assert!(result.is_none(), "scan must not restore cached initialization");
+        assert_eq!(reads.get(), 0, "scan must not enter cache lookup I/O");
+    }
+
+    #[test]
+    fn scan_mode_never_creates_or_replaces_product_cache() {
+        let f = Fixture::new();
+        let preset = f.0.join("fixture.nki");
+        std::fs::write(&preset, [0; 16]).unwrap();
+        let dir = f.0.join("cache");
+        let mut k = kontakt(&f.0);
+        with_product_cache(false, || store_in(&dir, &preset, 0, &mut k, &[]));
+        let existing = entry(&dir, &preset, 0, &[]);
+        let before = std::fs::read(&existing).unwrap();
+        k.instrument.name = "changed synthetic metadata".into();
+        let writes = std::cell::Cell::new(0);
+        for target in [&dir, &f.0.join("new-cache")] {
+            with_product_cache(true, || {
+                writes.set(writes.get() + 1);
+                store_in(target, &preset, 0, &mut k, &[]);
+            });
+        }
+        assert!(std::fs::read(existing).unwrap() == before, "scan must not replace an existing cache");
+        assert!(!f.0.join("new-cache").exists(), "scan must not create cache files or directories");
+        assert_eq!(writes.get(), 0, "scan must not enter cache store I/O");
+    }
+
     #[test]
     fn product_cache_roundtrip_and_corruption_fallback() {
         let f = Fixture::new();
