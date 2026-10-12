@@ -398,10 +398,11 @@ mod tests {
             id: 0x20,
             data: {
                 let mut b = vec![0, 0x50, 0];
-                for v in [8f32, 22050.0, 0.25] {
+                for v in [8f32, 22050.0] {
                     b.extend(v.to_le_bytes());
                 }
                 b.push(1);
+                b.extend(0.25f32.to_le_bytes());
                 b.extend(0.75f32.to_le_bytes());
                 b
             },
@@ -450,7 +451,8 @@ mod tests {
         assert_eq!(records[0].fields[1].value, Value::Boolean(true));
         assert_eq!(records[1].fields[0].value, Value::Number(8.0));
         assert_eq!(records[1].fields[1].value, Value::Number(22050.0));
-        assert_eq!(records[1].fields[3].value, Value::Integer(1));
+        assert_eq!(records[1].fields[2].value, Value::Integer(1));
+        assert_eq!(records[1].fields[3].value, Value::Number(0.25));
         assert_eq!(records[1].fields[4].value, Value::Number(0.75));
         let Value::Records(children) = &records[1].fields[5].value else {
             panic!("child identities")
