@@ -57,6 +57,18 @@ identifies two relevant leftovers:
   there is no missing runtime fix to merge.
 - `v2/ksp-frontend`: untracked `examples/ksp_v1_baseline.rs` is a v1 audit
   example. It does not provide a missing v2 runtime implementation.
+- `v2/fix-w12-gate`: uncommitted `native_always_keeps_its_compound_operator`
+  assumes a mode-0 row before a key condition should act as boolean true
+  with its AND_NOT join. This expected behavior has no retained native
+  evaluator proof. The [NI Group Start Options manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view)
+  instead defines Always as a no-operation end/deletion marker, and
+  excludes a trailing Always from a multi-row condition list. The
+  [Kontakt API group-start condition inventory](https://docs.native-instruments.com/ni-tech-manuals/kontakt-api-reference-manual/en/group)
+  does not include Always among predicates. Therefore do not port that
+  fixture as a confirmed failing contract or add an Always-true IR/DSP
+  law to satisfy it. Current skipping may be correct for legitimate lists;
+  malformed interior mode-0 rows remain unverified. This is an inference
+  from the documented marker semantics, not a measured native trace.
 
 The named `fix/kontakt-fx-parity`, `wp456-kontakt-parity`, audit Kontakt/KSP,
 and retained KSP follow-up worktrees are clean in this inventory. They
