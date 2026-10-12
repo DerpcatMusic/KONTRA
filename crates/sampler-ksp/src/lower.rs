@@ -538,7 +538,7 @@ impl Gen<'_, '_> {
             );
         }
         self.u.budget -= 1;
-        if let Some(inspect) = &mut self.u.inspection {
+        if let Some(inspect) = &mut self.u.inspection && inspect.record_ops {
             inspect
                 .ops
                 .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));

@@ -1,6 +1,6 @@
 //! Offline source and conversion inspection. No plugin, Runtime or audio audition.
 use ni_file::kontakt::objects::{BParScript, Bank as NiBank, GroupList, Program, ZoneList};
-use sampler_parity::ScriptReport;
+use sampler_parity::{Lang, ScriptReport};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -209,14 +209,23 @@ fn source_program(
                 source = linked;
             }
         }
-        // Existing source-only frontend handles linked scripts/NCKP diagnostics.
-        // It never executes init. Its report is attached by stable physical id.
+        // The source-only Kontakt frontend below compiles each script with its
+        // physical slot and performance-view environment. Keep only display
+        // metadata here so the script is not compiled twice.
         let id = if let Some((rack, within)) = rack_slot {
             format!("ksp:program{rack}:{within}:slot{slot}")
         } else {
             format!("ksp:slot{slot}")
         };
-        let frontend = sampler_ksp::parity_report(&source, &id, &format!("Script slot {slot}"));
+        let frontend = ScriptReport {
+            id,
+            title: format!("Script slot {slot}"),
+            lang: Lang::Ksp,
+            source_len: source.len().min(u32::MAX as usize) as u32,
+            tokens: Vec::new(),
+            constructs: Vec::new(),
+            lowered: Vec::new(),
+        };
         add_script(
             report,
             frontend,
@@ -527,7 +536,12 @@ fn kontakt(opts: &Options, report: &mut Value) {
         .collect();
     report["metadata"] = json!({"program_count":programs.len(),"programs":records});
     let mut frontend_ok = true;
-    match sampler_kontakt::read_parity_reports(&opts.path) {
+    let frontends = if opts.summary {
+        sampler_kontakt::read_parity_reports_summary(&opts.path)
+    } else {
+        sampler_kontakt::read_parity_reports(&opts.path)
+    };
+    match frontends {
         Ok(frontends) => {
             for frontend in frontends {
                 if let Some(existing) = report["scripts"]
@@ -536,8 +550,9 @@ fn kontakt(opts: &Options, report: &mut Value) {
                     .iter_mut()
                     .find(|s| s["id"] == frontend.id)
                 {
+                    let mut frontend = serde_json::to_value(frontend).unwrap();
                     for key in ["tokens", "constructs", "lowered"] {
-                        existing[key] = serde_json::to_value(&frontend).unwrap()[key].clone();
+                        existing[key] = frontend.as_object_mut().unwrap().remove(key).unwrap();
                     }
                 }
             }
@@ -1098,6 +1113,39 @@ mod tests {
     }
 
     const XML: &str = r#"<Program Name="Authored"><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer SamplePath="missing.wav"/></Oscillators></Keygroup></Keygroups></Layer></Layers><Inserts><UnmodeledFixture/></Inserts><EventProcessors><ScriptProcessor><script><![CDATA[function onInit() error("PRIVATE_DO_NOT_EXECUTE") end]]></script></ScriptProcessor></EventProcessors></Program>"#;
+
+    #[test]
+    fn summary_ksp_frontend_matches_full_report_after_compaction() {
+        let source = "on init declare $x := abs(-7) end on\non note set_global_key(1) end on";
+        let full = sampler_ksp::parity_report(source, "ksp:slot0", "Script slot 0");
+        let summary = sampler_ksp::parity_report_summary_with(
+            source,
+            "ksp:slot0",
+            "Script slot 0",
+            sampler_ksp::Limits::LIBRARY,
+            &sampler_ksp::Environment::default(),
+        );
+        assert_eq!(summary.constructs, full.constructs);
+        assert!(summary.tokens.is_empty());
+        assert!(summary.lowered.is_empty());
+        let opts = Options {
+            path: "Synthetic.nki".into(),
+            summary: true,
+            ..Default::default()
+        };
+        let mut full_report = base(&opts, "kontakt");
+        let mut summary_report = base(&opts, "kontakt");
+        add_script(&mut full_report, full, None, Some(0), Some(0), Some(false));
+        add_script(
+            &mut summary_report,
+            summary,
+            None,
+            Some(0),
+            Some(0),
+            Some(false),
+        );
+        assert_eq!(compact(full_report), compact(summary_report));
+    }
 
     #[test]
     fn static_inspection_converts_metadata_without_running_lua_or_reading_samples() {

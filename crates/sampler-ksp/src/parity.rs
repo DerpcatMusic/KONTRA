@@ -110,6 +110,30 @@ pub fn parity_report_with(
     limits: Limits,
     environment: &Environment,
 ) -> ScriptReport {
+    parity_report_with_detail(source, id, title, limits, environment, true)
+}
+
+/// The same coverage and diagnostics as `parity_report_with`, without token
+/// highlighting or lowered operation prose. Use for aggregate inspection that
+/// discards those large source maps.
+pub fn parity_report_summary_with(
+    source: &str,
+    id: &str,
+    title: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> ScriptReport {
+    parity_report_with_detail(source, id, title, limits, environment, false)
+}
+
+fn parity_report_with_detail(
+    source: &str,
+    id: &str,
+    title: &str,
+    limits: Limits,
+    environment: &Environment,
+    source_map: bool,
+) -> ScriptReport {
     let starts: Vec<_> = std::iter::once(0)
         .chain(
             source
@@ -163,7 +187,14 @@ pub fn parity_report_with(
         }
     };
     let mut previous = [None, None];
+    // Advance a single cursor through comments. Repeated suffix searches can
+    // become quadratic for a long series of call-like identifiers/comments.
+    let mut next_non_comment = 1usize;
     for (i, t) in toks.iter().enumerate() {
+        next_non_comment = next_non_comment.max(i + 1);
+        while next_non_comment < toks.len() && toks[next_non_comment].tok == Tok::Comment {
+            next_non_comment += 1;
+        }
         let mut use_kind = None;
         let mut name = "";
         let class = match t.tok {
@@ -183,10 +214,8 @@ pub fn parity_report_with(
                 } else if KEYWORDS.contains(&name) || hir::WidgetKind::from_keyword(name).is_some()
                 {
                     Class::Keyword
-                } else if toks[i + 1..]
-                    .iter()
-                    .find(|t| t.tok != Tok::Comment)
-                    .is_some_and(|t| t.tok == Tok::Punct(Punct::LParen))
+                } else if toks.get(next_non_comment).map(|t| t.tok)
+                    == Some(Tok::Punct(Punct::LParen))
                 {
                     use_kind = Some(Kind::Command);
                     Class::Builtin
@@ -226,10 +255,12 @@ pub fn parity_report_with(
             Tok::Punct(_) => Class::Operator,
             Tok::Eof => continue,
         };
-        report.tokens.push(Token {
-            span: span(t.span),
-            class,
-        });
+        if source_map {
+            report.tokens.push(Token {
+                span: span(t.span),
+                class,
+            });
+        }
         if t.tok != Tok::Comment {
             previous = [Some(t.tok), previous[0]];
         }
@@ -267,6 +298,7 @@ pub fn parity_report_with(
             &span,
             &mut report.constructs,
             &mut declarations,
+            source_map,
         );
         report.constructs.sort_by_key(|c| c.span.start);
         crate::sema::analyze(
@@ -286,23 +318,25 @@ pub fn parity_report_with(
             return report;
         }
     };
-    report.lowered.extend(declarations);
-    let constants: std::collections::BTreeSet<_> = hir
-        .vars
-        .iter()
-        .filter(|v| matches!(v.home, hir::Home::Const(_)))
-        .filter_map(|v| syms.get(&v.name))
-        .collect();
-    let constant_tokens: std::collections::BTreeSet<_> = toks
-        .iter()
-        .filter_map(|t| match t.tok {
-            Tok::Var(s) if constants.contains(&s) => Some(t.span.start),
-            _ => None,
-        })
-        .collect();
-    for t in &mut report.tokens {
-        if constant_tokens.contains(&t.span.start) {
-            t.class = Class::Constant;
+    if source_map {
+        report.lowered.extend(declarations);
+        let constants: std::collections::BTreeSet<_> = hir
+            .vars
+            .iter()
+            .filter(|v| matches!(v.home, hir::Home::Const(_)))
+            .filter_map(|v| syms.get(&v.name))
+            .collect();
+        let constant_tokens: std::collections::BTreeSet<_> = toks
+            .iter()
+            .filter_map(|t| match t.tok {
+                Tok::Var(s) if constants.contains(&s) => Some(t.span.start),
+                _ => None,
+            })
+            .collect();
+        for t in &mut report.tokens {
+            if constant_tokens.contains(&t.span.start) {
+                t.class = Class::Constant;
+            }
         }
     }
     let ids: Vec<_> = hir
@@ -329,19 +363,24 @@ pub fn parity_report_with(
         warnings: Vec::new(),
         scratch: 0,
         modules: Vec::new(),
-        inspection: Some(Default::default()),
+        inspection: Some(Inspection {
+            record_ops: source_map,
+            ..Default::default()
+        }),
     };
     let mut programs = Vec::new();
     for cb in &hir.callbacks {
         if cb.kind == hir::CallbackKind::Init {
-            init_statements(&cb.body, &span, &mut report.lowered);
-            init_functions(
-                &hir,
-                &cb.body,
-                &span,
-                &mut report.lowered,
-                &mut Default::default(),
-            );
+            if source_map {
+                init_statements(&cb.body, &span, &mut report.lowered);
+                init_functions(
+                    &hir,
+                    &cb.body,
+                    &span,
+                    &mut report.lowered,
+                    &mut Default::default(),
+                );
+            }
             for c in report
                 .constructs
                 .iter_mut()
@@ -369,16 +408,18 @@ pub fn parity_report_with(
         fail(&mut report, f);
     }
     let inspection = unit.inspection.take().unwrap();
-    let mut ops: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
-    for (s, op) in inspection.ops {
-        ops.entry((s.start, s.end)).or_default().push(op);
+    if source_map {
+        let mut ops: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+        for (s, op) in inspection.ops {
+            ops.entry((s.start, s.end)).or_default().push(op);
+        }
+        report
+            .lowered
+            .extend(ops.into_iter().map(|((start, end), ops)| Lowered {
+                span: span(diag::Span { start, end }),
+                ops,
+            }));
     }
-    report
-        .lowered
-        .extend(ops.into_iter().map(|((start, end), ops)| Lowered {
-            span: span(diag::Span { start, end }),
-            ops,
-        }));
     let mut uses: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, c) in report.constructs.iter().enumerate() {
         uses.entry(c.name.clone()).or_default().push(i);
@@ -440,6 +481,7 @@ fn ast_calls(
     span: &impl Fn(diag::Span) -> Span,
     out: &mut Vec<Construct>,
     declarations: &mut Vec<Lowered>,
+    source_map: bool,
 ) {
     use crate::ast::{ExprKind as E, Item, StmtKind as S};
     let functions: std::collections::BTreeSet<_> = ast
@@ -456,6 +498,7 @@ fn ast_calls(
         span: F,
         out: &'o mut Vec<Construct>,
         declarations: &'o mut Vec<Lowered>,
+        source_map: bool,
     }
     impl<F: Fn(diag::Span) -> Span> Calls<'_, '_, '_, F> {
         fn call(&mut self, name: lexer::Sym, at: diag::Span, explicit: bool) {
@@ -510,21 +553,23 @@ fn ast_calls(
                     }
                     S::Call(n) => self.call(*n, s.span, true),
                     S::Declare(d) => {
-                        let op = if let Some(ui) = d.ui {
-                            format!("declare {}: allocate UI model/control", self.syms.name(ui))
-                        } else {
-                            match d.storage {
-                                crate::ast::Storage::Const => "bind compile-time constant".into(),
-                                crate::ast::Storage::Polyphonic => {
-                                    "allocate note-owned state".into()
+                        if self.source_map {
+                            let op = if let Some(ui) = d.ui {
+                                format!("declare {}: allocate UI model/control", self.syms.name(ui))
+                            } else {
+                                match d.storage {
+                                    crate::ast::Storage::Const => "bind compile-time constant".into(),
+                                    crate::ast::Storage::Polyphonic => {
+                                        "allocate note-owned state".into()
+                                    }
+                                    _ => "allocate typed script state".into(),
                                 }
-                                _ => "allocate typed script state".into(),
-                            }
-                        };
-                        self.declarations.push(Lowered {
-                            span: (self.span)(s.span),
-                            ops: vec![op],
-                        });
+                            };
+                            self.declarations.push(Lowered {
+                                span: (self.span)(s.span),
+                                ops: vec![op],
+                            });
+                        }
                         if let Some(e) = &d.size {
                             self.expr(e);
                         }
@@ -565,6 +610,7 @@ fn ast_calls(
         span,
         out,
         declarations,
+        source_map,
     };
     for item in &ast.items {
         match item {
@@ -674,6 +720,7 @@ const KEYWORDS: &[&str] = &[
 pub(crate) struct Inspection {
     pub ops: Vec<(diag::Span, String)>,
     pub calls: Vec<(diag::Span, Builtin, lower::Coverage)>,
+    pub record_ops: bool,
 }
 pub(crate) fn operation_name(op: &sampler_core::Instruction) -> String {
     // Debug contains authored operands; keep ONLY the enum variant name.
