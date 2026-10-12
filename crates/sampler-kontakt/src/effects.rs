@@ -2542,14 +2542,73 @@ mod tests {
         .unwrap()
     }
 
+    // Authored independently of the decoder schema: native Raum reader
+    // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
+    fn raum_payload() -> Vec<u8> {
+        let mut bytes = (-17i32).to_le_bytes().to_vec();
+        bytes.extend(
+            [
+                0.125f32, 0.25, 0.5, 1., 2., 4., 8., 16., 32., 64., 128., 256.,
+            ]
+            .into_iter()
+            .flat_map(f32::to_le_bytes),
+        );
+        bytes.extend([0xa5, 0x5a]);
+        bytes.extend([-0.5f32, -1., -2.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0xff);
+        bytes
+    }
+
     #[test]
     fn malformed_effect_payloads_keep_raw_bytes_and_report_physical_framing_errors() {
         use sampler_ir::{Reason, SourceParameterValue};
         let cases = [
-            (0x13, 0x50, vec![0; 3], "Static error: Truncated FX parameter"),
-            (0x13, 0x50, vec![0; 5], "Static error: Trailing FX parameter bytes"),
-            (0x42, 0x10, vec![0; 12], "Static error: Truncated FX parameter"),
-            (0x17, 0x51, vec![0xff; 4], "Static error: Truncated FX parameter list"),
+            (
+                0x13,
+                0x50,
+                vec![0; 3],
+                "Static error: Truncated FX parameter",
+            ),
+            (
+                0x13,
+                0x50,
+                vec![0; 5],
+                "Static error: Trailing FX parameter bytes",
+            ),
+            (
+                0x42,
+                0x10,
+                vec![0; 12],
+                "Static error: Truncated FX parameter",
+            ),
+            (
+                0x17,
+                0x51,
+                vec![0xff; 4],
+                "Static error: Truncated FX parameter list",
+            ),
+            (
+                0x65,
+                0x10,
+                vec![0xde, 0xad, 0xbe, 0xef],
+                "Static error: Truncated FX parameter",
+            ),
+            (
+                0x65,
+                0x10,
+                raum_payload()[..66].to_vec(),
+                "Static error: Truncated FX parameter",
+            ),
+            (
+                0x65,
+                0x10,
+                {
+                    let mut bytes = raum_payload();
+                    bytes.push(0);
+                    bytes
+                },
+                "Static error: Trailing FX parameter bytes",
+            ),
         ];
         for (module, version, bytes, expected) in cases {
             let array = effect_fixture(module, version, &bytes);
@@ -2565,8 +2624,7 @@ mod tests {
             assert_eq!(saved.version, version);
             assert_eq!(saved.location, "owned rack/slot 5/module");
             assert!(saved.fields.iter().any(|f| {
-                f.name == "undecoded_public"
-                    && f.value == SourceParameterValue::Opaque(bytes.clone())
+                f.name == "undecoded_public" && f.value == SourceParameterValue::Opaque(bytes.clone())
             }));
             for scope in [Scope::Voice, Scope::Bus] {
                 let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
@@ -2575,6 +2633,7 @@ mod tests {
                     "a rejected slot must not become a Mix identity"
                 );
                 assert!(out.send_taps.is_empty());
+                assert_eq!(out.notes.len(), 2, "framing and unsupported DSP are distinct");
                 assert!(out.notes.iter().any(|(slot, field, value, reason)| {
                     *slot == 5
                         && field.ends_with(": parameter framing")
@@ -2596,7 +2655,11 @@ mod tests {
             .flat_map(f32::to_le_bytes)
             .collect();
         tape.push(0xa5); // Raw byte, not a guessed Boolean or quality ordinal.
-        for (module, bytes) in [(0x42, tape), (0x65, vec![0xde, 0xad, 0xbe, 0xef])] {
+        for (module, bytes) in [
+            (0x42, tape),
+            (0x65, raum_payload()),
+            (0xfe, vec![0xde, 0xad, 0xbe, 0xef]),
+        ] {
             let array = effect_fixture(module, 0x10, &bytes);
             let slots = rack(&array, |_, error| panic!("{error}"));
             assert_eq!(slots[0].public, bytes);
@@ -2611,6 +2674,32 @@ mod tests {
                 assert!(saved.fields.iter().any(|f| {
                     f.name == "quality" && f.value == SourceParameterValue::Integer(0xa5)
                 }));
+            } else if module == 0x65 {
+                assert_eq!(bytes.len(), 67);
+                assert_eq!(&bytes[52..54], &[0xa5, 0x5a]);
+                assert_eq!(&bytes[54..58], &(-0.5f32).to_le_bytes());
+                assert_eq!(bytes[66], 0xff);
+                assert!(
+                    matches!(slots[0].params(), Some(Params::Fields(ref fields)) if fields.len() == 19)
+                );
+                assert_eq!(saved.fields.len(), 19);
+                for (name, value) in [
+                    ("param_0", SourceParameterValue::Integer(-17)),
+                    ("param_1", SourceParameterValue::Number(0.125)),
+                    ("param_12", SourceParameterValue::Number(256.)),
+                    ("param_13", SourceParameterValue::Integer(0xa5)),
+                    ("param_14", SourceParameterValue::Integer(0x5a)),
+                    ("param_15", SourceParameterValue::Number(-0.5)),
+                    ("param_17", SourceParameterValue::Number(-2.)),
+                    ("param_18", SourceParameterValue::Integer(0xff)),
+                ] {
+                    assert!(
+                        saved
+                            .fields
+                            .iter()
+                            .any(|f| f.name == name && f.value == value)
+                    );
+                }
             } else {
                 assert!(slots[0].params().is_none());
                 assert!(saved.fields.iter().any(|f| {
@@ -2621,6 +2710,7 @@ mod tests {
             for scope in [Scope::Voice, Scope::Bus] {
                 let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
                 assert!(out.processors.is_empty());
+                assert!(out.send_taps.is_empty());
                 assert_eq!(out.notes.len(), 1);
                 assert_eq!(
                     (out.notes[0].0, out.notes[0].1.as_str(), out.notes[0].3),
