@@ -3669,6 +3669,10 @@ pub(crate) mod tests {
         let params = SamplerParams::new();
         params.selection.write_unpoisoned().parts = vec![Part {
             path: path.display().to_string(),
+            // This checks resident handover and immediate allocation-free audio,
+            // as the original plain-WAV fixture did. Auto streaming deliberately
+            // leaves ordinary UVI heads cold until the decoder services them.
+            streaming: Some(Streaming::RamOnly),
             ..Default::default()
         }];
         load_until(&params, |p| {
