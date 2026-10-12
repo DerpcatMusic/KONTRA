@@ -45,3 +45,7 @@ GPU errors use `Host::observe_gpu_error` once per observer and device
 generation. The upstream callback keeps recording errors and losses; the
 window forwards them to KONTRA's sink before/after present, outside the model
 lock. Errors between ticks coalesce according to MUI's observation contract.
+
+## MUI render fallback migration (2026-10-06)
+
+Adds the shared retained CPU renderer when GPU initialization fails or `MUI_RENDERER=cpu` is selected. Uses lazy native-backend initialization while preserving Kontra GPU diagnostics, Windows backend policy, pointer capture, wheel behavior, IME and accessibility. Repaint events invalidate retained pixels without rebuilding the UI.

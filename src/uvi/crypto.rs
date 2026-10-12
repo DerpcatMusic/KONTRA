@@ -48,15 +48,15 @@ pub fn metadata_key(namespace: &[u8], bank_name: &str) -> u64 {
 /// Symmetric transform; nonce is the physical file offset for container members.
 pub fn transform(data: &mut [u8], key: u64, nonce: u64) {
     let mut state = (mix(nonce) ^ key).wrapping_mul(MIX);
-    let mut chunks = data.chunks_exact_mut(4);
-    for chunk in chunks.by_ref() {
+    let (chunks, remainder) = data.as_chunks_mut::<4>();
+    for chunk in chunks {
         let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
-        let value = u32::from_le_bytes(chunk.try_into().unwrap()) ^ word;
+        let value = u32::from_le_bytes(*chunk) ^ word;
         chunk.copy_from_slice(&value.to_le_bytes());
         state = state.wrapping_mul(STEP);
     }
     let word = (((state >> 22) ^ state) >> (22 + (state >> 61))) as u32;
-    for (byte, mask) in chunks.into_remainder().iter_mut().zip(word.to_le_bytes()) {
+    for (byte, mask) in remainder.iter_mut().zip(word.to_le_bytes()) {
         *byte ^= mask;
     }
 }

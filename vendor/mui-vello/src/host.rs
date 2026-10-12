@@ -21,6 +21,41 @@ use crate::kurbo::Affine;
 /// GPU that keeps failing does not cost a device creation every frame.
 const RETRY: Duration = Duration::from_millis(500);
 
+// Opening every API eagerly loads GL/EGL even when Vulkan/Metal/DX12 succeeds.
+// Keep the caller's enabled backends, but pay for the secondary APIs only on failure.
+fn try_backends<T>(
+    enabled: wgpu::Backends,
+    mut open: impl FnMut(wgpu::Backends) -> Result<T, String>,
+) -> Result<T, String> {
+    let primary = enabled & wgpu::Backends::PRIMARY;
+    let mut errors = Vec::new();
+    for backends in [primary, enabled - primary]
+        .into_iter()
+        .filter(|b| !b.is_empty())
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(backends)));
+        match result {
+            Ok(Ok(host)) => return Ok(host),
+            Ok(Err(error)) => errors.push(format!("{backends:?}: {error}")),
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                errors.push(format!(
+                    "{backends:?}: GPU initialization panicked: {message}"
+                ));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Err("no GPU backends enabled".into())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 /// The surface size clamped to what a vello `Scene` holds (`u16`), or
 /// `None` when there is nothing to draw into: a minimised window reports
 /// 0x0, and configuring a zero-sized surface is invalid.
@@ -548,6 +583,32 @@ pub struct Host {
 }
 
 impl Host {
+    /// Open native APIs first, then secondary APIs if needed. `WGPU_BACKEND`
+    /// remains an allowlist. The factory must drop each failed surface before
+    /// creating another and keep its native window alive for the returned host.
+    pub fn open_native(
+        create: impl FnMut(wgpu::Backends) -> Result<(wgpu::Instance, wgpu::Surface<'static>), String>,
+        size: (u32, u32),
+    ) -> Result<Self, String> {
+        Self::open_native_with_transparency(create, size, Transparency::Opaque)
+    }
+
+    /// [`Self::open_native`] preserving a native window's transparency policy.
+    pub fn open_native_with_transparency(
+        mut create: impl FnMut(
+            wgpu::Backends,
+        ) -> Result<(wgpu::Instance, wgpu::Surface<'static>), String>,
+        size: (u32, u32),
+        transparency: Transparency,
+    ) -> Result<Self, String> {
+        let enabled = wgpu::InstanceDescriptor::new_without_display_handle_from_env().backends;
+        try_backends(enabled, |backends| {
+            let (instance, surface) = create(backends)?;
+            Self::with_transparency(instance, surface, size, transparency)
+                .map_err(|e| e.to_string())
+        })
+    }
+
     /// A device for `surface` and a renderer at `size` physical pixels.
     /// `surface` must come from `instance`.
     pub fn new(
@@ -793,6 +854,50 @@ impl Host {
 mod tests {
     use super::*;
     use mui_scene::prelude::*;
+
+    #[test]
+    fn native_backends_are_lazy_and_preserve_the_allowlist() {
+        use wgpu::Backends as B;
+        let mut tried = Vec::new();
+        assert_eq!(
+            try_backends(B::VULKAN | B::GL, |b| {
+                tried.push(b);
+                Ok(42)
+            }),
+            Ok(42)
+        );
+        assert_eq!(tried, [B::VULKAN]);
+        tried.clear();
+        assert_eq!(
+            try_backends(B::VULKAN | B::GL, |b| {
+                tried.push(b);
+                if b == B::GL {
+                    Ok(42)
+                } else {
+                    Err("no surface".into())
+                }
+            }),
+            Ok(42)
+        );
+        assert_eq!(tried, [B::VULKAN, B::GL]);
+        let error = try_backends::<()>(B::VULKAN, |_| Err("no surface".into())).unwrap_err();
+        assert!(error.contains("no surface"));
+        assert!(try_backends::<()>(B::empty(), |_| panic!("must not run")).is_err());
+        assert!(
+            try_backends::<()>(B::VULKAN, |_| panic!("shader diagnostic"))
+                .unwrap_err()
+                .contains("shader diagnostic")
+        );
+        assert_eq!(
+            try_backends(B::VULKAN | B::GL, |b| {
+                if b == B::VULKAN {
+                    panic!("bad driver")
+                }
+                Ok(42)
+            }),
+            Ok(42)
+        );
+    }
 
     #[test]
     fn sizes_clamp_and_zero_is_nothing_to_draw_into() {

@@ -555,7 +555,10 @@ impl EventLoop {
                 }
             }
 
-            XEvent::Expose(e) if e.window == self.window.raw_id() => self.exposed = true,
+            XEvent::Expose(e) if e.window == self.window.raw_id() => {
+                self.exposed = true;
+                self.handle_event(Event::Window(WindowEvent::RedrawRequested));
+            }
 
             ////
             // mouse

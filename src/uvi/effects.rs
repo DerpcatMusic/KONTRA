@@ -321,7 +321,7 @@ fn band_coefficients(
                 }
             }
         }
-        for pair in real.chunks_exact(2) {
+        for pair in real.as_chunks::<2>().0 {
             pairs.push([-pair[0] - pair[1], pair[0] * pair[1]]);
         }
         (pairs, normalization.re)

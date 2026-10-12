@@ -45,3 +45,7 @@ alongside the existing native integration tests. A controlled original/fixed
 run reproduced `VIEWABLE` with cached false before and cached true afterward;
 the dependency lock and stimulus were identical. This proves the discovery
 race and its fix, but does not establish the cause of a particular DAW session.
+
+## MUI render fallback migration (2026-10-06)
+
+Forwards X11 Expose and Win32 WM_PAINT as RedrawRequested so software-rendered pixels are restored after native damage. Existing host reparenting/visibility fixes are retained.
