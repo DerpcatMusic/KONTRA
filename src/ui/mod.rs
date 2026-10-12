@@ -34,12 +34,15 @@ mod menu;
 mod mixer;
 mod panel;
 mod perf_view;
+mod native_ui;
 pub(crate) use perf_view::font_fallbacks;
 mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::asset_restoration_harness;
 mod theme;
 mod vector;
 mod viz;
@@ -450,6 +453,7 @@ struct EditorState {
     /// Each part's performance view as last read.
     panels: HashMap<usize, panel::Cache>,
     vector_assets: vector::Assets,
+    native_ui: HashMap<usize, native_ui::State>,
     /// Pictures the original views asked for, by instrument, read or not.
     perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
@@ -933,6 +937,7 @@ fn build(
         ranges: HashMap::new(),
         panels: HashMap::new(),
         vector_assets: vector::Assets::default(),
+        native_ui: HashMap::new(),
         perf_asked: Default::default(),
         started: Instant::now(),
         computer,
