@@ -9,7 +9,7 @@ snapshot rows explicitly remain unverified; their source and dirty bytes are
 preserved by the coordinator before checkout deletion.
 
 No build, Cargo, compiler, protected instrument, sample library or native plugin
-was invoked by this recovery agent. Rustfmt parsed the changed Rust sources;
+was invoked by this recovery agent. Final Rustfmt parsing checked36changed Rust sources with zero syntax failures;
 `git diff --check` passed. These are source checks, not execution or native
 acceptance. All code changes were made in the assigned isolated worktree.
 
@@ -75,7 +75,8 @@ not activated. Limited-depth older pre-v2/platform rows retain their source
 refs; this review does not establish every historical behavior integrated.
 
 Conflux's installed blank paint and Pacific/Vista's absent authored pictures
-remain separate unresolved evidence. No replacement artwork, fake native
+remain separate unresolved evidence. Existing canonical NCKP custom/state font,
+press-shift and visible table-step omissions remain reported. No replacement artwork, fake native
 pixels, relabeled omissions or native-equivalence claim was introduced.
 
 ## Regression targets and execution status
@@ -83,7 +84,9 @@ pixels, relabeled omissions or native-equivalence claim was introduced.
 The coordinator reported **630 passed, 2 failed, 29 ignored** for the earlier
 Mapping/MUI/capture host cohort. The two mapping fixture failures motivated
 `96ef7f86`; its rerun was pending when this report was written. The newer value,
-fractional geometry and gesture cohorts also await coordinator execution.
+fractional geometry and gesture cohorts also await coordinator execution. Root
+integrated these cohorts and corrected geometry retention hash inputs with
+`to_bits` in `256dad72`; that follow-up is required when composing the changes.
 
 Focused targets are:
 
