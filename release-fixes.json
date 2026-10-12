@@ -4515,6 +4515,50 @@
       ],
       "accepted": true,
       "validation": "Hosted Linux run38102742837 compiled the exact product source and passed compact_diagnostics_group_errors_and_keep_only_the_origin, snapshot_jobs_scale_concurrency_without_rejecting_large_arrays and nka_arrays_above_legacy_caps_bind_and_stream_without_partial_updates, including zero-audio-allocation capture/completion and failed-read rollback. Windows/macOS checks passed. The retained Linux failure was an old malformed-file expectation of Capacity instead of InvalidInput, corrected in cbb1b4fb408cc4bb534e6d21968b68b639da0182 without product changes. Full final exact-head CI and local build/install remain pending; merge requires all checks green."
+    },
+    {
+      "id": "retained-semantic-action-invalidation",
+      "summary": "Wake the retained owner and nested memo ancestors when an accepted semantic action targets an idle control",
+      "source_commits": [
+        "7a0916d0d9d17bbc15673a0a6db1ebe6aebdd8a1"
+      ],
+      "accepted": true,
+      "validation": "Reviewed semantic_actions_wake_targeted_nested_memos_without_rebuilding_siblings: idle SetValue changes the model, Activate executes once, target ancestors rebuild and the sibling stays retained. The application mapped_accessibility_set_value_uses_authored_units test checks authored units. Combined source 14a284fcc2ed9b3117a7732f778e40a5d33a228c passed 2,605 tests with zero failures, CI-equivalent Clippy and optimized product/offline-inspector builds; 0ae6e387a9e9035e382ee4e35b9086437e68988e changes documentation only. Receipt: docs/audit-2026-10-12/main-consolidation-receipt.json. No new executable tests were run by this ledger review.",
+      "category": "Fixed",
+      "release_note": "Keep accessibility value changes and button activation working after their controls become idle."
+    },
+    {
+      "id": "kontakt-validated-zone-storage-compaction",
+      "summary": "Release excess executable and saved Kontakt zone storage after validation and before publication",
+      "source_commits": [
+        "82ccb65ef5e3c1a28fa5ca06cba74de3d9ad500f"
+      ],
+      "accepted": true,
+      "validation": "Reviewed both shrink_to_fit calls after successful IR validation and before Kontakt publication/cache: executable and saved physical zone Vec storage is compacted without renumbering, dropping holes or reordering content. Scoped source-recovery evidence: docs/audit-2026-10-12/backend-supplemental-successors.json (da560b45 donor contract, recovered as 26e187e0 and ported as 82ccb65e). No new installed capacity/RSS measurement or allocator-specific capacity guarantee. Combined source 14a284fcc2ed9b3117a7732f778e40a5d33a228c passed 2,605 tests with zero failures, CI-equivalent Clippy and optimized product/offline-inspector builds; 0ae6e387a9e9035e382ee4e35b9086437e68988e changes documentation only. Receipt: docs/audit-2026-10-12/main-consolidation-receipt.json. No new executable tests were run by this ledger review.",
+      "category": "Improved",
+      "release_note": "Release excess Kontakt zone storage before publishing a loaded instrument while preserving physical zone identities."
+    },
+    {
+      "id": "legacy-multi-all-program-census",
+      "summary": "Visit every legacy NKM program and propagate read errors instead of reporting a generic zero count",
+      "source_commits": [
+        "9b7df105e56f126fed74f116bbde043e3dd8a7ff"
+      ],
+      "accepted": true,
+      "validation": "Reviewed legacy_health::probe nkm branch: read_multi supplies the exact program count; read_program visits every index and sums zone counts, propagating per-program errors. Scoped source-recovery evidence: docs/audit-2026-10-12/backend-supplemental-successors.json (df7e322f donor contract, recovered as 78d7b2b8 and ported as 9b7df105). No new installed NKM scan or native-host/audio validation. Combined source 14a284fcc2ed9b3117a7732f778e40a5d33a228c passed 2,605 tests with zero failures, CI-equivalent Clippy and optimized product/offline-inspector builds; 0ae6e387a9e9035e382ee4e35b9086437e68988e changes documentation only. Receipt: docs/audit-2026-10-12/main-consolidation-receipt.json. No new executable tests were run by this ledger review.",
+      "category": "Fixed",
+      "release_note": "Report all programs and zone counts in the legacy Kontakt multi health probe, including read failures."
+    },
+    {
+      "id": "apple-notarization-upload-acknowledgement",
+      "summary": "Accept the Apple upload acknowledgement without a final status and require matching accepted wait completion before packaging",
+      "source_commits": [
+        "97bee9c5f87dba1d0a35c094841bbbe562e49c52"
+      ],
+      "accepted": true,
+      "validation": "Apple primary documentation distinguishes the upload ID/path acknowledgement from a later final status. The documented successful acknowledgement fails the pre-fix source. After the fix: 19 hermetic notarization tests, 4 universal-packaging mock tests and the full nightly signing/publication mock gate pass; upload is exactly once, matching-ID waits retry once on transport failure, and invalid IDs, failed submission, malformed successful results, boolean statusCode and rejection do not produce an Accepted result. No actual Apple/macOS notarization was run. Receipt: notarization-fix-review.json in the owned release-20261012 evidence directory.",
+      "category": "Fixed",
+      "release_note": "Handle Apple notarization upload acknowledgements correctly and wait for acceptance before publishing macOS packages."
     }
   ]
 }

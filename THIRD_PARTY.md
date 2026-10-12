@@ -9,6 +9,12 @@ one unlicensed entry, `ni-file`. This includes development dependencies
 and multiple platforms; it is not a per-binary bill of materials or
 confirmation that every distribution obligation has been satisfied.
 
+That inventory is historical. Current releases regenerate the notice/source
+bundle from the exact locked graph with `tools/licenses.py`; its generated
+package inventory is authoritative for that snapshot. The 2026-10-12 lockfile
+contains eight MPL package/version entries, including `symphonia-bundle-flac`
+and `symphonia-utils-xiph`; both are included in fresh covered-source bundles.
+
 ## Upstream metadata: vendor/ni-file
 
 > **No explicit redistribution license found.** This vendored crate comes
@@ -110,7 +116,7 @@ separate entries. Source-specific components are described above.
 | MIT | 84 crates |
 | LicenseRef-TruceLicense-1.0 | 17 `moose-*` crates (above) |
 | Apache-2.0 | cpal, hound, moose-font, gethostname, gl_generator, glutin_wgl_sys, khronos_api, spirv, codespan-reporting, unicode-linebreak |
-| MPL-2.0 | symphonia, symphonia-core, symphonia-codec-pcm, symphonia-format-riff, symphonia-metadata, option-ext |
+| MPL-2.0 | symphonia, symphonia-core, symphonia-codec-pcm, symphonia-format-riff, symphonia-metadata, symphonia-bundle-flac, symphonia-utils-xiph, option-ext |
 | MIT OR Unlicense | memchr, same-file, walkdir, winapi-util |
 | Zlib | foldhash, slotmap |
 | BSD-3-Clause | tiny-skia, tiny-skia-path |
