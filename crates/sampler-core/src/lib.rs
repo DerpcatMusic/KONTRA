@@ -153,6 +153,7 @@ pub use array_file::{
 };
 mod midi_object;
 mod ops;
+pub mod waveform;
 pub use midi_object::{
     MIDI_ALL_EVENTS, MIDI_ASYNC_SIGNAL, MIDI_CURRENT_EVENT, MIDI_MARKS_FLAG, MIDI_MAX_EVENTS,
     MIDI_SERVICE, MIDI_TRACK_FLAG, MidiAction, MidiCompletion, MidiExportArea, MidiObject,
