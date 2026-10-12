@@ -824,7 +824,7 @@ impl Runtime {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state));
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
         let context = super::dsp::RenderContext {
             controls,
             trace,
@@ -967,7 +967,7 @@ pub(super) fn render_source<const TRACE: bool>(
         for (i, frame) in output[..produced].iter_mut().enumerate() {
             for c in 0..2 { frame[c] = (f64::from(frame[c]) * levels[i] * f64::from(context.expression[c])) as f32; }
         }
-        (produced, voice.cursor.done() || voice.envelope.done() || controls.state.done(), 0)
+        (produced, voice.cursor.done() || voice.envelope.done() || controls.done(), 0)
     } else {
         let produced = voice.cursor.render(
             source,

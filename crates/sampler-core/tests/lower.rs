@@ -3297,3 +3297,165 @@ fn native_control_state_keeps_physical_plan_ownership_across_replacement() {
     assert!((out[127][0]-1.4).abs()<1e-6,"old physical control cannot alter the replacement source");
     assert_eq!(rt.stats().v1_control_starts,2);
 }
+
+#[test]
+fn native_external_bypass_keeps_lag_state_running_until_resume() {
+    use sampler_core::{ControlValue, ControlWrite};
+    let mut ir = controlled_native_external_fixture();
+    ir.routes[0].lag = ir::Time::Milliseconds(1000.);
+    ir.source_indices.modulators[1].settings.as_mut().unwrap().targets[0].lag_ms = 1000;
+    let make = || Runtime::new(lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+    let mut masked = make();
+    let mut reference = make();
+    let plan = masked.active_plan();
+    let bypass = sampler_core::lower::ir_control_id("external-bypass");
+    let mut actual = [[0.;2];128];
+    let mut expected = [[0.;2];128];
+    support::without_heap(|| {
+        for rt in [&mut masked,&mut reference] {
+            rt.set_controller(rt.performance(0).unwrap(),11,0).unwrap();
+            rt.trigger(input(60),60,1.).unwrap();
+        }
+        masked.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        masked.edit_controls(plan,None,&[ControlWrite{id:bypass,value:ControlValue::Real(1.)}]).unwrap();
+        for rt in [&mut masked,&mut reference] { rt.set_controller(rt.performance(0).unwrap(),11,u32::MAX).unwrap(); }
+        for _ in 0..2 {
+            masked.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+        }
+        masked.edit_controls(plan,None,&[ControlWrite{id:bypass,value:ControlValue::Real(0.)}]).unwrap();
+        masked.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+    });
+    assert_eq!(actual[127],expected[127],"resume must read the continuously lagged source, not reset to current CC");
+    assert!(actual[127][0] < 0.7,"one-second source lag must still be progressing");
+    assert_eq!(masked.stats().v1_control_starts,1);
+}
+
+#[test]
+fn native_external_indices_follow_a_replaced_physical_control_schema() {
+    use sampler_core::{ControlDefinition,ControlDomain,ControlId,ControlValue};
+    let ir = controlled_native_external_fixture();
+    let plan = lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap();
+    let mut controls = plan.controls().to_vec();
+    assert!(controls.iter().all(|c| c.id != ControlId(0)));
+    controls.push(ControlDefinition{id:ControlId(0),domain:ControlDomain::Real{min:0.,max:1.},default:ControlValue::Real(0.9)});
+    let plan = plan.with_controls(controls).unwrap();
+    let mut rt = Runtime::new(plan,limits()).unwrap();
+    let mut out = [[0.;2];128];
+    support::without_heap(|| {
+        rt.set_controller(rt.performance(0).unwrap(),11,0).unwrap();
+        rt.trigger(input(60),60,1.).unwrap();
+        rt.render(&mut out).unwrap();
+    });
+    assert_eq!(out[127],[(1.-0.4f32);2],"native depth/bypass must use remapped IDs, never old dense indices");
+    assert_eq!(rt.stats().v1_control_starts,1);
+}
+
+fn controlled_native_flex_fixture() -> ir::Instrument {
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].attack_ms = 0.;
+    ir.modulators[0].source = ir::ModulationSource::Envelope(ir::Envelope {
+        release: ir::Time::Milliseconds(250.0013),
+        release_shape: ir::Curve::Exponential((3.0f64 / 43.).ln()),
+        ..Default::default()
+    });
+    let points = vec![
+        ir::kontakt::FlexPoint{time_ms:12.5,level:0.5,curve:0.5},
+        ir::kontakt::FlexPoint{time_ms:3.,level:0.,curve:0.5},
+    ];
+    ir.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::Breakpoints(ir::Breakpoints{
+        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),
+    })});
+    ir.routes.push(ir::Route::new(ir::ModulatorRef(1),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
+    ir.zones[0].routes.push(ir::RouteRef(0));
+    ir.source_indices.modulators.push(ir::SourceModulator{group:0,slot:9,external:false,name:"flex".into(),runtime:Some(ir::ModulatorRef(1)),settings:Some(ir::kontakt::Modulation{
+        version:1,source:ir::kontakt::ModulationSource::Internal{flags:[0;4],unknown_id:0,source:ir::kontakt::InternalSource::Flex{points,sustain:0,unknown_index:0,unknown_tail:vec![]}},targets:vec![original_volume_target(1.)],
+    })});
+    ir.controls = ["flex-depth","flex-bypass"].into_iter().enumerate().map(|(i,key)|ir::Control{key:key.into(),label:key.into(),value:ir::ControlValue::Continuous{min:0.,max:1.,default:if i==0{1.}else{0.},unit:ir::ControlUnit::None},automation:ir::Automation::None}).collect();
+    ir.source_indices.route_controls.push((ir::RouteRef(0),ir::ControlRef(0),ir::ControlRef(1)));
+    ir
+}
+
+#[test]
+fn native_flex_live_depth_and_bypass_keep_clock_and_primary_release_ownership() {
+    use sampler_core::{ControlValue,ControlWrite};
+    for processed in [false,true] {
+        let mut ir = controlled_native_flex_fixture();
+        if processed {
+            ir.chains.push(ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![],post_amplitude:vec![ir::Processor::Gain(ir::Gain::Linear(1.))]});
+            ir.zones[0].chain=Some(ir::ChainRef(0));
+        }
+        let mut primary = ir.clone();
+        primary.zones[0].routes.clear(); primary.routes.clear();primary.modulators.pop();primary.source_indices.modulators.pop();primary.source_indices.route_controls.clear();primary.controls.clear();
+        let make=|i:&ir::Instrument|Runtime::new(lower(i,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+        let mut actual=make(&ir);let mut full=make(&ir);let mut dry=make(&primary);
+        let plan=actual.active_plan();
+        let depth=sampler_core::lower::ir_control_id("flex-depth");let bypass=sampler_core::lower::ir_control_id("flex-bypass");
+        let mut a=[[0.;2];128];let mut f=[[0.;2];128];let mut d=[[0.;2];128];
+        support::without_heap(||{
+            for rt in [&mut actual,&mut full,&mut dry]{rt.trigger(input(60),60,1.).unwrap();}
+            actual.render(&mut a).unwrap();full.render(&mut f).unwrap();dry.render(&mut d).unwrap();
+        });
+        assert_eq!(a,f);assert_eq!(actual.stats().v1_control_starts,1);
+        support::without_heap(||{
+            actual.edit_controls(plan,None,&[ControlWrite{id:depth,value:ControlValue::Real(0.)}]).unwrap();
+            actual.render(&mut a).unwrap();full.render(&mut f).unwrap();dry.render(&mut d).unwrap();
+        });
+        assert_eq!(a,d,"zero depth must leave the primary audible");
+        support::without_heap(||{
+            actual.edit_controls(plan,None,&[ControlWrite{id:depth,value:ControlValue::Real(0.25)}]).unwrap();
+            actual.render(&mut a).unwrap();full.render(&mut f).unwrap();dry.render(&mut d).unwrap();
+        });
+        assert_eq!(a[127],[(1.-0.25*(1.-f64::from(f[127][0]))) as f32;2]);
+        support::without_heap(||{
+            actual.edit_controls(plan,None,&[ControlWrite{id:depth,value:ControlValue::Real(1.)}]).unwrap();
+            actual.render(&mut a).unwrap();full.render(&mut f).unwrap();dry.render(&mut d).unwrap();
+        });
+        assert_eq!(a,f,"the masked clock must continue without resetting its phase");
+        support::without_heap(||{
+            actual.edit_controls(plan,None,&[ControlWrite{id:bypass,value:ControlValue::Real(1.)}]).unwrap();
+            for rt in [&mut actual,&mut full,&mut dry]{rt.note_off(input(60),None).unwrap();}
+            for _ in 0..4{
+                actual.render(&mut a).unwrap();full.render(&mut f).unwrap();dry.render(&mut d).unwrap();
+            }
+        });
+        assert_eq!(a,d,"a completed masked Flex must not cut the primary's independent release");
+        assert_eq!(actual.voice_count(),1);
+        assert_eq!(actual.stats().v1_control_starts,1);
+    }
+}
+
+#[test]
+fn mutable_flex_without_a_raw_primary_keeps_the_shared_synthetic_gate_owner() {
+    let mut ir=controlled_native_flex_fixture();
+    ir.source_indices.ahdsrs.clear();ir.source_indices.modulators.remove(0);
+    ir.modulators[0].source=ir::ModulationSource::Envelope(ir::Envelope{release:ir::Time::Milliseconds(3.),release_shape:ir::Curve::Step,..Default::default()});
+    let mut rt=Runtime::new(lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+    support::without_heap(||{rt.trigger(input(60),60,1.).unwrap();rt.render(&mut [[0.;2];128]).unwrap();});
+    assert_eq!(rt.stats().v1_control_starts,0,"the unity native primary cannot replace a mutable synthetic gate");
+}
+
+#[test]
+fn post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owner() {
+    use sampler_core::{EngineParameterAddress,engine_parameter_id};
+    let ir=native_primary_fixture();let mut generic=ir.clone();generic.source_indices.ahdsrs.clear();
+    for (parameter,value) in [("ENGINE_PAR_ATTACK",0),("ENGINE_PAR_ATK_CURVE",500000),("ENGINE_PAR_SUSTAIN",625000)] {
+        let make=|i:&ir::Instrument|Runtime::new(lower(i,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+        let mut actual=make(&ir);let mut expected=make(&generic);
+        let address=EngineParameterAddress{parameter:engine_parameter_id(parameter).unwrap(),group:0,slot:7,generic:-1};
+        support::without_heap(||{
+            actual.set_engine_parameter(address,value).unwrap();expected.set_engine_parameter(address,value).unwrap();
+            actual.trigger(input(60),60,1.).unwrap();expected.trigger(input(60),60,1.).unwrap();
+        });
+        assert_eq!(actual.engine_parameter(address),expected.engine_parameter(address));
+        for block in 0..8 {
+            if block==4 {support::without_heap(||{actual.note_off(input(60),None).unwrap();expected.note_off(input(60),None).unwrap();});}
+            let mut a=[[0.;2];37];let mut b=[[0.;2];37];
+            support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+            assert_eq!(a,b,"{parameter} must not be overwritten by saved native coefficients");
+        }
+        assert_eq!(actual.stats().v1_control_starts,0);
+    }
+}
