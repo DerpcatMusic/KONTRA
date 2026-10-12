@@ -1,0 +1,794 @@
+{
+  "schema": 1,
+  "main_revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+  "scope": "Supplementary content review of older UI/platform refs and four non-local remote tips; source successors are scope-specific, not wholebranch equivalence.",
+  "validation": "Static Git source comparison and pinned span citations only; no build/Cargo/native/library load. Parent separately reports 148 MUI framework tests passed for semantic invalidation fix; no execution credit imported for historical probes.",
+  "older_ref_count": 40,
+  "remote_ref_count": 4,
+  "rows": [
+    {
+      "id": "resource_owner",
+      "refs": [
+        {
+          "ref": "codex/resource-ownership",
+          "tip": "1fd1380ee0f64078880e649e8b5f9336ed12e814"
+        }
+      ],
+      "disposition": "bounded_current_successor",
+      "rationale": "Current Resources::of identifies one root and limits ancestor search; normalize rejects escaping names. nested_names_and_library_boundary verifies own nested native member and absent sibling image. Not a claim every old fallback/unknown-owner diagnostic matches.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-kontakt/src/resources.rs",
+          "anchor": "pub fn of",
+          "line_start": 66,
+          "line_end": 72,
+          "blob": "f9fa537ff8eaf5415780716884c29204b3206059",
+          "span_sha256": "614ce2dc36c69cee74b88198a05dc4bd7b736186cebc4c69a771473835b651e8"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-kontakt/src/resources.rs",
+          "anchor": "nested_names_and_library_boundary",
+          "line_start": 322,
+          "line_end": 328,
+          "blob": "f9fa537ff8eaf5415780716884c29204b3206059",
+          "span_sha256": "668ec6caeb8c0107932045a44be1aaeee188a86de304e226aa1eacf77f6d6f9e"
+        }
+      ]
+    },
+    {
+      "id": "language_discovery",
+      "refs": [
+        {
+          "ref": "codex/native-ui-discovery",
+          "tip": "80c5465956d3b3d432b202601cc3dc0f14a7e911"
+        }
+      ],
+      "disposition": "missing_donor_discovery_contract_acceptance_unproven",
+      "rationale": "Donor resolve_ui_entry distinguishes LegacyLua/KompleteScript folders/extensions, rejects ambiguity and reads target_version from library.json. Current Package explicitly loads legacy .nui/fonts and has no corresponding language/target selector. Typed modern rendering was not established as an accepted implementation by this donor. Preserve discovery contract separately from native pixel acceptance.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_runtime.rs",
+          "anchor": "Bounded legacy",
+          "line_start": 1,
+          "line_end": 5,
+          "blob": "00c4c2a61cd3e01eb555229357015f6dac8334b9",
+          "span_sha256": "e877240dd3c9c5f2a34fb1ab1f8a221f89c76dee94ea268ef5030c6153851e9c"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_runtime.rs",
+          "anchor": "relative.ends_with(\".nui\")",
+          "line_start": 163,
+          "line_end": 169,
+          "blob": "00c4c2a61cd3e01eb555229357015f6dac8334b9",
+          "span_sha256": "9c5cbd83f77c29cdf7ab7bccc30457592b58d7604fa73eb89dadfba79265d146"
+        },
+        {
+          "revision": "codex/native-ui-discovery",
+          "path": "src/resources.rs",
+          "anchor": "pub(crate) fn resolve_ui_entry(",
+          "line_start": 56,
+          "line_end": 62,
+          "blob": "665a4b32746fcd449c7f811b5eaab30d70654450",
+          "span_sha256": "f4c4bbb5bce5d5ebe4711f28d5b6da369fe55686bdbe38b5557896cd2fd2fea6"
+        }
+      ]
+    },
+    {
+      "id": "native_dsl",
+      "refs": [
+        {
+          "ref": "codex/conflux-native-ui",
+          "tip": "4da706400d69a41d31cc0cec167144f8b6a5bdd0"
+        },
+        {
+          "ref": "codex/native-lua-ui",
+          "tip": "3c806173e132091f14c45e931a049a9a9d16f8ec"
+        },
+        {
+          "ref": "codex/native-ui-drop",
+          "tip": "d7676564bd8257c6a703620f6ec87c2a706eaba1"
+        },
+        {
+          "ref": "codex/native-ui-rotation-adapter",
+          "tip": "4ced974d2c3e2b5bc1b9dccdcbc18662b8964e59"
+        },
+        {
+          "ref": "codex/core-uvi-ui-verified-20261005",
+          "tip": "ce94add200f7d69d38e538c0241d7d3bf4a39da3"
+        }
+      ],
+      "disposition": "bounded_current_successors",
+      "rationale": "Current legacy Package/UI bridges typed IR, bound graph nesting, preserve flexible Spacer and subtree rotation; current authored-source bindings/geometry tests cover actual producer-consumer seams. This is not a Conflux execution/pixel parity receipt, nor activation of the parked widget adapter.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_runtime.rs",
+          "anchor": "legacy_component_reads_the_published_ir_and_produces_a_typed_edit",
+          "line_start": 1537,
+          "line_end": 1543,
+          "blob": "00c4c2a61cd3e01eb555229357015f6dac8334b9",
+          "span_sha256": "972cfdefb1c3d6c7f9a21feff4f963f9e065d52e024ea6cfb065a35dc5581523"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_ui.rs",
+          "anchor": "graph_depth(",
+          "line_start": 322,
+          "line_end": 328,
+          "blob": "4e903efc18f84ed8762978c94184809d7cdc89e2",
+          "span_sha256": "dca56e1eab1f936b5eee72e4a652487e1c2a47320d41a8c9ad11a66240d567ce"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_ui.rs",
+          "anchor": "\"Spacer\" => block",
+          "line_start": 1423,
+          "line_end": 1429,
+          "blob": "4e903efc18f84ed8762978c94184809d7cdc89e2",
+          "span_sha256": "1061f70b68795f4a0f6276dbeffa8a9aa23ed85a477b99142d06ce3d94808ac7"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_ui.rs",
+          "anchor": "\"rotation\" => el",
+          "line_start": 1844,
+          "line_end": 1850,
+          "blob": "4e903efc18f84ed8762978c94184809d7cdc89e2",
+          "span_sha256": "224ecec702dc3f5e216412dfda0c8c236733dc67ca6f60d4a02d7c44a9bcb156"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_ui.rs",
+          "anchor": "native_edit_selector_bindings_use_the_published_source",
+          "line_start": 3565,
+          "line_end": 3571,
+          "blob": "4e903efc18f84ed8762978c94184809d7cdc89e2",
+          "span_sha256": "2f49caa7a7acb30b8b3238376854ff7a1ca602fc170ad0375975355c0be9b30d"
+        }
+      ]
+    },
+    {
+      "id": "published_state",
+      "refs": [
+        {
+          "ref": "codex/late-ui-metadata",
+          "tip": "695eb47a09ff20257290e84ee56f869d4f55647c"
+        },
+        {
+          "ref": "codex/ui-dependency-revisions",
+          "tip": "7f53de472a6f29a1def48a84cf39a2e077bc55b7"
+        },
+        {
+          "ref": "codex/ui-optimistic-overlay",
+          "tip": "54860eb13785b3727494b86e5e562d870321a31f"
+        },
+        {
+          "ref": "codex/ui-row-publication",
+          "tip": "010789f49f4239284319a33e451c0768ff1a4a55"
+        },
+        {
+          "ref": "codex/ui-section-lag",
+          "tip": "d661045451939458a513422774788ded8c5738a4"
+        },
+        {
+          "ref": "codex/ui-snapshot-reuse",
+          "tip": "27530d5c949b9397e784f1d0e2bea385bc0cf026"
+        }
+      ],
+      "disposition": "architecture_successor_not_v1_whole_file_equivalence",
+      "rationale": "Current source-owned sparse publication and scalar/native revisions replace v1 raw property scans and snapshot history. Face::publish retains raw materializations, detects source Arc identity and keeps local pages; typed control atom edits provide optimistic values without full script UI copies. Original inactive-scalar Value::IntArray marker was a removed v1 representation, not a required v2 storage format.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "Exact retained publication identity",
+          "line_start": 102,
+          "line_end": 108,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "8842637fd03a601042527b7cef3a2f2efb8937417e2414f0f9085b0fb568a93c"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "raw_projection_retains_unchanged_sources_and_releases_reverted_patches",
+          "line_start": 1098,
+          "line_end": 1104,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "4490c34cbbbb6213e4a17583ee9b382b14ab6450d18f6b9897b3a59b7d5a5f9a"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "publication_preserves_presentation_script_page_and_values",
+          "line_start": 1308,
+          "line_end": 1314,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "a20ae0565877d20cc6031ddf38998e919d8d59d5eccdfc4b228403becee81a05"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/plugin.rs",
+          "anchor": "scalar_revision: AtomicU64",
+          "line_start": 545,
+          "line_end": 551,
+          "blob": "4b781c779ffaf1fba9fa83694f2e5ce98f1d39c0",
+          "span_sha256": "621fdff614d6adf0c6d2ff1f6281017d9efbf6b86c6fc82eaaa76ecb0be22b38"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/plugin.rs",
+          "anchor": "native_revision: AtomicU64",
+          "line_start": 546,
+          "line_end": 552,
+          "blob": "4b781c779ffaf1fba9fa83694f2e5ce98f1d39c0",
+          "span_sha256": "ce463883f8e5a92a901d5afc4e4dbd1b9d79d53e6d8465129386ba624609a59b"
+        }
+      ]
+    },
+    {
+      "id": "fonts_images",
+      "refs": [
+        {
+          "ref": "codex/original-ui-text",
+          "tip": "2aec43871d31edc5c20c01867cded535f6078cc6"
+        },
+        {
+          "ref": "codex/wallpaper-resource-formats",
+          "tip": "3897fb7ebda4db29412b907cab5b767027c5987a"
+        },
+        {
+          "ref": "codex/ksp-native-ui-resource",
+          "tip": "1baf1be240e53a25f26ce9e9e6ced79196c37612"
+        }
+      ],
+      "disposition": "bounded_current_successors_with_known_field_gaps",
+      "rationale": "Current renderer applies source/state styles, font colors and parent opacity; shared decode covers JPEG/PNG/WebP rather than appending png to resource names. NCKP entries.as_array().into_iter().flatten() accepts null as empty. These successors do not fill the already named custom/state NCKP font, press-shift or visible-step omissions.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/ir_view.rs",
+          "anchor": "wd.state_styles[state].or(wd.style)",
+          "line_start": 1206,
+          "line_end": 1212,
+          "blob": "0d9d9dfc41bf758dda6fefb53042fde35a1cd0c1",
+          "span_sha256": "3c2f387b33b15fb4cfdc101c8992821c6d0acef95632349f322f001f72664550"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/picture_decode.rs",
+          "anchor": "every_codec_selects_the_same_frame_window_at_device_size",
+          "line_start": 415,
+          "line_end": 421,
+          "blob": "d904dbdb7e03c8b9d936e34a81f6d9291cc838ce",
+          "span_sha256": "76478aa81d63361921d7b664e4aa416c7223c59602c05e1250d6d12f3b486d96"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ksp/src/nckp.rs",
+          "anchor": "let menu = v[\"entries\"]",
+          "line_start": 344,
+          "line_end": 350,
+          "blob": "3ec814bc4443cd5b5ae96588449e8c99da1b4ad1",
+          "span_sha256": "ee57b7fd2e0ebf4d38908a25f319daed86bb1da3f863cbf0aef44542f5ccaf97"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ksp/tests/ui.rs",
+          "anchor": "saved_state_and_new_widget_fields_reach_the_ir",
+          "line_start": 148,
+          "line_end": 154,
+          "blob": "b45baa16f369a236fdd59c368ed114f83cd177d3",
+          "span_sha256": "0eec84d926cc2500a31dd8ff75c03ed4c99ee5d00263f079b9498206ff90957e"
+        }
+      ]
+    },
+    {
+      "id": "pictured_vector_field",
+      "refs": [
+        {
+          "ref": "codex/ui-graph-parity",
+          "tip": "76b3227c08d3f339f28f9b17a825345e6b474d0c"
+        }
+      ],
+      "disposition": "bitmap_path_implemented_vector_policy_contract_missing",
+      "rationale": "Donor native_control preserves a broad pictured Slider edited across its short axis (180x83,128-frame authored graph) in vectorized views. Current Bitmap keeps authored frames. Vector only retains replaced strip art when label_in_image matches a textless Button/Switch, not this Slider. No selective broad-slider successor was found. This is a named Vector policy difference, not evidence Bitmap coverage absent or wholebranch semantics accepted.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ui-ir/src/lib.rs",
+          "anchor": "pub fn label_in_image",
+          "line_start": 228,
+          "line_end": 234,
+          "blob": "87608af2675613a5085302db50560d01f862e74d",
+          "span_sha256": "5986b531c4d8779cf6b570376ce4d5a62579eb9e789a348b12d2e5c4b36dc4f4"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ui-ir/src/lib.rs",
+          "anchor": "!w.label_in_image()",
+          "line_start": 771,
+          "line_end": 777,
+          "blob": "87608af2675613a5085302db50560d01f862e74d",
+          "span_sha256": "5b4948f1e7d2b50dca9be59ebb0f034b6d180b1671a448f0ee1632ef543f5206"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/ir_view.rs",
+          "anchor": "bitmap || wd.label_in_image()",
+          "line_start": 1137,
+          "line_end": 1143,
+          "blob": "0d9d9dfc41bf758dda6fefb53042fde35a1cd0c1",
+          "span_sha256": "f276ba2262c9512f653af7134dcf4145fdfbb83566488085e7149b01673eab89"
+        },
+        {
+          "revision": "codex/ui-graph-parity",
+          "path": "src/ui/vector.rs",
+          "anchor": "pub(super) fn native_control(",
+          "line_start": 159,
+          "line_end": 165,
+          "blob": "1b3ddfd498e1d0592c212e1ba32ebb4f917dc8ad",
+          "span_sha256": "a4d2f0077300b1643b7db1e40a33c3e78536f45aa46e0e145befe551c966f67d"
+        }
+      ]
+    },
+    {
+      "id": "host_browser",
+      "refs": [
+        {
+          "ref": "codex/dynamic-rack-ui",
+          "tip": "ddfa727e9a24feb7b05902d02c5dc8ec5833ca01"
+        },
+        {
+          "ref": "codex/script-slot-ui",
+          "tip": "d82f6c7e3849934ec8137b7fe5008a4df40fddd9"
+        },
+        {
+          "ref": "codex/ui-auto-fit",
+          "tip": "0c691ed86087c56d791cbb41c10e5cbd741d9b0a"
+        },
+        {
+          "ref": "fix/latest-mui-20261004",
+          "tip": "1a1931dc904c6edb91c723ef9dfd70407d3ef55e"
+        }
+      ],
+      "disposition": "bounded_current_successors_platform_execution_not_claimed",
+      "rationale": "Current split-browser constraints/scale test and portal Runtime/close/shutdown are retained. Source/page selection and two-axis fit are in the current Face model; old tab-helper import and benchmark prefix parser belong to removed v1 consumers. No full 65ab platform migration is replayed.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/tests.rs",
+          "anchor": "split_browser_keeps_both_panes_usable_across_resize_and_scale",
+          "line_start": 1326,
+          "line_end": 1332,
+          "blob": "d699781afd4c8922a14a0f652d0c2764949f089d",
+          "span_sha256": "96b1f7fd7ea4f9188482ab03d0c9236a9a2ef819ae615f8e863e2298675eb7da"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/picker/linux.rs",
+          "anchor": "pub(crate) struct Runtime",
+          "line_start": 20,
+          "line_end": 26,
+          "blob": "26d35bec8362e2d6d4ef36062951e0eb6b6a5f65",
+          "span_sha256": "8eff19fc6afebbca5eaa2c2d2799ff3596747e5ad8dc680fb03f4e1d2dc875b2"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/picker/linux.rs",
+          "anchor": "pub(crate) fn shutdown",
+          "line_start": 41,
+          "line_end": 47,
+          "blob": "26d35bec8362e2d6d4ef36062951e0eb6b6a5f65",
+          "span_sha256": "bbd378da1c774de40a620f9988c85dae82de08866cab937ffdcea24150626b4b"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "fit_uses_both_axes_and_explicit_zoom_is_exact",
+          "line_start": 1412,
+          "line_end": 1418,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "ba59377c198c9684e07048b99cbe866d646f5671a2f53580b0ba9324a83ec70f"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "publication_preserves_presentation_script_page_and_values",
+          "line_start": 1308,
+          "line_end": 1314,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "a20ae0565877d20cc6031ddf38998e919d8d59d5eccdfc4b228403becee81a05"
+        }
+      ]
+    },
+    {
+      "id": "diagnostic_release",
+      "refs": [
+        {
+          "ref": "codex/diagnostic-core",
+          "tip": "9e41a316bd5cca2b3c1dc2b10f46ca58da69b870"
+        },
+        {
+          "ref": "codex/diagnostic-panel",
+          "tip": "5dc24f376c3107c165ec6a2a3a6edff1780ca366"
+        },
+        {
+          "ref": "codex/diagnostic-visibility",
+          "tip": "a43530cdbc2208b95fce3276fa0b1404a8475517"
+        },
+        {
+          "ref": "codex/info-diagnostic-summary",
+          "tip": "1463536aa0e45742ef8b472ac44fd2a82fdf8c9e"
+        },
+        {
+          "ref": "codex/ui-integration-fix",
+          "tip": "b68501fa03074d66a7feb502f33f78d7d582d2ea"
+        },
+        {
+          "ref": "codex/native-ui-journal-isolation",
+          "tip": "25897ccd64b68d5a1ca977221d78684524fcde14"
+        }
+      ],
+      "disposition": "bounded_current_successors",
+      "rationale": "Current actionable load notices and positioned/grouped diagnostics preserve real load causes, journal retention/export accounts orphan rotations and sidecars, hidden Logs remains separately scheduled. Current journal test owns subprocess isolation. Source evidence does not certify current installed/native failures as resolved.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/diagnostics.rs",
+          "anchor": "orphan rotations must count toward the byte budget",
+          "line_start": 3094,
+          "line_end": 3100,
+          "blob": "6517baddb8e987b35864925490f814c5481d65f4",
+          "span_sha256": "b2c2c912b75d3330e82d9745f43e6dfd8c1bacfe532df1a1d4d4c47906fe6529"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/diagnostics.rs",
+          "anchor": "journal_contract_bounds_rotates_recovers_and_exports_private_reports",
+          "line_start": 2845,
+          "line_end": 2851,
+          "blob": "6517baddb8e987b35864925490f814c5481d65f4",
+          "span_sha256": "9b09b1d144c50b2ebddf709bbf9732b3e9a36a1a1e656d9e030882ed5c6f7feb"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/diagnostics.rs",
+          "anchor": "load_warnings_group_counts_and_keeps_full_location_sidecar",
+          "line_start": 2764,
+          "line_end": 2770,
+          "blob": "6517baddb8e987b35864925490f814c5481d65f4",
+          "span_sha256": "4ab2cf247ff79e68ff66553d8115b5ed6993a8dbd99f45b0a38079ec87de3827"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "v.status.strip_prefix(\"Load failed: \")",
+          "line_start": 787,
+          "line_end": 793,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "f2a3722a625bafb2206fb5b2fcee66119a35de5f34f0d21472996d904abf1287"
+        }
+      ]
+    },
+    {
+      "id": "stream_throttle",
+      "refs": [
+        {
+          "ref": "codex/diagnostic-hooks",
+          "tip": "1a6720d187e027a645f896977209b62896de088a"
+        }
+      ],
+      "disposition": "archival_old_decoder_contract_not_proven_equivalent",
+      "rationale": "V1 source-pointer/Weak failure throttle is part of removed decoder architecture. Current typed StreamError feeds per-part problem counters through take_stream_fault/record_stream_error; identical first-report-per-source and one-second suppression semantics are not established. This microcontract stays unverified, not silently marked integrated.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/sound/v2.rs",
+          "anchor": "part.runtime.take_stream_fault()",
+          "line_start": 1935,
+          "line_end": 1941,
+          "blob": "3f89f0b79b5b60bb39bdfeac54b6a0ec7d9c15d0",
+          "span_sha256": "b28327fdc335fb0a7b5608ab848b1e669c4e905f19e76d454b5fe22197c7a971"
+        },
+        {
+          "revision": "codex/diagnostic-hooks",
+          "path": "src/engine/stream.rs",
+          "anchor": "errors: HashMap<usize",
+          "line_start": 691,
+          "line_end": 697,
+          "blob": "97d6857e5441ee23991221694cb6adc64050eaf8",
+          "span_sha256": "f24b9c9f6a22da0be453b5fbc960438be1995d0f76524bda59ff4fa552af387c"
+        }
+      ]
+    },
+    {
+      "id": "audit_probes",
+      "refs": [
+        {
+          "ref": "codex/analog-active-ui-audit",
+          "tip": "d850a7fae3b23b55247856d2f78b105b07c2c205"
+        },
+        {
+          "ref": "codex/analog-ui-performance",
+          "tip": "05d02e253569b79fd7c8c8a9251d8b8889a45ed7"
+        },
+        {
+          "ref": "codex/bitmap-font-parity",
+          "tip": "9439421cebcc377bd7a12467911a946d7b9cc979"
+        },
+        {
+          "ref": "codex/native-ui-lua-probe",
+          "tip": "68b777eef273477c918a8b78b9687e8f202db4a3"
+        },
+        {
+          "ref": "codex/native-ui-timing",
+          "tip": "3f539f9fcb0b806ce30b2efdf67d979aa19a3fca"
+        },
+        {
+          "ref": "codex/ui-cost-partition",
+          "tip": "0896cd5da5c88589cb953430f6e011f534f4cf67"
+        },
+        {
+          "ref": "codex/ui-library-sweep",
+          "tip": "1577b173d7c93c938532b2786f6f84510633f996"
+        },
+        {
+          "ref": "codex/ui-observer-pump",
+          "tip": "5d85d15d7169a3d3bec86292cf389c4a2c86a381"
+        },
+        {
+          "ref": "codex/ui-selection-cost",
+          "tip": "f4d797476b607d3e3fa0519e7f6d887246a2649f"
+        },
+        {
+          "ref": "codex/ui-sharpness-audit",
+          "tip": "dc82d0f91d67349b73edec69a2e96295ab0b5d0b"
+        }
+      ],
+      "disposition": "archival_probe_and_measurement_evidence",
+      "rationale": "These tips add audit/profiler witnesses or measurement bookkeeping, not independently accepted missing product flows. Current scan/native work/paint counters and source-bound typed edits are concrete successors, but historical protected/native results were not rerun; old benchmark formulas/fixture expectations are not promoted to current runtime proof.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_runtime.rs",
+          "anchor": "native_profiler_counts_connected_script_and_deferred_paint_calls",
+          "line_start": 1507,
+          "line_end": 1513,
+          "blob": "00c4c2a61cd3e01eb555229357015f6dac8334b9",
+          "span_sha256": "f6ad5fe648894e65e6f5ceb58534d699503cb7649a7c1960e02d7fcdc5b862bc"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/native_ui.rs",
+          "anchor": "native_program_work_counts",
+          "line_start": 3727,
+          "line_end": 3733,
+          "blob": "4e903efc18f84ed8762978c94184809d7cdc89e2",
+          "span_sha256": "99583e0291a91f4e225c68c1be656602f2dafa2450ec80eed957751a27db267a"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/scan.rs",
+          "anchor": "pub(crate) fn strict_table",
+          "line_start": 26,
+          "line_end": 32,
+          "blob": "240f8df0ea2dffa6110d5dc779c0e407b4281f7a",
+          "span_sha256": "5e8e7311ed36f7ee2c1c65b54ee58bbb6b3fffd37f8d90e1147389f449721569"
+        }
+      ]
+    },
+    {
+      "id": "historical_docs",
+      "refs": [
+        {
+          "ref": "codex/docs-font-write-proof",
+          "tip": "526de21a68f77f54e256a18457d1e658a5713416"
+        },
+        {
+          "ref": "codex/docs-late-ui-harps",
+          "tip": "58849001c1d35d3d6db3fe7ee1788da946bee04a"
+        }
+      ],
+      "disposition": "archival_claims_not_new_execution_receipts",
+      "rationale": "Historical verified font/NKA/late-caption/harp release documents remain preserved. Current source UI projection and resource tests exist, but this static review does not inherit native proof or declare release voice/audio contracts equivalent.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ksp/tests/ui.rs",
+          "anchor": "custom_fonts_do_not_collide_with_factory_fonts",
+          "line_start": 291,
+          "line_end": 297,
+          "blob": "b45baa16f369a236fdd59c368ed114f83cd177d3",
+          "span_sha256": "cff238046a631d2f3b10c802a41d60e7f56b140892d0912a342ec9afc7027fe7"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/v2_tests.rs",
+          "anchor": "widget_conflux_footer_text_reaches_typed_publication_without_truncation",
+          "line_start": 4041,
+          "line_end": 4047,
+          "blob": "73246711da8ac12ce257fb0a77a0231ad146e130",
+          "span_sha256": "21ae9219866b7a826f7e16446b8a0d59af35a0896a2d9124fb1f4fe32bc48e5a"
+        }
+      ]
+    },
+    {
+      "id": "remote_pointer",
+      "refs": [
+        {
+          "ref": "origin/fix/0.3-pointer-popup-eq",
+          "tip": "940addcf2be0745841da351455c4625de3e79d06"
+        }
+      ],
+      "disposition": "pointer_popup_successors_effect_display_missing",
+      "rationale": "Current context-menu backdrop and popup wheel ownership plus host pointer_at/hidden_at clearing retain the pointer fixes. Donor Solid G-EQ SEQ_*GAIN display uses signed +/-15dB matched to its DSP; current display has no such branch and no shared current SolidG-EQ implementation was found. Preserve effect/display contract missing rather than add a caption-only formula that claims an audio law.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/menu.rs",
+          "anchor": "context-menu-backdrop",
+          "line_start": 1044,
+          "line_end": 1050,
+          "blob": "9cd7b5dceb6ba12c17e32020b1929ecd01238db6",
+          "span_sha256": "20c5ca3e279e68f4b13ecfdc6c0c5921019e28f8e0f901f7834534ed53f1e80c"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "vendor/mui-baseview/src/lib.rs",
+          "anchor": "never warp back into an inactive editor",
+          "line_start": 1031,
+          "line_end": 1037,
+          "blob": "ae91b4d3c3a1051462c43e06f52ef0119aa9b563",
+          "span_sha256": "e3d4b81758dc004ed826a5832d5754ba7d0b998344a9a9e18431bc2b15f0bd7c"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-core/src/engine_parameters.rs",
+          "anchor": "pub(crate) fn display(",
+          "line_start": 845,
+          "line_end": 851,
+          "blob": "b5e55c3d54c2de90c0a69a595cefff5ff0af970e",
+          "span_sha256": "35f5be9b2f74bb5cfd8829b9e8d0e54abcfcb3bf1520bcf14969bee27e56c884"
+        },
+        {
+          "revision": "origin/fix/0.3-pointer-popup-eq",
+          "path": "src/engine/params.rs",
+          "anchor": "solid_geq_callback_captions_show_signed_dsp_gain",
+          "line_start": 1181,
+          "line_end": 1187,
+          "blob": "74d1a67c79048bec4be2e105b731278d2ea3f25f",
+          "span_sha256": "8bbdf831a049296fde9c4a18e989231942d258d387abfa80b938466bcda4e4f3"
+        }
+      ]
+    },
+    {
+      "id": "remote_transport",
+      "refs": [
+        {
+          "ref": "origin/improve/0.3-immutable-ui-transport",
+          "tip": "959fcf6f25febd8ad6759ac280371385ff81d1e9"
+        }
+      ],
+      "disposition": "ui_drag_current_successor_backend_contracts_separate",
+      "rationale": "Current owner-specific grip/rebase uses drag_total first-movement correction and source-specific fine modifiers. Current UI publication remains immutable. Alternating loop playback/map/restores are backend scopes and this row does not claim all remote tip audio semantics integrated.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/theme.rs",
+          "anchor": "let missed = r.drag_total - r.drag_delta",
+          "line_start": 845,
+          "line_end": 851,
+          "blob": "d0a216a235a85a7737ae28ca6acf9891cefd9efd",
+          "span_sha256": "048ab386d4bc7f225a91c50055e8af97ebdfb03873ee5023ad26b177b955992a"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/theme.rs",
+          "anchor": "fn grip(ui: &Ui",
+          "line_start": 759,
+          "line_end": 765,
+          "blob": "d0a216a235a85a7737ae28ca6acf9891cefd9efd",
+          "span_sha256": "dbc9b91b578f43764bcafd7313b1e5329e8ad5a5799ae2d59752ce660fcc920f"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/ir_view.rs",
+          "anchor": "mapped_semantic_edit_rebases_an_active_pointer_grab",
+          "line_start": 3385,
+          "line_end": 3391,
+          "blob": "0d9d9dfc41bf758dda6fefb53042fde35a1cd0c1",
+          "span_sha256": "15b552e6fe0e9adba284c8bf0b7389f33e4d26cde0c9e21cf2f8bcbbe67abb84"
+        }
+      ]
+    },
+    {
+      "id": "remote_playback",
+      "refs": [
+        {
+          "ref": "origin/improve/0.3-ui-playback-parity",
+          "tip": "09afe2a072eb401f3e6cc765a395dc9e51c533b7"
+        }
+      ],
+      "disposition": "ui_publication_successor_array_backend_admission_separate",
+      "rationale": "Current sparse/retained projection replaces old v1 vector planning/snapshot cost optimizations. Current load_array_str has authored init/runtime async array-file tests; backend release cleanup/envelope/container patches require their own backend disposition rather than this UI path scan.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "shell_only_editor_repaints_do_not_rematerialize_authored_sources",
+          "line_start": 1041,
+          "line_end": 1047,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "cd2371a9a544588247628f40502156309520b8f125ab0d0f24a87a65a7662845"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "crates/sampler-ksp/tests/array_file.rs",
+          "anchor": "wait_async($job)",
+          "line_start": 161,
+          "line_end": 167,
+          "blob": "80304457ea006ced0459c826184f9298da0497c3",
+          "span_sha256": "431a9795d9bd3ee6eb1f18bf37459d90f4aabf8a2c0b9852b751d7abb98003a1"
+        }
+      ]
+    },
+    {
+      "id": "remote_checkpoint",
+      "refs": [
+        {
+          "ref": "origin/publish/latest-source-checkpoint",
+          "tip": "f0da397ce7a8de9351179378e4c3c2784dae4a24"
+        }
+      ],
+      "disposition": "ui_failure_and_export_successors_reader_backend_separate",
+      "rationale": "Current notices preserve Load failed reason and export waits for fresh request ID plus enabled completed scene before a second request. ni-file typed container failure-context patches are delegated to backend/parent reconciliation; no blanket whole-tip completion claim.",
+      "evidence": [
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/part.rs",
+          "anchor": "v.status.strip_prefix(\"Load failed: \")",
+          "line_start": 787,
+          "line_end": 793,
+          "blob": "fa4f26befabf839c30f4828aaf4f1df01564d1f4",
+          "span_sha256": "f2a3722a625bafb2206fb5b2fcee66119a35de5f34f0d21472996d904abf1287"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/logs.rs",
+          "anchor": "previous: Option<u64>",
+          "line_start": 1588,
+          "line_end": 1594,
+          "blob": "18782a0424aeff0f87504f8fc48425188699c02c",
+          "span_sha256": "4bdc5c18476f8fa8a1afabc66976391f70c70bcbb632f243f316dfc3c9294119"
+        },
+        {
+          "revision": "9b7df105e56f126fed74f116bbde043e3dd8a7ff",
+          "path": "src/ui/logs.rs",
+          "anchor": ".filter(|id| Some(*id) != previous)",
+          "line_start": 1607,
+          "line_end": 1613,
+          "blob": "18782a0424aeff0f87504f8fc48425188699c02c",
+          "span_sha256": "b3705dcc391cf8b59e6b229224a03c22c8fb80629450265aec3d56fc969f5bce"
+        }
+      ]
+    }
+  ],
+  "uncovered_older_refs": [],
+  "material_remaining": [
+    "Full 65ab5 sibling/native OS/GPU migration and Windows DXC dependency addition not admitted; current dcf079 custom renderer/host retained, candidate ref preserved.",
+    "Dynamics-in-Settings layout proposal not adopted; equivalent next-load control behavior remains in current performance strip.",
+    "Native-widget adapter donor explicitly parked pending product policy; not enabled.",
+    "Conflux actual blank renderer and Pacific/Vista absent authored images not reclassified or repaired by invented art; current native behavior remains unknown.",
+    "Older source_scope_catalog_only rows retain historical refs and snapshots; this review does not independently prove every pre-v2/UI/platform behavior integrated.",
+    "New Rust regression and cross-platform compilation execution pending; static parse checks cannot establish type-check or native fidelity.",
+    "Existing canonical NCKP custom/state font, press-shift and visible table-step omissions remain explicitly reported; this consolidation did not introduce new NCKP field implementations or reclassify those losses.",
+    "Real retained v1 program-bank owner remains materially missing; see backend-v1-ownership-recovery.md for pool/preload/swap/admission prerequisites.",
+    "Explicit LegacyLua/KompleteScript source selection/ambiguity/target-version metadata discovery has no current successor; typed modern rendering acceptance is unproven.",
+    "Broad short-axis pictured Slider preservation in Vector has no current selective successor; Bitmap authored-frame coverage is implemented.",
+    "Remote Solid G-EQ signed display/DSP contract has no proven current successor; a caption-only formula would not establish backend admission."
+  ]
+}
