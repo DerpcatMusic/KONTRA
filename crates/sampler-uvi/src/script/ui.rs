@@ -2,7 +2,7 @@
 use super::ScriptHost;
 use mlua::{Function, Table, Value};
 use sampler_ui_ir as ui;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub fn control_id(widget: usize, component: usize) -> ui::ControlId {
     ui::ControlId(0x55564900000000000000000000000000 | ((widget as u128) << 32) | component as u128)
@@ -22,18 +22,45 @@ fn text(t: &Table, key: &str) -> Option<String> {
 fn mapper(t: &Table) -> Option<String> {
     text(t, "mapper").or_else(|| {
         let id = num(t, "mapper")?;
-        if id.fract() != 0. || !(0. ..=9.).contains(&id) { return None; }
-        ["Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic"]
-            .get(id as usize).map(|name| (*name).to_owned())
+        if id.fract() != 0. || !(0. ..=9.).contains(&id) {
+            return None;
+        }
+        [
+            "Linear",
+            "Exponential",
+            "QuinticRoot",
+            "QuarticRoot",
+            "CubeRoot",
+            "SquareRoot",
+            "Quadratic",
+            "Cubic",
+            "Quartic",
+            "Quintic",
+        ]
+        .get(id as usize)
+        .map(|name| (*name).to_owned())
     })
 }
 fn unit(t: &Table) -> Option<f64> {
-    num(t,"unit").or_else(|| Some(match text(t,"unit")?.as_str() {
-        "Generic"=>0., "Percent"=>1., "PercentNormalized"=>2., "Seconds"=>3.,
-        "MilliSeconds"=>5., "Hertz"=>7., "Decibels"=>9., "UviFilter"=>10.,
-        "LinearGain"=>11., "Pan"=>12., "Megabyte"=>13., "SemiTones"=>14.,
-        "Cents"=>15., "MidiKey"=>16., _=>return None,
-    }))
+    num(t, "unit").or_else(|| {
+        Some(match text(t, "unit")?.as_str() {
+            "Generic" => 0.,
+            "Percent" => 1.,
+            "PercentNormalized" => 2.,
+            "Seconds" => 3.,
+            "MilliSeconds" => 5.,
+            "Hertz" => 7.,
+            "Decibels" => 9.,
+            "UviFilter" => 10.,
+            "LinearGain" => 11.,
+            "Pan" => 12.,
+            "Megabyte" => 13.,
+            "SemiTones" => 14.,
+            "Cents" => 15.,
+            "MidiKey" => 16.,
+            _ => return None,
+        })
+    })
 }
 
 // Numeric host IDs select the same readout formatter used by the renderer.
@@ -54,8 +81,11 @@ fn unit_text(value: f64, integer: bool, unit: Option<f64>) -> String {
         Some(16.) => "MidiKey",
         _ => "",
     };
-    ui::Display { unit: name.into(), ..Default::default() }
-        .format_value(value, integer, ui::Source::FalconLua)
+    ui::Display {
+        unit: name.into(),
+        ..Default::default()
+    }
+    .format_value(value, integer, ui::Source::FalconLua)
 }
 
 fn num(t: &Table, key: &str) -> Option<f64> {
@@ -80,6 +110,158 @@ fn widgets(host: &ScriptHost) -> Vec<Table> {
         .map(|t| t.sequence_values::<Table>().flatten().collect())
         .unwrap_or_default()
 }
+// Port v1 host.rs snapshot traversal: object identity stays in declaration order.
+fn widget_tree(
+    widgets: &[Table],
+) -> Result<(Vec<Option<ui::WidgetRef>>, Vec<ui::WidgetRef>), &'static str> {
+    let count = widgets.len();
+    let mut identities = HashMap::with_capacity(count);
+    for (index, widget) in widgets.iter().enumerate() {
+        if identities
+            .insert(widget.to_pointer() as usize, index)
+            .is_some()
+        {
+            return Err("Duplicate UVI UI snapshot widget identity");
+        }
+    }
+    let mut parents = Vec::with_capacity(count);
+    let mut child_pointers = Vec::with_capacity(count);
+    let mut items = 0usize;
+    for widget in widgets {
+        let state = widget
+            .raw_get::<Table>("__data")
+            .map_err(|_| "Invalid UVI UI snapshot widget state")?;
+        let parent = match state
+            .raw_get::<Value>("parent")
+            .map_err(|_| "Invalid UVI UI snapshot parent")?
+        {
+            Value::Nil => None,
+            Value::Table(t) => Some(ui::WidgetRef(
+                *identities
+                    .get(&(t.to_pointer() as usize))
+                    .ok_or("UVI UI snapshot parent is outside processor scope")?,
+            )),
+            _ => return Err("Invalid UVI UI snapshot parent"),
+        };
+        let mut pointers = Vec::new();
+        match state
+            .raw_get::<Value>("children")
+            .map_err(|_| "Invalid UVI UI snapshot child list")?
+        {
+            Value::Nil => {}
+            Value::Table(source) => {
+                // A valid sibling list cannot contain more identities than the model.
+                if source.raw_len() > count {
+                    return Err("UVI UI snapshot child list exceeds widget count");
+                }
+                items = items.saturating_add(source.raw_len());
+                if items > 131_072 {
+                    return Err("UVI UI snapshot item limit exceeded");
+                }
+                let mut entries = 0;
+                for pair in source.pairs::<Value, Value>() {
+                    let (key, _) = pair.map_err(|_| "Invalid UVI UI snapshot sequence")?;
+                    let index = match key {
+                        Value::Integer(i) => i as f64,
+                        Value::Number(n) => n,
+                        _ => 0.,
+                    };
+                    if !index.is_finite()
+                        || index.fract() != 0.
+                        || index < 1.
+                        || index > source.raw_len() as f64
+                    {
+                        return Err("Invalid UVI UI snapshot sequence");
+                    }
+                    entries += 1;
+                }
+                if entries != source.raw_len() {
+                    return Err("Sparse UVI UI snapshot sequence");
+                }
+                for i in 1..=source.raw_len() {
+                    let Value::Table(child) = source
+                        .raw_get::<Value>(i)
+                        .map_err(|_| "Invalid UVI UI snapshot child reference")?
+                    else {
+                        return Err("Invalid UVI UI snapshot child reference");
+                    };
+                    pointers.push(child.to_pointer() as usize);
+                }
+            }
+            _ => return Err("Invalid UVI UI snapshot child list"),
+        }
+        parents.push(parent);
+        child_pointers.push(pointers);
+    }
+    let mut visited = vec![0u8; count];
+    for index in 0..count {
+        if visited[index] == 2 {
+            continue;
+        }
+        let mut chain = Vec::new();
+        let mut next = Some(index);
+        while let Some(i) = next {
+            if visited[i] == 2 {
+                break;
+            }
+            if visited[i] == 1 {
+                return Err("Cyclic UVI UI snapshot parent tree");
+            }
+            visited[i] = 1;
+            chain.push(i);
+            next = parents[i].map(|p| p.0);
+        }
+        for i in chain {
+            visited[i] = 2;
+        }
+    }
+    let mut derived = vec![Vec::new(); count];
+    for (index, parent) in parents.iter().enumerate() {
+        if let Some(parent) = parent {
+            derived[parent.0].push(ui::WidgetRef(index));
+        }
+    }
+    let mut children = Vec::with_capacity(count);
+    for (index, pointers) in child_pointers.into_iter().enumerate() {
+        let mut seen = HashSet::with_capacity(pointers.len());
+        let mut ordered = Vec::new();
+        for pointer in pointers {
+            let child = ui::WidgetRef(
+                *identities
+                    .get(&pointer)
+                    .ok_or("UVI UI snapshot child is outside processor scope")?,
+            );
+            if child.0 == index || !seen.insert(child) {
+                return Err("Duplicate or self UVI UI snapshot child reference");
+            }
+            // Current parent wins over a stale constructor list after reparenting.
+            if parents[child.0] == Some(ui::WidgetRef(index)) {
+                ordered.push(child);
+            }
+        }
+        ordered.extend(
+            derived[index]
+                .iter()
+                .copied()
+                .filter(|id| !seen.contains(id)),
+        );
+        children.push(ordered);
+    }
+    let mut pending: Vec<_> = parents
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.is_none().then_some(i))
+        .rev()
+        .collect();
+    let mut order = Vec::with_capacity(count);
+    while let Some(index) = pending.pop() {
+        order.push(ui::WidgetRef(index));
+        pending.extend(children[index].iter().rev().map(|id| id.0));
+    }
+    debug_assert_eq!(order.len(), count);
+    Ok((parents, order))
+}
+
 fn color(value: &str) -> Option<ui::Rgba> {
     let value = value.strip_prefix('#').unwrap_or(value);
     let packed = u32::from_str_radix(value, 16).ok();
@@ -187,6 +369,20 @@ impl ScriptHost {
         };
         out.performance = flag(&root, "performance", false);
         let widgets = widgets(self);
+        let (parents, order) = match widget_tree(&widgets) {
+            Ok(tree) => tree,
+            Err(error) => {
+                self.shared.find("lua UI snapshot", error);
+                out.unsupported.push(ui::Unsupported {
+                    widget: None,
+                    feature: "lua UI snapshot".into(),
+                    value: error.into(),
+                });
+                out.paint_order = Some(Vec::new());
+                return out;
+            }
+        };
+        out.paint_order = Some(order);
         let mut assets = BTreeMap::<String, usize>::new();
         let mut asset = |path: &str, kind: ui::AssetKind, out: &mut ui::Interface| {
             if let Some(&index) = assets.get(path) {
@@ -204,15 +400,17 @@ impl ScriptHost {
             // Plain reads of the widget's data table: the proxy's __index is a Lua
             // call per property, and a snapshot reads ~70 per widget. Only a value
             // bound to an element is computed (by the proxy).
-            let data = proxy.raw_get::<Table>("__data").unwrap_or_else(|_| proxy.clone());
+            let data = proxy
+                .raw_get::<Table>("__data")
+                .unwrap_or_else(|_| proxy.clone());
             let w = &data;
             let kind = text(w, "kind").unwrap_or_default();
             let name = text(w, "name").unwrap_or_default();
             let (x, y, wd, ht) = (
                 num(w, "x").unwrap_or(0.),
                 num(w, "y").unwrap_or(0.),
-                num(w, "width").unwrap_or(0.).max(0.),
-                num(w, "height").unwrap_or(0.).max(0.),
+                num(w, "width").unwrap_or(0.),
+                num(w, "height").unwrap_or(0.),
             );
             let value = if matches!(w.raw_get::<Value>("element"), Ok(Value::Nil) | Err(_)) {
                 num(w, "value")
@@ -309,7 +507,12 @@ impl ScriptHost {
             let mut wd = ui::Widget::new(
                 name.clone(),
                 ui::PageRef(0),
-                ui::Rect::new(x as i32, y as i32, wd as u32, ht as u32),
+                ui::Rect {
+                    x,
+                    y,
+                    width: wd,
+                    height: ht,
+                },
                 kind_ir,
             );
             wd.source_id = Some(index as i32 + 1);
@@ -339,14 +542,18 @@ impl ScriptHost {
                 .or_else(|| text(w, "displayName"))
                 .unwrap_or_default();
             wd.value_text = text(w, "displayText").filter(|t| !t.is_empty());
-            wd.parent = num(w, "parent_id")
-                .filter(|id| *id > 0.)
-                .map(|id| ui::WidgetRef(id as usize - 1));
+            wd.parent = parents[index];
             wd.automation.allowed = flag(w, "exported", false);
             wd.automation.id = num(w, "paramId").map(|n| n as u32);
             wd.mapper = mapper(w);
-            if wd.value_text.is_none() && matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. } | ui::Kind::ValueEdit { .. }) {
-                wd.value_text = unit(w).map(|u| unit_text(value, flag(w,"integer",false), Some(u)));
+            if wd.value_text.is_none()
+                && matches!(
+                    wd.kind,
+                    ui::Kind::Knob { .. } | ui::Kind::Slider { .. } | ui::Kind::ValueEdit { .. }
+                )
+            {
+                wd.value_text =
+                    unit(w).map(|u| unit_text(value, flag(w, "integer", false), Some(u)));
             }
             wd.menu_cycle = kind == "MultiStateButton";
             wd.colors.background = text(w, "backgroundColour").and_then(|c| color(&c));
@@ -450,7 +657,11 @@ impl ScriptHost {
             // when the script asks for them (showLabel/showValue, or displayText).
             let skinned = wd.images.iter().any(|i| i.role == ui::Role::Strip);
             wd.hide.title = !flag(w, "showLabel", !skinned);
-            wd.hide.value = !flag(w, "showValue", !skinned || text(w, "displayText").is_some_and(|t| !t.is_empty()));
+            wd.hide.value = !flag(
+                w,
+                "showValue",
+                !skinned || text(w, "displayText").is_some_and(|t| !t.is_empty()),
+            );
             if let Some(font) = text(w, "font").filter(|s| !s.is_empty()) {
                 let a = asset(&font, ui::AssetKind::TrueTypeFont, &mut out);
                 wd.style = Some(ui::StyleRef(out.styles.len()));
@@ -593,25 +804,25 @@ impl ScriptHost {
             .iter()
             .enumerate()
             .map(|(i, _)| out.page_rect(ui::WidgetRef(i)))
-            .map(|r| r.x.saturating_add(r.width as i32).max(0) as u32)
-            .max()
-            .unwrap_or(720);
+            .map(|r| (r.x + r.width).max(0.))
+            .reduce(f64::max)
+            .unwrap_or(720.);
         let height = out
             .widgets
             .iter()
             .enumerate()
             .map(|(i, _)| out.page_rect(ui::WidgetRef(i)))
-            .map(|r| r.y.saturating_add(r.height as i32).max(0) as u32)
-            .max()
-            .unwrap_or(100);
+            .map(|r| (r.y + r.height).max(0.))
+            .reduce(f64::max)
+            .unwrap_or(100.);
         let background = text(&root, "background")
             .filter(|s| !s.is_empty())
             .map(|s| asset(&s, ui::AssetKind::Image(Default::default()), &mut out));
         out.pages.push(ui::Page {
             name: "main".into(),
             size: ui::Size {
-                width: num(&root, "width").unwrap_or(width as f64).max(1.) as u32,
-                height: num(&root, "height").unwrap_or(height as f64).max(1.) as u32,
+                width: num(&root, "width").unwrap_or(width),
+                height: num(&root, "height").unwrap_or(height),
             },
             background: ui::Background {
                 image: background,
@@ -620,6 +831,20 @@ impl ScriptHost {
             },
             ..Default::default()
         });
+        if let Err(error) = out.validate() {
+            let error = format!("Invalid UVI UI snapshot: {error}");
+            self.shared.find("lua UI snapshot", &error);
+            return ui::Interface {
+                source: ui::Source::FalconLua,
+                paint_order: Some(Vec::new()),
+                unsupported: vec![ui::Unsupported {
+                    widget: None,
+                    feature: "lua UI snapshot".into(),
+                    value: error,
+                }],
+                ..Default::default()
+            };
+        }
         out
     }
 }
