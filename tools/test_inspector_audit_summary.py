@@ -96,6 +96,18 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["totals"]["ir_converted"], 0)
         self.assertEqual(s["totals"]["ui_projected"], 0)
 
+    def test_translation_failure_retains_completed_source_scan(self):
+        r = report("uvi-bank", BANK, MEMBER)
+        r["status"] = "failed"
+        r["stages"][2]["status"] = "failed"
+        r["converted"]["status"] = "not_run"
+        r["diagnostics"] = [{"stage": "translate", "category": "Translation"}]
+        s = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"], [r])
+        self.assertEqual(s["totals"]["source_inspected"], 1)
+        self.assertEqual(s["totals"]["ir_converted"], 0)
+        self.assertEqual(s["totals"]["source_semantics_complete"], 0)
+        self.assertEqual(s["admission"], "incomplete")
+
     def test_provenance_hashes_and_expected_observed_per_library(self):
         s = self.run_summary([f"kontakt\t{KONTAKT}", f"uvi-program\t{BANK}::{MEMBER}"],
                              [report()])
