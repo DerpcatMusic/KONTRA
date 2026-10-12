@@ -197,6 +197,9 @@ pub(crate) fn prepare(
                     if r.source == source {
                         if r.target != crate::ModTarget::Attenuate
                             || r.depth != 1.
+                            || r.invert
+                            || r.shape.is_some()
+                            || r.lag != 0
                             || r.scale.is_some()
                         {
                             return None;
