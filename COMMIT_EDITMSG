@@ -1,0 +1,5 @@
+test: preserve bus owners in the dry Harp parity fixture
+
+Keep unused bus-scoped chains valid while disconnecting the dry rack. Add bounded stage metrics to diagnose a failed audio null.
+
+Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>
