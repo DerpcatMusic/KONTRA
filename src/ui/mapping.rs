@@ -127,20 +127,32 @@ impl Index {
     }
 
     pub(super) fn fit(&self, picked: Option<usize>) -> (u8, u8) {
-        self.bounds[picked.unwrap_or(self.counts.len())]
+        match picked {
+            None => self.bounds[self.counts.len()],
+            Some(g) if g < self.counts.len() => self.bounds[g],
+            Some(_) => (0, 127),
+        }
     }
 
     fn first(&self, picked: Option<usize>) -> Option<usize> {
-        self.first[picked.unwrap_or(self.counts.len())]
+        if picked.is_some_and(|g| g >= self.counts.len()) {
+            None
+        } else {
+            self.first[picked.unwrap_or(self.counts.len())]
+        }
     }
 
     pub(super) fn stack(
         &self,
-        inst: &ir::Instrument,
         picked: Option<usize>,
         key: u8,
         vel: u8,
     ) -> Vec<usize> {
+        // Queries never reinterpret an index using a different instrument.
+        let inst = &self.source;
+        if key > 127 || vel > 127 || picked.is_some_and(|g| g >= self.counts.len()) {
+            return Vec::new();
+        }
         let mut hits = Vec::new();
         let mut node = usize::from(key) + 128;
         while node > 0 {
@@ -437,7 +449,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         if let Some(z) = inst.zones.first() {
             let (k, v) = midpoint(z);
-            st.mapping.stack = index.stack(inst, None, k, v);
+            st.mapping.stack = index.stack(None, k, v);
         }
     }
     let index = cx.state.inside[&slot]
@@ -515,6 +527,11 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                     cx.p.shared.select_articulation(slot, n);
                     cx.state.inside.get_mut(&slot).unwrap().active = Some(n);
                 }
+                // Pointer focus lands on the named control; keyboard navigation belongs
+                // to the virtual row so offscreen destinations can be constructed.
+                if ui.focused(id.as_str()) {
+                    ui.focus(&item.id);
+                }
                 let on = active == Some(n);
                 let c = super::inside::articulation_color(cx, slot, &index.ids[n], a);
                 let input = cx.selection.parts[slot].articulation_overlay.input(
@@ -573,6 +590,11 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 let id = format!("map-group-{slot}-{g}");
                 if ui.get(id.as_str()).activated() {
                     picked = if on { None } else { Some(g) };
+                }
+                // Pointer focus lands on the named control; keyboard navigation belongs
+                // to the virtual row so offscreen destinations can be constructed.
+                if ui.focused(id.as_str()) {
+                    ui.focus(&item.id);
                 }
                 let name = &index.names[g];
                 let conditions = inst
@@ -643,7 +665,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             let z = &inst.zones[n];
             st.mapping.selected = n;
             let (k, v) = midpoint(z);
-            st.mapping.stack = index.stack(inst, picked, k, v);
+            st.mapping.stack = index.stack(picked, k, v);
         }
     }
     let mut navigation = Vec::new();
@@ -698,7 +720,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             .map(|s| s.frame.size)
         && let Some((key, vel)) = point(at, size, bounds)
     {
-        let hit = index.stack(inst, picked, key, vel);
+        let hit = index.stack(picked, key, vel);
         if !hit.is_empty() {
             let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
             let n = if hit == st.stack && st.cell == Some((key, vel)) {
@@ -1362,7 +1384,7 @@ mod tests {
         for key in 0..128 {
             for picked in [None, Some(0), Some(188)] {
                 assert_eq!(
-                    index.stack(&inst, picked, key, 64),
+                    index.stack(picked, key, 64),
                     stack(&inst, picked, key, 64)
                 );
                 assert_eq!(index.fit(picked), fit(&inst, picked));
@@ -1372,6 +1394,34 @@ mod tests {
         assert_eq!(*inst, before);
     }
     use super::*;
+
+    #[test]
+    fn mapping_index_empty_and_invalid_queries_do_not_alias_physical_groups() {
+        let empty = Index::new(&Arc::new(ir::Instrument::default()));
+        assert_eq!(empty.fit(None), (0, 127));
+        assert_eq!(empty.first(None), None);
+        assert!(empty.stack(None, 127, 127).is_empty());
+        assert!(empty.stack(None, 128, 64).is_empty());
+
+        let mut source = ir::Instrument::default();
+        source.groups.resize_with(2, ir::Group::default);
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.group = Some(ir::GroupRef(1));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        source.zones.push(zone);
+        let index = Index::new(&Arc::new(source));
+        assert_eq!(index.stack(None, 60, 64), vec![0]);
+        assert_eq!(index.stack(Some(1), 60, 64), vec![0]);
+        assert!(index.stack(Some(0), 60, 64).is_empty());
+        // The no-group row is a real identity; the all-group bounds sentinel is not.
+        for picked in [Some(2), Some(3), Some(usize::MAX)] {
+            assert_eq!(index.first(picked), None);
+            assert_eq!(index.fit(picked), (0, 127));
+            assert!(index.stack(picked, 60, 64).is_empty());
+        }
+        assert!(index.stack(None, 255, 64).is_empty());
+        assert!(index.stack(None, 60, 128).is_empty());
+    }
 
     #[test]
     fn mapping_overlap_walk_idle_and_foreign_focus_do_not_allocate() {
