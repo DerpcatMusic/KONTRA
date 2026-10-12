@@ -1507,7 +1507,9 @@ impl VoiceModState {
                 ),
                 other => other.input(inputs, seed, i),
             };
-            changed |= values[i].to_bits() != value.to_bits();
+            if p.cacheable || native.is_some() {
+                changed |= values[i].to_bits() != value.to_bits();
+            }
             values[i] = value;
         }
         let native_point = native.map(|native| {
