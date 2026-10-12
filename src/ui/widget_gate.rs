@@ -159,6 +159,18 @@ impl Gate {
         }
         targets.into_iter().collect()
     }
+    fn binding_keys(&self, id: &str) -> Option<Vec<String>> {
+        let view = self.params.shared.view.lock().unwrap();
+        let part = &view.parts[0];
+        for (source, face) in part.interfaces.iter().enumerate() {
+            for (n, widget) in face.widgets.iter().enumerate() {
+                if id == format!("part-0-epoch-{}-script-{source}-ir-{n}", part.generation) {
+                    return Some(binding_keys(widget, source, n));
+                }
+            }
+        }
+        None
+    }
     fn hit(&mut self, id: &str) -> Option<Point> {
         self.phase = "hit-test";
         let frame = self.editor.ui.scene()?.surface(id)?.frame;
@@ -237,6 +249,50 @@ fn changed(before: &Values, after: &Values) -> Vec<String> {
 }
 fn retained(keys: &[String], saved: &Values, reloaded: &Values) -> bool {
     !keys.is_empty() && keys.iter().all(|key| saved.get(key).is_some() && saved.get(key) == reloaded.get(key))
+}
+
+fn binding_keys(widget: &ir::Widget, source: usize, n: usize) -> Vec<String> {
+    let mut keys: Vec<_> = match widget.binding {
+        ir::Binding::Control(id) => vec![format!("control-{}", id.0)],
+        ir::Binding::Variable { .. } => vec![format!("typed-{source}-{n}")],
+        _ => Vec::new(),
+    };
+    keys.extend(widget.components.iter().map(|id| format!("control-{}", id.0)));
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn recall_counts(keys: &[String], bound: Option<&[String]>, saved: &Values, recalled: &Values) -> serde_json::Value {
+    let mismatches: Vec<_> = keys.iter().filter(|key| saved.get(*key).is_none() || saved.get(*key) != recalled.get(*key)).collect();
+    let bound_changed = bound.map(|bound| keys.iter().filter(|key| bound.contains(key)).count());
+    let bound_mismatches = bound.map(|bound| mismatches.iter().filter(|key| bound.contains(key)).count());
+    serde_json::json!({"binding_known": bound.is_some(), "bound_parameters": bound.map(<[String]>::len),
+        "bound_changes": bound_changed, "bound_mismatches": bound_mismatches,
+        "unrelated_changes": bound_changed.map(|n| keys.len() - n),
+        "unrelated_mismatches": bound_mismatches.map(|n| mismatches.len() - n),
+        "mismatch_key_sha256": mismatches.iter().map(|key| sha2::Sha256::digest(key.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>()).collect::<Vec<_>>()})
+}
+
+#[test]
+fn recall_attribution_separates_bound_values_from_timer_updates() {
+    let saved = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("control-2".into(), ir::Value::Real(2.))]);
+    let recalled = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("control-2".into(), ir::Value::Real(3.))]);
+    let keys = vec!["control-1".into(), "control-2".into()];
+    let bound = vec!["control-1".into()];
+    let row = recall_counts(&keys, Some(&bound), &saved, &recalled);
+    assert_eq!(row["bound_changes"], 1);
+    assert_eq!(row["bound_mismatches"], 0);
+    assert_eq!(row["unrelated_mismatches"], 1);
+    assert_eq!(row["mismatch_key_sha256"].as_array().unwrap().len(), 1);
+    assert!(recall_counts(&keys, None, &saved, &recalled)["bound_mismatches"].is_null());
+    let mut widget = ir::Widget::new("fixture", ir::PageRef(0), ir::Rect::default(), ir::Kind::Switch);
+    widget.binding = ir::Binding::Control(ir::ControlId(1));
+    widget.components = vec![ir::ControlId(1), ir::ControlId(2)];
+    assert_eq!(binding_keys(&widget, 0, 0), keys);
+    widget.binding = ir::Binding::Variable { script: 0, name: "fixture".into() };
+    widget.components.clear();
+    assert_eq!(binding_keys(&widget, 2, 3), ["typed-2-3"]);
 }
 
 fn source_range(total: usize, selected: Option<usize>) -> Option<std::ops::Range<usize>> {
@@ -321,6 +377,7 @@ fn original_widget_gestures() {
                 let Some((id, kind)) = candidates.into_iter().find(|(id, _)| !seen.contains(id)) else { break };
                 seen.insert(id.clone());
                 gate.current_target = Some(results.len());
+                let bound = gate.binding_keys(&id);
                 let mut reason = "parameter-unchanged";
                 let mut keys = Vec::new();
                 if Instant::now() >= deadline { exhausted = true; reason = "probe-budget"; }
@@ -334,7 +391,7 @@ fn original_widget_gestures() {
                 let faults = gate.faults();
                 initial_faults += faults;
                 if faults > 0 { reason = "script-or-render-fault"; }
-                results.push((serde_json::json!({"target_sha256": sha2::Sha256::digest(id.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>(), "source": source, "page": page, "kind": kind, "reason": reason, "parameter_changes": keys.len(), "value_changed": !keys.is_empty(), "parameter_reached": !keys.is_empty(), "persistence": false}), keys));
+                results.push((serde_json::json!({"target_sha256": sha2::Sha256::digest(id.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>(), "source": source, "page": page, "kind": kind, "reason": reason, "parameter_changes": keys.len(), "value_changed": !keys.is_empty(), "parameter_reached": !keys.is_empty(), "persistence": false}), keys, bound));
                 if exhausted { break; }
             }
             if exhausted { break; }
@@ -364,14 +421,15 @@ fn original_widget_gestures() {
     let reload_status = reloaded.params.shared.view.lock().unwrap().parts[0].status.clone();
     let reload_failure = load_failure(&reload_status);
     let reload_failed = reload_failure != "none";
-    for (row, keys) in &mut results {
+    for (row, keys, bound) in &mut results {
+        row["recall_attribution"] = recall_counts(keys, bound.as_deref(), &saved_values, &reload_values);
         if row["reason"] == "persistence-pending" {
             let pass = retained(keys, &saved_values, &reload_values);
             row["persistence"] = pass.into();
             row["reason"] = if faults > 0 { "script-or-render-fault" } else if reload_failed { "save-reload-load-failed" } else if pass { "passed" } else { "save-reload-mismatch" }.into();
         }
     }
-    let rows: Vec<_> = results.into_iter().map(|(row, _)| row).collect();
+    let rows: Vec<_> = results.into_iter().map(|(row, _, _)| row).collect();
     let passed = rows.iter().filter(|r| r["reason"] == "passed").count();
     let total = rows.len();
     let status = if faults > 0 || reload_failed { "FAIL" } else if exhausted || total == 0 || requested_source.is_some() { "UNKNOWN" } else if passed == total { "PASS" } else { "FAIL" };
