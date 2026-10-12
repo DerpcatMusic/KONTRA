@@ -100,13 +100,34 @@ impl Default for Parameter {
     }
 }
 
+/// RPN 0 fields retain their serialized coarse value even when cents exceed
+/// 99; relative RP-018 steps carry only when applying the relative operation.
+#[derive(Clone, Copy)]
+struct Sensitivity {
+    coarse: u8,
+    cents: u8,
+}
+impl Sensitivity {
+    fn semitones(self) -> f64 {
+        f64::from(self.coarse) + f64::from(self.cents) / 100.
+    }
+    fn relative(self, increment: bool) -> Self {
+        let total = i32::from(self.coarse) * 100 + i32::from(self.cents);
+        let total = (total + if increment { 1 } else { -1 }).clamp(0, 9600) as u16;
+        Self {
+            coarse: (total / 100) as u8,
+            cents: (total % 100) as u8,
+        }
+    }
+}
+
 /// One explicitly configured zone in one runtime/port/group domain. MIDI 1.0
 /// and 2.0 channel voice messages both play it; 2.0 values keep their
 /// precision (velocity, controllers, pressure, pitch bend).
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
-/// This is not a complete MPE receiver: MCM, fractional/relative RPN and channel modes are
+/// This is not a complete MPE receiver: MCM, other RPNs and channel modes are
 /// reported Unsupported. Do not forward those messages to ordinary channel
 /// ingress as a substitute for zone semantics. Raw-event consumers run before
 /// this adapter; a consumed message must not be passed to apply.
@@ -120,7 +141,7 @@ pub struct Mpe {
     limit: usize,
     controls: [Controls; 16],
     bends: [Value; 16],
-    ranges: [u8; 2],
+    ranges: [Sensitivity; 2],
     bend_override: Option<u8>,
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
@@ -180,7 +201,16 @@ impl Mpe {
             limit: notes,
             controls: [Controls::default(); 16],
             bends: [Value::Bits14(8192); 16],
-            ranges: [2, 48],
+            ranges: [
+                Sensitivity {
+                    coarse: 2,
+                    cents: 0,
+                },
+                Sensitivity {
+                    coarse: 48,
+                    cents: 0,
+                },
+            ],
             bend_override: None,
             parameters: [Parameter::default(); 16],
             bindings,
@@ -203,9 +233,14 @@ impl Mpe {
         self.bend_override = semitones.filter(|&r| r <= 96);
     }
 
-    /// Whole-semitone manager and shared member bend sensitivities.
+    /// Stored coarse manager and shared member bend sensitivities.
     pub fn pitch_ranges(&self) -> (u8, u8) {
-        (self.ranges[0], self.ranges[1])
+        (self.ranges[0].coarse, self.ranges[1].coarse)
+    }
+
+    /// Effective manager/member sensitivities, including RPN 0 cents.
+    pub fn pitch_sensitivities(&self) -> (f64, f64) {
+        (self.ranges[0].semitones(), self.ranges[1].semitones())
     }
 
     /// Manager channel for a part's keyboard and shared performance controls.
@@ -293,13 +328,13 @@ impl Mpe {
                 attribute,
             },
             Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
-                let range = self
-                    .bend_override
-                    .unwrap_or(self.ranges[usize::from(voice.channel != self.zone.manager())]);
+                let range = self.bend_override.map(f64::from).unwrap_or_else(|| {
+                    self.ranges[usize::from(voice.channel != self.zone.manager())].semitones()
+                });
                 let applied = self.control(
                     runtime,
                     voice.channel,
-                    Control::Pitch(pitch(value, f64::from(range)), pitch(value, 1.0)),
+                    Control::Pitch(pitch(value, range), pitch(value, 1.0)),
                 )?;
                 self.bends[usize::from(voice.channel)] = value;
                 applied
@@ -311,13 +346,20 @@ impl Mpe {
                     Control::Pressure(value.full_scale()),
                 )?,
             // MIDI 2.0 Registered Controller 0:0, pitch bend sensitivity
-            // (semitones in the top 7 bits).
+            // (semitones in the top 7 bits, cents in the next 7).
             Message::ChannelControl {
                 space: crate::Controllers::Registered,
                 bank: 0,
                 index: 0,
                 value,
-            } => self.range(runtime, voice.channel, (value >> 25) as u8)?,
+            } => self.range(
+                runtime,
+                voice.channel,
+                Sensitivity {
+                    coarse: (value >> 25) as u8,
+                    cents: ((value >> 18) & 127) as u8,
+                },
+            )?,
             Message::Control {
                 index: index @ (64 | 66),
                 value: value @ (Value::Bits7(_) | Value::Bits32(_)),
@@ -352,10 +394,26 @@ impl Mpe {
                 self.control(runtime, voice.channel, Control::Timbre(value))?
             }
             // MIDI 2.0 carries RPNs as Registered Controllers, not CC 6/38/98..=101.
+            Message::Control { index, .. } if midi2 && crate::is_midi2_legacy_control(index) => {
+                Applied::Ignored
+            }
             Message::Control {
-                index: index @ (6 | 38 | 98..=101),
+                index: index @ (6 | 38 | 96..=101),
                 value: Value::Bits7(value),
-            } => self.parameter(runtime, voice.channel, index, value)?,
+            } => {
+                runtime.dispatch_controller(
+                    self.performance,
+                    input.channel_address(),
+                    if voice.channel == self.zone.manager() {
+                        self.manager_scope().channels
+                    } else {
+                        1 << voice.channel
+                    },
+                    index,
+                    Value::Bits7(value).full_scale(),
+                )?;
+                self.parameter(runtime, voice.channel, index, value)?
+            }
             Message::Control { index, value }
                 if index < 120
                     && !matches!(index, 96 | 97)
@@ -560,18 +618,41 @@ impl Mpe {
                 parameter.registered = false;
                 Ok(Applied::Configuration)
             }
-            6 if parameter.registered && parameter.rpn == [0, 0] => {
-                self.range(runtime, channel, value)
+            6 if parameter.registered && parameter.rpn == [0, 0] => self.range(
+                runtime,
+                channel,
+                Sensitivity {
+                    coarse: value,
+                    cents: 0,
+                },
+            ),
+            38 if parameter.registered && parameter.rpn == [0, 0] => {
+                let coarse = self.ranges[usize::from(channel != self.zone.manager())].coarse;
+                self.range(
+                    runtime,
+                    channel,
+                    Sensitivity {
+                        coarse,
+                        cents: value,
+                    },
+                )
             }
-            38 if parameter.registered && parameter.rpn == [0, 0] && value == 0 => {
-                Ok(Applied::Configuration)
+            96 | 97 if parameter.registered && parameter.rpn == [0, 0] => {
+                let value =
+                    self.ranges[usize::from(channel != self.zone.manager())].relative(index == 96);
+                self.range(runtime, channel, value)
             }
             _ => Ok(Applied::Unsupported),
         }
     }
 
-    fn range(&mut self, runtime: &mut Runtime, channel: u8, value: u8) -> Result<Applied, Error> {
-        if value > 96 {
+    fn range(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        value: Sensitivity,
+    ) -> Result<Applied, Error> {
+        if value.semitones() > 96. {
             return Err(Error::InvalidInput);
         }
         let manager = channel == self.zone.manager();
@@ -587,7 +668,7 @@ impl Mpe {
                     && channel != self.zone.manager()
                     && self.zone.contains(channel, self.members))
             {
-                control.pitch = pitch(self.bends[index], f64::from(value));
+                control.pitch = pitch(self.bends[index], value.semitones());
             }
         }
         let applied = self.project(
