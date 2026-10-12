@@ -1,0 +1,5 @@
+port from v1 0cb7a8a0:src/ui/chain.rs: restore native group insert inventory
+
+Reuse the native group chain lookup in both the Sound graph and Effects list. Inventory shared zone chains and summed group inserts once under one heading, preserving instrument and bus lists. Rendered failing-first fixture covers repeated and distinct chains and excludes other groups.
+
+Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>
