@@ -52,6 +52,7 @@ const INDENT: f64 = TEXT;
 /// The browser's own state between frames.
 #[derive(Default)]
 pub struct Browse {
+    pub(super) reader_path: Option<String>,
     positions: [Position; 2],
     /// The quick filter over the libraries, and as it was last drawn.
     pub filter: String,
@@ -443,14 +444,39 @@ pub fn sidebar(ui: &mut Ui, cx: &mut Cx) -> El {
         top += CONTROL;
     }
     let scanning = cx.p.shared.libraries.scanning();
-    if arranged.is_empty() && scanning.is_none() {
+    let bank_problem = uvi && !catalog.bank_issues.is_empty();
+    if bank_problem {
+        let count: usize = catalog.bank_issues.iter().map(|i| i.locations.len()).sum();
+        let reader = catalog.bank_issues.iter().any(|i| i.reader);
+        let message = if reader { format!("UVI libraries found ({count}), but their reader is unavailable. Install UVI Workstation or Falcon, or locate it.") }
+            else { format!("{count} UVI banks could not be read. See Logs for the affected locations.") };
+        let mut problem = vec![body(message).text_size(TEXT).lines(6).id("uvi-bank-problem")];
+        if reader {
+            let (locate, locate_el) = action(ui, "uvi-reader-locate", "Locate…", false);
+            if locate && !cx.state.picker.ask(super::picker::Ask::UviReader(None)) {
+                cx.state.browse.reader_path = Some(String::new());
+                ui.focus("uvi-reader-path");
+            }
+            problem.push(locate_el.named("Locate your installed UVI reader"));
+            if let Some(path) = &mut cx.state.browse.reader_path {
+                problem.push(text_input(ui, "uvi-reader-path", path).el.named("Path to your installed UVI reader"));
+                let (use_path, use_el) = action(ui, "uvi-reader-use", "Use reader", false);
+                if use_path && !path.trim().is_empty() && !cx.state.picker.ask(super::picker::Ask::UviReader(Some(PathBuf::from(path.trim())))) {
+                    cx.state.notice = "The reader picker is busy; retry when it closes.".into();
+                }
+                problem.push(use_el);
+            }
+        }
+        rows.insert(0, col(problem).gap(TIGHT).pad(INSET).shrink(0));
+    }
+    if !bank_problem && arranged.is_empty() && scanning.is_none() {
         if presets.is_empty() {
             // First, so its buttons are in view above favorites and recent.
             rows.insert(0, empty_state(ui, cx));
         } else {
             rows.push(hint(if uvi { "No Falcon / UVI libraries." } else { "No Kontakt libraries." }));
         }
-    } else if sources.is_empty() {
+    } else if !bank_problem && sources.is_empty() {
         rows.push(hint("No library matches that filter."));
     }
     let reveal = chosen_at.filter(|_| cx.state.browse.reveal_source);

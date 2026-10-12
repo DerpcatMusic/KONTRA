@@ -90,6 +90,37 @@ fn w14_format_tabs_separate_libraries() {
 }
 
 #[test]
+fn w10_reader_failure_has_a_visible_keyboard_accessible_locate_action() {
+    let p = catalog();
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut shelf = crate::library::Shelf::new(Vec::new());
+        view.files = Arc::new(Vec::new());
+        shelf.bank_issues.push(crate::library::BankIssue {
+            reader: true, message: "UVI reader not located".into(),
+            locations: (0..26).map(|n| PathBuf::from(format!("/virtual/UVI/Bank{n}.ufs"))).collect(),
+        });
+        view.shelf = Arc::new(shelf);
+    }
+    for (width, height) in [(1180., 760.), (900., 600.)] {
+        let mut h = Harness::new(&p, width, height);
+        h.press("bank-uvi");
+        let scene = h.ui.scene().unwrap();
+        assert!(scene.surface("uvi-bank-problem").is_some());
+        assert!(scene.surface("uvi-reader-locate").is_some());
+        h.ui.focus("uvi-reader-locate");
+        h.tick(Input { keys: vec![KeyPress { key: Key::Enter, mods: Mods::default() }], ..Default::default() });
+        h.idle(2);
+        assert!(h.ui.scene().unwrap().surface("uvi-reader-path").is_some(), "no portal has an inline path fallback");
+        assert!(h.ui.scene().unwrap().surface("uvi-reader-use").is_some());
+        if let Some(out) = std::env::var_os("KONTRA_BROWSER_SHOTS").map(PathBuf::from) {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(format!("uvi-reader-{width}.png")), &pixels(&h.ui, width as u16, height as u16), width as u32, height as u32);
+        }
+    }
+}
+
+#[test]
 fn format_tabs_retain_independent_preset_scroll_positions() {
     let p = catalog();
     {

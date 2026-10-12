@@ -14,6 +14,8 @@ pub(crate) use linux::Runtime;
 
 /// What the editor asks for.
 pub enum Ask {
+    /// Locate an installed reader, or validate an inline path off the GUI thread.
+    UviReader(Option<PathBuf>),
     /// Ported v1 sample-folder creator; filesystem work stays on the picker worker.
     Samples { out: PathBuf },
     Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
@@ -29,6 +31,7 @@ pub enum Ask {
 
 /// What came back.
 pub enum Picked {
+    UviReader(Result<PathBuf, String>),
     Created(Result<PathBuf, String>),
     Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
     DialogError(String),
@@ -100,7 +103,7 @@ impl Picker {
     /// Run a file operation on its owned worker. Unavailable dialogs return
     /// false for their inline fallback; Reveal returns false when busy.
     pub fn ask(self: &Arc<Self>, ask: Ask) -> bool {
-        if !matches!(ask, Ask::Reveal(_)) && !Self::available() {
+        if !matches!(ask, Ask::Reveal(_) | Ask::UviReader(Some(_))) && !Self::available() {
             return false;
         }
         if self.answer.open.swap(true, Ordering::AcqRel) {
@@ -147,6 +150,10 @@ impl Picker {
 #[cfg(not(target_os = "linux"))]
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
+        Ask::UviReader(path) => {
+            let path = path.or_else(|| rfd::FileDialog::new().set_title("Locate your installed UVI Workstation or Falcon").pick_file())?;
+            Some(reader_selected(path))
+        }
         Ask::Samples { out } => {
             let source = rfd::FileDialog::new().set_title("A folder of WAV or AIFF samples").pick_folder()?;
             Some(created(source, out))
@@ -180,6 +187,10 @@ fn show(ask: Ask) -> Option<Picked> {
                 .map(Picked::Multi)
         }
     }
+}
+
+fn reader_selected(path: PathBuf) -> Picked {
+    Picked::UviReader(sampler_uvi::validate_reader(&path).map(|()| path).map_err(|e| e.to_string()))
 }
 
 #[cfg(test)]

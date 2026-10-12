@@ -49,6 +49,14 @@ use std::{
 
 const XML_LIMIT: u64 = 32 << 20;
 
+/// Validate a user-selected installed reader without changing it or any prefix.
+pub fn validate_reader(path: &Path) -> Result<(), AccessError> {
+    #[cfg(feature = "library-access")]
+    { access::ReaderNamespaces::open(path).map(|_| ()).map_err(|e| AccessError::Reader(access::failure_reason(&e))) }
+    #[cfg(not(feature = "library-access"))]
+    { let _ = path; Err(AccessError::Disabled) }
+}
+
 /// Container nodes whose meaning is their children.
 const STRUCTURAL: [&str; 18] = [
     "Mappers",

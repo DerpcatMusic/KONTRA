@@ -39,3 +39,29 @@ Program XML is bounded to 32 MiB and one million nodes, with DTDs disabled.
 This admits the installed Augmented Orchestra programs with more than
 200,000 nodes. Explicit `$Bank.ufs/` resources resolve within their named bank.
 XML bounds: `f24c85c6`; resource paths: `2b9a8b3d`; memory-only access: `2a6ba617`.
+
+## Installed reader discovery
+
+Reader selection uses `KONTRA_UVI_READER`, then the saved `uvi_reader` path
+(the same JSON key as v1), then read-only standard installation discovery.
+Candidates include native Windows/macOS locations, `WINEPREFIX`, `~/.wine`,
+and common Bottles/Lutris prefix folders. No application is shipped, copied,
+downloaded or installed. Discovery checks existence; opening or selecting a
+reader retains the existing namespace/hash validation. This hotfix does not
+add reader formats: the decoder currently verifies Windows x64 Workstation
+4.0.9; an unsupported Falcon/macOS binary gets a visible validation error.
+
+Failed banks stay visible as one catalog diagnostic per cause, carrying all
+affected locations. The Falcon/UVI browser offers **Locate…**, with an inline
+path fallback when a file dialog is unavailable. Validation runs on the picker
+worker; successful selection saves preferences and rescans every open instance.
+Scans use the current settings snapshot even before its asynchronous disk save.
+Unknown JSON settings continue to survive saves through the existing flatten
+map. Failed/null bank metadata was already retried; a regression now checks
+that successful replacement survives index save/reload without rereading.
+
+The installed regression uses copies of settings/index with `env -i`. Its
+baseline on 0.3.306 found zero Falcon libraries from 26 banks: the old Wine
+candidate omitted the installed `UVI Workstation x64` directory variant.
+Synthetic tests cover missing-reader diagnostics and keyboard-accessible Locate,
+separately from the real automatic-discovery and saved-selection witnesses.
