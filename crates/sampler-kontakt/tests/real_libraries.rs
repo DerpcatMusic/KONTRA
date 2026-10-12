@@ -1167,6 +1167,14 @@ fn vista_harp_mode3_nulls_against_frozen_v1() {
     assert!(power > 1e-8, "the reference must sound");
     println!("W15_HARP_MODE3 peak_error={peak} residual_db={} voices={}",
         10. * (residual / power).log10(), runtime.voice_count());
+    let expected = data.chunks_exact(8).take(24_000).map(|f| [0, 1].map(|ch|
+        f32::from_le_bytes(f[ch * 4..ch * 4 + 4].try_into().unwrap()) * 4.)).collect::<Vec<_>>();
+    let fit = out.iter().flatten().zip(expected.iter().flatten())
+        .map(|(a,b)| f64::from(*a) * f64::from(*b)).sum::<f64>() / power;
+    let fitted_error = out.iter().flatten().zip(expected.iter().flatten())
+        .map(|(a,b)| (f64::from(*a) - fit * f64::from(*b)).powi(2)).sum::<f64>();
+    println!("W15_HARP_FIT scale={fit} gain_db={} residual_db={}",
+        20. * fit.abs().log10(), 10. * (fitted_error / power).log10());
     if peak > 1e-6 {
         let reader = runtime.signal_trace_reader().unwrap();
         let mut seen = std::collections::BTreeSet::new();
