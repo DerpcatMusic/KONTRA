@@ -73,7 +73,9 @@ fn stamp(
     controls: &[(sampler_core::ControlId, i32)],
 ) -> Option<Vec<u8>> {
     let (size, mtime, identity) = version(path)?;
-    let mut out = b"KONTRA v2 translated instrument 1 ".to_vec();
+    // Version 1 could serialize Behavior::source. Reject its entries even if
+    // the import signature happens to remain unchanged across builds.
+    let mut out = b"KONTRA v2 translated instrument 2 ".to_vec();
     out.extend_from_slice(env!("KONTRA_IMPORT_HASH").as_bytes());
     out.extend_from_slice(&program.to_le_bytes());
     out.extend_from_slice(&size.to_le_bytes());
@@ -137,6 +139,7 @@ fn load_from(
     if !current(&head.dependencies)
         || head.instrument.assets.len() != head.locations.len()
         || head.states.len() != head.instrument.behaviors.len()
+        || !head.instrument.behaviors.is_empty()
         || head.control_values != controls
         || !head.instrument.impulses.is_empty()
         || !head.instrument.zones.is_empty()
@@ -260,6 +263,17 @@ fn store_in(
     kontakt: &mut Kontakt,
     recipes: &[ImpulseRecipe],
 ) {
+    // Behavior carries source-language text and saved script state. A product
+    // cache must never persist either from a decoded/protected instrument.
+    // A source-free instrument can still use the metadata cache.
+    if !kontakt.instrument.behaviors.is_empty()
+        || kontakt
+            .initialized
+            .as_ref()
+            .is_some_and(|init| !init.states.is_empty())
+    {
+        return;
+    }
     if kontakt
         .instrument
         .unsupported
@@ -498,7 +512,10 @@ mod tests {
             load_from(&dir, &preset, 0, &[])
         })
         .flatten();
-        assert!(result.is_none(), "scan must not restore cached initialization");
+        assert!(
+            result.is_none(),
+            "scan must not restore cached initialization"
+        );
         assert_eq!(reads.get(), 0, "scan must not enter cache lookup I/O");
     }
 
@@ -520,8 +537,14 @@ mod tests {
                 store_in(target, &preset, 0, &mut k, &[]);
             });
         }
-        assert!(std::fs::read(existing).unwrap() == before, "scan must not replace an existing cache");
-        assert!(!f.0.join("new-cache").exists(), "scan must not create cache files or directories");
+        assert!(
+            std::fs::read(existing).unwrap() == before,
+            "scan must not replace an existing cache"
+        );
+        assert!(
+            !f.0.join("new-cache").exists(),
+            "scan must not create cache files or directories"
+        );
         assert_eq!(writes.get(), 0, "scan must not enter cache store I/O");
     }
 
@@ -551,12 +574,12 @@ mod tests {
         assert!(load_from(&dir, &preset, 0, &[]).is_none());
     }
     #[test]
-    fn product_cache_restores_host_values_engine_state_and_invalidates_dependencies() {
+    fn product_cache_never_writes_script_source() {
         let f = Fixture::new();
         let preset = f.0.join("fixture.nki");
         std::fs::write(&preset, [0; 16]).unwrap();
         let dir = f.0.join("cache");
-        let source = "on init\ndeclare ui_knob $k(0,100,1)\nmake_persistent($k)\nread_persistent_var($k)\nset_engine_par($ENGINE_PAR_VOLUME,12345,-1,-1,-1)\nend on";
+        let source = "on init\ndeclare ui_knob $k(0,100,1)\nmake_persistent($k)\nread_persistent_var($k)\nset_engine_par($ENGINE_PAR_VOLUME,12345,-1,-1,-1)\n{PRIVATE_KSP_MARKER_NOT_FOR_DISK}\nend on";
         let id = sampler_ksp::derived_control_id(0, "$k");
         let controls = vec![(id, 37)];
         let mut k = kontakt(&f.0);
@@ -574,43 +597,69 @@ mod tests {
             Vec::new(),
             &controls,
         ));
-        let expected = k.initialized.as_ref().unwrap().states[0]
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .engine_pars();
-        store_in(&dir, &preset, 0, &mut k, &[]);
         assert!(
-            load_from(&dir, &preset, 0, &[]).is_none(),
-            "different restored state is a miss"
+            k.initialized.as_ref().unwrap().states[0]
+                .as_ref()
+                .unwrap()
+                .is_ok()
         );
-        let mut warm = load_from(&dir, &preset, 0, &controls).expect("cached semantic host values");
-        let init = warm.initialized.as_mut().unwrap().states[0]
-            .take()
-            .unwrap()
-            .unwrap();
-        assert_eq!(init.engine_pars(), expected);
-        let script = sampler_ksp::compile_initialized(
-            source,
-            48000,
-            sampler_ksp::Limits::LIBRARY,
-            &[],
-            init,
-        )
-        .unwrap();
+        let absent = f.0.join("absent-cache");
+        store_in(&absent, &preset, 0, &mut k, &[]);
+        assert!(
+            !absent.exists(),
+            "scripted load must not create a cache directory"
+        );
+        k.instrument.behaviors.clear();
+        store_in(&absent, &preset, 0, &mut k, &[]);
+        assert!(
+            !absent.exists(),
+            "script initialization state must not create a cache entry"
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("unrelated"), b"keep").unwrap();
+        store_in(&dir, &preset, 0, &mut k, &[]);
+        assert!(load_from(&dir, &preset, 0, &controls).is_none());
+        for file in std::fs::read_dir(&dir).unwrap().flatten() {
+            assert_ne!(
+                file.path().extension().and_then(|e| e.to_str()),
+                Some("instrument")
+            );
+            assert!(
+                !std::fs::read(file.path())
+                    .unwrap()
+                    .windows(source.len())
+                    .any(|w| w == source.as_bytes()),
+                "private KSP source must not appear in the cache"
+            );
+        }
+        assert_eq!(std::fs::read(dir.join("unrelated")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn source_free_product_cache_roundtrips_and_invalidates_new_resources() {
+        let f = Fixture::new();
+        let preset = f.0.join("fixture.nki");
+        std::fs::write(&preset, [0; 16]).unwrap();
+        let dir = f.0.join("cache");
+        let mut k = kontakt(&f.0);
+        k.instrument.name = "source-free fixture".into();
+        k.initialized.as_mut().unwrap().resources = Some(Resources::of(&preset));
+        store_in(&dir, &preset, 0, &mut k, &[]);
         assert_eq!(
-            script.controls()[0].definition.default,
-            sampler_core::ControlValue::Integer(37)
+            load_from(&dir, &preset, 0, &[]).unwrap().instrument.name,
+            "source-free fixture"
         );
         std::fs::create_dir(f.0.join("Resources")).unwrap();
         std::fs::write(f.0.join("Resources/new.nckp"), b"fixture").unwrap();
         assert!(
-            load_from(&dir, &preset, 0, &controls).is_none(),
+            load_from(&dir, &preset, 0, &[]).is_none(),
             "new resource invalidates captured view"
         );
+        std::fs::remove_file(f.0.join("Resources/new.nckp")).unwrap();
+        std::fs::remove_dir(f.0.join("Resources")).unwrap();
+        assert!(load_from(&dir, &preset, 0, &[]).is_some());
         std::fs::write(&preset, b"changed fixture length").unwrap();
-        assert!(load_from(&dir, &preset, 0, &controls).is_none());
+        assert!(load_from(&dir, &preset, 0, &[]).is_none());
     }
     #[test]
     fn metadata_writer_and_cache_eviction_are_bounded() {
