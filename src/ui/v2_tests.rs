@@ -7190,3 +7190,119 @@ fn v1_modulation_inventory_includes_primary_amplitude_envelope_once() {
     assert_eq!(text.iter().filter(|s| **s == "+100%").count(), 1);
     assert!(!text.contains(&"Nothing modulates this group."));
 }
+
+#[test]
+fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument::default();
+    inst.assets.push(sir::Asset {
+        location: sir::AssetLocation::Path("Samples/Selected_sample.wav".into()),
+        encoding: sir::Encoding::Wav,
+        root_key: Some(60),
+        loops: vec![],
+    });
+    for n in 0..189 {
+        inst.groups.push(sir::Group {
+            name: format!("Group {n}"),
+            ..Default::default()
+        });
+    }
+    for n in 0..54_216 {
+        let mut zone = sir::Zone::new(sir::AssetRef(0));
+        zone.group = Some(sir::GroupRef(n % 189));
+        inst.zones.push(zone);
+    }
+    let source = Arc::new(inst);
+    let before = (*source).clone();
+    let index = Arc::new(super::MappingIndex::new(&source));
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/x/54k workbench.nki".into(),
+            ..Default::default()
+        });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts.resize_with(1, Default::default);
+        view.parts[0].instrument = Some(source.clone());
+        view.parts[0].mapping_index = Some(index.clone());
+    }
+    for (w, h) in [(1180, 780), (900, 640)] {
+        let mut ui = Harness::new(&p, w as f64, h as f64);
+        ui.press("view-0-Mapping");
+        ui.idle(30);
+        let scene = ui.ui.scene().unwrap();
+        let map = scene.surface("map-0").unwrap().frame;
+        let wave = scene.surface("map-wave-0").unwrap().frame;
+        let table = scene.surface("map-stack-0").unwrap().frame;
+        let rack = scene.surface("rack-view").unwrap().frame;
+        assert!(map.size.height >= 32., "large map at {w}×{h}: {map:?}");
+        assert!(wave.size.height >= 40. && table.size.height >= 22.);
+        assert!(
+            wave.y + wave.size.height <= rack.y + rack.size.height,
+            "wave stays visible"
+        );
+        assert!(
+            scene
+                .surfaces()
+                .filter(|s| s.key.starts_with("map-group-0-"))
+                .count()
+                < 48,
+            "offscreen group rows are never constructed"
+        );
+        let path = scene
+            .paint
+            .iter()
+            .find(|p| &*p.key == "map-0" && p.layer == moose::mui::mui::scene::Layer::Draw(0))
+            .unwrap()
+            .path
+            .clone();
+        ui.idle(100);
+        let idle = ui
+            .ui
+            .scene()
+            .unwrap()
+            .paint
+            .iter()
+            .find(|p| &*p.key == "map-0" && p.layer == moose::mui::mui::scene::Layer::Draw(0))
+            .unwrap()
+            .path
+            .clone();
+        assert!(
+            Arc::ptr_eq(&path, &idle),
+            "idle redraw reuses the immutable map paint"
+        );
+        ui.press("map-zone-0-1");
+        ui.press("view-0-Sound");
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("sound-tab-0-Mapping")
+                .is_none()
+        );
+        ui.press("view-0-Mapping");
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-1")
+                .is_some()
+        );
+        assert!(Arc::ptr_eq(
+            &index,
+            p.shared.view.lock().unwrap().parts[0]
+                .mapping_index
+                .as_ref()
+                .unwrap()
+        ));
+
+    }
+    assert_eq!(
+        *source, before,
+        "workbench leaves source identities and data intact"
+    );
+}
