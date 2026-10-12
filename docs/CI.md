@@ -14,7 +14,7 @@ checks cannot turn the aggregate green.
 | Workflow checks | YAML, expressions, dependency graph, documentation filtering and simulated release safety | `bash .github/scripts/check_workflows.sh` (Linux); `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`; `python3 .github/workflows/check_nightly.py` |
 | rustfmt | Formatting differences, currently advisory because the tree has existing debt | `cargo fmt --all --check` |
 | clippy | Compilation plus Rust lint diagnostics; existing warning policy is unchanged | `cargo clippy --locked --profile ci --all-targets` |
-| Linux tests | The entire existing default-feature unit/integration/doc-test suite | `cargo test --locked --profile ci` |
+| Linux tests | Default-feature unit/integration/doc-tests for the root and every first-party workspace package, including the parity ledger and corpus collector | `cargo test --locked --profile ci -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir -p sampler-perf -p sampler-parity -p corpus-health` |
 | Windows/macOS check | Native API, platform configuration and standalone compilation; this does not execute tests | `cargo check --locked --profile ci --all-targets --features standalone` |
 | CI required | Every applicable job succeeded, or all expensive jobs were deliberately skipped for docs | GitHub Actions job |
 
@@ -22,6 +22,12 @@ checks cannot turn the aggregate green.
 four `access::*` unit tests, so rerunning them with the same enabled feature was
 redundant. No assertion or test was removed, and existing ignored/local-library
 or timing-sensitive tests were not newly disabled.
+
+The root-only `cargo test` command does not select the other workspace packages.
+CI names every first-party package explicitly; `sampler-parity` and
+`corpus-health` are included so parity reporting and corpus-result admission
+receive the same checks as the playback crates. Installed-library tests that
+require local paths remain separate from synthetic CI coverage.
 
 `ci` inherits `release`: optimization level 3, release assertion/overflow behavior
 and unwind semantics remain. It turns off **cross-crate ThinLTO**, reducing linker
