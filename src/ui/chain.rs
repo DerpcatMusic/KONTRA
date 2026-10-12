@@ -31,20 +31,26 @@ pub fn bypass_light(on: bool) -> El {
     .shrink(0)
     .named(if on { "On" } else { "Bypassed" })
 }
-pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: usize) -> El {
+pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, slot: usize, i: &ir::Instrument, g: usize) -> El {
     let mut rows = Vec::new();
     let mut used = Vec::new();
+    let mut amplitudes = Vec::new();
+    let part = p.shared.part(slot);
     for z in i.zones.iter().filter(|z| z.group == Some(ir::GroupRef(g))) {
+        if let Some(source) = z.amplitude {
+            if !amplitudes.contains(&source) { amplitudes.push(source); }
+        }
         for r in &z.routes {
             if !used.contains(r) {
                 used.push(*r);
             }
         }
     }
-    for id in used {
-        let Some(r) = i.routes.get(id.0) else {
-            continue;
-        };
+    // port from v1 0cb7a8a0:src/ui/chain.rs: include the primary amplitude assignment.
+    let routes = used.into_iter().filter_map(|id| i.routes.get(id.0)).copied()
+        .chain(amplitudes.into_iter().map(|source|
+            ir::Route::new(source, ir::Target::Amplitude, ir::Depth::Normalized(1.))));
+    for r in routes {
         let Some(source) = i.modulators.get(r.source.0) else {
             continue;
         };
@@ -55,6 +61,7 @@ pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: 
         };
         let source = source.source.clone();
         let state = p.clone();
+        let part = part.clone();
         let reach = depth.abs().min(1.);
         let bar = canvas(move |s| {
             let y = ((s.height - 3.) / 2.).round();
@@ -62,6 +69,13 @@ pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: 
                 Draw::fill(rect(0., y, s.width, 3.), Role::Ink.alpha(0.1)),
                 Draw::fill(rect(0., y, s.width * reach, 3.), Role::Ink.alpha(0.22)),
             ];
+            // port from v1 0cb7a8a0:src/ui/chain.rs: live key/velocity from the watched voice.
+            let voice = || {
+                if state.shared.editor_watch.load(Relaxed) != slot { return None; }
+                part.as_ref()?.editor_taps.iter()
+                    .filter_map(|v| crate::sound::edits::Tap::unpack(v.load(Relaxed)))
+                    .filter(|t| usize::from(t.group) == g).last()
+            };
             let v = match source {
                 ir::ModulationSource::Controller(1) => {
                     Some(state.shared.modulation.load(Relaxed) as f64 / 127.)
@@ -70,6 +84,8 @@ pub fn modulation(p: &Arc<crate::plugin::SamplerParams>, i: &ir::Instrument, g: 
                     Some(state.shared.bend.load(Relaxed) as f64 / 16383.)
                 }
                 ir::ModulationSource::Constant => Some(1.),
+                ir::ModulationSource::Velocity => voice().map(|t| f64::from(t.velocity) / 127.),
+                ir::ModulationSource::Key => voice().map(|t| f64::from(t.note) / 127.),
                 _ => None,
             };
             if let Some(v) = v {
