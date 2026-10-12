@@ -130,8 +130,10 @@ fn base(opts: &Options, kind: &str) -> Value {
         "ui": {"status": "not_evaluated", "scope": "Source frontends do not execute authored UI initialization", "interfaces": []},
         "diagnostics": [],
         "evidence": {"runtime": "not_run", "audio": "not_run", "native_equivalence": "unknown",
-            "v1_reference": {"kontakt": "0cb7a8a0", "uvi": "4bffbb18"},
-            "v1_comparison":"Reference commits only; v1 conversion was not executed"}
+            "reference_policy":"Native host behavior and official scripting contracts; implementation agreement is not native proof",
+            "native_reference":{"host":if kind.starts_with("kontakt") {"Native Instruments Kontakt"} else {"UVI Falcon/Workstation"},"measurement":"not_run"},
+            "implementation_history": {"kontakt_v1": "0cb7a8a0", "uvi_v1": "4bffbb18"},
+            "implementation_comparison":"Historical commits only; v1 conversion was not executed"}
     })
 }
 
