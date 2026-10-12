@@ -644,6 +644,12 @@ fn translate(
         out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok();
     }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
+    // Keep validated zone storage sized to admitted content. This runs before
+    // publication/cache storage; physical zone indices and holes stay unchanged.
+    out.ir.zones.shrink_to_fit();
+    if let Some(objects) = &mut out.ir.kontakt_objects {
+        objects.zones.shrink_to_fit();
+    }
     drop(_span);
     let mut kontakt = Kontakt {
         instrument: out.ir,
