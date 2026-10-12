@@ -200,3 +200,20 @@ fn fractional_nested_widget_edit_readback_and_restore_keep_physical_identities()
     assert_eq!(after.widgets[2].binding, identity);
     assert!(restored.findings().is_empty(), "{:?}", restored.findings());
 }
+
+#[test]
+fn finite_negative_parent_relative_positions_remain_admissible() {
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      setSize(320.5,160.25)
+      outer=Panel{'outer',bounds={-10.25,-20.5,100.75,80.125}}
+      inner=outer:Panel{'inner',bounds={3.5,4.25,60.5,50.25}}
+      inner:Knob{'knob',0.25,0,1,bounds={2.5,5.125,24.75,24.125}}
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let host = ScriptHost::new(xml, (), Config::default()).unwrap();
+    let face = host.interface();
+    assert_eq!(face.validate(), Ok(()));
+    let rect = face.page_rect(WidgetRef(2));
+    assert_eq!((rect.x, rect.y), (-4.25, -11.125));
+    assert_eq!((rect.width, rect.height), (24.75, 24.125));
+    assert!(host.findings().is_empty(), "{:?}", host.findings());
+}
