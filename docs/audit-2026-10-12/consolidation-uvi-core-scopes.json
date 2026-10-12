@@ -1936,11 +1936,9 @@
       "tip": "f630f08fd3000453debe313e04c1a689aa4be553",
       "tip_tree": "a9fc022983763fe21eda8bc6c6e2bb5bc52d0d3a",
       "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
-      "disposition": "preserved-unaccepted-native-consumers",
-      "reason": "d8f1c623 native primary source checks passed but c7218f7b records CPU HOLD,477 missing features/four silent notes, and no native-admission counter.0158aefa later ordinary/Flex/external consumer ends with pending trusted GREEN/freeze/quiet handoff; no successful whole output/admission gate found. New source dictionaries/runtime consumers require modern-control integration; do not enable on branch name or v1 equivalence alone.",
+      "disposition": "recovered-production-primary-ordinary-flex-external",
+      "reason": "Recovered d8f1c623/0158aefa and2eae7382/d6c24fbc/f630f08f into current EnvelopeState, plan-generation slabs, scalar/parallel source rendering and modulation control/phase/filter owners. Added initialized coefficient agreement, live external depth/bypass authority and schema remapping, unique physical group identity, replacement/growth isolation and actual admission counters. No rejected fused render/SIMD/ring experiment enabled. Central Rust validation pending; whole native/timed CPU remains UNKNOWN.",
       "unresolved_scopes": [
-        "native-primary",
-        "whole-controls",
         "fold-experiments"
       ],
       "different_scoped_paths": 164,
@@ -1950,7 +1948,11 @@
         "crates/sampler-core/src/v1_voice_controls.rs"
       ],
       "latest_changed_paths_equal_to_baseline": [],
-      "whole_branch_semantic_integration_claim": false
+      "whole_branch_semantic_integration_claim": false,
+      "recovery_commits": [
+        "45d8ad3c",
+        "7f845b75"
+      ]
     },
     {
       "ref": "refs/heads/wip/orphan-voice",
@@ -2534,11 +2536,11 @@
   "recovered_commits": [
     "c3e825c9",
     "640224a0",
-    "2e030e6d"
+    "2e030e6d",
+    "45d8ad3c",
+    "7f845b75"
   ],
   "unresolved_major_scopes": [
-    "native-primary",
-    "whole-controls",
     "fold-experiments",
     "fused-render",
     "streaming-rings",
@@ -2557,38 +2559,11 @@
     "synthetic_cases": 27,
     "numeric_method": "Python f32 reconstruction of saved tick preparation and recurrence versus committed synthetic original-byte fixture. Native CRT pow and native host timing remain unknown.",
     "diff_check": "git diff --check passed",
-    "rust_tests": "authored and recovered, not executed here by explicit no-build instruction"
+    "rust_tests": "authored and recovered, not executed here by explicit no-build instruction",
+    "production_recovery_syntax_files": 15,
+    "production_recovery_rust_tests": "Recovered/added authored tests not run here; explicit no-build instruction. Parent central owner will compile/run and append exact receipts."
   },
   "unresolved_details": [
-    {
-      "id": "native-primary",
-      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
-      "donor_tip": "f630f08fd3000453debe313e04c1a689aa4be553",
-      "commits": [
-        "c3cb7aa9",
-        "d8f1c623",
-        "7254f00b",
-        "c7218f7b"
-      ],
-      "source_gap": "Current EnvelopeState runs generic frame-valued envelope curves; raw SourceAhdsr.native_amplitude metadata and v1 native evaluator are present but not joined to the production envelope owner. This is actual missing source, not a name-only discrepancy.",
-      "reason_not_enabled": "d8f1c623 is a separate native-primary checkpoint with v1/evaluator bit tests, not original-host sound acceptance. c7218f7b explicitly holds full native-control execution:477 feature omissions,four silent reports,unknown active-native admission after initialization and no clear CPU improvement. Current envelope setters/trace/control/retirement tests have later changes; simply replacing envelope.rs would regress them. Preserve donor and its numeric source oracle until independently admitted modern lifecycle/source identity tests and exact initialized overlays exist.",
-      "followup": "Port only typed native-primary selection/state into current EnvelopeState, preserve step curves/control reset/choke/stream onset semantics, add dynamic/default overlay and actual admission counters, then parent central tests and version-pinned native capture."
-    },
-    {
-      "id": "whole-controls",
-      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
-      "commits": [
-        "fee28276",
-        "41c30630",
-        "0158aefa",
-        "2eae7382",
-        "d6c24fbc",
-        "f630f08f"
-      ],
-      "source_gap": "Current ordinary primary/Flex/external modulation runs shared generic evaluator; donor introduces whole_voice.rs prepared ControlPlan and state/claim arrays, ordered native input projection, plus runtime admission counters. Not present in current production.",
-      "reason_not_enabled": "Latest own whole-controls handoff still requests trusted focused GREEN/area no-run/freeze/quiet. No successful final acceptance receipt found. Modern source-driven LFO phase routing,filter index sets,live control IDs and bipolar script sources must retain current owners. Source0158 admission also declines active LFO/ambiguous/new shapes and still lacks native initialized/live source mirror. Full branch replacement would remove newer sound controls/DSP; enable only after source-derived admission and current lifecycle/heap/growth tests.",
-      "followup": "Retain original descriptors as evidence, establish one physical prepared mapping using current IR/runtime addresses, separately prove ordinary/Flex/external kernels; never use older normalized source identity or copied v1 test alone as native parity."
-    },
     {
       "id": "fused-render",
       "donor_ref": "refs/heads/v2/w9-v1-fused-resample-5fc",
@@ -2630,6 +2605,85 @@
     {
       "id": "v1-precursor",
       "reason_not_enabled": "Old monolithic v1 core,original UI,readers and DSP refs are preserved; this scoped source audit does not certify every v1 source consumer. Current UVI/core already contains named admitted extracted leaf laws. New native context and major dirty main-v1 successor are parent/other lane responsibilities."
+    }
+  ],
+  "recovered_production_consumers": [
+    {
+      "id": "native-primary",
+      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
+      "donor_tip": "f630f08fd3000453debe313e04c1a689aa4be553",
+      "commits": [
+        "c3cb7aa9",
+        "d8f1c623",
+        "7254f00b",
+        "c7218f7b"
+      ],
+      "historical_admission_boundary": "d8f1c623 is a separate native-primary checkpoint with v1/evaluator bit tests, not original-host sound acceptance. c7218f7b explicitly holds full native-control execution:477 feature omissions,four silent reports,unknown active-native admission after initialization and no clear CPU improvement. Current envelope setters/trace/control/retirement tests have later changes; simply replacing envelope.rs would regress them. Preserve donor and its numeric source oracle until independently admitted modern lifecycle/source identity tests and exact initialized overlays exist.",
+      "historical_source_gap": "Current EnvelopeState runs generic frame-valued envelope curves; raw SourceAhdsr.native_amplitude metadata and v1 native evaluator are present but not joined to the production envelope owner. This is actual missing source, not a name-only discrepancy.",
+      "current_status": "Recovered into production as45d8ad3c+7f845b75; parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
+      "current_code": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/src/whole_voice.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/parallel.rs"
+      ],
+      "current_regressions": [
+        "lowered_native_primary_runs_the_pinned_evaluator_in_production_voice",
+        "lowered_whole_voice_uses_v1_ordinary_amplitude_clock",
+        "lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse",
+        "lowered_whole_voice_external_uses_current_depth_and_full_resolution_cc",
+        "lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths",
+        "native_external_reads_live_depth_and_bypass_without_resetting_held_source",
+        "initialized_envelope_overlay_declines_stale_raw_native_coefficients",
+        "native_control_state_keeps_physical_plan_ownership_across_replacement"
+      ],
+      "remaining_contract_limits": [
+        "Native host PCM/control cadence and current CPU/RSS are unknown; copied-v1 consumer oracle is distinguished from existing original-byte leaf fixtures.",
+        "Native primary/ordinary raw coefficients require agreement with initialized AHDSR projection; frame/setter/Step overlays stay on the current owner.",
+        "An unsupported active LFO, ambiguous physical mapping, secondary primary, arbitrary shaper, transformed/scaled route or unrepresentable original-unit depth declines the whole-control consumer. Shared existing source/route owners remain authoritative.",
+        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact."
+      ]
+    },
+    {
+      "id": "whole-controls",
+      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
+      "commits": [
+        "fee28276",
+        "41c30630",
+        "0158aefa",
+        "2eae7382",
+        "d6c24fbc",
+        "f630f08f"
+      ],
+      "historical_admission_boundary": "Latest own whole-controls handoff still requests trusted focused GREEN/area no-run/freeze/quiet. No successful final acceptance receipt found. Modern source-driven LFO phase routing,filter index sets,live control IDs and bipolar script sources must retain current owners. Source0158 admission also declines active LFO/ambiguous/new shapes and still lacks native initialized/live source mirror. Full branch replacement would remove newer sound controls/DSP; enable only after source-derived admission and current lifecycle/heap/growth tests.",
+      "historical_source_gap": "Current ordinary primary/Flex/external modulation runs shared generic evaluator; donor introduces whole_voice.rs prepared ControlPlan and state/claim arrays, ordered native input projection, plus runtime admission counters. Not present in current production.",
+      "current_status": "Recovered into production as45d8ad3c+7f845b75; parent central tests required. Native runtime and present CPU/RSS remain UNKNOWN.",
+      "current_code": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/src/whole_voice.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/parallel.rs"
+      ],
+      "current_regressions": [
+        "lowered_native_primary_runs_the_pinned_evaluator_in_production_voice",
+        "lowered_whole_voice_uses_v1_ordinary_amplitude_clock",
+        "lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse",
+        "lowered_whole_voice_external_uses_current_depth_and_full_resolution_cc",
+        "lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths",
+        "native_external_reads_live_depth_and_bypass_without_resetting_held_source",
+        "initialized_envelope_overlay_declines_stale_raw_native_coefficients",
+        "native_control_state_keeps_physical_plan_ownership_across_replacement"
+      ],
+      "remaining_contract_limits": [
+        "Native host PCM/control cadence and current CPU/RSS are unknown; copied-v1 consumer oracle is distinguished from existing original-byte leaf fixtures.",
+        "Native primary/ordinary raw coefficients require agreement with initialized AHDSR projection; frame/setter/Step overlays stay on the current owner.",
+        "An unsupported active LFO, ambiguous physical mapping, secondary primary, arbitrary shaper, transformed/scaled route or unrepresentable original-unit depth declines the whole-control consumer. Shared existing source/route owners remain authoritative.",
+        "Native Q32 LFO/pitch-envelope whole-voice integration needs original initialized/live coefficient mirrors and exact physical source/target mapping before that combined consumer can replace the current evaluator. Existing imported leaf/source APIs and diagnostics remain intact."
+      ]
     }
   ]
 }
