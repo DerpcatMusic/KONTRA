@@ -38,6 +38,7 @@ mod ir_view;
 #[allow(dead_code)]
 mod load_report;
 mod mapping;
+pub(crate) use mapping::Index as MappingIndex;
 #[allow(dead_code)]
 mod mix_tree;
 mod native_runtime;
