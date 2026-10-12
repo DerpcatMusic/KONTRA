@@ -49,6 +49,11 @@ const SOURCE_RULE: f64 = 2. * INSET + 1.;
 /// How far a folder level steps in.
 const INDENT: f64 = TEXT;
 
+#[cfg(test)]
+thread_local! { pub(super) static WORK: std::cell::Cell<[usize; 6]> = const { std::cell::Cell::new([0; 6]) }; }
+#[cfg(test)]
+fn work(at: usize, count: usize) { WORK.with(|n| { let mut counts = n.get(); counts[at] += count; n.set(counts); }); }
+
 /// The browser's own state between frames.
 #[derive(Default)]
 pub struct Browse {
@@ -681,6 +686,7 @@ fn list(
     recent: &[PathBuf],
     needle: &str,
 ) -> Vec<Row> {
+    #[cfg(test)] work(0, 1);
     let view = &cx.view;
     let words: Vec<&str> = needle.split_whitespace().collect();
     // A preset's library and its folders inside it.
@@ -714,6 +720,7 @@ fn list(
             paths.extend(view.shelf.snapshots.iter().filter(|(base, _)| view.shelf.of(base).is_some_and(|l| l.dir == library.dir))
                 .flat_map(|(_, snapshots)| snapshots.paths.iter().map(PathBuf::as_path)));
         }
+        #[cfg(test)] work(1, paths.len());
         paths.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         paths.dedup();
         paths
@@ -746,6 +753,7 @@ fn categories(library: &Library, paths: &[&Path], open: &BTreeMap<String, bool>)
             category == name
         }).collect();
         if selected.is_empty() { continue; }
+        #[cfg(test)] work(2, selected.len());
         selected.sort_by_cached_key(|p| import::natural(&p.to_string_lossy()));
         let mut root = library.dir.clone();
         // Bank members keep their source identity while hiding the container wrapper.
@@ -1299,6 +1307,7 @@ fn folder(ui: &mut Ui, cx: &mut Cx, n: usize, row: &Row) -> El {
 /// rack, right-click opens its menu. A star at its end, shown on hover and
 /// kept once set, makes it a favorite. `under`, when set, is its folder.
 fn preset(ui: &mut Ui, cx: &mut Cx, n: usize, path: &Path, depth: usize, under: &str) -> El {
+    #[cfg(test)] work(4, 1);
     let id = format!("instrument-{n}");
     let star_id = format!("star-{n}");
     let text = path.to_string_lossy().into_owned();

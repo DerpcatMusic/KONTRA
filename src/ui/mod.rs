@@ -1354,6 +1354,8 @@ pub use ir_view::uvi_ui_health;
 mod loop_audit;
 #[cfg(test)]
 mod browser_tests;
+#[cfg(all(test, feature = "shots"))]
+mod browser_perf_tests;
 #[cfg(test)]
 mod chrome_tests;
 #[cfg(test)]
