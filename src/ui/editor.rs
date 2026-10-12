@@ -876,7 +876,7 @@ fn lower(
                 .gap(0)
                 .shrink(0);
         }
-        Lower::Modulation => chain::modulation(cx.p, instrument, group as usize),
+        Lower::Modulation => chain::modulation(cx.p, slot, instrument, group as usize),
         Lower::Effects => chain::effects(instrument, group as usize),
     };
     col![
