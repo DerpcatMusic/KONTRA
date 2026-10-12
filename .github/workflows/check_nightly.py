@@ -67,9 +67,10 @@ for case in ("valid", "missing", "duplicate"):
 
 signing = Path(__file__).resolve().parents[1].joinpath("scripts/notarize_macos.sh")
 assert "Developer ID sign and notarize macOS" in workflow and "--sign -" not in workflow
-for check in ("--options runtime --timestamp", "/notarize.py", "stapler validate", "spctl --assess"):
+for check in ("--options runtime --timestamp", "/notarize.py", '/stapler.py" staple', '/stapler.py" validate', "spctl --assess"):
     assert check in signing.read_text(), check
 subprocess.run(["python3", str(signing.with_name("test_notarize.py"))], check=True)
+subprocess.run(["python3", str(signing.with_name("test_stapler.py"))], check=True)
 clean_env = {k:v for k,v in os.environ.items() if not k.startswith("APPLE_")}
 result = subprocess.run(["bash", str(signing)], env=clean_env, capture_output=True, text=True)
 assert result.returncode == 1 and "Missing required signing secret:" in result.stderr
@@ -119,8 +120,14 @@ elif name=="xcrun" and args[:2]==["notarytool","wait"]:
     assert args[args.index("--timeout")+1]=="30m"
     print(json.dumps(dict(status="Invalid" if os.environ["SIGNING_CASE"]=="rejected" else "Accepted",id=args[2])))
 elif name=="xcrun" and args[:2]==["stapler","validate"] and os.environ["SIGNING_CASE"]=="bad-ticket": sys.exit(1)
+elif name=="xcrun" and args[:1]==["stapler"] and os.environ["SIGNING_CASE"]==args[1]+"-network":
+    calls=pathlib.Path(os.environ["NATIVE_CALLS"]).read_text()
+    if calls.count("xcrun stapler "+args[1]+"\n")==1:
+        print('Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." synthetic-fixture',file=sys.stderr)
+        sys.exit(68)
 '''
-for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-chain", "rejected", "bad-ticket", "bad-swift-after-output", "bad-dmg-create", "bad-dmg-sign", "bad-notary-submit", "bad-notary-json"):
+successful_signing = ("accepted", "duplicate-ca", "duplicate-p12", "staple-network", "validate-network")
+for case in (*successful_signing, "bad-ca-import", "bad-chain", "rejected", "bad-ticket", "bad-swift-after-output", "bad-dmg-create", "bad-dmg-sign", "bad-notary-submit", "bad-notary-json"):
     with tempfile.TemporaryDirectory(prefix="kontra-signing-check-") as directory:
         root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
         for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl","curl"): tools.joinpath(name).symlink_to("mock")
@@ -133,8 +140,8 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
         env["APPLE_APPLICATION_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-fixture").decode()+"\n"
         env["APPLE_INSTALLER_CERTIFICATE_P12_BASE64"]=base64.b64encode(b"synthetic-installer-fixture").decode()+"\n"
         result=subprocess.run(["bash",str(signing)],env=env,capture_output=True,text=True)
-        assert result.returncode==(0 if case in ("accepted", "duplicate-ca", "duplicate-p12") else 7 if case=="bad-dmg-create" else 1),(case,result.stderr)
-        assert (stage/"notarization.json").exists()==(case in ("accepted", "duplicate-ca", "duplicate-p12"))
+        assert result.returncode==(0 if case in successful_signing else 7 if case=="bad-dmg-create" else 1),(case,result.stderr)
+        assert (stage/"notarization.json").exists()==(case in successful_signing)
         calls=root.joinpath("calls").read_text()
         assert "security delete-keychain" in calls
         assert json.loads(root.joinpath("calls.keychains").read_text())==["/Users/test user/login.keychain-db", "/Library/Keychains/System.keychain"], "original keychains were not restored"
@@ -158,12 +165,15 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
         if case=="rejected":
             assert calls.count("xcrun notarytool submit")==1 and calls.count("xcrun notarytool wait")==1
             assert "xcrun stapler staple" not in calls
-        if case in ("accepted", "duplicate-ca", "duplicate-p12"):
+        if case in successful_signing:
             receipt=json.loads(stage.joinpath("notarization.json").read_text())
             assert receipt["status"]=="Accepted" and receipt["stapled"] and receipt["signatures_verified"]
             assert stage.joinpath("notarization.json").stat().st_mode & 0o777 == 0o600
             assert all(hashlib.sha256(stage.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in receipt["sha256"].items())
             assert calls.count("xcrun notarytool submit")==1 and calls.count("xcrun notarytool wait")==1
+            assert calls.count("xcrun stapler staple")== (2 if case=="staple-network" else 1)
+            assert calls.count("xcrun stapler validate")== (2 if case=="validate-network" else 1)
+            assert "synthetic-fixture" not in result.stdout+result.stderr
             assert calls.index("xcrun notarytool submit") < calls.index("xcrun notarytool wait") < calls.index("xcrun stapler validate") < calls.index("spctl --assess")
 
 mock_gh = r'''#!/usr/bin/env python3
