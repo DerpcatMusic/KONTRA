@@ -359,7 +359,9 @@ impl CursorTemplate {
             loop_range: self.loop_range,
             controlled_loop: None,
             loops: extra.filter(|extra| extra.wavetable.is_none()),
-            position: wavetable.map_or(self.lead, |w| (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64),
+            position: wavetable.map_or(self.lead, |w| {
+                (f64::from(w.phase).rem_euclid(1.) * 2048.) as u64
+            }),
             fraction: wavetable.map_or(0., |w| (f64::from(w.phase).rem_euclid(1.) * 2048.).fract()),
             step: self.step,
             exit: self.exit,
@@ -522,6 +524,13 @@ impl Cursor {
 
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
         self.wavetable
+    }
+    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2]: [f32; 3]) {
+        if let Some(source) = &mut self.wavetable {
+            source.position = position;
+            source.form1 = form1;
+            source.form2 = form2;
+        }
     }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward

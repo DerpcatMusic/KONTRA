@@ -881,10 +881,12 @@ impl Translation {
                     ExternalModArray32::try_from(chunk)?
                         .slots()?
                         .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| {
-                            let settings = crate::modulation_objects::external(m.0.version, &p);
-                            (slot, p.name, p.targets, settings)
-                        }))
+                        .map(|(slot, m)| {
+                            m.params().map(|p| {
+                                let settings = crate::modulation_objects::external(m.0.version, &p);
+                                (slot, p.name, p.targets, settings)
+                            })
+                        })
                         .collect::<Result<_, _>>()?
                 } else {
                     let mut names = Vec::new();
@@ -967,7 +969,12 @@ impl Translation {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
                         ("FREQ", (f64::from(*hz) / 20.).log10() / 3., 0., 1.),
-                        ("BW", sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)), 0., 1.),
+                        (
+                            "BW",
+                            sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)),
+                            0.,
+                            1.,
+                        ),
                     ] {
                         if !value.is_finite() {
                             continue;
@@ -1261,14 +1268,6 @@ impl Translation {
                                 );
                             }
                         }
-                    }
-                    if self.dynamic {
-                        self.unsupported(
-                            &at,
-                            "wavetable live engine parameters",
-                            source.mode,
-                            not_modeled,
-                        );
                     }
                 } else {
                     self.unsupported(&at, "wavetable source", source.mode, not_modeled);
