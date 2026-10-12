@@ -36,35 +36,133 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
     let unit = Linear { low: 0., high: 1. };
     let (slot, lanes) = match p {
         ir::Processor::LadderLP4(d) => {
-            let Some(slot) = d.address else { return Vec::new() };
-            (slot, vec![("ENGINE_PAR_CUTOFF", d.cutoff, unit),
-                ("ENGINE_PAR_RESONANCE", d.resonance, unit),
-                ("ENGINE_PAR_GAIN", d.gain, SignedNormalized)])
+            let Some(slot) = d.address else {
+                return Vec::new();
+            };
+            (
+                slot,
+                vec![
+                    ("ENGINE_PAR_CUTOFF", d.cutoff, unit),
+                    ("ENGINE_PAR_RESONANCE", d.resonance, unit),
+                    ("ENGINE_PAR_GAIN", d.gain, SignedNormalized),
+                ],
+            )
         }
-        ir::Processor::LiveSaturation { shape, address } => (address,
-            vec![("ENGINE_PAR_SHAPE", f64::from(shape), Linear { low: -1., high: 1. })]),
-        ir::Processor::LiveDistortion { drive, damping, address, .. } => (address,
-            vec![("ENGINE_PAR_DRIVE", f64::from(drive), unit),
-                ("ENGINE_PAR_DAMPING", f64::from(damping), unit)]),
+        ir::Processor::LiveSaturation { shape, address } => (
+            address,
+            vec![(
+                "ENGINE_PAR_SHAPE",
+                f64::from(shape),
+                Linear { low: -1., high: 1. },
+            )],
+        ),
+        ir::Processor::LiveDistortion {
+            drive,
+            damping,
+            address,
+            ..
+        } => (
+            address,
+            vec![
+                ("ENGINE_PAR_DRIVE", f64::from(drive), unit),
+                ("ENGINE_PAR_DAMPING", f64::from(damping), unit),
+            ],
+        ),
         _ => return Vec::new(),
     };
-    lanes.into_iter().map(|(name, value, law)| {
-        let address = crate::EngineParameterAddress {
-            parameter: crate::engine_parameter_id(name).unwrap(),
-            group: slot.group, slot: slot.slot, generic: slot.generic,
-        };
-        let id = crate::engine_parameter_control(address);
-        let low = if matches!(law, SignedNormalized | Linear { low: -1., .. }) { -1. } else { 0. };
-        (ControlDefinition { id, domain: ControlDomain::Real { min: low, max: 1. },
-            default: ControlValue::Real(value) },
-            crate::EngineParameterBinding { address, control: id, law })
-    }).collect()
+    lanes
+        .into_iter()
+        .map(|(name, value, law)| {
+            let address = crate::EngineParameterAddress {
+                parameter: crate::engine_parameter_id(name).unwrap(),
+                group: slot.group,
+                slot: slot.slot,
+                generic: slot.generic,
+            };
+            let id = crate::engine_parameter_control(address);
+            let low = if matches!(law, SignedNormalized | Linear { low: -1., .. }) {
+                -1.
+            } else {
+                0.
+            };
+            (
+                ControlDefinition {
+                    id,
+                    domain: ControlDomain::Real { min: low, max: 1. },
+                    default: ControlValue::Real(value),
+                },
+                crate::EngineParameterBinding {
+                    address,
+                    control: id,
+                    law,
+                },
+            )
+        })
+        .collect()
 }
 
-fn native_parameter(lanes: &[(ControlDefinition, crate::EngineParameterBinding)], index: usize) -> Parameter {
+fn native_parameter(
+    lanes: &[(ControlDefinition, crate::EngineParameterBinding)],
+    index: usize,
+) -> Parameter {
     let c = lanes[index].0;
-    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
-    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
+    let ControlDomain::Real { min, max } = c.domain else {
+        unreachable!()
+    };
+    Parameter::Control(ControlRange {
+        control: c.id,
+        low: min,
+        high: max,
+        ramp_frames: 0,
+    })
+}
+
+/// Port v1 group settings: physical source lanes feed the oscillator every block.
+fn wavetable_lanes(
+    instrument: &ir::Instrument,
+    group: usize,
+    wave: ir::Wavetable,
+) -> Result<[(ControlDefinition, crate::EngineParameterBinding); 3], LowerError> {
+    let physical = if instrument.source_indices.groups.is_empty() {
+        group
+    } else {
+        instrument
+            .source_indices
+            .groups
+            .iter()
+            .position(|g| *g == Some(ir::GroupRef(group)))
+            .ok_or_else(|| {
+                core(Stage::Controls, format!("group {group} source identity"))(Error::InvalidInput)
+            })?
+    };
+    let physical = i32::try_from(physical)
+        .map_err(|_| core(Stage::Controls, "source group identity")(Error::InvalidInput))?;
+    Ok([
+        ("ENGINE_PAR_WT_POSITION", wave.position),
+        ("ENGINE_PAR_WT_FORM", wave.form1),
+        ("ENGINE_PAR_WT_FORM2", wave.form2),
+    ]
+    .map(|(name, value)| {
+        let address = crate::EngineParameterAddress {
+            parameter: crate::engine_parameter_id(name).unwrap(),
+            group: physical,
+            slot: -1,
+            generic: -1,
+        };
+        let id = crate::engine_parameter_control(address);
+        (
+            ControlDefinition {
+                id,
+                domain: ControlDomain::Real { min: 0., max: 1. },
+                default: ControlValue::Real(f64::from(value)),
+            },
+            crate::EngineParameterBinding {
+                address,
+                control: id,
+                law: crate::EngineParameterLaw::Linear { low: 0., high: 1. },
+            },
+        )
+    }))
 }
 
 /// Seed for random sequences; fixed so renders are reproducible.
@@ -425,11 +523,29 @@ pub fn lower_with(
     // Before the voice chains, which validate the controls they bind.
     let mut slots = lowering.slot_controls();
     slots.extend(lowering.controls()?);
+    let mut wave_bindings = Vec::new();
+    let mut wave_controls = if instrument.groups.iter().any(|g| g.wavetable.is_some()) {
+        vec![None; instrument.groups.len()]
+    } else {
+        Vec::new()
+    };
+    for (group, authored) in instrument.groups.iter().enumerate() {
+        if let Some(wave) = authored.wavetable {
+            let lanes = wavetable_lanes(instrument, group, wave)?;
+            wave_controls[group] = Some(lanes.map(|(control, _)| control.id));
+            for (control, binding) in lanes {
+                slots.push(control);
+                wave_bindings.push(binding);
+            }
+        }
+    }
+
     if !slots.is_empty() {
         plan = plan
             .with_controls(slots)
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
+    plan.wavetable_controls = wave_controls.into_boxed_slice();
     if !instrument.groups.is_empty() {
         // Group membership and authored values for script group edits
         // (`purge_group`, `set_engine_par`); selection is unaffected.
@@ -645,6 +761,7 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
+    engine_bindings.extend(wave_bindings);
     for alias in &instrument.source_indices.control_aliases {
         let routes = &instrument.source_indices.route_controls;
         if routes
@@ -1681,7 +1798,12 @@ impl Lowering<'_> {
     /// The control-driven stage for an IR filter, gain or matrix that a
     /// live parameter binds (frequency, quality, decibels, enable or a matrix
     /// cell), seeded with the authored constants.
-    fn live_stage(&self, chain: ir::ChainRef, index: usize, p: &ir::Processor) -> Option<Processor> {
+    fn live_stage(
+        &self,
+        chain: ir::ChainRef,
+        index: usize,
+        p: &ir::Processor,
+    ) -> Option<Processor> {
         let live = self.live_bound(chain, index);
         if !live {
             return None;
@@ -1715,8 +1837,12 @@ impl Lowering<'_> {
                 let (shape, gain) = match kind {
                     ir::FilterKind::LowShelf { gain } => (S::LowShelf, db(gain)),
                     ir::FilterKind::HighShelf { gain } => (S::HighShelf, db(gain)),
-                    ir::FilterKind::FirstOrderLowShelf { gain } => (S::FirstOrderLowShelf, db(gain)),
-                    ir::FilterKind::FirstOrderHighShelf { gain } => (S::FirstOrderHighShelf, db(gain)),
+                    ir::FilterKind::FirstOrderLowShelf { gain } => {
+                        (S::FirstOrderLowShelf, db(gain))
+                    }
+                    ir::FilterKind::FirstOrderHighShelf { gain } => {
+                        (S::FirstOrderHighShelf, db(gain))
+                    }
                     ir::FilterKind::Peak { gain } => (S::Peak, db(gain)),
                     ir::FilterKind::LowPass { .. } => (S::LowPass, 0.),
                     ir::FilterKind::HighPass { .. } => (S::HighPass, 0.),
@@ -1990,14 +2116,39 @@ impl Lowering<'_> {
             }
             ir::Processor::LiveDistortion { transistor, .. } => {
                 let lanes = native_lanes(processor);
-                Processor::LiveDistortion { transistor, drive: native_parameter(&lanes, 0),
-                    damping: native_parameter(&lanes, 1) }
+                Processor::LiveDistortion {
+                    transistor,
+                    drive: native_parameter(&lanes, 0),
+                    damping: native_parameter(&lanes, 1),
+                }
             }
-            ir::Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit },
-            ir::Processor::KontaktEnhancedCompressor { knobs, link } => Processor::KontaktEnhancedCompressor { knobs, link },
+            ir::Processor::LegacyPhaser {
+                depth,
+                feedback,
+                phase,
+                speed,
+                period_unit,
+            } => Processor::LegacyPhaser {
+                depth,
+                feedback,
+                phase,
+                speed,
+                period_unit,
+            },
+            ir::Processor::KontaktEnhancedCompressor { knobs, link } => {
+                Processor::KontaktEnhancedCompressor { knobs, link }
+            }
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
-            ir::Processor::Distortion { transistor, drive, damping } => Processor::Distortion { transistor, drive, damping },
+            ir::Processor::Distortion {
+                transistor,
+                drive,
+                damping,
+            } => Processor::Distortion {
+                transistor,
+                drive,
+                damping,
+            },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
@@ -2085,9 +2236,11 @@ impl Lowering<'_> {
             ir::FilterKind::FirstOrderLowShelf { gain } => biquad(FilterKind::FirstOrderLowShelf {
                 gain_db: 20.0 * gain.linear().log10(),
             }),
-            ir::FilterKind::FirstOrderHighShelf { gain } => biquad(FilterKind::FirstOrderHighShelf {
-                gain_db: 20.0 * gain.linear().log10(),
-            }),
+            ir::FilterKind::FirstOrderHighShelf { gain } => {
+                biquad(FilterKind::FirstOrderHighShelf {
+                    gain_db: 20.0 * gain.linear().log10(),
+                })
+            }
         }
     }
 
