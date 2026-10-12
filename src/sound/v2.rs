@@ -1223,6 +1223,9 @@ impl Default for V2Core {
 
 #[cfg(feature = "shots")]
 impl V2Core {
+    pub fn scan_runtime_stats(&self, part: usize) -> Option<sampler_core::RuntimeStats> {
+        Some(self.parts.get(part)?.as_ref()?.runtime.stats())
+    }
     pub fn scan_record_selections(&mut self, part: usize, enabled: bool) {
         if let Some(Some(p)) = self.parts.get_mut(part) {
             p.runtime.record_selections(enabled);
