@@ -1,0 +1,13 @@
+Read UVI4 state frames, clear UFS names and bounded NI members
+
+UVI program readers accept the UVI4 + version + length + zlib state frame
+with a 32 MiB limit, exact length and no trailing data. UFS readers honour
+the encoded-name flag (header 304) and root pointer (header 40); clear
+banks load without an installed reader. NIFileContainer gains a bounded
+read_member. Verified: 37 UVI unit tests, 32 NI compatibility tests, and
+all 26 local banks resolve 127,828 files and 1,409 folders.
+
+Source: thread 8ed6293f reader-improvements (DSP_FORMAT_SPECIFICATION UFS
+and UVI program sections).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
