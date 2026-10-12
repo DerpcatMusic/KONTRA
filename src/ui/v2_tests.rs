@@ -7277,12 +7277,14 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         );
         ui.press("map-zone-0-1");
         ui.press("view-0-Sound");
+        ui.press("sound-tab-0-Controls");
         assert!(
             ui.ui
                 .scene()
                 .unwrap()
-                .surface("sound-tab-0-Mapping")
-                .is_none()
+                .surface("map-0")
+                .is_none(),
+            "switching to Sound controls removes the actual map content"
         );
         ui.press("view-0-Mapping");
         assert!(
