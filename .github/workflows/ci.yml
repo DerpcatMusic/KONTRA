@@ -34,7 +34,7 @@ env:
   CRATES: >-
     -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp
     -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir
-    -p sampler-perf
+    -p sampler-perf -p sampler-parity -p corpus-health
 
 jobs:
   changes:
