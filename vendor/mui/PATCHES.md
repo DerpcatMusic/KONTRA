@@ -20,3 +20,13 @@ Witnesses: src/ui/popup_tests.rs and the native popover input guard in src/ui/na
 Upstream refuses any frame whose tree exceeds `mui_layout::Limits::default()` (4096 nodes) with `BudgetExceeded`, hard-coded in `Ui::frame`, the popup/tip validations, memo expansion and `SceneSpec::new`. A real instrument face (thousands of controls, each several nodes) blanked the whole editor.
 
 `Ui` now carries `node_limit` (default 65536, `Ui::set_node_limit`) and uses `Ui::limits()` at every one of those sites. The limit guards linear work and buffers (layout allocates in proportion to the nodes present) and the depth limit (64) still bounds recursion, so only the node count changed. Witness: `src/ui/chrome_tests.rs` `a_five_thousand_widget_face_never_blanks_the_editor`.
+
+# Semantic requests invalidate their retained ancestors
+
+Accepted `Ui::request_action` calls wake the target surface's retained memo
+ancestors before the next build. Otherwise an idle cached slider/button skips
+its input closure and the queued request expires without changing its model.
+This retains targeted invalidation, semantic value clamping and event coalescing;
+pointer capture and source-unit conversion remain unchanged. Witnesses:
+`semantic_actions_wake_targeted_nested_memos_without_rebuilding_siblings` and
+the application's exact `mapped_accessibility_set_value_uses_authored_units`.
