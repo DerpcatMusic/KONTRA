@@ -242,3 +242,20 @@ impl ScriptHost {
         out
     }
 }
+
+impl ScriptHost {
+    /// Survey instrumentation only; does not change baseline widget semantics.
+    pub fn ui_properties(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        if let Ok(root) = self.lua.globals().raw_get::<Table>("__ui")
+            && let Ok(list) = root.raw_get::<Table>("widgets") {
+            for w in list.sequence_values::<Table>().flatten() {
+                let kind = text(&w,"kind").unwrap_or_default();
+                for (key,_) in w.pairs::<String,Value>().flatten() {
+                    if !key.starts_with('_') { *out.entry(format!("{kind}.{key}")).or_default()+=1; }
+                }
+            }
+        }
+        out
+    }
+}
