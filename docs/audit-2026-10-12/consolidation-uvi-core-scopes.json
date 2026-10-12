@@ -1,0 +1,2635 @@
+{
+  "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+  "review_date": "2026-10-12",
+  "read_only_other_checkouts": true,
+  "builds_run": false,
+  "native_host_run": false,
+  "review_method": "Current source comparisons, authored regression/function candidate extraction across1039 dated all-ref commits, donor handoffs and explicit acceptance/rejection receipts. Symbol absence is a search lead only, not admission evidence. Latest changed path equality does not certify older branch commits.",
+  "raw_candidates": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/consolidation-20261012/inventory/uvi-core-symbol-candidates.json.gz",
+  "refs": [
+    {
+      "ref": "refs/heads/audit/cpu-20261008",
+      "tip": "63f6423b5b35a92bb774704efaeaabe0f0b84cc5",
+      "tip_tree": "762360343d664355c24655e772b42e3fb393962f",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 189,
+      "latest_scoped_commit": "cb992238ad9f86c702e77db8467eae9ea8e4d165",
+      "latest_scoped_subject": "Merge commit 'a511eade' into integrate/core-v2",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/dsp-20261008",
+      "tip": "3ea7a97b36309ebc0a2eed9f973240c9887a54c2",
+      "tip_tree": "1963786743a3fab61f5644a992fe586f1124394d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 191,
+      "latest_scoped_commit": "3ea7a97b36309ebc0a2eed9f973240c9887a54c2",
+      "latest_scoped_subject": "Audit DSP coverage and native reference fidelity",
+      "latest_changed_paths": [
+        "crates/sampler-core/examples/audit_dsp_envelope.rs",
+        "crates/sampler-uvi/examples/audit_dsp_census.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/uvi-20261008",
+      "tip": "0fe4d1570d62c2f5252472b89a226291e8b0a9cb",
+      "tip_tree": "77d79ba5a672b6a42be28fe7103de2ffd7f6da6b",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 190,
+      "latest_scoped_commit": "0d76dad5f7c5b083994059dc193778e6b3129228",
+      "latest_scoped_subject": "Correct UVI state contract and document v1 scanner handoff",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/tests/uvi_audit.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/uvi-v1-scanner-20261008",
+      "tip": "026bdbb49f29a5ad752b3470a5f6f64a20a8957d",
+      "tip_tree": "343da848735650d1a7b68ccf640de3e051f3dafe",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "026bdbb49f29a5ad752b3470a5f6f64a20a8957d",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/w10-v1-uvi-cpu-20261009",
+      "tip": "bd5a88a42f3090a9d37c10a25009d3af916ce6ab",
+      "tip_tree": "816bb51afffa207bf98a5b7d2e9e71fa797b6445",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "bd5a88a42f3090a9d37c10a25009d3af916ce6ab",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/w8-load-v1-stages-20261008",
+      "tip": "2f51deec854bfc7338bfccb54db6339d8400ce9d",
+      "tip_tree": "73aa16340c57dd62a2f4bff8cfee3a1f2a238130",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "2f51deec854bfc7338bfccb54db6339d8400ce9d",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/w8-load-v1-uvi-stages-20261008",
+      "tip": "3b4a47a5f04c445df55388c307ecadb231d79ad8",
+      "tip_tree": "1c129dd79dd85b0285fd6568d025d5152e611cb9",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "3b4a47a5f04c445df55388c307ecadb231d79ad8",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/w9-v1-cpu-adapter-20261008",
+      "tip": "41a4a5d81ca42146960c2d4d16171f92f3b21a33",
+      "tip_tree": "627a84ee96e114dd4aecf4028b4e3980c6696096",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "41a4a5d81ca42146960c2d4d16171f92f3b21a33",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/audit/w9-v1-stream-schedules-20261008",
+      "tip": "f77d801924367bbc651f65803f0026cb80007cfd",
+      "tip_tree": "0caaefe5c4ce1ae39fc8177677cbd56ed78506fa",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "f77d801924367bbc651f65803f0026cb80007cfd",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/analog-script-performance",
+      "tip": "e4f266fd5266a24cdad950c5dd2be236b8b34128",
+      "tip_tree": "1ed5d3207ff243dd37f1f7ff06ef9c094002435d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "e4f266fd5266a24cdad950c5dd2be236b8b34128",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/analog-ui-performance",
+      "tip": "05d02e253569b79fd7c8c8a9251d8b8889a45ed7",
+      "tip_tree": "b9a51854bdfe379e054173e25c27e68e20bccaaf",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "05d02e253569b79fd7c8c8a9251d8b8889a45ed7",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/core-uvi-integration-20261005",
+      "tip": "834c56ff9960a21e0483b126c66dbb720d26bb05",
+      "tip_tree": "3a564c554277da6e3112644789df83b9b3e206fc",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "834c56ff9960a21e0483b126c66dbb720d26bb05",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/core-uvi-ui-verified-20261005",
+      "tip": "ce94add200f7d69d38e538c0241d7d3bf4a39da3",
+      "tip_tree": "e933742bd48e1b41dbc53fbf86e59ff1a55d77aa",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "ce94add200f7d69d38e538c0241d7d3bf4a39da3",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/core-uvi-verified-20261005",
+      "tip": "acc3532e240a964aeca16707728d0da0b44ac15a",
+      "tip_tree": "ebf9a1760a12c1290c3c9df9270ef1a103d25965",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "acc3532e240a964aeca16707728d0da0b44ac15a",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/internal-modulation",
+      "tip": "66a3fc9fb619efb47cbd8491bedd2169e1c318a4",
+      "tip_tree": "0339b389e229f27eabf5f43309a83e887b186caf",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "66a3fc9fb619efb47cbd8491bedd2169e1c318a4",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/internal-modulation-continuation",
+      "tip": "30fbcdf6e4d358440ae28879d6b7d4170605607c",
+      "tip_tree": "d62fbdde6e3f6226e43123c3d02190f9fdff238e",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "30fbcdf6e4d358440ae28879d6b7d4170605607c",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/ladder-modulation-cadence",
+      "tip": "d64b24917f1a657e5d2fa297147d4346c0a09135",
+      "tip_tree": "c164ca01b2dc7af4b49041dccc54286ea071a809",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "d64b24917f1a657e5d2fa297147d4346c0a09135",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/modulation-slot-recovery",
+      "tip": "5f231bea0c2b4b174d26d99c9889eadfee9189c0",
+      "tip_tree": "c686b74e2b201f03b6193b7637ed0aa6ecae62b1",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "5f231bea0c2b4b174d26d99c9889eadfee9189c0",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/native-wavetable-source",
+      "tip": "db85397e69e75f166c449203abbde738e4d774f1",
+      "tip_tree": "dd77b15f175dededf317750c110667d0687ff833",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "db85397e69e75f166c449203abbde738e4d774f1",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/performance-background",
+      "tip": "ebcd1fd342aca6a1d02a7379789cf869bcd9dd63",
+      "tip_tree": "333740291204d50dfb39a5ea0220722e967c37ae",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "ebcd1fd342aca6a1d02a7379789cf869bcd9dd63",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/performance-hardening",
+      "tip": "c446a6c7b041eb98c86d6f8c7d61720682bcdf15",
+      "tip_tree": "0f2c755e484abfd596eb956e43e31a9d17bd43a6",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "c446a6c7b041eb98c86d6f8c7d61720682bcdf15",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/saved-lfo-fade",
+      "tip": "b8885133bd4a0a9523e7ad00e37a40a1f46ee2ff",
+      "tip_tree": "b75ad516df83cfc5b22ce443458902d0cc916daf",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "b8885133bd4a0a9523e7ad00e37a40a1f46ee2ff",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/uvi-latest-integration",
+      "tip": "4bffbb18b867b0a8e84b435d11684784b237693c",
+      "tip_tree": "d4b915ecae4a0c4f7e6279609a3041a2857d3123",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "4bffbb18b867b0a8e84b435d11684784b237693c",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/codex/uvi-linux-compatibility",
+      "tip": "9d69ae0b62a1ec73e85a70f50e73a6d016e0fb0a",
+      "tip_tree": "c51523a10b7ff5a851305cd73a04eb2585144e68",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "9d69ae0b62a1ec73e85a70f50e73a6d016e0fb0a",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/feat/kontakt-uvi-library-support",
+      "tip": "c1359117652bbdfd9fae01bebf9df0fe71389929",
+      "tip_tree": "923c9e7ece78f95ff7358c426bfdc06d72837452",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 167,
+      "latest_scoped_commit": "27fdb0e1e56c41d9c880312871fce2185a4272b9",
+      "latest_scoped_subject": "Release 0.3.344: native Falcon opening and integrated playback/UI fixes (#47)",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/behavior.rs",
+        "crates/sampler-core/src/bus.rs",
+        "crates/sampler-core/src/control.rs",
+        "crates/sampler-core/src/control/transfer.rs",
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/lanes.rs",
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/midi_object.rs",
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/plan_programs.rs",
+        "crates/sampler-core/src/plans.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/trace.rs",
+        "crates/sampler-core/tests/behavior.rs",
+        "crates/sampler-core/tests/host_performance.rs",
+        "crates/sampler-uvi/Cargo.toml",
+        "crates/sampler-uvi/src/access.rs",
+        "crates/sampler-uvi/src/access_error.rs",
+        "crates/sampler-uvi/src/bank.rs",
+        "crates/sampler-uvi/src/crypto.rs",
+        "crates/sampler-uvi/src/lib.rs",
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script/diagnostics.rs",
+        "crates/sampler-uvi/src/script/ui.rs",
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/src/ufs.rs",
+        "crates/sampler-uvi/tests/assets.rs",
+        "crates/sampler-uvi/tests/audit_seed.rs",
+        "crates/sampler-uvi/tests/bounded_load.rs",
+        "crates/sampler-uvi/tests/fixture.rs",
+        "crates/sampler-uvi/tests/host_parameters.rs",
+        "crates/sampler-uvi/tests/installed.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-uvi/src/access_error.rs",
+        "crates/sampler-uvi/src/script/diagnostics.rs",
+        "crates/sampler-uvi/tests/installed.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/fix/uvi-programs-play",
+      "tip": "082a10538c626cbd02c36816a0a51547735111a9",
+      "tip_tree": "29d65b1ca41b058589594be37d5408c8710b656c",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 190,
+      "latest_scoped_commit": "082a10538c626cbd02c36816a0a51547735111a9",
+      "latest_scoped_subject": "corpus-health: give scripted programs time to finish their own release samples",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/lib.rs",
+        "crates/sampler-uvi/src/scripted.rs",
+        "crates/sampler-uvi/tests/probe.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/fix/uvi-restore-order",
+      "tip": "0d9069377ed3b2247c145bc6ae8210a1c2ce8971",
+      "tip_tree": "93d2b1199945a10942ada7f61478550f7440b9de",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 191,
+      "latest_scoped_commit": "a2fa45b81d69af080b822ef78bd1e44086dbf60b",
+      "latest_scoped_subject": "UVI scripts: playNote oscIndex is 0-based; a release of a finished note is not an error",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/lib.rs",
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/scripted.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/parity/medium-dsp-20261011",
+      "tip": "6bc6c224e05942fe507977d177d3062686d96dcc",
+      "tip_tree": "ab9082a48268bb04f957912ccdd6bd741e6ee4dc",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 72,
+      "latest_scoped_commit": "4955b8f85bd395067242d3b1e873decdd8a341a3",
+      "latest_scoped_subject": "fix: preserve authored step curves when retiming envelope stages",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/tests/envelope.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/tests/envelope.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/parity/medium-uvi-20261011",
+      "tip": "14f89598df96797c207722fbe36f02b31d2a2575",
+      "tip_tree": "e6bd667f71c2508721bf62c1adda8de032a6342d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "integrated-or-superseded-uvi",
+      "reason": "Current engine_parameters/script/inserts retain live digital EQ widths/gain scale, stable shared insert control,ConstantModulation, standing script modulation, scope forwarding, async convolver resource uploads and nil absent connections. Initial restore-order and newer typed/no-success diagnostics supersede conflicting old expectations.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 74,
+      "latest_scoped_commit": "14f89598df96797c207722fbe36f02b31d2a2575",
+      "latest_scoped_subject": "fix(uvi): return nil for absent parameter connections",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script_prelude.lua",
+        "crates/sampler-uvi/tests/host_parameters.rs",
+        "crates/sampler-uvi/tests/uvi_audit.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/perf/rss-vista-load",
+      "tip": "ac4226c2ba4a6239ab90b3faf89bc98e8f334ae1",
+      "tip_tree": "bd7600865efc3c30f00e05809a16a60c06befbf3",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "integrated-with-memory-successor",
+      "reason": "Program cached flags/distinct body validation,512 initial note pages and geometric loop segment demand are current. PR59 stream.rs explicitly replaces eager initialized page buffers with fallibly pre-reserved uninitialized Vec pages, touched by worker only on use. The donor lazy worker allocation differs but weakens preparation-time capacity failure; no performance reversion.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 56,
+      "latest_scoped_commit": "ac4226c2ba4a6239ab90b3faf89bc98e8f334ae1",
+      "latest_scoped_subject": "perf: native loop slots keep geometric stream demand (no per-frame walk on the audio thread)",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/source/demand.rs",
+        "crates/sampler-core/src/stream.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/source/demand.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/perf/ui-gpu-limits",
+      "tip": "50b9ee71a95f6fe1f00adbe03b74470be0ea323f",
+      "tip_tree": "b44d0a37e6f520260ab7fd7770149a77ca48385d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 71,
+      "latest_scoped_commit": "01d1d3379349c2c0e179550a43c2df6f2053cdc4",
+      "latest_scoped_subject": "Compact diagnostics and scale NKA arrays for the final release (#58)",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/array_file.rs",
+        "crates/sampler-core/src/lib.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/array_file.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/perf/v1-block-voice-dsp",
+      "tip": "7210cb968bd3d6e8b2a0ce5b79b035d4f71cb4b6",
+      "tip_tree": "2ee7d951a40410491bb297c3558c1180c394deb2",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "7210cb968bd3d6e8b2a0ce5b79b035d4f71cb4b6",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi-parity/uvi-lanes-13c044d6-20261010",
+      "tip": "f697c32a7c803be887a53bccb967d056c95e9d9d",
+      "tip_tree": "4f245b222ffe98642b224e0d13095aea4dc5b8bf",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 75,
+      "latest_scoped_commit": "7abcf606db1bb085f06c047d8ca9dcc187e7f0b6",
+      "latest_scoped_subject": "fix(waveform): reject malformed state and preserve scalar projection order",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi-release-430-modulation-fix",
+      "tip": "5d9ea1e638eb7572b38232170ce9fbbc1fa9e029",
+      "tip_tree": "65c1c60805073cd3275698c9d0d4a39e63308469",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 75,
+      "latest_scoped_commit": "7abcf606db1bb085f06c047d8ca9dcc187e7f0b6",
+      "latest_scoped_subject": "fix(waveform): reject malformed state and preserve scalar projection order",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/conflux-k8-modulation-20261010",
+      "tip": "58d5f64661db18a81cbd11f3a039bc96b17c5fb5",
+      "tip_tree": "975471560b051186e07f29e74e41fde2bba27cc8",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 75,
+      "latest_scoped_commit": "7abcf606db1bb085f06c047d8ca9dcc187e7f0b6",
+      "latest_scoped_subject": "fix(waveform): reject malformed state and preserve scalar projection order",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/conflux-nka-snapshot-pool-fix-20261010",
+      "tip": "35139a99c2b8f5426987de42f6cd9a14bd3799a7",
+      "tip_tree": "2e2ef0ecf41dfb7296992771400239badea2ab7a",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "scope-identical-pool",
+      "reason": "crates/sampler-pool exactly matches baseline for this donor. NKA payload sizing01a5bde9 lives in core array_file.rs/KSP tests and has a current successor: snapshot_jobs_scale_concurrency_without_rejecting_large_arrays removes an obsolete whole-array rejection while retaining checked arithmetic and bounded job concurrency.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 75,
+      "latest_scoped_commit": "7abcf606db1bb085f06c047d8ca9dcc187e7f0b6",
+      "latest_scoped_subject": "fix(waveform): reject malformed state and preserve scalar projection order",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/waveform.rs",
+        "crates/sampler-core/tests/waveform.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/conflux-nka-snapshot-pool-successor-20261010",
+      "tip": "01a5bde95517fe873a69c465a0e1ad95cf0484bb",
+      "tip_tree": "81fa22deaaddb718eb73192022946599de760b7d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "scope-identical-pool",
+      "reason": "crates/sampler-pool exactly matches baseline for this donor. NKA payload sizing01a5bde9 lives in core array_file.rs/KSP tests and has a current successor: snapshot_jobs_scale_concurrency_without_rejecting_large_arrays removes an obsolete whole-array rejection while retaining checked arithmetic and bounded job concurrency.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 75,
+      "latest_scoped_commit": "01a5bde95517fe873a69c465a0e1ad95cf0484bb",
+      "latest_scoped_subject": "fix(ksp): bound NKA snapshot slots by per-job payload",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/array_file.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/modulation-control-remap-fix",
+      "tip": "f1ea356b0a93fc23cc9d2a866e6ac31fd37b9280",
+      "tip_tree": "c9504d7133090d35117048895189f50fdfa8fb6a",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 80,
+      "latest_scoped_commit": "275494599eb9b3f9758e7c63a99827ea1ef382b0",
+      "latest_scoped_subject": "fix: preserve compiled modulation control identities across schema changes",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/control.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/tests/controls.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/modulation-fixture-compile-fix",
+      "tip": "5f60978a0cc21bfe518906b6f600d4f857d9e62a",
+      "tip_tree": "10ba37ea991a73928f4252ac474e63f55404d146",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 79,
+      "latest_scoped_commit": "967ea34cf33f4646d873616688311ab4ac9b1bd5",
+      "latest_scoped_subject": "test: discard revisions in matching core modulation heap guards",
+      "latest_changed_paths": [
+        "crates/sampler-core/tests/controls.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/tests/controls.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/native-fade-fix-round4",
+      "tip": "0950ea4e19bb09274ea4d6b3d925b49eaf5c2120",
+      "tip_tree": "32fa64010e2813e012c51e13e4b2b4483aa2d878",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 86,
+      "latest_scoped_commit": "ef9a21440b0dbbd501cc7678d62a7ac973c05a15",
+      "latest_scoped_subject": "test: require nonzero changed audio in active parallel fade window",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/parallel.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/perf-acceptance-next",
+      "tip": "38322e9589d2c88da11eaff3e28d2a5a585d3cea",
+      "tip_tree": "7f1ebd62aba5fafded85911d6174b316f7519bda",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 89,
+      "latest_scoped_commit": "51e0b9e78d543acfed1392c623119a312ae8e5cb",
+      "latest_scoped_subject": "fix(dsp): prepare request-priority AR runtime behind test-only gate",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/ar.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/perf-acceptance-round5",
+      "tip": "559c6915e27379140a34355441cfedffeffab101",
+      "tip_tree": "886d7ddda5d0dc6f781a1ddd9a097ddee8653696",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 84,
+      "latest_scoped_commit": "09aa4a8576b3104f495475678a051dbbcf473aa8",
+      "latest_scoped_subject": "test: require nonzero changed audio in active parallel fade window",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/parallel.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/perf-admission-round4",
+      "tip": "60f5742c07526b14ab24894a13457b99a41ea523",
+      "tip_tree": "251df45de83a28e9e7898b952dbd0ec388d3a5ba",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 89,
+      "latest_scoped_commit": "51e0b9e78d543acfed1392c623119a312ae8e5cb",
+      "latest_scoped_subject": "fix(dsp): prepare request-priority AR runtime behind test-only gate",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/ar.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/perf-host-takeover",
+      "tip": "3d4c9659a4bec3c6c97126bffb5404a9147a2f50",
+      "tip_tree": "7bb5b0f0c7314874a97e8e167b23059e94055c33",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 109,
+      "latest_scoped_commit": "e53256e17f27d43d27ae17ee411d11fc5b5ccc7b",
+      "latest_scoped_subject": "Release KONTRA 0.3.393: loading, sound, scripting and editor fixes",
+      "latest_changed_paths": [
+        "crates/sampler-core/Cargo.toml",
+        "crates/sampler-core/examples/page_admission.rs",
+        "crates/sampler-core/examples/streamed_resample.rs",
+        "crates/sampler-core/src/behavior.rs",
+        "crates/sampler-core/src/bus.rs",
+        "crates/sampler-core/src/control.rs",
+        "crates/sampler-core/src/control/script_state.rs",
+        "crates/sampler-core/src/control/transfer.rs",
+        "crates/sampler-core/src/controller_event.rs",
+        "crates/sampler-core/src/diagnose.rs",
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/compressor.rs",
+        "crates/sampler-core/src/dsp/control.rs",
+        "crates/sampler-core/src/dsp/daft.rs",
+        "crates/sampler-core/src/dsp/delay.rs",
+        "crates/sampler-core/src/dsp/eq.rs",
+        "crates/sampler-core/src/dsp/kernel_tests.rs",
+        "crates/sampler-core/src/dsp/ladder.rs",
+        "crates/sampler-core/src/dsp/lanes.rs",
+        "crates/sampler-core/src/dsp/lofi.rs",
+        "crates/sampler-core/src/dsp/reverb.rs",
+        "crates/sampler-core/src/dsp/stereo.rs",
+        "crates/sampler-core/src/dsp/svf.rs",
+        "crates/sampler-core/src/dsp/taps.rs",
+        "crates/sampler-core/src/engine_parameters.rs",
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/src/gate.rs",
+        "crates/sampler-core/src/groups.rs",
+        "crates/sampler-core/src/grow.rs",
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/midi_object.rs",
+        "crates/sampler-core/src/ops.rs",
+        "crates/sampler-core/src/ownership.rs",
+        "crates/sampler-core/src/parallel.rs",
+        "crates/sampler-core/src/parameter_registry.rs",
+        "crates/sampler-core/src/performance.rs",
+        "crates/sampler-core/src/plans.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/prepare/predicates.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/release.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/script.rs",
+        "crates/sampler-core/src/script_params.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/src/source/demand.rs",
+        "crates/sampler-core/src/stream.rs",
+        "crates/sampler-core/src/switching.rs",
+        "crates/sampler-core/src/trace.rs",
+        "crates/sampler-core/src/trace_report.rs",
+        "crates/sampler-core/src/v1_voice_controls.rs",
+        "crates/sampler-core/src/variation.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/tests/behavior.rs",
+        "crates/sampler-core/tests/buses.rs",
+        "crates/sampler-core/tests/cold_chain.rs",
+        "crates/sampler-core/tests/cold_offset.rs",
+        "crates/sampler-core/tests/compressor.rs",
+        "crates/sampler-core/tests/daft.rs",
+        "crates/sampler-core/tests/dsp.rs",
+        "crates/sampler-core/tests/gainer.rs",
+        "crates/sampler-core/tests/growth.rs",
+        "crates/sampler-core/tests/host_performance.rs",
+        "crates/sampler-core/tests/lower.rs",
+        "crates/sampler-core/tests/paged_render.rs",
+        "crates/sampler-core/tests/selection_record.rs",
+        "crates/sampler-core/tests/shaping.rs",
+        "crates/sampler-core/tests/signal_trace.rs",
+        "crates/sampler-core/tests/source.rs",
+        "crates/sampler-core/tests/sparse_retirement.rs",
+        "crates/sampler-core/tests/stream_cache.rs",
+        "crates/sampler-core/tests/stream_policy.rs",
+        "crates/sampler-core/tests/support/v1_voice_controls_oracle.rs",
+        "crates/sampler-core/tests/svf.rs",
+        "crates/sampler-core/tests/v1_voice_controls.rs",
+        "crates/sampler-core/tests/voice_mod.rs",
+        "crates/sampler-pool/src/claim.rs",
+        "crates/sampler-pool/src/lib.rs",
+        "crates/sampler-pool/src/pool.rs",
+        "crates/sampler-pool/src/ring.rs",
+        "crates/sampler-pool/src/snapshot.rs",
+        "crates/sampler-simd/src/lib.rs",
+        "crates/sampler-simd/src/v1_section.rs",
+        "crates/sampler-uvi/examples/slot_inventory.rs",
+        "crates/sampler-uvi/examples/ui_health.rs",
+        "crates/sampler-uvi/src/access.rs",
+        "crates/sampler-uvi/src/bank.rs",
+        "crates/sampler-uvi/src/coverage.rs",
+        "crates/sampler-uvi/src/crypto.rs",
+        "crates/sampler-uvi/src/inserts.rs",
+        "crates/sampler-uvi/src/lib.rs",
+        "crates/sampler-uvi/src/modulation.rs",
+        "crates/sampler-uvi/src/no_access.rs",
+        "crates/sampler-uvi/src/parameters.rs",
+        "crates/sampler-uvi/src/resources.rs",
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script/ui.rs",
+        "crates/sampler-uvi/src/scripted.rs",
+        "crates/sampler-uvi/src/scripted/lifecycle_tests.rs",
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/src/stream.rs",
+        "crates/sampler-uvi/src/ufs.rs",
+        "crates/sampler-uvi/tests/assets.rs",
+        "crates/sampler-uvi/tests/audit_seed.rs",
+        "crates/sampler-uvi/tests/bounded_load.rs",
+        "crates/sampler-uvi/tests/fixture.rs",
+        "crates/sampler-uvi/tests/host_parameters.rs",
+        "crates/sampler-uvi/tests/real_banks.rs",
+        "crates/sampler-uvi/tests/resources.rs",
+        "crates/sampler-uvi/tests/ui.rs",
+        "crates/sampler-uvi/tests/uvi_audit_corpus.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/Cargo.toml",
+        "crates/sampler-core/examples/page_admission.rs",
+        "crates/sampler-core/examples/streamed_resample.rs",
+        "crates/sampler-core/src/diagnose.rs",
+        "crates/sampler-core/src/dsp/compressor.rs",
+        "crates/sampler-core/src/dsp/control.rs",
+        "crates/sampler-core/src/dsp/daft.rs",
+        "crates/sampler-core/src/dsp/delay.rs",
+        "crates/sampler-core/src/dsp/lofi.rs",
+        "crates/sampler-core/src/dsp/reverb.rs",
+        "crates/sampler-core/src/dsp/stereo.rs",
+        "crates/sampler-core/src/dsp/taps.rs",
+        "crates/sampler-core/src/gate.rs",
+        "crates/sampler-core/src/grow.rs",
+        "crates/sampler-core/src/ownership.rs",
+        "crates/sampler-core/src/performance.rs",
+        "crates/sampler-core/src/plans.rs",
+        "crates/sampler-core/src/prepare/predicates.rs",
+        "crates/sampler-core/src/release.rs",
+        "crates/sampler-core/src/switching.rs",
+        "crates/sampler-core/src/trace_report.rs",
+        "crates/sampler-core/src/variation.rs",
+        "crates/sampler-core/tests/behavior.rs",
+        "crates/sampler-core/tests/cold_chain.rs",
+        "crates/sampler-core/tests/cold_offset.rs",
+        "crates/sampler-core/tests/compressor.rs",
+        "crates/sampler-core/tests/daft.rs",
+        "crates/sampler-core/tests/dsp.rs",
+        "crates/sampler-core/tests/gainer.rs",
+        "crates/sampler-core/tests/growth.rs",
+        "crates/sampler-core/tests/host_performance.rs",
+        "crates/sampler-core/tests/shaping.rs",
+        "crates/sampler-core/tests/signal_trace.rs",
+        "crates/sampler-core/tests/sparse_retirement.rs",
+        "crates/sampler-core/tests/stream_cache.rs",
+        "crates/sampler-core/tests/stream_policy.rs",
+        "crates/sampler-core/tests/support/v1_voice_controls_oracle.rs",
+        "crates/sampler-core/tests/svf.rs",
+        "crates/sampler-pool/src/claim.rs",
+        "crates/sampler-pool/src/lib.rs",
+        "crates/sampler-pool/src/pool.rs",
+        "crates/sampler-pool/src/ring.rs",
+        "crates/sampler-pool/src/snapshot.rs",
+        "crates/sampler-simd/src/lib.rs",
+        "crates/sampler-simd/src/v1_section.rs",
+        "crates/sampler-uvi/examples/slot_inventory.rs",
+        "crates/sampler-uvi/examples/ui_health.rs",
+        "crates/sampler-uvi/src/access.rs",
+        "crates/sampler-uvi/src/crypto.rs",
+        "crates/sampler-uvi/src/parameters.rs",
+        "crates/sampler-uvi/src/stream.rs",
+        "crates/sampler-uvi/tests/assets.rs",
+        "crates/sampler-uvi/tests/audit_seed.rs",
+        "crates/sampler-uvi/tests/bounded_load.rs",
+        "crates/sampler-uvi/tests/resources.rs",
+        "crates/sampler-uvi/tests/uvi_audit_corpus.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/production-modulation-next",
+      "tip": "c579d4a92cddb1a4d8c22312bf860cb02c38a87f",
+      "tip_tree": "970cf2e7ab4e26ebe81fb43d0fd577bef1cdd91f",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 80,
+      "latest_scoped_commit": "d49ab53e59ab240278bab051e49c61bf604063b5",
+      "latest_scoped_subject": "fix: connect bounded internal modulation controls to production routes",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/engine_parameters.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/tests/buses.rs",
+        "crates/sampler-core/tests/multicore.rs",
+        "crates/sampler-core/tests/paged_render.rs",
+        "crates/sampler-core/tests/selection_record.rs",
+        "crates/sampler-core/tests/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/tests/buses.rs",
+        "crates/sampler-core/tests/multicore.rs",
+        "crates/sampler-core/tests/selection_record.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/uvi-loaddata-async-20261010",
+      "tip": "c27a6a869244d0175e8d76702302358a225f9771",
+      "tip_tree": "318174dee4889a26b8f7803f716a46afe4701e11",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 87,
+      "latest_scoped_commit": "1cdc8d4d5a82aa67d5a4a942b8501f8bf5bf1c41",
+      "latest_scoped_subject": "fix(uvi): wake parked data owner with bounded receipt backpressure",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script/async_data.rs",
+        "crates/sampler-uvi/tests/load_data.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/uvi-setter-consistency-next",
+      "tip": "b465a00820a6ed87fffc3f1d03cadbc95f7dfdd8",
+      "tip_tree": "8583aa182c3e909004ea223ee9d39271a0f663e1",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 84,
+      "latest_scoped_commit": "0df29cdc63d66ea7ba6e98da64c81fae3e0201e0",
+      "latest_scoped_subject": "fix(uvi): gate parameter readback on setter queue admission",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script_prelude.lua",
+        "crates/sampler-uvi/tests/fixture.rs",
+        "crates/sampler-uvi/tests/host_parameters.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/pi/uvi-setter-round6-fix",
+      "tip": "3312c4d25e119d937ed04934d55e65c542bcf177",
+      "tip_tree": "d2364ef1c9888e7c530016837b14c40f5b051b7d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 84,
+      "latest_scoped_commit": "10c29088a85776f50f395d5d58ec4ba87d3eb465",
+      "latest_scoped_subject": "fix: preserve declared exponential control endpoints exactly",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/engine_parameters.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/takeover/dsp-20261010",
+      "tip": "12475a0d731b89af515ee1f43c5b23175ed67813",
+      "tip_tree": "b7b8dda2ddf2aa672b5c86d6fd443c5d45f81c15",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 99,
+      "latest_scoped_commit": "12475a0d731b89af515ee1f43c5b23175ed67813",
+      "latest_scoped_subject": "feat(core): prepare sample-clock Kontakt fade curves with legacy linear path",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/script_params.rs",
+        "crates/sampler-core/src/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/uvi-ui-lua-fixes",
+      "tip": "e07103277a2d64729427365987891cd44b55e39b",
+      "tip_tree": "572785f32c7eac2d59cea322485ed449c7244a87",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "integrated-or-superseded-uvi",
+      "reason": "Current engine_parameters/script/inserts retain live digital EQ widths/gain scale, stable shared insert control,ConstantModulation, standing script modulation, scope forwarding, async convolver resource uploads and nil absent connections. Initial restore-order and newer typed/no-success diagnostics supersede conflicting old expectations.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 69,
+      "latest_scoped_commit": "e07103277a2d64729427365987891cd44b55e39b",
+      "latest_scoped_subject": "UVI: DigitalEq Bandwidth and GainScale reach the DSP, a node placed on several chains is one control, chain editor names the new processor parameters",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/engine_parameters.rs",
+        "crates/sampler-uvi/src/inserts.rs",
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/tests/fixture.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/block-voice-dsp",
+      "tip": "e1568f704aa44e583891b829f6260529adce1197",
+      "tip_tree": "80206cf8b3427df0602d96a2a4466025ab6cb44b",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 205,
+      "latest_scoped_commit": "e1568f704aa44e583891b829f6260529adce1197",
+      "latest_scoped_subject": "Resample pitched-up voices from pre-decimated octave levels",
+      "latest_changed_paths": [
+        "crates/sampler-core/examples/render_workloads.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/resample.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/tests/resample.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/diagnose-vista-649",
+      "tip": "847a2c50f21031647f08537576c5e5264e6ecb10",
+      "tip_tree": "3c4a2bdfb185b611eedbd6846a52540b4d3e1f9c",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 177,
+      "latest_scoped_commit": "f667bcf2d09877ea6a5cbfa265c9a0e644357c40",
+      "latest_scoped_subject": "fix(core): retain deferred attacks through callback preemption",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/behavior.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/schedule.rs",
+        "crates/sampler-core/tests/event_ids.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-core/src/schedule.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/dsp-kernels",
+      "tip": "ddad588e74e3b811943ae5592aadb006a6b6f335",
+      "tip_tree": "3024784af708bcd7725b769e803d0b8714354ce7",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 189,
+      "latest_scoped_commit": "b2378599e4be168140d84aced1c7f29a5f4800e6",
+      "latest_scoped_subject": "Merge integrate/core-v2 into v2/dsp-kernels",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/expression-2-uvi",
+      "tip": "af50e6386374d283194bb43ed6d622f49d4043fc",
+      "tip_tree": "4020dee855034186097f8b1ab2f23b91fc40ecd6",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 193,
+      "latest_scoped_commit": "af50e6386374d283194bb43ed6d622f49d4043fc",
+      "latest_scoped_subject": "fix(uvi): restore saved widget values between the script body and onInit (airKnob 0 must reach onInit's default), survey ranges and cc1 retry",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/lib.rs",
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script_prelude.lua",
+        "crates/sampler-uvi/src/scripted.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/expression-uvi",
+      "tip": "e173ed570ee36d8598422bc03015b2b044bc9b1f",
+      "tip_tree": "289ecd880d64b183af10eac1444ec8161c2b0c40",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 204,
+      "latest_scoped_commit": "e173ed570ee36d8598422bc03015b2b044bc9b1f",
+      "latest_scoped_subject": "refactor(uvi): modulation sources need no consumed-node marks",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/modulation.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-cpu",
+      "tip": "142733125c393d722816b781cf3a29112cc2fb0b",
+      "tip_tree": "4514a015c037040032104d1f6dc1dad879498a9b",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-resampler-rejection",
+      "reason": "cpu-fixes.md records final resample source restored byte-for-byte from945098b2 after experiments4c3c8f07/50b2b8db/124ca53a failed acceptance. Diagnostic tests/receipts are preserved; new bank geometry is not a missing accepted fix.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 180,
+      "latest_scoped_commit": "142733125c393d722816b781cf3a29112cc2fb0b",
+      "latest_scoped_subject": "revert(core): reject resampler parts that fail original-instrument tails",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/resample.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-dsp",
+      "tip": "bbb143bf55cd270b99ba501abcf315b8c42384f8",
+      "tip_tree": "04f9feedbbb28a55fe2dba2628212c8cadc5f7b3",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 179,
+      "latest_scoped_commit": "78af0703db6b7338c69a137dafb06438dcddc785",
+      "latest_scoped_subject": "test(dsp): reserve stream credits for every cold-chain fixture voice",
+      "latest_changed_paths": [
+        "crates/sampler-core/tests/cold_chain.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-render-vista",
+      "tip": "d103dd387eadf9dfdfebed9235a815e304985486",
+      "tip_tree": "123d68352baff53cbf9cc6449c556a4c001b6349",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 175,
+      "latest_scoped_commit": "bb75737eda93aebdd71088b79c3eca98181fb217",
+      "latest_scoped_subject": "Supply requested Assistant Regular host font and separate scanner font failures",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/assets/assistant/Assistant-Regular.ttf",
+        "crates/sampler-uvi/assets/assistant/OFL.txt",
+        "crates/sampler-uvi/assets/assistant/README.md",
+        "crates/sampler-uvi/src/resources.rs",
+        "crates/sampler-uvi/tests/assets.rs",
+        "crates/sampler-uvi/tests/resources.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-uvi/assets/assistant/Assistant-Regular.ttf",
+        "crates/sampler-uvi/assets/assistant/OFL.txt",
+        "crates/sampler-uvi/assets/assistant/README.md"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-render-vista-triage",
+      "tip": "3b21ec9c88c29452cc241986e7012a7a781e7a89",
+      "tip_tree": "f3fe3707ec0ba9013b67abd5bf7762ff5df842e8",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 175,
+      "latest_scoped_commit": "bb75737eda93aebdd71088b79c3eca98181fb217",
+      "latest_scoped_subject": "Supply requested Assistant Regular host font and separate scanner font failures",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/assets/assistant/Assistant-Regular.ttf",
+        "crates/sampler-uvi/assets/assistant/OFL.txt",
+        "crates/sampler-uvi/assets/assistant/README.md",
+        "crates/sampler-uvi/src/resources.rs",
+        "crates/sampler-uvi/tests/assets.rs",
+        "crates/sampler-uvi/tests/resources.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-uvi/assets/assistant/Assistant-Regular.ttf",
+        "crates/sampler-uvi/assets/assistant/OFL.txt",
+        "crates/sampler-uvi/assets/assistant/README.md"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi",
+      "tip": "0be9aa7b8bc41257980c455f1ecb1e93a4ea00fb",
+      "tip_tree": "719a5e2f218515d81cb99bbb500a2b1ff21adb1f",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 176,
+      "latest_scoped_commit": "0be9aa7b8bc41257980c455f1ecb1e93a4ea00fb",
+      "latest_scoped_subject": "audit: seed and synchronize UVI offline PCM witnesses",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/tests/audit_seed.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi-bank-diagnostics",
+      "tip": "24966c074a472fbe88207615a52f30dee4780a7c",
+      "tip_tree": "2f6d9a2b9c5da1d95184231a1625f2824e633171",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 170,
+      "latest_scoped_commit": "8571c2a95820c03a3874ed860627aaaf009aa422",
+      "latest_scoped_subject": "Capture fresh UVI custom state on the script owner",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/tests/ui.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi-discovery",
+      "tip": "72bb976744762435ab726f0a00908f47d9f470c5",
+      "tip_tree": "91528137ccce6108fdb67143b7d0c0ca5d531a48",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 170,
+      "latest_scoped_commit": "8571c2a95820c03a3874ed860627aaaf009aa422",
+      "latest_scoped_subject": "Capture fresh UVI custom state on the script owner",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/tests/ui.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi-open",
+      "tip": "a88b86ed87bfdd1a95bd02106e9dcc90c3c7644e",
+      "tip_tree": "d4099f523f8674a1da072cdb0d09222499876ab3",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 169,
+      "latest_scoped_commit": "a88b86ed87bfdd1a95bd02106e9dcc90c3c7644e",
+      "latest_scoped_subject": "audit(uvi): expose optional nonblocking owner progress",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script/diagnostics.rs",
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/tests/audit_seed.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-uvi/src/script/diagnostics.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi-release-lifecycle",
+      "tip": "ba537b6f246cf8fc9cdc1f06de8a855ef4fc9276",
+      "tip_tree": "36de829d2d7ecaf14ffc0bddcca48afeac36d48b",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 170,
+      "latest_scoped_commit": "ba537b6f246cf8fc9cdc1f06de8a855ef4fc9276",
+      "latest_scoped_subject": "fix: retire source-owned UVI script notes after sample completion",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-uvi/src/scripted.rs",
+        "crates/sampler-uvi/src/scripted/lifecycle_tests.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/fix-uvi-scan-344",
+      "tip": "6df342507c67c24a3c3de94e7881cb4bf3fc2315",
+      "tip_tree": "6d2b09d6c3303ae49f0d68ac8c96df3e596c7ce5",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 165,
+      "latest_scoped_commit": "c1241d0a68163ab1b5982718af0e1229c9a4cdf0",
+      "latest_scoped_subject": "reject invalid shared UVI geometry before publication",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script/ui.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/gpt-decipher-dsp",
+      "tip": "aa3430d61ebcccb2f3e98e66b57aeba61cdf5392",
+      "tip_tree": "f82a5afc99cbfa74ea3ef1ef7a33bba08237b295",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 189,
+      "latest_scoped_commit": "b17f5f3d8b2f762dc9c7cb398f35a962868022e7",
+      "latest_scoped_subject": "Merge branch 'v2/ksp-runtime-engine-par' into integrate/core-v2",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/gpt-uvi-audit",
+      "tip": "da3be219e4b70c278fb4d29edbe693367dadca27",
+      "tip_tree": "ba664fb224edb76b1fa14fbb4ebab2f5b916ca29",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 188,
+      "latest_scoped_commit": "da3be219e4b70c278fb4d29edbe693367dadca27",
+      "latest_scoped_subject": "Add resumable UVI audit shards and state/bypass conformance repros",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/tests/uvi_audit.rs",
+        "crates/sampler-uvi/tests/uvi_audit_catalog.rs",
+        "crates/sampler-uvi/tests/uvi_audit_corpus.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-uvi/tests/uvi_audit_catalog.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/gpt-uvi-ui",
+      "tip": "24c70a25031243d002e24c661c1afbb1408653aa",
+      "tip_tree": "ad86907606c91959b2fae7255aee851b1f21d892",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 189,
+      "latest_scoped_commit": "24c70a25031243d002e24c661c1afbb1408653aa",
+      "latest_scoped_subject": "Honor UVI mapper positions and constructor defaults",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/examples/ui_health.rs",
+        "crates/sampler-uvi/src/script/ui.rs",
+        "crates/sampler-uvi/src/script_prelude.lua",
+        "crates/sampler-uvi/tests/ui.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/simd-voice-dsp",
+      "tip": "95fd47b1efda449e03dde6489ae9ac2a75f91d72",
+      "tip_tree": "27603471625b50af97b6c79ff7704094a728d2eb",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 205,
+      "latest_scoped_commit": "95fd47b1efda449e03dde6489ae9ac2a75f91d72",
+      "latest_scoped_subject": "Size start guards from the kernel's read radius at each zone's step",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-core/src/resample.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/simd-voice-dsp-wip",
+      "tip": "e7c1efca1948dceaccadb221cd2d6341f37c1cdd",
+      "tip_tree": "e49d3b6fbbea407a5ac8c32311eaca8c4dc155c3",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 205,
+      "latest_scoped_commit": "e7c1efca1948dceaccadb221cd2d6341f37c1cdd",
+      "latest_scoped_subject": "wip: --case bench mode (moved to v2/simd-voice-dsp)",
+      "latest_changed_paths": [
+        "crates/sampler-core/examples/render_workloads.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/stream-storage",
+      "tip": "bd3b92efc682c363c2a55017e533036a5ed3ad18",
+      "tip_tree": "2f26c67bf6f0e554b271cdbabfdc6410b33827be",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 192,
+      "latest_scoped_commit": "4bc36e9b69a2ac1b4a55347baea2ffebcbe8de54",
+      "latest_scoped_subject": "Merge integrate/core-v2",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w12-dsp-recount",
+      "tip": "5172a9ef00935f0c463b8ff2fb65e2632c032c8e",
+      "tip_tree": "c1697f7fab7198211b1ec8e7cfd7f024b46e1033",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 175,
+      "latest_scoped_commit": "5172a9ef00935f0c463b8ff2fb65e2632c032c8e",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/daft.rs",
+        "crates/sampler-core/src/dsp/ladder.rs",
+        "crates/sampler-core/src/dsp/svf.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/tests/lower.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w12-vista-pacific-resources",
+      "tip": "68052b42beb3c3aa828f36db05e23a3a78e895de",
+      "tip_tree": "5e8e2bc70bf24d182beab529909a3683bec55fe8",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 109,
+      "latest_scoped_commit": "a444ed473e65be84caa81e1f4f3ccda72f48a4d9",
+      "latest_scoped_subject": "fix held EQ portability with one SSE2 kernel and runtime oracle coefficients",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp/eq.rs",
+        "crates/sampler-simd/src/v1_section.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-simd/src/v1_section.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w14-browser-perf-383",
+      "tip": "ec921bce2ae6c3e758e3d0c95c63e2b649aa87e1",
+      "tip_tree": "4345f31c7515dffdf9b89b5e76168416f5021ac2",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 101,
+      "latest_scoped_commit": "cb98834eac6c8c532d5fce156cd5828f8b3ef2a7",
+      "latest_scoped_subject": "Carry the checked EQ portability fix and reviewed 0.3.393 notes into the next batch",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w15-dsp",
+      "tip": "42062adcc9b0aa87ab3858626a85a10421904d42",
+      "tip_tree": "5ab2883c7327a035fe6d0a14af26144913c64f68",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 175,
+      "latest_scoped_commit": "42062adcc9b0aa87ab3858626a85a10421904d42",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/engine/filter.rs: addressed normalized Q and Gain routes",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp.rs",
+        "crates/sampler-core/src/dsp/daft.rs",
+        "crates/sampler-core/src/dsp/ladder.rs",
+        "crates/sampler-core/src/dsp/svf.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/voice_mod.rs",
+        "crates/sampler-core/tests/lower.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w15-modulation",
+      "tip": "51828387bce6a03d4913990742da85fa937eb5b6",
+      "tip_tree": "b4017bf8840a8be945ae412e7e3d28ea01ef4626",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 170,
+      "latest_scoped_commit": "b2bd75994b311bbb3195dab2cf4f17deb1a3b344",
+      "latest_scoped_subject": "Keep generic per-voice filter projection outside shared coefficient caches",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp/control.rs",
+        "crates/sampler-core/src/dsp/svf.rs",
+        "crates/sampler-core/tests/lower.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w15-vista-harp",
+      "tip": "afe58f31a817027e89ead59ffdfd61d9559cc4b0",
+      "tip_tree": "1d30b032df9e23f881590d335ad1bcae431b1397",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 109,
+      "latest_scoped_commit": "a444ed473e65be84caa81e1f4f3ccda72f48a4d9",
+      "latest_scoped_subject": "fix held EQ portability with one SSE2 kernel and runtime oracle coefficients",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp/eq.rs",
+        "crates/sampler-simd/src/v1_section.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [
+        "crates/sampler-simd/src/v1_section.rs"
+      ],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w5-wavetable-live-381",
+      "tip": "dd1dca32244a06f1522dd857d722835c8400a74c",
+      "tip_tree": "0254a54d8d879d08234c91225c2d1b221ecebdbe",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "recovered",
+      "reason": "Missing physical WT_POSITION/FORM/FORM2 lanes and active scalar/batch/parallel cursor projection recovered as c3e825c9 with sparse-group7 exact oracle/heap/schema regressions; dd1dca32 historical READY receipt retained.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 164,
+      "latest_scoped_commit": "35ded542766c80e2e614515b1aa2e5409d652611",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/engine/voice.rs live wavetable settings",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/control.rs",
+        "crates/sampler-core/src/lower.rs",
+        "crates/sampler-core/src/parallel.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/tests/wavetable.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-cpu-52438",
+      "tip": "7cea074b0b3edfc11fbb371bc0d373835edded8b",
+      "tip_tree": "bb5d838bf5165a9b7a51b1917ba62997f4a1e295",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 173,
+      "latest_scoped_commit": "59a86c89675e898c5e53dbc8b8764320f2d7d2fe",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/engine/voice.rs: reuse settled modulation results",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-cpu-accept-5fc362f3",
+      "tip": "5fc362f355c764fd043510b3ff8f031a45328e11",
+      "tip_tree": "ffc8e2e8aca08c4fb5e3f2b6ed3301d62fdbd88d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 170,
+      "latest_scoped_commit": "8db2eef66735151295de9c4c764bc009cf644803",
+      "latest_scoped_subject": "fix: retire source-owned UVI script notes after sample completion",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-uvi/src/scripted.rs",
+        "crates/sampler-uvi/src/scripted/lifecycle_tests.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-envmod-perf",
+      "tip": "051c11c0aa245f6c119a78b438b0ef8261ac0f49",
+      "tip_tree": "2e9781ca31cadc30e7a0ae76651ac7bf40fadb7e",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 167,
+      "latest_scoped_commit": "6556184c12d7c5cceadb97da84ad0c7f67c43af2",
+      "latest_scoped_subject": "perf(core): port v1 envelope skip and indexed shaper paths",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/src/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-universal-dsp",
+      "tip": "8e9ac50ba0ddd43d04e5c2ac7eaebbfb5553fb39",
+      "tip_tree": "1a872637846ce4a7aa724e24f8b17e23f91a6b46",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 169,
+      "latest_scoped_commit": "b2fe9e7793297f5be1c0aae778dbf3d890a42b0b",
+      "latest_scoped_subject": "feat(core): expose playback compressor transfer curve off audio",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/dsp/compressor.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-v1-voice-controls-381",
+      "tip": "4507cb1e214d777ef1ee8812df64b9a3718cc36c",
+      "tip_tree": "5dcb7a74f21cf632a49cb7a1a440edf2b1070fa4",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 165,
+      "latest_scoped_commit": "4507cb1e214d777ef1ee8812df64b9a3718cc36c",
+      "latest_scoped_subject": "Port pinned v1 voice control evaluator and filter source bridge",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/v1_voice_controls.rs",
+        "crates/sampler-core/tests/support/v1_voice_controls_oracle.rs",
+        "crates/sampler-core/tests/v1_voice_controls.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w6-v1-voice-evaluator",
+      "tip": "051c11c0aa245f6c119a78b438b0ef8261ac0f49",
+      "tip_tree": "2e9781ca31cadc30e7a0ae76651ac7bf40fadb7e",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 167,
+      "latest_scoped_commit": "6556184c12d7c5cceadb97da84ad0c7f67c43af2",
+      "latest_scoped_subject": "perf(core): port v1 envelope skip and indexed shaper paths",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/envelope.rs",
+        "crates/sampler-core/src/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w8-load-attribution-resume",
+      "tip": "039da7cd1da075548ec2da724e41ab69518e331d",
+      "tip_tree": "35847b3bb32a3bbe45d02fcf1f90819bee73a316",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "recovered-host-callback-budget",
+      "reason": "Missing c250646e,01e33a7d,4e949aca,c591b435 recovered as640224a0, preserving modern tempo/transport and invalid-rate conservatism.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 167,
+      "latest_scoped_commit": "039da7cd1da075548ec2da724e41ab69518e331d",
+      "latest_scoped_subject": "docs: record trusted bounded callback ordering verification",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/behavior.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-cpu42-top3-5fc",
+      "tip": "49401fcef2ce3fc4e9671d94489f68d36e9a56aa",
+      "tip_tree": "7e1ffb319fc1e603bcfdd27b6ca87257487c0cc6",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-resampler-rejection",
+      "reason": "cpu-fixes.md records final resample source restored byte-for-byte from945098b2 after experiments4c3c8f07/50b2b8db/124ca53a failed acceptance. Diagnostic tests/receipts are preserved; new bank geometry is not a missing accepted fix.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 171,
+      "latest_scoped_commit": "00a254eafe877503ac0f94e2715de9bb59b0e989",
+      "latest_scoped_subject": "perf(core): prepare realtime sinc banks across the supported pitch range",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/resample.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-envmod-sparse-608",
+      "tip": "e8f407e624eeeaa5bdb84d8548a597cff2fe9c7a",
+      "tip_tree": "dd54f93b254914efbc872230b8606fcfe9f1e3ef",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 169,
+      "latest_scoped_commit": "e8f407e624eeeaa5bdb84d8548a597cff2fe9c7a",
+      "latest_scoped_subject": "docs: record sparse modulation port scope and deferred gates",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/voice_mod.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-fused-resample-5fc",
+      "tip": "0d4af3f168f8ca91a05c4a23fa1bd8e52a1c813b",
+      "tip_tree": "909ada994b43320ea1f1bb436a1bc6ec3ff80b11",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-cpu-hold",
+      "reason": "3d9994df records null/heap GREEN but Horns256 p50 regression4.8\u20138.0% and CPU HOLD for22e44927/0e38851e. Full native output also unknown; retain current traversal/render dispatch.",
+      "unresolved_scopes": [
+        "fused-render"
+      ],
+      "different_scoped_paths": 172,
+      "latest_scoped_commit": "0d4af3f168f8ca91a05c4a23fa1bd8e52a1c813b",
+      "latest_scoped_subject": "test(core): bound native rate resolution per render run",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/source.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-resample-run-608",
+      "tip": "d11c9d35d3fb741c79a9dd69fb3952c42c449a3f",
+      "tip_tree": "896099f3286d97a34dbf234d89e49268fb083be0",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "historical-leaf-successors",
+      "reason": "Current shared core owns parameter routing, loop geometry, bounded page ownership and scalar/lane DSP; this old tip predates later import/DSP/lifetime changes. Latest path equality is recorded separately and is not whole-branch proof.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 169,
+      "latest_scoped_commit": "d11c9d35d3fb741c79a9dd69fb3952c42c449a3f",
+      "latest_scoped_subject": "docs: record native resampling port scope and deferred gates",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/source.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-stream-model-52438",
+      "tip": "e30383ada3939c6092837084b5bec596a5fe0ae0",
+      "tip_tree": "6662ad20943058962bf7bfc946036249a2878444",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-streaming-hold",
+      "reason": "Voice rings/predictive heads reached quiet trial98e92f9f but original Areia32 strings still had one underrun, versus frozen v1 zero. e30383ad explicitly declares Streaming HOLD; no READY source. Preserve the proposal and receipts rather than install its alternate storage owner.",
+      "unresolved_scopes": [
+        "streaming-rings"
+      ],
+      "different_scoped_paths": 180,
+      "latest_scoped_commit": "368d2654d6aec540255fe7f21cbd0366ed936a80",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/audio.rs predictive preload packing",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/packed.rs",
+        "crates/sampler-core/src/packed/compressed.rs",
+        "crates/sampler-core/src/prepare.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/tests/voice_ring_render.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-stream-model-port",
+      "tip": "5e57099a6edee2dc14cc88c43410215b6ad0146d",
+      "tip_tree": "031cd2f4471df97245a86785c52dc8b019c71e49",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-streaming-hold",
+      "reason": "Voice rings/predictive heads reached quiet trial98e92f9f but original Areia32 strings still had one underrun, versus frozen v1 zero. e30383ad explicitly declares Streaming HOLD; no READY source. Preserve the proposal and receipts rather than install its alternate storage owner.",
+      "unresolved_scopes": [
+        "streaming-rings"
+      ],
+      "different_scoped_paths": 181,
+      "latest_scoped_commit": "5e57099a6edee2dc14cc88c43410215b6ad0146d",
+      "latest_scoped_subject": "port from v1 0cb7a8a0:src/engine/stream.rs wire voice rings and resident onsets (HOLD draft)",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/lib.rs",
+        "crates/sampler-core/src/ownership.rs",
+        "crates/sampler-core/src/parallel.rs",
+        "crates/sampler-core/src/prepare/selection.rs",
+        "crates/sampler-core/src/render.rs",
+        "crates/sampler-core/src/source.rs",
+        "crates/sampler-core/src/stream.rs",
+        "crates/sampler-core/src/voice_stream.rs",
+        "crates/sampler-core/tests/cold_offset.rs",
+        "crates/sampler-core/tests/voice_ring_render.rs",
+        "crates/sampler-pool/src/ring.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-stream-pool-port",
+      "tip": "e012a5f90c2370c13d0c026958f04cd1e0b2c268",
+      "tip_tree": "9d24e3896f5490471ebb3777a81ab0eefbf8d05d",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "explicit-experiment-rejection",
+      "reason": "Branch e012a5f9 explicitly rejects fixed polyphony page pool; ea08f3d2 rejects fixed8192-frame prefetch lead. Current geometric page ownership and native loop segment demand supersede the experiment.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 178,
+      "latest_scoped_commit": "9ebfecb32a59c6da507b03b4054ae2ff4bac52ee",
+      "latest_scoped_subject": "port from v1 4bffbb18:src/uvi/host.rs direct parameter lookup and worker.rs ready snapshot",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/src/script.rs",
+        "crates/sampler-uvi/src/script/ui.rs",
+        "crates/sampler-uvi/src/script_prelude.lua",
+        "crates/sampler-uvi/src/scripted/thread.rs",
+        "crates/sampler-uvi/tests/bounded_load.rs",
+        "crates/sampler-uvi/tests/host_parameters.rs",
+        "crates/sampler-uvi/tests/ui.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/v2/w9-v1-whole-voice-381",
+      "tip": "f630f08fd3000453debe313e04c1a689aa4be553",
+      "tip_tree": "a9fc022983763fe21eda8bc6c6e2bb5bc52d0d3a",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-unaccepted-native-consumers",
+      "reason": "d8f1c623 native primary source checks passed but c7218f7b records CPU HOLD,477 missing features/four silent notes, and no native-admission counter.0158aefa later ordinary/Flex/external consumer ends with pending trusted GREEN/freeze/quiet handoff; no successful whole output/admission gate found. New source dictionaries/runtime consumers require modern-control integration; do not enable on branch name or v1 equivalence alone.",
+      "unresolved_scopes": [
+        "native-primary",
+        "whole-controls",
+        "fold-experiments"
+      ],
+      "different_scoped_paths": 164,
+      "latest_scoped_commit": "f630f08fd3000453debe313e04c1a689aa4be553",
+      "latest_scoped_subject": "fix(core): retain v1 static onset values in native module follow",
+      "latest_changed_paths": [
+        "crates/sampler-core/src/v1_voice_controls.rs"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/wip/orphan-voice",
+      "tip": "9174e76cb37a65d051fc732b500249db373daa08",
+      "tip_tree": "0c5270e9f9d843e0f3d5d68f0cc05a5f049ee314",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "preserved-v1-precursor",
+      "reason": "Monolithic v1 precursor rather than current crate architecture. Source-derived leaf laws exist in shared core/UVI adapters. Full old host execution was not transplanted; legacy differences remain preserved for independent native-contract review.",
+      "unresolved_scopes": [
+        "v1-precursor"
+      ],
+      "different_scoped_paths": 223,
+      "latest_scoped_commit": "9174e76cb37a65d051fc732b500249db373daa08",
+      "latest_scoped_subject": "no scoped code",
+      "latest_changed_paths": [],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    },
+    {
+      "ref": "refs/heads/wp123-uvi-parity",
+      "tip": "4f7cfeee0f9c532b105098cbad5257f745877020",
+      "tip_tree": "07558203c2d321d3d55d7bb55fb3044e6d81b24b",
+      "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
+      "disposition": "integrated-or-superseded-uvi",
+      "reason": "Current engine_parameters/script/inserts retain live digital EQ widths/gain scale, stable shared insert control,ConstantModulation, standing script modulation, scope forwarding, async convolver resource uploads and nil absent connections. Initial restore-order and newer typed/no-success diagnostics supersede conflicting old expectations.",
+      "unresolved_scopes": [],
+      "different_scoped_paths": 64,
+      "latest_scoped_commit": "8081e0412d716047c4497381b8b7d434f1c19a15",
+      "latest_scoped_subject": "UVI: remove the scratch example entry",
+      "latest_changed_paths": [
+        "crates/sampler-uvi/Cargo.toml"
+      ],
+      "latest_changed_paths_equal_to_baseline": [],
+      "whole_branch_semantic_integration_claim": false
+    }
+  ],
+  "dirty_donors": [
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/audit-uvi-ui-probe",
+      "head": "24c70a25031243d002e24c661c1afbb1408653aa",
+      "ref": null,
+      "operations": {},
+      "changes": [
+        {
+          "status": "??",
+          "path": "crates/sampler-uvi/tests/audit_resources.rs",
+          "area": "tests",
+          "baseline_has_path": false,
+          "size_bytes": 4842,
+          "working_blob": "4744256bd5beeb061c1737e77ab80c2344400ed2",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Ignored installed-resource failure survey only; no production fix. Current relative resource resolver and authored assets tests implement the diagnosed dependency authority; retain external probe snapshot."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/fix-uvi-discovery",
+      "head": "72bb976744762435ab726f0a00908f47d9f470c5",
+      "ref": "refs/heads/v2/fix-uvi-discovery",
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "Cargo.lock",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 158260,
+          "working_blob": "2916ab353aaebb1f111b4d61e3843f3f220eb42a",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/access.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 22970,
+          "working_blob": "cbe4684c9b5fa00219f80ca2f15caa3d6f1e0bf2",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/bank.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 21285,
+          "working_blob": "9818bbdae4aba1f7a1aff3544f1d7e9899a51077",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/lib.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 94136,
+          "working_blob": "205328046ad9142e9102c237190c5cb205ade8a4",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/no_access.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 948,
+          "working_blob": "5cc6c07b8b443208ae2a687b29f5de120b2cb908",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "docs/architecture-v2/LIBRARY_ACCESS.md",
+          "area": "documentation",
+          "baseline_has_path": true,
+          "size_bytes": 3633,
+          "working_blob": "b4582543b080df7b7175650b0cdc54100a52886c",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/library.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 72397,
+          "working_blob": "abdcefc1513080ca0f5717490a57315d3b2b215b",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/library/cache.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 7465,
+          "working_blob": "7e3cc687a24bf175d3064f3ef378f26d86030294",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/ui/browser.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 62194,
+          "working_blob": "a8593f286facb3272fe775571b38c6ca398ca65d",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/ui/browser_tests.rs",
+          "area": "tests",
+          "baseline_has_path": true,
+          "size_bytes": 7475,
+          "working_blob": "cccca45842e8d12dc29a337c1360caac93e5d2e2",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/ui/mod.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 55933,
+          "working_blob": "c572ffaf6199b891d9e97f71f436504934507f46",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/ui/picker.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 9652,
+          "working_blob": "b7bb9826308a9ba1f845161be3a3e0112c378ce8",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "src/ui/picker/linux.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 9015,
+          "working_blob": "248535b9173000dcea7a0a361918c4a9e4009e36",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Old workstation-reader dependency/configured-reader discovery replaced by native bank namespaces and bounded bank/resource access. Port would revive obsolete external reader dependency."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-uvi-ui-baseline",
+      "head": "699758abb71726163439e8303ab45a3fe779fed4",
+      "ref": null,
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/script/ui.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 10136,
+          "working_blob": "31e449ca70e69ecd150a97cae3752eba7bfa8d29",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "crates/sampler-uvi/examples/ui_health.rs",
+          "area": "instrumentation",
+          "baseline_has_path": true,
+          "size_bytes": 6702,
+          "working_blob": "c1a925aefcbd2ca0db46c6978c482859b2e27c32",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "ui_properties is survey-only raw key inventory; current widgets use metatable __data and snapshot cache, so the old collector no longer observes the intended property tree. Current ui_health example supersedes the old probe."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/pi-perf-acceptance-round5",
+      "head": "559c6915e27379140a34355441cfedffeffab101",
+      "ref": "refs/heads/pi/perf-acceptance-round5",
+      "operations": {},
+      "changes": [
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-inputs/events.tsv",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 390,
+          "working_blob": "9b307e9d85a881ffbd5259749e7cfa60157ce0fe",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-inputs/input.kontra-multi",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 336,
+          "working_blob": "a56caea9c800bb2518bc51cbaf047b6864d78ee6",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-inputs/samples/tone.wav",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 1536044,
+          "working_blob": "a795f4bd26f98a2817601c30c62e430dc50eb42c",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/activity.json",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 66,
+          "working_blob": "378e6657090cd4a05121f8260000287bdabfba8a",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/activity.jsonl",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 13395,
+          "working_blob": "85257203b188b19e09119034492c46754c816a39",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/load-stages.json",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 86,
+          "working_blob": "cd6944a274f8c458cf10aab7ecc4f9cabd77dcfb",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/metrics.json",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 23350,
+          "working_blob": "ed2b42ed9072fd1d7c05624cb6eaa0ada1509e53",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/plugin-diagnostics.json",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 14722,
+          "working_blob": "dcc5704a4161216a963988418a8b22f4341357dd",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": ".cache/pi-perf-round5-measurements/b64-unforced-source-cache-r0/signal-traces.json",
+          "area": "generated",
+          "baseline_has_path": false,
+          "size_bytes": 15,
+          "working_blob": "369690965bdf9f7919c83f314a82f1e6e2080e80",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Generated input/cache measurements only, no source patch; numeric receipts preserved externally."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/v2-simd-dsp",
+      "head": "ddad588e74e3b811943ae5592aadb006a6b6f335",
+      "ref": "refs/heads/v2/dsp-kernels",
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "crates/sampler-core/src/dsp.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 46216,
+          "working_blob": "d627e6a0b988182679bdddd10b8b420d55aabbb3",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-core/src/dsp/svf.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 18055,
+          "working_blob": "f64f3e93ff7e00a18bb5c3f8240175f29cab6531",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-core/src/lib.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 56998,
+          "working_blob": "5f52c370bbc1b5cffd9e07e032c7b82856de9359",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-core/src/render.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 28067,
+          "working_blob": "74b993fbba268e755039fc37af82b84dba648f47",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-core/src/voice_mod.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 42222,
+          "working_blob": "bc5b2e5b0564ab7d9e2ff09ab0655d5d0e5cce0e",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-kontakt/src/effects.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 59141,
+          "working_blob": "c00c44bbbc8a2040af67731394116129b311d240",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Older AR/slot-filter approximation loses current nonlinear/parameter/routing successor kernels and lacks native AR resonance/subtype proof. Preserve native numerical evidence; no backwards kernel replacement."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/v2-uvi-fix",
+      "head": "082a10538c626cbd02c36816a0a51547735111a9",
+      "ref": "refs/heads/fix/uvi-programs-play",
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/lib.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 93328,
+          "working_blob": "7f90bae515a6ae2a312361f479471f97c0065413",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "tools/corpus-health/src/main.rs",
+          "area": "instrumentation",
+          "baseline_has_path": true,
+          "size_bytes": 108435,
+          "working_blob": "26ffbfb765bf2fd4ecac3c689f910c0f8f28d4ee",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "script_playable_keys scanner mutates one host for all keys and increments shared state/time; later keys can inherit earlier tasks/round-robin/persistence. Survey-only hypothesis; current isolated audit/corpus owners supersede its unconditional selection policy."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-baseline-5fc",
+      "head": "5fc362f355c764fd043510b3ff8f031a45328e11",
+      "ref": null,
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/script.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 91198,
+          "working_blob": "8d44039dceecfb1a2b474220c7edec90fab0f92e",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/script/ui.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 30524,
+          "working_blob": "3be2769a833ea32acd638255c25453042ed8f1d8",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-uvi/src/scripted/thread.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 17695,
+          "working_blob": "d51d575e473b8bade7cf33a4ed790aa3075ae7a5",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "examples/render_cpu_witness.rs",
+          "area": "instrumentation",
+          "baseline_has_path": true,
+          "size_bytes": 3983,
+          "working_blob": "8f0ffa725569782694eab36d7b3f8bd03253407d",
+          "working_bytes_equal_to_baseline": true
+        },
+        {
+          "status": " M",
+          "path": "src/sound/v2.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 182926,
+          "working_blob": "4ff89c657ffbc968b6860b075ae3555a1a7a101e",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Deterministic work budgets, seeded owner barrier, UI arm hooks and render witness are present in current script.rs/thread.rs/diagnostics. Modern barrier publication closes race after UI snapshot; do not restore older earlier reply."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-eq",
+      "head": "ada2634d2290160cc7397fc9970602f3d03a4f3e",
+      "ref": "refs/heads/v2/w15-eq-controls",
+      "operations": {},
+      "changes": [
+        {
+          "status": "??",
+          "path": "crates/sampler-kontakt/examples/piano_release_route.rs",
+          "area": "instrumentation",
+          "baseline_has_path": false,
+          "size_bytes": 12697,
+          "working_blob": "eaa7a2a4a276b8621c233728ad0a277f41be3a08",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Ignored synthetic-source installed piano release-route witness only, no production patch."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-harp-shipping",
+      "head": "f199980d68ddef02634f07109a33de5bbe3470cd",
+      "ref": "refs/heads/v2/w15-harp-shipping",
+      "operations": {},
+      "changes": [
+        {
+          "status": "??",
+          "path": "crates/sampler-kontakt/tests/w15_harp_shipping.rs",
+          "area": "tests",
+          "baseline_has_path": false,
+          "size_bytes": 997,
+          "working_blob": "59ceacb63cc07382d033aa9b88d39a7f16347ade",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Ignored installed Harp compaction probe only; current shared physical-zone identity/compaction fixes already covered by accepted tests."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w15-vista-harp",
+      "head": "afe58f31a817027e89ead59ffdfd61d9559cc4b0",
+      "ref": "refs/heads/v2/w15-vista-harp",
+      "operations": {},
+      "changes": [
+        {
+          "status": " M",
+          "path": "crates/sampler-kontakt/src/effects.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 103870,
+          "working_blob": "8570415a4a27a2237d039191d5848fe1dd1868e5",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": " M",
+          "path": "crates/sampler-kontakt/tests/real_libraries.rs",
+          "area": "tests",
+          "baseline_has_path": true,
+          "size_bytes": 70269,
+          "working_blob": "fdc2f407fa0278fee0452770d69ab2a8a6db0cde",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "crates/sampler-core/src/dsp/ar.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 7156,
+          "working_blob": "c90e1d2f7ee0286908c3a10fd3490f50ffb8d39c",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "crates/sampler-core/src/dsp/ar_kernel.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": true,
+          "size_bytes": 9069,
+          "working_blob": "4dc5141077d939675245072e46552fb8303b0be3",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "crates/sampler-core/src/dsp/phaser_kernel.rs",
+          "area": "source_or_configuration",
+          "baseline_has_path": false,
+          "size_bytes": 2373,
+          "working_blob": "21d5b08ee6b70c7873c4427c5120b88e6d32cbb8",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "docs/audit-2026-10-10/w15-ar-native.md",
+          "area": "documentation",
+          "baseline_has_path": true,
+          "size_bytes": 5196,
+          "working_blob": "ec496562cb31cec20bc8a83fb274e83d400f312c",
+          "working_bytes_equal_to_baseline": false
+        },
+        {
+          "status": "??",
+          "path": "tools/w15-ar-native.py",
+          "area": "instrumentation",
+          "baseline_has_path": true,
+          "size_bytes": 19041,
+          "working_blob": "ed3ca5a4240a8c3c1f4d2d9c1256b9bd81964908",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "Standalone AR/phaser drafts were disconnected and handoff says native numerical admission pending. Current core AR/phaser kernels and translation/law tests are successors. Added native_ar_family_keeps_every_authored_slot assumes all IDs admitted without completing numerical gate; preserve hypothesis."
+    },
+    {
+      "path": "/home/derpcat/.t3/worktrees/KONTAKTO/w6-envmod",
+      "head": "051c11c0aa245f6c119a78b438b0ef8261ac0f49",
+      "ref": "refs/heads/v2/w6-v1-voice-evaluator",
+      "operations": {},
+      "changes": [
+        {
+          "status": "??",
+          "path": "docs/audit-2026-10-09/w6-v1-evaluator-contract.md",
+          "area": "documentation",
+          "baseline_has_path": true,
+          "size_bytes": 4516,
+          "working_blob": "e1992b7070cb855c4e0a4e2ec2a1ea5fb14df480",
+          "working_bytes_equal_to_baseline": false
+        }
+      ],
+      "disposition": "preserved-probe-or-successor",
+      "reason": "The untracked evaluator contract document is already current under docs/audit-2026-10-09; source-free research, not new consumer."
+    }
+  ],
+  "recovered_commits": [
+    "c3e825c9",
+    "640224a0",
+    "2e030e6d"
+  ],
+  "unresolved_major_scopes": [
+    "native-primary",
+    "whole-controls",
+    "fold-experiments",
+    "fused-render",
+    "streaming-rings",
+    "v1-precursor"
+  ],
+  "official_scheduler_contract": {
+    "source": "https://lua.uvi.net/_time_intro.html",
+    "waitBeat": "Converts beats to milliseconds once using call-time tempo; a tempo change during the wait does not stretch or shorten it.",
+    "run_spawn": "run starts immediately; spawn at end of callback cycle shares timestamp. Both own no triggering note; isNoteHeld false and waitForRelease returns immediately.",
+    "production_limit": "No sample-accurate zero-latency response can be guaranteed by an off-thread general interpreter without a host lookahead/declared latency or a lowered realtime behavior; no new scheduler feature was added during consolidation."
+  },
+  "validation": {
+    "rust_syntax_files": 28,
+    "method": "rustfmt --emit stdout --config skip_children=true (parse only; no compilation)",
+    "independent_synthetic_f32_points": 108,
+    "synthetic_cases": 27,
+    "numeric_method": "Python f32 reconstruction of saved tick preparation and recurrence versus committed synthetic original-byte fixture. Native CRT pow and native host timing remain unknown.",
+    "diff_check": "git diff --check passed",
+    "rust_tests": "authored and recovered, not executed here by explicit no-build instruction"
+  },
+  "unresolved_details": [
+    {
+      "id": "native-primary",
+      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
+      "donor_tip": "f630f08fd3000453debe313e04c1a689aa4be553",
+      "commits": [
+        "c3cb7aa9",
+        "d8f1c623",
+        "7254f00b",
+        "c7218f7b"
+      ],
+      "source_gap": "Current EnvelopeState runs generic frame-valued envelope curves; raw SourceAhdsr.native_amplitude metadata and v1 native evaluator are present but not joined to the production envelope owner. This is actual missing source, not a name-only discrepancy.",
+      "reason_not_enabled": "d8f1c623 is a separate native-primary checkpoint with v1/evaluator bit tests, not original-host sound acceptance. c7218f7b explicitly holds full native-control execution:477 feature omissions,four silent reports,unknown active-native admission after initialization and no clear CPU improvement. Current envelope setters/trace/control/retirement tests have later changes; simply replacing envelope.rs would regress them. Preserve donor and its numeric source oracle until independently admitted modern lifecycle/source identity tests and exact initialized overlays exist.",
+      "followup": "Port only typed native-primary selection/state into current EnvelopeState, preserve step curves/control reset/choke/stream onset semantics, add dynamic/default overlay and actual admission counters, then parent central tests and version-pinned native capture."
+    },
+    {
+      "id": "whole-controls",
+      "donor_ref": "refs/heads/v2/w9-v1-whole-voice-381",
+      "commits": [
+        "fee28276",
+        "41c30630",
+        "0158aefa",
+        "2eae7382",
+        "d6c24fbc",
+        "f630f08f"
+      ],
+      "source_gap": "Current ordinary primary/Flex/external modulation runs shared generic evaluator; donor introduces whole_voice.rs prepared ControlPlan and state/claim arrays, ordered native input projection, plus runtime admission counters. Not present in current production.",
+      "reason_not_enabled": "Latest own whole-controls handoff still requests trusted focused GREEN/area no-run/freeze/quiet. No successful final acceptance receipt found. Modern source-driven LFO phase routing,filter index sets,live control IDs and bipolar script sources must retain current owners. Source0158 admission also declines active LFO/ambiguous/new shapes and still lacks native initialized/live source mirror. Full branch replacement would remove newer sound controls/DSP; enable only after source-derived admission and current lifecycle/heap/growth tests.",
+      "followup": "Retain original descriptors as evidence, establish one physical prepared mapping using current IR/runtime addresses, separately prove ordinary/Flex/external kernels; never use older normalized source identity or copied v1 test alone as native parity."
+    },
+    {
+      "id": "fused-render",
+      "donor_ref": "refs/heads/v2/w9-v1-fused-resample-5fc",
+      "commits": [
+        "c44a9e8a",
+        "0e38851e",
+        "22e44927",
+        "3d9994df",
+        "0d4af3f1"
+      ],
+      "reason_not_enabled": "Explicit CPU HOLD: Morph improves but Horns256 median regresses4.8\u20138.0%; no native instrument PCM captures. Full current dispatch/stream source owner replacement unjustified."
+    },
+    {
+      "id": "fold-experiments",
+      "donor_ref": "refs/heads/v2/w9-horns-frames",
+      "commits": [
+        "4c21903c",
+        "5340a425",
+        "c8a122bf",
+        "10281730",
+        "8c206006",
+        "6a2f68b2"
+      ],
+      "reason_not_enabled": "SSE fold experiment rejected; corrected AVX source gates recorded but CPU acceptance remains pending. Current safe sampler-simd dispatch/bounds must remain; preserve exact hypothesis and frozen metrics."
+    },
+    {
+      "id": "streaming-rings",
+      "donor_ref": "refs/heads/v2/w9-v1-stream-model-52438",
+      "commits": [
+        "009a1366",
+        "d826303f",
+        "368d2654",
+        "29897195",
+        "98e92f9f",
+        "e30383ad"
+      ],
+      "reason_not_enabled": "Explicit quiet Streaming HOLD: one original Areia32 underrun versus v1 zero; capacity/RSS improved but neither zero-underrun nor matched sonic work admitted. alternate pervoice rings/predictive packing requires entire owner/readiness/reload generation protocol, not individual symbol copies."
+    },
+    {
+      "id": "v1-precursor",
+      "reason_not_enabled": "Old monolithic v1 core,original UI,readers and DSP refs are preserved; this scoped source audit does not certify every v1 source consumer. Current UVI/core already contains named admitted extracted leaf laws. New native context and major dirty main-v1 successor are parent/other lane responsibilities."
+    }
+  ]
+}
