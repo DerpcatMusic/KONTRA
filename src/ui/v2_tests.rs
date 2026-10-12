@@ -7302,6 +7302,39 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
                 .unwrap()
         ));
 
+        // Clicking the named control hands focus to the virtual row. Arrow and
+        // End navigation must construct destinations while retaining source IDs.
+        let at = super::tests::center(&ui.ui, "map-group-0-0");
+        for down in [true, false] {
+            ui.tick(Input {
+                pointer: PointerInput {
+                    pos: Some(at),
+                    buttons: if down { Buttons::PRIMARY } else { Buttons::default() },
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        ui.idle(2);
+        assert_eq!(ui.ui.focus_key(), Some("map-groups-0/item/0"));
+        for key in [Key::Down, Key::Enter] {
+            ui.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+            ui.idle(2);
+        }
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some());
+        for key in [Key::End, Key::Enter] {
+            ui.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+            ui.idle(2);
+        }
+        assert_eq!(ui.ui.focus_key(), Some("map-groups-0/item/188"));
+        let scene = ui.ui.scene().unwrap();
+        assert!(scene.surface("map-group-0-188").is_some());
+        assert!(scene.surface("map-inspector-0-188").is_some());
+        assert!(scene.surfaces().filter(|s| s.key.starts_with("map-group-0-")).count() < 48);
+        ui.press("view-0-Sound");
+        ui.press("sound-tab-0-Controls");
+        ui.press("view-0-Mapping");
+        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-188").is_some());
     }
     assert_eq!(
         *source, before,
