@@ -360,7 +360,7 @@ fn initialization_uses_the_load_budget_and_live_callbacks_keep_their_budget() {
 }
 
 #[test]
-fn initial_and_explicit_state_load_preserve_their_distinct_callback_orders() {
+fn initial_and_explicit_state_load_restore_widgets_before_on_load() {
     let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor K='7'>
       <state>{"counter":42}</state><script>
       local k=Knob('K',0,0,10)
@@ -371,14 +371,14 @@ fn initial_and_explicit_state_load_preserve_their_distinct_callback_orders() {
       function onSave() return {counter=42} end
       </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let mut host = ScriptHost::new(xml, (), Config::default()).unwrap();
-    assert_eq!(host.global_text("order"), "L0W7I7");
+    assert_eq!(host.global_text("order"), "W7L7I7");
     let state = host.save_ui_state().unwrap();
     host.set_control(sampler_uvi::script::control_id(1, 0), 2.)
         .unwrap();
     host.restore_ui_state(&state).unwrap();
-    assert_eq!(host.global_text("order"), "L0W7I7W2W7L7");
+    assert_eq!(host.global_text("order"), "W7L7I7W2W7L7");
     host.restore_ui_state(&state).unwrap();
-    assert_eq!(host.global_text("order"), "L0W7I7W2W7L7L7");
+    assert_eq!(host.global_text("order"), "W7L7I7W2W7L7L7");
 }
 
 #[test]
