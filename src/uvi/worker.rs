@@ -3187,7 +3187,9 @@ function onSave()error('runtime inspection must not run callbacks')end
         bytes[..4].copy_from_slice(b"UFS2");
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         bytes[48..62].copy_from_slice(b"WorkerAuthored");
+        bytes[304] = 1;
         let root = named(&mut bytes, 0x2fba_3632, "Root", 272, key);
+        bytes[40..48].copy_from_slice(&root.to_le_bytes());
         let member = named(&mut bytes, 0x6758_50e4, "authored.uvip", 289, key);
         let data = append(&mut bytes, source.as_bytes());
         bytes[member as usize + 260..member as usize + 268]

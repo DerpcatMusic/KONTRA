@@ -409,7 +409,9 @@ mod tests {
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         bytes[8..24].fill(7);
         bytes[48..58].copy_from_slice(b"UiAuthored");
+        bytes[304] = 1;
         let root = named(&mut bytes, 0x2fba_3632, "Root", 272, key);
+        bytes[40..48].copy_from_slice(&root.to_le_bytes());
         let stripe = [
             10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
         ];
