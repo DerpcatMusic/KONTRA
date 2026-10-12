@@ -1,0 +1,11 @@
+Distill scale and shared menu explanations into hover help
+
+Keep menu action labels and Enter/Ctrl+D/Del visible; put prose hints on the
+existing hover surface. Move remembered-window-size help onto a named scale
+label so it works under actual pointer hover.
+
+Two intended REDs -> GREEN; 15 focused behavior/layout tests PASS. Shots root
+lib no-run PASS and both-size PNG pairs inspected. Existing slot clipping and
+resize guards remain green; browser redesign WIP is excluded.
+
+Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>
