@@ -1,5 +1,7 @@
 use std::io::Cursor;
 
+use crate::nis::items::preset_chunk_data;
+
 use crate::{
     kontakt::{
         objects::{BPatchHeader, BPatchHeaderV42},
@@ -8,17 +10,14 @@ use crate::{
     },
     nis::{
         BNISoundHeader, BNISoundPresetProperties, EncryptionItem, ItemContainer, ItemType, Preset,
-        PresetChunkItemProperties,
     },
     Error,
 };
 
 impl ItemContainer {
     pub fn find_kontakt_preset_item(&self) -> Option<Result<Preset, Error>> {
-        if let Ok(b) = self.find_item::<BNISoundPresetProperties>(&ItemType::BNISoundPreset)? {
-            return Some(Ok(b.preset));
-        }
-        None
+        self.find_item::<BNISoundPresetProperties>(&ItemType::BNISoundPreset)
+            .map(|result| result.map(|properties| properties.preset))
     }
 
     pub fn find_kontakt_header(&self) -> Option<Result<BPatchHeaderV42, Error>> {
@@ -37,31 +36,17 @@ impl ItemContainer {
             Err(e) => return Some(Err(e)),
         };
 
-        let preset: KontaktPreset = match self.find_encryption_item()? {
-            Ok(enc) => {
-                let item = enc.subtree.item().unwrap();
-
-                match item.find_item::<PresetChunkItemProperties>(&ItemType::PresetChunkItem) {
-                    Some(preset_chunk_item) => {
-                        let chunk = preset_chunk_item.unwrap();
-                        let chunk = chunk.chunk();
-                        KontaktPreset::read(
-                            &mut Cursor::new(&chunk),
-                            &header.app_signature,
-                            &header.patch_type,
-                            &header.min_supported_version,
-                        )
-                        .unwrap()
-                    }
-                    None => todo!(),
-                }
-            }
-            Err(e) => return Some(Err(e)),
-        };
-
-        Some(Ok(KontaktInstrument {
-            header: BPatchHeader::BPatchHeaderV42(header),
-            preset,
+        Some(preset_chunk_data(self)?.and_then(|data| {
+            let preset = KontaktPreset::read(
+                Cursor::new(data),
+                &header.app_signature,
+                &header.patch_type,
+                &header.min_supported_version,
+            )?;
+            Ok(KontaktInstrument {
+                header: BPatchHeader::BPatchHeaderV42(header),
+                preset,
+            })
         }))
     }
 }
@@ -84,25 +69,7 @@ impl BNISoundPresetContainer {
 
     /// Attempts to fetch the raw inner preset chunk data
     pub fn preset_data(&self) -> Option<Result<Vec<u8>, Error>> {
-        match self.0.find_encryption_item()? {
-            Ok(enc) => {
-                if enc.is_encrypted {
-                    panic!("Item is encrypted.");
-                }
-
-                let item = enc.subtree.item().unwrap();
-
-                match item.find_item::<PresetChunkItemProperties>(&ItemType::PresetChunkItem) {
-                    Some(preset_chunk_item) => {
-                        let chunk = preset_chunk_item.unwrap();
-                        let data = chunk.chunk();
-                        return Some(Ok(data.to_owned()));
-                    }
-                    None => todo!(),
-                }
-            }
-            Err(e) => panic!("Error unpacking encryption item: {e}"),
-        };
+        preset_chunk_data(&self.0)
     }
 
     pub fn preset(&self) -> Option<Result<KontaktPreset, Error>> {

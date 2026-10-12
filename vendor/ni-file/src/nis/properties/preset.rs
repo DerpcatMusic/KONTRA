@@ -68,12 +68,23 @@ pub enum AuthoringApplication {
 
 impl Preset {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        assert_eq!(reader.read_u32_le()?, 1);
+        let property_version = reader.read_u32_le()?;
+        if property_version != 1 {
+            return Err(Error::context(
+                "Preset properties".into(),
+                Error::VersionMismatch {
+                    expected: 1,
+                    got: property_version,
+                },
+            ));
+        }
 
         let is_factory_preset = reader.read_bool()?;
         let authoring_app: AuthoringApplication = reader.read_u32_le()?.into();
 
-        assert_eq!(reader.read_u32_le()?, 1, "Preset expected value: 1");
+        if reader.read_u32_le()? != 1 {
+            return Err(Error::Static("Unsupported Preset version-string prefix"));
+        }
 
         let version = reader.read_widestring_utf16()?;
 
@@ -89,8 +100,14 @@ impl std::convert::TryFrom<&ItemData> for Preset {
     type Error = Error;
 
     fn try_from(frame: &ItemData) -> Result<Self, Error> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::Preset);
-        Preset::read(Cursor::new(frame.data.clone()))
+        let got = frame.header.item_type();
+        if got != ItemType::Preset {
+            return Err(Error::ItemWrapError {
+                expected: ItemType::Preset,
+                got,
+            });
+        }
+        Preset::read(Cursor::new(&frame.data))
     }
 }
 
