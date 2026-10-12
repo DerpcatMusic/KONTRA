@@ -23,7 +23,7 @@ use anyhow::{Context, ensure};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use sampler_core::{
@@ -54,6 +54,8 @@ mod host_transport_tests;
 mod persistence;
 #[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod capture_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -74,6 +76,9 @@ const WIRE: ChannelAddress = ChannelAddress {
 pub struct Part {
     runtime: Runtime,
     persistence: Option<persistence::Persistence>,
+    /// Changes to typed widget values, published by the audio owner.
+    widget_revision: Arc<AtomicU64>,
+    widget_state_revision: (u64, u64),
     tone: sampler_core::OutputLowPass,
     tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
@@ -243,30 +248,13 @@ impl Part {
                     .map(|value| (sampler_ui_ir::ControlId(w.id.0), value))
             })
             .collect();
-        let mut captures = std::collections::VecDeque::new();
-        let mut capture = Vec::new();
-        for widget in &widgets {
-            let len = match widget.storage {
-                sampler_core::WidgetStorage::Control(_) => 0,
-                sampler_core::WidgetStorage::Cells { len, .. }
-                | sampler_core::WidgetStorage::Texts { len, .. } => len,
-                sampler_core::WidgetStorage::FileSelection { .. } => 1,
-            };
-            for index in 0..len {
-                capture.push(sampler_core::WidgetEdit {
-                    id: widget.id,
-                    index,
-                    value: sampler_core::WidgetValue::Integer(0),
-                    interaction: Default::default(),
-                });
-                if capture.len() == sampler_core::WIDGET_EDIT_CAPACITY {
-                    captures.push_back(std::mem::take(&mut capture));
-                }
-            }
-        }
-        if !capture.is_empty() {
-            captures.push_back(capture);
-        }
+        // A table's scalar state is already projected above. Transfer only one bounded
+        // chunk at a time rather than retaining a Text-sized edit for every cell.
+        let captures = std::collections::VecDeque::from([
+            Vec::with_capacity(sampler_core::WIDGET_EDIT_CAPACITY),
+        ]);
+        let widget_revision = Arc::new(AtomicU64::new(0));
+        let widget_state_revision = runtime.script_state_revision(plan).map_err(core)?;
         let revision = runtime.control_revision(plan).unwrap_or(0);
         let context = ControlContext {
             performance: runtime.performance(0).map_err(core)?,
@@ -292,6 +280,11 @@ impl Part {
                 widget_values,
                 captures,
                 capturing: false,
+                capture_cursor: Some((0, 0)),
+                capture_start: (0, 0),
+                captured_revision: 0,
+                capturing_revision: 0,
+                widget_revision: widget_revision.clone(),
                 midi_requests: Default::default(),
                 array_worker: None,
                 revision,
@@ -300,6 +293,8 @@ impl Part {
                 persistence: None,
             }),
             runtime,
+            widget_revision,
+            widget_state_revision,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
             editor_offsets: None,
@@ -441,6 +436,15 @@ impl Part {
         }
     }
 
+    fn publish_widget_revision(&mut self) {
+        if let Ok(revision) = self.runtime.script_state_revision(self.runtime.active_plan())
+            && revision != self.widget_state_revision
+        {
+            self.widget_state_revision = revision;
+            self.widget_revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
     /// Apply node settings to the runtime's buses.
     fn mix_nodes(&mut self, nodes: &[NodeMix]) {
         for (to, from) in self.nodes.iter_mut().zip(nodes) {
@@ -521,6 +525,11 @@ pub(crate) struct ControlIngress {
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
     captures: std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing: bool,
+    capture_cursor: Option<(usize, u32)>,
+    capture_start: (usize, u32),
+    captured_revision: u64,
+    capturing_revision: u64,
+    widget_revision: Arc<AtomicU64>,
     midi_requests: std::collections::VecDeque<sampler_core::ControlRequest>,
     array_worker: Option<array_file::Worker>,
     revision: u64,
@@ -782,16 +791,60 @@ impl ControlIngress {
     /// Existing 100 ms worker owns polling and recycles native capture buffers.
     pub(crate) fn refresh(&mut self) -> bool {
         let changed = self.settle();
+        let observed = self.widget_revision.load(Ordering::Acquire);
+        if !self.capturing && self.capture_cursor.is_none() && observed != self.captured_revision {
+            self.capture_cursor = Some((0, 0));
+            self.capturing_revision = observed;
+        }
         if !self.capturing
-            && let Some(output) = self.captures.pop_front()
+            && let Some(start) = self.capture_cursor
+            && let Some(mut output) = self.captures.pop_front()
         {
+            output.clear();
+            let (mut widget, mut index) = start;
+            while widget < self.widgets.len() && output.len() < sampler_core::WIDGET_EDIT_CAPACITY {
+                let definition = &self.widgets[widget];
+                let len = match definition.storage {
+                    sampler_core::WidgetStorage::Control(_) => 0,
+                    sampler_core::WidgetStorage::Cells { len, .. }
+                    | sampler_core::WidgetStorage::Texts { len, .. } => len,
+                    sampler_core::WidgetStorage::FileSelection { .. } => 1,
+                };
+                if index >= len {
+                    widget += 1;
+                    index = 0;
+                    continue;
+                }
+                output.push(sampler_core::WidgetEdit {
+                    id: definition.id,
+                    index,
+                    value: sampler_core::WidgetValue::Integer(0),
+                    interaction: Default::default(),
+                });
+                index += 1;
+                if index == len {
+                    widget += 1;
+                    index = 0;
+                }
+            }
+            if output.is_empty() {
+                self.capture_cursor = None;
+                self.captured_revision = self.capturing_revision;
+                self.captures.push_back(output);
+                return changed;
+            }
+            let next = (widget < self.widgets.len()).then_some((widget, index));
             let request = sampler_core::ControlRequest {
                 plan: self.plan,
                 expected_revision: None,
                 operation: sampler_core::ControlOperation::CaptureWidget(output),
             };
             match self.client.submit(request) {
-                Ok(_) => self.capturing = true,
+                Ok(_) => {
+                    self.capturing = true;
+                    self.capture_start = start;
+                    self.capture_cursor = next;
+                }
                 Err(rejected) => {
                     if let sampler_core::ControlOperation::CaptureWidget(output) =
                         rejected.command.operation
@@ -913,6 +966,11 @@ impl ControlIngress {
                     for edit in output.iter().take(count) {
                         changed |= self.accept_value(edit);
                     }
+                    if self.capture_cursor.is_none() {
+                        self.captured_revision = self.capturing_revision;
+                    }
+                } else {
+                    self.capture_cursor = Some(self.capture_start);
                 }
                 self.captures.push_back(output);
             }
@@ -1985,6 +2043,7 @@ impl V2Core {
         #[cfg(test)]
         let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
         for part in self.parts.iter_mut().flatten() {
+            part.publish_widget_revision();
             if let Some(state) = part.persistence.as_mut() {
                 state.publish(&mut part.runtime);
             }
