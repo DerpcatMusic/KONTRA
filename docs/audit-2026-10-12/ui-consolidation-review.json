@@ -4269,7 +4269,11 @@
     "Conflux actual blank renderer and Pacific/Vista absent authored images not reclassified or repaired by invented art; current native behavior remains unknown.",
     "Older source_scope_catalog_only rows retain historical refs and snapshots; this review does not independently prove every pre-v2/UI/platform behavior integrated.",
     "New Rust regression and cross-platform compilation execution pending; static parse checks cannot establish type-check or native fidelity.",
-    "Existing canonical NCKP custom/state font, press-shift and visible table-step omissions remain explicitly reported; this consolidation did not introduce new NCKP field implementations or reclassify those losses."
+    "Existing canonical NCKP custom/state font, press-shift and visible table-step omissions remain explicitly reported; this consolidation did not introduce new NCKP field implementations or reclassify those losses.",
+    "Real retained v1 program-bank owner remains materially missing; see backend-v1-ownership-recovery.md for pool/preload/swap/admission prerequisites.",
+    "Explicit LegacyLua/KompleteScript source selection/ambiguity/target-version metadata discovery has no current successor; typed modern rendering acceptance is unproven.",
+    "Broad short-axis pictured Slider preservation in Vector has no current selective successor; Bitmap authored-frame coverage is implemented.",
+    "Remote Solid G-EQ signed display/DSP contract has no proven current successor; a caption-only formula would not establish backend admission."
   ],
   "reviewed_scope_paths": [
     "src/ui",
@@ -4288,5 +4292,6 @@
     "vendor/mui-baseview",
     "vendor/mui-vello",
     "vendor/moose-baseview"
-  ]
+  ],
+  "older_scope_supplement": "ui-older-scope-supplement.json"
 }
