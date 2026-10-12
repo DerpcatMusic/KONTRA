@@ -88,3 +88,54 @@ historical evidence and classify it as superseded.
 No additional correctness regression was verified in the reviewed changes.
 Broad test results, installed-bank failures and the recovered UI work remain
 in their separate coordinator and lane receipts.
+
+## Follow-up: headless hosts must service the script outbox
+
+The coordinator's explicit installed-library run then exposed a separate
+integration error: Big Screen program 1 rendered peak zero, while all five
+Analog Strings pedal cases left notes stuck after 60 seconds. The old
+headless harnesses flushed callback outcomes but never drained script effects.
+The production `render-kontakt` CLI had the same omission.
+
+`Loaded.scripts` explicitly assigns interface-model ownership by
+`ScriptInstanceId` (`sampler-kontakt/src/load.rs:70`). Since release #59,
+`Emit` rewinds and yields on the full 256-entry outbox, keeping every UI
+effect. Without a host consumer, a large UI refresh can therefore hold up
+the musical operations that follow it. Core backpressure remains unchanged.
+The repaired headless loops consume effects into their actual script models.
+
+This does not establish a closed-editor plugin failure: the plugin audio
+process transfers effects to `Shared`, independently schedules the serialized
+Load worker about ten times per second, and that worker calls `apply_effects`.
+An open editor provides another consumer, rather than the only one.
+
+The renderer's consumer fences the plan, script instance and service table.
+MIDI and array-file jobs require separate service hosts; the CLI now returns
+an explicit unsupported-service error without acknowledging or completing
+those jobs. Its authored refusal test verifies that both jobs remain in the
+outbox when the consumer refuses them. This repair adds UI hosting, not
+external MIDI/array-file service support.
+
+Validation kept the installed auditions' keys, controllers, gains and musical
+assertions unchanged:
+
+- Big Screen program 1: peak **0 → 0.05534125**, exact test passed in 3.06 s.
+- Analog Strings profile: three bound scripts, peak 1.524, at most four voices,
+  idle 7.14 s after the last event; exact test passed in 30.11 s. The remaining
+  four tests passed in 46.54 s: retrigger, soft pedal, sostenuto and deterministic
+  repeated PCM, including the existing 61-versus-64-frame partition check.
+- Authored CLI musical-tail test: a note callback emits 1,000 UI updates before
+  `play_note`. The unserviced renderer failed with "the render is silent";
+  the serviced renderer produces peak 0.250 and retires the generated note.
+  The complete `render_kontakt::tests` group passes 3/3 in 0.01 s.
+- The Kontakt lane's separate physical-binding assertion repair was validated
+  in the shared test file: 1/1 in 0.10 s, 1,253 controls and 272 lookups. It
+  checks envelope/internal-modulator ownership separately from effect and route
+  ownership, while retaining the physical setter/readback assertion.
+
+The original red receipts remain in `final-cargo-tests.log`. Follow-up logs
+in `/tmp/kontra-parity-audit-20261012/`: `big-screen-ui-host-green.log`,
+`analog-pedals-ui-host-green.log`, `analog-pedals-ui-host-followup.log`,
+`headless-ui-host-red.log`, `headless-ui-host-green.log` and
+`kontakt-source-binding-green.log`. These establish caller integration and
+local playback behavior, without claiming native Kontakt audio equality.
