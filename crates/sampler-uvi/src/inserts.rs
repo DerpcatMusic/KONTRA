@@ -368,7 +368,7 @@ impl Translation {
                 }
                 placed.push((id, first, count));
             }
-            self.used.push(node.id());
+            self.used.insert(node.id());
         }
         Ok((out, placed))
     }

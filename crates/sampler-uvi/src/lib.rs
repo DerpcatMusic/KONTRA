@@ -44,7 +44,7 @@ pub use no_access::Bank;
 use roxmltree::{Document, Node, ParsingOptions};
 use sampler_ir as ir;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -268,7 +268,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         route_index: HashMap::new(),
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
-        used: Vec::new(),
+        used: HashSet::new(),
         #[cfg(feature = "scan")]
         dropped_connections: Default::default(),
         #[cfg(feature = "scan")]
@@ -410,7 +410,7 @@ struct Translation {
     /// report entry.
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
-    used: Vec<roxmltree::NodeId>,
+    used: HashSet<roxmltree::NodeId>,
     #[cfg(feature = "scan")]
     dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
     #[cfg(feature = "scan")]
@@ -456,7 +456,7 @@ impl Translation {
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
         {
-            self.used.push(processor.id());
+            self.used.insert(processor.id());
             let source: String = processor
                 .descendants()
                 .filter(|n| n.has_tag_name("script"))
@@ -583,7 +583,7 @@ impl Translation {
                 else {
                     continue;
                 };
-                self.used.push(router.id());
+                self.used.insert(router.id());
                 base.sends.push(ir::GroupSend {
                     to: bus,
                     gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
@@ -875,7 +875,7 @@ impl Translation {
         if let Some(&found) = self.envelopes.get(&node.id()) {
             return Ok(found);
         }
-        self.used.push(node.id());
+        self.used.insert(node.id());
         let at = path(node);
         let kind = node.tag_name().name();
         let seconds =

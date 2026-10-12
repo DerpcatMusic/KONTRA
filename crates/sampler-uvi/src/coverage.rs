@@ -2,12 +2,12 @@
 use super::{Translation, modulation::source_node};
 use roxmltree::Node;
 use sampler_ir::{DspDisposition as D, DspSlot as Slot, DspSlotKind as K, DspSlotReason as R};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub(super) fn slots(out: &Translation, program: Node) -> Vec<Slot> {
     let mut references = HashMap::<_, bool>::new();
     let mut native_targets = HashMap::<_, Vec<sampler_ir::DspTarget>>::new();
-    let used: HashSet<_> = out.used.iter().copied().collect();
+    let used = &out.used;
     for connection in program
         .descendants()
         .filter(|n| n.has_tag_name("SignalConnection"))
