@@ -3,7 +3,7 @@
   "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
   "inventory": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/consolidation-20261012/inventory/worktree-inventory.json",
   "scope_limit": "Branch scopes and successor behavior, with explicit limited-depth older rows; graph divergence is not missing behavior. Parent preserves all refs and dirty bytes before deleting checkouts. No checkout was deleted or mutated outside the assigned worktree.",
-  "validation": "No build, Cargo, compiler invocation, protected-library or native plugin load by this agent. Final rustfmt parser pass validated36changed Rust files with0syntax failures, git diff baseline..HEAD --check passed, worktree clean. Root reported630passed/2failed/29ignored against earlier Mapping/MUI cohort;96ef7f86 corrects those fixture/content seams. Root integrated later cohorts and fixed float geometry hashing with to_bits in256dad72. Coherent runtime suites remain pending coordinator; no new green/native receipt claimed.",
+  "validation": "No build, Cargo, compiler invocation, protected-library or native plugin load by this agent. Final rustfmt parser pass validated 36 changed Rust files with 0 syntax failures, git diff baseline..HEAD --check passed, worktree clean. Root reported 630 passed / 2 failed / 29 ignored against earlier Mapping/MUI cohort;96ef7f86 corrects those fixture/content seams. Root integrated later cohorts and fixed float geometry hashing with to_bits in 256dad72. Coherent runtime suites remain pending coordinator; no new green/native receipt claimed.",
   "recovery_commits": [
     "a1a6f011",
     "ee906d63",
@@ -1412,7 +1412,7 @@
       "subject": "Read named NICNT resources by selected bounded item range",
       "review_depth": "content_and_behavioral_successor_review",
       "classification": "integrated_with_successors",
-      "rationale": "Current resource_container.rs reads named NICNT entries by NIFileContainer::read_item with32MiB bound and physical stored IDs; duplicate IDs and opaque TOC fields survive. Old source function spelling is not evidence of missing behavior.",
+      "rationale": "Current resource_container.rs reads named NICNT entries by NIFileContainer::read_item with 32 MiB bound and physical stored IDs; duplicate IDs and opaque TOC fields survive. Old source function spelling is not evidence of missing behavior.",
       "scope_different_path_count": 50,
       "tip_changed_scope_paths": [
         "crates/sampler-kontakt/src/resource_container.rs"
@@ -2011,7 +2011,7 @@
       "subject": "test: bound idle numeric callbacks and retain default MUI drag behavior",
       "review_depth": "content_and_behavioral_successor_review",
       "classification": "recovered_with_current_retention",
-      "rationale": "ed1c1bd1 recovers missing8e767b52/a48fa1df/226b7ac7 gesture policy and numeric entry: Falcon Ctrl/Cmd fine and Alt reset, Kontakt Shift fine and Ctrl/Cmd reset, continuous-control/table/XY fader shared entry, finite/ratio/step/clamp/single-commit rules, Escape handling and semantic-edit drag rebase. Current caption/menu rendering and retained runs stay intact; numeric editor revisions invalidate retained/generated widgets. Authored policy/idle/callback/capture regressions recovered; execution pending.",
+      "rationale": "ed1c1bd1 recovers missing 8e767b52/a48fa1df/226b7ac7 gesture policy and numeric entry: Falcon Ctrl/Cmd fine and Alt reset, Kontakt Shift fine and Ctrl/Cmd reset, continuous-control/table/XY fader shared entry, finite/ratio/step/clamp/single-commit rules, Escape handling and semantic-edit drag rebase. Current caption/menu rendering and retained runs stay intact; numeric editor revisions invalidate retained/generated widgets. Authored policy/idle/callback/capture regressions recovered; execution pending.",
       "scope_different_path_count": 66,
       "tip_changed_scope_paths": [
         "src/ui/ir_view.rs"
@@ -2122,7 +2122,7 @@
       "subject": "port from v1 0cb7a8a0:src/ui/menu.rs: restore sound and route shortcuts",
       "review_depth": "content_and_behavioral_successor_review",
       "classification": "integrated",
-      "rationale": "Same6c5da47e scope as host-provenance: current mixer and part menus expose Edit sound and Route to using current selected-part/output ownership.",
+      "rationale": "Same 6c5da47e scope as host-provenance: current mixer and part menus expose Edit sound and Route to using current selected-part/output ownership.",
       "scope_different_path_count": 65,
       "tip_changed_scope_paths": [
         "src/ui/menu.rs",
@@ -2278,7 +2278,7 @@
       "subject": "adapt resource filmstrip size fixture to shared fractional Size",
       "review_depth": "content_and_behavioral_successor_review",
       "classification": "integrated_with_recovered_gaps",
-      "rationale": "Same3145bdc2 tip as prior UI takeover; fractional producer/renderer/resource-sizing prerequisites now recovered in2063f8f2, preserving current image-origin/authority and retained widget preparation.",
+      "rationale": "Same 3145bdc2 tip as prior UI takeover; fractional producer/renderer/resource-sizing prerequisites now recovered in 2063f8f2, preserving current image-origin/authority and retained widget preparation.",
       "scope_different_path_count": 69,
       "tip_changed_scope_paths": [
         "crates/sampler-kontakt/src/resources.rs"
