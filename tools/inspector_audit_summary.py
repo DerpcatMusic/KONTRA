@@ -446,7 +446,7 @@ def markdown(summary: dict) -> str:
              f"Separate initialized samples: {t['initialized_attempted']} attempted, {t['initialized_ir_ok']} IR, "
              f"{t['initialized_ui_ok']} UI, {t['initialized_failed']} incomplete.",
              "Runtime/audio/native comparison requires independent evidence and is not inferred here.", "",
-             "| Library | Expected | Observed | Missing | Source inspected | All NKM programs | Static IR | Init IR | Init UI | Scripts | Constructs |",
+             "| Library | Expected | Observed | Missing | Source inspected | Kontakt files: all programs | Static IR | Init IR | Init UI | Scripts | Constructs |",
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for name, group in summary["libraries"].items():
         safe = name.replace("|", "\\|")
