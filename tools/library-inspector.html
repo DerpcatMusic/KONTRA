@@ -779,12 +779,14 @@
       render();
     };
     const s = r.scripts[state.script];
+    const compact = Boolean(r.mode?.summary);
     const goToLine = node("input");
     goToLine.type = "number";
     goToLine.min = "1";
     goToLine.value = String(state.line);
     goToLine.setAttribute("aria-label", "Go to source line");
     goToLine.title = "Go to source line";
+    goToLine.disabled = compact;
     if (typeof s.source === "string") {
       goToLine.max = String(s.source.split("\n").length);
     }
@@ -803,13 +805,26 @@
       node(
         "p",
         `${s.source_len || 0} source bytes · ${
-          asArray(s.constructs).length
+          s.construct_count ?? asArray(s.constructs).length
         } classified constructs · ${
-          asArray(s.lowered).length
-        } lowering records. Source offsets are byte offsets; line numbers are one-based.`,
+          compact
+            ? "lowering details omitted"
+            : asArray(s.lowered).length + " lowering records"
+        }. Source offsets are byte offsets; line numbers are one-based.`,
         "notice",
       ),
     );
+    if (s.compiler) root.append(properties({ compiler: s.compiler }));
+    if (compact) {
+      root.append(
+        node(
+          "p",
+          "This compact report preserves classification counts and findings. Original text, detailed constructs and lowering records were omitted. Open a full per-file inspection to trace a line.",
+          "notice",
+        ),
+      );
+      if (s.status_counts) root.append(properties(s.status_counts));
+    }
     const split = node("div", undefined, "split"),
       left = node("div", undefined, "pane"),
       right = node("div", undefined, "pane");
@@ -824,7 +839,9 @@
         node("p", "Source text was not included in this report."),
         node(
           "p",
-          "Run the memory-only launcher with --source to see original code. Coordinates and bindings remain available here.",
+          compact
+            ? "Run a full per-file inspection through the launcher with --source to see original code and lowering records."
+            : "Run the memory-only launcher with --source to see original code. Coordinates and bindings remain available here.",
           "muted",
         ),
       );
@@ -884,7 +901,9 @@
       right.append(
         node(
           "p",
-          "No binding record for this line. Unclassified text is not a success verdict.",
+          compact
+            ? "Detailed lowering records were omitted from this compact report."
+            : "No binding record for this line. Unclassified text is not a success verdict.",
           "empty",
         ),
       );
