@@ -1,0 +1,5 @@
+Keep periodic script callbacks alive across intentional waits
+
+Reset continuous-preemption age only after a positive wait passes clock and queue validation. Finite callbacks and generated listener timers no longer inherit watchdog age from prior work; zero waits and disabled waits retain the runaway guard.
+
+Co-Authored-By: GPT-6.1-Sol (Codex) <noreply@openai.com>
