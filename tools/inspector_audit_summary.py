@@ -188,7 +188,6 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         fault(faults, "report", "metadata or diagnostics missing", key)
         return result
     source_ok = stage_map.get("container") == "ok" and stage_map.get("source_frontend") == "ok"
-    source_ok &= report["status"] != "failed"
     source_ok &= not any(isinstance(d, dict) and d.get("stage") == "parse" for d in diagnostics)
     if key[0].startswith("kontakt"):
         programs = metadata.get("programs")
@@ -396,10 +395,14 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
                "initialized_attempted", "initialized_ir_ok", "initialized_ui_ok", "initialized_failed")}
     totals["unexpected"] = sum(unexpected.values())
     totals["libraries"] = len(libraries)
+    totals["uvi_expected"] = sum(g["kinds"].get("uvi-program", 0) + g["kinds"].get("uvi-loose", 0)
+                                  for g in groups.values())
     totals["script_status_counts"] = dict(sum((g["script_status_counts"] for g in groups.values()), Counter()))
     # A complete manifest report is only a complete static inspection. Even with
     # zero gaps, native parity cannot follow from these reports.
-    admission = "complete_static_catalog" if not faults and totals["source_inspected"] == totals["expected"] else "incomplete"
+    admission = ("complete_static_catalog" if not faults and
+                 totals["source_inspected"] == totals["expected"] and
+                 totals["ir_converted"] == totals["uvi_expected"] else "incomplete")
     return {"format": "kontra-inspector-audit-summary", "schema": 1,
             "admission": admission, "native_parity": "unknown",
             "provenance": provenance, "totals": totals, "libraries": libraries,
