@@ -3,7 +3,7 @@
   "baseline": "972b4410571bb9c3144e3af5d1800b69258f0570",
   "inventory": "/mnt/Windows11/DEV_WORKSPACE/kontra-runs/consolidation-20261012/inventory/worktree-inventory.json",
   "scope_limit": "Branch scopes and successor behavior, with explicit limited-depth older rows; graph divergence is not missing behavior. Parent preserves all refs and dirty bytes before deleting checkouts. No checkout was deleted or mutated outside the assigned worktree.",
-  "validation": "No build, Cargo, compiler invocation, protected-library or native plugin load by this agent. Rustfmt parser validated27changed Rust files and git diff --check passed. Root later reported630passed/2failed/29ignored against the earlier Mapping/MUI cohort;96ef7f86 corrects those meaningful fixture/content seams and awaits root rerun. Fractional/value cohort tests remain pending coordinator.",
+  "validation": "No build, Cargo, compiler invocation, protected-library or native plugin load by this agent. Final rustfmt parser pass validated36changed Rust files with0syntax failures, git diff baseline..HEAD --check passed, worktree clean. Root reported630passed/2failed/29ignored against earlier Mapping/MUI cohort;96ef7f86 corrects those fixture/content seams. Root integrated later cohorts and fixed float geometry hashing with to_bits in256dad72. Coherent runtime suites remain pending coordinator; no new green/native receipt claimed.",
   "recovery_commits": [
     "a1a6f011",
     "ee906d63",
@@ -4268,7 +4268,8 @@
     "Native-widget adapter donor explicitly parked pending product policy; not enabled.",
     "Conflux actual blank renderer and Pacific/Vista absent authored images not reclassified or repaired by invented art; current native behavior remains unknown.",
     "Older source_scope_catalog_only rows retain historical refs and snapshots; this review does not independently prove every pre-v2/UI/platform behavior integrated.",
-    "New Rust regression and cross-platform compilation execution pending; static parse checks cannot establish type-check or native fidelity."
+    "New Rust regression and cross-platform compilation execution pending; static parse checks cannot establish type-check or native fidelity.",
+    "Existing canonical NCKP custom/state font, press-shift and visible table-step omissions remain explicitly reported; this consolidation did not introduce new NCKP field implementations or reclassify those losses."
   ],
   "reviewed_scope_paths": [
     "src/ui",
