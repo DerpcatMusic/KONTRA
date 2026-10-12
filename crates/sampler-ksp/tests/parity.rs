@@ -30,6 +30,21 @@ fn report_classifies_implemented_stub_unsupported_and_tokens_without_source() {
 }
 
 #[test]
+fn long_comment_runs_preserve_call_highlighting() {
+    let source = format!("on init\n{}(1)\nend on", "custom {note} ".repeat(10_000));
+    let report = parity_report(&source, "ksp:slot0", "comments");
+    let classes: Vec<_> = report
+        .tokens
+        .iter()
+        .filter(|token| &source[token.span.start as usize..token.span.end as usize] == "custom")
+        .map(|token| token.class)
+        .collect();
+    assert_eq!(classes.len(), 10_000);
+    assert!(classes[..classes.len() - 1].iter().all(|class| *class == TokenClass::Other));
+    assert_eq!(classes.last(), Some(&TokenClass::Builtin));
+}
+
+#[test]
 fn lowering_reports_statements_and_context_stubs_without_values() {
     let source = "on init declare $x end on\non note\n $x := abs(-7)\n set_script_title(\"private title\")\nend on";
     let r = parity_report(source, "ksp:slot0", "test");

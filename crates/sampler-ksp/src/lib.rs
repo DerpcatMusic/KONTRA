@@ -24,7 +24,7 @@ mod lexer;
 mod lower;
 pub mod model;
 pub mod parity;
-pub use parity::{RuntimeCoverage, parity_report, parity_report_with};
+pub use parity::{RuntimeCoverage, parity_report, parity_report_summary_with, parity_report_with};
 pub mod nckp;
 mod parser;
 #[cfg(feature = "scan")]
