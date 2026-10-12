@@ -142,7 +142,24 @@ fn callbacks_suppress_table_changes_and_ui_callbacks_cannot_yield() {
 }
 
 #[test]
-fn persistence_restores_custom_data_before_widgets_and_init() {
+fn initial_on_load_sees_restored_widget_value_in_visible_ui() {
+    let script = r#"
+      local gain=Knob('Gain',0,0,1)
+      local readout=Label('Restored gain')
+      function onSave() return {suffix=' loaded'} end
+      function onLoad(data) readout.text=tostring(gain.value)..data.suffix end
+    "#;
+    let mut original = host(script);
+    original.set_control(control_id(1, 0), 0.625).unwrap();
+    let state = original.save_ui_state().unwrap();
+
+    let restored =
+        ScriptHost::new_with_ui_state(&xml(script), (), Config::default(), Some(&state)).unwrap();
+    assert_eq!(restored.interface().widgets[1].text, "0.625 loaded");
+}
+
+#[test]
+fn persistence_restores_widgets_before_custom_data_and_init() {
     let script = r#"
       trace='body'
       local k=Knob('Gain',0,0,1)
@@ -151,7 +168,7 @@ fn persistence_restores_custom_data_before_widgets_and_init() {
       function onInit() trace=trace..'/init' end
       function onSave() return {a=true,text='ok',[2]={0.125}} end
       function onLoad(data)
-        assert(trace=='body' and k.value==0)
+        assert(trace=='body/widget' and k.value==0.625)
         assert(data.a and data.text=='ok' and data[2][1]==0.125)
         trace=trace..'/load'
       end
@@ -164,7 +181,7 @@ fn persistence_restores_custom_data_before_widgets_and_init() {
     let state = serde_json::from_str(&encoded).unwrap();
     let b =
         ScriptHost::new_with_ui_state(&xml(script), (), Config::default(), Some(&state)).unwrap();
-    assert_eq!(b.global_text("trace"), "body/load/widget/init");
+    assert_eq!(b.global_text("trace"), "body/widget/load/init");
     assert_eq!(b.control_values()[1].1, 0.);
     assert!(
         host("function onSave() local t={} t.self=t return t end")
