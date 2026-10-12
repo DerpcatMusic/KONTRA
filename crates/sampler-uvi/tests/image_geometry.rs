@@ -8,8 +8,8 @@ impl Files for Images {
     }
     fn image_size(&self, path: &str) -> Option<Size> {
         (path == "overlay.png").then_some(Size {
-            width: 720,
-            height: 18,
+            width: 720.0,
+            height: 18.0,
         })
     }
 }
@@ -39,15 +39,15 @@ fn image_geometry_uses_intrinsic_size_only_on_omitted_axes() {
     assert_eq!(
         sizes,
         [
-            (720, 18),
-            (100, 18),
-            (100, 100),
-            (100, 100),
-            (120, 30),
-            (720, 40)
+            (720.0, 18.0),
+            (100.0, 18.0),
+            (100.0, 100.0),
+            (100.0, 100.0),
+            (120.0, 30.0),
+            (720.0, 40.0)
         ]
     );
-    assert_eq!((face.widgets[4].rect.x, face.widgets[4].rect.y), (10, 20));
+    assert_eq!((face.widgets[4].rect.x, face.widgets[4].rect.y), (10.0, 20.0));
     assert_eq!(
         face,
         host.interface(),
