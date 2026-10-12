@@ -218,7 +218,7 @@ fn source_program(
             format!("ksp:slot{slot}")
         };
         let frontend = ScriptReport {
-            id,
+            id: id.clone(),
             title: format!("Script slot {slot}"),
             lang: Lang::Ksp,
             source_len: source.len().min(u32::MAX as usize) as u32,
@@ -234,6 +234,43 @@ fn source_program(
             Some(slot),
             Some(params.bypass),
         );
+        if opts.source {
+            if let Some(name) = sampler_ksp::nckp::view_name(&source) {
+                let path = format!("Resources/performance_view/{name}.nckp");
+                let mut view = json!({
+                    "script_id": id,
+                    "slot": slot,
+                    "path": path,
+                    "format": "NCKP JSON",
+                    "provenance": "literal load_performance_view in the authored KSP on init"
+                });
+                match resources.read_result(&path) {
+                    Ok(Some(bytes)) => {
+                        view["bytes"] = json!(bytes.len());
+                        match sampler_ksp::nckp::parse(&bytes) {
+                            Ok(_) => view["parse_status"] = json!("ok"),
+                            Err(error) => {
+                                view["parse_status"] = json!("failed");
+                                view["parse_detail"] = json!(error);
+                            }
+                        }
+                        match String::from_utf8(bytes) {
+                            Ok(text) => view["source"] = json!(text),
+                            Err(_) => view["text_status"] = json!("non_utf8"),
+                        }
+                    }
+                    Ok(None) => view["parse_status"] = json!("missing"),
+                    Err(error) => {
+                        view["parse_status"] = json!("unavailable");
+                        view["parse_detail"] = json!(error.to_string());
+                    }
+                }
+                if record["ui_resources"].is_null() {
+                    record["ui_resources"] = json!([]);
+                }
+                record["ui_resources"].as_array_mut().unwrap().push(view);
+            }
+        }
     }
     record
 }
@@ -605,19 +642,16 @@ fn kontakt(opts: &Options, report: &mut Value) {
         "Product translation executes KSP init; may read/decode convolution impulse resources, no sample playback",
         "crates/sampler-kontakt/src/library.rs",
     );
-    let (scripts, faces, _) = sampler_kontakt::compile_ui(
-        &mut converted.instrument,
-        &sampler_kontakt::Options {
-            library: Some(opts.path.clone()),
-            mpe: None,
-            ..Default::default()
-        },
-    );
+    let (scripts, faces, _) = converted.compile_ui(&sampler_kontakt::Options {
+        library: Some(opts.path.clone()),
+        mpe: None,
+        ..Default::default()
+    });
     stage(
         report,
         "ui_projection",
         "ok",
-        "Product compile_ui re-evaluates initialization; deferred live persistence callbacks are not activated",
+        "Product UI projection consumes translated KSP init state; deferred live persistence callbacks are not activated",
         "crates/sampler-kontakt/src/load.rs",
     );
     report["ui"] = json!({"status":"ok","scope":"Initialized model only; no native renderer, resource pixels, gestures or live callbacks","interfaces":interfaces(&faces)});
@@ -1416,6 +1450,54 @@ mod tests {
         assert_eq!(scripts[0]["source_len"], 0);
         assert_eq!(scripts[1]["bypassed"], true);
         assert_eq!(scripts[1]["source"], source);
+    }
+
+    #[test]
+    fn ephemeral_kontakt_view_source_has_slot_path_and_parse_provenance() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        let temp = Temp::new();
+        let view_dir = temp.0.join("Resources/performance_view");
+        std::fs::create_dir_all(&view_dir).unwrap();
+        let view =
+            r#"{"value":{"performanceView":{"size":{"width":800,"height":500},"controls":[]}}}"#;
+        std::fs::write(view_dir.join("Piano.nckp"), view).unwrap();
+        let source = "on init\n load_performance_view(\"Piano\")\nend on";
+        let mut data = vec![0, 0x50, 0];
+        data.extend((source.len() as u32).to_le_bytes());
+        data.extend(source.as_bytes());
+        data.extend([0; 3]);
+        data.extend(0u32.to_le_bytes());
+        data.extend(u32::MAX.to_le_bytes());
+        data.extend(0u32.to_le_bytes());
+        let program = Program(StructuredObject {
+            version: 0xaf,
+            public_data: vec![0; 70],
+            private_data: vec![],
+            children: vec![Chunk { id: 6, data }],
+        });
+        let path = temp.0.join("Authored.nki");
+        let opts = Options {
+            path: path.clone(),
+            source: true,
+            ..Default::default()
+        };
+        let mut report = base(&opts, "kontakt");
+        let record = source_program(&mut report, &path, &program, 0, None, &opts);
+        let original = &record["ui_resources"][0];
+        assert_eq!(original["script_id"], "ksp:slot0");
+        assert_eq!(original["slot"], 0);
+        assert_eq!(original["path"], "Resources/performance_view/Piano.nckp");
+        assert_eq!(original["parse_status"], "ok");
+        assert_eq!(original["source"], view);
+
+        let opts = Options {
+            source: false,
+            ..opts
+        };
+        let mut report = base(&opts, "kontakt");
+        let record = source_program(&mut report, &path, &program, 0, None, &opts);
+        assert!(record.get("ui_resources").is_none());
+        assert!(!report.to_string().contains(view));
     }
 
     #[test]
