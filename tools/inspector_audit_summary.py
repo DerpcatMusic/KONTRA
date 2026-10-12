@@ -124,7 +124,8 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
               "kontakt_all_programs": False, "script_count": 0,
               "construct_count": 0, "script_status_counts": Counter(),
               "runtime": "unknown", "audio": "unknown", "native_equivalence": "unknown"}
-    if report.get("format") != "kontra-library-inspector" or report.get("schema") != 1:
+    if (report.get("format") != "kontra-library-inspector" or
+            type(report.get("schema")) is not int or report["schema"] != 1):
         fault(faults, "schema", "unsupported report format/schema", key)
         return result
     if report.get("status") not in INSPECTION_STATUSES:
@@ -153,6 +154,9 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         fault(faults, "scripts", "compact script list missing", key)
         return result
     script_ids = set()
+    script_count = 0
+    construct_count = 0
+    script_status_counts = Counter()
     for script in scripts:
         if not isinstance(script, dict) or not isinstance(script.get("id"), str):
             fault(faults, "scripts", "script identity missing", key)
@@ -172,9 +176,12 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         except ValueError as error:
             fault(faults, "scripts", str(error), key)
             return result
-        result["script_count"] += 1
-        result["construct_count"] += n
-        result["script_status_counts"].update(counts)
+        script_count += 1
+        construct_count += n
+        script_status_counts.update(counts)
+    result["script_count"] = script_count
+    result["construct_count"] = construct_count
+    result["script_status_counts"] = script_status_counts
     metadata = report.get("metadata")
     diagnostics = report.get("diagnostics")
     if not isinstance(metadata, dict) or not isinstance(diagnostics, list):
@@ -345,7 +352,8 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
         group["initialized_attempted"] += 1
         mode, converted, ui, stages, evidence = (report.get(k) for k in
                                                  ("mode", "converted", "ui", "stages", "evidence"))
-        if (report.get("format") != "kontra-library-inspector" or report.get("schema") != 1 or
+        if (report.get("format") != "kontra-library-inspector" or type(report.get("schema")) is not int or
+                report["schema"] != 1 or
                 report.get("status") not in INSPECTION_STATUSES or
                 not isinstance(mode, dict) or mode.get("initialize") is not True or
                 mode.get("ephemeral_source") is not False or not isinstance(stages, list) or
@@ -395,6 +403,7 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
     return {"format": "kontra-inspector-audit-summary", "schema": 1,
             "admission": admission, "native_parity": "unknown",
             "provenance": provenance, "totals": totals, "libraries": libraries,
+            "unexpected_by_library": dict(sorted(unexpected.items())),
             "fault_counts": dict(Counter(f["code"] for f in faults)), "faults": faults}
 
 
