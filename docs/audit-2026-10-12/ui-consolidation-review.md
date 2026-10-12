@@ -138,3 +138,48 @@ this query fix does not silently remap malformed source metadata.
 These follow-up regressions are authored, not executed by this agent. Rustfmt
 parsing and `git diff --check` remain the available local validation; the
 coordinator owns compilation and runtime results.
+
+## Older architecture and remote-tip supplement
+
+The [source-contract supplement](ui-older-scope-supplement.json) adds content
+comparison for all **40 older preserved UI/platform refs** plus four remote tips
+that were not reachable from local branches. Its 15 scope rows pin donor tips,
+current source blobs, line spans and span hashes. Each row gives bounded
+successor evidence or names the remaining difference; no whole v1 file or
+branch is labeled equivalent merely because a current symbol exists.
+
+Current successors include library-bound resources/nested lookup tests,
+source-owned sparse publication and scalar revisions, state/font rendering,
+shared JPEG/PNG/WebP decoding, null exported menu acceptance, two-axis fit,
+constrained split-browser panes, portal Runtime shutdown, bounded legacy DSL
+Spacer/rotation, orphan-journal retention, actionable load failures, popup and
+host-pointer isolation, first-drag correction across scales, and fresh export
+completion identity. Historical audit/profiler and font/harp proof documents are
+archival evidence, without inherited execution credit. The old decoder's exact
+first-report-per-source throttle remains unverified against the new typed
+StreamError counters.
+
+The retained **v1 program-bank owner remains materially missing**, as detailed
+in [backend ownership recovery](backend-v1-ownership-recovery.md); fixed rack
+program selection does not supply its shared pool/preload/swap/admission
+contracts. Three additional donor contracts have no proven current successor:
+
+- `80c54659`: explicit LegacyLua/KompleteScript entry language, ambiguity and
+  `library.json` target-version discovery. Current Package deliberately loads
+  legacy `.nui` and fonts; the donor does not prove accepted modern rendering.
+- `76b3227c`: preservation of broad pictured Sliders edited across their short
+  axis in Vector. Bitmap authored-frame coverage is implemented. Vector's
+  existing textless Button/Switch exception does not cover those Sliders; this
+  remains an explicit presentation-policy difference.
+- Remote `940addcf`: Solid G-EQ's signed gain captions tied to its +/-15 dB DSP.
+  The current core has neither the matching display branch nor a proven shared
+  Solid G-EQ implementation. A caption-only formula would not recover the audio
+  contract, so this remains a backend/effect admission gap.
+
+The four remote tips' UI changes have scoped successors, including immutable
+publication, owner-specific scaled drags, popup isolation and fresh exports.
+Their alternating-loop, release, array-worker and ni-file failure contexts need
+backend/parent reconciliation; this supplement does not declare their whole
+histories integrated. No new code or build was introduced by this final review.
+The coordinator separately reported 148 MUI framework tests passed for semantic
+invalidation; source citations do not establish native or platform acceptance.
