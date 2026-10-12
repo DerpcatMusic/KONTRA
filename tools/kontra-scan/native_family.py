@@ -17,12 +17,20 @@ def group_allowed(group, plan, phase, default):
     if group.get('muted') or group.get('channel', -1) not in (-1, plan.get('channel', 0)):
         return False
     rows = group.get('criteria', [])
+    # NI's Group Start Options manual defines Always as a no-op/deletion/end
+    # marker, rather than a boolean predicate. A sole Always is unconditional;
+    # a trailing Always is excluded together with the preceding row's join.
+    # Interior markers have no documented evaluation law: do not infer native
+    # MATCH/MISMATCH from treating one as True, including an AND_NOT join.
+    # https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view
+    if any(row['mode'] == 0 for row in rows[:-1]):
+        raise ValueError('native-start-interior-always-requires-capture')
+    if rows and rows[-1]['mode'] == 0:
+        rows = rows[:-1]
     def test(row):
         mode = row['mode']
         if row.get('sequencer_only'):
             raise ValueError('sequencer-start-requires-native-capture')
-        if mode == 0:
-            return True
         if mode == 1:
             switch = plan.get('switch')
             if switch is None:
