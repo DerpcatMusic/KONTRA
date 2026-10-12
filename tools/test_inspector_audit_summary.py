@@ -58,6 +58,7 @@ class SummaryTests(unittest.TestCase):
         s = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"],
                              [report("uvi-bank", BANK, MEMBER)])
         self.assertEqual(s["admission"], "complete_static_catalog")
+        self.assertTrue(s["catalog_records_complete"])
         self.assertEqual(s["totals"]["ir_converted"], 1)
         self.assertEqual(s["totals"]["compiler_status_counts"], {"ok": 1})
         self.assertEqual(s["totals"]["ui_projected"], 0)
@@ -69,6 +70,7 @@ class SummaryTests(unittest.TestCase):
                               f"uvi-program\t{BANK}::{MEMBER}"],
                              [report(), report(), report("uvi-bank", BANK, "Presets/Other.uvip")])
         self.assertEqual(s["admission"], "incomplete")
+        self.assertFalse(s["catalog_records_complete"])
         for code in ("duplicate_manifest_id", "duplicate_report_id", "missing_report_id",
                      "unexpected_report_id"):
             self.assertGreater(s["fault_counts"][code], 0)
@@ -90,6 +92,7 @@ class SummaryTests(unittest.TestCase):
         s = self.run_summary([f"kontakt-multi\t{MULTI}"], [r])
         self.assertEqual(s["totals"]["kontakt_all_programs"], 0)
         self.assertEqual(s["admission"], "incomplete")
+        self.assertFalse(s["catalog_records_complete"])
         self.assertIn("programs", s["fault_counts"])
 
     def test_skipped_stages_cannot_claim_success(self):
@@ -110,6 +113,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["totals"]["ir_converted"], 0)
         self.assertEqual(s["totals"]["source_semantics_complete"], 0)
         self.assertEqual(s["admission"], "incomplete")
+        self.assertTrue(s["catalog_records_complete"])
 
     def test_uvi_compiler_failure_is_a_source_gap(self):
         r = report("uvi-bank", BANK, MEMBER)
@@ -120,6 +124,8 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["totals"]["compiler_status_counts"], {"failed": 1})
         self.assertEqual(s["totals"]["source_inspected"], 0)
         self.assertEqual(s["totals"]["ir_converted"], 1)
+        self.assertTrue(s["catalog_records_complete"])
+        self.assertEqual(s["admission"], "incomplete")
 
     def test_provenance_hashes_and_expected_observed_per_library(self):
         s = self.run_summary([f"kontakt\t{KONTAKT}", f"uvi-program\t{BANK}::{MEMBER}"],
@@ -157,6 +163,35 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["totals"]["initialized_ir_ok"], 1)
         self.assertEqual(s["totals"]["initialized_ui_ok"], 0)
         self.assertEqual(s["totals"]["initialized_failed"], 1)
+
+    def test_initialized_ui_omission_is_valid_partial_stage_not_success(self):
+        initialized = report("uvi-bank", BANK, MEMBER)
+        initialized["mode"]["initialize"] = True
+        initialized["stages"].insert(3, {"name": "ui_projection", "status": "partial"})
+        initialized["stages"].insert(4, {"name": "initialize", "status": "ok"})
+        initialized["ui"] = {"status": "partial", "interfaces": [{"unsupported": 1}]}
+        initialized["diagnostics"] = [{"stage": "ui_projection", "category": "NotModeled"}]
+        s = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"],
+                             [report("uvi-bank", BANK, MEMBER)], [initialized])
+        self.assertTrue(s["catalog_records_complete"])
+        self.assertEqual(s["totals"]["initialized_attempted"], 1)
+        self.assertEqual(s["totals"]["initialized_ir_ok"], 1)
+        self.assertEqual(s["totals"]["initialized_ui_ok"], 0)
+        self.assertEqual(s["totals"]["initialized_failed"], 1)
+        self.assertNotIn("initialized_stages", s["fault_counts"])
+        initialized["ui"]["status"] = "ok"
+        inconsistent = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"],
+                                        [report("uvi-bank", BANK, MEMBER)], [initialized])
+        self.assertEqual(inconsistent["totals"]["initialized_ui_ok"], 0)
+
+    def test_initialized_identity_fault_does_not_change_static_record_coverage(self):
+        stray = report("uvi-bank", BANK, "Presets/NotInManifest.uvip")
+        stray["mode"]["initialize"] = True
+        s = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"],
+                             [report("uvi-bank", BANK, MEMBER)], [stray])
+        self.assertTrue(s["catalog_records_complete"])
+        self.assertEqual(s["fault_counts"]["unexpected_initialized_id"], 1)
+        self.assertEqual(s["admission"], "incomplete")
 
     def test_selected_multi_numeric_collision_is_duplicate(self):
         s = self.run_summary([f"kontakt-multi\t{MULTI}#0", f"kontakt-multi\t{MULTI}#00"], [])
