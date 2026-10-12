@@ -139,3 +139,29 @@ attack setter/getter round trip. The original assertion failed in the
 whole-suite attempt; the focused repaired test passed in **0.10 s**, with
 **1,253 controls** and **272 physical lookups**. The receipt is
 `/tmp/kontra-parity-audit-20261012/kontakt-source-binding-green.log`.
+
+## Mixed-format rack host and generated ledger
+
+The first explicit installed-rack run admitted a nonexistent relative virtual UFS
+path because its resolver only checked for the substring `.ufs`. Discovery now
+requires the bank file to exist; an authored fixture rejects missing banks and
+directories while accepting existing virtual banks and ordinary files.
+
+With both installed roots configured, the next run exposed the same headless UI
+outbox omission: Conflux Hybrid Walk and the combined Horns case were silent.
+The rack now retains each part's script models and consumes UI effects outside
+the counted audio callback. Unsupported MIDI/array file services remain queued
+and explicitly fail the witness. No gain, musical key, channel, duration or
+audibility threshold changed. The final run passed both tests in 12.52 seconds,
+including channel/output isolation, layered parts, MPE, articulation migration,
+and zero heap calls during counted rendering. Informational block timings were
+p50 218.954 microseconds and p99 438.138 microseconds against the 128-frame
+48-kHz deadline of 2666.667 microseconds. This was not a quiet benchmark or native
+PCM comparison. Its remaining Horns per-node-meter gap is printed separately.
+Logs: `/tmp/kontra-parity-audit-20261012/one-rack-fixed.log` (unserviced failure)
+and `one-rack-serviced.log` (pass).
+
+The generated UVI ledger test also exposed stale source line locations. The
+ledger was regenerated from `parity_summary --ledger`; normalizing only source
+line numbers proved all statuses, reasons and translated-operation text unchanged.
+Its large diff reflects repeated source citations, not thousands of new APIs.
