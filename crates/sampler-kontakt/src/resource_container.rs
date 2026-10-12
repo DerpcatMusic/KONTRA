@@ -51,7 +51,7 @@ impl ResourceContainer {
             file.seek(SeekFrom::Start(start as u64))
                 .map_err(|e| LoadError::io(path, e))?;
             Index::Files(
-                ni_file::file_container::NIFileContainer::read(&mut file)
+                ni_file::file_container::NIFileContainer::read_index(&mut file)
                     .map_err(|e| LoadError::decode(path, "NICNT resources", e))?,
             )
         } else {
@@ -82,8 +82,7 @@ impl ResourceContainer {
     /// `None` means the name is absent; malformed/protected resources are errors.
     /// Names are case insensitive; NICNT's `|` separators also accept `/`.
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, LoadError> {
-        use std::io::{Read, Seek, SeekFrom};
-        let (offset, size) = match &mut self.index {
+        match &mut self.index {
             Index::Archive(archive) => {
                 let Some(entry) = archive
                     .member(&mut self.file, name)
@@ -133,26 +132,18 @@ impl ResourceContainer {
                         reason: "Ambiguous resource name".into(),
                     });
                 }
-                (
-                    files.file_section_offset + item.file_start_offset,
-                    item.file_size,
-                )
+                if item.file_size > 32 << 20 {
+                    return Err(LoadError::Invalid {
+                        path: self.path.clone(),
+                        reason: "Resource exceeds 32 MiB".into(),
+                    });
+                }
+                files
+                    .read_member(&mut self.file, item.index, 32 << 20)
+                    .map(Some)
+                    .map_err(|e| LoadError::decode(&self.path, "resource bytes", e))
             }
-        };
-        if size > 32 << 20 {
-            return Err(LoadError::Invalid {
-                path: self.path.clone(),
-                reason: "Resource exceeds 32 MiB".into(),
-            });
         }
-        self.file
-            .seek(SeekFrom::Start(offset))
-            .map_err(|e| LoadError::io(&self.path, e))?;
-        let mut bytes = vec![0; size as usize];
-        self.file
-            .read_exact(&mut bytes)
-            .map_err(|e| LoadError::io(&self.path, e))?;
-        Ok(Some(bytes))
     }
 }
 
