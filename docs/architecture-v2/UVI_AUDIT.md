@@ -1,5 +1,11 @@
 # UVI script host adversarial audit
 
+Historical baseline: the 31 originally ignored authored probes below all passed
+on 2026-10-12 and are now enabled in normal CI. See the
+[current Falcon/UVI audit](../audit-2026-10-12/falcon-parity.md). The findings and
+corpus counts in this document describe the 2026-10-08 implementation, rather
+than current failure results.
+
 Date: 2026-10-08. Branch: `v2/gpt-uvi-audit`, based on `699758ab`
 (`origin/integrate/core-v2`). This is an audit, not an implementation: only this
 report and authored tests were changed. The UVI implementation owner should

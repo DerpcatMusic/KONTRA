@@ -122,14 +122,19 @@ now labeled historical; they must not stand in for the current installed corpus.
 
 ## Test coverage and scan interpretation
 
-`tests/uvi_audit.rs` contains **31 ignored authored conformance probes**, all
-using generated XML, synthetic PCM and host time advancement. They require no
-installed libraries or reader paths and may be run serially with
-`--test uvi_audit -- --ignored --test-threads=1`. Their old ignored labels are
-not current failure results. Some assert historical audit expectations; a new
-failure must be checked against current vendor/v1 semantics before changing the
-runtime. Real-bank and catalog surveys are separate ignored targets with explicit
-data prerequisites and are not part of that command.
+The original `tests/uvi_audit.rs` had **31 ignored authored conformance probes**,
+using generated XML, synthetic PCM and host time advancement. This audit ran all
+31 with `/home/derpcat/.cache/kontakto-heavy cargo test -p sampler-uvi --profile ci
+--test uvi_audit -- --ignored --test-threads=1`: **31 passed, 0 failed**, 0.22
+seconds after compilation. Logs are in
+`/tmp/kontra-parity-audit-20261012/uvi-authored-audit.log` with exit 0. These
+probes require no installed libraries or reader paths. All 31 are now promoted
+into normal CI alongside the four previously active cases, so note identity,
+repeated releases, parameter scopes, coroutine order, typed readback, widget
+restoration, custom state and bypassed-processor behavior cannot silently lose
+their regression guards. The old “known failures” labels did not describe the
+current code. Real-bank and catalog surveys remain separate ignored targets
+with explicit data prerequisites; none was promoted by this change.
 
 Two historical audio leads need fresh reproduction: VWinds Flutes Alto had a
 silent matched-note scan at key 60/velocity 64 despite 22/22 bound controls in
