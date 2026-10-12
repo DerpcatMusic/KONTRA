@@ -84,37 +84,61 @@ pub(crate) struct Slot {
     pub private: Vec<u8>,
 }
 
-pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
+pub(crate) fn rack(
+    array: &BParamArrayBParFX8,
+    mut report: impl FnMut(usize, ni_file::Error),
+) -> Vec<Slot> {
     array
         .items
         .iter()
         .enumerate()
         .filter_map(|(slot, chunk)| {
-            let fx = BParFX::try_from(chunk.as_ref()?).ok()?;
-            let state = fx.params().ok()?;
-            let effect: &Chunk = fx.effect()?;
-            let object = StructuredObject::try_from(effect).ok();
-            Some(Slot {
-                slot,
-                module: effect.id,
-                version: object.as_ref().map_or(0, |o| o.version),
-                bypass: state.bypass,
-                output_gain: state.output_gain,
-                dry_level: state.dry_level,
-                public: object
-                    .as_ref()
-                    .map_or_else(Vec::new, |o| o.public_data.clone()),
-                private: object.map_or_else(Vec::new, |o| o.private_data),
-            })
+            let chunk = chunk.as_ref()?; // A clear slot flag is ordinary absence.
+            let decoded = BParFX::try_from(chunk).and_then(|fx| {
+                let state = fx.params()?;
+                let effect = fx.effect().ok_or(ni_file::Error::Static(
+                    "Missing effect object in occupied rack slot",
+                ))?;
+                let object = StructuredObject::try_from(effect)?;
+                Ok(Slot {
+                    slot,
+                    module: effect.id,
+                    version: object.version,
+                    bypass: state.bypass,
+                    output_gain: state.output_gain,
+                    dry_level: state.dry_level,
+                    public: object.public_data,
+                    private: object.private_data,
+                })
+            });
+            match decoded {
+                Ok(slot) => Some(slot),
+                Err(error) => {
+                    report(slot, error);
+                    None
+                }
+            }
         })
         .collect()
 }
 
 /// The program's racks with their locations: instrument insert, send and
 /// main, then each bus.
-pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
+pub(crate) fn program_racks(
+    program: &Program,
+    mut report: impl FnMut(String, ni_file::Error),
+) -> Vec<(String, Vec<Slot>)> {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut out = Vec::new();
+    let mut append = |at: String, array: Result<BParamArrayBParFX8, ni_file::Error>| match array {
+        Ok(array) => {
+            let slots = rack(&array, |slot, error| {
+                report(format!("{at} slot {slot}"), error)
+            });
+            out.push((at, slots));
+        }
+        Err(error) => report(at, error),
+    };
     let mut racks = 0;
     let mut buses = 0;
     for child in &program.0.children {
@@ -124,21 +148,19 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                     .get(racks)
                     .map_or_else(|| format!("rack {racks}"), |n| (*n).into());
                 racks += 1;
-                if let Ok(array) = BParamArrayBParFX8::try_from(child) {
-                    out.push((name, rack(&array)));
-                }
+                append(name, BParamArrayBParFX8::try_from(child));
             }
             BUS => {
                 let index = buses;
                 buses += 1;
-                if let Ok(bus) = InsertBus::try_from(child)
-                    && let Some(array) = bus
-                        .0
-                        .find_first(RACK)
-                        .and_then(|c| BParamArrayBParFX8::try_from(c).ok())
-                {
-                    out.push((format!("bus {index}"), rack(&array)));
-                }
+                let array = InsertBus::try_from(child).and_then(|bus| {
+                    BParamArrayBParFX8::try_from(
+                        bus.0
+                            .find_first(RACK)
+                            .ok_or(ni_file::Error::Static("Missing instrument bus effect rack"))?,
+                    )
+                });
+                append(format!("bus {index}"), array);
             }
             _ => {}
         }
@@ -867,6 +889,144 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fx_decode_failures_keep_scope_slots_and_valid_siblings() {
+        mod wire {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/chunks.rs"
+            ));
+        }
+        let object = |id, private: &[u8], children: &[u8]| Chunk {
+            id,
+            data: wire::object(if id == BUS { 0x11 } else { 0x50 }, private, &[], children),
+        };
+        let mut state = 20u32.to_le_bytes().to_vec();
+        state.extend([0; 6]);
+        state.extend(1f32.to_le_bytes());
+        state.extend(1f32.to_le_bytes());
+        state.extend((-1i32).to_le_bytes());
+        let mut gain = vec![0, 0x50, 0];
+        gain.extend(2f32.to_le_bytes());
+        let valid = object(0x25, &state, &wire::chunk(0x13, &gain));
+        let array = BParamArrayBParFX8 {
+            version: 0x13,
+            items: vec![
+                None,
+                Some(Chunk {
+                    id: 0x26,
+                    data: vec![],
+                }),
+                Some(object(0x25, &[], &[])),
+                Some(object(0x25, &state, &[])),
+                Some(object(0x25, &state, &wire::chunk(0x13, &[0]))),
+                Some(Chunk { id: valid.id, data: valid.data.clone() }),
+                None,
+                None,
+            ],
+        };
+        let encode = |array: &BParamArrayBParFX8| {
+            let mut data = vec![0, 0x13, 0];
+            data.extend(8u32.to_le_bytes());
+            for item in &array.items {
+                data.push(u8::from(item.is_some()));
+                if let Some(chunk) = item {
+                    data.extend(wire::chunk(chunk.id, &chunk.data));
+                }
+            }
+            Chunk { id: RACK, data }
+        };
+        let empty = BParamArrayBParFX8 {
+            version: 0x13,
+            items: (0..8).map(|_| None).collect(),
+        };
+        let mut good = BParamArrayBParFX8 {
+            version: 0x13,
+            items: (0..8).map(|_| None).collect(),
+        };
+        good.items[5] = Some(valid);
+        let bad = Chunk {
+            id: RACK,
+            data: vec![0, 0xff, 0xff],
+        };
+        let program = Program(StructuredObject {
+            version: 0xb5,
+            private_data: vec![],
+            public_data: vec![],
+            children: vec![
+                encode(&array),
+                Chunk { id: bad.id, data: bad.data.clone() },
+                encode(&empty),
+                Chunk {
+                    id: BUS,
+                    data: vec![],
+                },
+                object(BUS, &[], &[]),
+                object(BUS, &[], &wire::chunk(bad.id, &bad.data)),
+                object(BUS, &[], &wire::chunk(RACK, &encode(&good).data)),
+            ],
+        });
+        let raw: Vec<_> = program.0.children.iter().map(|c| c.data.clone()).collect();
+        let mut errors = Vec::new();
+        let racks = program_racks(&program, |at, error| errors.push((at, error.to_string())));
+        assert_eq!(
+            racks.iter().map(|(at, _)| at.as_str()).collect::<Vec<_>>(),
+            ["instrument insert", "instrument main", "bus 3"]
+        );
+        for index in [0, 2] {
+            assert_eq!(racks[index].1.len(), 1);
+            assert_eq!(
+                (racks[index].1[0].slot, racks[index].1[0].module),
+                (5, 0x13)
+            );
+            assert_eq!(
+                chain(&racks[index].1, Scope::Voice).processors,
+                [sampler_ir::Processor::StereoMatrix([
+                    [2.0, 0.0],
+                    [0.0, 2.0]
+                ])]
+            );
+        }
+        assert_eq!(errors.len(), 8, "{errors:?}");
+        for at in [
+            "instrument insert slot 1",
+            "instrument insert slot 2",
+            "instrument insert slot 3",
+            "instrument insert slot 4",
+            "instrument send",
+            "bus 0",
+            "bus 1",
+            "bus 2",
+        ] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|(where_, why)| where_ == at && !why.is_empty()),
+                "{at}: {errors:?}"
+            );
+        }
+        assert!(
+            errors
+                .iter()
+                .any(|(_, why)| why.contains("Missing effect object"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|(_, why)| why.contains("Missing instrument bus effect rack"))
+        );
+        assert!(errors.iter().any(|(_, why)| why.contains("ffff")));
+        assert_eq!(
+            program
+                .0
+                .children
+                .iter()
+                .map(|c| c.data.clone())
+                .collect::<Vec<_>>(),
+            raw
+        );
+    }
+
     #[test]
     fn sv_filters_follow_the_measured_laws() {
         let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else {
