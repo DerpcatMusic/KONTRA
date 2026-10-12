@@ -94,6 +94,7 @@ impl<'de> Deserialize<'de> for crate::model::PersistenceCompletion {
 #[derive(Serialize, Deserialize)]
 pub struct CachedInit {
     groups: Vec<String>,
+    folders: [String; 4],
     slot: u8,
     performance_view: crate::model::PerformanceView,
     engine_values: Vec<([i32; 4], i32)>,
@@ -204,6 +205,7 @@ impl Initialized {
         }
         Some(CachedInit {
             groups: self.environment.groups.clone(),
+            folders: self.environment.folders.clone(),
             slot: self.environment.slot,
             performance_view: self.environment.performance_view.clone(),
             engine_values: self
@@ -428,6 +430,7 @@ pub fn restore_initialized(
     }
     let environment = Environment {
         groups: cached.groups,
+        folders: cached.folders,
         slot: cached.slot,
         performance_view: cached.performance_view,
         engine_values: cached.engine_values.into_iter().collect(),
@@ -452,6 +455,72 @@ pub fn restore_initialized(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_initializer_preserves_callback_folder_lookups() {
+        let source = "on init
+declare $literal
+declare $computed
+declare $missing
+declare $selector
+end on
+on note
+$literal := find_group(get_folder($GET_FOLDER_LIBRARY_DIR))
+$selector := $GET_FOLDER_PATCH_DIR
+$computed := find_group(get_folder($selector))
+$selector := 99
+$missing := find_group(get_folder($selector))
+end on";
+        let environment = crate::Environment {
+            groups: ["/library/", "/patch/", ""].map(str::to_owned).into(),
+            folders: ["/library/", "", "/patch/", ""].map(str::to_owned),
+            ..Default::default()
+        };
+        let cold = crate::initialize(source, crate::Limits::LIBRARY, &environment).unwrap();
+        let bytes = serde_json::to_vec(&cold.capture_initialized().unwrap()).unwrap();
+        let warm = super::restore_initialized(
+            source,
+            crate::Limits::LIBRARY,
+            serde_json::from_slice(&bytes).unwrap(),
+        )
+        .unwrap();
+        for (name, initialized) in [("cold", cold), ("warm", warm)] {
+            let script =
+                crate::compile_initialized(source, 48000, crate::Limits::LIBRARY, &[], initialized)
+                    .unwrap();
+            let plan = script
+                .bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap())
+                .unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+            let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+            runtime
+                .trigger(
+                    sampler_core::Input {
+                        protocol: sampler_core::Protocol::Native,
+                        port: 0,
+                        group: 0,
+                        channel: 0,
+                        key: 60,
+                        external_id: Some(60),
+                    },
+                    60,
+                    1.,
+                )
+                .unwrap();
+            runtime.render(&mut [[0.; 2]; 64]).unwrap();
+            for (cell, expected) in [(0, 0), (1, 1), (2, 2)] {
+                assert_eq!(
+                    runtime.script_cell(
+                        runtime.active_plan(),
+                        sampler_core::ScriptInstanceId(0),
+                        cell
+                    ),
+                    Ok(expected),
+                    "{name} callback folder lookup at cell {cell}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cached_waiting_persistence_starts_once_on_live_activation() {
         let source = "on init declare $calls declare $done end on
