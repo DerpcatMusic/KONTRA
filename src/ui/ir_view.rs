@@ -578,11 +578,11 @@ fn retained_art(
         Arc::as_ptr(image) as usize,
         asset.0,
         frame,
-        (r.x, r.y, r.width, r.height),
+        (r.x.to_bits(), r.y.to_bits(), r.width.to_bits(), r.height.to_bits()),
         (w.to_bits(), h.to_bits(), scale.to_bits()),
         presentation == Presentation::Bitmap,
         (enabled, opacity.to_bits()),
-        meta.size.map(|s| (s.width, s.height)),
+        meta.size.map(|s| (s.width.to_bits(), s.height.to_bits())),
         meta.stretch,
         (
             meta.margins.top,
