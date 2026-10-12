@@ -29,7 +29,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x1a, "Inverter"),
     (0x1b, "DYX"),
     (0x1c, "Limiter"),
-    (0x1d, "Surround Panner"),
+    (0x1d, "Shaper / legacy Surround Panner"),
     (0x1e, "Distortion"),
     (0x1f, "Stereo Modeller"),
     (0x20, "Lo-Fi"),
@@ -61,6 +61,13 @@ const MODULES: &[(u16, &str)] = &[
     (0x61, "Bass Pro"),
     (0x63, "Psyche Delay"),
     (0x64, "Ring Modulator"),
+    (0x65, "Raum"),
+    (0x66, "Bite"),
+    (0x68, "Freak"),
+    (0x69, "Vibrato Chorus"),
+    (0x6a, "Wow / Flutter"),
+    (0x72, "Gater"),
+    (0x74, "Reverse Grain"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -218,7 +225,7 @@ pub(crate) enum Params {
     /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
     Compressor {
-        mode: f32,
+        mode: i32,
         threshold_db: f32,
         ratio: f32,
         attack_ms: f32,
@@ -309,7 +316,7 @@ impl Slot {
                 }))
             }
             0x19 => Params::Compressor {
-                mode: r.f32()?,
+                mode: r.i32()?,
                 threshold_db: r.f32()?,
                 ratio: r.f32()?,
                 attack_ms: r.f32()?,
@@ -713,7 +720,7 @@ pub(crate) fn chain_with(
                 // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
                 // output gain with about 0.3-0.7 dB of reduction. Only mode 0
                 // (Classic) is taken to share the kernel.
-                if *mode != 0.0 {
+                if *mode != 0 {
                     notes.push((
                         "compressor mode".into(),
                         format!("{mode}"),
