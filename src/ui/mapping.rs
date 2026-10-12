@@ -7,16 +7,165 @@ use std::{
     sync::{Arc, Weak},
 };
 
-#[derive(Default)]
-pub(super) struct State {
-    source: Option<Arc<ir::Instrument>>,
+/// Built on the load worker; no source-zone traversal belongs in a UI frame.
+pub(crate) struct Index {
+    source: Arc<ir::Instrument>,
     counts: Vec<usize>,
     links: Vec<Vec<usize>>,
     source_ids: Vec<u32>,
-    bounds: (u8, u8),
     rectangles: Arc<[(usize, u8, u8, u8, u8)]>,
+    bounds: Vec<(u8, u8)>,
+    first: Vec<Option<usize>>,
+    keys: Vec<Vec<usize>>,
+    names: Vec<String>,
+    search: Vec<String>,
+    ids: Vec<String>,
+    rail: Vec<(usize, Option<usize>, bool)>,
+}
+
+impl Index {
+    pub(crate) fn new(inst: &Arc<ir::Instrument>) -> Self {
+        let mut counts = vec![0; inst.groups.len() + 1];
+        let mut bounds = vec![(127, 0); counts.len() + 1];
+        let mut first = vec![None; counts.len() + 1];
+        let mut keys = vec![Vec::new(); 256];
+        for (n, z) in inst.zones.iter().enumerate() {
+            let g = group(z, inst);
+            counts[g] += 1;
+            for b in [g, counts.len()] {
+                bounds[b].0 = bounds[b].0.min(z.keys.low);
+                bounds[b].1 = bounds[b].1.max(z.keys.high);
+                first[b].get_or_insert(n);
+            }
+            // Canonical key intervals store each identity at most twelve times.
+            let (mut low, mut high) = (
+                usize::from(z.keys.low) + 128,
+                usize::from(z.keys.high) + 129,
+            );
+            while low < high {
+                if low % 2 == 1 {
+                    keys[low].push(n);
+                    low += 1;
+                }
+                if high % 2 == 1 {
+                    high -= 1;
+                    keys[high].push(n);
+                }
+                low /= 2;
+                high /= 2;
+            }
+        }
+        for b in &mut bounds {
+            *b = if b.0 > b.1 {
+                (0, 127)
+            } else {
+                (
+                    b.0 / 12 * 12,
+                    (u16::from(b.1) / 12 * 12 + 11).min(127) as u8,
+                )
+            };
+        }
+        let links = links(inst);
+        let names = (0..counts.len())
+            .map(|g| {
+                inst.groups
+                    .get(g)
+                    .filter(|g| !g.name.is_empty())
+                    .map_or_else(
+                        || {
+                            if g == inst.groups.len() {
+                                "No group".into()
+                            } else {
+                                format!("Group {}", g + 1)
+                            }
+                        },
+                        |g| g.name.clone(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let search = names
+            .iter()
+            .enumerate()
+            .map(|(g, name)| {
+                let mut text = name.to_lowercase();
+                for &n in &links[g] {
+                    text.push('\n');
+                    text.push_str(&inst.articulations[n].name.to_lowercase());
+                }
+                text
+            })
+            .collect();
+        let rail = counts
+            .iter()
+            .enumerate()
+            .filter(|(_, count)| **count > 0)
+            .flat_map(|(g, _)| {
+                std::iter::once((g, None, false))
+                    .chain(links[g].iter().map(move |&n| (g, Some(n), false)))
+                    .chain(
+                        inst.groups
+                            .get(g)
+                            .filter(|g| !g.start.is_empty())
+                            .map(|_| (g, None, true)),
+                    )
+            })
+            .collect();
+        Self {
+            source: inst.clone(),
+            rail,
+            counts,
+            bounds,
+            first,
+            keys,
+            links,
+            names,
+            search,
+            ids: crate::sound::articulation::identities(&inst.articulations),
+            source_ids: crate::sound::waveform::source_ids(inst),
+            rectangles: rectangles(inst),
+        }
+    }
+
+    pub(super) fn fit(&self, picked: Option<usize>) -> (u8, u8) {
+        self.bounds[picked.unwrap_or(self.counts.len())]
+    }
+
+    fn first(&self, picked: Option<usize>) -> Option<usize> {
+        self.first[picked.unwrap_or(self.counts.len())]
+    }
+
+    pub(super) fn stack(
+        &self,
+        inst: &ir::Instrument,
+        picked: Option<usize>,
+        key: u8,
+        vel: u8,
+    ) -> Vec<usize> {
+        let mut hits = Vec::new();
+        let mut node = usize::from(key) + 128;
+        while node > 0 {
+            hits.extend(self.keys[node].iter().copied().filter(|&n| {
+                let z = &inst.zones[n];
+                picked.is_none_or(|g| group(z, inst) == g)
+                    && (z.velocities.low..=z.velocities.high).contains(&vel)
+            }));
+            node /= 2;
+        }
+        hits.sort_unstable();
+        hits
+    }
+}
+
+#[derive(Default)]
+pub(super) struct State {
+    index: Option<Arc<Index>>,
+    paint: CanvasCache<((u8, u8), Option<usize>, usize)>,
+    wave_paint: CanvasCache<(usize, u64, (u64, u64), usize)>,
+    bounds: (u8, u8),
     selected: usize,
     query: String,
+    group_query: String,
+    group_list: Option<ListState>,
     stack: Vec<usize>,
     audition: Option<Audition>,
     cell: Option<(u8, u8)>,
@@ -113,6 +262,7 @@ fn takes(inst: &ir::Instrument, z: &ir::Zone) -> String {
         labels.join(" · ")
     }
 }
+#[cfg(test)]
 fn stack(inst: &ir::Instrument, picked: Option<usize>, key: u8, vel: u8) -> Vec<usize> {
     inst.zones
         .iter()
@@ -144,6 +294,7 @@ fn point(at: Point, size: Size, bounds: (u8, u8)) -> Option<(u8, u8)> {
     Some((key, vel))
 }
 
+#[cfg(test)]
 fn fit(inst: &ir::Instrument, picked: Option<usize>) -> (u8, u8) {
     let (mut low, mut high) = (127, 0);
     for z in inst
@@ -265,32 +416,36 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .entry(slot)
         .or_default()
         .mapping
-        .source
+        .index
         .as_ref()
-        .is_none_or(|old| !Arc::ptr_eq(old, inst));
+        .is_none_or(|old| !Arc::ptr_eq(&old.source, inst));
     if changed {
-        let mut counts = vec![0; inst.groups.len() + 1];
-        for z in &inst.zones {
-            counts[group(z, inst)] += 1;
-        }
-        let bounds = fit(inst, None);
+        let index = cx.view.parts[slot]
+            .mapping_index
+            .clone()
+            .filter(|index| Arc::ptr_eq(&index.source, inst))
+            // Authored harnesses can publish IR directly, without a loader.
+            .unwrap_or_else(|| Arc::new(Index::new(inst)));
+        let bounds = index.fit(None);
         let st = cx.state.inside.entry(slot).or_default();
         st.group = None;
         st.mapping = State {
-            source: Some(inst.clone()),
-            counts,
-            links: links(inst),
-            source_ids: crate::sound::waveform::source_ids(inst),
-            rectangles: rectangles(inst),
+            index: Some(index.clone()),
             bounds,
             ..Default::default()
         };
         ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         if let Some(z) = inst.zones.first() {
             let (k, v) = midpoint(z);
-            st.mapping.stack = stack(inst, None, k, v);
+            st.mapping.stack = index.stack(inst, None, k, v);
         }
     }
+    let index = cx.state.inside[&slot]
+        .mapping
+        .index
+        .as_ref()
+        .unwrap()
+        .clone();
     let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
     let before = st.query.clone();
     let search = super::browser::search_field(
@@ -317,59 +472,43 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     if all {
         picked = None;
     }
-    let mut groups = vec![all_el.h(CONTROL)];
-    let ids = crate::sound::articulation::identities(&inst.articulations);
-    for g in 0..=inst.groups.len() {
-        let count = cx.state.inside[&slot].mapping.counts[g];
-        if count == 0 {
-            continue;
-        }
-        let name = inst
-            .groups
-            .get(g)
-            .filter(|g| !g.name.is_empty())
-            .map_or_else(
-                || {
-                    if g == inst.groups.len() {
-                        "No group".into()
-                    } else {
-                        format!("Group {}", g + 1)
-                    }
-                },
-                |g| g.name.clone(),
-            );
-        if !query.is_empty()
-            && !name.to_lowercase().contains(&query)
-            && !cx.state.inside[&slot].mapping.links[g]
+    let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
+    let initial = st.group_list.is_none();
+    let mut list = st
+        .group_list
+        .take()
+        .unwrap_or_else(|| ListState::variable([], CONTROL));
+    if initial || st.group_query != query {
+        list.set_items(
+            index
+                .rail
                 .iter()
-                .any(|&n| inst.articulations[n].name.to_lowercase().contains(&query))
-        {
-            continue;
+                .enumerate()
+                .filter(|(_, (g, _, _))| query.is_empty() || index.search[*g].contains(&query))
+                .map(|(n, _)| n as u64),
+        );
+        for n in 0..list.len() {
+            let (_, art, condition) = index.rail[list.key(n).unwrap() as usize];
+            list.set_height(
+                n,
+                if art.is_some() || condition {
+                    20.
+                } else {
+                    CONTROL
+                },
+            );
         }
-        let id = format!("map-group-{slot}-{g}");
-        let on = picked == Some(g);
-        if ui.get(id.as_str()).activated() {
-            picked = if on { None } else { Some(g) };
-        }
-        groups.push(interactive(
-            row![
-                block(3., 16.).fill(color(g)).shrink(0),
-                body(name.clone()).lines(1).flex(1).min_w(0),
-                caption(count.to_string()).fill(secondary())
-            ]
-            .gap(TIGHT)
-            .h(CONTROL)
-            .pad((0, TIGHT))
-            .align(Align::Center)
-            .focusable()
-            .a11y(A11y::Toggle { on })
-            .named(name.clone())
-            .tip(name)
-            .id(id),
-            on,
-        ));
-        if let Some(group) = inst.groups.get(g) {
-            for n in cx.state.inside[&slot].mapping.links[g].clone() {
+        st.group_query = query.clone();
+    }
+    let empty = list.is_empty();
+    let groups = variable_list(
+        ui,
+        format!("map-groups-{slot}"),
+        &mut list,
+        ListOptions::new(156., (map_height + 20. - CONTROL).max(CONTROL)),
+        |ui, item| {
+            let (g, art, condition) = index.rail[item.key as usize];
+            let (height, el) = if let Some(n) = art {
                 let a = &inst.articulations[n];
                 let id = format!("map-art-{slot}-{g}-{n}");
                 if ui.get(id.as_str()).activated() {
@@ -377,84 +516,134 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                     cx.state.inside.get_mut(&slot).unwrap().active = Some(n);
                 }
                 let on = active == Some(n);
-                let c = super::inside::articulation_color(cx, slot, &ids[n], a);
+                let c = super::inside::articulation_color(cx, slot, &index.ids[n], a);
                 let input = cx.selection.parts[slot].articulation_overlay.input(
-                    &ids[n],
+                    &index.ids[n],
                     a,
                     super::inside::mode(cx, slot, inst),
                 );
                 let label = format!("{} · {}", a.name, super::inside::input_label(&input));
-                groups.push(interactive(
-                    row![
-                        block(3., 12.).fill(c).shrink(0),
-                        caption(label.clone()).lines(1).min_w(0).flex(1)
-                    ]
-                    .gap(TIGHT)
-                    .pad((0, SPACE))
-                    .h(20.)
-                    .focusable()
-                    .a11y(A11y::Toggle { on })
-                    .when(on, |e| e.fill(Role::Raised))
-                    .named(format!("Select {} articulation", a.name))
-                    .tip(format!("{label}; authored group conditions still apply"))
-                    .id(id),
-                    on,
-                ));
-            }
-            let conditions = group
-                .start
-                .iter()
-                .map(|s| match s.test {
-                    ir::StartTest::Key { low, high } => {
-                        format!("Native KS {}–{}", note_name(low), note_name(high))
-                    }
-                    ir::StartTest::Controller {
-                        controller,
-                        low,
-                        high,
-                    } => format!("CC{controller} {low}–{high}"),
-                    ir::StartTest::RoundRobin(n) => format!("RR {n}"),
-                    ir::StartTest::Random => "Random".into(),
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
-            if !conditions.is_empty() {
-                groups.push(
-                    caption(conditions.clone())
+                (
+                    20.,
+                    interactive(
+                        row![
+                            block(3., 12.).fill(c).shrink(0),
+                            caption(label.clone()).lines(1).min_w(0).flex(1)
+                        ]
+                        .gap(TIGHT)
+                        .pad((0, SPACE))
+                        .h(20.)
+                        .focusable()
+                        .a11y(A11y::Toggle { on })
+                        .named(format!("Select {} articulation", a.name))
+                        .tip(format!("{label}; authored group conditions still apply"))
+                        .id(id),
+                        on,
+                    ),
+                )
+            } else if condition {
+                let group = &inst.groups[g];
+                let label = group
+                    .start
+                    .iter()
+                    .map(|s| match s.test {
+                        ir::StartTest::Key { low, high } => {
+                            format!("Native KS {}–{}", note_name(low), note_name(high))
+                        }
+                        ir::StartTest::Controller {
+                            controller,
+                            low,
+                            high,
+                        } => format!("CC{controller} {low}–{high}"),
+                        ir::StartTest::RoundRobin(n) => format!("RR {n}"),
+                        ir::StartTest::Random => "Random".into(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                (
+                    20.,
+                    caption(label)
                         .fill(secondary())
                         .lines(1)
-                        .tip(format!("Authored conditions: {:?}", group.start))
-                        .min_w(0),
-                );
-            }
+                        .min_w(0)
+                        .tip(format!("Authored conditions: {:?}", group.start)),
+                )
+            } else {
+                let on = picked == Some(g);
+                let id = format!("map-group-{slot}-{g}");
+                if ui.get(id.as_str()).activated() {
+                    picked = if on { None } else { Some(g) };
+                }
+                let name = &index.names[g];
+                let conditions = inst
+                    .groups
+                    .get(g)
+                    .map(|g| format!("Authored conditions: {:?}", g.start))
+                    .unwrap_or_default();
+                (
+                    CONTROL,
+                    interactive(
+                        row![
+                            block(3., 16.).fill(color(g)).shrink(0),
+                            body(name.clone()).lines(1).flex(1).min_w(0),
+                            caption(index.counts[g].to_string())
+                                .fill(secondary())
+                                .tip(conditions)
+                        ]
+                        .gap(TIGHT)
+                        .h(CONTROL)
+                        .pad((0, TIGHT))
+                        .align(Align::Center)
+                        .focusable()
+                        .a11y(A11y::Toggle { on })
+                        .named(name.clone())
+                        .tip(name.clone())
+                        .id(id),
+                        on,
+                    ),
+                )
+            };
+            ListRow::new(el, height)
+        },
+    );
+    if let Some(key) = groups.changed.activated {
+        let (g, art, condition) = index.rail[key as usize];
+        if let Some(n) = art {
+            cx.p.shared.select_articulation(slot, n);
+            cx.state.inside.get_mut(&slot).unwrap().active = Some(n);
+        } else if !condition {
+            picked = if picked == Some(g) { None } else { Some(g) };
         }
     }
-    if groups.len() == 1 && !query.is_empty() {
-        groups.push(
+    let groups = groups.el;
+    cx.state.inside.get_mut(&slot).unwrap().mapping.group_list = Some(list);
+    let groups = col![
+        all_el.h(CONTROL),
+        if empty {
             caption("No groups match")
                 .fill(secondary())
-                .lines(1)
                 .h(CONTROL)
                 .tip("Clear the group search to show every group")
-                .id(format!("map-no-groups-{slot}")),
-        );
-    }
+                .id(format!("map-no-groups-{slot}"))
+        } else {
+            groups
+        }
+    ]
+    .gap(0)
+    .w(156.)
+    .shrink(0);
     if picked != cx.state.inside[&slot].group {
         ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
         let st = cx.state.inside.get_mut(&slot).unwrap();
         st.group = picked;
         st.mapping.audition = None;
         st.mapping.cell = None;
-        st.mapping.bounds = fit(inst, picked);
-        if let Some((n, z)) = inst
-            .zones
-            .iter()
-            .enumerate()
-            .find(|(_, z)| picked.is_none_or(|g| group(z, inst) == g))
-        {
+        st.mapping.bounds = index.fit(picked);
+        if let Some(n) = index.first(picked) {
+            let z = &inst.zones[n];
             st.mapping.selected = n;
             let (k, v) = midpoint(z);
-            st.mapping.stack = stack(inst, picked, k, v);
+            st.mapping.stack = index.stack(inst, picked, k, v);
         }
     }
     let mut navigation = Vec::new();
@@ -491,7 +680,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                 "zoom-out" => window(center, width * 2),
                 "pan-left" => pan(st.bounds, -1),
                 "pan-right" => pan(st.bounds, 1),
-                _ => fit(inst, picked),
+                _ => index.fit(picked),
             };
         }
         navigation.push(el.named(name).tip(name).when(disabled, |e| e.disabled()));
@@ -509,7 +698,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             .map(|s| s.frame.size)
         && let Some((key, vel)) = point(at, size, bounds)
     {
-        let hit = stack(inst, picked, key, vel);
+        let hit = index.stack(inst, picked, key, vel);
         if !hit.is_empty() {
             let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
             let n = if hit == st.stack && st.cell == Some((key, vel)) {
@@ -543,12 +732,13 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         stack_height,
     );
     let selected = cx.state.inside[&slot].mapping.selected;
-    let geometry = cx.state.inside[&slot].mapping.rectangles.clone();
+    let geometry = index.rectangles.clone();
+    let paint = cx.state.inside[&slot].mapping.paint.clone();
     let selected_zone = inst
         .zones
         .get(selected)
         .map(|z| (z.keys.low, z.keys.high, z.velocities.low, z.velocities.high));
-    let map = canvas(move |s| {
+    let map = canvas_keyed(&paint, (bounds, picked, selected), move |s| {
         let keys = f64::from(bounds.1 - bounds.0 + 1);
         let x = |k: u16| (f64::from(k) - f64::from(bounds.0)) / keys * s.width;
         let y = |v: u16| (1. - f64::from(v) / 128.) * s.height;
@@ -715,13 +905,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .lines(1)
         .min_w(0);
     let grid = row![
-        col(groups)
-            .gap(1)
-            .w(156.)
-            .h(map_height + 28.)
-            .scroll()
-            .id(format!("map-groups-{slot}"))
-            .shrink(0),
+        groups,
         col![
             row![
                 col![
@@ -881,7 +1065,11 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
         .scene()
         .and_then(|s| s.surface(&id))
         .map_or(512, |s| s.frame.size.width.ceil().clamp(1., 4096.) as usize);
-    let source = st.source_ids.get(n).copied();
+    let source = st
+        .index
+        .as_ref()
+        .and_then(|index| index.source_ids.get(n))
+        .copied();
     let part = cx.p.shared.part(slot);
     let epoch = cx.view.parts[slot].generation;
     let full = source.and_then(|zone| part.as_ref()?.zone_waveform(zone, epoch, bins));
@@ -1052,7 +1240,11 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
             .end
             .map_or_else(|| "sample end".into(), |f| f.to_string())
     );
-    let wave = canvas(move |s| {
+    let paint = cx.state.inside[&slot].mapping.wave_paint.clone();
+    let peaks_key = envelope
+        .as_ref()
+        .map_or(0, |e| Arc::as_ptr(&e.peaks) as *const () as usize);
+    let wave = canvas_keyed(&paint, (n, epoch, bounds, peaks_key), move |s| {
         let mut draws = vec![
             Draw::fill(rect(0., 0., s.width, s.height), Role::Field),
             Draw::fill(rect(0., s.height / 2., s.width, 1.), hairline()),
@@ -1144,6 +1336,41 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mapping_worker_index_54k_keeps_identity_and_bounded_key_membership() {
+        let mut inst = ir::Instrument::default();
+        inst.groups.resize_with(189, ir::Group::default);
+        for n in 0..54_216 {
+            let mut z = ir::Zone::new(ir::AssetRef(0));
+            z.group = Some(ir::GroupRef(n % 189));
+            let low = (n % 128) as u8;
+            z.keys = ir::KeyRange {
+                low,
+                high: low.saturating_add((n % 13) as u8).min(127),
+            };
+            z.velocities = ir::VelocityRange {
+                low: (n % 64) as u8,
+                high: 127,
+            };
+            inst.zones.push(z);
+        }
+        let before = inst.clone();
+        let inst = Arc::new(inst);
+        let index = Index::new(&inst);
+        assert_eq!(index.counts.iter().sum::<usize>(), 54_216);
+        assert!(index.keys.iter().map(Vec::len).sum::<usize>() <= inst.zones.len() * 12);
+        for key in 0..128 {
+            for picked in [None, Some(0), Some(188)] {
+                assert_eq!(
+                    index.stack(&inst, picked, key, 64),
+                    stack(&inst, picked, key, 64)
+                );
+                assert_eq!(index.fit(picked), fit(&inst, picked));
+            }
+        }
+        assert!(Arc::ptr_eq(&index.source, &inst));
+        assert_eq!(*inst, before);
+    }
     use super::*;
 
     #[test]

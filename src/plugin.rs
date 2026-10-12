@@ -1016,6 +1016,8 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// Prepared with the immutable instrument on the load worker.
+    pub(crate) mapping_index: Option<Arc<crate::ui::MappingIndex>>,
     /// The keys as the scripts colour and name them (128, or none).
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
@@ -2403,13 +2405,18 @@ fn load_part(
                     }
                 }
             }
-            Ok(loaded)
+            let mapping_index = loaded.instrument.as_ref()
+                .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            if canceled() {
+                return Err(CoreError::Canceled);
+            }
+            Ok((loaded, mapping_index))
         });
     let mut view = shared.view.lock_unpoisoned();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
-        Ok(mut loaded) => {
+        Ok((mut loaded, mapping_index)) => {
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
@@ -2473,6 +2480,7 @@ fn load_part(
                 .map(|&(id, value)| ControlCell::new(id, value))
                 .collect();
             v.instrument = loaded.instrument;
+            v.mapping_index = mapping_index;
             v.keys = loaded.scripts.keys();
             *atoms.scripts.lock_unpoisoned() = loaded.scripts;
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
@@ -3667,7 +3675,18 @@ pub(crate) mod tests {
             "{}",
             v.status
         );
+        let index = v.mapping_index.clone().expect("load worker prepared the mapping index");
+        let instrument = v.instrument.clone().unwrap();
+        let generation = v.generation;
         drop(view);
+        assert!(!load_part(&params, 0, None), "unchanged source does not rebuild mapping");
+        {
+            let view = params.shared.view.lock_unpoisoned();
+            let current = &view.parts[0];
+            assert!(Arc::ptr_eq(&index, current.mapping_index.as_ref().unwrap()));
+            assert!(Arc::ptr_eq(&instrument, current.instrument.as_ref().unwrap()));
+            assert_eq!(current.generation, generation);
+        }
 
         let mut dsp = Dsp::default();
         let (slot, generation, part) = params.shared.ready.pop().expect("a part was handed over");
@@ -3710,6 +3729,7 @@ pub(crate) mod tests {
             .last()
             .unwrap();
         assert!(part.is_none());
+        assert!(params.shared.view.lock_unpoisoned().parts[0].mapping_index.is_none());
     }
 
     #[test]
