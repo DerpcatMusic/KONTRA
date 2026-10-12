@@ -126,6 +126,113 @@ MIDI input and analysis commands also retain explicit gaps. Source-only
 parity reporting does not execute initialization and must not replace
 production callback/load checks.
 
+## Source, conversion and execution evidence for the offline inspector
+
+The source-only Kontakt entry points are `read_chunks`, typed native objects,
+`read_multi`, and `read_parity_reports`. The last compiles and lowers each
+physical KSP slot, retaining bypassed/empty slots, without executing `on init`
+or resolving instrument samples. Linked scripts and requested NCKP resources
+are read into memory. Active `Instrument.behaviors` alone cannot supply this
+physical-slot inventory: the playable translation excludes bypassed/empty
+behaviors.
+
+`sampler_kontakt::read` is a product translation/initialization entry point,
+not a pure metadata inspection API. `library.rs::read_program` executes KSP
+initialization, consumes engine parameter writes, and can decode convolution
+impulse resources. It also resolves sample paths/headers and participates in
+the product metadata cache. `compile_ui` initializes when it does not receive
+the private reusable `ScriptInit`; calling it after `read` repeats that stage.
+Its generated interfaces are actual product projections, but neither this
+stage nor static lowering proves native execution, audible PCM, or rendered
+pixels.
+
+Initialization can perform external I/O: `sampler-ksp/src/eval.rs` handles
+`load_array_str` and `save_array_str` synchronously during init by calling
+`ArrayFileCompletion::perform`. The inspector's optional initialized mode
+therefore runs through the root-owned read-only sandbox launcher. A label or
+environment flag alone does not prevent those writes. No evaluator-host API
+or script semantics were changed for inspection.
+
+The live Script view's `script_coverage` in `src/ui/script_view.rs` returns
+`None` for ordinary production instruments; KSP evaluation is separate from
+the playback VM, and the owner-thread observation seam is not connected. Its
+existing test explicitly prevents an unavailable producer from becoming an
+observed zero-hit report. Static construct status, initialized UI projection,
+script admission, runtime faults and audio must remain separate evidence.
+
+## Independently confirmed v1/v2 NCKP differences
+
+Frozen v1 `0cb7a8a0:src/ksp/performance_view.rs` turns NCKP controls into KSP
+declarations/properties. `font` resolves a nonempty custom font through
+`get_font_id`; `controls` imports per-state fonts, text press shifting, and a
+table's visible steps. Current v2 `sampler-ksp/src/nckp.rs` directly builds
+`PerformanceView` controls and omitted these source fields while returning a
+successful parse. This is a source-conversion difference independently visible
+in code, not a native pixel/audio comparison.
+
+| Source field | Frozen v1 conversion | Current v2 conversion |
+| --- | --- | --- |
+| `text.font.custom` | `get_font_id` feeds the font property | Imports the numeric `text.font.type`; custom name has no conversion |
+| `text.fonts.off/on/pressedOff/pressedOn/hoverOff/hoverOn` | Assigns base/on/pressed/hover font properties | State font objects have no conversion |
+| `text.shiftOnPress` | Writes `CONTROL_PAR_DISABLE_TEXT_SHIFTING` | Field has no conversion |
+| `steps.visible` on a table | Calls `set_table_steps_shown` | Imports `steps.total`; visible-step field has no conversion |
+
+This round records a canonical omission warning when each of those source
+fields is present; empty base custom-font names do not produce a warning.
+It does not guess a font, press-shift or table display law. An authored fixture
+adds all nine fields to otherwise modeled knob/table controls, requires every
+canonical key, and compares the complete `PerformanceView` before and after:
+the modeled projection remains equal. A static physical-slot fixture carries
+four representative keys through resource lookup into separate
+`@performance-view-field:<key>` Unsupported constructs at the requesting
+`load_performance_view` source span. These records contain no authored font,
+control, resource names or values.
+
+V1 also rejected missing/unreadable/invalid performance-view resources during
+its frontend preparation. V2's product initializer already records a
+performance-view failure, but `read_parity_reports` silently discarded resource
+read and parse errors and unknown control-type warnings. The static producer
+now uses `Resources::read_result`, preserves distinct missing/read/parse
+failure stages, and retains an unknown-control-type omission count. It keeps
+normal static compiler diagnostics too; the resource failure is the cause
+evidence instead of an invented successful view.
+
+## Diagnostic retention and scan cache corrections
+
+A successful `Script::ui` can carry `Interface.unsupported`, including an
+unmapped property, invalid panel parent, or modulation-light hide request.
+Previously `load.rs::compile_ui_initialized` forwarded script warnings and
+outright UI errors, but discarded these successful-projection omissions from
+`Instrument.unsupported` and therefore the product load report. It now retains
+each with physical script slot and optional widget index. The existing
+interface-local list is preserved. An authored UI knob succeeds in projection,
+records `HIDE_PART_MOD_LIGHT`, and requires that same omission/value in the
+instrument's report. The initialized inspector also exposes the interface
+list separately; duplicated evidence must not be counted as an audio failure.
+
+Earlier scanning assumptions were too broad: `KONTRA_SCAN_ACTIVE` disabled
+some UVI scan caches, but did **not** disable Kontakt product caches. Commit
+`faa678e5` gates Kontakt lookup and store before directory discovery or any
+cache I/O, including pruning. Environment-variable presence is the mode
+contract. Existing user caches are preserved. Authored fixtures first seed a
+valid cache, then prove scan mode never enters lookup or store, preserves the
+existing bytes and cannot create a fresh cache directory. They use an explicit
+pure policy gate to avoid process-environment races between parallel tests.
+
+All focused checks use `/home/derpcat/.cache/kontakto-heavy` and `--profile ci`.
+The two cache regressions failed first without the guard, then the cache/header
+filter passed 7/7. The missing-resource static fixture and successful-interface
+retention fixture each failed first; their respective parity and loader
+diagnostic filters passed 2/2 before the additional field-loss fixture.
+The NCKP omission fixture also failed first with an empty warning list. Final
+focused results: `sampler-ksp --lib nckp::tests` **2/2**,
+`sampler-kontakt --lib parity::tests` **3/3**, loader diagnostic tests **2/2**,
+and `sampler-kontakt --test nckp_resources` **4/4**. Resource and field fixtures
+use authored temporary files only. Field recognition accepts the exact
+canonical allowlist, preventing an authored unknown-control name from spoofing
+the warning prefix into a static detail. `git diff --check` passed. Existing
+compiler warnings were left visible; no warning or diagnostic was suppressed.
+
 Kontakt DSP follow-up should start from the extracted evidence already in
 `docs/re/`: modern Reverb's eight recovered dispatch targets, convolution
 resize/filter/early-late preparation, Pro compressor scheduling, dynamic
