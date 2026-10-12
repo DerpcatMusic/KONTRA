@@ -106,12 +106,23 @@ pub fn report_sources(
     let Some(program) = doc.descendants().find(|n| n.has_tag_name("Program")) else {
         return Vec::new();
     };
-    let lowered = crate::translate_full(xml, crate::Source::Bank).ok();
+    // Translation is needed only to classify concrete parameter bindings.
+    // Many programs have no such calls, so defer the full XML/IR pass. A
+    // substring check may translate unnecessarily (for a comment or literal)
+    // but cannot skip a source that contains a parameter call.
+    let lowered = std::cell::OnceCell::<Option<crate::FullTranslation>>::new();
     let mut out = Vec::new();
     let mut modules = BTreeSet::new();
     let mut pending = Vec::new();
     for script in program.descendants().filter(|n| n.has_tag_name("script")) {
         let source = script.text().unwrap_or_default();
+        let translation = if source.contains("setParameter") || source.contains("getParameter") {
+            lowered
+                .get_or_init(|| crate::translate_full(xml, crate::Source::Bank).ok())
+                .as_ref()
+        } else {
+            None
+        };
         let report = report(
             source,
             script_id(script),
@@ -120,7 +131,7 @@ pub fn report_sources(
                 .and_then(|p| p.attribute("Name"))
                 .unwrap_or("ScriptProcessor"),
             program,
-            lowered.as_ref(),
+            translation,
         );
         required_modules(source, &report.tokens, &mut pending);
         out.push((report, std::sync::Arc::from(source)));
@@ -130,12 +141,20 @@ pub fn report_sources(
             continue;
         }
         if let Some(source) = files.script(&module) {
+            let translation = if source.contains("setParameter") || source.contains("getParameter")
+            {
+                lowered
+                    .get_or_init(|| crate::translate_full(xml, crate::Source::Bank).ok())
+                    .as_ref()
+            } else {
+                None
+            };
             let report = report(
                 &source,
                 format!("uvi:module:{module}"),
                 &module,
                 program,
-                lowered.as_ref(),
+                translation,
             );
             required_modules(&source, &report.tokens, &mut pending);
             out.push((report, std::sync::Arc::from(source)));
@@ -512,10 +531,9 @@ fn report(
                     | "unpack"
             )
         {
-            // Local functions and standard-library members are not unknown host APIs.
-            let local_function = ts
-                .windows(2)
-                .any(|w| text(source, w[0]) == "function" && text(source, w[1]) == name);
+            // Authored function names were collected above and skipped before
+            // this branch. Scanning every token again for each unknown call is
+            // quadratic on large scripts.
             let std_member = i >= 2
                 && text(source, ts[i - 1]) == "."
                 && matches!(
@@ -524,8 +542,7 @@ fn report(
                 );
             let method = i > 0 && matches!(text(source, ts[i - 1]), "." | ":");
             let host_method = i > 0 && targets.contains_key(&(i - 1));
-            if local_function
-                || std_member
+            if std_member
                 || method && !host_method && !(i >= 2 && text(source, ts[i - 2]) == "Engine")
             {
                 continue;
@@ -549,4 +566,56 @@ fn report(
     out.constructs.sort_by_key(|c| c.span.start);
     out.tokens = tokens;
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn assigned_anonymous_and_declared_functions_are_not_host_api_gaps() {
+        let source = "local assigned = function() end; assigned(); local function declared() end; declared(); mystery()";
+        let xml = format!(
+            "<UVI4><Program><EventProcessors><ScriptProcessor><script>{source}</script></ScriptProcessor></EventProcessors></Program></UVI4>"
+        );
+        let report = super::report_sources(&xml, &()).pop().unwrap().0;
+        assert!(report.constructs.iter().any(|c| {
+            c.name == "mystery" && c.status == sampler_parity::Status::Unsupported
+        }));
+        assert!(
+            !report
+                .constructs
+                .iter()
+                .any(|c| c.name == "assigned" || c.name == "declared")
+        );
+    }
+
+    #[test]
+    fn lazy_translation_preserves_full_reports_with_and_without_parameter_calls() {
+        for source in [
+            "function onNote(e) wait(1) end",
+            "function onInit() Program:setParameter('Gain', 0.5) end",
+        ] {
+            let xml = format!(
+                "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor Name='S'><script>{source}</script></ScriptProcessor></EventProcessors></Program></UVI4>"
+            );
+            let doc = crate::parse_program_xml(&xml).unwrap();
+            let program = doc
+                .descendants()
+                .find(|n| n.has_tag_name("Program"))
+                .unwrap();
+            let script = program
+                .descendants()
+                .find(|n| n.has_tag_name("script"))
+                .unwrap();
+            let lowered = crate::translate_full(&xml, crate::Source::Bank).unwrap();
+            let eager = super::report(
+                source,
+                super::script_id(script),
+                "S",
+                program,
+                Some(&lowered),
+            );
+            let lazy = super::report_sources(&xml, &()).pop().unwrap().0;
+            assert_eq!(lazy, eager);
+        }
+    }
 }
