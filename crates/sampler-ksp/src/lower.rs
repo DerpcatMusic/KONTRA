@@ -1417,6 +1417,24 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn waveform(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        use sampler_core::waveform::Action;
+        let action = match builtin {
+            Builtin::AttachZone => Action::Attach,
+            Builtin::SetUiWfProperty => Action::Set,
+            _ => Action::Get,
+        };
+        // Arg::Var is the original HIR UI identity; every other operand once.
+        let (_, text) = self.effect_args(builtin, args, dst)?;
+        if text.is_some() { return fault(self.span, "waveform operands must be integers"); }
+        let services = [self.u.service(Builtin::AttachZone), self.u.service(Builtin::SetUiWfProperty)];
+        let local = reg(dst, 4)?;
+        self.emit(I::Op(Op::Waveform { action, args: dst, local, services }))?;
+        if action == Action::Get { self.copy_i32(local, dst)?; }
+        self.cover(builtin, Coverage::Approximate);
+        Ok(())
+    }
+
     fn emit_effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let (count, text) = self.effect_args(builtin, args, dst)?;
         self.emit_prepared_effect(builtin, dst, count, text)?;
@@ -1551,6 +1569,9 @@ impl Gen<'_, '_> {
         let t = reg(dst, 1)?;
         let is_real = |i: usize| matches!(args.get(i), Some(Arg::Expr(e)) if e.ty == Ty::Real);
         let native = match builtin {
+            AttachZone | SetUiWfProperty | GetUiWfProperty => {
+                return self.waveform(builtin, args, dst);
+            }
             Exit => {
                 self.forward()?;
                 self.emit(I::End)?;
@@ -2752,6 +2773,7 @@ impl Gen<'_, '_> {
             }
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
+<<<<<<< HEAD
             | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
             | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
             | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | AttachZone
@@ -2759,6 +2781,23 @@ impl Gen<'_, '_> {
             | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
             | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
             | PgsCreateKey | PgsCreateStrKey => {
+||||||| parent of d057af73 (feat(ksp): admit owned waveform state and bounded UI projection)
+            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
+            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
+            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
+            | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName | SetNksNavPar
+            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
+            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
+            | SaveArray | PgsSetStrKeyVal | PgsCreateKey | PgsCreateStrKey => {
+=======
+            | SetEventParArr | SetNoteController | SetRpn | SetNrpn | WillNeverTerminate
+            | RedirectOutput | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter
+            | AddTextLine | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor
+            | FsNavigate | SetNksNavName | SetNksNavPar
+            | ResetNksNav | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
+            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
+            | SaveArray | PgsSetStrKeyVal | PgsCreateKey | PgsCreateStrKey => {
+>>>>>>> d057af73 (feat(ksp): admit owned waveform state and bounded UI projection)
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
                     self.set(dst, 0)?;

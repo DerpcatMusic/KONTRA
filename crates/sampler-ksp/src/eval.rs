@@ -918,6 +918,50 @@ impl Eval<'_> {
         Ok(())
     }
 
+    fn waveform(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        use sampler_core::waveform::Property;
+        let var = Self::var(args, 0);
+        let ui = self.ui_of(var);
+        let id = ui.map(|i| b::FIRST_UI_ID + i as i32);
+        let name = self.hir.vars[var.0 as usize].name.to_string();
+        // Every non-variable operand is evaluated exactly once, even on rejection.
+        let selector = self.int(args, 1)?;
+        let index = self.int(args, 2)?;
+        let value = if builtin == Builtin::SetUiWfProperty { self.int(args, 3)? } else { 0 };
+        let valid_ui = ui.is_some_and(|i| self.hir.uis[i].kind == WidgetKind::Waveform && !self.hir.uis[i].unresolved);
+        let Some(id) = id.filter(|_| valid_ui) else {
+            self.warn(span, "waveform operation requires a declared waveform UI identity");
+            return Ok(V::I(0));
+        };
+        if builtin == Builtin::AttachZone {
+            if selector <= 0 || !self.env.zones.contains_key(&(selector as u32)) {
+                self.warn(span, "waveform source zone is absent from the physical-source environment");
+                return Ok(V::I(0));
+            }
+            crate::waveform::project(&mut self.st.model, &name, id, Request {
+                command: "attach_zone",
+                args: vec![Value::Int(id), Value::Int(selector), Value::Int(index)],
+            });
+            return Ok(V::I(0));
+        }
+        let property_name = symbol_name(self.hir, selector);
+        let property = property_name.as_deref().and_then(Property::from_name);
+        let wave = crate::ui::waveform_requests(&self.st.model, id, &name);
+        let Some((p, wave)) = property.zip(wave).filter(|(p, _)| p.validate_index(index).is_ok()) else {
+            self.warn(span, "waveform property requires an attachment, known symbol and admitted index");
+            return Ok(V::I(0));
+        };
+        if builtin == Builtin::GetUiWfProperty {
+            return Ok(V::I(crate::waveform::read(&wave, p, index)));
+        }
+        crate::waveform::project(&mut self.st.model, &name, id, Request {
+            command: "set_ui_wf_property",
+            args: vec![Value::Int(id), Value::Text(property_name.unwrap_or_default()),
+                Value::Int(index), Value::Int(p.value(index, value))],
+        });
+        Ok(V::I(0))
+    }
+
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
         let result = self.builtin_inner(builtin, args, span);
@@ -1683,7 +1727,8 @@ impl Eval<'_> {
                         .unwrap_or(0),
                 )
             }
-            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit | GetUiWfProperty
+            AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
+            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
             | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
@@ -1761,7 +1806,7 @@ impl Eval<'_> {
                 }
             }
             PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
-            | AttachZone | SetUiWfProperty | FsNavigate | LoadNativeUi | SetNksNavName
+            | FsNavigate | LoadNativeUi | SetNksNavName
             | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
