@@ -265,6 +265,21 @@ impl Runtime {
     }
 
     /// Hard-silence one input domain, including descendants and pending callbacks.
+    /// Cancel one exact physical owner and its linked work without invoking a
+    /// musical release callback, release sample or pedal hold. This is the host
+    /// NOTE_CHOKE path; channel siblings and detached generated notes retain
+    /// their own lifetimes. No command queue capacity or allocation is needed.
+    pub fn cancel_input_note(&mut self, note: super::NoteId) -> Result<(), Error> {
+        self.apply_due();
+        let owner = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        if owner.input.is_none() {
+            return Err(Error::InvalidInput);
+        }
+        owner.input_down = false;
+        self.release_key(note, ReleaseCause::Discarded, None);
+        self.discard_note(note)
+    }
+
     /// Physical input keys remain owned until key-up; pedals and other domains remain.
     /// Returns the number of stopped source voices, including delayed starts.
     pub fn all_sound_off(&mut self, address: ChannelAddress) -> Result<usize, Error> {
