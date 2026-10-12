@@ -1206,16 +1206,39 @@ pub fn translate_program(
 ) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
     let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
         let (text, _) = bank.program(program)?;
-        let lua = bank.scripts();
-        let text = promote(text, &lua);
-        let (mut instrument, ..) =
-            translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
-        if let Some(sources) = &mut instrument.uvi_script_sources {
-            sources.files = lua.sources();
-        }
-        Ok(instrument)
+        translate_decoded_program_inner(bank, program, text)
     };
     translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
+}
+
+/// Translate program XML already decoded from this bank member. The same
+/// promotion and error staging as `translate_program` apply; the caller owns
+/// the decoded text and can inspect it before passing it here.
+#[cfg(feature = "library-access")]
+#[track_caller]
+pub fn translate_decoded_program(
+    bank: &Bank,
+    program: &str,
+    text: String,
+) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    translate_decoded_program_inner(bank, program, text)
+        .map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
+}
+
+#[cfg(feature = "library-access")]
+fn translate_decoded_program_inner(
+    bank: &Bank,
+    program: &str,
+    text: String,
+) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    let lua = bank.scripts();
+    let text = promote(text, &lua);
+    let (mut instrument, ..) =
+        translate_full(&text, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = lua.sources();
+    }
+    Ok(instrument)
 }
 
 /// Tag `error` with the load `stage` and the caller's location, as the other
