@@ -218,16 +218,16 @@ fn label_text_shows_over_a_transparent_background_picture() {
         path: path.into(),
         kind: AssetKind::Image(ImageMeta {
             size: Some(if path.ends_with("transparent.png") {
-                ir::Size { width: 1, height: 1 }
+                ir::Size { width: 1.0, height: 1.0 }
             } else {
-                ir::Size { width: 160, height: 40 }
+                ir::Size { width: 160.0, height: 40.0 }
             }),
             ..Default::default()
         }),
     };
     let face = ir::Interface {
         pages: vec![ir::Page {
-            size: ir::Size { width: 160, height: 40 },
+            size: ir::Size { width: 160.0, height: 40.0 },
             background: ir::Background {
                 image: Some(ir::AssetRef(1)),
                 ..Default::default()
@@ -248,7 +248,7 @@ fn label_text_shows_over_a_transparent_background_picture() {
     natural.widgets[0].auto_size = true;
     natural.widgets[0].default_axes = [true; 2];
     assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
-    natural.widgets[0].rect.width = 112;
+    natural.widgets[0].rect.width = 112.0;
     natural.widgets[0].default_axes = [false, true];
     assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 112, 1));
     natural.widgets[0].kind = Kind::Switch;
@@ -334,8 +334,8 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
         pages: vec![ir::Page {
             name: "Main".into(),
             size: ir::Size {
-                width: 633,
-                height: 300,
+                width: 633.0,
+                height: 300.0,
             },
             background: ir::Background {
                 image: Some(ir::AssetRef(0)),
@@ -522,8 +522,8 @@ fn both_modes(
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
     let (w, h) = (
-        page.size.width.clamp(1, 1200) as u16,
-        ir_view::height(&face, ir::PageRef(0)).clamp(1, 900) as u16,
+        page.size.width.clamp(1., 1200.) as u16,
+        ir_view::height(&face, ir::PageRef(0)).clamp(1., 900.) as u16,
     );
     let mut values = ir_view::Values::default();
     let mut assets = ir_view::Assets::default();
@@ -2047,8 +2047,8 @@ fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
     };
     face.pages.push(Page {
         size: ir::Size {
-            width: 200,
-            height: 100,
+            width: 200.0,
+            height: 100.0,
         },
         ..Default::default()
     });
@@ -2293,7 +2293,7 @@ fn widget_picture_slider_drags_like_the_authored_knob() {
 #[test]
 fn five_thousand_widgets_are_all_present_and_laid_out() {
     let mut face = ir::Interface {
-        pages: vec![ir::Page { size: ir::Size { width: 2000, height: 1600 }, ..Default::default() }],
+        pages: vec![ir::Page { size: ir::Size { width: 2000.0, height: 1600.0 }, ..Default::default() }],
         ..Default::default()
     };
     for n in 0..5000i32 {
@@ -2339,7 +2339,7 @@ fn ir_view_frame_profile() {
         }
         None => {
             let mut face = ir::Interface {
-                pages: vec![ir::Page { size: ir::Size { width: 2000, height: 1600 }, ..Default::default() }],
+                pages: vec![ir::Page { size: ir::Size { width: 2000.0, height: 1600.0 }, ..Default::default() }],
                 ..Default::default()
             };
             for n in 0..5000i32 {
@@ -2593,8 +2593,8 @@ fn widget_conflux_placement_and_capture() {
         .filter(|(n, w)| {
             face.visible(ir::WidgetRef(*n))
                 && matches!(w.kind, ir::Kind::Knob { .. } | ir::Kind::Slider { .. })
-                && face.page_rect(ir::WidgetRef(*n)).x == 0
-                && face.page_rect(ir::WidgetRef(*n)).y == 0
+                && face.page_rect(ir::WidgetRef(*n)).x == 0.0
+                && face.page_rect(ir::WidgetRef(*n)).y == 0.0
         })
         .count();
     println!(
@@ -6560,8 +6560,8 @@ fn menus_show_a_fallback_without_editing_the_script_value() {
     let face = ir::Interface {
         pages: vec![ir::Page {
             size: ir::Size {
-                width: 160,
-                height: 60,
+                width: 160.0,
+                height: 60.0,
             },
             ..Default::default()
         }],
@@ -6613,7 +6613,7 @@ fn an_unsized_axis_does_not_discard_the_authored_other_axis() {
             resolved.widgets[0].rect.width,
             resolved.widgets[0].rect.height
         ),
-        (220, 18)
+        (220., 18.)
     );
 }
 
@@ -6630,8 +6630,8 @@ fn rack_interfaces_have_independent_input_identities() {
     let face = ir::Interface {
         pages: vec![ir::Page {
             size: ir::Size {
-                width: 100,
-                height: 30,
+                width: 100.0,
+                height: 30.0,
             },
             ..Default::default()
         }],
@@ -7051,7 +7051,7 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
         let face=host.interface();
         assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
         assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
-        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320,160));
+        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320.,160.));
         assert_eq!(face.widgets[5].initial_value,if after {0.5} else {0.25});
         assert_eq!(face.widgets[5].value_text.as_deref(),Some(if after {"50 %"} else {"25 %"}));
         for (control,value) in host.control_values() { values.insert(control,value); }
@@ -7305,4 +7305,117 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         *source, before,
         "workbench leaves source identities and data intact"
     );
+}
+
+#[test]
+fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
+    let dir = tempfile::tempdir().unwrap();
+    let colours = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    let data: Vec<u8> = (0..8)
+        .flat_map(|_| (0..32).flat_map(|x| colours[x / 8]))
+        .collect();
+    moose::core::screenshot::save_png(&dir.path().join("strip.png"), &data, 32, 8);
+    let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      setSize(320.5,160.25)
+      p=Panel{'Root',bounds={20.25,20.5,80.75,80.125}}
+      h=p:Knob{'Lower',0,0,1,bounds={1.25,2.25,32.125,32.375},showLabel=false,showValue=false}
+      v=p:Knob{'Upper',0.75,0,1,bounds={1.25,2.25,32.125,32.375},showLabel=false,showValue=false}
+      h:setStripImage('strip.png',4,true); v:setStripImage('strip.png',4,true)
+      function onController(e) p.children={v,h}; h:setValue(1,false) end
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let patch = dir.path().join("preset.uvip");
+    std::fs::write(&patch, xml).unwrap();
+    let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let mut assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    for (after, name, expected) in [
+        (false, "uvi-order-before.png", colours[2]),
+        (true, "uvi-order-after.png", colours[3]),
+    ] {
+        if after {
+            host.controller(1, 64, 0);
+        }
+        let face = host.interface();
+        assert_eq!(face.validate(), Ok(()));
+        assert!(host.findings().is_empty(), "{:?}", host.findings());
+        assert_eq!(
+            face.page_rect(ir::WidgetRef(1)),
+            ir::Rect {
+                x: 21.5,
+                y: 22.75,
+                width: 32.125,
+                height: 32.375
+            }
+        );
+        assert_eq!(
+            (face.pages[0].size.width, face.pages[0].size.height),
+            (320.5, 160.25)
+        );
+        assert_eq!(
+            face.draw_order(ir::PageRef(0)),
+            if after {
+                vec![ir::WidgetRef(0), ir::WidgetRef(2), ir::WidgetRef(1)]
+            } else {
+                vec![ir::WidgetRef(0), ir::WidgetRef(1), ir::WidgetRef(2)]
+            }
+        );
+        for (control, value) in host.control_values() {
+            values.insert(control, value);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            assets.prepare(
+                &patch,
+                &face,
+                ir::PageRef(0),
+                ir::Presentation::Bitmap,
+                2.,
+                &values,
+            );
+            if assets.pending() == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ui = settle(642., 322., |ui| {
+            ir_view::view(
+                ui,
+                &face,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                2.,
+                &mut values,
+            )
+        });
+        let data = pixels(&ui, 642, 322);
+        let at = (77 * 642 + 75) * 4;
+        assert_eq!(
+            &data[at..at + 4],
+            &expected,
+            "{name}: authored overlap order"
+        );
+        let pixel = |x: usize, y: usize| &data[(y * 642 + x) * 4..(y * 642 + x + 1) * 4];
+        let background = pixel(40, 77);
+        for (x, y) in [(42, 77), (108, 77), (75, 44), (75, 111)] {
+            assert_eq!(pixel(x, y), background, "{name}: outside authored fractional bounds");
+        }
+        for (x, y) in [(43, 77), (107, 77), (75, 45), (75, 110)] {
+            assert_ne!(pixel(x, y), background, "{name}: fractional edge must paint");
+            assert_ne!(pixel(x, y), &expected, "{name}: fractional edge retains partial coverage");
+        }
+        #[cfg(feature = "shots")]
+        if let Some(out) =
+            std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from)
+        {
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(&out.join(name), &data, 642, 322);
+        }
+    }
 }
