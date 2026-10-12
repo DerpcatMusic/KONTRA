@@ -102,7 +102,7 @@ pub(super) struct Prelude {
     pub modulated: bool,
     pub stop: bool,
     /// Filter-cutoff modulation for the chunk.
-    pub filter: Option<[f64; 2]>,
+    pub filter: Option<crate::FilterFactors>,
 }
 
 /// A releasing voice whose output cannot exceed this (about -120 dBFS) for
@@ -474,10 +474,12 @@ impl Runtime {
                 .modulation
                 .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
             let (from, to) = (ramp.from, ramp.to);
-            filter = Some([
-                (from.filter[0] + to.filter[0]) * 0.5,
-                (from.filter[1] + to.filter[1]) * 0.5,
-            ]);
+            filter = Some(std::array::from_fn(|k| {
+                [
+                    (from.filter[k][0] + to.filter[k][0]) * 0.5,
+                    (from.filter[k][1] + to.filter[k][1]) * 0.5,
+                ]
+            }));
             ramp
         });
         // Script layers (render_segment chunks once a script writes one).
@@ -606,7 +608,7 @@ impl Runtime {
         };
         drop((claimed, delay));
         if let (Some(ramp), Some(target)) = (points, mixed) {
-            plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
+            plan.dsp.filters.as_mut_slice()[0].modulation = [[1.0; 2]; crate::FILTER_SLOTS + 1];
             if modulated {
                 plan.modulation
                     .mix(i, segment, target, ramp, at, f64::from(self.rate));

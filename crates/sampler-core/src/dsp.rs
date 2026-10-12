@@ -143,6 +143,9 @@ pub enum Processor {
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
+    /// A state-variable filter a voice's modulation addresses by slot
+    /// (`< FILTER_SLOTS`); otherwise [`Processor::StateVariable`].
+    ModulatedFilter(StateVariableFilter, u8),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
     /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
@@ -170,6 +173,9 @@ impl Processor {
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
+            Processor::ModulatedFilter(filter, slot) => {
+                filter.valid() && usize::from(*slot) < svf::FILTER_SLOTS
+            }
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
             Processor::Mix {
@@ -212,7 +218,7 @@ pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
-pub use svf::{StateVariableFilter, SvfMode};
+pub use svf::{FILTER_SLOTS, FilterFactors, StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
     Gain(f64),
@@ -349,6 +355,11 @@ pub(super) fn compile_processors(
                 Processor::StateVariable(filter) => {
                     let index = filters.len();
                     filters.push(filter.compile(rate, bindings)?);
+                    PreparedProcessor::StateVariable(index)
+                }
+                Processor::ModulatedFilter(filter, slot) => {
+                    let index = filters.len();
+                    filters.push(filter.compile(rate, bindings)?.with_slot(slot));
                     PreparedProcessor::StateVariable(index)
                 }
                 Processor::Delay(delay) => {
