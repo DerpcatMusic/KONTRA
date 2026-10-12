@@ -1,0 +1,6 @@
+KSP: %CC_TOUCHED and search over runtime system arrays
+
+%CC_TOUCHED[n] is 1 for the controller of the current controller
+callback; search() now accepts %KEY_DOWN, %CC and %CC_TOUCHED.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
