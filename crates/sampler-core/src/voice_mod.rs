@@ -1366,9 +1366,18 @@ impl VoiceModState {
     }
 
     pub(crate) fn native_render<'a>(&'a self, modulation: &'a VoiceModulation, voice: usize,
-        state: &'a mut Option<crate::v1_voice_controls::ControlState>) -> Option<crate::whole_voice::Render<'a>> {
+        state: &'a mut Option<crate::v1_voice_controls::ControlState>, controls: &[crate::ControlValue]) -> Option<crate::whole_voice::Render<'a>> {
         let program = &modulation.programs[self.program(voice)? as usize];
-        Some(crate::whole_voice::Render { plan: &program.native.as_ref()?.plan, state: state.as_mut()?, blocks: &self.native_blocks })
+        let native = program.native.as_ref()?;
+        let flex_depth = native.routes.iter().position(|r| matches!(r, crate::whole_voice::Route::Flex)).map_or(1., |route| {
+            program.controls.iter().find(|(index,_)| *index == route).map_or(program.routes[route].depth, |(_, [depth,bypass])| {
+                match (controls[*depth],controls[*bypass]) {
+                    (crate::ControlValue::Real(depth),crate::ControlValue::Real(0.)) => depth,
+                    _ => 0.,
+                }
+            })
+        });
+        Some(crate::whole_voice::Render { plan: &native.plan, state: state.as_mut()?, blocks: &self.native_blocks, flex_depth })
     }
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {

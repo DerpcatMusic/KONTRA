@@ -50,3 +50,34 @@ and tests remain required. Original-byte leaf fixtures already present in
 Full native Kontakt sound/timing and current CPU/RSS status remain UNKNOWN.
 The rejected/HOLD voice-ring, fused resampler and fold experiments stay out of
 production; their original refs and receipts remain accounted separately.
+
+### Final control-owner review
+
+The follow-up review found and repairs one concrete immutable-donor defect:
+`Route::Flex` was skipped by the shared destination evaluator while the native
+render consumer always multiplied its saved unity Flex source. Current held
+Flex depth/bypass writes now read the prepared physical control IDs in rendering,
+without restarting the Flex source clock. A completed zero/partial-depth Flex
+cannot retire an independently releasing primary amplitude owner. Unity retains
+the recovered exact f32 multiplication. Dynamic Flex without a raw primary
+stays on the shared synthetic gate owner, because substituting a native unity
+primary would erase that independent release gate; the existing shared path
+already consumes its controls and reports no new native admission.
+
+New authored checks compare held depth zero against the same primary without
+Flex, fractional depth against the continuing Flex signal, reenabled unity
+against an uninterrupted twin, and masked Flex completion against the primary's
+independent release in dry and processed rendering. Separate checks verify
+external source lag continues while bypassed, schema insertion remaps native
+indices, and post-prepare attack/curve/sustain writes choose the current owner
+for future starts rather than immutable saved coefficients.
+
+AHDSR writes on already held voices remain an existing host boundary: both the
+old generic path and the recovered native path read controlled envelopes at
+voice admission. No official/versioned native rule for active attack retiming
+was available in this recovery, so no new retiming behavior is invented. The
+code boundary is `Runtime::controlled_envelope` (admission) versus
+`Runtime::edit_controls_now`/`EngineLayers::envelope` (generation control state).
+Future starts honor the written controls and native admission counters decline
+those frame/curve overlays. Native held-envelope setter semantics require their
+own measured lifecycle rule and active-state consumer before parity admission.
