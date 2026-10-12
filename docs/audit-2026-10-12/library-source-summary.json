@@ -1,0 +1,1072 @@
+{
+  "admission": "complete_static_catalog",
+  "catalog_records_complete": true,
+  "fault_counts": {},
+  "faults": [],
+  "format": "kontra-inspector-audit-summary",
+  "libraries": {
+    "Kontakt/ANALOG STRINGS": {
+      "audio": {
+        "not_run": 1
+      },
+      "compiler_status_counts": {},
+      "constructs": 12027,
+      "expected": 1,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 1
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 1
+      },
+      "kontakt_all_programs": 1,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 1
+      },
+      "observed": 1,
+      "runtime": {
+        "not_run": 1
+      },
+      "script_status_counts": {
+        "Approximate": 8105,
+        "Implemented": 3922
+      },
+      "scripts": 5,
+      "source_inspected": 1,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Afflatus Chapter II Brass": {
+      "audio": {
+        "not_run": 348
+      },
+      "compiler_status_counts": {},
+      "constructs": 1052175,
+      "expected": 348,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 348
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 348
+      },
+      "kontakt_all_programs": 348,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 348
+      },
+      "observed": 348,
+      "runtime": {
+        "not_run": 348
+      },
+      "script_status_counts": {
+        "Approximate": 994942,
+        "Implemented": 56885,
+        "Stub": 348
+      },
+      "scripts": 1740,
+      "source_inspected": 348,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Areia 1.2.0 [Audio Imperia]": {
+      "audio": {
+        "not_run": 155
+      },
+      "compiler_status_counts": {},
+      "constructs": 48607928,
+      "expected": 155,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 155
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 155
+      },
+      "kontakt_all_programs": 155,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 155
+      },
+      "observed": 155,
+      "runtime": {
+        "not_run": 155
+      },
+      "script_status_counts": {
+        "Approximate": 43409427,
+        "Implemented": 5198499,
+        "Stub": 2
+      },
+      "scripts": 775,
+      "source_inspected": 155,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Audio Imperia CHORUS": {
+      "audio": {
+        "not_run": 42
+      },
+      "compiler_status_counts": {},
+      "constructs": 8671497,
+      "expected": 42,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 42
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 39,
+        "kontakt-multi": 3
+      },
+      "kontakt_all_programs": 42,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 42
+      },
+      "observed": 42,
+      "runtime": {
+        "not_run": 42
+      },
+      "script_status_counts": {
+        "Approximate": 7684405,
+        "Implemented": 987092
+      },
+      "scripts": 240,
+      "source_inspected": 42,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Audio Imperia Dolce": {
+      "audio": {
+        "not_run": 77
+      },
+      "compiler_status_counts": {},
+      "constructs": 21186396,
+      "expected": 77,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 77
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 77
+      },
+      "kontakt_all_programs": 77,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 77
+      },
+      "observed": 77,
+      "runtime": {
+        "not_run": 77
+      },
+      "script_status_counts": {
+        "Approximate": 18984966,
+        "Implemented": 2201430
+      },
+      "scripts": 385,
+      "source_inspected": 77,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Conflux 1.1.0 [Native Instruments]": {
+      "audio": {
+        "not_run": 51
+      },
+      "compiler_status_counts": {},
+      "constructs": 453393,
+      "expected": 51,
+      "initialized_attempted": 3,
+      "initialized_failed": 3,
+      "initialized_ir_ok": 3,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 51
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 1,
+        "kontakt-multi": 50
+      },
+      "kontakt_all_programs": 51,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 51
+      },
+      "observed": 51,
+      "runtime": {
+        "not_run": 51
+      },
+      "script_status_counts": {
+        "Approximate": 373268,
+        "Implemented": 78766,
+        "Stub": 951,
+        "Unsupported": 408
+      },
+      "scripts": 505,
+      "source_inspected": 51,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Morphology Evolved [Zero-G] rutracker.org": {
+      "audio": {
+        "not_run": 1
+      },
+      "compiler_status_counts": {},
+      "constructs": 39615,
+      "expected": 1,
+      "initialized_attempted": 1,
+      "initialized_failed": 1,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 1
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 1
+      },
+      "kontakt_all_programs": 1,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 1
+      },
+      "observed": 1,
+      "runtime": {
+        "not_run": 1
+      },
+      "script_status_counts": {
+        "Approximate": 35594,
+        "Implemented": 4020,
+        "Stub": 1
+      },
+      "scripts": 5,
+      "source_inspected": 1,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Pacific Ensemble Strings": {
+      "audio": {
+        "not_run": 50
+      },
+      "compiler_status_counts": {},
+      "constructs": 80925,
+      "expected": 50,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 50
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 49,
+        "kontakt-multi": 1
+      },
+      "kontakt_all_programs": 50,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 50
+      },
+      "observed": 50,
+      "runtime": {
+        "not_run": 50
+      },
+      "script_status_counts": {
+        "Approximate": 73165,
+        "Implemented": 7760
+      },
+      "scripts": 265,
+      "source_inspected": 50,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Performance Samples Vista": {
+      "audio": {
+        "not_run": 7
+      },
+      "compiler_status_counts": {},
+      "constructs": 9188,
+      "expected": 7,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 7
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 7
+      },
+      "kontakt_all_programs": 7,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 7
+      },
+      "observed": 7,
+      "runtime": {
+        "not_run": 7
+      },
+      "script_status_counts": {
+        "Approximate": 8148,
+        "Implemented": 1040
+      },
+      "scripts": 35,
+      "source_inspected": 7,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Solo": {
+      "audio": {
+        "not_run": 100
+      },
+      "compiler_status_counts": {},
+      "constructs": 14486002,
+      "expected": 100,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 100
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 100
+      },
+      "kontakt_all_programs": 100,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 100
+      },
+      "observed": 100,
+      "runtime": {
+        "not_run": 100
+      },
+      "script_status_counts": {
+        "Approximate": 12333720,
+        "Implemented": 2152278,
+        "Stub": 4
+      },
+      "scripts": 500,
+      "source_inspected": 100,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "Kontakt/Una Corda Library": {
+      "audio": {
+        "not_run": 3
+      },
+      "compiler_status_counts": {},
+      "constructs": 17001,
+      "expected": 3,
+      "initialized_attempted": 1,
+      "initialized_failed": 0,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 1,
+      "inspection_status": {
+        "partial": 3
+      },
+      "ir_converted": 0,
+      "kinds": {
+        "kontakt": 3
+      },
+      "kontakt_all_programs": 3,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 3
+      },
+      "observed": 3,
+      "runtime": {
+        "not_run": 3
+      },
+      "script_status_counts": {
+        "Approximate": 16314,
+        "Implemented": 687
+      },
+      "scripts": 15,
+      "source_inspected": 3,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "UVI/UVI - Augmented Orchestra v1.1.2-R2R": {
+      "audio": {
+        "not_run": 620
+      },
+      "compiler_status_counts": {
+        "ok": 620
+      },
+      "constructs": 620,
+      "expected": 620,
+      "initialized_attempted": 1,
+      "initialized_failed": 1,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 620
+      },
+      "ir_converted": 620,
+      "kinds": {
+        "uvi-program": 620
+      },
+      "kontakt_all_programs": 0,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 620
+      },
+      "observed": 620,
+      "runtime": {
+        "not_run": 620
+      },
+      "script_status_counts": {
+        "Approximate": 620
+      },
+      "scripts": 620,
+      "source_inspected": 620,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "UVI/VWinds - Clarinets": {
+      "audio": {
+        "not_run": 16
+      },
+      "compiler_status_counts": {
+        "ok": 64
+      },
+      "constructs": 17394,
+      "expected": 16,
+      "initialized_attempted": 1,
+      "initialized_failed": 1,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 16
+      },
+      "ir_converted": 16,
+      "kinds": {
+        "uvi-program": 16
+      },
+      "kontakt_all_programs": 0,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 16
+      },
+      "observed": 16,
+      "runtime": {
+        "not_run": 16
+      },
+      "script_status_counts": {
+        "Approximate": 15075,
+        "Implemented": 656,
+        "Stub": 1215,
+        "Unsupported": 448
+      },
+      "scripts": 64,
+      "source_inspected": 16,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "UVI/VWinds - Double Reeds": {
+      "audio": {
+        "not_run": 15
+      },
+      "compiler_status_counts": {
+        "ok": 60
+      },
+      "constructs": 15641,
+      "expected": 15,
+      "initialized_attempted": 1,
+      "initialized_failed": 1,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 15
+      },
+      "ir_converted": 15,
+      "kinds": {
+        "uvi-program": 15
+      },
+      "kontakt_all_programs": 0,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 15
+      },
+      "observed": 15,
+      "runtime": {
+        "not_run": 15
+      },
+      "script_status_counts": {
+        "Approximate": 13536,
+        "Implemented": 617,
+        "Stub": 1097,
+        "Unsupported": 391
+      },
+      "scripts": 60,
+      "source_inspected": 15,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    },
+    "UVI/VWinds - Flutes": {
+      "audio": {
+        "not_run": 9
+      },
+      "compiler_status_counts": {
+        "ok": 36
+      },
+      "constructs": 10098,
+      "expected": 9,
+      "initialized_attempted": 1,
+      "initialized_failed": 1,
+      "initialized_ir_ok": 1,
+      "initialized_ui_ok": 0,
+      "inspection_status": {
+        "partial": 9
+      },
+      "ir_converted": 9,
+      "kinds": {
+        "uvi-program": 9
+      },
+      "kontakt_all_programs": 0,
+      "missing": 0,
+      "native_equivalence": {
+        "unknown": 9
+      },
+      "observed": 9,
+      "runtime": {
+        "not_run": 9
+      },
+      "script_status_counts": {
+        "Approximate": 8721,
+        "Implemented": 387,
+        "Stub": 747,
+        "Unsupported": 243
+      },
+      "scripts": 36,
+      "source_inspected": 9,
+      "source_semantics_complete": 0,
+      "ui_projected": 0
+    }
+  },
+  "native_parity": "unknown",
+  "provenance": [
+    {
+      "bytes": 226574,
+      "name": "all-items-current.tsv",
+      "role": "manifest",
+      "sha256": "02be1aa7cc78c41557e700628b106b95fa7ade3e2cccbc29af61309175158092"
+    },
+    {
+      "bytes": 93186,
+      "name": "static-00.jsonl",
+      "role": "report_jsonl",
+      "sha256": "7a2bcd71b94d6015d2be8110563b0300c4aa0b2f599ad09c2ac7a3ed44020663"
+    },
+    {
+      "bytes": 93962,
+      "name": "static-01.jsonl",
+      "role": "report_jsonl",
+      "sha256": "96b85c1bf99611a02a3a6b7452c361b6b101107f36d20a54865a3ba6c1a7540a"
+    },
+    {
+      "bytes": 94019,
+      "name": "static-02.jsonl",
+      "role": "report_jsonl",
+      "sha256": "ffe3c96cd5ad7341dc6ab023f55704ca4d9bf48f00f80cbc8f8f39cae3ded021"
+    },
+    {
+      "bytes": 93912,
+      "name": "static-03.jsonl",
+      "role": "report_jsonl",
+      "sha256": "7a47d94ca843f460e1b28cbdd5dcd56fbf4bfd319fd192e35a405da22bf479c0"
+    },
+    {
+      "bytes": 94111,
+      "name": "static-04.jsonl",
+      "role": "report_jsonl",
+      "sha256": "eb52b6540574276147ca0aa5aec7f00a78032ddba428c724fc5c554481951030"
+    },
+    {
+      "bytes": 94223,
+      "name": "static-05.jsonl",
+      "role": "report_jsonl",
+      "sha256": "0c524e2f28ec3590737e0f9bf8073a5ac5d89acc9f8b27f55a5835324c0da1c7"
+    },
+    {
+      "bytes": 94904,
+      "name": "static-06.jsonl",
+      "role": "report_jsonl",
+      "sha256": "ddac273357d76e4ae2b198f1da45e3c520618af8cfa1c33227b0d258dd16e456"
+    },
+    {
+      "bytes": 94210,
+      "name": "static-07.jsonl",
+      "role": "report_jsonl",
+      "sha256": "2bb6faf41a3485b77cd660aee6bc0086239148c01f3368fe8d8d5bb64ac9b2ee"
+    },
+    {
+      "bytes": 94654,
+      "name": "static-08.jsonl",
+      "role": "report_jsonl",
+      "sha256": "0303baa05b57ffc8c2c87358e8742931ff0d996dc977637034bb9724b4ac25bf"
+    },
+    {
+      "bytes": 95009,
+      "name": "static-09.jsonl",
+      "role": "report_jsonl",
+      "sha256": "ca24c9c8ade1cfca834a8b9fe2e8bad55a8c7abac953553fd25510c27bc9e31c"
+    },
+    {
+      "bytes": 94537,
+      "name": "static-10.jsonl",
+      "role": "report_jsonl",
+      "sha256": "1a1c118b1c2c0da2bf9a19293c06f664875a69fa5cf62489519eac59ae00304d"
+    },
+    {
+      "bytes": 93843,
+      "name": "static-11.jsonl",
+      "role": "report_jsonl",
+      "sha256": "7f696633b90b8c61a1b52f2ba0d915bcaa40ca8c22ce40beff2d672137a9e752"
+    },
+    {
+      "bytes": 93674,
+      "name": "static-12.jsonl",
+      "role": "report_jsonl",
+      "sha256": "0cccc95a84b3e9e0fff84fc376bffb07cd9416707175040e4770f64cd3f19487"
+    },
+    {
+      "bytes": 94365,
+      "name": "static-13.jsonl",
+      "role": "report_jsonl",
+      "sha256": "1e8c645d260cd1373cf3059fdbf844f1d8b8454b9e084a0a1a919d529bf20349"
+    },
+    {
+      "bytes": 84338,
+      "name": "static-14.jsonl",
+      "role": "report_jsonl",
+      "sha256": "3d5d47819b3c76c457910c3cb5559e8ac2d8a076ca6d0c5be53fa2931a39295f"
+    },
+    {
+      "bytes": 84514,
+      "name": "static-15.jsonl",
+      "role": "report_jsonl",
+      "sha256": "71fae526ae2a4f6511373082e62dad6bcb3545583a6a6a768e3502ebd5c43efe"
+    },
+    {
+      "bytes": 84519,
+      "name": "static-16.jsonl",
+      "role": "report_jsonl",
+      "sha256": "fb29dd582d7eb9b9034fb49d4a4f3f2848cb8ea08f616d1a5d13094474c7c8c7"
+    },
+    {
+      "bytes": 85081,
+      "name": "static-17.jsonl",
+      "role": "report_jsonl",
+      "sha256": "7115fba1c851613707ca36bfe32ec163fa778b7f099de261d1f13a89b5a0b8c8"
+    },
+    {
+      "bytes": 84930,
+      "name": "static-18.jsonl",
+      "role": "report_jsonl",
+      "sha256": "ff9c128c87b0efaff95371d191246cf513110e140995bb85c9b64d16d12bde0d"
+    },
+    {
+      "bytes": 84336,
+      "name": "static-19.jsonl",
+      "role": "report_jsonl",
+      "sha256": "9975e6885a4ca0389b926055814e6c6a54fc0fe37da69e21e099ff42575679c4"
+    },
+    {
+      "bytes": 84615,
+      "name": "static-20.jsonl",
+      "role": "report_jsonl",
+      "sha256": "c31c9287518cacde1d81984087e3134bbf881fa9dce1fa5749275c8247b42cee"
+    },
+    {
+      "bytes": 94660,
+      "name": "static-21.jsonl",
+      "role": "report_jsonl",
+      "sha256": "d7fc78d0f3a54a588314b2fcd712d44a79679823575e64aa3f87b158bff1d50d"
+    },
+    {
+      "bytes": 83484,
+      "name": "static-22.jsonl",
+      "role": "report_jsonl",
+      "sha256": "07345bb6f878c2ea505ae0c04834c91b4f2b5f2d02de38dfd386860120f85935"
+    },
+    {
+      "bytes": 83072,
+      "name": "static-23.jsonl",
+      "role": "report_jsonl",
+      "sha256": "4f21901870c408d9835249b0ca2fa8eba2b959968c0120fe8b939d09dbcd1749"
+    },
+    {
+      "bytes": 104994,
+      "name": "static-24.jsonl",
+      "role": "report_jsonl",
+      "sha256": "99dce773b88ccee723466aebdd7c91959d7a7fd6da648e6512a9f83e6aa9a177"
+    },
+    {
+      "bytes": 391613,
+      "name": "static-25.jsonl",
+      "role": "report_jsonl",
+      "sha256": "f24249584474f457dc6e2d2ed094061bb67caded5f829bf69f968c7339eeedda"
+    },
+    {
+      "bytes": 369701,
+      "name": "static-26.jsonl",
+      "role": "report_jsonl",
+      "sha256": "84eb840c0b860e0c3f4d4250180a8794800c900ff4d6114a63ec139c48d6cd4c"
+    },
+    {
+      "bytes": 83791,
+      "name": "static-27.jsonl",
+      "role": "report_jsonl",
+      "sha256": "d9e93f44b812815564efb46879c4e9bb78e6a6aee99a229ba351e40b0f5bf9e8"
+    },
+    {
+      "bytes": 89391,
+      "name": "static-28.jsonl",
+      "role": "report_jsonl",
+      "sha256": "35f6774a8f87f2a3c2190ef90b241b5765146c5f9ef0acd8e75081383908f7eb"
+    },
+    {
+      "bytes": 82570,
+      "name": "static-29.jsonl",
+      "role": "report_jsonl",
+      "sha256": "34c9011b1d167037f6ded169887ca78b4fcf44ba8fdb043a9ea973eacf1c395f"
+    },
+    {
+      "bytes": 83444,
+      "name": "static-30.jsonl",
+      "role": "report_jsonl",
+      "sha256": "7fdafad8317336ebcbbf944cefb9320f36b72c450782f6adf7662633e37bf36f"
+    },
+    {
+      "bytes": 83741,
+      "name": "static-31.jsonl",
+      "role": "report_jsonl",
+      "sha256": "486b0317c457403f97e0aa4121773aa175a1b1c0cc75339b36802fe5aedcc722"
+    },
+    {
+      "bytes": 83753,
+      "name": "static-32.jsonl",
+      "role": "report_jsonl",
+      "sha256": "a260f125e73d48b3ac765180e2512c3c0ef72f2775ea8f30b2637f9699c084e8"
+    },
+    {
+      "bytes": 11963123,
+      "name": "static-33.jsonl",
+      "role": "report_jsonl",
+      "sha256": "8e108d8795c96c7898d7f5887110baca079d562845945a41c3093d71ea7ad79b"
+    },
+    {
+      "bytes": 19879403,
+      "name": "static-34.jsonl",
+      "role": "report_jsonl",
+      "sha256": "b2cfbc729c7862bf2ef3f43c590ca22e407cec815a08bcf88b18fe4bb4a23fa9"
+    },
+    {
+      "bytes": 19879893,
+      "name": "static-35.jsonl",
+      "role": "report_jsonl",
+      "sha256": "c5a16e30c11711b07897177d643ead460449ce652adceabb42a197313e964b8a"
+    },
+    {
+      "bytes": 19878822,
+      "name": "static-36.jsonl",
+      "role": "report_jsonl",
+      "sha256": "956818cfea28ac971bb8a57064de990515ef7a1f39b683088fa00e9bb488a1e0"
+    },
+    {
+      "bytes": 19879814,
+      "name": "static-37.jsonl",
+      "role": "report_jsonl",
+      "sha256": "1d8d379682cea095eee36b346338885150ae1f8c9d3f718db4d385f60542c372"
+    },
+    {
+      "bytes": 21242822,
+      "name": "static-38.jsonl",
+      "role": "report_jsonl",
+      "sha256": "222cdbc904c76c42242dd3bc4479d4b0170219a71072287acac339691daa2f13"
+    },
+    {
+      "bytes": 21867874,
+      "name": "static-39.jsonl",
+      "role": "report_jsonl",
+      "sha256": "83d7035251a4cb5517cc2381582f91194760a3a5f23f5ed93eaf7f8ab4d21f71"
+    },
+    {
+      "bytes": 20899127,
+      "name": "static-40.jsonl",
+      "role": "report_jsonl",
+      "sha256": "065ddd1061d1d682d7d543a8d07d4183fa661069b51e1f45d0e0aee745ea0efd"
+    },
+    {
+      "bytes": 23047376,
+      "name": "static-41.jsonl",
+      "role": "report_jsonl",
+      "sha256": "bea1b1e9ddb3115dd8438397c503654eaa4086302a8f6953dc1cf8853986e0dd"
+    },
+    {
+      "bytes": 24103102,
+      "name": "static-42.jsonl",
+      "role": "report_jsonl",
+      "sha256": "60d1d3e685c4a5b9da3bf02373bccc22050432625add613891dbbc62fd528eec"
+    },
+    {
+      "bytes": 34739402,
+      "name": "static-43.jsonl",
+      "role": "report_jsonl",
+      "sha256": "b17835cbe8f348666b3c977ec2d064e7ca7efb214bf2a449287c3d9bd65ac3d2"
+    },
+    {
+      "bytes": 24581604,
+      "name": "static-44.jsonl",
+      "role": "report_jsonl",
+      "sha256": "b53ebcfc202dace8f7c818f2c680d5a81505b1e5cd1d407c59480e041c021312"
+    },
+    {
+      "bytes": 24969209,
+      "name": "static-45.jsonl",
+      "role": "report_jsonl",
+      "sha256": "68d18016da52e7f95c0d76229c3f5b85c798fdffe44c24d7b16be5ab301632b7"
+    },
+    {
+      "bytes": 28175131,
+      "name": "static-46.jsonl",
+      "role": "report_jsonl",
+      "sha256": "b1618afed8bf1be5790cebfec8393cf35d79d752fac2e70a3082dde35a65c2b3"
+    },
+    {
+      "bytes": 30235863,
+      "name": "static-47.jsonl",
+      "role": "report_jsonl",
+      "sha256": "e6d39f7775582c54b0a2972f3df2f252808fed5f69c4b4561bb74793e3b23a96"
+    },
+    {
+      "bytes": 29896266,
+      "name": "static-48.jsonl",
+      "role": "report_jsonl",
+      "sha256": "77629b0a47e9667806b03349c262c268c69f7cb92c52daf2bc7a55d7c6184e59"
+    },
+    {
+      "bytes": 20504129,
+      "name": "static-49.jsonl",
+      "role": "report_jsonl",
+      "sha256": "f5bd9e553998ae3d20d1b695827d5300c1d8891fedc10b3c58222eb137aa7ea0"
+    },
+    {
+      "bytes": 21877604,
+      "name": "static-50.jsonl",
+      "role": "report_jsonl",
+      "sha256": "4f44c76d796e362ac2fdfef692a0eacd5d49250ddcd3f56ee7c7877912b460a7"
+    },
+    {
+      "bytes": 19880072,
+      "name": "static-51.jsonl",
+      "role": "report_jsonl",
+      "sha256": "adcd7da55f0fd5187b104dec6e5dfb9de05740a5c73794abf96558d53a73db95"
+    },
+    {
+      "bytes": 19880556,
+      "name": "static-52.jsonl",
+      "role": "report_jsonl",
+      "sha256": "c4142ab5cbd917a07a8e3c8ce55ec5ba54d739d5c3016e0bef52baa4bf0d6e92"
+    },
+    {
+      "bytes": 19877857,
+      "name": "static-53.jsonl",
+      "role": "report_jsonl",
+      "sha256": "be558c9b1ca2bfbfa32d7b2da8cca4a583b8dc371a01b9521cf2f65dd7b98c44"
+    },
+    {
+      "bytes": 29758003,
+      "name": "static-54.jsonl",
+      "role": "report_jsonl",
+      "sha256": "1fbbcddcaaf67886fd60e8041de7be377433fec6a6edf62caf7232f0e17de41b"
+    },
+    {
+      "bytes": 26621346,
+      "name": "static-55.jsonl",
+      "role": "report_jsonl",
+      "sha256": "9d6380c875a3e86930431368b6290d2a15e417928a9d40e7443ca33407d1904b"
+    },
+    {
+      "bytes": 28410763,
+      "name": "static-56.jsonl",
+      "role": "report_jsonl",
+      "sha256": "807e27ac950d68c577cad7846e98f8eb145e4a0a79f558f4256a7e3bf84682ce"
+    },
+    {
+      "bytes": 27333840,
+      "name": "static-57.jsonl",
+      "role": "report_jsonl",
+      "sha256": "29a0c3724e447023e0992208eeed2bf816efe657a7bd76aba3542f8fd576af12"
+    },
+    {
+      "bytes": 8552243,
+      "name": "static-58.jsonl",
+      "role": "report_jsonl",
+      "sha256": "425564d3c90c021f1b3aac3850e46be468584c0e085baa5b8fbeeff3ee926b41"
+    },
+    {
+      "bytes": 3988531,
+      "name": "static-59.jsonl",
+      "role": "report_jsonl",
+      "sha256": "16ff62bffd957b4fc9a5bb84d5568a8db881080c2f0f574cc84c1f5144415c48"
+    },
+    {
+      "bytes": 1692029,
+      "name": "initialized-00.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "fa4916d2474e418eac022c5822dcdc37bb132455d0074501ead2e8aef14168c9"
+    },
+    {
+      "bytes": 5320,
+      "name": "initialized-01.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "d85ec6dbd567a94f239897a28955cca2c3f01ac2f6044a06f1e8ba08f60d6ec6"
+    },
+    {
+      "bytes": 7273,
+      "name": "initialized-02.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "245e3008c4c4ee6651f66c63fe430fce1253f31100bb224f56bace29c5ccd64c"
+    },
+    {
+      "bytes": 6283,
+      "name": "initialized-03.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "3327488347d4b61aeb0f3bba6a57ac7deab19e09d09ec8d16a961dd16ec51b68"
+    },
+    {
+      "bytes": 17161,
+      "name": "initialized-04.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "95b71b55d249edb5c8826282c03b36576bbb6b8d2d559939cbee0781d8d1b6fb"
+    },
+    {
+      "bytes": 1146221,
+      "name": "initialized-05.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "077929d9aef3c4120066035f8372dae97236389cbb58334c71cda62195242423"
+    },
+    {
+      "bytes": 68044,
+      "name": "initialized-06.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "11f3b66e2f1e8b33bc122cbf50805bf6ef041ebd90a4c8bde93dd32d312f9fed"
+    },
+    {
+      "bytes": 16587,
+      "name": "initialized-07.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "e731cdb4338e4ef6999b8f04de89b84083afb598582a28613b3d066c366e2944"
+    },
+    {
+      "bytes": 4369,
+      "name": "initialized-08.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "b21c5d242709ad2619fcc4fe1cb0e80df56750cfd2e89bf973b8524a34205b40"
+    },
+    {
+      "bytes": 6747,
+      "name": "initialized-09.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "ed12ebbc8b2ded55d7b8ceb41422b27aced4c5809d71a80d72101eb92de9fbca"
+    },
+    {
+      "bytes": 4779,
+      "name": "initialized-10.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "154ae4121e7976aa1f49e6e6427c4209c31afd95c94704dfdbaad81ca6ac38f1"
+    },
+    {
+      "bytes": 27600,
+      "name": "initialized-11.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "f637d8b33a219158d6f0415a4bf2aa338c24a94ffe61490b2addcfcf2c122d63"
+    },
+    {
+      "bytes": 1119103,
+      "name": "initialized-12.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "0910e3e9dd085292586bf8125deea3d55852fe9baa33d589e86bf69f84fe35d0"
+    },
+    {
+      "bytes": 268340,
+      "name": "initialized-13.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "9661a7c5012a17a12054221d49db2c835c05d33386172632e52eca30b7f44129"
+    },
+    {
+      "bytes": 258128,
+      "name": "initialized-14.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "334e687d50dbdb30470356a2ff5d7d6c04b75f8d419d03297b137d6720707a07"
+    },
+    {
+      "bytes": 339343,
+      "name": "initialized-15.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "7e9a1a4a39ea1c246b87b3c42146ce79124e11a049d155def8da1cfb747e8f52"
+    },
+    {
+      "bytes": 1159543,
+      "name": "initialized-16.jsonl",
+      "role": "initialized_report_jsonl",
+      "sha256": "21fdd5b96bd6248eff479ae2ea08235d079d6b4391429b5a2854aea062c65513"
+    }
+  ],
+  "schema": 1,
+  "totals": {
+    "compiler_status_counts": {
+      "ok": 780
+    },
+    "constructs": 94659900,
+    "expected": 1495,
+    "initialized_attempted": 17,
+    "initialized_failed": 8,
+    "initialized_ir_ok": 17,
+    "initialized_ui_ok": 9,
+    "ir_converted": 660,
+    "kontakt_all_programs": 835,
+    "libraries": 15,
+    "missing": 0,
+    "observed": 1495,
+    "script_status_counts": {
+      "Approximate": 83960006,
+      "Implemented": 10694039,
+      "Stub": 4365,
+      "Unsupported": 1490
+    },
+    "scripts": 5250,
+    "source_inspected": 1495,
+    "source_semantics_complete": 0,
+    "ui_projected": 0,
+    "unexpected": 0,
+    "uvi_expected": 660
+  },
+  "unexpected_by_library": {}
+}
