@@ -306,6 +306,15 @@ fn pick_key_with(ir: &sampler_ir::Instrument, near: bool) -> Option<Pick> {
         .iter()
         .flat_map(|a| a.switch_keys.iter().copied())
         .collect();
+    // `near` aims at the middle of the keys any zone covers: a script keeps to
+    // the range its instrument was sampled over, and its middle is safest.
+    let centre = if near {
+        let low = ir.zones.iter().map(|z| z.keys.low).min().unwrap_or(60);
+        let high = ir.zones.iter().map(|z| z.keys.high).max().unwrap_or(60);
+        ((u16::from(low) + u16::from(high)) / 2) as u8
+    } else {
+        60
+    };
     let best = |v: u8, allow_switch: bool| {
         (0..=127u8)
             .filter(|k| allow_switch || !switch.contains(k))
@@ -318,7 +327,7 @@ fn pick_key_with(ir: &sampler_ir::Instrument, near: bool) -> Option<Pick> {
                             && (z.velocities.low..=z.velocities.high).contains(&v)
                     })
                     .count();
-                (if near { 1 } else { count }, std::cmp::Reverse(k.abs_diff(60)), k)
+                (if near { 1 } else { count }, std::cmp::Reverse(k.abs_diff(centre)), k)
             })
             .filter(|(count, ..)| *count > 0)
             .max()
@@ -1329,10 +1338,28 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             }
             stage("load");
             match sampler_uvi::load_program_scripted_streamed(&bank, program, 48000, &policy) {
-                Ok(p) => (
+                Ok(p) => {
+                    // Play where the script plays: the playable key nearest
+                    // middle C that some zone also covers.
+                    let mut pick = pick;
+                    if let Ok(keys) = sampler_uvi::script_playable_keys(&bank, program)
+                        && let Some(key) = keys
+                            .into_iter()
+                            .filter(|k| {
+                                p.instrument.zones.iter().any(|z| {
+                                    (z.keys.low..=z.keys.high).contains(k)
+                                        && (z.velocities.low..=z.velocities.high).contains(&pick.velocity)
+                                })
+                            })
+                            .min_by_key(|k| k.abs_diff(60))
+                    {
+                        pick.key = key;
+                    }
+                    (
                     ok(pick, &p.instrument),
                     Some((Subject::Scripted(Box::new(p)), pick)),
-                ),
+                    )
+                }
                 Err(e) => load_failure(&*e, "load"),
             }
         }
