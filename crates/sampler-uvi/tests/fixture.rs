@@ -1073,6 +1073,25 @@ fn script_program(inserts: &str, script: &str) -> String {
     )
 }
 
+fn effect_rack_level(path: &std::path::Path, inserts: &str, scripted: bool) -> f64 {
+    let xml = script_program(inserts, "");
+    let xml = if scripted {
+        xml
+    } else {
+        xml.replace("<EventProcessors><ScriptProcessor><script></script></ScriptProcessor></EventProcessors>", "")
+    };
+    std::fs::write(path, xml).unwrap();
+    let loaded = sampler_uvi::load(path, 48000).unwrap();
+    let limits = Limits::for_plan(&loaded.plan, 4, 4);
+    let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+    rt.trigger(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+    let mut block = vec![[0.; 2]; 128];
+    for _ in 0..4 {
+        rt.render(&mut block).unwrap();
+    }
+    f64::from(block[100][0])
+}
+
 #[test]
 fn effect_racks_keep_nested_chains_inside_their_owner() {
     // Each rack sums its own parallel chains. A nested rack is an insert in
@@ -1081,24 +1100,7 @@ fn effect_racks_keep_nested_chains_inside_their_owner() {
     std::fs::create_dir_all(dir.join("samples")).unwrap();
     std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[16000; 48000])).unwrap();
     let path = dir.join("Nested.uvip");
-    let level = |inserts: &str, scripted: bool| {
-        let xml = script_program(inserts, "");
-        let xml = if scripted {
-            xml
-        } else {
-            xml.replace("<EventProcessors><ScriptProcessor><script></script></ScriptProcessor></EventProcessors>", "")
-        };
-        std::fs::write(&path, xml).unwrap();
-        let loaded = sampler_uvi::load(&path, 48000).unwrap();
-        let limits = Limits::for_plan(&loaded.plan, 4, 4);
-        let mut rt = Runtime::new(loaded.plan, limits).unwrap();
-        rt.trigger(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
-        let mut block = vec![[0.; 2]; 128];
-        for _ in 0..4 {
-            rt.render(&mut block).unwrap();
-        }
-        f64::from(block[100][0])
-    };
+    let level = |inserts: &str, scripted: bool| effect_rack_level(&path, inserts, scripted);
     for scripted in [false, true] {
         let plain = level("", scripted);
         assert!(plain > 0.05);
@@ -1117,6 +1119,33 @@ fn effect_racks_keep_nested_chains_inside_their_owner() {
         let bypassed = nested.replace(r#"<AuxEffect Gain="0.5">"#, r#"<AuxEffect Gain="0.5" Bypass="1">"#);
         let output = level(&bypassed, scripted);
         assert!((output / plain - 0.125).abs() < 0.001, "bypassed scripted={scripted}: {plain} -> {output}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn effect_racks_with_no_active_chains_are_silent() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-silent-rack-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[16000; 48000])).unwrap();
+    let path = dir.join("Silent.uvip");
+    for scripted in [false, true] {
+        let plain = effect_rack_level(&path, "", scripted);
+        assert!(plain > 0.05);
+        for rack in [
+            r#"<EffectRack><Chains><AuxEffect Gain="0"/></Chains></EffectRack>"#,
+            r#"<EffectRack><Chains><AuxEffect Gain="0"/><AuxEffect Gain="0"/></Chains></EffectRack>"#,
+            r#"<EffectRack><Chains><AuxEffect Gain="1" Bypass="1"/></Chains></EffectRack>"#,
+            r#"<EffectRack><Chains/></EffectRack>"#,
+            r#"<EffectRack><Chains><AuxEffect Gain="1"><Inserts><EffectRack><Chains><AuxEffect Gain="0"/></Chains></EffectRack></Inserts></AuxEffect></Chains></EffectRack>"#,
+        ] {
+            let output = effect_rack_level(&path, rack, scripted);
+            assert!(output.abs() < 1e-9, "scripted={scripted}: {rack}: {plain} -> {output}");
+            // Bypassing the rack preserves its input, unlike muting its chains.
+            let bypassed = rack.replacen("<EffectRack>", r#"<EffectRack Bypass="1">"#, 1);
+            let output = effect_rack_level(&path, &bypassed, scripted);
+            assert!((output / plain - 1.).abs() < 0.001, "bypassed scripted={scripted}: {plain} -> {output}");
+        }
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
