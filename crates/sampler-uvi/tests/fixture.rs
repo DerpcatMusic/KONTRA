@@ -1074,6 +1074,54 @@ fn script_program(inserts: &str, script: &str) -> String {
 }
 
 #[test]
+fn effect_racks_keep_nested_chains_inside_their_owner() {
+    // Each rack sums its own parallel chains. A nested rack is an insert in
+    // one of those chains, rather than another branch of the outer rack.
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-nested-rack-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[16000; 48000])).unwrap();
+    let path = dir.join("Nested.uvip");
+    let level = |inserts: &str, scripted: bool| {
+        let xml = script_program(inserts, "");
+        let xml = if scripted {
+            xml
+        } else {
+            xml.replace("<EventProcessors><ScriptProcessor><script></script></ScriptProcessor></EventProcessors>", "")
+        };
+        std::fs::write(&path, xml).unwrap();
+        let loaded = sampler_uvi::load(&path, 48000).unwrap();
+        let limits = Limits::for_plan(&loaded.plan, 4, 4);
+        let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+        rt.trigger(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+        let mut block = vec![[0.; 2]; 128];
+        for _ in 0..4 {
+            rt.render(&mut block).unwrap();
+        }
+        f64::from(block[100][0])
+    };
+    for scripted in [false, true] {
+        let plain = level("", scripted);
+        assert!(plain > 0.05);
+        // The first outer chain is 0.5 × (0.25 + 0.75) = 0.5;
+        // its sibling contributes 0.125. Inner chains must not be added again.
+        let nested = r#"<EffectRack><Chains>
+            <AuxEffect Gain="0.5"><Inserts><EffectRack><Chains>
+                <AuxEffect Gain="0.25"/><AuxEffect Gain="0.75"/>
+            </Chains></EffectRack></Inserts></AuxEffect>
+            <AuxEffect Gain="0.125"/>
+        </Chains></EffectRack>"#;
+        let output = level(nested, scripted);
+        assert!((output / plain - 0.625).abs() < 0.001, "scripted={scripted}: {plain} -> {output}");
+        // A bypassed parent also owns its descendants: its inner chain must
+        // not leak into the outer sum, even when scripts retain it for edits.
+        let bypassed = nested.replace(r#"<AuxEffect Gain="0.5">"#, r#"<AuxEffect Gain="0.5" Bypass="1">"#);
+        let output = level(&bypassed, scripted);
+        assert!((output / plain - 0.125).abs() < 0.001, "bypassed scripted={scripted}: {plain} -> {output}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn scripted_insert_bypass_reaches_the_dsp() {
     let xml = script_program(
         r#"<Gain Volume="0.25"/>"#,
