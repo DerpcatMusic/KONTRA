@@ -827,6 +827,21 @@ pub fn compile_ui(
     compile_ui_initialized(instrument, options, None)
 }
 
+impl Kontakt {
+    /// Project the UI from a translated instrument, reusing its script init
+    /// state once. A different set of host control values reinitializes it.
+    pub fn compile_ui(
+        &mut self,
+        options: &Options,
+    ) -> (
+        Vec<sampler_ksp::Script>,
+        Vec<sampler_ui_ir::Interface>,
+        Option<Resources>,
+    ) {
+        compile_ui_initialized(&mut self.instrument, options, self.initialized.take())
+    }
+}
+
 fn compile_ui_initialized(
     instrument: &mut ir::Instrument,
     options: &Options,
