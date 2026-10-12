@@ -1127,7 +1127,28 @@ impl Lowering<'_> {
         let ir::ModulationSource::Envelope(e) = &modulator.source else {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
-        self.adsr(owner, e, one_shot)
+        let envelope = self.adsr(owner, e, one_shot)?;
+        let source = zone.group.and_then(|group| {
+            let mut sources = self.ir.source_indices.modulators.iter().filter(|source|
+                self.ir.source_indices.groups.get(source.group).copied().flatten()
+                    .unwrap_or(ir::GroupRef(source.group)) == group
+                    && !source.external && source.runtime == zone.amplitude);
+            let address = sources.next()?;
+            if sources.next().is_some() { return None; }
+            let mut raw = self.ir.source_indices.ahdsrs.iter().filter(|source|
+                source.group == address.group && source.slot == address.slot);
+            let source = raw.next()?;
+            (raw.next().is_none() && source.native_amplitude).then_some(source)
+        });
+        if let Some(source) = source {
+            if !crate::v1_voice_controls::valid_ahdsr(&crate::v1_voice_controls::Ahdsr::from(source)) {
+                return Err(core(Stage::Envelope, owner)(Error::InvalidInput));
+            }
+            if !one_shot && crate::whole_voice::ahdsr_agrees(source, e) {
+                return envelope.with_native_primary(source, self.rate).map_err(core(Stage::Envelope, owner));
+            }
+        }
+        Ok(envelope)
     }
 
     fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
@@ -1275,29 +1296,32 @@ impl Lowering<'_> {
 
     /// One voice modulation program per distinct zone route list.
     fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self.mpe.is_none() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
+        if self.mpe.is_none() && self.ir.source_indices.ahdsrs.is_empty() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
             return Ok(plan);
         }
         let mut programs: Vec<ModProgram> = Vec::new();
+        let mut native = Vec::new();
         let mut known = std::collections::HashMap::new();
         let mut bindings = Vec::with_capacity(self.ir.zones.len());
         for (i, zone) in self.ir.zones.iter().enumerate() {
-            if self.mpe.is_none() && zone.routes.is_empty() {
+            if self.mpe.is_none() && zone.routes.is_empty() && zone.amplitude.is_none() {
                 bindings.push(None);
                 continue;
             }
-            let index = match known.get(&(&zone.routes, plan.region_chain(i))) {
+            let index = match known.get(&(&zone.routes, plan.region_chain(i), zone.group, zone.amplitude)) {
                 Some(&index) => index,
                 None => {
                     let program = self.program(&format!("zone {i}"), i, zone, &plan)?;
+                    let controls = crate::whole_voice::prepare(self.ir, zone, &program, self.rate);
                     let index = programs.len();
+                    native.push(controls);
                     programs.push(program);
-                    known.insert((&zone.routes, plan.region_chain(i)), index);
+                    known.insert((&zone.routes, plan.region_chain(i), zone.group, zone.amplitude), index);
                     index
                 }
             };
             // A program whose routes all belong to native expression is no program.
-            bindings.push((!programs[index].routes.is_empty()).then_some(index));
+            bindings.push((native[index].is_some() || !programs[index].routes.is_empty()).then_some(index));
         }
         let ranges = self
             .ir
@@ -1305,7 +1329,7 @@ impl Lowering<'_> {
             .iter()
             .map(|z| z.playback.start_range.min(u64::from(u32::MAX)) as u32)
             .collect();
-        plan.with_voice_modulation(programs, bindings, ranges)
+        plan.with_voice_modulation_and_v1(programs, bindings, ranges, native)
             .map_err(core(Stage::Modulation, "zones"))
     }
 

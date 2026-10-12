@@ -2736,3 +2736,564 @@ fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
         assert!(lower(&ir, 48000, vec![], no_behaviors).is_err());
     }
 }
+
+fn native_primary_fixture() -> ir::Instrument {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("native-primary")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            amplitude: Some(ir::ModulatorRef(0)),
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::Milliseconds(125.01293),
+                attack_shape: {
+                    let b = f64::from((-20_000f64.ln()).exp() as f32);
+                    ir::Curve::Exponential(((1. + b) / b).ln())
+                },
+                release_shape: ir::Curve::Exponential((3.0f64 / 43.).ln()),
+                release: ir::Time::Milliseconds(250.0013),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0, slot: 7, external: false, name: "primary".into(),
+        runtime: Some(ir::ModulatorRef(0)), settings: None,
+    });
+    ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0, slot: 7, attack_ms: 125.01293, attack_curve: -1.,
+        hold_ms: 0., decay_ms: 0., sustain: 1., release_ms: 250.0013,
+        ahd_only: false, native_amplitude: true,
+    });
+    ir
+}
+
+#[test]
+fn lowered_native_primary_runs_the_pinned_evaluator_in_production_voice() {
+    use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
+    for processed in [false, true] {
+        let mut ir = native_primary_fixture();
+        if processed {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                post_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.))],
+                pre_amplitude: vec![]
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let plan = ControlPlan::prepare(ControlDescription {
+            amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+            native_amplitude: true, ..Default::default()
+        }, 48000.).unwrap();
+        let mut expected = ControlState::new(&plan);
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        let mut output = [[0.; 2]; 128];
+        let mut amp = [0.; 128];
+        let mut positions = [0; 128];
+        for reuse in 0..2 {
+            expected = if reuse == 0 { expected } else { ControlState::new(&plan) };
+            support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); });
+            for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
+                output.fill([0.; 2]);
+                if block == 5 {
+                    expected.release(&plan);
+                    support::without_heap(|| { rt.note_off(input(60), None).unwrap(); });
+                }
+                expected.render(&plan, 120., 1., &mut amp[..n], None, None, &mut positions[..n]).unwrap();
+                support::without_heap(|| rt.render(&mut output[..n]).unwrap());
+                for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
+                    assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "processed={processed} reuse={reuse} block={block} frame={i}");
+                }
+            }
+            rt.panic();
+        }
+    }
+}
+
+
+#[test]
+fn native_primary_requires_unique_physical_identity_and_rejects_bad_coefficients() {
+    let render = |ir: &ir::Instrument| {
+        let mut rt = Runtime::new(lower(ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 64];
+        rt.render(&mut out).unwrap();
+        out
+    };
+    let mut generic = native_primary_fixture();
+    generic.source_indices.ahdsrs.clear();
+    let expected = render(&generic);
+    for case in 0..4 {
+        let mut ir = native_primary_fixture();
+        match case {
+            0 => ir.source_indices.ahdsrs[0].slot = 8,
+            1 => ir.source_indices.modulators[0].external = true,
+            2 => ir.source_indices.modulators.push(ir.source_indices.modulators[0].clone()),
+            _ => ir.source_indices.ahdsrs.push(ir.source_indices.ahdsrs[0]),
+        }
+        if case == 2 {
+            assert!(lower(&ir, 48000, vec![constant(1.)], no_behaviors).is_err(), "duplicate physical owner is invalid");
+        } else {
+            assert_eq!(render(&ir), expected, "case={case}");
+        }
+    }
+    let mut malformed = native_primary_fixture();
+    malformed.source_indices.ahdsrs[0].attack_curve = f32::NAN;
+    assert!(lower(&malformed, 48000, vec![constant(1.)], no_behaviors).is_err());
+}
+
+// V1's eight-frame affine kernel rounds at fragment boundaries. Match the existing 64-frame control grid.
+fn render_v1_on_core_grid(state: &mut sampler_core::v1_voice_controls::ControlState,
+    plan: &sampler_core::v1_voice_controls::ControlPlan, now: u64,
+    amplitude: &mut [f32], mut flex: Option<&mut [f32]>) {
+    let mut offset = 0;
+    while offset < amplitude.len() {
+        let n = (64 - ((now as usize + offset) % 64)).min(amplitude.len() - offset);
+        let mut positions = [0;64];
+        state.render(plan,120.,1.,&mut amplitude[offset..offset+n],
+            flex.as_deref_mut().map(|f| &mut f[offset..offset+n]),None,&mut positions[..n]).unwrap();
+        offset += n;
+    }
+}
+
+#[test]
+fn lowered_whole_voice_uses_v1_ordinary_amplitude_clock() {
+    use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].native_amplitude = false;
+    let plan = ControlPlan::prepare(ControlDescription {
+        amplitude: Ahdsr::from(&ir.source_indices.ahdsrs[0]),
+        native_amplitude: false, ..Default::default()
+    }, 48000.).unwrap();
+    let mut oracle = ControlState::new(&plan);
+    let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+    support::without_heap(|| { rt.trigger(input(60), 60, 1.).unwrap(); });
+    let mut output = [[0.; 2]; 64];
+    let mut amp = [0.; 64];
+    for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
+        if block == 5 {
+            oracle.release(&plan);
+            support::without_heap(|| { rt.note_off(input(60), None).unwrap(); });
+        }
+        render_v1_on_core_grid(&mut oracle,&plan,rt.now(),&mut amp[..n],None);
+        support::without_heap(|| rt.render(&mut output[..n]).unwrap());
+        for (i, (frame, value)) in output[..n].iter().zip(&amp).enumerate() {
+            assert_eq!(frame.map(f32::to_bits), [value.to_bits(); 2], "whole voice block={block} frame={i}");
+        }
+    }
+}
+
+
+fn original_volume_target(intensity: f32) -> ir::kontakt::ModulationTarget {
+    ir::kontakt::ModulationTarget {
+        param: "volume".into(),
+        intensity,
+        lag_ms: 0,
+        name: String::new(),
+        slot: None,
+        invert: false,
+        shaper: None,
+        unknown_i16: 0,
+        flags: 0,
+    }
+}
+
+#[test]
+fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
+    use sampler_core::v1_voice_controls::{
+        Ahdsr, ControlDescription, ControlPlan, ControlState, Flex,
+    };
+    let points = vec![
+        ir::kontakt::FlexPoint {
+            time_ms: 12.5,
+            level: 0.8,
+            curve: 0.25,
+        },
+        ir::kontakt::FlexPoint {
+            time_ms: 2.5,
+            level: 0.3,
+            curve: 0.75,
+        },
+        ir::kontakt::FlexPoint {
+            time_ms: 3.0,
+            level: 0.0,
+            curve: 0.5,
+        },
+    ];
+    for (processed, primary) in [(false,true),(true,true),(false,false),(true,false)] {
+        let mut ir = native_primary_fixture();
+        ir.source_indices.ahdsrs[0].native_amplitude = false;
+        ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Breakpoints(ir::Breakpoints {
+                points: points
+                    .iter()
+                    .map(|p| ir::Breakpoint {
+                        time: ir::Time::Milliseconds(f64::from(p.time_ms)),
+                        level: f64::from(p.level),
+                        shape: { let c = f64::from(p.curve) - 0.5; if c.abs() < 1e-4 { ir::Curve::Linear } else { ir::Curve::Exponential(-17. * c) } },
+                    })
+                    .collect(),
+                sustain: Some(1),
+            }),
+        });
+        ir.routes.push(ir::Route::new(
+            ir::ModulatorRef(1),
+            ir::Target::Amplitude,
+            ir::Depth::Normalized(1.),
+        ));
+        ir.zones[0].routes.push(ir::RouteRef(0));
+        ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 0,
+            slot: 9,
+            external: false,
+            name: "flex".into(),
+            runtime: Some(ir::ModulatorRef(1)),
+            settings: Some(ir::kontakt::Modulation {
+                version: 1,
+                source: ir::kontakt::ModulationSource::Internal {
+                    flags: [0; 4],
+                    unknown_id: 0,
+                    source: ir::kontakt::InternalSource::Flex {
+                        points: points.clone(),
+                        sustain: 1,
+                        unknown_index: 0,
+                        unknown_tail: vec![],
+                    },
+                },
+                targets: vec![original_volume_target(1.)],
+            }),
+        });
+        if processed {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![],
+                post_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(1.))],
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let amplitude = if primary { Ahdsr::from(&ir.source_indices.ahdsrs[0]) } else { Ahdsr::UNITY };
+        if !primary {
+            ir.modulators[0].source = ir::ModulationSource::Envelope(ir::Envelope {
+                release: ir::Time::Milliseconds(3.), release_shape: ir::Curve::Step, ..Default::default()
+            });
+            ir.source_indices.modulators.remove(0);
+            ir.source_indices.ahdsrs.clear();
+        }
+        let plan = ControlPlan::prepare(
+            ControlDescription {
+                amplitude,
+                native_amplitude: false,
+                flex: Some(Flex::from_kontakt(&points, 1).unwrap()),
+                ..Default::default()
+            },
+            48000.,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(
+            lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+            limits(),
+        )
+        .unwrap();
+        for reuse in 0..2 {
+            let mut oracle = ControlState::new(&plan);
+            support::without_heap(|| {
+                rt.trigger(input(60), 60, 1.).unwrap();
+            });
+            for (block, n) in [1, 7, 31, 32, 33, 64, 17, 3, 64, 64, 64]
+                .into_iter()
+                .enumerate()
+            {
+                if block == 5 {
+                    oracle.release(&plan);
+                    support::without_heap(|| {
+                        rt.note_off(input(60), None).unwrap();
+                    });
+                }
+                let mut out = [[0.; 2]; 64];
+                let mut amp = [0.; 64];
+                let mut flex = [0.; 64];
+                render_v1_on_core_grid(&mut oracle,&plan,rt.now(),&mut amp[..n],Some(&mut flex[..n]));
+                support::without_heap(|| rt.render(&mut out[..n]).unwrap());
+                for i in 0..n {
+                    assert_eq!(
+                        out[i].map(f32::to_bits),
+                        [(amp[i] * flex[i]).to_bits(); 2],
+                        "processed={processed} primary={primary} reuse={reuse} block={block} frame={i}"
+                    );
+                }
+            }
+            support::without_heap(|| rt.panic());
+        }
+        assert_eq!(rt.stats().v1_control_starts, 2);
+        assert!(rt.stats().v1_control_blocks > 0);
+    }
+}
+
+#[test]
+fn lowered_whole_voice_external_uses_current_depth_and_full_resolution_cc() {
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].attack_ms = 0.;
+    ir.source_indices.ahdsrs[0].release_ms = 0.;
+    ir.source_indices.ahdsrs[0].native_amplitude = false;
+    ir.modulators[0].source = ir::ModulationSource::Envelope(Default::default());
+    ir.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Controller(11),
+    });
+    ir.routes.push(ir::Route::new(
+        ir::ModulatorRef(1),
+        ir::Target::Amplitude,
+        ir::Depth::Normalized(f64::from(0.4f32)),
+    ));
+    ir.zones[0].routes.push(ir::RouteRef(0));
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0,
+        slot: 3,
+        external: true,
+        name: "expression".into(),
+        runtime: Some(ir::ModulatorRef(1)),
+        settings: Some(ir::kontakt::Modulation {
+            version: 1,
+            source: ir::kontakt::ModulationSource::External {
+                source: ir::kontakt::ExternalSource::MidiCc(11),
+                unknown_id: 0,
+                unknown_source_data: vec![],
+                unknown_tail: vec![],
+            },
+            targets: vec![original_volume_target(0.7)],
+        }),
+    });
+    for raw in [0, u32::MAX, 0x2345_6789] {
+        let mut rt = Runtime::new(
+            lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+            limits(),
+        )
+        .unwrap();
+        let performance = rt.performance(0).unwrap();
+        let mut out = [[0.; 2]; 64];
+        support::without_heap(|| {
+            rt.set_controller(performance, 11, raw).unwrap();
+            rt.trigger(input(60), 60, 1.).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let value = (f64::from(raw) / f64::from(u32::MAX)) as f32;
+        let expected = 1. - 0.4f32 * (1. - value);
+        assert!(
+            out.iter()
+                .all(|f| f.map(f32::to_bits) == [expected.to_bits(); 2]),
+            "raw={raw} first={:?}",
+            out[0]
+        );
+        assert_eq!(rt.stats().v1_control_starts, 1);
+    }
+    // An unrepresentable live depth cannot be substituted with the saved 0.7.
+    ir.routes[0].depth = ir::Depth::Normalized(0.40000000001);
+    let mut rt = Runtime::new(
+        lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(),
+        limits(),
+    )
+    .unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut [[0.; 2]; 64]).unwrap();
+    assert_eq!(rt.stats().v1_control_starts, 0);
+}
+
+
+#[test]
+fn lowered_whole_voice_state_survives_pool_growth_on_serial_and_parallel_paths() {
+    for threads in [1,2] {
+        let mut ir = native_primary_fixture();
+        ir.source_indices.ahdsrs[0].native_amplitude = false;
+        let make = |voices| {
+            let mut sizes = limits(); sizes.voices = voices;
+            sizes.notes = 64; sizes.families = 64; sizes.expressions = 64;
+            let plan = lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap();
+            let (rt,control) = Runtime::with_plan_updates(plan,sizes,2,1).unwrap();
+            (rt.with_threads(sampler_core::Threads::Fixed(threads)),control)
+        };
+        let (mut reference,_reference_control) = make(64);
+        let (mut actual,mut control) = make(1);
+        support::without_heap(|| {
+            reference.trigger(input(60),60,1.).unwrap(); actual.trigger(input(60),60,1.).unwrap();
+        });
+        for block in 0..8 {
+            if block == 2 { assert_eq!(control.grow_voices(64),Ok(64)); }
+            if block == 3 {
+                support::without_heap(|| {
+                    for id in 1..64 {
+                        let note = Input { external_id: Some(id), ..input(60) };
+                        reference.trigger(note,60,1.).unwrap(); actual.trigger(note,60,1.).unwrap();
+                    }
+                });
+            }
+            if block == 4 {
+                support::without_heap(|| {
+                    reference.note_off(input(60),None).unwrap(); actual.note_off(input(60),None).unwrap();
+                });
+            }
+            let mut expected = [[0.;2];37]; let mut output = [[0.;2];37];
+            support::without_heap(|| { reference.render(&mut expected).unwrap(); actual.render(&mut output).unwrap(); });
+            assert_eq!(output,expected,"threads={threads} block={block}");
+        }
+        assert_eq!(actual.stats().voice_growths,1);
+        assert_eq!(actual.stats().v1_control_starts,64);
+        if threads == 2 { assert!(actual.parallel_blocks() > 0); }
+        assert!(actual.stats().v1_control_blocks > 0);
+    }
+}
+
+fn controlled_native_external_fixture() -> ir::Instrument {
+    let mut ir = native_primary_fixture();
+    ir.source_indices.ahdsrs[0].attack_ms = 0.;
+    ir.source_indices.ahdsrs[0].release_ms = 0.;
+    ir.source_indices.ahdsrs[0].native_amplitude = false;
+    ir.modulators[0].source = ir::ModulationSource::Envelope(Default::default());
+    ir.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Controller(11),
+    });
+    ir.routes.push(ir::Route::new(
+        ir::ModulatorRef(1),
+        ir::Target::Amplitude,
+        ir::Depth::Normalized(f64::from(0.4f32)),
+    ));
+    ir.zones[0].routes.push(ir::RouteRef(0));
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0,
+        slot: 3,
+        external: true,
+        name: "expression".into(),
+        runtime: Some(ir::ModulatorRef(1)),
+        settings: Some(ir::kontakt::Modulation {
+            version: 1,
+            source: ir::kontakt::ModulationSource::External {
+                source: ir::kontakt::ExternalSource::MidiCc(11),
+                unknown_id: 0,
+                unknown_source_data: vec![],
+                unknown_tail: vec![],
+            },
+            targets: vec![original_volume_target(0.7)],
+        }),
+    });
+    ir.controls = ["external-depth", "external-bypass"].into_iter().enumerate().map(|(i,key)| ir::Control {
+        key: key.into(), label: key.into(),
+        value: ir::ControlValue::Continuous { min: 0., max: 1., default: if i == 0 { f64::from(0.4f32) } else { 0. }, unit: ir::ControlUnit::None },
+        automation: ir::Automation::None,
+    }).collect();
+    ir.source_indices.route_controls.push((ir::RouteRef(0), ir::ControlRef(0), ir::ControlRef(1)));
+    ir
+}
+
+#[test]
+fn native_external_reads_live_depth_and_bypass_without_resetting_held_source() {
+    use sampler_core::{ControlValue,ControlWrite};
+    let ir = controlled_native_external_fixture();
+    for threads in [1,2] {
+        let mut rt = Runtime::new(lower(&ir,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap()
+            .with_threads(sampler_core::Threads::Fixed(threads));
+        let plan = rt.active_plan();
+        let performance = rt.performance(0).unwrap();
+        support::without_heap(|| rt.set_controller(performance,11,0).unwrap());
+        let mut note = None;
+        support::without_heap(|| { note = Some(rt.trigger(input(60),60,1.).unwrap()); });
+        let note = note.unwrap();
+        let mut out = [[0.;2];128];
+        support::without_heap(|| rt.render(&mut out).unwrap());
+        assert_eq!(rt.stats().v1_control_starts,1);
+        let depth = sampler_core::lower::ir_control_id("external-depth");
+        let bypass = sampler_core::lower::ir_control_id("external-bypass");
+        // At a control-grid boundary the current route depth supersedes saved0.7 and init0.4.
+        support::without_heap(|| { rt.edit_controls(plan,None,&[ControlWrite{id:depth,value:ControlValue::Real(0.75)}]).unwrap(); });
+        support::without_heap(|| rt.render(&mut out).unwrap());
+        assert_eq!(out[127],[0.25;2]);
+        // Bypass masks the destination while input/lag state follows the held controller.
+        support::without_heap(|| {
+            rt.edit_controls(plan,None,&[ControlWrite{id:bypass,value:ControlValue::Real(1.)}]).unwrap();
+            rt.set_controller(performance,11,u32::MAX).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        assert_eq!(out[127],[1.;2]);
+        support::without_heap(|| {
+            rt.edit_controls(plan,None,&[ControlWrite{id:bypass,value:ControlValue::Real(0.)}]).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        assert_eq!(out[127],[1.;2]);
+        assert!(rt.note(note).is_ok());
+        assert_eq!(rt.stats().v1_control_starts,1,"updates must keep the same native source state");
+    }
+}
+
+#[test]
+fn initialized_envelope_overlay_declines_stale_raw_native_coefficients() {
+    for native in [false,true] {
+        let mut ir = native_primary_fixture();
+        ir.source_indices.ahdsrs[0].native_amplitude = native;
+        let ir::ModulationSource::Envelope(envelope) = &mut ir.modulators[0].source else { unreachable!() };
+        envelope.attack = ir::Time::Milliseconds(2.);
+        envelope.attack_shape = ir::Curve::Step;
+        let mut generic = ir.clone(); generic.source_indices.ahdsrs.clear();
+        let make = |i:&ir::Instrument| Runtime::new(lower(i,48000,vec![constant(1.)],no_behaviors).unwrap(),limits()).unwrap();
+        let mut actual = make(&ir); let mut expected = make(&generic);
+        support::without_heap(|| {
+            actual.trigger(input(60),60,1.).unwrap(); expected.trigger(input(60),60,1.).unwrap();
+        });
+        for _ in 0..5 {
+            let mut a = [[0.;2];37]; let mut b = [[0.;2];37];
+            support::without_heap(|| {actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+            assert_eq!(a,b,"an initialized Step envelope must keep the current owner");
+        }
+        assert_eq!(actual.stats().v1_control_starts,0);
+    }
+}
+
+#[test]
+fn native_control_state_keeps_physical_plan_ownership_across_replacement() {
+    use sampler_core::{ControlValue,ControlWrite};
+    let old = controlled_native_external_fixture();
+    let mut new = old.clone();
+    let ir::ControlValue::Continuous{default,..} = &mut new.controls[0].value else {unreachable!()};
+    *default = f64::from(0.8f32);
+    new.routes[0].depth = ir::Depth::Normalized(f64::from(0.8f32));
+    let old_prepared = lower(&old,48000,vec![constant(1.)],no_behaviors).unwrap();
+    let new_prepared = lower(&new,48000,vec![constant(0.5)],no_behaviors).unwrap();
+    let (mut rt,mut worker) = Runtime::with_plan_updates(old_prepared,limits(),2,1).unwrap();
+    let old_plan = rt.active_plan();
+    let mut old_note = None;
+    let mut new_note = None;
+    let mut out = [[0.;2];128];
+    support::without_heap(|| {
+        rt.set_controller(rt.performance(0).unwrap(),11,0).unwrap();
+        old_note = Some(rt.trigger(Input{external_id:Some(1),..input(60)},60,1.).unwrap());
+        rt.render(&mut out).unwrap();
+    });
+    let request = worker.submit(Box::new(new_prepared)).unwrap();
+    support::without_heap(|| { assert_eq!(rt.poll_plan_update(),Ok(Some(request))); });
+    let new_plan = rt.active_plan();
+    assert_ne!(old_plan,new_plan);
+    support::without_heap(|| {
+        new_note = Some(rt.trigger(Input{external_id:Some(2),..input(60)},60,1.).unwrap());
+        rt.render(&mut out).unwrap();
+    });
+    assert_eq!(rt.note_plan(old_note.unwrap()),Ok(old_plan));
+    assert_eq!(rt.note_plan(new_note.unwrap()),Ok(new_plan));
+    assert!((out[127][0]-0.7).abs()<1e-6);
+    support::without_heap(|| {
+        rt.edit_controls(new_plan,None,&[ControlWrite{id:sampler_core::lower::ir_control_id("external-depth"),value:ControlValue::Real(0.2)}]).unwrap();
+        rt.render(&mut out).unwrap();
+    });
+    assert!((out[127][0]-1.).abs()<1e-6,"new generation depth cannot retarget the held old source");
+    support::without_heap(|| {
+        rt.edit_controls(old_plan,None,&[ControlWrite{id:sampler_core::lower::ir_control_id("external-bypass"),value:ControlValue::Real(1.)}]).unwrap();
+        rt.render(&mut out).unwrap();
+    });
+    assert!((out[127][0]-1.4).abs()<1e-6,"old physical control cannot alter the replacement source");
+    assert_eq!(rt.stats().v1_control_starts,2);
+}
