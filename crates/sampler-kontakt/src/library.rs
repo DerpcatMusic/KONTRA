@@ -3307,6 +3307,96 @@ mod saved_tests {
     }
 
     #[test]
+    fn translated_ui_consumes_init_once_and_reinitializes_for_late_controls() {
+        let path = std::env::temp_dir().join(format!("ui-init-{}.nki", std::process::id()));
+        std::fs::write(&path, [0; 16]).unwrap();
+        let mode = sampler_ksp::derived_control_id(0, "$mode");
+        let echo = sampler_ksp::derived_control_id(0, "$echo");
+        let defaults = |scripts: &[sampler_ksp::Script]| {
+            [mode, echo].map(|id| {
+                scripts[0]
+                    .controls()
+                    .iter()
+                    .find(|c| c.definition.id == id)
+                    .unwrap()
+                    .definition
+                    .default
+            })
+        };
+
+        crate::load::take_script_init_runs();
+        let mut translated = super::translate(
+            path.clone(),
+            menu_program(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            &[(mode, 4)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(crate::load::take_script_init_runs(), 1);
+        let (scripts, faces, _) = translated.compile_ui(&crate::Options {
+            library: Some(path.clone()),
+            control_values: vec![(mode, 4)],
+            ..Default::default()
+        });
+        assert_eq!(crate::load::take_script_init_runs(), 0);
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(faces.len(), 1);
+        assert_eq!(faces[0].widgets.len(), 2);
+        assert!(faces[0]
+            .widgets
+            .iter()
+            .all(|widget| widget.value == Some(sampler_ui_ir::Value::Integer(4))));
+        assert_eq!(
+            defaults(&scripts),
+            [sampler_core::ControlValue::Integer(4); 2]
+        );
+
+        let mut translated = super::translate(
+            path.clone(),
+            menu_program(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(crate::load::take_script_init_runs(), 1);
+        let (scripts, faces_changed, _) = translated.compile_ui(&crate::Options {
+            library: Some(path.clone()),
+            control_values: vec![(mode, -3)],
+            ..Default::default()
+        });
+        assert_eq!(crate::load::take_script_init_runs(), 1);
+        assert!(faces_changed[0]
+            .widgets
+            .iter()
+            .all(|widget| widget.value == Some(sampler_ui_ir::Value::Integer(-3))));
+        assert_eq!(
+            faces_changed[0]
+                .widgets
+                .iter()
+                .map(|widget| widget.name.as_str())
+                .collect::<Vec<_>>(),
+            faces[0]
+                .widgets
+                .iter()
+                .map(|widget| widget.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            defaults(&scripts),
+            [sampler_core::ControlValue::Integer(-3); 2]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn late_host_override_reinitializes_instead_of_reusing_wrong_state() {
         let path = std::env::temp_dir().join(format!("late-menu-{}.nki", std::process::id()));
         std::fs::write(&path, [0; 16]).unwrap();
