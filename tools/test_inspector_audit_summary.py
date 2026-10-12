@@ -193,6 +193,31 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["fault_counts"]["unexpected_initialized_id"], 1)
         self.assertEqual(s["admission"], "incomplete")
 
+    def test_honest_parse_failures_keep_record_coverage_complete(self):
+        kontakt = report()
+        kontakt["status"] = "failed"
+        kontakt["stages"][1] = {"name": "parse", "status": "failed"}
+        kontakt["metadata"] = {}
+        kontakt["scripts"] = []
+        kontakt["diagnostics"] = [{"stage": "parse", "category": "ProgramDecode"}]
+        uvi = report("uvi-bank", BANK, MEMBER)
+        uvi["status"] = "failed"
+        uvi["stages"] = [{"name": "container", "status": "ok"},
+                         {"name": "parse", "status": "failed"},
+                         {"name": "runtime", "status": "skipped"},
+                         {"name": "audio", "status": "skipped"}]
+        uvi["metadata"] = {}
+        uvi["scripts"] = []
+        uvi["converted"] = {"status": "not_run"}
+        uvi["diagnostics"] = [{"stage": "parse", "category": "Xml"}]
+        s = self.run_summary([f"kontakt\t{KONTAKT}", f"uvi-program\t{BANK}::{MEMBER}"],
+                             [kontakt, uvi])
+        self.assertTrue(s["catalog_records_complete"])
+        self.assertEqual(s["totals"]["observed"], 2)
+        self.assertEqual(s["totals"]["source_inspected"], 0)
+        self.assertEqual(s["admission"], "incomplete")
+        self.assertEqual(s["fault_counts"], {})
+
     def test_selected_multi_numeric_collision_is_duplicate(self):
         s = self.run_summary([f"kontakt-multi\t{MULTI}#0", f"kontakt-multi\t{MULTI}#00"], [])
         self.assertEqual(s["admission"], "incomplete")
