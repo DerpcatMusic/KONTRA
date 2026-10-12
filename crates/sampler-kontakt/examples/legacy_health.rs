@@ -61,6 +61,21 @@ fn version(path: &Path) -> Result<String, String> {
 }
 fn probe(path: &Path, ext: &str) -> Result<(usize, usize), String> {
     match ext {
+        "nkm" => {
+            let count = sampler_kontakt::read_multi(path)
+                .map_err(|e| e.to_string())?
+                .programs
+                .len();
+            let mut zones = 0;
+            for index in 0..count {
+                zones += sampler_kontakt::read_program(path, index)
+                    .map_err(|e| e.to_string())?
+                    .instrument
+                    .zones
+                    .len();
+            }
+            Ok((count, zones))
+        }
         "nksn" => {
             let s = sampler_kontakt::read_snapshot(path).map_err(|e| e.to_string())?;
             Ok((s.groups.len(), s.persistent.len()))
