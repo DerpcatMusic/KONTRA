@@ -26,11 +26,20 @@ def notarize(artifact):
             submission = str(uuid.UUID(data['id']))
             if expected_id is not None and submission != expected_id:
                 raise ValueError('Unexpected submission')
-            if data['status'] not in ('Uploaded', 'In Progress', 'Accepted', 'Invalid', 'Rejected'):
+            # A submit without --wait acknowledges the upload with id/path,
+            # not a final status. Only a wait for that ID can prove acceptance.
+            # https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
+            state = data.get('status', 'Uploaded') if expected_id is None else data['status']
+            if state not in ('Uploaded', 'In Progress', 'Accepted', 'Invalid', 'Rejected'):
                 raise ValueError('Unexpected status')
-            result = dict(id=submission, status=data['status'])
-            if type(data.get('statusCode')) is int:
-                result['statusCode'] = data['statusCode']
+            if 'statusCode' in data and type(data['statusCode']) is not int:
+                raise ValueError('Unexpected status code')
+            if state == 'Accepted' and child.returncode != 0:
+                raise ValueError('Failed acceptance command')
+            safe = dict(id=submission, status=state)
+            if 'statusCode' in data:
+                safe['statusCode'] = data['statusCode']
+            result = safe
         except (ValueError, KeyError, TypeError, AttributeError):
             return None
         return child.returncode
@@ -39,9 +48,7 @@ def notarize(artifact):
     if status != 0:
         return False, result
     submission = result['id']
-    if result['status'] == 'Accepted':
-        return True, result
-    if result['status'] not in ('Uploaded', 'In Progress'):
+    if result['status'] not in ('Uploaded', 'In Progress', 'Accepted'):
         return False, result
     # Split submit/wait so a transport timeout cannot lose the upload's submission ID.
     for timeout in ('30m', '5m'):
