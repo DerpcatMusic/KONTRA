@@ -29,7 +29,9 @@ def report(kind="kontakt", path=KONTAKT, program=None):
             "mode": {"initialize": False, "ephemeral_source": False, "summary": True},
             "status": "ok", "stages": stages, "metadata": metadata,
             "scripts": [{"id": "ksp:slot0", "program": 0 if kind.startswith("kontakt") else None,
-                         "construct_count": 2, "status_counts": {"Implemented": 2}}],
+                         "construct_count": 2, "status_counts": {"Implemented": 2},
+                         "compiler": {"status": "ok", "source_language": "Falcon Lua",
+                                      "executable_frontend": "Luau"} if kind == "uvi-bank" else None}],
             "converted": {"status": "ok" if kind == "uvi-bank" else "not_run",
                           "summary": {"groups": 1} if kind == "uvi-bank" else None},
             "ui": {"status": "not_evaluated", "interfaces": []}, "diagnostics": [],
@@ -57,6 +59,7 @@ class SummaryTests(unittest.TestCase):
                              [report("uvi-bank", BANK, MEMBER)])
         self.assertEqual(s["admission"], "complete_static_catalog")
         self.assertEqual(s["totals"]["ir_converted"], 1)
+        self.assertEqual(s["totals"]["compiler_status_counts"], {"ok": 1})
         self.assertEqual(s["totals"]["ui_projected"], 0)
         self.assertEqual(s["native_parity"], "unknown")
         self.assertEqual(s["libraries"]["UVI/Example"]["runtime"], {"not_run": 1})
@@ -107,6 +110,16 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["totals"]["ir_converted"], 0)
         self.assertEqual(s["totals"]["source_semantics_complete"], 0)
         self.assertEqual(s["admission"], "incomplete")
+
+    def test_uvi_compiler_failure_is_a_source_gap(self):
+        r = report("uvi-bank", BANK, MEMBER)
+        r["status"] = "partial"
+        r["stages"][1]["status"] = "failed"
+        r["scripts"][0]["compiler"]["status"] = "failed"
+        s = self.run_summary([f"uvi-program\t{BANK}::{MEMBER}"], [r])
+        self.assertEqual(s["totals"]["compiler_status_counts"], {"failed": 1})
+        self.assertEqual(s["totals"]["source_inspected"], 0)
+        self.assertEqual(s["totals"]["ir_converted"], 1)
 
     def test_provenance_hashes_and_expected_observed_per_library(self):
         s = self.run_summary([f"kontakt\t{KONTAKT}", f"uvi-program\t{BANK}::{MEMBER}"],
