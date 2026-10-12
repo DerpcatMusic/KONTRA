@@ -62,11 +62,36 @@ fn library(var: &str, relative: &str) -> Option<PathBuf> {
     let roots = std::env::var_os(var).unwrap_or_default();
     let found = std::env::split_paths(&roots)
         .map(|r| r.join(relative))
-        .find(|p| p.is_file() || p.to_string_lossy().contains(".ufs"));
+        .find(|p| library_path_exists(p));
     if found.is_none() && std::env::var_os("KONTRA_REQUIRE_LIBRARIES").is_some() {
         panic!("{var} lacks {relative}");
     }
     found
+}
+
+fn library_path_exists(path: &Path) -> bool {
+    path.is_file()
+        || path.ancestors().any(|bank| {
+            bank.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("ufs"))
+                && bank.is_file()
+        })
+}
+
+#[test]
+fn virtual_program_requires_an_existing_bank_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let bank = dir.path().join("fixture.ufs");
+    let program = bank.join("Presets/fixture.uvip");
+    assert!(!library_path_exists(&program), "missing bank is unavailable");
+    std::fs::create_dir(&bank).unwrap();
+    assert!(!library_path_exists(&program), "a directory is not a bank");
+    std::fs::remove_dir(&bank).unwrap();
+    std::fs::write(&bank, []).unwrap();
+    assert!(library_path_exists(&program));
+    let ordinary = dir.path().join("fixture.wav");
+    std::fs::write(&ordinary, []).unwrap();
+    assert!(library_path_exists(&ordinary));
 }
 
 fn sine(path: &Path, hz: f32) {
@@ -91,6 +116,7 @@ struct Rack {
     /// Per part: tree nodes below the root.
     tree_nodes: Vec<usize>,
     missing: Vec<String>,
+    scripts: Vec<kontakto::sound::ScriptUi>,
 }
 
 impl Rack {
@@ -122,6 +148,7 @@ impl Rack {
             .push(path.file_name().unwrap().to_string_lossy().into_owned());
         self.missing.push(format!("{:?}", loaded.report.missing));
         self.tree_nodes.push(loaded.tree.nodes.len() - 1);
+        self.scripts.push(loaded.scripts);
         self.core.install(part, loaded.part);
         part
     }
@@ -148,8 +175,30 @@ impl Rack {
                 }
             }
             self.core.end_block(FRAMES, &mut |_| true);
+            self.service_ui();
         }
         peak
+    }
+
+    /// The host side consumes UI effects outside the counted audio callback.
+    /// Unsupported external jobs stay queued and fail this witness explicitly.
+    fn service_ui(&mut self) {
+        for part in 0..self.scripts.len() {
+            let model = &mut self.scripts[part];
+            let mut refused = None;
+            self.core.take_effects(part, &mut |instance, effect| {
+                if matches!(effect.service,
+                    sampler_core::MIDI_SERVICE | sampler_core::ARRAY_FILE_SERVICE)
+                {
+                    refused = Some(effect.service);
+                    return false;
+                }
+                assert!(model.views.get(instance).is_some(), "missing script UI owner");
+                model.apply(instance, effect);
+                true
+            });
+            assert!(refused.is_none(), "part {part}: unsupported host service {refused:?}");
+        }
     }
 
     fn on(&mut self, channel: u8, key: u8, id: i32, port: u8) {
@@ -234,6 +283,7 @@ fn one_rack_plays_every_format_together() {
         names: Vec::new(),
         tree_nodes: Vec::new(),
         missing: Vec::new(),
+        scripts: Vec::new(),
     };
 
     // Channel 0: Kontakt .nki. 1: UVI. 2: Kontakt multi program. 3: two WAVs layered.
@@ -405,6 +455,7 @@ fn one_rack_plays_every_format_together() {
             rack.core.end_block(FRAMES, &mut |_| true);
         });
         times.push(start.elapsed());
+        rack.service_ui();
         std::thread::sleep(Duration::from_micros(500));
     }
     times.sort();
