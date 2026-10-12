@@ -123,6 +123,7 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
               "ir_converted": False, "ui_projected": False,
               "kontakt_all_programs": False, "script_count": 0,
               "construct_count": 0, "script_status_counts": Counter(),
+              "compiler_status_counts": Counter(),
               "runtime": "unknown", "audio": "unknown", "native_equivalence": "unknown"}
     if (report.get("format") != "kontra-library-inspector" or
             type(report.get("schema")) is not int or report["schema"] != 1):
@@ -157,6 +158,7 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
     script_count = 0
     construct_count = 0
     script_status_counts = Counter()
+    compiler_status_counts = Counter()
     for script in scripts:
         if not isinstance(script, dict) or not isinstance(script.get("id"), str):
             fault(faults, "scripts", "script identity missing", key)
@@ -179,9 +181,16 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         script_count += 1
         construct_count += n
         script_status_counts.update(counts)
+        if key[0].startswith("uvi"):
+            compiler = script.get("compiler")
+            if not isinstance(compiler, dict) or compiler.get("status") not in ("ok", "failed"):
+                fault(faults, "compiler", "UVI script has no compiler-only syntax status", key)
+                return result
+            compiler_status_counts[compiler["status"]] += 1
     result["script_count"] = script_count
     result["construct_count"] = construct_count
     result["script_status_counts"] = script_status_counts
+    result["compiler_status_counts"] = compiler_status_counts
     metadata = report.get("metadata")
     diagnostics = report.get("diagnostics")
     if not isinstance(metadata, dict) or not isinstance(diagnostics, list):
@@ -189,6 +198,7 @@ def validate_report(report: dict, key, faults: list[dict]) -> dict:
         return result
     source_ok = stage_map.get("container") == "ok" and stage_map.get("source_frontend") == "ok"
     source_ok &= not any(isinstance(d, dict) and d.get("stage") == "parse" for d in diagnostics)
+    source_ok &= compiler_status_counts.get("failed", 0) == 0
     if key[0].startswith("kontakt"):
         programs = metadata.get("programs")
         try:
@@ -322,7 +332,8 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
                                   "source_inspected": 0, "source_semantics_complete": 0,
                                   "kontakt_all_programs": 0, "ir_converted": 0,
                                   "ui_projected": 0, "scripts": 0, "constructs": 0,
-                                  "script_status_counts": Counter(), "runtime": Counter(),
+                                  "script_status_counts": Counter(), "compiler_status_counts": Counter(),
+                                  "runtime": Counter(),
                                   "audio": Counter(), "native_equivalence": Counter(),
                                   "initialized_attempted": 0, "initialized_ir_ok": 0,
                                   "initialized_ui_ok": 0, "initialized_failed": 0})
@@ -344,6 +355,7 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
         group["scripts"] += evidence["script_count"]
         group["constructs"] += evidence["construct_count"]
         group["script_status_counts"].update(evidence["script_status_counts"])
+        group["compiler_status_counts"].update(evidence["compiler_status_counts"])
         for field in ("runtime", "audio", "native_equivalence"):
             group[field][evidence[field]] += 1
     for (key, selected), report in initialized.items():
@@ -398,6 +410,7 @@ def summarize(manifest_path: Path, report_paths: list[Path], initialized_paths: 
     totals["uvi_expected"] = sum(g["kinds"].get("uvi-program", 0) + g["kinds"].get("uvi-loose", 0)
                                   for g in groups.values())
     totals["script_status_counts"] = dict(sum((g["script_status_counts"] for g in groups.values()), Counter()))
+    totals["compiler_status_counts"] = dict(sum((g["compiler_status_counts"] for g in groups.values()), Counter()))
     # A complete manifest report is only a complete static inspection. Even with
     # zero gaps, native parity cannot follow from these reports.
     admission = ("complete_static_catalog" if not faults and
@@ -417,6 +430,8 @@ def markdown(summary: dict) -> str:
              f"Manifest items: {t['expected']}; observed: {t['observed']}; missing: {t['missing']}; unexpected: {t['unexpected']}.",
              f"Static source inspected: {t['source_inspected']}; source semantics without reported gaps: {t['source_semantics_complete']}; "
              f"Static IR converted: {t['ir_converted']}; static UI projected: {t['ui_projected']}.",
+             f"UVI compiler-only syntax: {t['compiler_status_counts'].get('ok', 0)} ok, "
+             f"{t['compiler_status_counts'].get('failed', 0)} failed. This is Luau syntax evidence, not native Falcon Lua behavior.",
              f"Separate initialized samples: {t['initialized_attempted']} attempted, {t['initialized_ir_ok']} IR, "
              f"{t['initialized_ui_ok']} UI, {t['initialized_failed']} incomplete.",
              "Runtime/audio/native comparison requires independent evidence and is not inferred here.", "",
