@@ -539,10 +539,10 @@ pub(crate) fn load(
             );
             write(path, lib, loaded, bank, aliases, &samples, stop)
         })();
-        if let Err(e) = publish {
-            if e.is::<sample::LoadCancelled>() {
-                return Err(e);
-            }
+        if let Err(e) = publish
+            && e.is::<sample::LoadCancelled>()
+        {
+            return Err(e);
         }
     }
     Ok((samples, enabled.then_some(false)))

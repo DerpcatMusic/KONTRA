@@ -1403,7 +1403,7 @@ mod tests {
             } else {
                 Short::Above(e)
             };
-            let stops = |x: f32| frames(x, powers(*step)).into_iter().any(|y| stop(y));
+            let stops = |x: f32| frames(x, powers(*step)).into_iter().any(stop);
             if e.is_finite() {
                 let before = if *rising { e.next_down() } else { e.next_up() };
                 assert!(short.holds(before) && !stops(before), "{step:?}");

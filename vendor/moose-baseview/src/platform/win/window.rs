@@ -656,6 +656,12 @@ unsafe fn wnd_proc_inner(
             window_bv.frame_pending.store(false, Ordering::Release);
             Some(0)
         }
+        WM_PAINT => {
+            window_bv.handle_event(Event::Window(WindowEvent::RedrawRequested));
+            // DefWindowProc validates the update region. The paced callback
+            // presents after validation, without drawing inside a reentrant event.
+            None
+        }
         WM_CLOSE => {
             window_bv.handler.request_close();
             Some(0)
