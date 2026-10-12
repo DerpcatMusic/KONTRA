@@ -17,6 +17,7 @@
 //! resume that item is recorded as `crash` and skipped, so one bad library
 //! cannot stall the run.
 mod heap;
+mod inspect;
 
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
@@ -2926,6 +2927,8 @@ fn diff(old: &Path, new: &Path) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.as_slice() {
+        [cmd, rest @ ..] if cmd == "inspect" => inspect::run(rest),
+        [cmd, rest @ ..] if cmd == "inspect-list" => inspect::run_list(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
             let mut it = rest.iter();
@@ -2974,7 +2977,8 @@ fn main() {
             eprintln!(
                 "usage: corpus-health run OUT.jsonl [--tier parse|full|quick] [--shard I/N] [--only GLOB]\n\
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
-                 \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW"
+                 \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
+                 \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--initialize] [--ephemeral-source]"
             );
             2
         }
