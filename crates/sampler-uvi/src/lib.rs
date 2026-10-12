@@ -1448,6 +1448,30 @@ pub fn load_program_scripted_streamed(
     })
 }
 
+/// The keys (24..=108) at which the program's script plays a note, found on a
+/// throwaway host: a script keeps to the range its instrument was sampled over,
+/// which the zones alone do not tell. Empty when the script plays nothing.
+#[cfg(feature = "library-access")]
+pub fn script_playable_keys(bank: &Bank, program: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let (text, _) = bank.program(program)?;
+    let mut host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let mut clock = 0.0;
+    let mut keys = Vec::new();
+    for key in 24..=108u8 {
+        host.note_on(1 + u64::from(key), key, 100, 0);
+        clock += 500.0;
+        host.advance(clock);
+        if host.take_commands().iter().any(|c| matches!(c, script::Command::Play(_))) {
+            keys.push(key);
+        }
+        host.note_off(1 + u64::from(key), key, 64, 0);
+        clock += 500.0;
+        host.advance(clock);
+        host.take_commands();
+    }
+    Ok(keys)
+}
+
 fn read_text(path: &Path) -> Result<String, Error> {
     let io = |error| Error::Io {
         path: path.into(),
