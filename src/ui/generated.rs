@@ -335,7 +335,7 @@ pub fn view(
                         n,
                         assets,
                         ir_view::value_key(face, n, values),
-                        place,
+                        (place, input.numeric_revision()),
                         |ui| {
                             col![
                                 caption(label.clone())
