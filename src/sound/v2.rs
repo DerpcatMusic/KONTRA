@@ -56,6 +56,8 @@ mod persistence;
 mod pressed_tests;
 #[cfg(test)]
 mod capture_tests;
+#[cfg(test)]
+mod host_contract_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -88,6 +90,9 @@ pub struct Part {
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
     force_articulation_once: bool,
+    /// Internal wire identities keep distinct physical host tuples independent
+    /// after a part maps their channels to its single musical domain.
+    next_host_id: u32,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
     buses: Box<[Option<usize>]>,
@@ -301,6 +306,7 @@ impl Part {
             persistence: None,
             mpe,
             force_articulation_once: false,
+            next_host_id: 0,
             tune: 0.0,
             buses: (0..count).map(|n| n.checked_sub(1)).collect(),
             tree,
@@ -1323,18 +1329,13 @@ fn wire(key: u8, external_id: Option<i32>) -> Input {
     }
 }
 
-/// A host note's owner on the wire, distinct from MIDI notes by its ID; notes
-/// without one (VST3) get a negative ID per channel. In an MPE zone it keeps
-/// its member channel.
-fn host_input(note: HostNote, mpe: bool) -> Input {
-    let id = if note.id >= 0 {
-        note.id
-    } else {
-        -1 - i32::from(note.channel)
-    };
+/// A host note's internal execution owner on the wire, distinct from MIDI
+/// notes. The physical tuple stays in Held; expressive members retain their
+/// channel in an MPE zone even when other input uses the part's manager.
+fn host_input(note: HostNote, mpe: bool, execution_id: i32) -> Input {
     Input {
         channel: if mpe { note.channel & 15 } else { WIRE.channel },
-        ..wire(note.key, Some(id))
+        ..wire(note.key, Some(execution_id))
     }
 }
 
@@ -1490,6 +1491,11 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         word as u8 & 127,
     );
     let channel = (word >> 16) as u8 & 15;
+    if kind == 4 && status == 0xb0 && sampler_midi::is_midi2_legacy_control(a) {
+        // No Lua/controller/articulation callback may reinterpret a deprecated
+        // MIDI 2.0 control as a MIDI 1.0 parameter or bank-select transaction.
+        return;
+    }
     if part.script.is_some() && matches!(kind, 2 | 4) && matches!(status, 0x80 | 0x90) {
         // Only incoming notes enter Lua; script-generated MIDI stays on the direct wire path.
         let mut words = [word, data];
@@ -1579,6 +1585,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 *overflow += 1;
                 return;
             }
+            if note.id != -1 && (held.iter().any(|h| h.part == index && h.note == note)
+                || part.consumed_hosts.contains(&note)) {
+                // Duplicate complete host tuples remain owned until NOTE_END.
+                return;
+            }
             // The driver sees the note as MIDI on its own channel.
             let key = u32::from(note.key & 127) << 8
                 | (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u32;
@@ -1593,7 +1604,21 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 return;
             }
-            let input = host_input(note, part.mpe_zone);
+            let mut input = None;
+            // Find a free internal ID within the bounded held-owner population.
+            // Input IDs are execution handles; Held retains the exact host tuple.
+            for _ in 0..=held.len() {
+                let id = part.next_host_id as i32;
+                part.next_host_id = part.next_host_id.wrapping_add(1) & i32::MAX as u32;
+                if !held.iter().any(|h| h.part == index && h.input.external_id == Some(id)) {
+                    input = Some(host_input(note, part.mpe_zone, id));
+                    break;
+                }
+            }
+            let Some(input) = input else {
+                *overflow += 1;
+                return;
+            };
             if let Some(script) = part.script.as_mut() {
                 // The scripts play the part's notes: the physical one is silent.
                 let velocity = velocity.clamp(0.0, 1.0);
@@ -1638,7 +1663,12 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 express(&mut part.runtime, id, |e| e.pitch_semitones += tune);
             }
         }
-        Event::NoteOff(pattern) | Event::Choke(pattern) => {
+        Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) | Event::Choke(pattern) => {
+            let velocity = match event {
+                Event::NoteOffVelocity(_, velocity) if (0.0..=1.0).contains(&velocity) => Some(velocity),
+                Event::NoteOffVelocity(_, _) => return,
+                _ => None,
+            };
             // Release consumed presses by the exact host identity captured at onset,
             // even if the mapping or driver changed while that key was down.
             let mut at = 0;
@@ -1659,10 +1689,14 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
-                if let Some(script) = part.script.as_mut() {
-                    let _ = script.note_off_note(&mut part.runtime, h.id, h.note.key);
+                if matches!(event, Event::Choke(_)) {
+                    let _ = part.runtime.cancel_input_note(h.id);
+                } else {
+                    if let Some(script) = part.script.as_mut() {
+                        let _ = script.note_off_note_velocity(&mut part.runtime, h.id, h.note.key, velocity);
+                    }
+                    let _ = part.runtime.note_off(h.input, velocity);
                 }
-                let _ = part.runtime.note_off(h.input, None);
             }
         }
         Event::Expression(pattern, expression) => {
@@ -2090,7 +2124,7 @@ impl V2Core {
     fn enqueue(&mut self, slot: usize, event: Event) {
         // Wildcards may also reach owners which predate alignment. Dispatch
         // only those exact tuples immediately; the scheduler retains its own holds.
-        if let Event::NoteOff(pattern) | Event::Choke(pattern) | Event::Expression(pattern, _) =
+        if let Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) | Event::Choke(pattern) | Event::Expression(pattern, _) =
             event
             && self.align.parts[slot].hosts().any(|n| pattern.matches(n))
         {
@@ -2117,6 +2151,7 @@ impl V2Core {
                     slot,
                     match event {
                         Event::NoteOff(_) => Event::NoteOff(p),
+                        Event::NoteOffVelocity(_, velocity) => Event::NoteOffVelocity(p, velocity),
                         Event::Choke(_) => Event::Choke(p),
                         Event::Expression(_, x) => Event::Expression(p, x),
                         _ => unreachable!(),

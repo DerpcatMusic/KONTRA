@@ -60,6 +60,8 @@ pub enum Event {
         tune: f64,
     },
     NoteOff(HostPattern),
+    /// Physical host key-up with its original normalized release velocity.
+    NoteOffVelocity(HostPattern, f64),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
     /// A MIDI 1.0 (message type 2, one word used) or MIDI 2.0 (type 4)
@@ -83,9 +85,10 @@ impl Event {
     pub fn channel(&self) -> Option<u8> {
         match self {
             Self::NoteOn { note, .. } => Some(note.channel),
-            Self::NoteOff(p) | Self::Choke(p) | Self::Expression(p, _) => {
-                u8::try_from(p.channel).ok()
-            }
+            Self::NoteOff(p)
+            | Self::NoteOffVelocity(p, _)
+            | Self::Choke(p)
+            | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
             Self::Ump([word, _]) => Some((word >> 16) as u8 & 15),
         }
     }
