@@ -154,6 +154,11 @@ name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ['MOCK_LOG'], 'a') as log: log.write(json.dumps([name, args]) + '\\n')
 if name == os.environ.get('FAIL_TOOL') or (name == 'xcrun' and (args[:2] == ['stapler', os.environ.get('FAIL_TOOL')] or args[:1] == [os.environ.get('FAIL_TOOL')])): sys.exit(1)
+if name == 'xcrun' and args[:1] == ['stapler'] and args[1] == os.environ.get('STAPLER_NETWORK'):
+    calls = pathlib.Path(os.environ['MOCK_LOG']).read_text().splitlines()
+    if sum(json.loads(c)[0] == 'xcrun' and json.loads(c)[1][:2] == args[:2] for c in calls) == 1:
+        print('Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost." private-server-field', file=sys.stderr)
+        sys.exit(68)
 if name == 'codesign' and '--force' in args and pathlib.Path(args[-1]).is_dir():
     signature = pathlib.Path(args[-1]) / 'Contents/_CodeSignature'
     signature.mkdir(exist_ok=True)
@@ -211,7 +216,8 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'wait']:
                    APPLE_DEVELOPER_ID_INSTALLER='Developer ID Installer: Synthetic (TESTTEAM)',
                    APPLE_ID='synthetic@example.invalid', APPLE_APP_SPECIFIC_PASSWORD='synthetic',
                    MOCK_LOG=str(self.root / 'calls.jsonl'))
-        cases = [('valid', '', 'Accepted'), ('resume', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
+        successful = ('valid', 'resume', 'staple-network', 'validate-network')
+        cases = [('valid', '', 'Accepted'), ('resume', '', 'Accepted'), ('staple-network', '', 'Accepted'), ('validate-network', '', 'Accepted'), ('codesign', 'codesign', 'Accepted'),
                  ('package-registration', 'swift', 'Accepted'),
                  ('productsign', 'productsign', 'Accepted'), ('pkgutil', 'pkgutil', 'Accepted'),
                  ('rejected', '', 'Invalid'), ('staple', 'staple', 'Accepted'), ('validate', 'validate', 'Accepted'), ('assessment', 'spctl', 'Accepted')]
@@ -220,20 +226,24 @@ if name == 'xcrun' and args[:2] == ['notarytool', 'wait']:
                 output = self.root / f'{case}.pkg'
                 (self.root / 'calls.jsonl').write_text('')
                 result = subprocess.run(['bash', str(HERE / 'package_macos.sh'), str(self.stage), str(output)],
-                                        env=dict(env, FAIL_TOOL=tool, NOTARY_STATUS=status, NOTARY_RESUME='1' if case == 'resume' else ''), capture_output=True)
-                self.assertEqual(result.returncode == 0, case in ('valid', 'resume'), result.stderr.decode())
-                self.assertEqual(output.exists(), case in ('valid', 'resume'))
-                self.assertEqual(output.with_suffix('.notarization.json').exists(), case in ('valid', 'resume'))
+                                        env=dict(env, FAIL_TOOL=tool, NOTARY_STATUS=status, NOTARY_RESUME='1' if case == 'resume' else '', STAPLER_NETWORK=case.removesuffix('-network') if case.endswith('-network') else ''), capture_output=True)
+                self.assertEqual(result.returncode == 0, case in successful, result.stderr.decode())
+                self.assertEqual(output.exists(), case in successful)
+                self.assertEqual(output.with_suffix('.notarization.json').exists(), case in successful)
+                self.assertNotIn('private-server-field', result.stdout.decode()+result.stderr.decode())
                 calls = [json.loads(row) for row in (self.root / 'calls.jsonl').read_text().splitlines()]
                 notary = [args for name, args in calls if name == 'xcrun' and args[:1] == ['notarytool']]
-                if case in ('valid', 'resume', 'rejected', 'staple', 'validate', 'assessment'):
+                if case in (*successful, 'rejected', 'staple', 'validate', 'assessment'):
                     self.assertEqual(sum(args[1] == 'submit' for args in notary), 1)
                     waits = [args for args in notary if args[1] == 'wait']
                     self.assertEqual([args[args.index('--timeout')+1] for args in waits], ['30m', '5m'] if case == 'resume' else ['30m'])
                     self.assertTrue(all(args[2] == '00000000-0000-4000-8000-000000000000' for args in waits))
                 if case == 'rejected':
                     self.assertFalse(any(name == 'xcrun' and args[:2] == ['stapler', 'staple'] for name, args in calls))
-                if case in ('valid', 'resume'):
+                if case in successful:
+                    operations = [args[1] for name, args in calls if name == 'xcrun' and args[:1] == ['stapler']]
+                    self.assertEqual(operations, ['staple', 'staple', 'validate'] if case == 'staple-network' else ['staple', 'validate', 'validate'] if case == 'validate-network' else ['staple', 'validate'])
+                    self.assertTrue(any(name == 'spctl' and args[:1] == ['--assess'] for name, args in calls))
                     receipt = json.loads(output.with_suffix('.notarization.json').read_text())
                     self.assertEqual(receipt['source_builds']['arm64']['vst3']['target'], 'aarch64-apple-darwin')
                     self.assertEqual(len(receipt['products']), 3)

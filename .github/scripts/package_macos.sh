@@ -69,8 +69,8 @@ info = json.load(open(sys.argv[1]))
 assert info['status'] == 'Accepted', 'Apple did not accept the installer notarization'
 uuid.UUID(info['id'])
 PY
-xcrun stapler staple "$work/KONTRA.pkg"
-xcrun stapler validate "$work/KONTRA.pkg"
+python3 "$(dirname "$0")/stapler.py" staple "$work/KONTRA.pkg"
+python3 "$(dirname "$0")/stapler.py" validate "$work/KONTRA.pkg"
 spctl --assess --type install "$work/KONTRA.pkg"
 # Publish only after real Apple acceptance, ticket validation and assessment.
 mkdir -p "$(dirname "$output")"

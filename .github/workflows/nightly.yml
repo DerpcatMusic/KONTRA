@@ -79,6 +79,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: nightly-${{ matrix.os }}-${{ matrix.target }}-release
+          cache-workspace-crates: true
+          cache-on-failure: true
       - name: Install cargo-moose
         shell: bash
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
