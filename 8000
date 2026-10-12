@@ -1,0 +1,1482 @@
+[
+  {
+    "audio_sha256": "f4ea9cb1c47a7c952285640d045bbc007876e45d91ed4f47152cebaf62cdb3e1",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 32000000,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 635050,
+          "wall_ns": 637380
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 32000000,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 631060,
+          "wall_ns": 629910
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 32000000,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 413790,
+          "wall_ns": 415777
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 32000000,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 520190,
+          "wall_ns": 519059
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 8000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.63505,
+      "max_wall_ms": 0.63738,
+      "thread_cpu_ms": 2.20009,
+      "wall_ms": 2.202126
+    }
+  },
+  {
+    "audio_sha256": "f4ea9cb1c47a7c952285640d045bbc007876e45d91ed4f47152cebaf62cdb3e1",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 128000000,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2293749,
+          "wall_ns": 2438221
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 8000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.293749,
+      "max_wall_ms": 2.438221,
+      "thread_cpu_ms": 2.293749,
+      "wall_ms": 2.438221
+    }
+  },
+  {
+    "audio_sha256": "ddf2b69a524fc3e071dbd67f3979c99d9560a43aa8c321b2b81a1e2b9e2e80c4",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 31996000,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 653460,
+          "wall_ns": 670271
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 31996000,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 691370,
+          "wall_ns": 704422
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 31996000,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 447880,
+          "wall_ns": 490488
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 31996000,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 554430,
+          "wall_ns": 567220
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 8001,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.69137,
+      "max_wall_ms": 0.704422,
+      "thread_cpu_ms": 2.34714,
+      "wall_ms": 2.432401
+    }
+  },
+  {
+    "audio_sha256": "ddf2b69a524fc3e071dbd67f3979c99d9560a43aa8c321b2b81a1e2b9e2e80c4",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 127984001,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2340429,
+          "wall_ns": 3852213
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 8001,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.340429,
+      "max_wall_ms": 3.852213,
+      "thread_cpu_ms": 2.340429,
+      "wall_ms": 3.852213
+    }
+  },
+  {
+    "audio_sha256": "45a4f2ba91066dce028bf4fd75f4d73b0b7c8f2554e76df05d9fe0f759b59302",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 11609977,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 654459,
+          "wall_ns": 656301
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 11609977,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 693300,
+          "wall_ns": 714112
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 11609977,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 450130,
+          "wall_ns": 455168
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 11609977,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 547560,
+          "wall_ns": 611090
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 22050,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.6933,
+      "max_wall_ms": 0.714112,
+      "thread_cpu_ms": 2.345449,
+      "wall_ms": 2.436671
+    }
+  },
+  {
+    "audio_sha256": "45a4f2ba91066dce028bf4fd75f4d73b0b7c8f2554e76df05d9fe0f759b59302",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 46439909,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2149619,
+          "wall_ns": 2156916
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 22050,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.149619,
+      "max_wall_ms": 2.156916,
+      "thread_cpu_ms": 2.149619,
+      "wall_ms": 2.156916
+    }
+  },
+  {
+    "audio_sha256": "1e7e8885d67db32c4a42eeb770e0aa6c9776187c5a9877789404e7c27eaba760",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 5804988,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 602220,
+          "wall_ns": 603120
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 5804988,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 677630,
+          "wall_ns": 678461
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 5804988,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 371850,
+          "wall_ns": 371067
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 5804988,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 513220,
+          "wall_ns": 512378
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 44100,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.67763,
+      "max_wall_ms": 0.678461,
+      "thread_cpu_ms": 2.16492,
+      "wall_ms": 2.165026
+    }
+  },
+  {
+    "audio_sha256": "1e7e8885d67db32c4a42eeb770e0aa6c9776187c5a9877789404e7c27eaba760",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 23219954,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2299399,
+          "wall_ns": 2440341
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 44100,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.299399,
+      "max_wall_ms": 2.440341,
+      "thread_cpu_ms": 2.299399,
+      "wall_ms": 2.440341
+    }
+  },
+  {
+    "audio_sha256": "e5d965316fe076f7e23fa2d2f8d4995c49adf2f1e6da223dabebe83a17ee00fa",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 5333333,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 624030,
+          "wall_ns": 643970
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 5333333,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 673650,
+          "wall_ns": 704001
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 5333333,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 426610,
+          "wall_ns": 428647
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 5333333,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 545100,
+          "wall_ns": 543939
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 48000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.67365,
+      "max_wall_ms": 0.704001,
+      "thread_cpu_ms": 2.26939,
+      "wall_ms": 2.320557
+    }
+  },
+  {
+    "audio_sha256": "e5d965316fe076f7e23fa2d2f8d4995c49adf2f1e6da223dabebe83a17ee00fa",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 21333333,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2316369,
+          "wall_ns": 2440320
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 48000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.316369,
+      "max_wall_ms": 2.44032,
+      "thread_cpu_ms": 2.316369,
+      "wall_ms": 2.44032
+    }
+  },
+  {
+    "audio_sha256": "68cad96eaace327bebd9d4a80eaf057a8774111aedd6fd18221b818b2d18db2a",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 2902494,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 631880,
+          "wall_ns": 630641
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 2902494,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 710270,
+          "wall_ns": 712111
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 2902494,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 430849,
+          "wall_ns": 429667
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 2902494,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 586510,
+          "wall_ns": 588590
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 88200,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.71027,
+      "max_wall_ms": 0.712111,
+      "thread_cpu_ms": 2.359509,
+      "wall_ms": 2.361009
+    }
+  },
+  {
+    "audio_sha256": "68cad96eaace327bebd9d4a80eaf057a8774111aedd6fd18221b818b2d18db2a",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 11609977,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2389920,
+          "wall_ns": 8549832
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 88200,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.38992,
+      "max_wall_ms": 8.549832,
+      "thread_cpu_ms": 2.38992,
+      "wall_ms": 8.549832
+    }
+  },
+  {
+    "audio_sha256": "b3beaf19f38d6de4aeb1c44522b378c5ff8af3ce5f835318c0660b653b535161",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 2666666,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 648350,
+          "wall_ns": 760433
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 2666666,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 691309,
+          "wall_ns": 821354
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 2666666,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 459020,
+          "wall_ns": 847594
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 2666666,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 591160,
+          "wall_ns": 700621
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 96000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.691309,
+      "max_wall_ms": 0.847594,
+      "thread_cpu_ms": 2.389839,
+      "wall_ms": 3.130002
+    }
+  },
+  {
+    "audio_sha256": "b3beaf19f38d6de4aeb1c44522b378c5ff8af3ce5f835318c0660b653b535161",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 10666666,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2435749,
+          "wall_ns": 2953709
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 96000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.435749,
+      "max_wall_ms": 2.953709,
+      "thread_cpu_ms": 2.435749,
+      "wall_ms": 2.953709
+    }
+  },
+  {
+    "audio_sha256": "ec2dd214a0708a693bb6fba7ee14075b4d1d22006d155a0161f15262bdbdc9cb",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 1451247,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 678260,
+          "wall_ns": 680161
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1451247,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 745830,
+          "wall_ns": 763772
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 1451247,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 457930,
+          "wall_ns": 458787
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1451247,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 617710,
+          "wall_ns": 616980
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 176400,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.74583,
+      "max_wall_ms": 0.763772,
+      "thread_cpu_ms": 2.49973,
+      "wall_ms": 2.5197
+    }
+  },
+  {
+    "audio_sha256": "ec2dd214a0708a693bb6fba7ee14075b4d1d22006d155a0161f15262bdbdc9cb",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 5804988,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2460429,
+          "wall_ns": 6079510
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 176400,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 1,
+      "max_thread_cpu_ms": 2.460429,
+      "max_wall_ms": 6.07951,
+      "thread_cpu_ms": 2.460429,
+      "wall_ms": 6.07951
+    }
+  },
+  {
+    "audio_sha256": "4c5607703c0a56951556ae8f4425ae36b7d72b93bac93bfbf66e614c42bca873",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 1333340,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 666520,
+          "wall_ns": 665471
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1333340,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 731400,
+          "wall_ns": 733962
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 1333340,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 439010,
+          "wall_ns": 587380
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1333340,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 576150,
+          "wall_ns": 594900
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 191999,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 0.7314,
+      "max_wall_ms": 0.733962,
+      "thread_cpu_ms": 2.41308,
+      "wall_ms": 2.581713
+    }
+  },
+  {
+    "audio_sha256": "4c5607703c0a56951556ae8f4425ae36b7d72b93bac93bfbf66e614c42bca873",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 5333361,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2328489,
+          "wall_ns": 2336609
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 191999,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.328489,
+      "max_wall_ms": 2.336609,
+      "thread_cpu_ms": 2.328489,
+      "wall_ms": 2.336609
+    }
+  },
+  {
+    "audio_sha256": "c763c99900db62ba9b85a15e93ea09696dbda55c7a7f6d09d7cefde2246347f8",
+    "block_frames": 256,
+    "blocks": [
+      {
+        "commands": 3,
+        "deadline_ns": 1333333,
+        "frame": 0,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 623520,
+          "wall_ns": 622170
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1333333,
+        "frame": 256,
+        "frames": 256,
+        "host_commands": 2,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 697539,
+          "wall_ns": 1699128
+        }
+      },
+      {
+        "commands": 2,
+        "deadline_ns": 1333333,
+        "frame": 512,
+        "frames": 256,
+        "host_commands": 1,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 426620,
+          "wall_ns": 436297
+        }
+      },
+      {
+        "commands": 0,
+        "deadline_ns": 1333333,
+        "frame": 768,
+        "frames": 256,
+        "host_commands": 0,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 554890,
+          "wall_ns": 1253291
+        }
+      }
+    ],
+    "command_sha256": "c3922cd4737909c6f7cd9ec9cf5e2fa960170a3e1cd6f85e5ab507a788c3bc21",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "bc0b627ba2dd1f211260a7d6037f9b47cb7097a8eedbde0360ed20db1d251384",
+    "rate": 192000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 4,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 1,
+      "max_thread_cpu_ms": 0.697539,
+      "max_wall_ms": 1.699128,
+      "thread_cpu_ms": 2.302569,
+      "wall_ms": 4.010886
+    }
+  },
+  {
+    "audio_sha256": "c763c99900db62ba9b85a15e93ea09696dbda55c7a7f6d09d7cefde2246347f8",
+    "block_frames": 1024,
+    "blocks": [
+      {
+        "commands": 5,
+        "deadline_ns": 5333333,
+        "frame": 0,
+        "frames": 1024,
+        "host_commands": 4,
+        "renderer": {
+          "allocations": {
+            "allocation_calls": 0,
+            "deallocated_bytes": 0,
+            "deallocation_calls": 0,
+            "reallocation_calls": 0,
+            "requested_bytes": 0
+          },
+          "thread_cpu_ns": 2251330,
+          "wall_ns": 4503825
+        }
+      }
+    ],
+    "command_sha256": "6483ae03e65e8c3233ac2bedeae8cd10ae5d84db70a2f253f3297c55438b38be",
+    "commands": 5,
+    "finite": true,
+    "frames": 1024,
+    "host_commands": 4,
+    "host_sha256": "8f61d624befdf1ba77d01258c703c0a3da09050008efa624f74c8c1026825010",
+    "rate": 192000,
+    "renderer": {
+      "allocations": {
+        "allocation_calls": 0,
+        "deallocated_bytes": 0,
+        "deallocation_calls": 0,
+        "reallocation_calls": 0,
+        "requested_bytes": 0
+      },
+      "calls": 1,
+      "deadline_misses_cpu": 0,
+      "deadline_misses_wall": 0,
+      "max_thread_cpu_ms": 2.25133,
+      "max_wall_ms": 4.503825,
+      "thread_cpu_ms": 2.25133,
+      "wall_ms": 4.503825
+    }
+  }
+]

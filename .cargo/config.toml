@@ -1,0 +1,4 @@
+[build]
+# Local edit loops use rustc incremental compilation. CI may set RUSTC_WRAPPER.
+rustc-wrapper = ""
+
