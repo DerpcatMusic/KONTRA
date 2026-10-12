@@ -304,7 +304,7 @@ impl Translation {
                     // gain stage is a control the script can raise; a chain's
                     // bypass is that gain at zero.
                     let chains: Vec<_> = node
-                        .descendants()
+                        .children()
                         .filter(|n| n.has_tag_name("Chains"))
                         .flat_map(|c| c.children().filter(|c| c.has_tag_name("AuxEffect")))
                         .filter(|c| {

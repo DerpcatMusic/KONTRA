@@ -28,7 +28,7 @@ Rust. Custom UI framework. Windows, macOS, Linux. CLAP, VST3, standalone.
 | :--- | :--- | :--- |
 | Kontakt | Experimental playback | Full compatibility |
 | Scripts, UI & effects | Partial support | Full coverage |
-| Falcon / UFS | Metadata inspection | Playback |
+| Falcon / UFS | Experimental sample playback, Lua and authored UI | Full module coverage and native sound parity |
 
 ## Feature status
 
