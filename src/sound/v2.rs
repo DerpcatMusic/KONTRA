@@ -5936,7 +5936,28 @@ mod tests {
             .filter(|n| n.kind == NodeKind::Bus)
             .map(|n| n.name.as_str())
             .collect();
-        assert_eq!(buses, ["insert", "send 0", "send 1"]);
+        // Send names carry their physical rack slots, including the holes.
+        let rack_buses: Vec<_> = buses
+            .iter()
+            .copied()
+            .filter(|name| *name == "insert" || name.starts_with("send "))
+            .collect();
+        assert_eq!(rack_buses, ["insert", "send 2", "send 5"]);
+        let instrument = loaded.instrument.as_ref().unwrap();
+        assert_eq!(instrument.bus_addresses.len(), 16);
+        for &(address, bus) in &instrument.bus_addresses {
+            let node = &loaded.tree.nodes[bus.0 + 1];
+            assert_eq!(node.name, format!("bus {}", address - 1000));
+            assert!(matches!(node.kind, NodeKind::Bus | NodeKind::Mic));
+            assert_eq!(
+                node.parent,
+                Some(match instrument.buses[bus.0].output {
+                    ir::Output::Master => 0,
+                    ir::Output::Bus(parent) => parent.0 + 1,
+                }),
+                "the physical instrument bus keeps its authored parent"
+            );
+        }
         let groups = loaded
             .tree
             .nodes
@@ -5987,61 +6008,39 @@ mod tests {
         assert_ne!(names[0], names[1]);
     }
 
-    /// A UVI bank program loads through the host and its layers are mixer nodes.
+    fn installed_ao_mixer_program() -> Option<PathBuf> {
+        const BANK: &str = "UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
+        const PROGRAM: &str = "Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip";
+        let configured = std::env::var_os("KONTRA_UVI_LIBRARIES")
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var_os("KONTRA_KONTAKT_LIBRARIES").filter(|s| !s.is_empty()));
+        let Some(configured) = configured else {
+            eprintln!("skipped: set KONTRA_UVI_LIBRARIES for the installed AO mixer fixture");
+            return None;
+        };
+        let roots: Vec<_> = std::env::split_paths(&configured)
+            .flat_map(|root| {
+                [
+                    root.clone(),
+                    root.join("UVI"),
+                    root.parent().unwrap_or(&root).join("UVI"),
+                ]
+            })
+            .collect();
+        let bank = roots
+            .iter()
+            .map(|r| r.join(BANK))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("configured library roots have no {BANK}: {roots:?}"));
+        Some(bank.join(PROGRAM))
+    }
+
+    /// The explicit AO program's translated groups become mixer nodes.
     #[test]
     fn real_uvi_layers_become_mixer_nodes() {
-        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
-        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
-        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
-        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
-            eprintln!("skipped: {relative} is not installed");
+        let Some(path) = installed_ao_mixer_program() else {
             return;
         };
-        let loaded = match V2Loader.prepare(
-            &LoadRequest {
-                path,
-                sample_rate: 48000.0,
-                ..Default::default()
-            },
-            &mut |_| {},
-            &|| false,
-        ) {
-            Ok(loaded) => loaded,
-            Err(e) => {
-                eprintln!("skipped: {e:?}");
-                return;
-            }
-        };
-        let groups = loaded
-            .tree
-            .nodes
-            .iter()
-            .filter(|n| n.kind == NodeKind::Group)
-            .count();
-        assert!(groups > 0, "layers are nodes");
-    }
-
-    /// Peak of the last blocks after applying `mix` to a part with a held note.
-    fn settled(core: &mut V2Core, mix: &Mix) -> f32 {
-        core.set_mix(mix);
-        let mut peak = 0.0f32;
-        for block in 0..400 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let r = core.render(128);
-            if block >= 390 {
-                peak = r
-                    .buses
-                    .iter()
-                    .flat_map(|b| b[0][..128].iter().chain(&b[1][..128]))
-                    .fold(peak, |p, x| p.max(x.abs()));
-            }
-        }
-        peak
-    }
-
-    /// Muting nodes silences the part and soloing one leaves only it. `kind`
-    /// picks the nodes the test drives; the instrument must play at `keys`.
-    fn mixer_nodes_pass_audio(path: std::path::PathBuf, kind: NodeKind) {
         let loaded = V2Loader
             .prepare(
                 &LoadRequest {
@@ -6053,105 +6052,272 @@ mod tests {
                 &|| false,
             )
             .unwrap();
-        let nodes: Vec<usize> = (1..loaded.tree.nodes.len())
-            .filter(|&n| loaded.tree.nodes[n].kind == kind)
-            .collect();
-        let count = loaded.tree.nodes.len() - 1;
-        // Try the middles of zones across the map until one key sounds.
-        let zones = &loaded.instrument.as_ref().unwrap().zones;
-        let mut keys: Vec<u8> = (0..8)
-            .filter_map(|n| zones.get(n * zones.len() / 8))
-            .map(|z| ((u16::from(z.keys.low) + u16::from(z.keys.high)) / 2) as u8)
-            .collect();
-        keys.dedup();
-        let mut core = V2Core::with_parts(1, 48000.0);
-        core.install(0, loaded.part);
-        let mut heard = false;
-        for (id, &key) in keys.iter().enumerate() {
-            core.event(
-                0,
-                on(HostNote {
-                    port: 0,
-                    channel: 0,
-                    key,
-                    id: id as i32 + 1,
-                    clap: true,
-                }),
+        let groups = loaded
+            .tree
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Group)
+            .count();
+        assert!(groups > 0, "translated source groups are nodes");
+    }
+
+    struct MixerProbe {
+        output: f32,
+        nodes: Vec<f32>,
+    }
+
+    /// Bound audio and wall time independently. Post-mix node meters verify
+    /// gates without confusing downstream effect tails with a muted source.
+    fn settled(
+        core: &mut V2Core,
+        mix: &Mix,
+        deadline: std::time::Instant,
+        blocks: usize,
+        stop_at_onset: bool,
+    ) -> MixerProbe {
+        core.set_mix(mix);
+        let count = core.parts[0].as_ref().unwrap().tree.nodes.len();
+        let mut probe = MixerProbe {
+            output: 0.,
+            nodes: vec![0.; count],
+        };
+        core.take_node_peaks(0, &mut |_, _| {});
+        for _ in 0..blocks {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mixer audio probe exceeded its 20-second deadline"
             );
-            heard = (0..150).any(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                let r = core.render(128);
-                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            // This is a routing check, so cold lazy sample heads must be
+            // serviced rather than consuming their attack as realtime silence.
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                ..Default::default()
             });
-            if heard {
+            let rendered = core.render(128);
+            for sample in rendered
+                .buses
+                .iter()
+                .flat_map(|bus| bus.iter())
+                .flat_map(|channel| &channel[..128])
+            {
+                assert!(sample.is_finite(), "nonfinite mixer output");
+                probe.output = probe.output.max(sample.abs());
+            }
+            core.take_node_peaks(0, &mut |node, peak| {
+                assert!(
+                    peak.iter().all(|x| x.is_finite()),
+                    "nonfinite node {node} meter"
+                );
+                probe.nodes[node] = probe.nodes[node].max(peak[0]).max(peak[1]);
+            });
+            core.end_block(128, &mut |_| true);
+            if stop_at_onset && probe.output > 1e-5 {
                 break;
             }
         }
-        assert!(
-            heard,
-            "silent before any node is touched: keys {keys:?}, {:?}, samples {} zones {} missing {:?}",
-            core.problems(0),
-            loaded.report.decoded.samples,
-            loaded.report.decoded.zones,
-            loaded.report.missing.iter().take(6).collect::<Vec<_>>()
+        probe
+    }
+
+    fn mixer_note(core: &mut V2Core, key: u8, velocity: u8, id: i32) -> HostNote {
+        core.panic();
+        let note = HostNote {
+            port: 0,
+            channel: 0,
+            key,
+            id,
+            clap: true,
+        };
+        core.event(
+            0,
+            Event::NoteOn {
+                note,
+                velocity: f64::from(velocity) / 127.,
+                tune: 0.,
+            },
         );
-        assert!(nodes.len() >= 2, "{kind:?} nodes: {}", nodes.len());
-        let mut mix = Mix::default();
-        mix.nodes[0] = vec![NodeMix::default(); count];
-        let open = settled(&mut core, &mix);
-        assert!(open > 1e-6, "audible with every node open");
-        for &n in &nodes {
-            mix.nodes[0][n - 1].mute = true;
-        }
-        let muted = settled(&mut core, &mix);
-        let loose: Vec<_> = (1..loaded.tree.nodes.len())
-            .filter(|&n| {
-                loaded.tree.nodes[n].kind == NodeKind::Group
-                    && loaded.tree.nodes[n]
-                        .parent
-                        .is_some_and(|p| !nodes.contains(&p) && kind == NodeKind::Mic)
-            })
-            .map(|n| loaded.tree.nodes[n].name.clone())
+        note
+    }
+
+    fn mixer_release(core: &mut V2Core, note: HostNote, mix: &Mix, deadline: std::time::Instant) {
+        core.event(
+            0,
+            Event::NoteOff(super::super::event::HostPattern {
+                port: i32::from(note.port),
+                channel: i32::from(note.channel),
+                key: i32::from(note.key),
+                id: note.id,
+                clap: note.clap,
+            }),
+        );
+        // Advance the Lua owner and flush NOTE_END before the next fresh input.
+        let _ = settled(core, mix, deadline, 8, false);
+        core.panic();
+    }
+
+    /// One installed program exercises actual onset, all-source mute, and two
+    /// active solo paths. Exhaustive combinations belong to authored fixtures.
+    fn mixer_nodes_pass_audio(path: std::path::PathBuf, kind: NodeKind) {
+        let load_started = std::time::Instant::now();
+        let load_deadline = load_started + std::time::Duration::from_secs(120);
+        let loaded = V2Loader
+            .prepare(
+                &LoadRequest {
+                    path: path.clone(),
+                    sample_rate: 48000.,
+                    ..Default::default()
+                },
+                &mut |_| {},
+                &|| std::time::Instant::now() >= load_deadline,
+            )
+            .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+        assert!(
+            std::time::Instant::now() < load_deadline,
+            "{}: loading exceeded its separate 120-second budget",
+            path.display()
+        );
+        eprintln!("MIXER_LOAD program={} load_ms={} budget_ms=120000", path.display(), load_started.elapsed().as_millis());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let tree = &loaded.tree;
+        let nodes: Vec<_> = (1..tree.nodes.len())
+            .filter(|&n| tree.nodes[n].kind == kind)
             .collect();
-        // An effect's tail may ring on after its input is muted.
-        assert!(
-            muted < open * 0.05 + 1e-7,
-            "muting every {kind:?} node leaves {muted} of {open}; groups outside: {loose:?}"
-        );
-        for &n in &nodes {
-            mix.nodes[0][n - 1].mute = false;
+        assert!(nodes.len() >= 2, "{kind:?} nodes: {}", nodes.len());
+        let zones = &loaded.instrument.as_ref().unwrap().zones;
+        let uvi = path
+            .ancestors()
+            .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")));
+        let velocity = if uvi { 64 } else { 100 };
+        // C4/64 is the retained AO audition. Other candidates are mapped at
+        // this velocity, deduplicated and bounded; failed keys get note-offs.
+        let mut keys = vec![60];
+        for zone in zones
+            .iter()
+            .filter(|z| z.velocities.low <= velocity && velocity <= z.velocities.high)
+        {
+            let key = ((u16::from(zone.keys.low) + u16::from(zone.keys.high)) / 2) as u8;
+            if !keys.contains(&key) {
+                keys.push(key);
+                if keys.len() == 4 {
+                    break;
+                }
+            }
         }
-        // Soloing a node mutes the rest, so some solo is audible and the
-        // soloed set is quieter than or equal to everything.
-        let all = settled(&mut core, &mix);
-        let mut heard_solo = false;
+        eprintln!(
+            "MIXER_PROBE program={} kind={kind:?} nodes={} candidates={keys:?} velocity={velocity} CC1=100 CC11=127",
+            path.display(),
+            nodes.len()
+        );
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, loaded.part);
+        core.play(0, Event::midi1(0xb0, 1, 100));
+        core.play(0, Event::midi1(0xb0, 11, 127));
+        core.play(0, Event::midi1(0xb0, 64, 0));
+        for &(cc, _) in &loaded.report.decoded.dynamics {
+            if !matches!(cc, 1 | 11 | 64) {
+                core.play(0, Event::midi1(0xb0, cc, 127));
+            }
+        }
+        let mut open = Mix::default();
+        open.nodes[0] = vec![NodeMix::default(); tree.nodes.len() - 1];
+        core.set_mix(&open);
+        let mut heard = None;
+        for (id, &key) in keys.iter().enumerate() {
+            let note = mixer_note(&mut core, key, velocity, id as i32 + 1);
+            // 750 × 128 frames = two audio seconds, allowing delayed Lua
+            // admission and disk service while keeping a wall-clock deadline.
+            let probe = settled(&mut core, &open, deadline, 750, true);
+            let active: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|&n| probe.nodes[n] > 1e-6)
+                .collect();
+            mixer_release(&mut core, note, &open, deadline);
+            if probe.output > 1e-5 && !active.is_empty() {
+                heard = Some(key);
+                break;
+            }
+        }
+        let key = heard.unwrap_or_else(|| panic!("{}: no onset at keys {keys:?}, velocity={velocity}, CC1=100 CC11=127; problems {:?}, samples {}, zones {}", path.display(), core.problems(0), loaded.report.decoded.samples, zones.len()));
+        let note = mixer_note(&mut core, key, velocity, 10);
+        let before_mute = settled(&mut core, &open, deadline, 750, true);
+        assert!(
+            before_mute.output > 1e-5,
+            "fresh note did not sound before mute"
+        );
+        let mut muted = open.clone();
         for &n in &nodes {
-            mix.nodes[0][n - 1].solo = true;
-            let solo = settled(&mut core, &mix);
-            mix.nodes[0][n - 1].solo = false;
+            muted.nodes[0][n - 1].mute = true;
+        }
+        let after_mute = settled(&mut core, &muted, deadline, 8, false);
+        assert!(
+            nodes.iter().all(|&n| after_mute.nodes[n] == 0.),
+            "muted {kind:?} nodes still pass post-mix audio"
+        );
+        mixer_release(&mut core, note, &muted, deadline);
+        for case in 0..2 {
+            let note = mixer_note(&mut core, key, velocity, 20 + case as i32);
+            let onset = settled(&mut core, &open, deadline, 750, true);
+            let active: Vec<_> = nodes
+                .iter()
+                .copied()
+                .filter(|&n| onset.nodes[n] > 1e-6)
+                .collect();
             assert!(
-                solo <= all * 1.01 + 1e-7,
-                "solo {} louder than all: {solo} > {all}",
-                loaded.tree.nodes[n].name
+                onset.output > 1e-5 && !active.is_empty(),
+                "fresh solo audition had no active {kind:?} source"
             );
-            heard_solo |= solo > 1e-6;
+            // Select from this note's real active nodes, so round-robin source
+            // choice cannot make a previously active group falsely fail.
+            let selected = active[case % active.len()];
+            let ancestor = |candidate: usize, mut n: usize| loop {
+                if candidate == n {
+                    break true;
+                }
+                match tree.nodes[n].parent {
+                    Some(p) => n = p,
+                    None => break false,
+                }
+            };
+            let expected: Vec<_> = (0..tree.nodes.len())
+                .map(|n| ancestor(n, selected) || ancestor(selected, n))
+                .collect();
+            let mut solo = open.clone();
+            solo.nodes[0][selected - 1].solo = true;
+            let probe = settled(&mut core, &solo, deadline, 8, false);
+            assert_eq!(
+                core.parts[0].as_ref().unwrap().audible.as_ref(),
+                expected.as_slice(),
+                "solo path for node {selected}"
+            );
+            assert!(
+                probe.nodes[selected] > 1e-6,
+                "active solo node {selected} did not pass audio after onset"
+            );
+            for &n in &nodes {
+                if !expected[n] {
+                    assert_eq!(
+                        probe.nodes[n], 0.,
+                        "node {n} leaked outside solo path {selected}"
+                    );
+                }
+            }
+            // The explicitly soloed node can still be muted. Check its own
+            // post-fader signal, not a later aggregate effect-tail peak.
+            solo.nodes[0][selected - 1].mute = true;
+            let silenced = settled(&mut core, &solo, deadline, 8, false);
+            assert_eq!(
+                silenced.nodes[selected], 0.,
+                "muted solo node {selected} leaked audio"
+            );
+            eprintln!(
+                "MIXER_PROBE selected={selected} source_peak={} output_peak={} exact_solo_mask=yes mute_peak=0",
+                probe.nodes[selected], probe.output
+            );
+            mixer_release(&mut core, note, &solo, deadline);
         }
-        assert!(heard_solo, "no {kind:?} node is audible alone");
-        // A node with nothing soloed elsewhere: soloing one while every other
-        // is muted keeps exactly that one.
-        for &n in &nodes {
-            mix.nodes[0][n - 1].mute = true;
-        }
-        mix.nodes[0][nodes[0] - 1].mute = false;
-        mix.nodes[0][nodes[0] - 1].solo = true;
-        let one = settled(&mut core, &mix);
-        mix.nodes[0][nodes[0] - 1].solo = false;
-        mix.nodes[0][nodes[0] - 1].mute = true;
-        let none = settled(&mut core, &mix);
-        assert!(
-            none < open * 0.05 + 1e-7 && one >= none,
-            "one {one}, none {none}"
-        );
+        assert_eq!(core.problems(0).offline_failures, 0, "offline sample service failed");
     }
 
     #[test]
@@ -6234,11 +6400,7 @@ mod tests {
 
     #[test]
     fn real_uvi_layer_nodes_pass_audio() {
-        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
-        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
-        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
-        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
-            eprintln!("skipped: {relative} is not installed");
+        let Some(path) = installed_ao_mixer_program() else {
             return;
         };
         mixer_nodes_pass_audio(path, NodeKind::Group);
@@ -6536,6 +6698,16 @@ mod tests {
 
     #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
+        let render = |core: &mut V2Core| {
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                ..Default::default()
+            });
+            let heard = loud(&core.render(128), 0, 128);
+            core.end_block(128, &mut |_| true);
+            heard
+        };
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
         let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
         let Some(path) = std::env::split_paths(&roots)
@@ -6561,6 +6733,13 @@ mod tests {
         assert!(loaded.report.decoded.zones > 0);
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, loaded.part);
+        // The loader publishes lazy sample heads. Offline rendering waits for
+        // storage without advancing silent frames past the onset.
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            offline: true,
+            ..Default::default()
+        });
         core.event(
             0,
             on(HostNote {
@@ -6571,8 +6750,9 @@ mod tests {
                 clap: true,
             }),
         );
-        let heard = (0..40).any(|_| loud(&core.render(128), 0, 128));
-        assert!(heard, "no output; missing: {:?}", loaded.report.missing);
+        let heard = (0..40).any(|_| render(&mut core));
+        assert!(heard, "no output; problems: {:?}", core.problems(0));
+        assert_eq!(core.problems(0).offline_failures, 0);
 
         // Samples stream: only start data is resident, and an idle budget drops it.
         let stream = loaded.stream.expect("Kontakt samples stream");
@@ -6588,12 +6768,14 @@ mod tests {
                 clap: true,
             }),
         );
-        (0..400).for_each(|_| _ = core.render(128));
-        assert!(
-            stream.trim(0, core.clock(0)) > 0,
-            "idle start data is dropped"
-        );
-        assert!(stream.resident_bytes() < held);
+        (0..400).for_each(|_| _ = render(&mut core));
+        // Cold heads may arrive while the held and release voices render.
+        // Compare the purge with its current residency, not the first onset.
+        let before_trim = stream.resident_bytes();
+        let freed = stream.trim(0, core.clock(0));
+        let after_trim = stream.resident_bytes();
+        assert!(freed > 0, "idle start data is dropped");
+        assert!(after_trim < before_trim, "purge kept {after_trim} of {before_trim} resident bytes");
         // A purged sample's first start is refused and reloads it; later starts play.
         let again = (2..200).any(|id| {
             core.event(
@@ -6607,9 +6789,11 @@ mod tests {
                 }),
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
-            (0..4).any(|_| loud(&core.render(128), 0, 128))
+            (0..4).any(|_| render(&mut core))
         });
         assert!(again, "the purged sample reloads");
+        assert_eq!(core.problems(0).offline_failures, 0);
+        eprintln!("KONTAKT_STREAM_PURGE before={before_trim} after={after_trim} freed={freed} reloaded_audible=yes");
     }
 }
 
