@@ -147,7 +147,7 @@ fn versioned_resource_names_and_opaque_bytes_reach_typed_nckp_picture_consumer()
         panic!("expected image metadata")
     };
     assert_eq!(meta.frames, 31);
-    assert_eq!(meta.size.map(|s| (s.width, s.height)), Some((40, 10)));
+    assert_eq!(meta.size.map(|s| (s.width, s.height)), Some((40.0, 10.0)));
 }
 
 #[test]
