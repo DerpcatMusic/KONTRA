@@ -15,10 +15,6 @@ const MAX_PREDELAY_MS: f32 = 250.0;
 const ALLPASS_MS: [f32; 2] = [4.77, 3.59];
 /// Tiny DC bias keeping decaying feedback out of subnormal floats (slow on x86).
 const ANTI_DENORMAL: f32 = 1e-20;
-/// Frames between exact LFO values; in between they are interpolated
-/// linearly. At 0.7 Hz that is off by under 3e-7 of the swing: a
-/// modulated delay off by a hundred-thousandth of a frame.
-const LFO_STEP: usize = 16;
 
 /// Power-of-two ring buffer; `mask` wraps indices without branches.
 struct Line {
@@ -69,8 +65,6 @@ pub struct Reverb {
     mod_depth: f32,
     lfo_phase: f32,
     lfo_step: f32,
-    /// `lfo_phase.sin_cos()`.
-    lfo: [f32; 2],
     input_coef: f32,
     /// 0 while frozen: the input no longer reaches the network.
     input_gain: f32,
@@ -114,7 +108,6 @@ impl Reverb {
             mod_depth: 0.0,
             lfo_phase: 0.0,
             lfo_step: TAU * 0.7 / sample_rate,
-            lfo: [0.0, 1.0],
             input_coef: 0.0,
             input_gain: 1.0,
             input_state: [0.0; 2],
@@ -196,20 +189,10 @@ impl Reverb {
     /// `AVX2` only from [`process_avx2`](Self::process_avx2).
     #[inline(always)]
     fn process_with<const AVX2: bool>(&mut self, left: &mut [f32], right: &mut [f32]) {
-        for (left, right) in left.chunks_mut(LFO_STEP).zip(right.chunks_mut(LFO_STEP)) {
-            let from = self.lfo;
-            for _ in 0..left.len() {
-                self.advance_lfo();
-            }
+        for (left, right) in left.iter_mut().zip(right.iter_mut()) {
+            self.advance_lfo();
             let (sin, cos) = self.lfo_phase.sin_cos();
-            self.lfo = [sin, cos];
-            let n = left.len() as f32;
-            let slope = [(sin - from[0]) / n, (cos - from[1]) / n];
-            for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-                let t = (i + 1) as f32;
-                let lfo = [from[0] + slope[0] * t, from[1] + slope[1] * t];
-                [*l, *r] = self.tick::<AVX2>([*l, *r], lfo);
-            }
+            [*left, *right] = self.tick::<AVX2>([*left, *right], [sin, cos]);
         }
     }
 
@@ -442,27 +425,77 @@ mod tests {
         }
     }
 
-    /// The interpolated LFO against an exact one every frame: within
-    /// -100 dB of the peak.
     #[test]
-    fn interpolated_lfo_matches_exact() {
-        let mut p = params(0.6);
-        p.modulation = 1.0;
-        let (mut fast, mut exact) = (Reverb::new(&p, 48_000.0), Reverb::new(&p, 48_000.0));
-        let input: Vec<f32> = (0..96_000).map(|i| (i as f32 * 0.05).sin() * (i as f32 * 0.0007).cos()).collect();
-        let (mut l, mut r) = (input.clone(), input.clone());
-        for (l, r) in l.chunks_mut(100).zip(r.chunks_mut(100)) {
-            fast.process(l, r);
+    fn lfo_rate_partition_and_tail_match_scalar_frames() {
+        let boost = 16.0f32.powi(4);
+        let (mut worst_relative, mut worst_output, mut worst_partition) = (0f32, 0f32, 0f32);
+        for rate in [8_000., 22_050., 48_000., 96_000., 192_000.] {
+            for profile in 0..4 {
+                let mut p = params(if profile == 0 { 0.6 } else { 1.0 });
+                p.modulation = if profile == 2 { 0.0 } else { 1.0 };
+                p.size = if profile == 0 { 0.0 } else { 1.0 };
+                p.room_type = if profile == 0 { 0.0 } else { 1.0 };
+                p.damping = 0.0;
+                p.diffusion = 1.0;
+                let count = (2.0 * rate) as usize;
+                let drive = (0.2 * rate) as usize;
+                let input: Vec<f32> = (0..count).map(|i| if i < drive {
+                    // Four valid gain stages bring this quiet input back to
+                    // ordinary output levels without concealing the error.
+                    ((i as f32 * 0.317).sin() + (i as f32 * 0.071).cos()) * 0.125 / boost
+                } else { 0.0 }).collect();
+                let mut exact = Reverb::new(&p, rate);
+                let oracle: Vec<[f32; 2]> = input.iter().enumerate().map(|(i, &x)| {
+                    if profile == 3 && i == drive {
+                        let mut frozen = p;
+                        frozen.freeze = 1.0;
+                        exact.set(&frozen);
+                    }
+                    exact.advance_lfo();
+                    let (sin, cos) = exact.lfo_phase.sin_cos();
+                    exact.tick::<false>([x, x], [sin, cos])
+                }).collect();
+                let peak = oracle.iter().flatten().map(|x| x.abs()).fold(0f32, f32::max);
+                let mut first_partition: Option<Vec<[f32; 2]>> = None;
+                for block in [1, 7, 16, 31, 128] {
+                    let mut fast = Reverb::new(&p, rate);
+                    let (mut l, mut r) = (input.clone(), input.clone());
+                    let mut from = 0;
+                    while from < count {
+                        if profile == 3 && from == drive {
+                            let mut frozen = p;
+                            frozen.freeze = 1.0;
+                            fast.set(&frozen);
+                        }
+                        let mut end = (from + block).min(count);
+                        if profile == 3 && from < drive { end = end.min(drive); }
+                        fast.process(&mut l[from..end], &mut r[from..end]);
+                        from = end;
+                    }
+                    let actual: Vec<_> = l.into_iter().zip(r).map(|(l, r)| [l, r]).collect();
+                    assert!(actual.iter().chain(&oracle).flatten().all(|x| x.is_finite()));
+                    let error = actual.iter().flatten().zip(oracle.iter().flatten())
+                        .map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                    let relative = error / peak.max(f32::MIN_POSITIVE);
+                    let partition_error = first_partition.as_ref().map_or(0.0, |first| {
+                        actual.iter().flatten().zip(first.iter().flatten())
+                            .map(|(a, b)| (a - b).abs()).fold(0f32, f32::max)
+                    });
+                    worst_relative = worst_relative.max(relative);
+                    worst_output = worst_output.max(error * boost);
+                    worst_partition = worst_partition.max(partition_error * boost);
+                    eprintln!("reverb audit: rate={rate}, profile={profile}, block={block}, relative={relative}, output_error={}, output_peak={}, partition_error={}",
+                        error * boost, peak * boost, partition_error * boost);
+                    assert_eq!(actual, oracle,
+                        "reverb frame clock changed PCM: rate={rate}, profile={profile}, block={block}, output error={}", error * boost);
+                    if let Some(first) = &first_partition {
+                        assert_eq!(&actual, first, "callback partition changed reverb PCM");
+                    }
+                    if first_partition.is_none() { first_partition = Some(actual); }
+                }
+            }
         }
-        let (mut worst, mut peak) = (0f32, 0f32);
-        for (i, &x) in input.iter().enumerate() {
-            exact.advance_lfo();
-            let (sin, cos) = exact.lfo_phase.sin_cos();
-            let [el, er] = exact.tick::<false>([x, x], [sin, cos]);
-            worst = worst.max((el - l[i]).abs()).max((er - r[i]).abs());
-            peak = peak.max(el.abs());
-        }
-        assert!(worst < 1e-5 * peak, "worst {worst} of peak {peak}");
+        eprintln!("reverb audit maxima: relative={worst_relative}, output_error={worst_output}, partition_error={worst_partition}");
     }
 
     #[cfg(target_arch = "x86_64")]

@@ -311,15 +311,7 @@ impl Route {
         }
     }
 
-    fn member(&self, channel: u8) -> bool {
-        self.zone().is_some_and(|(_, members)| members.contains(&channel))
-    }
-
-    fn master(&self, channel: u8) -> bool {
-        self.zone().is_some_and(|(master, _)| master == channel)
-    }
-
-    /// Channel mode, unless MPE owns the channels.
+    /// Channel mode, unless the authored MPE route owns the channels.
     fn by_channel(&self) -> bool {
         self.mode == Mode::Channel && self.mpe.zone == Zone::Off
     }
@@ -333,68 +325,144 @@ impl Route {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum In {
     /// Exact owner, velocity and initial tuning in semitones.
-    HostOn(crate::engine::HostNote, u8, f32),
+    HostOn(crate::engine::HostNote, crate::midi::Velocity, f32),
     HostOff(crate::engine::HostPattern),
+    HostOffVelocity(crate::engine::HostPattern, crate::midi::Velocity),
     HostChoke(crate::engine::HostPattern),
     HostExpression(crate::engine::HostPattern, crate::engine::HostExpression),
+    /// Native exact poly pressure retains its authored callback before acceptance.
+    HostPressure(crate::engine::HostPattern, crate::midi::ControlValue),
     NoteOn(u8, u8, u8),
+    Midi1NoteOn(u8, u8, u8),
+    NoteOnVelocity(u8, u8, crate::midi::Velocity),
+    /// Native NoteOn attribute3 absolute pitch (Q7.9 at the boundary).
+    NoteOnVelocityPitch(u8, u8, crate::midi::Velocity, f64),
     NoteOff(u8, u8),
+    /// Actual MIDI1 wire releases alone consume the velocity prefix.
+    Midi1NoteOff(u8, u8, u8),
+    Midi1ZeroNoteOff(u8, u8),
+    NoteOffVelocity(u8, u8, crate::midi::Velocity),
     Cc(u8, u8, u8),
+    Midi1Cc(u8, u8, u8),
+    MidiControl(u8, crate::midi::Control),
+    Parameter(u8, crate::midi::NativeParameter),
+    PerNoteControl(u8, u8, crate::midi::NoteControl),
+    PerNotePressure(u8, u8, crate::midi::ControlValue),
+    PerNoteManagement { channel: u8, note: u8, detach: bool, reset: bool },
     /// 0..=16383, centre 8192.
     Bend(u8, u16),
     Pressure(u8, u8),
     PolyAt(u8, u8, u8),
-    /// Host note expressions, by channel and key: semitones, pressure
-    /// (0..=127), linear gain, pan (−1..=1), brightness (0..=127).
+    Midi1PolyAt(u8, u8, u8),
+    /// Synthetic compatibility expressions: semitones, MIDI1 pressure,
+    /// linear gain, pan (−1..=1), normalized brightness.
     NoteTune(u8, u8, f32),
     NotePressure(u8, u8, u8),
     NoteGain(u8, u8, f32),
     NotePan(u8, u8, f32),
-    NoteBrightness(u8, u8, u8),
+    NoteBrightness(u8, u8, crate::midi::ControlValue),
 }
 
 impl In {
-    /// A host event as a part takes it. Per-note MIDI 2.0 bodies (CLAP note
-    /// expressions) stay per key; the rest of MIDI 2.0 narrows to MIDI 1.0.
+    /// Native wire input. Per-note values and normalized velocities retain
+    /// their precision; explicit host expressions use the exact-owner lane.
     #[cfg(feature = "plugin")]
     pub fn from_event(body: &EventBody) -> Option<Self> {
-        let unit = |v: u32| (f64::from(v) / f64::from(u32::MAX)) as f32;
-        let hi7 = |v: u32| (v >> 25) as u8;
+        use crate::midi::{Bend, Control, ControlValue, NativeParameter, NativeParameterData, NoteControl, Velocity};
         Some(match *body {
-            EventBody::PerNotePitchBend { channel, note, value, .. } => {
-                Self::NoteTune(channel, note, midi::per_note_bend_semitones(value) as f32)
+            EventBody::NoteOn2 { channel, note, velocity, attribute_type: 3, attribute, .. }
+                if channel < 16 && note < 128 =>
+                Self::NoteOnVelocityPitch(channel, note, Velocity::from_midi2(velocity), f64::from(attribute) / 512.),
+            EventBody::NoteOn2 { channel, note, velocity, .. }
+                if channel < 16 && note < 128 =>
+                Self::NoteOnVelocity(channel, note, Velocity::from_midi2(velocity)),
+            EventBody::NoteOff2 { channel, note, velocity, .. }
+                if channel < 16 && note < 128 =>
+                Self::NoteOffVelocity(channel, note, Velocity::from_midi2(velocity)),
+            EventBody::NoteOn2 { .. } | EventBody::NoteOff2 { .. } => return None,
+            // UMP v1.1.2 §7.4.6 recommends ignoring MIDI1 bank/parameter
+            // compounds in native MIDI2 CC; unified parameter messages carry
+            // their own address and full-width value below.
+            EventBody::ControlChange2 { channel, cc, value, .. }
+                if channel < 16 && cc < 128 && !crate::midi::ignored_midi2_cc(cc) =>
+                Self::MidiControl(channel, Control::Cc(cc, ControlValue::from_midi2(value))),
+            EventBody::ChannelPressure2 { channel, pressure, .. } if channel < 16 =>
+                Self::MidiControl(channel, Control::Pressure(ControlValue::from_midi2(pressure))),
+            EventBody::PitchBend2 { channel, value, .. } if channel < 16 =>
+                Self::MidiControl(channel, Control::Bend(Bend::from_midi2(value))),
+            EventBody::ControlChange2 { .. } | EventBody::ChannelPressure2 { .. } | EventBody::PitchBend2 { .. } => return None,
+            EventBody::RegisteredController { channel, bank, index, value, .. }
+                if channel < 16 && bank < 128 && index < 128 =>
+                Self::Parameter(channel, NativeParameter { registered: true, address: u16::from(bank) << 7 | u16::from(index), data: NativeParameterData::Absolute(value) }),
+            EventBody::AssignableController { channel, bank, index, value, .. }
+                if channel < 16 && bank < 128 && index < 128 =>
+                Self::Parameter(channel, NativeParameter { registered: false, address: u16::from(bank) << 7 | u16::from(index), data: NativeParameterData::Absolute(value) }),
+            EventBody::RelativeRegisteredController { channel, bank, index, delta, .. }
+                if channel < 16 && bank < 128 && index < 128 =>
+                Self::Parameter(channel, NativeParameter { registered: true, address: u16::from(bank) << 7 | u16::from(index), data: NativeParameterData::Relative(delta) }),
+            EventBody::RelativeAssignableController { channel, bank, index, delta, .. }
+                if channel < 16 && bank < 128 && index < 128 =>
+                Self::Parameter(channel, NativeParameter { registered: false, address: u16::from(bank) << 7 | u16::from(index), data: NativeParameterData::Relative(delta) }),
+            EventBody::RegisteredController { .. } | EventBody::AssignableController { .. }
+            | EventBody::RelativeRegisteredController { .. } | EventBody::RelativeAssignableController { .. } => return None,
+            EventBody::PerNotePitchBend { channel, note, value, .. } if channel < 16 && note < 128 =>
+                Self::PerNoteControl(channel, note, NoteControl::Pitch(Bend::from_midi2(value))),
+            EventBody::PolyPressure2 { channel, note, pressure, .. } if channel < 16 && note < 128 =>
+                Self::PerNotePressure(channel, note, ControlValue::from_midi2(pressure)),
+            EventBody::PerNoteCC { channel, note, cc: index, value, registered, .. }
+                if channel < 16 && note < 128 =>
+                Self::PerNoteControl(channel, note, if registered { NoteControl::Registered { index, value } }
+                    else { NoteControl::Assignable { index, value } }),
+            EventBody::PerNoteManagement { channel, note, flags, .. }
+                if channel < 16 && note < 128 =>
+                // UMP v1.1.2 Figure51: D is bit1, S is bit0; reserved
+                // fields do not change the defined action (§2.1.3).
+                Self::PerNoteManagement { channel, note, detach: flags & 2 != 0, reset: flags & 1 != 0 },
+            // Native unsupported controls never fall back to channel MIDI1.
+            EventBody::PerNoteCC { .. } | EventBody::PerNotePitchBend { .. }
+            | EventBody::PolyPressure2 { .. } | EventBody::PerNoteManagement { .. } => return None,
+            EventBody::NoteOn { channel, note, velocity: 0, .. } if channel < 16 && note < 128 => {
+                Self::Midi1ZeroNoteOff(channel, note)
             }
-            EventBody::PolyPressure2 { channel, note, pressure, .. } => {
-                Self::NotePressure(channel, note, hi7(pressure))
+            EventBody::NoteOn { channel, note, velocity, .. } if channel < 16 && note < 128 && velocity < 128 => Self::Midi1NoteOn(channel, note, velocity),
+            EventBody::NoteOn { .. } => return None,
+            EventBody::NoteOff { channel, note, velocity, .. } if channel < 16 && note < 128 && velocity <= 127 => {
+                Self::Midi1NoteOff(channel, note, velocity)
             }
-            EventBody::PerNoteCC { channel, note, cc: 7, value, registered: true, .. } => {
-                Self::NoteGain(channel, note, unit(value) * midi::PER_NOTE_VOLUME_MAX_GAIN as f32)
+            EventBody::NoteOff { .. } => return None,
+            EventBody::ControlChange { channel, cc, value, .. } if channel < 16 && cc < 128 && value < 128 => Self::Midi1Cc(channel, cc, value),
+            EventBody::ControlChange { .. } => return None,
+            EventBody::PitchBend { channel, value, .. } if channel < 16 && value < 16384 => Self::Bend(channel, value),
+            EventBody::PitchBend { .. } => return None,
+            EventBody::ChannelPressure { channel, pressure, .. } if channel < 16 && pressure < 128 => Self::Pressure(channel, pressure),
+            EventBody::ChannelPressure { .. } => return None,
+            EventBody::Aftertouch { channel, note, pressure, .. } if channel < 16 && note < 128 && pressure < 128 => {
+                Self::Midi1PolyAt(channel, note, pressure)
             }
-            EventBody::PerNoteCC { channel, note, cc: 10, value, registered: true, .. } => {
-                Self::NotePan(channel, note, unit(value) * 2.0 - 1.0)
-            }
-            EventBody::PerNoteCC { channel, note, cc: 74, value, registered: true, .. } => {
-                Self::NoteBrightness(channel, note, hi7(value))
-            }
-            EventBody::NoteOn { channel, note, velocity: 0, .. } => Self::NoteOff(channel, note),
-            EventBody::NoteOn { channel, note, velocity, .. } => Self::NoteOn(channel, note, velocity),
-            EventBody::NoteOff { channel, note, .. } => Self::NoteOff(channel, note),
-            EventBody::ControlChange { channel, cc, value, .. } => Self::Cc(channel, cc, value),
-            EventBody::PitchBend { channel, value, .. } => Self::Bend(channel, value),
-            EventBody::ChannelPressure { channel, pressure, .. } => Self::Pressure(channel, pressure),
-            EventBody::Aftertouch { channel, note, pressure, .. } => {
-                Self::PolyAt(channel, note, pressure)
-            }
+            EventBody::Aftertouch { .. } => return None,
             _ => return Self::from_event(&midi::downconvert_to_midi1(body)?),
         })
     }
 
-    fn channel(self) -> u8 {
+    pub(crate) fn channel(self) -> u8 {
         match self {
             Self::HostOn(note, ..) => note.channel,
-            Self::HostOff(p) | Self::HostChoke(p) | Self::HostExpression(p, _) => p.channel.max(0).min(15) as u8,
+            Self::PerNoteManagement { channel, .. } => channel,
+            Self::HostOff(p) | Self::HostOffVelocity(p, _) | Self::HostChoke(p) | Self::HostExpression(p, _) | Self::HostPressure(p, _) => p.channel.max(0).min(15) as u8,
             Self::NoteOn(c, ..)
+            | Self::Midi1NoteOn(c, ..)
+            | Self::Midi1Cc(c, ..)
+            | Self::NoteOnVelocity(c, ..)
+            | Self::NoteOnVelocityPitch(c, ..)
+            | Self::Parameter(c, _)
+            | Self::PerNoteControl(c, ..)
+            | Self::PerNotePressure(c, ..)
+            | Self::Midi1PolyAt(c, ..)
+            | Self::NoteOffVelocity(c, ..)
             | Self::NoteOff(c, _)
+            | Self::Midi1NoteOff(c, ..)
+            | Self::Midi1ZeroNoteOff(c, _)
+            | Self::MidiControl(c, _)
             | Self::Cc(c, ..)
             | Self::Bend(c, _)
             | Self::Pressure(c, _)
@@ -411,20 +479,30 @@ impl In {
 /// What a [`Router`] sends the part's engine.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Out {
+    /// Actual wire attack, distinct from generated articulation keyswitches.
+    InputNoteOn { physical: u8, raw_key: u8, logical: u8, key: u8, velocity: crate::midi::Velocity },
     /// The delivered original host input; generated articulation keyswitches
     /// remain ordinary notes, even when their pitch equals this input.
-    HostNoteOn(crate::engine::HostNote, u8, u8, u8, f32),
+    HostNoteOn(crate::engine::HostNote, u8, u8, crate::midi::Velocity, f32),
     NoteOn(u8, u8, u8),
+    NoteOnVelocity(u8, u8, crate::midi::Velocity),
     NoteOff(u8, u8),
+    NoteOffVelocity(u8, u8, crate::midi::Velocity),
     /// Script channel, physical input channel, key, velocity.
     NoteOnFrom(u8, u8, u8, u8),
+    NoteOnVelocityFrom(u8, u8, u8, crate::midi::Velocity),
     NoteOffFrom(u8, u8, u8),
+    NoteOffVelocityFrom(u8, u8, u8, crate::midi::Velocity),
     Cc(u8, u8, u8),
     CcFrom(u8, u8, u8, u8),
+    MidiControl(u8, crate::midi::Control),
+    MidiControlFrom(u8, u8, crate::midi::Control),
     SoundOffFrom(u8, u16),
     BendFrom(u8, u8, u16),
     PressureFrom(u8, u8, u8),
     PolyAtFrom(u8, u8, u8, u8),
+    /// Compatibility callback only; canonical channel pressure owns the sound.
+    MpePolyAt(u8, u8, u8, crate::midi::ControlValue),
     Bend(u8, u16),
     Pressure(u8, u8),
     PolyAt(u8, u8, u8),
@@ -434,56 +512,34 @@ pub enum Out {
     FreezeExpression(u8, u8),
 }
 
-/// MIDI state of each channel's RPN: selected parameter and fine data entry.
-#[derive(Clone, Copy, Default)]
-struct Rpn {
-    msb: u8,
-    lsb: u8,
-    cents: Option<u8>,
-}
-
 /// One rack slot's pre-script MIDI layer on the audio thread.
 pub struct Router {
     pub route: Route,
-    /// The articulation the scripts were last switched to, as far as known.
     current: Option<usize>,
-    /// Per input channel and key: the channel and key the engine got.
     held: [[(u8, u8); 128]; 16],
-    /// Whether the original note carried a physical owner through Channel mode.
     held_from: [u128; 16],
-    /// MPE: member channels' pitch bend and the live bend range.
-    bend: [u16; 16],
-    /// Remember pressure even while a member has no active key.
-    member_pressure: [Option<u8>; 16],
-    bend_range: (u8, u8),
-    /// Explicitly negotiated master sensitivity; otherwise keep the library's range.
-    master_bend_range: Option<(u8, u8)>,
-    rpn: [Rpn; 16],
-    /// Per channel and key as the engine got them.
+    member_pressure: [Option<crate::midi::ControlValue>; 16],
+    /// Read-only projection of the engine's effective negotiated zones.
+    mpe: crate::midi::MpeZones,
+    /// Authored configuration already installed in the engine.
+    configured_mpe: Option<(Mpe, bool)>,
     expression: Box<[[Expression; 128]; 16]>,
     brightness: [u8; 128],
-    /// The part's scripts: they take pressure per note (`on poly_at`), and
-    /// channel controllers once, not per member channel.
     scripted: bool,
     handles_pressure: bool,
-    /// The scripts [`Self::current`] is known for, by address: new ones
-    /// (a reload, restored values) start at the library's own articulation.
     script: usize,
 }
 
 impl Default for Router {
     fn default() -> Self {
-        let route = Route::default();
         Self {
-            bend_range: (route.mpe.bend_range, 0),
-            master_bend_range: None,
-            route,
+            route: Route::default(),
             current: None,
             held: [[(NONE, NONE); 128]; 16],
             held_from: [0; 16],
-            bend: [8192; 16],
             member_pressure: [None; 16],
-            rpn: [Rpn { msb: 127, lsb: 127, cents: None }; 16],
+            mpe: crate::midi::MpeZones::default(),
+            configured_mpe: None,
             expression: Box::new([[Expression::default(); 128]; 16]),
             brightness: [NONE; 128],
             scripted: false,
@@ -493,36 +549,56 @@ impl Default for Router {
     }
 }
 
-/// Pressure as volume: −12 dB at none, unity at full.
 fn pressure_gain(pressure: u8) -> f32 {
     10f32.powf((f32::from(pressure.min(127)) / 127.0 - 1.0) * 12.0 / 20.0)
 }
 
 impl Router {
-    /// Take a new route; held notes keep where they went.
+    /// Take a new route; held notes retain their captured destination.
     pub fn set_route(&mut self, route: Route) {
         if route != self.route {
-            if route.mpe.bend_range != self.route.mpe.bend_range {
-                self.bend_range = (route.mpe.bend_range, 0);
+            if route.mpe != self.route.mpe || route.by_channel() != self.route.by_channel() {
+                self.configured_mpe = None;
+                let mut mpe = crate::midi::MpeZones::default();
+                if !route.by_channel() && let Some((manager, _)) = route.zone() {
+                    mpe.configure(manager, route.mpe.members, route.mpe.bend_range);
+                }
+                self.mpe = mpe;
             }
-            if route.mpe.zone != self.route.mpe.zone { self.master_bend_range = None; }
             self.route = route;
             self.forget();
         }
     }
 
     /// Each channel plays its own articulation.
+    /// Project the same static setup as real ingress, without installing it.
+    pub(crate) fn source_topology(&self, current: crate::midi::MpeZones) -> Option<crate::midi::MpeZones> {
+        if self.route.count != 0 || self.route.by_channel()
+            || !self.route.keys.iter().enumerate().all(|(key, &mapped)| key == usize::from(mapped)) {
+            return None;
+        }
+        if self.configured_mpe == Some((self.route.mpe, self.route.by_channel())) {
+            return Some(current);
+        }
+        let mut projected = crate::midi::MpeZones::default();
+        if let Some((manager, members, range)) = self.mpe_setup() {
+            projected.configure(manager, members, range)?;
+        }
+        Some(projected)
+    }
+
+    fn mpe_setup(&self) -> Option<(u8, u8, u8)> {
+        if self.route.by_channel() { None } else { self.route.zone().map(|(manager, _)|
+            (manager, self.route.mpe.members, self.route.mpe.bend_range)) }
+    }
+
     pub fn by_channel(&self) -> bool {
-        self.route.by_channel()
+        self.route.mode == Mode::Channel && self.mpe.zones().iter().all(|zone| zone.members == 0)
     }
 
     /// Physical input channels stopped by a channel-mode message.
     pub(crate) fn stop_channels(&self, channel: u8) -> u16 {
-        let mut channels = 1u16 << (channel & 15);
-        if let Some((master, members)) = self.route.zone() && channel == master {
-            for member in members { channels |= 1 << member; }
-        }
-        channels
+        (1u16 << (channel & 15)) | self.mpe.manager(channel).map_or(0, |zone| zone.member_mask())
     }
 
     /// The scripts' articulation may have changed some other way (a click):
@@ -533,11 +609,10 @@ impl Router {
 
     pub(crate) fn reset_midi(&mut self) {
         self.forget();
+        self.configured_mpe = None;
         self.held.fill([(NONE, NONE); 128]);
         self.held_from.fill(0);
-        self.bend.fill(8192);
         self.member_pressure.fill(None);
-        self.rpn.fill(Rpn { msb: 127, lsb: 127, cents: None });
         self.expression.fill([Expression::default(); 128]);
         self.brightness.fill(NONE);
     }
@@ -549,7 +624,7 @@ impl Router {
         c.port == port
             && (c.channel < 0
                 || c.channel == i16::from(channel)
-                || r.zone().is_some_and(|(master, members)| master == channel || members.contains(&channel))
+                || self.mpe.zone(channel).is_some()
                 || r.by_channel() && r.arts().iter().any(|a| a.enabled && a.channel == channel))
     }
 
@@ -645,11 +720,6 @@ impl Router {
         }
     }
 
-    fn member_tune(&self, channel: u8) -> f32 {
-        (f32::from(self.bend[channel as usize & 15]) - 8192.0) / 8192.0
-            * (f32::from(self.bend_range.0) + f32::from(self.bend_range.1) / 100.).min(96.)
-    }
-
     fn pressure(&mut self, channel: u8, key: u8, value: u8, out: &mut impl FnMut(Out)) {
         out(Out::PolyAt(channel, key, value));
         if !self.handles_pressure {
@@ -660,17 +730,48 @@ impl Router {
     /// Route one input to the part's engine: `home` is the part's channel,
     /// where channel mode plays everything.
     pub fn input(&mut self, ev: In, home: u8, output: &mut impl FnMut(Out)) {
-        let (ev, host_note) = match ev {
-            In::HostOn(note, velocity, tune) => (In::NoteOn(note.channel, note.key, velocity), Some((note,tune))),
-            ev => (ev, None),
+        self.input_impl(ev, home, false, None, output);
+    }
+
+    fn input_impl(&mut self, ev: In, home: u8, bind_input: bool, precise_onset: Option<crate::midi::Velocity>, output: &mut impl FnMut(Out)) {
+        use crate::midi::Velocity;
+        let canonical = if let In::MidiControl(_, control) = ev { Some(control) } else { None };
+        let ev = match ev {
+            In::Midi1Cc(c, cc, raw) => In::Cc(c, cc, raw),
+            In::Midi1PolyAt(c, n, raw) => In::PolyAt(c, n, raw),
+            In::MidiControl(c, crate::midi::Control::Cc(cc, value)) => In::Cc(c, cc, value.midi1()),
+            In::MidiControl(c, crate::midi::Control::Cc14 { cc, raw, .. }) => In::Cc(c, cc, raw),
+            In::MidiControl(c, crate::midi::Control::Bend(value)) => In::Bend(c, value.midi1()),
+            In::MidiControl(c, crate::midi::Control::Pressure(value)) => In::Pressure(c, value.midi1()),
+            In::MidiControl(c, crate::midi::Control::ResetPressure) => In::Pressure(c, 0),
+            ev => ev,
+        };
+        let (ev, host_note, mut onset_velocity, release_velocity) = match ev {
+            In::Midi1NoteOn(c, n, v) => (In::NoteOn(c, n, v), None, precise_onset, None),
+            In::Midi1NoteOff(c, n, v) => (In::NoteOff(c, n), None, None, Some(Velocity::from_midi1(v))),
+            In::Midi1ZeroNoteOff(c, n) => (In::NoteOff(c, n), None, None, Some(Velocity::from_midi1(64))),
+            In::HostOn(note, velocity, tune) => (In::NoteOn(note.channel, note.key, velocity.midi1()), Some((note,tune)), Some(velocity), None),
+            In::NoteOnVelocity(c, n, v) | In::NoteOnVelocityPitch(c, n, v, _) => (In::NoteOn(c, n, v.midi1().max(1)), None, Some(v), None),
+            In::NoteOffVelocity(c, n, v) => (In::NoteOff(c, n), None, None, Some(v)),
+            ev => (ev, None, None, None),
         };
         let r = self.route;
+        let by_channel = self.by_channel();
+        let mpe = self.mpe;
         let channel = ev.channel();
-        let to = if r.by_channel() { home & 15 } else { channel };
-        let out = &mut |o| output(if r.by_channel() {
+        let to = if by_channel { home & 15 } else { channel };
+        let out = &mut |o| {
+            let o = match (canonical, o) {
+                (Some(control), Out::Cc(c, ..) | Out::Bend(c, _) | Out::Pressure(c, _)) => Out::MidiControl(c, control),
+                (_, o) => o,
+            };
+            output(if by_channel {
             match o {
                 Out::NoteOn(c, n, v) => Out::NoteOnFrom(c, channel, n, v),
                 Out::NoteOff(c, n) => Out::NoteOffFrom(c, channel, n),
+                Out::NoteOnVelocity(c, n, v) => Out::NoteOnVelocityFrom(c, channel, n, v),
+                Out::NoteOffVelocity(c, n, v) => Out::NoteOffVelocityFrom(c, channel, n, v),
+                Out::MidiControl(c, control) => Out::MidiControlFrom(c, channel, control),
                 Out::Cc(c, cc, v) => Out::CcFrom(c, channel, cc, v),
                 Out::Bend(c, v) => Out::BendFrom(c, channel, v),
                 Out::Pressure(c, v) => Out::PressureFrom(c, channel, v),
@@ -678,10 +779,13 @@ impl Router {
                 o => o,
             }
         } else { o });
+        };
         match ev {
             // HostOn is normalized above with its identity retained for final
             // delivery; the other exact events resolve engine-owned tuples.
-            In::HostOn(..) | In::HostOff(..) | In::HostChoke(..) | In::HostExpression(..) => {},
+            In::HostOn(..) | In::HostOff(..) | In::HostOffVelocity(..) | In::HostChoke(..) | In::HostExpression(..) | In::HostPressure(..)
+            | In::NoteOnVelocity(..) | In::NoteOnVelocityPitch(..) | In::NoteOffVelocity(..) | In::Midi1NoteOn(..) | In::Midi1Cc(..) | In::Midi1PolyAt(..) | In::Midi1NoteOff(..) | In::Midi1ZeroNoteOff(..) | In::MidiControl(..)
+            | In::Parameter(..) | In::PerNoteControl(..) | In::PerNotePressure(..) | In::PerNoteManagement { .. } => {},
             In::NoteOn(_, note, velocity) => {
                 let key = r.keys[note as usize & 127];
                 if key == NONE {
@@ -701,31 +805,37 @@ impl Router {
                             0 => velocity,
                             fixed => fixed,
                         };
+                        // Authored articulation rescaling deliberately writes a
+                        // new MIDI1 velocity; normal routing retains host precision.
+                        if onset_velocity.is_some() { onset_velocity = Some(Velocity::from_midi1(velocity)); }
                     }
                     self.switch(a, to, out);
                 }
                 // A new note on a key starts from its channel's expression.
-                if r.member(channel) {
+                if mpe.member(channel).is_some() {
                     out(Out::FreezeExpression(to, key));
                 }
-                let tune = if r.member(channel) { self.member_tune(channel) } else { 0.0 };
                 self.brightness[key as usize] = NONE;
-                self.set_expression(to, key, |x| *x = Expression { tune, ..Expression::default() }, out);
+                self.set_expression(to, key, |x| *x = Expression::default(), out);
                 self.held[channel as usize][note as usize & 127] = (to, key);
                 let bit = 1u128 << (note & 127);
-                if r.by_channel() { self.held_from[channel as usize] |= bit; }
+                if by_channel { self.held_from[channel as usize] |= bit; }
                 else { self.held_from[channel as usize] &= !bit; }
                 if let Some((note,tune)) = host_note {
-                    out(Out::HostNoteOn(note, to, key, velocity, tune));
-                } else if r.by_channel() {
+                    out(Out::HostNoteOn(note, to, key, onset_velocity.unwrap_or_else(|| Velocity::from_midi1(velocity)), tune));
+                } else if bind_input {
+                    out(Out::InputNoteOn { physical: channel, raw_key: note, logical: to, key,
+                        velocity: onset_velocity.unwrap_or_else(|| Velocity::from_midi1(velocity)) });
+                } else if let Some(velocity) = onset_velocity {
+                    if by_channel { out(Out::NoteOnVelocityFrom(to, channel, key, velocity)); }
+                    else { out(Out::NoteOnVelocity(to, key, velocity)); }
+                } else if by_channel {
                     out(Out::NoteOnFrom(to, channel, key, velocity));
                 } else {
                     out(Out::NoteOn(to, key, velocity));
                 }
-                if r.member(channel) {
-                    if let Some(value) = self.member_pressure[channel as usize] {
-                        self.pressure(to, key, value, out);
-                    }
+                if mpe.member(channel).is_some() && let Some(value) = self.member_pressure[channel as usize] {
+                    out(Out::MpePolyAt(to, channel, key, value));
                 }
             }
             In::NoteOff(_, note) => {
@@ -739,92 +849,68 @@ impl Router {
                 if key == NONE {
                     return;
                 }
-                if from || r.by_channel() {
-                    out(Out::NoteOffFrom(to, channel, key));
+                if from || by_channel {
+                    if let Some(velocity) = release_velocity { out(Out::NoteOffVelocityFrom(to, channel, key, velocity)); }
+                    else { out(Out::NoteOffFrom(to, channel, key)); }
                     return;
                 }
                 let shared = (0..16).any(|c| c != channel as usize && self.held[c][note as usize & 127] == (to, key));
                 if !shared {
-                    out(Out::NoteOff(to, key));
-                }
-            }
-            In::Bend(_, value) if r.member(channel) => {
-                self.bend[channel as usize] = value.min(16383);
-                let tune = self.member_tune(channel);
-                let row = self.held[channel as usize];
-                for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.set_expression(to, key, |x| x.tune = tune, out);
+                    if let Some(velocity) = release_velocity { out(Out::NoteOffVelocity(to, key, velocity)); }
+                    else { out(Out::NoteOff(to, key)); }
                 }
             }
             In::Bend(_, value) => {
                 out(Out::Bend(to, value));
             }
-            In::Pressure(_, value) if r.member(channel) => {
-                self.member_pressure[channel as usize] = Some(value.min(127));
-                let row = self.held[channel as usize];
-                for (to, key) in row.into_iter().filter(|h| h.1 != NONE) {
-                    self.pressure(to, key, value, out);
+            In::Pressure(_, value) => {
+                let precise = match canonical {
+                    Some(crate::midi::Control::Pressure(value)) => value,
+                    _ => crate::midi::ControlValue::from_midi1(value),
+                };
+                self.member_pressure[channel as usize] = Some(precise);
+                if mpe.member(channel).is_some() {
+                    for (logical,key) in self.held[channel as usize].into_iter().filter(|held| held.1 != NONE) {
+                        out(Out::MpePolyAt(logical, channel, key, precise));
+                    }
                 }
                 out(Out::Pressure(to, value));
             }
-            In::Pressure(_, value) => out(Out::Pressure(to, value)),
             In::PolyAt(_, note, value) => {
                 let (to, key) = self.note_route(channel, note, to);
                 if key != NONE { out(Out::PolyAt(to, key, value)); }
             }
             In::Cc(_, 121, value) => {
-                // The engine fences older callbacks first; the pressure-zero
-                // callbacks below belong to this reset and must survive it.
                 out(Out::Cc(to, 121, value));
                 let channels = self.stop_channels(channel);
                 for c in (0..16u8).filter(|&c| channels & (1 << c) != 0) {
-                    self.bend[c as usize] = 8192;
-                    let had_pressure = self.member_pressure[c as usize].take().is_some();
-                    self.rpn[c as usize] = Rpn { msb: 127, lsb: 127, cents: None };
-                    if r.member(c) {
-                        let reset_gain = had_pressure && !self.handles_pressure;
-                        for (to, key) in self.held[c as usize].into_iter().filter(|h| h.1 != NONE) {
-                            if had_pressure { out(Out::PolyAt(to, key, 0)); }
-                            self.set_expression(to, key, |x| {
-                                x.tune = 0.;
-                                if reset_gain { x.gain = 1.; }
-                            }, out);
-                        }
-                    }
+                    self.member_pressure[c as usize] = None;
                 }
             }
-            In::Cc(_, cc @ (120 | 123), value) => {
+            In::Cc(_, cc @ (120 | 123..=127), value) => {
                 let channels = self.stop_channels(channel);
                 // Sound-off retains physical routing until key-up; a remap
                 // made meanwhile must not change where its release goes.
-                for owner in (0..16).filter(|owner| cc == 123 && channels & (1 << owner) != 0) {
+                for owner in (0..16).filter(|owner| cc != 120 && channels & (1 << owner) != 0) {
                     let row = std::mem::replace(&mut self.held[owner], [(NONE, NONE); 128]);
                     let from = std::mem::take(&mut self.held_from[owner]);
                     // A mode change does not change who owns existing notes.
                     for (note, (to, key)) in row.into_iter().enumerate() {
-                        if key != NONE && (r.by_channel() || from & (1u128 << note) != 0) {
+                        if key != NONE && (by_channel || from & (1u128 << note) != 0) {
                             out(Out::NoteOffFrom(to, owner as u8, key));
                         }
                     }
                 }
-                if cc == 120 && r.by_channel() {
+                if cc == 120 {
                     out(Out::SoundOffFrom(to, channels));
-                } else if !r.by_channel() {
+                } else {
+                    // Retain the received mode number; its implicit release
+                    // does not enable unsupported Omni/Mono mode switching.
                     out(Out::Cc(to, cc, value));
                 }
             }
             In::Cc(_, cc, value) => {
-                if r.zone().is_some() && self.rpn_cc(channel, cc, value) {
-                    // Member sensitivity is shared by the zone and takes
-                    // effect immediately, including bends already sounding.
-                    for member in r.zone().map(|z| z.1).into_iter().flatten() {
-                        let tune = self.member_tune(member);
-                        for (to, key) in self.held[member as usize].into_iter().filter(|h| h.1 != NONE) {
-                            self.set_expression(to, key, |x| x.tune = tune, out);
-                        }
-                    }
-                }
-                if cc == 74 && r.member(channel) {
+                if cc == 74 && mpe.member(channel).is_some() {
                     let row = self.held[channel as usize];
                     for (_, key) in row.into_iter().filter(|h| h.1 != NONE) {
                         self.brightness[key as usize] = value;
@@ -861,7 +947,7 @@ impl Router {
                 // when articulation mapping changes while the key is held.
                 let (to, key) = self.note_route(channel, note, to);
                 if key != NONE {
-                    self.set_expression(to, key, |x| x.note_cc74 = Some(value.min(127)), out);
+                    self.set_expression(to, key, |x| x.note_cc74 = Some(value), out);
                 }
             }
         }
@@ -869,62 +955,49 @@ impl Router {
 
     /// Follow RPN 0 (pitch bend range) on member channels and the MPE
     /// configuration message (RPN 6) on the master channel.
-    fn rpn_cc(&mut self, channel: u8, cc: u8, value: u8) -> bool {
-        let rpn = &mut self.rpn[channel as usize];
-        match cc {
-            101 => { rpn.msb = value; rpn.cents = None; }
-            100 => { rpn.lsb = value; rpn.cents = None; }
-            98 | 99 => *rpn = Rpn { msb: 127, lsb: 127, cents: None },
-            6 | 38 => match (rpn.msb, rpn.lsb) {
-                (0, 0) if self.route.member(channel) || self.route.master(channel) => {
-                    let master = self.route.master(channel);
-                    let current = if master { self.master_bend_range.unwrap_or((2, 0)) } else { self.bend_range };
-                    let range = if cc == 38 {
-                        rpn.cents = Some(value.min(127));
-                        (current.0, value.min(127))
-                    } else {
-                        // Omitting the LSB after selecting RPN 0 means zero
-                        // cents; an LSB sent first still belongs to this entry.
-                        (value.min(96), rpn.cents.unwrap_or(0))
-                    };
-                    if master { self.master_bend_range = Some(range); return false; }
-                    let before = self.bend_range;
-                    self.bend_range = range;
-                    return before != self.bend_range;
-                }
-                (0, 6) if cc == 6 && self.route.master(channel) => {
-                    if value == 0 {
-                        self.route.mpe.zone = Zone::Off;
-                        self.master_bend_range = None;
-                    } else {
-                        self.route.mpe.members = value.min(15);
-                        self.bend_range = (48, 0);
-                        self.master_bend_range = Some((2, 0));
-                        return true;
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
+    /// Reconcile routing caches only after Engine reconciles musical owners.
+    fn sync_mpe(&mut self, mpe: crate::midi::MpeZones, _out: &mut impl FnMut(Out)) {
+        let previous = self.mpe;
+        self.mpe = mpe;
+        for channel in 0..16u8 {
+            let old = previous.zone(channel);
+            let new = mpe.zone(channel);
+            if old.map(|zone| (zone.manager, zone.manager == channel))
+                != new.map(|zone| (zone.manager, zone.manager == channel))
+            {
+                self.member_pressure[channel as usize] = None;
+                self.held[channel as usize].fill((NONE, NONE));
+                self.held_from[channel as usize] = 0;
+                // Expression is indexed by the delivered route, not this
+                // physical input. Each new note resets its own destination.
+            }
         }
-        false
     }
+
 }
 
 /// Apply what a router sends to its engine.
 pub(crate) fn apply(e: &mut Engine, o: Out) {
     match o {
-        Out::HostNoteOn(note, c, n, v, tune) => { e.host_note_on(note, c, n, v, tune); }
+        Out::InputNoteOn { physical, logical, key, velocity, .. } => e.note_on_from_velocity(logical, physical, key, velocity),
+        Out::HostNoteOn(note, c, n, v, tune) => { e.host_note_on_velocity(note, c, n, v, tune); }
         Out::NoteOn(c, n, v) => e.note_on(c, n, v),
         Out::NoteOff(c, n) => e.note_off(c, n),
         Out::NoteOnFrom(c, owner, n, v) => e.note_on_from(c, owner, n, v),
         Out::NoteOffFrom(c, owner, n) => e.note_off_from(c, owner, n),
+        Out::NoteOnVelocity(c, n, v) => e.note_on_velocity(c, n, v),
+        Out::NoteOffVelocity(c, n, v) => e.note_off_velocity(c, n, v),
+        Out::NoteOnVelocityFrom(c, owner, n, v) => e.note_on_from_velocity(c, owner, n, v),
+        Out::NoteOffVelocityFrom(c, owner, n, v) => e.note_off_from_velocity(c, owner, n, v),
+        Out::MidiControl(c, control) => e.control_from(c, c, control),
+        Out::MidiControlFrom(c, input, control) => e.control_from(c, input, control),
         Out::Cc(c, cc, v) => e.cc(c, cc, v),
         Out::CcFrom(c, input, cc, v) => e.cc_from(c, input, cc, v),
         Out::SoundOffFrom(c, mask) => e.all_sound_off_from(c, mask),
         Out::BendFrom(c, input, v) => e.pitch_bend_from(c, input, v),
         Out::PressureFrom(c, input, v) => e.channel_pressure_from(c, input, v),
         Out::PolyAtFrom(c, input, n, v) => e.poly_pressure_from(c, input, n, v),
+        Out::MpePolyAt(c, input, n, v) => e.mpe_poly_pressure_from(c, input, n, v),
         Out::Bend(c, v) => e.pitch_bend(c, v),
         Out::Pressure(c, v) => e.channel_pressure(c, v),
         Out::PolyAt(c, n, v) => e.poly_pressure(c, n, v),
@@ -937,15 +1010,83 @@ pub(crate) fn apply(e: &mut Engine, o: Out) {
 /// Send `ev` through `r` to its part's engine `e`; notes in channel mode
 /// arrive on `home`.
 pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
+    feed_on_port(r,e,ev,home,0);
+}
+
+pub(crate) fn feed_on_port(r: &mut Router, e: &mut Engine, ev: In, home: u8, port: u8) {
+    // Empty slots still receive setup/controller input, but cannot own a note.
+    if matches!(ev, In::HostOn(..)) && e.bank().is_none() && e.script().is_none() { return; }
+    // Wire protocol decoding happens once. Native/exact velocities never
+    // consume a MIDI1 prefix, and selectors retain the original attack byte.
+    let precise_onset = if let In::Midi1NoteOn(channel, _, raw) = ev { Some(e.midi1_velocity(channel, raw)) } else { None };
+    let ev = match ev {
+        In::Midi1NoteOff(channel, key, raw) => In::NoteOffVelocity(channel, key, e.midi1_release_velocity(channel, raw)),
+        In::Midi1ZeroNoteOff(channel, key) => {
+            e.midi1_velocity(channel, 0);
+            In::NoteOffVelocity(channel, key, crate::midi::Velocity::from_midi1(64))
+        },
+        ev => ev,
+    };
+    let address = match ev {
+        In::Midi1NoteOn(channel, key, _) => Some(crate::engine::InputAddress { port, channel, key }),
+        In::NoteOnVelocity(channel, key, _) | In::NoteOnVelocityPitch(channel, key, ..) => Some(crate::engine::InputAddress { port, channel, key }),
+        _ => None,
+    };
+    if let Some(address) = address && !e.admit_input_note(address) { return; }
     if let In::HostOn(note, ..) = ev && !e.admit_host_note(note) { return; }
     r.follow(e);
-    let zone = if r.by_channel() { None } else { r.route.zone() };
-    e.set_mpe_zone(zone.map(|(master, members)| (master, members.fold(0u16, |mask, member| mask | (1 << member)))));
-    e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
-        (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
+    let configured = (r.route.mpe, r.route.by_channel());
+    if r.configured_mpe != Some(configured) {
+        e.configure_mpe(r.mpe_setup());
+        r.configured_mpe = Some(configured);
+    }
+    let (ev, mut received) = match ev {
+        In::Midi1Cc(input, cc, raw) => {
+            let Some(received) = e.receive_midi1_cc(input, cc, raw) else { return; };
+            (In::MidiControl(input, received.control), Some(received))
+        },
+        In::Cc(input, cc, raw) => (ev, e.receive_controller(input, cc, raw)),
+        // Canonical native MIDI2 controls do not participate in the MIDI1
+        // compound decoder, including ordinary authored CC96/97 delivery.
+        In::MidiControl(_, control @ (crate::midi::Control::Cc(..) | crate::midi::Control::Cc14 { .. })) =>
+            (ev, Some(crate::midi::ReceivedControl::without_parameter(control))),
+        ev => (ev, None),
+    };
+    r.sync_mpe(e.mpe_zones(), &mut |output| apply(e, output));
+    // Channel modes can be consumed by ownership handling rather than ordinary
+    // controller callbacks; their raw library receiver slot still changes first.
+    let raw_mode = match ev {
+        In::Cc(input, cc @ 120..=127, raw) => Some((input,
+            crate::midi::Control::Cc(cc, crate::midi::ControlValue::from_midi1(raw)))),
+        In::MidiControl(input, control @ crate::midi::Control::Cc(120..=127, _)) => Some((input, control)),
+        _ => None,
+    };
+    if let Some((input, control)) = raw_mode {
+        e.receive_library_control(if r.by_channel() { home & 15 } else { input }, control);
+    }
+    // Disabled native stop messages remain controls: do not remove captured
+    // note routes or emit physical key-ups before the instrument sees them.
+    let disabled_stop = match ev {
+        In::Cc(input, cc @ (120 | 123), raw) => Some((input,
+            crate::midi::Control::Cc(cc, crate::midi::ControlValue::from_midi1(raw)))),
+        In::MidiControl(input, control @ crate::midi::Control::Cc(120 | 123, _)) => Some((input, control)),
+        _ => None,
+    };
+    if let Some((input, control)) = disabled_stop
+        && !e.native_note_action_enabled(control.legacy().0)
+    {
+        let logical = if r.by_channel() { home & 15 } else { input };
+        e.control_from_received_on_port(logical, input,
+            received.take().unwrap_or_else(|| crate::midi::ReceivedControl::without_parameter(control)), port);
+        return;
+    }
     match ev {
-        In::HostOff(pattern) | In::HostChoke(pattern) => {
-            if matches!(ev,In::HostChoke(_)) { e.host_note_choke(pattern); } else { e.host_note_off(pattern); }
+        In::HostOff(pattern) | In::HostOffVelocity(pattern, _) | In::HostChoke(pattern) => {
+            match ev {
+                In::HostChoke(_) => e.host_note_choke(pattern),
+                In::HostOffVelocity(_, velocity) => e.host_note_off_velocity(pattern, velocity),
+                _ => e.host_note_off(pattern),
+            }
             let mut index = 0;
             while let Some((note,_)) = e.host_note_at(index) {
                 let (channel,key)=r.held[note.channel as usize][note.key as usize];
@@ -957,16 +1098,65 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
                 index += 1;
             }
         },
+        In::Parameter(input, value) => {
+            let logical = if r.by_channel() { home & 15 } else { input };
+            e.native_parameter_from(logical, input, value);
+        },
+        In::PerNoteControl(channel, raw_key, value) => {
+            let to = if r.by_channel() { home & 15 } else { channel };
+            let (logical, key) = r.note_route(channel, raw_key, to);
+            // A filtered key may still carry pre-On protocol state for a later
+            // route. Callback note remains a valid MIDI key in that case.
+            e.note_controller_from(logical, if key == NONE { raw_key } else { key },
+                crate::engine::InputAddress { port, channel, key: raw_key }, value);
+        },
+        In::PerNoteManagement { channel, note: key, detach, reset } => {
+            e.per_note_manage(crate::engine::InputAddress { port, channel, key }, detach, reset);
+        },
+        In::PerNotePressure(channel, raw_key, value) => {
+            let to = if r.by_channel() { home & 15 } else { channel };
+            let (logical, key) = r.note_route(channel, raw_key, to);
+            e.per_note_pressure_from(logical, if key == NONE { raw_key } else { key },
+                crate::engine::InputAddress { port, channel, key: raw_key }, value);
+        },
+        In::Midi1PolyAt(channel, raw_key, value) => {
+            let to = if r.by_channel() { home & 15 } else { channel };
+            let (logical, key) = r.note_route(channel, raw_key, to);
+            e.per_note_pressure_from(logical, if key == NONE { raw_key } else { key },
+                crate::engine::InputAddress { port, channel, key: raw_key }, crate::midi::ControlValue::from_midi1(value));
+        },
         In::HostExpression(pattern, expression) => e.host_expression(pattern, expression),
-        ev => r.input(ev, home, &mut |o| apply(e, o)),
+        In::HostPressure(pattern, pressure) => e.host_pressure(pattern, pressure),
+        ev => r.input_impl(ev, home, matches!(ev, In::Midi1NoteOn(..) | In::NoteOnVelocity(..) | In::NoteOnVelocityPitch(..)), precise_onset, &mut |output| match output {
+            Out::InputNoteOn { physical, raw_key, logical, key, velocity } => {
+                let pitch = if let In::NoteOnVelocityPitch(_, _, _, pitch) = ev { Some(pitch) } else { None };
+                e.note_on_input_velocity_pitch(crate::engine::InputAddress { port, channel: physical, key: raw_key }, logical, key, velocity, pitch);
+            },
+            Out::MidiControl(channel, control) => match control {
+                crate::midi::Control::Cc(..) | crate::midi::Control::Cc14 { .. } => e.control_from_received_on_port(channel, channel,
+                    received.take().unwrap_or_else(|| crate::midi::ReceivedControl::without_parameter(control)), port),
+                _ => e.control_from(channel, channel, control),
+            },
+            Out::MidiControlFrom(channel, input, control) => match control {
+                crate::midi::Control::Cc(..) | crate::midi::Control::Cc14 { .. } => e.control_from_received_on_port(channel, input,
+                    received.take().unwrap_or_else(|| crate::midi::ReceivedControl::without_parameter(control)), port),
+                _ => e.control_from(channel, input, control),
+            },
+            Out::Cc(channel, cc, value) => e.control_from_received_on_port(channel, channel,
+                received.take().unwrap_or_else(|| crate::midi::ReceivedControl::without_parameter(
+                    crate::midi::Control::Cc(cc, crate::midi::ControlValue::from_midi1(value)))), port),
+            Out::CcFrom(channel, input, cc, value) => e.control_from_received_on_port(channel, input,
+                received.take().unwrap_or_else(|| crate::midi::ReceivedControl::without_parameter(
+                    crate::midi::Control::Cc(cc, crate::midi::ControlValue::from_midi1(value)))), port),
+            output => apply(e, output),
+        }),
     }
-    if let In::NoteOff(input,key)=ev
+    if let In::NoteOff(input,key) | In::NoteOffVelocity(input,key,_)=ev
         && let Some(route)=e.held_host_route(input,key) {
         r.held[input as usize][key as usize]=route;
         if input!=route.0 { r.held_from[input as usize] |= 1u128<<key; }
     }
-    e.set_mpe_master_bend_range(r.master_bend_range.map(|(semitones, cents)|
-        (f32::from(semitones) + f32::from(cents) / 100.).min(96.)));
+
 }
 
 /// Whether a part receives host input. Releases, bend and controllers other
@@ -974,10 +1164,16 @@ pub(crate) fn feed(r: &mut Router, e: &mut Engine, ev: In, home: u8) {
 pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
     // Old owners may outlive a part's routing change. Their immutable tuple,
     // rather than the current channel/port selector, resolves these events.
-    if matches!(ev, In::HostOff(..) | In::HostChoke(..) | In::HostExpression(..)) { return true; }
+    if matches!(ev, In::HostOff(..) | In::HostOffVelocity(..) | In::HostChoke(..) | In::HostExpression(..) | In::HostPressure(..)) { return true; }
     let wide = match ev {
-        In::NoteOff(..) | In::Bend(..) => true,
+        In::NoteOff(..) | In::NoteOffVelocity(..) | In::Midi1NoteOff(..) | In::Midi1ZeroNoteOff(..) | In::Bend(..)
+        | In::Parameter(..) | In::PerNoteControl(..) | In::PerNoteManagement { .. }
+        | In::PerNotePressure(..) | In::Midi1PolyAt(..) => true,
+        In::MidiControl(_, crate::midi::Control::Bend(_)) => true,
+        In::MidiControl(_, crate::midi::Control::Cc(cc, _)) => !matches!(cc, 7 | 10),
+        In::MidiControl(_, crate::midi::Control::Cc14 { coarse, .. }) => !matches!(coarse, 7 | 10),
         In::Cc(_, cc, _) => !matches!(cc, 7 | 10),
+        In::Midi1Cc(_, cc, _) => !matches!(cc, 7 | 10 | 39 | 42),
         _ => false,
     };
     if wide { c.port == port } else { r.hears(c, port, ev.channel()) }
@@ -985,10 +1181,11 @@ pub fn reaches(c: &PartControls, r: &Router, port: u8, ev: In) -> bool {
 
 /// Send host input through every part's router that accepts it.
 pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
-    let Rack { parts, controls, .. } = rack;
-    for ((e, c), r) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()) {
-        if reaches(c, r, port, ev) {
-            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+    for slot in 0..rack.parts.len().min(rack.controls.len()).min(routers.len()) {
+        let c = rack.controls[slot];
+        let r = &mut routers[slot];
+        if reaches(&c, r, port, ev) {
+            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
@@ -997,28 +1194,33 @@ pub fn dispatch(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In) {
 /// Every flag is overwritten; there is no fixed-width part mask.
 pub fn dispatch_record(rack: &mut Rack, routers: &mut [Router], port: u8, ev: In, reached: &mut [bool]) {
     reached.fill(false);
-    let Rack { parts, controls, .. } = rack;
-    for (((e, c), r), target) in parts.iter_mut().zip(controls.iter()).zip(routers.iter_mut()).zip(reached) {
-        *target = reaches(c, r, port, ev);
-        if *target {
-            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+    for slot in 0..rack.parts.len().min(rack.controls.len()).min(routers.len()).min(reached.len()) {
+        let c = rack.controls[slot];
+        let r = &mut routers[slot];
+        reached[slot] = reaches(&c, r, port, ev);
+        if reached[slot] {
+            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
 
 /// Send input to previously recorded targets, even if routing has changed.
 pub fn dispatch_to(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, ev: In) {
+    dispatch_to_on_port(rack,routers,slots,ev,0);
+}
+
+pub fn dispatch_to_on_port(rack: &mut Rack, routers: &mut [Router], slots: impl IntoIterator<Item = usize>, ev: In, port: u8) {
     for slot in slots {
-        if let (Some(e), Some(c), Some(r)) = (rack.parts.get_mut(slot), rack.controls.get(slot), routers.get_mut(slot)) {
-            feed(r, e, ev, u8::try_from(c.channel).unwrap_or(0));
+        if let (Some(c), Some(r)) = (rack.controls.get(slot).copied(), routers.get_mut(slot)) {
+            rack.with_part(slot, |e| feed_on_port(r, e, ev, u8::try_from(c.channel).unwrap_or(0), port));
         }
     }
 }
 
 /// Send input to one rack part (the on-screen keyboard).
 pub fn play(rack: &mut Rack, routers: &mut [Router], slot: usize, ev: In) {
-    if let (Some(e), Some(r)) = (rack.parts.get_mut(slot), routers.get_mut(slot)) {
-        feed(r, e, ev, ev.channel());
+    if let Some(r) = routers.get_mut(slot) {
+        rack.with_part(slot, |e| feed(r, e, ev, ev.channel()));
     }
 }
 
@@ -1082,7 +1284,7 @@ mod tests {
         before.keys[60] = 62;
         r.set_route(before);
         assert_eq!(run(&mut r,&[In::NoteOn(0,60,100)]),[Out::NoteOn(0,62,100)]);
-        assert_eq!(run(&mut r,&[In::Cc(0,120,0)]),[Out::Cc(0,120,0)]);
+        assert_eq!(run(&mut r,&[In::Cc(0,120,0)]),[Out::SoundOffFrom(0,1)]);
         let mut after = Route::default();
         after.keys[60] = 65;
         r.set_route(after);
@@ -1127,6 +1329,129 @@ mod tests {
         // Something else may have switched: switch again.
         r.forget();
         assert_eq!(run(&mut r, &[In::NoteOn(1, 62, 50)])[0], Out::NoteOnFrom(0, 1, 13, SWITCH_VELOCITY));
+    }
+
+    #[test]
+    fn parameter_reset_preserves_other_physical_inputs_on_the_same_home_channel() {
+        use crate::ksp::{LogEngine, Runtime, Value};
+        let (mut engine, mut router) = three_articulation_part();
+        let controls = "on init\ndeclare ui_switch $go\nend on\non ui_control($go)\nset_rpn(9,640)\nend on";
+        let receiver = "on init
+            make_perfview
+            declare ui_slider $two(0,100)
+            declare ui_slider $five(0,100)
+            declare ui_slider $authored(0,100)
+            declare ui_slider $channel(0,15)
+            end on
+            on rpn
+            wait(1000)
+            if ($RPN_ADDRESS = 2)
+                inc($two)
+            end if
+            if ($RPN_ADDRESS = 5)
+                inc($five)
+            end if
+            if ($RPN_ADDRESS = 9)
+                inc($authored)
+            end if
+            $channel := $MIDI_CHANNEL
+            end on";
+        let (runtime, errors) = Runtime::with_scripts(&[controls, receiver],
+            &mut LogEngine::new(Vec::new(), 48_000.), 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        engine.set_script(Some(Box::new(runtime)));
+        let mut exercise = || {
+            engine.begin_audio_block(128, 1, true);
+            engine.ui_control(0, 0, 1);
+            for input in [2, 5] {
+                for (cc, value) in [(101, 0), (100, input), (6, 2)] {
+                    feed(&mut router, &mut engine, In::Cc(input, cc, value), 0);
+                }
+            }
+            feed(&mut router, &mut engine, In::Cc(2, 121, 0), 0);
+            engine.render(&mut [0.; 128], &mut [0.; 128]);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        #[cfg(not(feature = "plugin"))]
+        exercise();
+        let ui = engine.script().unwrap().interface(1);
+        for (control, value) in [(0, 0), (1, 1), (2, 1), (3, 0)] {
+            assert_eq!(ui.controls[control].properties["$CONTROL_PAR_VALUE"], Value::Int(value));
+        }
+        assert!(engine.script().unwrap().diagnostics().is_empty());
+    }
+
+    #[test]
+    fn controller_reset_preserves_other_physical_inputs_on_the_same_home_channel() {
+        use crate::ksp::{LogEngine, Runtime, Value};
+        let (mut engine, mut router) = three_articulation_part();
+        let controls = "on init\ndeclare ui_switch $go\nend on\non ui_control($go)\nset_controller(1,9)\nend on";
+        let receiver = "on init
+            make_perfview
+            declare ui_slider $cc_two(0,100)
+            declare ui_slider $cc_five(0,100)
+            declare ui_slider $poly_two(0,100)
+            declare ui_slider $poly_five(0,100)
+            declare ui_slider $authored(0,100)
+            declare ui_slider $channel(0,15)
+            end on
+            on controller
+            if ($CC_NUM = 1)
+                if (%CC[1] = 2)
+                    wait(1000)
+                    inc($cc_two)
+                else
+                    if (%CC[1] = 5)
+                        wait(1000)
+                        inc($cc_five)
+                    else
+                        if (%CC[1] = 9)
+                            wait(1000)
+                            inc($authored)
+                        end if
+                    end if
+                end if
+                $channel := $MIDI_CHANNEL
+            end if
+            end on
+            on poly_at
+            if ($POLY_AT_NUM = 60)
+                wait(1000)
+                inc($poly_two)
+            else
+                if ($POLY_AT_NUM = 64)
+                    wait(1000)
+                    inc($poly_five)
+                end if
+            end if
+            $channel := $MIDI_CHANNEL
+            end on";
+        let (runtime, errors) = Runtime::with_scripts(&[controls, receiver],
+            &mut LogEngine::new(Vec::new(), 48_000.), 8, Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        engine.set_script(Some(Box::new(runtime)));
+        let mut exercise = || {
+            engine.begin_audio_block(128, 1, true);
+            engine.ui_control(0, 0, 1);
+            for (input, key) in [(2, 60), (5, 64)] {
+                feed(&mut router, &mut engine, In::Cc(input, 1, input), 0);
+                feed(&mut router, &mut engine, In::PolyAt(input, key, 50), 0);
+            }
+            feed(&mut router, &mut engine, In::Cc(2, 121, 0), 0);
+            engine.render(&mut [0.; 128], &mut [0.; 128]);
+        };
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| exercise()), 0);
+        #[cfg(not(feature = "plugin"))]
+        exercise();
+        let ui = engine.script().unwrap().interface(1);
+        for (control, value) in [(0, 0), (1, 1), (2, 0), (3, 1), (4, 1), (5, 0)] {
+            assert_eq!(ui.controls[control].properties["$CONTROL_PAR_VALUE"], Value::Int(value),
+                "control {control}; controls={:?}; diagnostics={:?}",
+                ui.controls, engine.script().unwrap().diagnostics());
+        }
+        assert!(engine.script().unwrap().diagnostics().is_empty());
     }
 
     /// A script that keeps one global articulation that keyswitches C-1,
@@ -1244,6 +1569,37 @@ mod tests {
     }
 
     #[test]
+    fn authored_home_stop_preserves_each_inputs_sustain_and_other_homes() {
+        for scripted in [false, true] {
+            for cc in 123..=127 {
+                let (mut e, _) = three_articulation_part();
+                if !scripted { e.set_script(None); }
+                e.cc_from(0, 1, 64, 127);
+                e.note_on_from(0, 1, 60, 100);
+                e.note_on_from(0, 2, 60, 100);
+                e.note_on_from(7, 1, 62, 100);
+                assert!(e.host_note_on(crate::engine::HostNote { port:0, channel:1, key:64, id:77, clap:true },0,64,100,0.));
+                render(&mut e);
+                assert_eq!(crate::plugin::tests::allocations(|| {
+                    e.cc(0, cc, 0);
+                    render(&mut e);
+                }), 0);
+                assert!(!e.input_key_down_from(1,0,60));
+                assert!(!e.input_key_down_from(2,0,60));
+                assert!(!e.host_key_held(1,64));
+                assert!(!voices(&e,60,false).is_empty(), "physical input1 sustain retains its released key");
+                assert!(!voices(&e,64,false).is_empty(), "the exact owner shares its physical sustain");
+                assert!(e.input_key_down_from(1,7,62), "another logical home on the same input remains held");
+                e.cc_from(0,1,64,0);
+                render(&mut e);
+                assert!(voices(&e,60,false).is_empty());
+                assert!(voices(&e,64,false).is_empty());
+                assert!(!voices(&e,62,false).is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn channel_noteoffs_keep_physical_owners_after_switching_to_keys() {
         fn no_heap(f: impl FnOnce()) {
             #[cfg(feature="plugin")]
@@ -1284,7 +1640,7 @@ mod tests {
         let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
         let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
         assert_eq!(crate::plugin::tests::allocations(|| {
-            feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
+        feed(&mut r,&mut e,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),7);
             assert_eq!(e.held_host_route(2,60),Some((7,60)),"the articulation keyswitch must not acquire the host tuple");
             assert_eq!(e.host_note_drops(),0);
             feed(&mut r,&mut e,In::NoteOn(2,60,100),7); render(&mut e);
@@ -1305,7 +1661,7 @@ mod tests {
         assert_eq!(crate::plugin::tests::allocations(|| {
             r.switch(2,7,&mut |o| apply(&mut e,o));
             assert!(e.host_note_at(0).is_none());
-            feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
+        feed(&mut r,&mut e,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),7);
             assert_eq!(e.held_host_route(2,60),Some((7,60)));
             assert_eq!(e.host_note_drops(),0);
             assert!(e.key_down(7,60));
@@ -1323,7 +1679,7 @@ mod tests {
             let note=HostNote { port:0,channel:2,key:60,id:10,clap:true };
             let pattern=HostPattern { port:0,channel:2,key:60,id:10,clap:true };
             let mut actions=|| {
-                feed(&mut r,&mut e,In::HostOn(note,100,0.),7);
+        feed(&mut r,&mut e,In::HostOn(note,crate::midi::Velocity::from_midi1(100),0.),7);
                 assert_eq!(e.held_host_route(2,60),Some((7,60)));
                 assert_eq!(e.host_note_drops(),0);
                 feed(&mut r,&mut e,In::NoteOn(2,60,100),7);
@@ -1626,7 +1982,7 @@ end on"#;
         };
         let engine = |scripted: bool| {
             let group = Group {
-                mods: vec![ModAssignment {
+                mods: vec![ModAssignment { cc_default: None,
                     name: "CC1_VOLUME".into(),
                     source: ModSource::MidiCc(1),
                     target: ModTarget::Volume,
@@ -1719,7 +2075,7 @@ end on"#;
         };
         let setup = |scripted| {
             let group = Group {
-                mods: vec![ModAssignment {
+                mods: vec![ModAssignment { cc_default: None,
                     name: "PRESSURE_VOLUME".into(),
                     source: ModSource::MonoAftertouch,
                     target: ModTarget::Volume,
@@ -1761,21 +2117,11 @@ end on"#;
                 feed(&mut ar, &mut actual, In::Pressure(master, 64), 0);
                 feed(&mut ar, &mut actual, In::NoteOn(member, 60, 100), 0);
                 let mut expected = setup(scripted);
-                let mut er = router(
-                    &Articulate::default(),
-                    &Mpe {
-                        zone,
-                        ..Mpe::default()
-                    },
-                );
+                // Independent non-MPE reference: pressure source is max(37,64),
+                // while the member's initial native gain uses its own pressure37.
                 expected.channel_pressure(member, 64);
-                feed(&mut er, &mut expected, In::NoteOn(member, 60, 100), 0);
-                feed(
-                    &mut er,
-                    &mut expected,
-                    In::NoteGain(member, 60, pressure_gain(37)),
-                    0,
-                );
+                expected.set_expression_on(member,60,Expression { gain:pressure_gain(37),..Expression::default() });
+                expected.note_on(member,60,100);
                 let (mut a, mut b, mut c, mut d) = ([0.; 128], [0.; 128], [0.; 128], [0.; 128]);
                 actual.render(&mut a, &mut b);
                 expected.render(&mut c, &mut d);
@@ -1792,29 +2138,37 @@ end on"#;
 
     #[test]
     fn mpe_rpn_range_changes_update_active_notes_and_nrpn_does_not_change_range() {
-        for (zone, members) in [(Zone::Lower, [1, 2]), (Zone::Upper, [14, 13])] {
-            let mut r = router(&Articulate::default(), &Mpe { zone, ..Mpe::default() });
-            let mut output = Vec::new();
-            for (channel, note) in members.into_iter().zip([60, 62]) {
-                r.input(In::Bend(channel, 12288), 0, &mut |o| output.push(o));
-                r.input(In::NoteOn(channel, note, 100), 0, &mut |o| output.push(o));
+        use crate::{audio::Sample,engine::Bank,import::{Group,Zone as SampleZone}};
+        let engine=|| {
+            let bank=Bank::from_samples(vec![Group::default()],vec![SampleZone::default()],vec![(
+                Default::default(),Sample {rate:48000,frames:(0..32000).map(|i| [i as f32/32000.;2]).collect()})]).unwrap();
+            let mut e=Engine::default();e.set_bank(Some(Box::new(bank)));e
+        };
+        for (zone,members) in [(Zone::Lower,[1,2]),(Zone::Upper,[14,13])] {
+            let (mut e,mut reference)=(engine(),engine());
+            let mut r=router(&Articulate::default(),&Mpe {zone,..Mpe::default()});
+            for (channel,note) in members.into_iter().zip([60,62]) {
+                feed(&mut r,&mut e,In::Bend(channel,12288),0);
+                feed(&mut r,&mut e,In::NoteOn(channel,note,100),0);
+                reference.set_expression_on(channel,note,Expression {tune:24.,..Default::default()});
+                reference.note_on(channel,note,100);
             }
-            for (range, cents) in [(12, 50), (0, 0)] {
-                output.clear();
-                for (cc, value) in [(101, 0), (100, 0), (6, range), (38, cents)] {
-                    r.input(In::Cc(members[0], cc, value), 0, &mut |o| output.push(o));
-                }
-                for (channel, note) in members.into_iter().zip([60, 62]) {
-                    let tune = (f32::from(range) + f32::from(cents) / 100.) / 2.;
-                    assert!(output.contains(&Out::Expression(channel, note, Expression { tune, ..Expression::default() })), "{zone:?}: live range {range}+{cents}c did not update member {channel}");
-                }
+            let check=|e:&mut Engine,reference:&mut Engine| {
+                let (mut a,mut b,mut x,mut y)=([0.;128],[0.;128],[0.;128],[0.;128]);
+                e.render(&mut a,&mut b);reference.render(&mut x,&mut y);
+                assert!(a.iter().zip(x).chain(b.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-5),"{zone:?}: live range PCM differs from independent note tune");
+            };
+            check(&mut e,&mut reference);
+            for (range,cents) in [(12,50),(0,0)] {
+                for (cc,value) in [(101,0),(100,0),(6,range),(38,cents)] {feed(&mut r,&mut e,In::Cc(members[0],cc,value),0);}
+                let tune=(f32::from(range)+f32::from(cents)/100.)/2.;
+                for (channel,note) in members.into_iter().zip([60,62]) {reference.set_expression_on(channel,note,Expression {tune,..Default::default()});}
+                check(&mut e,&mut reference);
             }
-            output.clear();
-            for (cc, value) in [(99, 0), (98, 0), (6, 96)] {
-                r.input(In::Cc(members[0], cc, value), 0, &mut |o| output.push(o));
-            }
-            r.input(In::Bend(members[0], 0), 0, &mut |o| output.push(o));
-            assert!(!output.iter().any(|o| matches!(o, Out::Expression(..))), "NRPN data entry changed the zero pitch range");
+            for (cc,value) in [(99,0),(98,0),(6,96)] {feed(&mut r,&mut e,In::Cc(members[0],cc,value),0);}
+            feed(&mut r,&mut e,In::Bend(members[0],0),0);
+            check(&mut e,&mut reference);
+            assert_eq!(e.mpe_zones().member(members[0]).unwrap().member_range,crate::midi::BendRange {coarse:0,fine:0},"NRPN changed pitch sensitivity");
         }
     }
 
@@ -1823,7 +2177,7 @@ end on"#;
         use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
         for (delay, attack_rendered) in [(0, true), (1000, true), (1000, false)] {
             let setup = || {
-                let group = Group { mods: vec![ModAssignment {
+                let group = Group { mods: vec![ModAssignment { cc_default: None,
                     name: "PB_PITCH".into(), source: ModSource::PitchBend, target: ModTarget::Pitch,
                     intensity: 1., invert: false, lag_ms: 0, shaper: None,
                 }], ..Group::default() };
@@ -1906,7 +2260,7 @@ end on"#;
                 for (zone, master, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
                     let setup = || {
                         let group = Group {
-                            mods: vec![ModAssignment {
+                            mods: vec![ModAssignment { cc_default: None,
                                 name: "CC74_VOLUME".into(),
                                 source,
                                 target: ModTarget::Volume,
@@ -2006,9 +2360,9 @@ end on"#;
         use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone},
             modulation::{ModAssignment, ModSource, ModTarget}};
         for mpe in [false, true] {
-            let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
+            let group = Group { mods: vec![ModAssignment { cc_default: None, name: "CC74_VOLUME".into(),
                 source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 1.,
-                invert: false, lag_ms: 0, shaper: None }, ModAssignment { name:"CC74_START".into(),
+                invert: false, lag_ms: 0, shaper: None }, ModAssignment { cc_default: None, name:"CC74_START".into(),
                 source:ModSource::MidiCc(74), target:ModTarget::SampleStart, intensity:1.,
                 invert:false, lag_ms:0, shaper:None }], ..Default::default() };
             let zones = [(60, -1.), (61, 1.)].map(|(key, pan)| SampleZone {
@@ -2028,11 +2382,15 @@ end on"#;
             let (mut left, mut right) = ([0.;512], [0.;512]);
             assert_eq!(crate::plugin::tests::allocations(|| {
                 feed(&mut r,&mut e,In::Cc(controller,74,32),7);
+                if mpe {
+                    // Isolate the manager's source from the default centered member timbre.
+                    for member in [first,second] { feed(&mut r,&mut e,In::Cc(member,74,0),7); }
+                }
                 feed(&mut r,&mut e,In::NoteOn(first,60,100),7);
                 feed(&mut r,&mut e,In::NoteOn(second,61,100),7);
                 // Start-only sample-offset modulation must see the same-sample
                 // override before queued voices have ever been rendered.
-                feed(&mut r,&mut e,In::NoteBrightness(first,60,127),7);
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,crate::midi::ControlValue::from_midi1(127)),7);
                 e.render(&mut left,&mut right);
                 assert!((left[511]/right[511]-127./32.).abs()<0.01);
                 r.set_expression(if mpe { first } else { 7 },48,|x| x.note_cc74=None,&mut |o| apply(&mut e,o));
@@ -2045,27 +2403,28 @@ end on"#;
                 for i in 0..2 { assert!((common[i]/low[i]-2.).abs()<0.01,"mpe={mpe}: channel CC74 must reach both held notes"); }
                 // Current routing differs from the retained attack owner.
                 if !mpe { r.route.mode = Mode::Keyswitch; }
-                feed(&mut r,&mut e,In::NoteBrightness(first,60,127),7);
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,crate::midi::ControlValue::from_midi1(127)),7);
                 e.render(&mut left,&mut right);
                 assert!((left[511]/common[0]-127./64.).abs()<0.01,"mpe={mpe}: settled native modulation did not see its note override");
                 assert!((right[511]-common[1]).abs()<1e-6,"mpe={mpe}: per-note brightness changed the other voice");
                 assert_eq!(r.brightness[48],NONE,"per-note brightness must not enter the part-wide fallback filter cache");
                 // Repeating an absolute value neither adds to it nor emits another edit.
-                r.input(In::NoteBrightness(first,60,127),7,&mut |_| panic!("equal note expression emitted twice"));
+                r.input(In::NoteBrightness(first,60,crate::midi::ControlValue::from_midi1(127)),7,&mut |_| panic!("equal note expression emitted twice"));
                 // Channel controls still reach the note without an override.
                 if !mpe { r.route.mode = Mode::Channel; }
                 feed(&mut r,&mut e,In::Cc(controller,74,16),7);
                 e.render(&mut left,&mut right);
                 assert!((left[511]/common[0]-127./64.).abs()<0.01,"mpe={mpe}: channel CC must not be added to an absolute note override");
                 assert!((right[511]/common[1]-0.25).abs()<0.01,"mpe={mpe}: channel fallback stopped working");
-                feed(&mut r,&mut e,In::NoteBrightness(first,60,8),7);
+                feed(&mut r,&mut e,In::NoteBrightness(first,60,crate::midi::ControlValue::from_midi1(8)),7);
                 e.render(&mut left,&mut right);
                 assert!((left[511]/common[0]-8./64.).abs()<0.01);
                 assert!((right[511]/common[1]-0.25).abs()<0.01);
                 r.scripted = false;
                 assert_eq!(r.cutoff_scale(),1.,"a low note override must not darken the whole part");
             }),0);
-            assert_eq!(e.cc_state()[if mpe { 1 } else { 7 }][74],if mpe { 0 } else { 16 },"note expression must never become channel CC74");
+            assert_eq!(e.cc_state()[if mpe { 1 } else { 4 }][74],if mpe { 0 } else { 16 },"note expression must never become physical channel CC74");
+            if !mpe { assert_eq!(e.cc_state()[7][74],0,"delivery channel must not receive physical controller state"); }
             assert_eq!(e.active_voices(),2);
             let voices = e.voice_census();
             let position = |note| voices.iter().find(|v| v.note==note).unwrap().pos;
@@ -2143,7 +2502,7 @@ end on"#;
         for (delay, attack_rendered) in [(0, true), (1000, true), (1000, false)] {
             let setup = || {
                 let release = Group {
-                    mods: vec![ModAssignment {
+                    mods: vec![ModAssignment { cc_default: None,
                         name: "CC74_VOLUME".into(),
                         source: ModSource::MidiCc(74),
                         target: ModTarget::Volume,
@@ -2273,7 +2632,7 @@ end on"#;
     fn mpe_master_and_member_bends_combine_with_scripts() {
         use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
         let engine = |scripted: bool| {
-            let group = Group { mods: vec![ModAssignment {
+            let group = Group { mods: vec![ModAssignment { cc_default: None,
                 name: "PB_PITCH".into(), source: ModSource::PitchBend, target: ModTarget::Pitch,
                 intensity: 1.0, invert: false, lag_ms: 0, shaper: None,
             }], ..Group::default() };
@@ -2307,11 +2666,11 @@ end on"#;
     fn mpe_negotiated_master_and_member_ranges_render_exact_pitch() {
         use crate::{audio::Sample, engine::Bank, import::{Group, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
         let engine = |scripted: bool, pitch_mod: bool| {
-            let mut mods = vec![ModAssignment {
+            let mut mods = vec![ModAssignment { cc_default: None,
                 name: "PB_VOLUME".into(), source: ModSource::PitchBend, target: ModTarget::Volume,
                 intensity: 0.25, invert: false, lag_ms: 0, shaper: None,
             }];
-            if pitch_mod { mods.push(ModAssignment {
+            if pitch_mod { mods.push(ModAssignment { cc_default: None,
                 name: "PB_PITCH".into(), source: ModSource::PitchBend, target: ModTarget::Pitch,
                 intensity: 1., invert: false, lag_ms: 0, shaper: None,
             }); }
@@ -2340,7 +2699,8 @@ end on"#;
                         let mut reference = engine(scripted, pitch_mod);
                         // Keep the same bend-to-volume source in the reference;
                         // remove its library pitch offset from the explicit tune.
-                        reference.pitch_bend(note_channel, 12288);
+                        let source_bend = if on_master { 0.5 } else { 1. };
+                        reference.control_from(note_channel,note_channel,crate::midi::Control::Bend(crate::midi::Bend::new(source_bend).unwrap()));
                         reference.note_on(note_channel, 60, 100);
                         let phases = [
                             (master, vec![], 9.375, 3.125),
@@ -2348,8 +2708,8 @@ end on"#;
                             (master, vec![(101, 0), (100, 0), (6, 0)], 6.25, 0.),
                             (master, vec![(101, 127), (100, 127), (38, 99), (6, 96)], 6.25, 0.),
                             (member, vec![(99, 0), (98, 0), (38, 99), (6, 96)], 6.25, 0.),
-                            // Either data-entry byte ordering is accepted.
-                            (member, vec![(100, 0), (101, 0), (38, 25), (6, 7)], 3.625, 0.),
+                            // A new coarse byte clears a fine byte sent beforehand.
+                            (member, vec![(100, 0), (101, 0), (38, 25), (6, 7)], 3.5, 0.),
                             (member, vec![(101, 0), (100, 0), (6, 0)], 0., 0.),
                             // An explicit MCM restores ±2/±48, even after manual ranges.
                             (master, vec![(101, 0), (100, 6), (6, 2)], 25., 1.),
@@ -2357,7 +2717,7 @@ end on"#;
                         for (channel, controls, tune, master_tune) in phases {
                             let tune = if on_master { master_tune } else { tune };
                             for (cc, value) in controls { feed(&mut r, &mut e, In::Cc(channel, cc, value), 0); }
-                            reference.set_expression_on(note_channel, 60, Expression { tune: tune - if pitch_mod { 6. } else { 0. }, ..Expression::default() });
+                            reference.set_expression_on(note_channel, 60, Expression { tune: tune - if pitch_mod { source_bend as f32 * 12. } else { 0. }, ..Expression::default() });
                             let (mut actual, mut right, mut expected) = ([0.; 128], [0.; 128], [0.; 128]);
                             e.render(&mut actual, &mut right);
                             reference.render(&mut expected, &mut right);
@@ -2394,6 +2754,8 @@ end on"#;
             declare $i
             declare ui_knob $setting (0, 100, 1)
             declare ui_knob $registered (0, 127, 1)
+            declare ui_knob $resumed_zero (0, 100, 1)
+            declare ui_knob $resumed_one (0, 100, 1)
         end on
         on note
             %events[128 * $MIDI_CHANNEL + $EVENT_NOTE] := $EVENT_ID
@@ -2411,6 +2773,11 @@ end on"#;
             end if
             if ($CC_NUM = 1 and %CC[1] = 99)
                 wait(10000)
+                if ($MIDI_CHANNEL = 0)
+                    inc($resumed_zero)
+                else
+                    inc($resumed_one)
+                end if
                 set_controller(64, 127)
             end if
             if ($CC_NUM = 64 or $CC_NUM = 66)
@@ -2449,7 +2816,11 @@ end on"#;
         assert!(e.key_down(0, 61) && e.key_down(1, 64));
         let (mut left, mut right) = ([0.; 128], [0.; 128]);
         for _ in 0..12 { e.render(&mut left, &mut right); }
-        assert_eq!(e.cc_state()[0][64], 0, "older delayed pedal-down must not undo CC121");
+        let ui = e.script().unwrap().interface(0);
+        assert_eq!(ui.controls[2].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(0),"CC121 must cancel the older physical0 callback");
+        assert_eq!(ui.controls[3].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(1),"unrelated physical1 callback must survive");
+        // The surviving callback explicitly authors a part-wide controller edit.
+        assert_eq!(e.cc_state()[0][64], 127, "accepted authored pedal must broadcast to every performance row");
         for (cc, value) in [(0, 23), (32, 14), (7, 90), (10, 37), (74, 81), (91, 77),
                             (2, 0), (65, 0), (67, 0), (98, 127), (99, 127), (100, 127), (101, 127)] {
             assert_eq!(e.cc_state()[0][cc], value, "CC{cc}: incorrect RP-015 reset");
@@ -2506,11 +2877,10 @@ end on"#;
                 for (channel, note) in [(member, 60), (member, 67), (other, 64)] {
                     reference.set_expression_on(channel, note, Expression::default());
                 }
-                assert_eq!(r.bend_range, (12, 50));
-                assert_eq!(r.master_bend_range, Some((6, 25)));
-                for channel in [master, member, other] { assert_eq!((r.rpn[channel as usize].msb, r.rpn[channel as usize].lsb), (127, 127)); }
+                assert_eq!(r.mpe.member(member).unwrap().member_range, crate::midi::BendRange { coarse: 12, fine: 50 });
+                assert_eq!(r.mpe.manager(master).unwrap().manager_range, Some(crate::midi::BendRange { coarse: 6, fine: 25 }));
                 feed(&mut r, &mut e, In::Cc(member, 6, 96), 0);
-                assert_eq!(r.bend_range, (12, 50), "data entry after reset has no selected RPN");
+                assert_eq!(r.mpe.member(member).unwrap().member_range, crate::midi::BendRange { coarse: 12, fine: 50 }, "data entry after reset has no selected RPN");
                 e.render(&mut left, &mut right);
                 reference.render(&mut expected, &mut right);
                 assert!(left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "master reset failed to clear its whole MPE zone");
@@ -2573,63 +2943,224 @@ end on"#;
     }
 
     #[test]
-    fn mpe_lower_zone_expresses_each_note() {
-        let mpe = Mpe { zone: Zone::Lower, ..Mpe::default() };
-        let mut r = router(&Articulate::default(), &mpe);
-        let mut out = Vec::new();
-        let mut send = |r: &mut Router, ev| r.input(ev, 0, &mut |o| out.push(o));
-        // Bend before the note, as MPE controllers do: the note starts bent.
-        send(&mut r, In::Bend(1, 8192 + 4096));
-        send(&mut r, In::NoteOn(1, 60, 100));
-        send(&mut r, In::NoteOn(2, 64, 100));
-        send(&mut r, In::Bend(2, 0));
-        send(&mut r, In::Pressure(1, 127));
-        send(&mut r, In::Cc(2, 74, 20));
-        let x = |key| out.iter().rev().find_map(|o| match o {
-            Out::Expression(_, k, x) if *k == key => Some(*x),
-            _ => None,
-        });
-        assert_eq!(x(60).unwrap().tune, 24.0);
-        assert_eq!(x(64).unwrap().tune, -48.0);
-        // Pressure is poly aftertouch for the scripts and, unused by them, volume.
-        assert!(out.contains(&Out::PolyAt(1, 60, 127)));
-        assert!(!out.iter().any(|o| matches!(o, Out::PolyAt(_, 64, _))));
-        assert_eq!(x(60).unwrap().gain, 1.0);
-        assert!(out.contains(&Out::Cc(2, 74, 20)));
-        // Member bends never reach the engine as channel bends.
-        assert!(!out.iter().any(|o| matches!(o, Out::Bend(..))));
-        assert!(r.cutoff_scale() < 0.1);
-        // RPN 0 on a member sets the bend range.
-        for (cc, v) in [(101, 0), (100, 0), (6, 12)] {
-            r.input(In::Cc(3, cc, v), 0, &mut |_| {});
+    fn mpe_pressure_zero_is_active_but_cc121_restores_unity_after_waits_without_heap() {
+        use crate::{audio::Sample,engine::Bank,import::{Group,Zone as SampleZone}};
+        let engine=|| {
+            let bank=Bank::from_samples(vec![Group::default()],vec![SampleZone::default()],vec![(
+                Default::default(),Sample {rate:48000,frames:vec![[0.25;2];48000]})]).unwrap();
+            let mut e=Engine::default();e.set_bank(Some(Box::new(bank)));e.attack=0.0001;e
+        };
+        for script in [None,Some("on init\nend on"),Some("on init\nend on\non controller\nif ($CC_NUM = $VCC_MONO_AT)\nwait(1000)\nend if\nend on")] {
+            for sizes in [&[128][..],&[1,7,31,128][..]] {
+                let (mut e,mut reference)=(engine(),engine());
+                if let Some(source)=script {e.set_script(Some(Box::new(runtime(source))));}
+                let mut r=router(&Articulate::default(),&Mpe {zone:Zone::Lower,..Mpe::default()});
+                let (mut a,mut b,mut x,mut y)=([0.;512],[0.;512],[0.;512],[0.;512]);
+                let render=|e:&mut Engine,l:&mut [f32],r:&mut [f32]| {
+                    let (mut at,mut block)=(0,0);
+                    while at<l.len() {let n=sizes[block%sizes.len()].min(l.len()-at);
+                        e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
+                };
+                let mut exercise=|| {
+                    feed(&mut r,&mut e,In::NoteOn(1,60,100),0);
+                    reference.note_on(1,60,100);
+                    render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);
+                    let full=a[511];assert!(full>0.01,"fixture must sound without a pressure modulation route");
+                    for (event,gain) in [(In::Pressure(1,0),pressure_gain(0)),(In::Cc(1,121,0),1.),(In::Pressure(1,0),pressure_gain(0))] {
+                        feed(&mut r,&mut e,event,0);
+                        reference.set_expression_on(1,60,Expression {gain,..Default::default()});
+                        // Includes the callback wait and the native gain ramp;
+                        // a stale reset-default forward cannot hide afterward.
+                        for _ in 0..4 {render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);}
+                        assert!(a.iter().zip(x).chain(b.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-6),"script={script:?} sizes={sizes:?} event={event:?}: reset pressure lost its accepted intent");
+                        assert!((a[511]/full-gain).abs()<1e-5,"explicit zero must use the native floor; CC121 must restore unity");
+                        assert!(e.key_down(1,60));
+                    }
+                    if let Some(rt)=e.script() {assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());}
+                };
+                #[cfg(feature="plugin")]
+                assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                #[cfg(not(feature="plugin"))]
+                exercise();
+            }
         }
-        let mut last = None;
-        r.input(In::Bend(1, 0), 0, &mut |o| last = Some(o));
-        assert_eq!(last, Some(Out::Expression(1, 60, Expression { tune: -12.0, gain: 1.0, pan: 0.0, ..Expression::default() })));
-        // Members are heard, other channels not, on a part set to channel 1.
-        let c = PartControls { channel: 0, ..PartControls::default() };
-        assert!(r.hears(&c, 0, 15) && r.hears(&c, 0, 3));
+    }
+
+    #[test]
+    fn physical_pedals_keep_inputs_isolated_on_one_delivery_channel_at_the_midi2_boundary() {
+        use crate::{audio::Sample,engine::{Bank,HostNote,HostPattern},import::{Group,Zone as SampleZone},midi::{Control,ControlValue,Velocity}};
+        for pedal in [64,66] {
+            for scripted in [false,true] {
+                for sizes in [&[512][..],&[1,7,31,128][..]] {
+                    let zones=[(60,-1.),(61,1.)].map(|(key,pan)| SampleZone {
+                        root:key,low_key:key,high_key:key,pan,..Default::default() });
+                    let bank=Bank::from_samples(vec![Group::default()],zones.to_vec(),vec![(
+                        Default::default(),Sample {rate:48000,frames:vec![[0.25;2];48000]})]).unwrap();
+                    let mut e=Engine::default(); e.set_bank(Some(Box::new(bank)));e.attack=0.0001;e.release=0.002;
+                    if scripted { e.set_script(Some(Box::new(runtime("on init\nend on\non controller\nwait(1000)\nend on")))); }
+                    let mut r=router(&Articulate::default(),&Mpe::default());r.route.mode=Mode::Channel;
+                    let owners=[HostNote {port:0,channel:4,key:60,id:104,clap:true},
+                        HostNote {port:0,channel:7,key:61,id:107,clap:true}];
+                    let (mut left,mut right)=([0.;512],[0.;512]);
+                    let render=|e:&mut Engine,l:&mut [f32],r:&mut [f32]| {
+                        let (mut at,mut block)=(0,0);
+                        while at<l.len() {let n=sizes[block%sizes.len()].min(l.len()-at);
+                            e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
+                        e.mark_host_notes();
+                    };
+                    let mut exercise=|| {
+                        for on in [false,true] {
+                            for owner in owners {feed(&mut r,&mut e,In::HostOn(owner,Velocity::from_midi1(100),0.),0);}
+                            render(&mut e,&mut left,&mut right);
+                            assert!(left[511]>0.01 && right[511]>0.01,"fixture must sound on both physical inputs");
+                            let word=if on {0x8000_0000} else {0x7fff_ffff};
+                            feed(&mut r,&mut e,In::MidiControl(4,Control::Cc(pedal,ControlValue::from_midi2(word))),0);
+                            render(&mut e,&mut left,&mut right);
+                            for owner in owners {feed(&mut r,&mut e,In::HostOff(HostPattern {
+                                port:0,channel:i32::from(owner.channel),key:i32::from(owner.key),id:owner.id,clap:true}),0);}
+                            for _ in 0..4 {render(&mut e,&mut left,&mut right);}
+                            if on {
+                                assert!(left[511]>0.01,"pedal={pedal} scripted={scripted}: physical4 not held");
+                                assert!(right.iter().all(|x| x.abs()<1e-6),"pedal={pedal} scripted={scripted}: physical4 pedal leaked to physical7");
+                                assert!(e.host_note_pending(owners[0]),"pedal-held exact owner ended early");
+                                assert!(!e.host_note_pending(owners[1]),"unrelated physical owner's NOTE_END eligibility delayed");
+                                feed(&mut r,&mut e,In::MidiControl(4,Control::Cc(pedal,ControlValue::from_midi2(0x7fff_ffff))),0);
+                                for _ in 0..4 {render(&mut e,&mut left,&mut right);}
+                            }
+                            assert!(left.iter().chain(&right).all(|x| x.abs()<1e-6),"pedal={pedal} scripted={scripted}: below-half value must release");
+                            assert_eq!(e.active_voices(),0);
+                            for owner in owners {
+                                assert!(!e.host_note_pending(owner),"exact address remained ineligible for NOTE_END after pedal release");
+                                e.retire_host_note(owner);
+                            }
+                        }
+                    };
+                    #[cfg(feature="plugin")]
+                    assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                    #[cfg(not(feature="plugin"))]
+                    exercise();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mode_messages_release_only_selected_midi_owners_and_respect_pedals_without_heap() {
+        use crate::{audio::Sample,engine::{Bank,HostNote,HostPattern},import::{Group,Zone as SampleZone},midi::{Control,ControlValue,Velocity}};
+        let engine=|scripted| {
+            let zones=[(60,-1.),(61,1.)].map(|(key,pan)| SampleZone {
+                root:key,low_key:key,high_key:key,pan,..Default::default() });
+            let bank=Bank::from_samples(vec![Group::default()],zones.to_vec(),vec![(
+                Default::default(),Sample {rate:48000,frames:vec![[0.25;2];48000]})]).unwrap();
+            let mut e=Engine::default();e.set_bank(Some(Box::new(bank)));e.attack=0.0001;e.release=0.002;
+            if scripted {e.set_script(Some(Box::new(runtime("on init\nend on\non note\nwait(1000)\nend on\non release\nwait(1000)\nend on\non controller\nwait(1000)\nend on"))));}
+            e
+        };
+        for cc in 123..=127 {
+            for exact in [false,true] {
+                for scripted in [false,true] {
+                    for sizes in [&[512][..],&[1,7,31,128][..]] {
+                        let (mut e,mut reference)=(engine(scripted),engine(scripted));
+                        let (mut r,mut rr)=(router(&Articulate::default(),&Mpe::default()),router(&Articulate::default(),&Mpe::default()));
+                        r.route.mode=Mode::Channel;rr.route.mode=Mode::Channel;
+                        let owners=[HostNote {port:0,channel:4,key:60,id:104,clap:true},HostNote {port:0,channel:7,key:61,id:107,clap:true}];
+                        let off=|owner:HostNote| if exact {In::HostOff(HostPattern {port:0,channel:i32::from(owner.channel),key:i32::from(owner.key),id:owner.id,clap:true})} else {In::NoteOff(owner.channel,owner.key)};
+                        let (mut a,mut b,mut x,mut y)=([0.;512],[0.;512],[0.;512],[0.;512]);
+                        let render=|e:&mut Engine,l:&mut [f32],r:&mut [f32]| {
+                            let (mut at,mut block)=(0,0);
+                            while at<l.len() {let n=sizes[block%sizes.len()].min(l.len()-at);
+                                e.render(&mut l[at..at+n],&mut r[at..at+n]);at+=n;block+=1;}
+                            e.mark_host_notes();
+                        };
+                        let mut exercise=|| {
+                            for owner in owners {
+                                let on=if exact {In::HostOn(owner,Velocity::from_midi1(100),0.)} else {In::NoteOn(owner.channel,owner.key,100)};
+                                feed(&mut r,&mut e,on,0);feed(&mut rr,&mut reference,on,0);
+                            }
+                            render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);
+                            assert!(a[511]>0.01 && b[511]>0.01,"fixture must sound on both inputs");
+                            let pedal=In::MidiControl(4,Control::Cc(64,ControlValue::FULL));
+                            feed(&mut r,&mut e,pedal,0);feed(&mut rr,&mut reference,pedal,0);
+                            render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);
+                            let value=if cc==126 {2} else {0};
+                            feed(&mut r,&mut e,In::Cc(4,cc,value),0);
+                            feed(&mut rr,&mut reference,off(owners[0]),0);
+                            for _ in 0..4 {render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);}
+                            assert!(a.iter().zip(x).chain(b.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-6),"CC{cc} exact={exact} scripted={scripted}: implicit release differs from NoteOff");
+                            assert!(a[511]>0.01 && b[511]>0.01,"All Notes Off must respect sustain and leave other input held");
+                            assert_eq!(e.cc_state()[4][cc as usize],value,"original mode CC value must be retained");
+                            assert_eq!(e.cc_state()[7][cc as usize],0,"mode cache leaked to unrelated input");
+                            let up=In::MidiControl(4,Control::Cc(64,ControlValue::ZERO));
+                            feed(&mut r,&mut e,up,0);feed(&mut rr,&mut reference,up,0);
+                            for _ in 0..4 {render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);}
+                            assert!(a.iter().all(|v| v.abs()<1e-6) && b[511]>0.01,"CC{cc}: pedal up must end only selected input");
+                            assert!(a.iter().zip(x).chain(b.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-6));
+                            if exact {assert!(!e.host_note_pending(owners[0]) && e.host_note_pending(owners[1]));e.retire_host_note(owners[0]);}
+                            feed(&mut r,&mut e,off(owners[1]),0);feed(&mut rr,&mut reference,off(owners[1]),0);
+                            for _ in 0..4 {render(&mut e,&mut a,&mut b);render(&mut reference,&mut x,&mut y);}
+                            assert!(a.iter().chain(&b).all(|v| v.abs()<1e-6));
+                            if exact {assert!(!e.host_note_pending(owners[1]));e.retire_host_note(owners[1]);}
+                            if let Some(rt)=e.script() {assert!(rt.diagnostics().is_empty(),"{:?}",rt.diagnostics());}
+                        };
+                        #[cfg(feature="plugin")]
+                        assert_eq!(crate::plugin::tests::allocations(||exercise()),0);
+                        #[cfg(not(feature="plugin"))]
+                        exercise();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mpe_lower_zone_expresses_each_note() {
+        let (mut actual, _) = three_articulation_part();
+        let (mut expected, _) = three_articulation_part();
+        actual.set_script(None); expected.set_script(None);
+        let mut r = router(&Articulate::default(), &Mpe { zone:Zone::Lower, ..Mpe::default() });
+        let mut reference = router(&Articulate::default(), &Mpe::default());
+        feed(&mut r,&mut actual,In::Bend(1,12288),0);
+        for (channel,key,tune) in [(1,60,24.),(2,64,-48.)] {
+            feed(&mut r,&mut actual,In::NoteOn(channel,key,100),0);
+            feed(&mut reference,&mut expected,In::NoteOn(channel,key,100),0);
+            feed(&mut reference,&mut expected,In::NoteTune(channel,key,tune),0);
+        }
+        feed(&mut r,&mut actual,In::Bend(2,0),0);
+        feed(&mut r,&mut actual,In::Pressure(1,127),0);
+        let check = |a:&mut Engine,b:&mut Engine| {
+            let (mut l,mut r,mut x,mut y)=([0.;128],[0.;128],[0.;128],[0.;128]);
+            a.render(&mut l,&mut r); b.render(&mut x,&mut y);
+            assert!(l.iter().zip(x).chain(r.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-5));
+        };
+        check(&mut actual,&mut expected);
+        // The shared received decoder changes both members in this zone.
+        for (cc,value) in [(101,0),(100,0),(6,12)] { feed(&mut r,&mut actual,In::Cc(3,cc,value),0); }
+        feed(&mut r,&mut actual,In::Bend(1,0),0);
+        for (channel,key) in [(1,60),(2,64)] { feed(&mut reference,&mut expected,In::NoteTune(channel,key,-12.),0); }
+        check(&mut actual,&mut expected);
+        let c = PartControls { channel:0, ..PartControls::default() };
+        assert!(r.hears(&c,0,15) && r.hears(&c,0,3));
     }
 
     #[test]
     fn mpe_pressure_is_volume_only_when_unhandled() {
-        let mpe = Mpe { zone: Zone::Upper, members: 4, ..Mpe::default() };
-        let mut r = router(&Articulate::default(), &mpe);
-        let mut out = Vec::new();
-        r.input(In::NoteOn(14, 60, 100), 0, &mut |o| out.push(o));
-        r.input(In::Pressure(14, 0), 0, &mut |o| out.push(o));
-        let gain = out.iter().rev().find_map(|o| match o {
-            Out::Expression(14, 60, x) => Some(x.gain),
-            _ => None,
-        });
-        assert!((gain.unwrap() - 0.251).abs() < 0.01);
-        // Channel 10 is outside a four-member upper zone.
-        let c = PartControls { channel: 15, ..PartControls::default() };
-        assert!(!r.hears(&c, 0, 10) && r.hears(&c, 0, 11));
-        r.handles_pressure = true;
-        out.clear();
-        r.input(In::Pressure(14, 50), 0, &mut |o| out.push(o));
-        assert_eq!(out, [Out::PolyAt(14, 60, 50), Out::Pressure(14, 50)]);
+        for handled in [false,true] {
+            let (mut actual, _) = three_articulation_part();
+            let (mut expected, _) = three_articulation_part();
+            actual.set_script(if handled { Some(Box::new(runtime("on init\nend on\non poly_at\nend on"))) } else { None });
+            expected.set_script(None);
+            let mut r=router(&Articulate::default(),&Mpe { zone:Zone::Upper,members:4,..Mpe::default() });
+            let mut reference=router(&Articulate::default(),&Mpe::default());
+            feed(&mut r,&mut actual,In::NoteOn(14,60,100),0);
+            feed(&mut r,&mut actual,In::Pressure(14,0),0);
+            feed(&mut reference,&mut expected,In::NoteOn(14,60,100),0);
+            feed(&mut reference,&mut expected,In::NoteGain(14,60,if handled {1.} else {pressure_gain(0)}),0);
+            let (mut l,mut rr,mut x,mut y)=([0.;512],[0.;512],[0.;512],[0.;512]);
+            actual.render(&mut l,&mut rr); expected.render(&mut x,&mut y);
+            assert!(l.iter().zip(x).chain(rr.iter().zip(y)).all(|(a,b)| (a-b).abs()<1e-5),"handled={handled}");
+            let c=PartControls {channel:15,..PartControls::default()};
+            assert!(!r.hears(&c,0,10) && r.hears(&c,0,11));
+        }
     }
 
     #[test]
@@ -2691,23 +3222,23 @@ end on"#;
         let ev = |body| In::from_event(&body);
         assert_eq!(
             ev(EventBody::PerNotePitchBend { group: 0, channel: 1, note: 60, value: tune }),
-            Some(In::NoteTune(1, 60, -3.5))
+            Some(In::PerNoteControl(1, 60, crate::midi::NoteControl::Pitch(crate::midi::Bend::from_midi2(tune))))
         );
         // CLAP volume: unity gain is the wire's quarter point.
         let gain = ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: u32::MAX / 4, registered: true });
-        assert!(matches!(gain, Some(In::NoteGain(0, 60, g)) if (g - 1.0).abs() < 1e-3));
+        assert!(matches!(gain, Some(In::PerNoteControl(0, 60, crate::midi::NoteControl::Registered { index:7, value })) if value == u32::MAX / 4));
         let pan = ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 10, value: u32::MAX, registered: true });
-        assert!(matches!(pan, Some(In::NotePan(0, 60, p)) if (p - 1.0).abs() < 1e-3));
+        assert!(matches!(pan, Some(In::PerNoteControl(0, 60, crate::midi::NoteControl::Registered { index:10, value:u32::MAX }))));
         assert_eq!(
             ev(EventBody::PolyPressure2 { group: 0, channel: 2, note: 61, pressure: u32::MAX }),
-            Some(In::NotePressure(2, 61, 127))
+            Some(In::PerNotePressure(2, 61, crate::midi::ControlValue::FULL))
         );
         assert_eq!(
             ev(EventBody::NoteOn2 { group: 0, channel: 0, note: 60, velocity: u16::MAX, attribute_type: 0, attribute: 0 }),
-            Some(In::NoteOn(0, 60, 127))
+            Some(In::NoteOnVelocity(0, 60, crate::midi::Velocity::from_midi2(u16::MAX)))
         );
-        assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::NoteOff(3, 60)));
-        assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), None);
+        assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::Midi1ZeroNoteOff(3, 60)));
+        assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), Some(In::PerNoteControl(0, 60, crate::midi::NoteControl::Assignable { index:7, value:0 })));
     }
 
     #[test]
@@ -2715,7 +3246,7 @@ end on"#;
         use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone},
             ksp::{LogEngine, Runtime}, modulation::{ModAssignment, ModSource, ModTarget}};
         let setup = |generated| {
-            let group = Group { mods: vec![ModAssignment { name: "CC74_VOLUME".into(),
+            let group = Group { mods: vec![ModAssignment { cc_default: None, name: "CC74_VOLUME".into(),
                 source: ModSource::MidiCc(74), target: ModTarget::Volume, intensity: 0.5,
                 invert: false, lag_ms: 0, shaper: None }], ..Group::default() };
             let groups = vec![group.clone(), Group { release_trigger: true, ..group }];
@@ -2772,11 +3303,11 @@ end on"#;
     fn mpe_script_transposition_keeps_physical_expression_and_release_counter() {
         use crate::{audio::Sample, engine::Bank, import::{Group, Loop, Zone as SampleZone}, modulation::{ModAssignment, ModSource, ModTarget}};
         let setup = |transpose| {
-            let raw = ModAssignment { name: "CC74_VOLUME".into(), source: ModSource::MidiCc(74),
+            let raw = ModAssignment { cc_default: None, name: "CC74_VOLUME".into(), source: ModSource::MidiCc(74),
                 target: ModTarget::Volume, intensity: 0.5, invert: false, lag_ms: 0, shaper: None };
             let groups = vec![Group { mods: vec![raw.clone()], ..Group::default() },
                 Group { release_trigger: true, release_counter_ms: 1000, mods: vec![raw,
-                    ModAssignment { name: "RTC_VOLUME".into(), source: ModSource::ReleaseTriggerCounter,
+                    ModAssignment { cc_default: None, name: "RTC_VOLUME".into(), source: ModSource::ReleaseTriggerCounter,
                         target: ModTarget::Volume, intensity: 1., invert: false, lag_ms: 0, shaper: None }], ..Group::default() }];
             let path = std::path::PathBuf::from("tone");
             let zones = (0..2).map(|group| SampleZone { group, sample: path.clone(),
@@ -3015,6 +3546,211 @@ mod real {
                     assert_eq!(notes[l], alone[l][beat][l], "{order:?}: line {l} beat {beat}");
                 }
             }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "plugin"))]
+#[path = "articulate_mpe_expression_tests.rs"]
+mod mpe_expression_tests;
+
+#[cfg(all(test, feature = "plugin"))]
+mod negotiated_mpe_tests {
+    use super::*;
+    use crate::{audio::Sample, engine::{Bank, HostNote, HostPattern}, import::{Group, Zone as SampleZone}};
+
+    fn engine(scripted: bool) -> Engine {
+        let bank = Bank::from_samples(vec![Group::default()], vec![SampleZone::default()],
+            vec![(std::path::PathBuf::new(), Sample { rate: 48000,
+                frames: (0..64000).map(|i| [i as f32 / 64000.; 2]).collect() })]).unwrap();
+        let mut e = Engine::default();
+        e.set_bank(Some(Box::new(bank)));
+        if scripted {
+            let (runtime, errors) = crate::ksp::Runtime::with_scripts(&["on init\nend on"],
+                &mut crate::ksp::LogEngine::new(Vec::new(), 48000.), 8, Vec::new());
+            assert!(errors.iter().all(Option::is_none), "{errors:?}");
+            e.set_script(Some(Box::new(runtime)));
+        }
+        e
+    }
+
+    fn parameter(r: &mut Router, e: &mut Engine, channel: u8, address: u8, coarse: u8, fine: Option<u8>) {
+        for (cc, value) in [(101, 0), (100, address), (6, coarse)] {
+            feed(r, e, In::Cc(channel, cc, value), 0);
+        }
+        if let Some(fine) = fine { feed(r, e, In::Cc(channel, 38, fine), 0); }
+    }
+
+    fn render(e: &mut Engine, frames: usize) {
+        e.render(&mut [0.; 1024][..frames], &mut [0.; 1024][..frames]);
+        e.mark_host_notes();
+    }
+
+    #[test]
+    fn negotiated_dual_zones_render_independent_ranges_and_block_partitions_without_heap() {
+        for scripted in [false, true] {
+            let (mut actual, mut split, mut expected) = (engine(scripted), engine(scripted), engine(scripted));
+            let (mut r, mut sr) = (Router::default(), Router::default());
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                for (e, r) in [(&mut actual, &mut r), (&mut split, &mut sr)] {
+                    parameter(r, e, 0, 6, 3, None);
+                    parameter(r, e, 15, 6, 3, None);
+                    for (channel, coarse, fine) in [(1, 12, 50), (14, 7, 25), (0, 6, 25), (15, 3, 50)] {
+                        parameter(r, e, channel, 0, coarse, Some(fine));
+                    }
+                    for (channel, bend) in [(0, 12288), (1, 10240), (15, 4096), (14, 12288)] {
+                        feed(r, e, In::Bend(channel, bend), 0);
+                    }
+                    for (channel, key) in [(1, 60), (14, 64)] { feed(r, e, In::NoteOn(channel, key, 100), 0); }
+                }
+                for (channel, key, tune) in [(1, 60, 6.25), (14, 64, 1.875)] {
+                    expected.set_expression_on(channel, key, Expression { tune, ..Expression::default() });
+                    expected.note_on(channel, key, 100);
+                }
+            }), 0);
+            assert_eq!(r.route.mpe.zone, Zone::Off, "received negotiation must not rewrite the authored route");
+            assert_eq!(actual.mpe_zones().member(1).unwrap().manager, 0);
+            assert_eq!(actual.mpe_zones().member(14).unwrap().manager, 15);
+            let (mut a, mut s, mut x, mut right) = ([0.; 1024], [0.; 1024], [0.; 1024], [0.; 1024]);
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                actual.render(&mut a, &mut right);
+                expected.render(&mut x, &mut right);
+                let mut at = 0;
+                for n in [1, 7, 31, 127, 13, 64].into_iter().cycle() {
+                    let n = n.min(s.len() - at);
+                    split.render(&mut s[at..at+n], &mut right[at..at+n]);
+                    at += n;
+                    if at == s.len() { break; }
+                }
+            }), 0);
+            assert!(a.iter().any(|x| x.abs() > 0.001));
+            assert!(a.iter().zip(x).all(|(a, x)| (a-x).abs() < 1e-5), "scripted={scripted}: zones lost their independent negotiated pitch");
+            assert!(a.iter().zip(s).all(|(a, s)| (a-s).abs() < 1e-6), "scripted={scripted}: block partition changed MPE audio");
+        }
+    }
+
+    #[test]
+    fn negotiated_membership_reassignment_cleans_pedal_held_owners_and_reuses_channels() {
+        for scripted in [false, true] {
+            let (mut e, mut r) = (engine(scripted), Router::default());
+            let old = HostNote { port: 0, channel: 12, key: 65, id: 12, clap: true };
+            let pattern = HostPattern { port: 0, channel: 12, key: 65, id: 12, clap: true };
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                parameter(&mut r, &mut e, 0, 6, 3, None);
+                parameter(&mut r, &mut e, 15, 6, 3, None);
+                feed(&mut r, &mut e, In::Cc(15, 64, 127), 0);
+                feed(&mut r, &mut e, In::Bend(12, 12288), 0);
+                feed(&mut r, &mut e, In::Pressure(12, 37), 0);
+                feed(&mut r, &mut e, In::HostOn(old, crate::midi::Velocity::from_midi1(100), 0.), 0);
+                for (channel, key) in [(1, 60), (14, 69)] { feed(&mut r, &mut e, In::NoteOn(channel, key, 100), 0); }
+                render(&mut e, 128);
+                feed(&mut r, &mut e, In::HostOff(pattern), 0);
+                render(&mut e, 128);
+            }), 0);
+            assert!(e.host_note_pending(old), "pedal-held owner disappeared before reconfiguration");
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                parameter(&mut r, &mut e, 0, 6, 12, None);
+                render(&mut e, 1024);
+            }), 0);
+            assert_eq!(e.mpe_zones().member(12).unwrap().manager, 0);
+            assert!(!e.host_note_pending(old), "old physical root survived MPE reassignment");
+            let ended = (0..).map_while(|index| e.host_note_at(index)).find(|(note, _)| *note == old);
+            assert_eq!(ended, Some((old, false)), "ended exact address must be available to plugin NOTE_END retirement");
+            e.retire_host_note(old);
+            assert!(!e.host_note_present(old));
+            assert!(e.key_down(1, 60) && e.key_down(14, 69), "unaffected zones lost their held notes");
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                parameter(&mut r, &mut e, 0, 6, 0, None);
+                render(&mut e, 1024);
+            }), 0);
+            assert!(!e.key_down(1, 60) && e.key_down(14, 69), "disabling lower zone also stopped the upper zone");
+            let fresh = HostNote { id: 13, ..old };
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                parameter(&mut r, &mut e, 0, 6, 12, None);
+                feed(&mut r, &mut e, In::HostOn(fresh, crate::midi::Velocity::from_midi1(100), 0.), 0);
+                feed(&mut r, &mut e, In::HostOff(pattern), 0);
+                render(&mut e, 128);
+            }), 0);
+            let voices = e.voice_census();
+            assert_eq!(voices.len(), 2, "old notes or queued descendants survived reconfiguration");
+            let reused = voices.iter().find(|v| v.channel == 12).unwrap();
+            assert!(reused.held && !reused.released);
+            assert!((reused.step - 2f64.powf(5. / 12.)).abs() < 1e-6, "reused channel inherited its previous bend");
+            assert_eq!(e.cc_state()[12][64], 0, "reused member inherited old manager's pedal");
+            assert_eq!(r.member_pressure[12], None);
+        }
+    }
+
+    #[test]
+    fn negotiated_reassignment_cancels_old_waits_but_keeps_other_physical_and_authored_work() {
+        let source = "on init\ndeclare ui_slider $old_cc(0,100)\ndeclare ui_slider $other_cc(0,100)\ndeclare ui_slider $other_key(0,1)\ndeclare ui_button $authored\ndeclare ui_slider $authored_done(0,100)\nend on\non note\nif ($MIDI_CHANNEL=12)\nignore_event($EVENT_ID)\nwait(5000)\nplay_note(72,100,0,-1)\nend if\nend on\non release\nif ($MIDI_CHANNEL=12)\n$other_key := %KEY_DOWN[69]\nwait(1000)\nplay_note(73,100,0,0)\nend if\nend on\non controller\nif (($CC_NUM=1) or ($CC_NUM=74) or ($CC_NUM=7) or ($CC_NUM=10))\nif ($MIDI_CHANNEL=12)\nwait(5000)\ninc($old_cc)\nelse\nif ($MIDI_CHANNEL=14)\nwait(5000)\ninc($other_cc)\nend if\nend if\nend if\nend on\non ui_control($authored)\nwait(5000)\ninc($authored_done)\nend on";
+        let (runtime, errors) = crate::ksp::Runtime::with_scripts(&[source],
+            &mut crate::ksp::LogEngine::new(Vec::new(),48000.),8,Vec::new());
+        assert!(errors.iter().all(Option::is_none), "{errors:?}");
+        let (mut e, mut r) = (engine(false), Router::default());
+        e.set_script(Some(Box::new(runtime)));
+        let old = HostNote { port:0, channel:12, key:65, id:20, clap:true };
+        assert_eq!(crate::plugin::tests::allocations(|| {
+            parameter(&mut r, &mut e, 0, 6, 3, None);
+            parameter(&mut r, &mut e, 15, 6, 3, None);
+            feed(&mut r,&mut e,In::NoteOn(14,69,100),0);
+            feed(&mut r,&mut e,In::HostOn(old,crate::midi::Velocity::from_midi1(100),0.),0);
+            for input in [12,14] { feed(&mut r,&mut e,In::Cc(input,1,input),0); }
+            for cc in [74,7,10] { feed(&mut r,&mut e,In::Cc(12,cc,17),0); }
+            for (cc,value) in [(101,0),(100,2)] { feed(&mut r,&mut e,In::Cc(12,cc,value),0); }
+            e.ui_control(0,3,1);
+            render(&mut e,64);
+            parameter(&mut r,&mut e,0,6,12,None);
+            assert_eq!(e.receive_controller(12,6,7).and_then(|received| received.parameter),None,"reassigned member retained old parameter selection");
+            render(&mut e,1024);
+        }),0);
+        let controls=&e.script().unwrap().interface(0).controls;
+        for (index,value) in [(0,0),(1,1),(2,1),(4,1)] {
+            assert_eq!(controls[index].properties["$CONTROL_PAR_VALUE"],crate::ksp::Value::Int(value),
+                "control {index}: scoped MPE cleanup lost or retained the wrong callback");
+        }
+        assert!(!e.host_note_pending(old));
+        assert!(e.key_down(14,69));
+        assert!(e.voice_census().iter().all(|voice| voice.note==69),"old waiting note or cleanup release created a voice");
+        assert!(e.script().unwrap().diagnostics().is_empty());
+    }
+
+    #[test]
+    fn full_upper_negotiation_reassigns_lower_manager_and_channel_modes_use_the_new_zone() {
+        for scripted in [false,true] {
+            let (mut e,mut r)=(engine(scripted),Router::default());
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                parameter(&mut r,&mut e,0,6,3,None);
+                parameter(&mut r,&mut e,15,6,3,None);
+                feed(&mut r,&mut e,In::Bend(0,12288),0);
+                for (channel,key) in [(0,60),(1,62),(14,69)] {
+                    feed(&mut r,&mut e,In::NoteOn(channel,key,100),0);
+                }
+                render(&mut e,128);
+                parameter(&mut r,&mut e,15,6,15,None);
+                render(&mut e,1024);
+            }),0);
+            assert_eq!(e.mpe_zones().manager(0),None);
+            assert_eq!(e.mpe_zones().member(0).unwrap().manager,15);
+            assert!(!e.key_down(0,60) && !e.key_down(1,62));
+            assert!(e.key_down(14,69),"extending upper zone stopped its unchanged member");
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                feed(&mut r,&mut e,In::NoteOn(0,65,100),0);
+                render(&mut e,128);
+            }),0);
+            let voices=e.voice_census();
+            let former_manager=voices.iter().find(|voice|voice.channel==0).unwrap();
+            assert!((former_manager.step-2f64.powf(5./12.)).abs()<1e-6,"former manager retained its previous bend after becoming a member");
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                feed(&mut r,&mut e,In::Cc(0,123,0),0);
+                render(&mut e,128);
+            }),0);
+            assert!(!e.key_down(0,65) && e.key_down(14,69),"former manager stop still acted on its old zone");
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                feed(&mut r,&mut e,In::Cc(15,123,0),0);
+                render(&mut e,128);
+            }),0);
+            assert!(!e.key_down(14,69),"active upper manager stop did not reach its members");
         }
     }
 }

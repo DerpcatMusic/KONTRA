@@ -41,6 +41,32 @@ pub struct BankPublicParams {
     pub name: String,
 }
 
+#[derive(Debug)]
+pub struct BankSlotSettings {
+    /// Native filter: 0 accepts any channel; otherwise compare channel - 1.
+    pub channel: u16,
+    pub flags: [u8; 2],
+    pub auxiliary: Vec<f32>,
+}
+
+#[derive(Debug)]
+pub struct BankOutputConfiguration {
+    pub mapping: Vec<u32>,
+    /// Occupied records in their original bitmap order.
+    pub records: Vec<BankOutputRecord>,
+}
+
+#[derive(Debug)]
+pub struct BankOutputRecord {
+    pub index: u8,
+    pub name: String,
+    pub channels: u16,
+    /// -1 disables auxiliary routing; 0..3 select a slot auxiliary level.
+    pub auxiliary: i16,
+    pub volume: f32,
+    pub fx: Vec<StructuredObject>,
+}
+
 impl Bank {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let so = StructuredObject::read(&mut reader)?;
@@ -61,6 +87,75 @@ impl Bank {
 
     pub fn slot_list(&self) -> Result<super::SlotList, Error> {
         (&self.0.children[7]).try_into()
+    }
+
+    /// Decode the verified v0x73/v0x74 slot metadata without applying it.
+    pub fn slot_settings(&self) -> Result<Vec<BankSlotSettings>, Error> {
+        if !matches!(self.0.version, 0x73 | 0x74) {
+            return Err(Error::Static("Unsupported bank slot-settings version"));
+        }
+        let chunk = self.0.find_first(0x48).ok_or(KontaktError::MissingChunk(0x48))?;
+        let mut reader = Cursor::new(&chunk.data);
+        let mut slots = Vec::with_capacity(64);
+        for _ in 0..64 {
+            let channel = reader.read_u16_le()?;
+            let flags = [reader.read_u8()?, reader.read_u8()?];
+            let count = reader.read_u32_le()?;
+            if count > 4 {
+                return Err(Error::Static("Bank slot has more than four auxiliary levels"));
+            }
+            let auxiliary = (0..count).map(|_| reader.read_f32_le()).collect::<Result<_, _>>()?;
+            slots.push(BankSlotSettings { channel, flags, auxiliary });
+        }
+        if reader.position() != chunk.data.len() as u64 {
+            return Err(Error::Static("Unsupported bank slot-settings trailing data"));
+        }
+        Ok(slots)
+    }
+
+    pub fn output_configuration(&self) -> Result<BankOutputConfiguration, Error> {
+        let chunk = self.0.find_first(0x3e).ok_or(KontaktError::MissingChunk(0x3e))?;
+        if chunk.data.first() != Some(&0) {
+            return Err(Error::Static("Unsupported structured bank output configuration"));
+        }
+        let object = StructuredObject::try_from(chunk)?;
+        if object.version != 0 || !object.private_data.is_empty() || !object.children.is_empty() {
+            return Err(Error::Static("Unsupported bank output-configuration format"));
+        }
+        let mut reader = Cursor::new(&object.public_data);
+        let count = reader.read_u32_le()? as usize;
+        if count > object.public_data.len().saturating_sub(20) / 4 {
+            return Err(Error::Static("Truncated bank output mapping"));
+        }
+        let mapping = (0..count).map(|_| reader.read_u32_le()).collect::<Result<_, _>>()?;
+        let occupied = reader.read_bytes(16)?;
+        let mut records = Vec::new();
+        for index in 0..128 {
+            if occupied[index / 8] & (1 << (index % 8)) == 0 { continue; }
+            if reader.read_u8()? != 0 || reader.read_u16_le()? != 0x70 {
+                return Err(Error::Static("Unsupported bank output-record format"));
+            }
+            let name = reader.read_widestring_utf16()?;
+            let channels = reader.read_u16_le()?;
+            let auxiliary = reader.read_i16_le()?;
+            let volume = reader.read_f32_le()?;
+            let count = reader.read_u32_le()?;
+            if count > 4 {
+                return Err(Error::Static("Bank output has more than four effects"));
+            }
+            let mut fx = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                if object.public_data.get(reader.position() as usize) != Some(&1) {
+                    return Err(Error::Static("Unsupported unstructured bank output effect"));
+                }
+                fx.push(StructuredObject::read(&mut reader)?);
+            }
+            records.push(BankOutputRecord { index: index as u8, name, channels, auxiliary, volume, fx });
+        }
+        if reader.position() != object.public_data.len() as u64 {
+            return Err(Error::Static("Unsupported bank output-configuration trailing data"));
+        }
+        Ok(BankOutputConfiguration { mapping, records })
     }
 }
 

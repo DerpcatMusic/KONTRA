@@ -17,7 +17,10 @@
 //! `Samples/<instrument>/` and `Reports/`.
 
 pub mod names;
+#[cfg(not(test))]
 mod nki;
+#[cfg(test)]
+pub(crate) mod nki;
 pub mod pitch;
 
 use crate::import::{Ahdsr, Group, Instrument, Loop, Zone};
@@ -96,6 +99,8 @@ struct Native {
     format: String,
     version: u32,
     name: String,
+    #[serde(default)]
+    sampling_profile: crate::import::SamplingProfile,
     groups: Vec<Group>,
     zones: Vec<Zone>,
     #[serde(default)]
@@ -132,6 +137,7 @@ pub fn read_native(path: &Path) -> Result<Instrument> {
         script_state: vec![Default::default(); native.scripts.len()],
         path,
         name: native.name,
+        sampling_profile: native.sampling_profile,
         groups: native.groups,
         zones,
         scripts: native.scripts,
@@ -601,6 +607,7 @@ pub fn create(options: &Options, progress: &dyn Fn(&str)) -> Result<Created> {
                 format: "kontra-instrument".into(),
                 version: 1,
                 name: name.clone(),
+                sampling_profile: crate::import::SamplingProfile::Compatibility,
                 groups: plan.groups.clone(),
                 zones: zones.clone(),
                 scripts: plan.script.iter().cloned().collect(),
@@ -627,7 +634,7 @@ pub fn create(options: &Options, progress: &dyn Fn(&str)) -> Result<Created> {
             let preset = root.join("Instruments").join(format!("{folder}.nki"));
             nki::write(
                 &preset,
-                &nki::Program { name: &name, author: &options.vendor, groups: &plan.groups, zones: &zones, samples: &files, script: plan.script.as_deref() },
+                &nki::Program { name: &name, author: &options.vendor, groups: &plan.groups, zones: &zones, samples: &files, script: plan.script.as_deref(), native_private: None, default_key_switch: None },
             )?;
             std::fs::write(root.join("Instruments").join(format!("{folder}.sfz")), sfz(&plan, &relative))?;
         }
@@ -804,3 +811,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
+
+#[cfg(all(test, feature = "plugin"))]
+#[path = "creator/sampling_profile_tests.rs"]
+mod sampling_profile_tests;

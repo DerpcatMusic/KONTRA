@@ -29,7 +29,7 @@ pub use engine::{
 };
 pub use inventory::requirements;
 pub use runtime::{FaultAction, FaultContext, Live, LiveFault, MAX_SLOTS, Persisted, Refresh, Runtime, settle_persistence};
-pub(crate) use runtime::{EVENT_CAPACITY, reset_controller_value};
+pub(crate) use runtime::EVENT_CAPACITY;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -117,8 +117,20 @@ pub struct Control {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ExposedControl {
+    pub slot: usize,
+    pub control: usize,
+    pub identifier: String,
+    pub menu_visible: Vec<bool>,
+    pub midi_learn: Option<usize>,
+    pub descriptor: Control,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Interface {
     pub performance: bool,
+    #[serde(default)]
+    pub native_ui: String,
     pub width: i32,
     pub height: i32,
     pub title: String,
@@ -143,6 +155,7 @@ impl Default for Interface {
     fn default() -> Self {
         Self {
             performance: false,
+            native_ui: String::new(),
             width: 632,
             height: 350,
             title: String::new(),

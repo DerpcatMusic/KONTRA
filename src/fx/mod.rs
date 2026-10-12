@@ -154,6 +154,18 @@ pub struct ProgramFx {
     pub send: Chain,
     pub main: Chain,
     pub buses: Vec<Bus>,
+    /// Saved send destinations. Missing entries retain the instrument return.
+    #[serde(default)]
+    pub send_outputs: Vec<SendOutput>,
+}
+
+/// A send slot's saved destination, independent of host output numbering.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SendOutput {
+    pub slot: usize,
+    /// -1 returns to the instrument; other values select a native output tag.
+    /// Native routing matches the output record tag, not a host channel index.
+    pub channel: i32,
 }
 
 impl Effect {
@@ -239,12 +251,25 @@ impl ProgramFx {
     pub fn read(program: &Program) -> Result<Self> {
         let mut racks = Vec::new();
         let mut buses = Vec::new();
+        let mut send_outputs = Vec::new();
         for child in &program.0.children {
             match child.id {
-                0x3a => racks.push(
-                    Chain::read(child)
-                        .with_context(|| format!("Instrument effect rack {}", racks.len()))?,
-                ),
+                0x3a => {
+                    let array = BParamArrayBParFX8::try_from(child)?;
+                    let chain = Chain::from_array(&array)
+                        .with_context(|| format!("Instrument effect rack {}", racks.len()))?;
+                    if racks.len() == 1 {
+                        for (slot, item) in array.items.iter().enumerate() {
+                            if let Some(chunk) = item {
+                                send_outputs.push(SendOutput {
+                                    slot,
+                                    channel: BParFX::try_from(chunk)?.params()?.output_channel,
+                                });
+                            }
+                        }
+                    }
+                    racks.push(chain);
+                }
                 0x45 => buses.push(
                     Bus::read(buses.len(), child)
                         .with_context(|| format!("Instrument bus {}", buses.len()))?,
@@ -259,6 +284,7 @@ impl ProgramFx {
             send: racks.next().unwrap_or_default(),
             main: racks.next().unwrap_or_default(),
             buses,
+            send_outputs,
         })
     }
 
@@ -537,6 +563,9 @@ impl ProgramFx {
     /// Compatibility notes: active effects that pass through, ignored params.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
+        for output in self.send_outputs.iter().filter(|output| output.channel != -1) {
+            out.push(format!("Instrument send slot {}: external output tag {} is retained but has no host output association; this return is unavailable and is excluded from the instrument main mix", output.slot + 1, output.channel));
+        }
         for (location, fx) in self.effects() {
             let at = format!("{} in {location} slot {}", fx.kind.name(), fx.slot + 1);
             if fx.bypass {

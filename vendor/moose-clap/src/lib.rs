@@ -1705,6 +1705,20 @@ fn typed_output_body_is_valid(body: &EventBody) -> bool {
             bank,
             index,
             ..
+        }
+        | EventBody::RelativeRegisteredController {
+            group,
+            channel,
+            bank,
+            index,
+            ..
+        }
+        | EventBody::RelativeAssignableController {
+            group,
+            channel,
+            bank,
+            index,
+            ..
         } => group < 16 && channel < 16 && bank < 128 && index < 128,
         EventBody::ParamChange { id, value } => id != CLAP_INVALID_ID && value.is_finite(),
         EventBody::ParamMod { id, note_id, value } => {
@@ -1971,7 +1985,9 @@ fn preflight_clap_output(
             | EventBody::PitchBend2 { .. }
             | EventBody::ProgramChange2 { .. }
             | EventBody::RegisteredController { .. }
-            | EventBody::AssignableController { .. }) => {
+            | EventBody::AssignableController { .. }
+            | EventBody::RelativeRegisteredController { .. }
+            | EventBody::RelativeAssignableController { .. }) => {
                 if info.midi_output_dialect != MidiDialect::Midi2 {
                     return OutputEventStatus::Unsupported;
                 }
@@ -2847,6 +2863,12 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
             bus_routing,
         );
 
+        if status == ProcessStatus::Error {
+            scr.input_slices.clear();
+            scr.output_slices.clear();
+            return CLAP_PROCESS_ERROR;
+        }
+
         // Convert + copy back to host outputs for every channel that
         // rendered into scratch (wire precision differed from
         // `P::Sample`). Zero-copy channels leave their scratch slot
@@ -2944,6 +2966,7 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
                 scr.input_slices.clear();
                 scr.output_slices.clear();
                 return match status {
+                    ProcessStatus::Error => CLAP_PROCESS_ERROR,
                     ProcessStatus::Normal => CLAP_PROCESS_CONTINUE,
                     ProcessStatus::Tail(0) => CLAP_PROCESS_SLEEP,
                     ProcessStatus::Tail(_) => CLAP_PROCESS_TAIL,
@@ -3214,7 +3237,9 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
                     | EventBody::PitchBend2 { .. }
                     | EventBody::ProgramChange2 { .. }
                     | EventBody::RegisteredController { .. }
-                    | EventBody::AssignableController { .. }) => {
+                    | EventBody::AssignableController { .. }
+                    | EventBody::RelativeRegisteredController { .. }
+                    | EventBody::RelativeAssignableController { .. }) => {
                         if data.info.midi_output_dialect != MidiDialect::Midi2 {
                             output_status = OutputEventStatus::Unsupported;
                             break 'output_events;
@@ -3259,6 +3284,7 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         scr.output_slices.clear();
 
         match status {
+            ProcessStatus::Error => CLAP_PROCESS_ERROR,
             ProcessStatus::Normal => CLAP_PROCESS_CONTINUE,
             ProcessStatus::Tail(0) => CLAP_PROCESS_SLEEP,
             ProcessStatus::Tail(_) => CLAP_PROCESS_TAIL,

@@ -169,16 +169,24 @@ pub struct EnvelopeFlex {
     pub points: Vec<FlexPoint>,
     /// Index into `points` held while the key is down.
     pub sustain: u32,
-    /// Index into `points`, `sustain - 1` in every local preset (loop start?).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Native loop-start index; `sustain` is the loop-end index.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_index: u32,
-    /// Trailing bytes: a `u16` (v0x12 only), one `(f32, f32, f32)` record and a
-    /// byte, all of unknown meaning.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// v0x12 starts with separate Loop and Oneshot bytes, followed by the
+    /// packed timing record retained by both admitted format versions.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub unknown_tail: Vec<u8>,
 }
 
 impl EnvelopeFlex {
+    /// Proven v0x12 switches. Older records and invalid switch bytes retain
+    /// their raw metadata without inventing native constructor defaults.
+    pub fn loop_and_oneshot(&self) -> Option<(bool, bool)> {
+        let tail = &self.unknown_tail;
+        (tail.len() == FLEX_TAIL_V12 && tail[0] <= 1 && tail[1] <= 1)
+            .then(|| (tail[0] != 0, tail[1] != 0))
+    }
+
     fn validate(&self) -> Result<(), Error> {
         let count = self.points.len();
         if count == 0

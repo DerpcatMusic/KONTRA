@@ -60,9 +60,11 @@ impl Mapping {
 
 pub(crate) struct Context {
     groups: Vec<Group>,
+    sampling_profile: crate::import::SamplingProfile,
     paths: Vec<PathBuf>,
     source_identity: Option<usize>,
     loop_controls: Vec<bool>,
+    primary_bypass: Vec<bool>,
     sources: Vec<Option<crate::audio::Source>>,
     stream_bytes: usize,
     loaded: Vec<bool>,
@@ -115,6 +117,7 @@ impl Bank {
         }
         self.zone_context = Some(Arc::new(Context {
             groups: self.groups().to_vec(),
+            sampling_profile: self.initial_state.as_ref().expect("prepared bank state").sampling_profile,
             loaded,
             paths,
             source_identity,
@@ -126,7 +129,9 @@ impl Bank {
                     .sum(),
             ),
             sources,
-            loop_controls: self
+            primary_bypass: self.initial_state.as_ref().expect("prepared bank state")
+                .base.iter().map(|g| g.primary_bypass.is_some()).collect(),
+            loop_controls: self.initial_state.as_ref().expect("prepared bank state")
                 .base
                 .iter()
                 .map(|g| g.mods.has_loop_controls())
@@ -219,7 +224,9 @@ impl Bank {
         self.zone_context.as_ref().is_some_and(|own| {
             own.source_identity.is_some()
                 && own.source_identity == context.source_identity
+                && own.sampling_profile == context.sampling_profile
                 && own.paths == context.paths
+                && own.primary_bypass == context.primary_bypass
                 && own
                     .sources
                     .iter()
@@ -337,6 +344,34 @@ impl Bank {
         prepared.installed = true;
         true
     }
+
+    /// Replace resident data only when no mapping job borrows the snapshot.
+    /// The worker prepared both new vectors and disposes both replaced ones.
+    pub(super) fn swap_sample_head(&mut self, head: &mut super::residency::Head) -> bool {
+        let sample = head.sample() as usize;
+        let Some(data) = self.samples.get_mut(sample).filter(|s| s.streamed) else { return false };
+        // Remapping can prepare a resident wavetable after the memory manager
+        // captured ordinary sample plays. Its older head cannot revoke any
+        // current table's complete contiguous source window, even while idle.
+        if self.plays.iter().filter(|play| play.sample as usize == sample)
+            .filter_map(|play| play.wavetable).any(|table| {
+                let first = table.first as u64;
+                let end = first + (table.cycles * super::wavetable::CYCLE) as u64;
+                !head.spans.iter().any(|span| span.start <= first && span.end() >= end)
+            }) {
+            return false;
+        }
+        let Some(state) = self.zone_state.as_mut().and_then(Arc::get_mut) else { return false };
+        let Some(snapshot) = state.samples.get_mut(sample) else { return false };
+        let before: usize = data.spans.iter().map(|s| s.data.bytes()).sum();
+        let after: usize = head.spans.iter().map(|s| s.data.bytes()).sum();
+        std::mem::swap(&mut data.spans, &mut head.spans);
+        std::mem::swap(&mut snapshot.spans, &mut head.snapshot_spans);
+        self.bytes = self.bytes.saturating_sub(before).saturating_add(after);
+        state.bytes = self.bytes;
+        head.applied();
+        true
+    }
 }
 
 impl Prepared {
@@ -417,6 +452,12 @@ impl Prepared {
             z.low_key = m.low;
             z.high_key = m.high;
             let group = &context.groups[z.group];
+            ensure!(super::bank::source_identity_supported(group, context.sampling_profile),
+                "Unsupported Kontakt source identity for target group {}: mode {:?}, decoded wavetable {}, interpolation quality {}",
+                z.group, group.source_mode, group.wavetable.is_some(), group.interp_quality);
+            ensure!(!context.primary_bypass[z.group]
+                || (z.loop_range.is_none() && !z.native_loops.iter().any(|row| row.mode != 0)),
+                "Primary amplitude bypass target group requires an unlooped sample zone");
             let sample = &mut samples[p.sample as usize];
             let path = &context.paths[p.sample as usize];
             let current = if let Some(original) = context.sources[p.sample as usize].as_ref() {
@@ -432,8 +473,17 @@ impl Prepared {
             } else {
                 None
             };
-            let (map, _) = super::bank::play_map(z, group, sample.frames)
+            let (mut map, _) = super::bank::play_map(z, group, sample.frames)
                 .map_err(|(_, e)| anyhow::anyhow!(e))?;
+            if p.counted.is_some() {
+                ensure!(!group.reverse && group.wavetable.is_none() && group.source_mode == Some(0)
+                    && !group.mods.iter().any(|m| super::params::loop_control_supported(group, m)),
+                    "Target group does not support prepared counted or ordered ordinary sample loops");
+                map.looped = None;
+            } else if z.native_loops.iter().filter(|l| l.mode != 0).count() > 1
+                || z.native_loops.iter().any(|l| l.mode != 0 && l.count != 0) {
+                map.looped = None;
+            }
             p.map = map;
             p.start_mod = z
                 .start_mod

@@ -57,6 +57,8 @@ pub struct Head {
     /// Bytes of the head as read.
     bytes: usize,
     pub(crate) spans: Vec<Span>,
+    /// Prepared copy for the zone snapshot; both replaced vectors retire here.
+    pub(super) snapshot_spans: Vec<Span>,
     applied: bool,
 }
 
@@ -158,6 +160,7 @@ impl Tracked {
             sample: self.sample,
             tier,
             bytes: spans.iter().map(|s: &Span| s.data.bytes()).sum(),
+            snapshot_spans: spans.clone(),
             spans,
             applied: false,
         })
@@ -240,7 +243,7 @@ impl Residency {
             late: false,
             waiting: Vec::new(),
             in_flight: false,
-            bytes: bank.bytes - Streamer::BYTES,
+            bytes: bank.bytes - Streamer::RING_BYTES,
             freed: 0,
         })
     }
@@ -392,6 +395,9 @@ fn tiers(scores: &[f32], extra: impl Fn(usize) -> usize, budget: usize, pressure
 mod tests {
     use super::*;
 
+    #[path = "residency_wavetable_tests.rs"]
+    mod wavetable_heads;
+
     #[test]
     fn heads_never_swap_under_a_playing_or_just_started_voice() {
         use crate::{
@@ -409,31 +415,66 @@ mod tests {
         let sample = (PathBuf::from("a"), Sample { rate: 48000, frames });
         let mut bank = Bank::from_samples(vec![Group::default()], vec![zone], vec![sample]).unwrap();
         bank.samples[0].streamed = true;
+        let old_pcm = std::sync::Arc::downgrade(&bank.samples[0].spans[0].data);
         let mut e = Engine::default();
         e.release = 0.001;
         e.set_bank(Some(Box::new(bank)));
         let render = |e: &mut Engine| e.render(&mut [0.0; 4800], &mut [0.0; 4800]);
         let data = Pcm::pack(&[[0.0; 2]; 16], false);
+        let spans = vec![Span { start: 0, data: Frames::new(data) }];
         let mut heads = [Head {
             sample: 0,
             tier: Tier::Hot,
-            bytes: data.bytes(),
-            spans: vec![Span { start: 0, data: Frames::new(data) }],
+            bytes: spans[0].data.bytes(),
+            snapshot_spans: spans.clone(),
+            spans,
             applied: false,
         }];
+        let swap = |e: &mut Engine, heads: &mut [Head]| {
+            #[cfg(feature = "plugin")]
+            assert_eq!(crate::plugin::tests::allocations(|| e.swap_heads(heads)), 0);
+            #[cfg(not(feature = "plugin"))]
+            e.swap_heads(heads);
+        };
         e.note_on(0, 60, 100);
-        e.swap_heads(&mut heads);
+        swap(&mut e, &mut heads);
         assert!(!heads[0].applied, "a note just started keeps its head");
         render(&mut e);
         e.note_off(0, 60);
-        e.swap_heads(&mut heads);
+        swap(&mut e, &mut heads);
         assert!(!heads[0].applied, "a releasing note keeps its head");
         render(&mut e);
         assert_eq!(e.active_voices(), 0);
-        e.swap_heads(&mut heads);
+        // A pending mapping job still needs the old immutable sample snapshot.
+        let snapshot = e.bank().unwrap().zone_state.as_ref().unwrap().clone();
+        swap(&mut e, &mut heads);
+        assert!(!heads[0].applied, "borrowed mapping data defers sample retirement");
+        assert_eq!(e.bank().unwrap().samples[0].spans[0].end(), 48000);
+        drop(snapshot); // The worker completes/cancels the mapping job.
+        swap(&mut e, &mut heads);
         assert!(heads[0].applied, "swapped once silent");
         assert_eq!(e.bank().unwrap().samples[0].spans[0].end(), 16);
         assert_eq!(heads[0].spans[0].end(), 48000, "the old head comes back to be freed");
+        assert!(old_pcm.upgrade().is_some(), "returned heads retain replaced PCM until worker disposal");
+        drop(heads); // Worker disposal follows the audio-thread swap.
+        assert!(old_pcm.upgrade().is_none(), "zone snapshots must not pin a retired sample head");
+
+        // A later mapping job must start from the installed short head rather
+        // than restoring the retired 48000-frame allocation.
+        use crate::ksp::engine::{ZoneEdit, ZonePar};
+        let job = e.bank().unwrap().zone_job(ZoneEdit {
+            zone: 0, par: ZonePar::HighKey, value: 60, slot: 0, id: 1,
+        }).unwrap();
+        let base = job.base.clone();
+        let mut prepared = super::super::zone::Prepared::build(vec![job], base, &|| false);
+        assert!(prepared.success, "{:?}", prepared.error);
+        #[cfg(feature = "plugin")]
+        assert_eq!(crate::plugin::tests::allocations(|| assert!(e.install_zone_map(&mut prepared))), 0);
+        #[cfg(not(feature = "plugin"))]
+        assert!(e.install_zone_map(&mut prepared));
+        assert_eq!(e.bank().unwrap().samples[0].spans[0].end(), 16);
+        assert_eq!(e.bank().unwrap().zone_par(0, ZonePar::HighKey), Some(60));
+        drop(prepared); // Replaced mapping storage also retires off audio.
     }
 
     #[test]

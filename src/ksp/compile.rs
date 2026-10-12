@@ -452,7 +452,7 @@ pub struct Program {
     pub poly: u32,
     pub revision_owners: [Arc<[u32]>; 3],
     pub revision_counts: [usize; 3],
-    pub sys_arrays: [Option<VarId>; 6],
+    pub sys_arrays: [Option<VarId>; 7],
     /// Script-local names for undeclared uppercase constants.
     pub auto_symbols: Vec<Box<str>>,
     /// Blocks that failed to compile, disabled at runtime.
@@ -895,6 +895,7 @@ impl<'a> Compiler<'a> {
             SysArray::PolyAt => "%POLY_AT",
             SysArray::GroupsSelected => "%GROUPS_SELECTED",
             SysArray::KeyDownOct => "%KEY_DOWN_OCT",
+            SysArray::NoteDuration => "%NOTE_DURATION",
         };
         self.p.vars.push(Var {
             name: name.into(),
@@ -1240,6 +1241,7 @@ impl<'a> Compiler<'a> {
             )
         };
         ensure!(!constant, "Assignment to constant {name}");
+        ensure!(self.p.sys_arrays[SysArray::NoteDuration as usize] != Some(v), "{name} is read-only");
         match (array, index) {
             (true, Some(index)) => {
                 self.expr_ty(index, Ty::Int)?;
@@ -1649,6 +1651,10 @@ impl<'a> Compiler<'a> {
                         *kind == Arg::V || self.p.vars[v as usize].is_array(),
                         "{fname} requires an array"
                     );
+                    ensure!(self.p.sys_arrays[SysArray::NoteDuration as usize] != Some(v)
+                        || !matches!(b, Builtin::Sort | Builtin::LoadArray | Builtin::LoadArrayStr | Builtin::GetEventIds
+                            | Builtin::MakePersistent | Builtin::MakeInstrPersistent | Builtin::ReadPersistentVar),
+                        "%NOTE_DURATION is read-only");
                     self.emit(Op::Ref(v));
                     if b == Builtin::SaveArrayStr && !self.p.array_writes.contains(&v) {
                         self.p.array_writes.push(v);
