@@ -247,19 +247,19 @@ fn bitmap_words(
 pub(super) fn sliced(image: &Arc<Image>, meta: ir::ImageMeta, w: f64, h: f64, s: f64) -> El {
     let axis = |on: bool,
                 own: u32,
-                source: u32,
+                source: f64,
                 to: f64,
                 mut first: u32,
                 mut last: u32|
      -> Vec<(u32, u32, f64)> {
-        if !on || own < 2 || source < 2 {
+        if !on || own < 2 || source < 2. {
             return vec![(0, own, to)];
         }
         if first == 0 && last == 0 {
-            first = (source - 1) / 2;
+            first = ((source - 1.) / 2.).floor() as u32;
             last = first;
         }
-        if first.saturating_add(last) >= source {
+        if f64::from(first.saturating_add(last)) >= source {
             return vec![(0, own, to)];
         }
         let (a, b) = (first as f64 * s, last as f64 * s);
@@ -278,8 +278,8 @@ pub(super) fn sliced(image: &Arc<Image>, meta: ir::ImageMeta, w: f64, h: f64, s:
         ]
     };
     let size = meta.size.unwrap_or(ir::Size {
-        width: image.width,
-        height: image.height,
+        width: f64::from(image.width),
+        height: f64::from(image.height),
     });
     let across = axis(
         meta.stretch[0],
