@@ -977,7 +977,51 @@ fn uvi(opts: &Options, report: &mut Value) {
         "Falcon Lua source/modules classified and compiled for Luau syntax without execution; lowered entries are source mappings, native Lua semantics unverified",
         "crates/sampler-uvi/src/parity.rs",
     );
-    let xml_for_init = opts.initialize.then(|| xml.clone());
+    if opts.initialize {
+        let origin = if let Some(program) = program.as_deref() {
+            sampler_uvi::ScriptedOrigin::Bank(program)
+        } else {
+            sampler_uvi::ScriptedOrigin::Loose(&opts.path)
+        };
+        match sampler_uvi::inspect_decoded_scripted_program(xml, files, origin) {
+            Ok((ir, host)) => {
+                instrument(
+                    report,
+                    &ir,
+                    "Production Falcon XML translation after bounded Lua onLoad overrides; no sample decode",
+                );
+                stage(
+                    report,
+                    "translate",
+                    "ok",
+                    "Converted the initialized XML hierarchy and admitted processor/control graph",
+                    "crates/sampler-uvi/src/lib.rs",
+                );
+                uvi_initialization(report, &host, &source_lines);
+            }
+            Err(sampler_uvi::ScriptedTranslationFailure::Initialize(error)) => {
+                fail(
+                    report,
+                    "initialize",
+                    "LuaInitialization",
+                    "Lua initialization rejected; authored payload omitted",
+                    "crates/sampler-uvi/src/script.rs",
+                );
+                ephemeral_error(report, &error);
+            }
+            Err(sampler_uvi::ScriptedTranslationFailure::Translate(error)) => {
+                fail(
+                    report,
+                    "translate",
+                    "Translation",
+                    "Production initialized XML translation rejected source; authored error payload omitted",
+                    "crates/sampler-uvi/src/lib.rs",
+                );
+                ephemeral_error(report, &error);
+            }
+        }
+        return;
+    }
     let ir = if let Some(bank) = &bank {
         sampler_uvi::translate_decoded_program(bank, program.as_ref().unwrap(), xml)
     } else {
@@ -1008,27 +1052,6 @@ fn uvi(opts: &Options, report: &mut Value) {
             );
             ephemeral_error(report, &e);
             return;
-        }
-    }
-    if opts.initialize {
-        match sampler_uvi::script::ScriptHost::new_inspected(
-            xml_for_init.as_deref().unwrap(),
-            files,
-            Default::default(),
-        ) {
-            Ok(host) => {
-                uvi_initialization(report, &host, &source_lines);
-            }
-            Err(e) => {
-                fail(
-                    report,
-                    "initialize",
-                    "LuaInitialization",
-                    "Lua initialization rejected; authored payload omitted",
-                    "crates/sampler-uvi/src/script.rs",
-                );
-                ephemeral_error(report, &e);
-            }
         }
     }
 }
@@ -1601,6 +1624,62 @@ mod tests {
         );
         uvi_initialization(&mut ephemeral, &host, &source_lines);
         assert!(ephemeral.to_string().contains("PRIVATE_INIT_ERROR"));
+    }
+
+    #[test]
+    fn initialized_uvi_reports_the_post_onload_gain_in_production_ir() {
+        let temp = Temp::new();
+        let xml = r#"<Program><Inserts><Gain Volume="1"/></Inserts><EventProcessors><ScriptProcessor><script><![CDATA[local gain=Program.inserts[1]
+function onInit() gain:setParameter('Volume',0.25) end]]></script></ScriptProcessor></EventProcessors></Program>"#;
+        let mut opts = fixture(&temp, xml, true);
+        let mut static_report = base(&opts, "uvi-loose");
+        uvi(&opts, &mut static_report);
+        opts.initialize = true;
+        let mut initialized = base(&opts, "uvi-loose");
+        uvi(&opts, &mut initialized);
+        let gain = |report: &Value| {
+            report["converted"]["chains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|chain| {
+                    ["pre_amplitude", "post_amplitude"]
+                        .into_iter()
+                        .flat_map(move |lane| chain[lane].as_array().into_iter().flatten())
+                })
+                .find_map(|processor| processor["Gain"]["Linear"].as_f64())
+                .unwrap()
+        };
+        assert_eq!(gain(&static_report), 1.0);
+        assert_eq!(gain(&initialized), 0.25);
+        assert_eq!(initialized["evidence"]["initialization"]["status"], "ok");
+        assert_eq!(initialized["metadata"]["xml"], xml);
+        assert!(initialized["scripts"][0]["source"].is_string());
+        assert_eq!(initialized["evidence"]["native_equivalence"], "unknown");
+    }
+
+    #[test]
+    fn initialized_uvi_pipeline_keeps_located_faults_and_source_opt_in() {
+        let temp = Temp::new();
+        let xml = r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[function onInit()
+ error('SYNTHETIC_PRIVATE_FAULT')
+end]]></script></ScriptProcessor></EventProcessors></Program>"#;
+        let mut opts = fixture(&temp, xml, false);
+        opts.initialize = true;
+        let mut report = base(&opts, "uvi-loose");
+        uvi(&opts, &mut report);
+        assert_eq!(report["evidence"]["initialization"]["status"], "failed");
+        assert_eq!(report["converted"]["status"], "ok");
+        assert!(report["metadata"].get("xml").is_none());
+        assert!(report["scripts"][0].get("source").is_none());
+        let fault = report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["category"] == "LuaInitializationFault")
+            .unwrap();
+        assert_eq!(fault["span"]["line"], 2);
+        assert!(!report.to_string().contains("SYNTHETIC_PRIVATE_FAULT"));
     }
 
     #[test]

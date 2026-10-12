@@ -1618,14 +1618,9 @@ pub fn load_program_scripted_with_options(
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
     let lua = bank.scripts();
-    let text = promote(text, &lua);
-    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
-    let patched = apply_overrides(&text, &host.insert_overrides());
-    let (mut instrument, locations, groups, inserts) =
-        translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
-    if let Some(sources) = &mut instrument.uvi_script_sources {
-        sources.files = lua.sources();
-    }
+    let ((mut instrument, locations, groups, inserts), host) =
+        initialized_translation(text, lua, Source::Bank, Path::new(program), false)
+            .map_err(ScriptedTranslationFailure::into_error)?;
     let (locations, decoded) =
         decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
             bank.resource(&program_path, authored)
@@ -1643,6 +1638,121 @@ pub fn load_program_scripted_with_options(
         inserts,
         stream: None,
     })
+}
+
+/// Which source authority to use when inspecting decoded XML after onLoad.
+#[cfg(feature = "library-access")]
+pub enum ScriptedOrigin<'a> {
+    Bank(&'a str),
+    Loose(&'a Path),
+}
+
+/// The phase that rejected a scripted translation. Error text may contain
+/// authored values and must be handled as private by callers.
+#[cfg(feature = "library-access")]
+#[derive(Debug)]
+pub enum ScriptedTranslationFailure {
+    Initialize(Box<dyn std::error::Error>),
+    Translate(Box<dyn std::error::Error>),
+}
+
+#[cfg(feature = "library-access")]
+impl ScriptedTranslationFailure {
+    fn into_error(self) -> Box<dyn std::error::Error> {
+        match self {
+            Self::Initialize(error) | Self::Translate(error) => error,
+        }
+    }
+}
+
+/// Run the same promotion, one initializer, override application and XML
+/// translation as the scripted bank loader, without reading or decoding audio.
+#[cfg(feature = "library-access")]
+pub fn inspect_decoded_scripted_program(
+    text: String,
+    files: script::Scripts,
+    origin: ScriptedOrigin<'_>,
+) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
+    let (source, path) = match origin {
+        ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program)),
+        ScriptedOrigin::Loose(path) => (
+            Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
+            path,
+        ),
+    };
+    let ((mut instrument, ..), host) = initialized_translation(text, files, source, path, true)?;
+    note_script(&host, &mut instrument);
+    Ok((instrument, host))
+}
+
+#[cfg(feature = "library-access")]
+fn initialized_translation(
+    text: String,
+    files: script::Scripts,
+    source: Source,
+    path: &Path,
+    inspected: bool,
+) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    let text = promote(text, &files);
+    let host = if inspected {
+        script::ScriptHost::new_inspected(&text, files.clone(), script::Config::default())
+    } else {
+        script::ScriptHost::new(&text, files.clone(), script::Config::default())
+    }
+    .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
+    let patched = apply_overrides(&text, &host.insert_overrides());
+    let (mut instrument, locations, groups, inserts) = translate_full(&patched, source)
+        .map_err(|error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))))?;
+    if let Some(sources) = &mut instrument.uvi_script_sources {
+        sources.files = files.sources();
+    }
+    Ok(((instrument, locations, groups, inserts), host))
+}
+
+#[cfg(all(test, feature = "library-access"))]
+mod scripted_translation_tests {
+    use super::*;
+
+    #[test]
+    fn bank_product_and_inspector_use_the_same_post_onload_gain() {
+        let xml = r#"<Program><Inserts><Gain Volume="1"/></Inserts><EventProcessors><ScriptProcessor><script><![CDATA[local gain=Program.inserts[1]
+function onInit() gain:setParameter('Volume',0.25) end]]></script></ScriptProcessor></EventProcessors></Program>"#;
+        let files = script::Scripts::default();
+        let (static_ir, ..) = translate_full(xml, Source::Bank).unwrap();
+        let ((product_ir, ..), _) = initialized_translation(
+            xml.to_owned(),
+            files.clone(),
+            Source::Bank,
+            Path::new("Authored.uvip"),
+            false,
+        )
+        .unwrap();
+        let (inspected_ir, host) = inspect_decoded_scripted_program(
+            xml.to_owned(),
+            files,
+            ScriptedOrigin::Bank("Authored.uvip"),
+        )
+        .unwrap();
+        let gain = |ir: &ir::Instrument| {
+            ir.chains
+                .iter()
+                .flat_map(|chain| {
+                    chain
+                        .pre_amplitude
+                        .iter()
+                        .chain(&chain.post_amplitude)
+                })
+                .find_map(|processor| match processor {
+                    ir::Processor::Gain(ir::Gain::Linear(value)) => Some(*value),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(gain(&static_ir), 1.0);
+        assert_eq!(gain(&product_ir), 0.25);
+        assert_eq!(gain(&inspected_ir), gain(&product_ir));
+        assert!(host.fault_counts().init.values().all(|count| *count == 0));
+    }
 }
 
 /// Impulse assets use the translated program's original asset indices. Resolve
@@ -1804,14 +1914,9 @@ pub fn load_program_scripted_streamed(
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
     let lua = bank.scripts();
-    let text = promote(text, &lua);
-    let host = script::ScriptHost::new(&text, lua.clone(), script::Config::default())?;
-    let patched = apply_overrides(&text, &host.insert_overrides());
-    let (mut instrument, locations, groups, inserts) =
-        translate_full(&patched, Source::Bank).map_err(|e| describe(Path::new(program), e))?;
-    if let Some(sources) = &mut instrument.uvi_script_sources {
-        sources.files = lua.sources();
-    }
+    let ((instrument, locations, groups, inserts), host) =
+        initialized_translation(text, lua, Source::Bank, Path::new(program), false)
+            .map_err(ScriptedTranslationFailure::into_error)?;
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
