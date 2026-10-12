@@ -24,10 +24,10 @@ pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
+pub mod parity;
 mod resources;
 mod reverb;
 pub mod script;
-pub mod parity;
 pub use parity::parity_reports;
 pub use resources::{ResourceError, Resources};
 pub mod scripted;
@@ -1116,9 +1116,12 @@ impl Translated {
         #[cfg(feature = "library-access")]
         if let Some((bank, program)) = &self.bank {
             let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
-            lua = lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+            lua =
+                lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
         }
-        if self.bank.is_none() && let Some(dir) = &self.dir {
+        if self.bank.is_none()
+            && let Some(dir) = &self.dir
+        {
             let resources = resources::Resources::of(&dir.join("ui.uvip"));
             lua = lua.with_images(move |path| resources.read(path));
         }
@@ -1126,7 +1129,9 @@ impl Translated {
             match (&self.bank, &self.dir) {
                 (Some((bank, program)), _) => {
                     let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
-                    Some(Box::new(move |path| bank.decode_resource(&program, path).ok()))
+                    Some(Box::new(move |path| {
+                        bank.decode_resource(&program, path).ok()
+                    }))
                 }
                 (None, Some(dir)) => {
                     let dir = dir.clone();
@@ -1551,18 +1556,12 @@ pub fn load_program_with_options(
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = bank.scripts().sources();
     }
-    let kept = instrument.retain_zones(|zone| {
-        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
-    });
-    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
-    let decoded = locations
-        .iter()
-        .map(|authored| {
+    let (locations, decoded) =
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
             bank.resource(&program_path, authored)
                 .map_err(|e| e.to_string())
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        })
-        .collect();
+        });
     assemble(instrument, locations, decoded, options)
 }
 
@@ -1599,18 +1598,12 @@ pub fn load_program_scripted_with_options(
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = lua.sources();
     }
-    let kept = instrument.retain_zones(|zone| {
-        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
-    });
-    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
-    let decoded = locations
-        .iter()
-        .map(|authored| {
+    let (locations, decoded) =
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
             bank.resource(&program_path, authored)
                 .map_err(|e| e.to_string())
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        })
-        .collect();
+        });
     let loaded = assemble(instrument, locations, decoded, options)?;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
@@ -1624,6 +1617,91 @@ pub fn load_program_scripted_with_options(
     })
 }
 
+/// Impulse assets use the translated program's original asset indices. Resolve
+/// them before narrowing note zones, which renumbers only zone assets.
+fn decode_selected_bank_assets(
+    instrument: &mut ir::Instrument,
+    locations: Vec<String>,
+    options: &sampler_kontakt::Options,
+    mut decode: impl FnMut(&str) -> Result<sampler_kontakt::Decoded, String>,
+) -> (Vec<String>, Vec<Result<sampler_kontakt::Decoded, String>>) {
+    inserts::fill_impulses(instrument, &locations, |asset| {
+        decode(&locations[asset]).map(|decoded| (decoded.rate, decoded.frames))
+    });
+    let kept = instrument.retain_zones(|zone| {
+        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
+    });
+    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
+    let decoded = locations.iter().map(|location| decode(location)).collect();
+    (locations, decoded)
+}
+
+#[cfg(test)]
+mod narrowed_impulse_tests {
+    use super::*;
+
+    #[test]
+    fn retained_note_range_still_decodes_impulse_at_original_asset_index() {
+        let locations: Vec<String> = ["low.wav", "high.wav", "spare.wav", "room.wav"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut instrument = ir::Instrument {
+            assets: locations
+                .iter()
+                .map(|location| ir::Asset {
+                    location: ir::AssetLocation::Path(location.clone()),
+                    encoding: ir::Encoding::Wav,
+                    root_key: None,
+                    loops: Vec::new(),
+                })
+                .collect(),
+            zones: [
+                (0, ir::KeyRange { low: 60, high: 60 }),
+                (1, ir::KeyRange { low: 61, high: 61 }),
+            ]
+            .into_iter()
+            .map(|(asset, keys)| {
+                let mut zone = ir::Zone::new(ir::AssetRef(asset));
+                zone.keys = keys;
+                zone
+            })
+            .collect(),
+            impulses: vec![ir::Impulse {
+                rate: 48000,
+                left: vec![1.0],
+                right: vec![1.0],
+                asset: Some(ir::AssetRef(3)),
+            }],
+            ..Default::default()
+        };
+        let mut reads = Vec::new();
+        let (selected, decoded) = decode_selected_bank_assets(
+            &mut instrument,
+            locations,
+            &sampler_kontakt::Options {
+                rate: 48000,
+                keys: 60..=60,
+                ..Default::default()
+            },
+            |location| {
+                reads.push(location.to_owned());
+                Ok(sampler_kontakt::Decoded {
+                    rate: 48000,
+                    frames: vec![[0.5, -0.5]],
+                })
+            },
+        );
+        assert_eq!(reads, ["room.wav", "low.wav"]);
+        assert_eq!(selected, ["low.wav"]);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(instrument.zones[0].asset, ir::AssetRef(0));
+        assert_eq!(instrument.impulses[0].asset, None);
+        assert_eq!(instrument.impulses[0].left, [0.5]);
+        assert_eq!(instrument.impulses[0].right, [-0.5]);
+    }
+}
+
 /// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
 /// write, so the translator makes them live and the host drives them.
 fn promote(text: String, scripts: &script::Scripts) -> String {
@@ -1632,7 +1710,11 @@ fn promote(text: String, scripts: &script::Scripts) -> String {
         .into_iter()
         .map(|(node, id)| (node, "ScriptLive".to_owned(), id.to_string()))
         .collect();
-    if marks.is_empty() { text } else { apply_overrides(&text, &marks) }
+    if marks.is_empty() {
+        text
+    } else {
+        apply_overrides(&text, &marks)
+    }
 }
 
 /// Write initialized script values into XML before translating the program.

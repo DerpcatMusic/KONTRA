@@ -165,3 +165,77 @@ The generated UVI ledger test also exposed stale source line locations. The
 ledger was regenerated from `parity_summary --ledger`; normalizing only source
 line numbers proved all statuses, reasons and translated-operation text unchanged.
 Its large diff reflects repeated source citations, not thousands of new APIs.
+
+
+## Remaining host-contract and quiet-output diagnostics
+
+The next all-14-package run supplied the complete installed Kontakt and UVI
+roots. It exposed four remaining root-library tests and two `real_banks` cases.
+The receipts below preserve failures; repairs to a test's host lifecycle are
+not evidence that its original audio contract passed.
+
+The headless mixer and three UVI root checks now retain `loaded.scripts` and
+service each part's owned KSP UI outbox outside the counted audio callback.
+Effects must address the active plan and an existing owner/service table.
+External MIDI and array-file jobs are refused and remain queued; the witness
+fails explicitly instead of discarding them. This is the host contract already
+proved by the mixed-format rack and native renderer checks. Audio blocks use
+`begin_block(offline=true)`, finite rendering, and `end_block`/NOTE_END service.
+Onsets permit up to two audio seconds (750 blocks of 128 frames at 48 kHz) with
+a ten-second wall guard, preserving the existing **strict peak > 0.01** gate.
+Warm-note heap counting excludes host model work, while retaining every audio
+NoteOn, block and NoteOff operation and the zero-allocation assertion.
+
+Source inspection also corrected the reset assumption. `Runtime::panic`
+cancels all pending behavior contexts, including unfinished plan/on-init
+callbacks and controller callbacks; it does **not** reset the retained CC1 or
+CC11 values. Mixer auditions instead send channel all-sound-off (CC120), whose
+source contract cancels that domain's note/controller callbacks while preserving
+plan initialization. They reapply the declared controllers, service the owner
+before each fresh note, and verify the admitted controller values. This is a
+source-grounded host repair; it did not resolve the Horns failure below.
+
+The UVI stream test now separates sample-head residency from the fixed 96 MiB
+page pool. Purging compares the immediate pre-trim snapshot after release with
+the post-trim snapshot, retaining positive freed bytes, reduced residency and
+fixed-pool lower bounds. Those checks remain beyond the failing onset gate and
+have **not** been validated for this Contrabass program.
+
+Two serialized focused runs retained the four failures. The first host-lifecycle
+run is `runtime-host-contract.log`, exit 101. The single numeric diagnostic run
+is `runtime-host-diagnostic.log`, exit 101, with four tests completing in 13.53 s
+(after compilation). Full paths are under
+`/tmp/kontra-parity-audit-20261012/`. No PCM, protected script source or key
+material was written by these witnesses.
+
+The numeric diagnostic distinguishes the current Contrabass result from zero
+output. With CC1=100 and CC11=127, admitted and effective controller values
+matched (3374617161 and 4294967295). The pitch fixture at key 40 produced finite
+output peak **0.0016416366** and node peak **0.0040436434**. The heap fixture at
+key 36 produced **0.0017324268** / **0.0037928848**; the trait fixture at key 36
+produced **0.0016875573** / **0.003782188**. Each had one active/audible voice,
+level 1, no silent notes and no offline, streaming or Lua faults. They fail the
+unchanged 0.01 witness threshold. There is no native-host amplitude reference
+that establishes whether this level is wrong, so no gain law or threshold was
+changed. The later pitch response, audio-thread heap and purge assertions remain
+unverified for this program in these runs.
+
+The installed Horns microphone case loaded in 467 ms and tested keys 60, 44,
+46 and 48 at velocity 100 with CC1=100/CC11=127. All four notes were suppressed
+without onset; `silent_notes=4`, packed silent receipt `[304,0,0]`, zero capacity,
+streaming, offline and script faults. The source/UI host repair and the bounded
+protocol did not resolve it. Its microphone routing contract remains unresolved;
+passing the combined mixed-format Horns witness is not proof of this isolated
+case.
+
+The narrowed VWinds scripted bank run exposed a separate loader panic: key-range
+selection renumbered zone sample assets, while a reverb impulse still named its
+original asset index. The loader now decodes impulse assets before narrowing
+zones in both scripted and plain bank paths. A focused index regression passed
+**1/1**, and the installed Bb Clarinet scripted test passed **1/1** with a finite
+peak of **0.026274467** and four reported script findings. The installed receipt
+is `/tmp/kontra-parity-audit-20261012/uvi-vwinds-impulse-fix.log`, exit 0.
+This proves the loader no longer panics for that program and that this audition
+produces audio; it is not a native UVI PCM comparison. The separate Augmented
+Orchestra `City Walker` case still produced peak zero in the earlier full
+`real_banks` run, so that suite is not green.
