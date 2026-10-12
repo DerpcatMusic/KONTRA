@@ -272,6 +272,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         #[cfg(feature = "scan")]
         dropped_connections: Default::default(),
         #[cfg(feature = "scan")]
+        visited_connections: Default::default(),
+        #[cfg(feature = "scan")]
         native_player_ids: program
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -413,6 +415,9 @@ struct Translation {
     used: HashSet<roxmltree::NodeId>,
     #[cfg(feature = "scan")]
     dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
+    /// Authored connections reached by translation in an instantiated scope.
+    #[cfg(feature = "scan")]
+    visited_connections: std::collections::HashSet<roxmltree::NodeId>,
     #[cfg(feature = "scan")]
     native_player_ids: HashMap<roxmltree::NodeId, usize>,
     osc_groups: Vec<OscGroup>,
