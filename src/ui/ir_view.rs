@@ -1497,7 +1497,11 @@ pub(super) fn widget_state(
                         wd.value_text
                             .as_deref()
                             .filter(|t| !t.is_empty())
-                            .unwrap_or(&number(v, display, face.source)),
+                            .unwrap_or(&display.format_value(
+                                v,
+                                range.step == Some(1.),
+                                face.source,
+                            )),
                         style,
                         assets,
                         bitmap,
