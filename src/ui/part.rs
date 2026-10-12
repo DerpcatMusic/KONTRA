@@ -1015,7 +1015,7 @@ mod tests {
         let mut widget = ir::Widget::new(
             "$level",
             ir::PageRef(0),
-            ir::Rect { x: 9, y: 7, width: 31, height: 17 },
+            ir::Rect { x: 9.0, y: 7.0, width: 31.0, height: 17.0 },
             ir::Kind::Knob {
                 range: ir::Range {
                     min: 0., max: 100., default: 25., step: Some(1.),
@@ -1030,7 +1030,7 @@ mod tests {
             source: ir::Source::Ksp { slot },
             performance: true,
             pages: vec![ir::Page {
-                size: ir::Size { width: 480, height: 240 },
+                size: ir::Size { width: 480.0, height: 240.0 },
                 height_rows: Some(3),
                 ..Default::default()
             }],
@@ -1100,7 +1100,7 @@ mod tests {
     fn raw_projection_retains_unchanged_sources_and_releases_reverted_patches() {
         let bases: Arc<[ir::Interface]> = vec![projection_fixture(0), projection_fixture(1)].into();
         let mut a = bases[0].clone();
-        a.widgets[0].rect.x = 123;
+        a.widgets[0].rect.x = 123.0;
         let patch_a = ir::InterfacePatch::between(&bases[0], &a);
         let updates: Arc<[ir::InterfacePatch]> = vec![patch_a.clone(), Default::default()].into();
         let mut face = Face::new(
@@ -1146,7 +1146,7 @@ mod tests {
         base.assets.push(ir::Asset {
             path: "missing-strip.png".into(),
             kind: ir::AssetKind::Image(ir::ImageMeta {
-                size: Some(ir::Size { width: 101, height: 79 }),
+                size: Some(ir::Size { width: 101.0, height: 79.0 }),
                 ..Default::default()
             }),
         });
@@ -1159,7 +1159,7 @@ mod tests {
         let mut variants = Vec::new();
         let mut current = base.clone();
         if let ir::AssetKind::Image(meta) = &mut current.assets[0].kind {
-            meta.size = Some(ir::Size { width: 43, height: 29 });
+            meta.size = Some(ir::Size { width: 43.0, height: 29.0 });
         }
         variants.push(current);
         current = base.clone();
@@ -1332,7 +1332,7 @@ mod tests {
             .insert(ir::WidgetRef(0), ir::Value::Text("Retained draft".into()));
         let mut current = authored.clone();
         current.widgets[0].value_text = Some("Changed".into());
-        current.widgets[0].rect.x += 10;
+        current.widgets[0].rect.x += 10.0;
         let patch = ir::InterfacePatch::between(&authored, &current);
         face.update(patch.clone());
         assert_eq!(
@@ -1355,6 +1355,32 @@ mod tests {
             ir_view::resolved(&authored),
             "reverted source properties return to their authored values"
         );
+    }
+
+    #[test]
+    fn authored_order_publication_reaches_live_and_reopened_faces() {
+        let script = sampler_ksp::compile("on init make_perfview declare ui_knob $k(0,100,1) declare ui_label $l(1,1) end on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mut authored = script.ui(&|_| None).unwrap();
+        authored.pages.push(authored.pages[0].clone());
+        let from: Arc<[ir::Interface]> = vec![authored.clone()].into();
+        let path = std::path::Path::new("/missing/synthetic.nki");
+        let mut face = Face::new(path, 7, from.clone(), 0, Presentation::Vector);
+        face.page = ir::PageRef(1);
+        face.input.values.insert(ir::WidgetRef(0), ir::Value::Text("Retained draft".into()));
+        let mut current = authored.clone();
+        current.paint_order = Some(vec![ir::WidgetRef(1), ir::WidgetRef(0)]);
+        let patch = ir::InterfacePatch::between(&authored, &current);
+        face.update(patch.clone());
+        assert_eq!(face.face.paint_order, current.paint_order);
+        assert_eq!((face.shown, face.page, face.presentation), (0, ir::PageRef(1), Presentation::Vector));
+        assert!(Arc::ptr_eq(&face.from, &from));
+        assert_eq!(face.input.values[&ir::WidgetRef(0)], ir::Value::Text("Retained draft".into()));
+        let mut reopened = Face::new(path, 7, from, 0, face.presentation);
+        reopened.update(patch);
+        assert_eq!(reopened.face.paint_order, current.paint_order);
+        assert_eq!(reopened.presentation, Presentation::Vector);
+        face.update(Default::default());
+        assert_eq!(face.face.paint_order, authored.paint_order);
     }
 
     #[test]

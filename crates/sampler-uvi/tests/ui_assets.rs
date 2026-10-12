@@ -56,7 +56,7 @@ fn root_ui_changes_in_authored_callbacks_publish_a_new_revision() {
     let face = h.interface();
     assert_eq!(
         (face.pages[0].size.width, face.pages[0].size.height),
-        (640, 480)
+        (640., 480.)
     );
     assert!(
         face.assets
