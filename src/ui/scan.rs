@@ -257,13 +257,13 @@ fn render(
         }
         let r = face.page_rect(ir::WidgetRef(n));
         let page = &face.pages[w.page.0];
-        if r.width == 0 || r.height == 0 {
+        if r.width == 0. || r.height == 0. {
             add(&mut geometry, "zero sized visible widget");
         }
-        if r.x < 0
-            || r.y < 0
-            || i64::from(r.x) + i64::from(r.width) > i64::from(page.size.width)
-            || i64::from(r.y) + i64::from(r.height) > i64::from(page.size.height)
+        if r.x < 0.
+            || r.y < 0.
+            || r.x + r.width > page.size.width
+            || r.y + r.height > page.size.height
         {
             add(&mut geometry, "outside authored page candidate");
         }
@@ -283,15 +283,15 @@ fn render(
     for p in 0..face.pages.len() {
         let start = Instant::now();
         // A 1200x900 viewport, fitted in both axes. Geometry flags use the uncropped source bounds.
-        let scale = (1200. / f64::from(face.pages[p].size.width.max(1)))
-            .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)))
+        let scale = (1200. / f64::from(face.pages[p].size.width.max(1.)))
+            .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1.)))
             .min(1.);
         let authored = native.as_ref().map(|n| n.authored());
-        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
+        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1.)), |s| s.width) * scale)
             .ceil()
             .clamp(1., 1200.) as u16;
         let h = (authored.map_or(
-            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)),
+            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1.)),
             |s| s.height,
         ) * scale)
             .ceil()

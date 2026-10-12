@@ -3001,7 +3001,7 @@ mod tests {
         });
         let host = ScriptHost::new("<UVI4><Program><EventProcessors><ScriptProcessor><script>Image('overlay.png'); Image('overlay.png'); Image('missing.png')</script></ScriptProcessor></EventProcessors></Program></UVI4>", files, Config::default()).unwrap();
         for _ in 0..2 {
-            assert_eq!(host.interface().widgets[0].rect.width, 720);
+            assert_eq!(host.interface().widgets[0].rect.width, 720.);
         }
         assert_eq!(reads.load(Ordering::Relaxed), 2, "cache successes and absence by resource path");
     }
