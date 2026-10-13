@@ -1596,7 +1596,8 @@ pub(super) fn widget_state(
             bipolar,
             steps_shown,
         } if !wd.components.is_empty() => {
-            let bars = (0..*columns as usize)
+            let shown = steps_shown.unwrap_or(*columns).min(*columns) as usize;
+            let bars = (0..shown)
                 .map(|c| {
                     let cid = wd.components.get(c).copied();
                     let mut value = cid
@@ -1638,7 +1639,6 @@ pub(super) fn widget_state(
                                 vec![value],
                                 *range,
                                 *bipolar,
-                                *steps_shown,
                                 wd.colors,
                             )
                         })
@@ -1669,21 +1669,29 @@ pub(super) fn widget_state(
                 _ => cells.iter().map(|v| *v as f64).collect(),
             };
             samples.resize(*columns as usize, range.default);
+            // Kontakt's steps are columns, not divisions of the value range.
+            // Preserve the whole array in readback while showing/editing its prefix.
+            let shown = steps_shown.unwrap_or(*columns).min(*columns) as usize;
             let response = ui.get(id.as_str());
             if !response.held {
                 input.table_drags.remove(&n);
             }
-            if can_edit && (response.pressed || response.dragged) && !samples.is_empty() {
+            if can_edit && (response.pressed || response.dragged) && shown > 0 {
                 if let Some(point) = ui.local(id.as_str()) {
-                    let column = (((point.x / w.max(1.)).clamp(0., 1.) * samples.len() as f64)
+                    let column = (((point.x / w.max(1.)).clamp(0., 1.) * shown as f64)
                         .floor() as usize)
-                        .min(samples.len() - 1);
+                        .min(shown - 1);
                     let raw = range.min
                         + (1. - point.y / h.max(1.)).clamp(0., 1.) * (range.max - range.min);
                     let (start, previous) = if response.pressed {
                         (column, raw)
                     } else {
-                        input.table_drags.get(&n).copied().unwrap_or((column, raw))
+                        input
+                            .table_drags
+                            .get(&n)
+                            .copied()
+                            .filter(|(start, _)| *start < shown)
+                            .unwrap_or((column, raw))
                     };
                     let distance = start.abs_diff(column);
                     if distance < sampler_core::WIDGET_EDIT_CAPACITY {
@@ -1722,7 +1730,8 @@ pub(super) fn widget_state(
                     }
                 }
             }
-            super::render_art::table(samples, *range, *bipolar, *steps_shown, wd.colors)
+            samples.truncate(shown);
+            super::render_art::table(samples, *range, *bipolar, wd.colors)
                 .cursor(Cursor::Crosshair)
                 .focusable()
         }
@@ -2936,6 +2945,49 @@ mod gesture_policy_tests {
             0.4,
             None,
         )
+    }
+
+    #[test]
+    fn ksp_table_visible_columns_route_pointer_edits_to_the_displayed_prefix() {
+        for (shown, last) in [(Some(16), 15), (None, 31), (Some(32), 31)] {
+            let steps = shown
+                .map(|n| format!("set_table_steps_shown(%table,{n})\n"))
+                .unwrap_or_default();
+            let source = format!(
+                "on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(160)\ndeclare ui_table %table[32] (1,1,100)\nmove_control_px(%table,10,10)\nset_control_par(get_ui_id(%table),$CONTROL_PAR_WIDTH,100)\nset_control_par(get_ui_id(%table),$CONTROL_PAR_HEIGHT,100)\n%table[31] := 99\n{steps}end on"
+            );
+            let script =
+                sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let mut f = Fixture {
+                ui: super::super::theme::ui(),
+                face: resolved(&script.ui(&|_| None).unwrap()),
+                values: Values::default(),
+                input: InputState::default(),
+            };
+            f.tick(Input::default());
+            let frame = f.ui.scene().unwrap().surface("ir-0").unwrap().frame;
+            let at = Point::new(
+                frame.x + frame.size.width - 0.5,
+                frame.y + frame.size.height / 4.,
+            );
+            f.pointer(at, false, Mods::default());
+            f.pointer(at, true, Mods::default());
+            f.pointer(at, false, Mods::default());
+            assert!(!f.input.edits.is_empty());
+            for edit in &f.input.edits {
+                assert_eq!(edit.index, last);
+                assert_eq!(edit.cursor, last);
+                assert_eq!(edit.value, ir::Value::Integer(75));
+            }
+            let Some(ir::Value::Reals(cells)) = f.input.values.get(&WidgetRef(0)) else {
+                panic!("the complete table array must be preserved for readback");
+            };
+            assert_eq!(cells.len(), 32);
+            assert_eq!(cells[last as usize], 75.);
+            if last == 15 {
+                assert_eq!(cells[31], 99., "editing the prefix preserves hidden cells");
+            }
+        }
     }
     fn drag_value(source: ir::Source, mods: Mods) -> f64 {
         let mut f = knob(source);

@@ -1783,6 +1783,9 @@ impl Lowering<'_> {
             (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
             (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
             (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
+            (Processor::KontaktLegacyEq(eq), Gain) => eq.gain_db = parameter,
+            (Processor::KontaktLegacyEq(eq), Cutoff) => eq.frequency = parameter,
+            (Processor::KontaktLegacyEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::Compressor(c), Threshold) => c.threshold_db = parameter,
             (Processor::Compressor(c), Ratio) => c.ratio = parameter,
             (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
@@ -2051,6 +2054,11 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
+            ir::Processor::KontaktLegacyEq(eq) => Processor::KontaktLegacyEq(crate::KontaktLegacyEqSettings {
+                frequency: Parameter::Constant(f64::from(eq.frequency)),
+                bandwidth: Parameter::Constant(f64::from(eq.bandwidth)),
+                gain_db: Parameter::Constant(f64::from(eq.gain_db)),
+            }),
             ir::Processor::Gainer { gain, dry } => Processor::Gainer {
                 gain: Parameter::Constant(gain.linear()),
                 dry,

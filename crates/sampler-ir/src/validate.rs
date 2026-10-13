@@ -213,6 +213,11 @@ impl Check<'_> {
                     self.within(pan, -1.0..=1.0, "stereo pan")?;
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::KontaktLegacyEq(eq) => {
+                    self.within(f64::from(eq.frequency), 0.0..=1.0, "legacy EQ frequency")?;
+                    self.within(f64::from(eq.bandwidth), 0.0..=1.0, "legacy EQ bandwidth")?;
+                    self.within(f64::from(eq.gain_db), -18.0..=18.0, "legacy EQ gain")?;
+                }
                 Processor::LoFi {
                     bits,
                     frequency,

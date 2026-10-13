@@ -450,7 +450,12 @@ __element_mt = element
 -- Threads ------------------------------------------------------------------
 function wait(ms) return coroutine.yield(ms or 0) end
 function waitBeat(beats) return coroutine.yield(beat2ms(beats or 0)) end
-function waitForRelease() return coroutine.yield("release") end
+function waitForRelease()
+  -- Widget changed/onLoad/onSave calls remain synchronous; a non-note
+  -- coroutine, however, returns immediately rather than waiting forever.
+  if not coroutine.isyieldable() then error("waitForRelease requires a coroutine", 2) end
+  if isNoteHeld() then return coroutine.yield("release") end
+end
 
 function postEvent(e, delta)
   if delta and delta > 0 then

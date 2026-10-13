@@ -199,7 +199,16 @@ non-unity gain state, and frozen coefficients generated as specified above.
 Channel history consists of previous input, second-previous input, previous
 output and second-previous output. For stored coefficient order
 (b0,b1,b2,a1,a2), every product and successive addition is F, in this order:
-`((((a1*y1 + a2*y2) + b2*x2) + b0*x0) + b1*x1)`.
+`(((a1*y1 + a2*y2) + b2*x2) + (b0*x0 + b1*x1))`.
+
+Reverified on 2026-10-13 against the same original image. The earlier sample
+probe accidentally intercepted coefficient generation with its wrapper-observation
+stub and tested zero coefficients. The corrected probe runs the native setter,
+rejects zero coefficients, and checks nonzero PCM and final histories for all
+positive-length cases. Original scalar instructions group the two feedforward
+products before adding them to the feedback sum; a sequential sum first diverges
+in the retained 129-frame case. The committed sample vectors now contain the
+corrected native results.
 The resulting y replaces y1, y1 moves to y2, x0 replaces x1 and x1 moves to x2.
 The overwrite output adds a +0 scratch value. Four-sample unrolling retains
 this dependency and arithmetic order. This differs in rounding from a

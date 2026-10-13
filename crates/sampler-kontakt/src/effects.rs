@@ -982,7 +982,18 @@ pub(crate) fn chain_with(
             Some(Params::Eq { bands }) => {
                 let live =
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
-                if live {
+                if bands.len() == 1 {
+                    flush(&mut combined, &mut filters, &mut out);
+                    if let Some(p) = native_eq_band(bands[0], live, &mut notes) {
+                        if live { out.filter_slots.push((fx.slot, out.processors.len())); }
+                        out.processors.push(p);
+                    } else if bands[0][2] != 0. || live {
+                        modelled = false;
+                    }
+                    notes.push(("native legacy EQ lifecycle".into(),
+                        "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
+                        sampler_ir::Reason::UnknownLaw));
+                } else if live {
                     flush(&mut combined, &mut filters, &mut out);
                     let live_bands: Option<Vec<_>> = bands
                         .iter()
@@ -1002,6 +1013,9 @@ pub(crate) fn chain_with(
                             .iter()
                             .filter_map(|band| eq_band(*band, false, &mut notes)),
                     );
+                }
+                if bands.len() > 1 {
+                    notes.push(("native multiband EQ".into(), "v1/generic fallback; native multiband processing and clocks unverified".into(), sampler_ir::Reason::UnknownLaw));
                 }
                 combined = product(eq_gain, combined);
             }
@@ -1799,6 +1813,23 @@ pub(crate) fn instrument_buses_with_recipes(
 }
 
 /// One EQ band (Hz, octaves, dB); live owners retain flat bands.
+fn native_eq_band(
+    [hz, octaves, db]: [f32; 3],
+    keep_flat: bool,
+    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
+) -> Option<sampler_ir::Processor> {
+    if db == 0. && !keep_flat { return None; }
+    if ![hz, octaves, db].iter().all(|v| v.is_finite()) || hz <= 0. || octaves <= 0. {
+        notes.push(("EQ band".into(), format!("{hz} Hz {octaves} oct {db} dB"), sampler_ir::Reason::InvalidValue));
+        return None;
+    }
+    Some(sampler_ir::Processor::KontaktLegacyEq(sampler_ir::KontaktLegacyEq {
+        frequency: sampler_core::KontaktLegacyEqSettings::frequency_knob(hz),
+        bandwidth: sampler_core::KontaktLegacyEqSettings::bandwidth_knob(octaves),
+        gain_db: db.clamp(-18., 18.),
+    }))
+}
+
 fn eq_band(
     [hz, octaves, db]: [f32; 3],
     keep_flat: bool,
@@ -1931,6 +1962,12 @@ mod tests {
                 assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
             }
             let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            if kind == 22 {
+                let sampler_ir::Processor::KontaktLegacyEq(eq) = built.processors[0] else { panic!("native one-band EQ owner"); };
+                assert_eq!(eq.gain_db, bands[0][2]);
+                assert_eq!(eq.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(bands[0][0]));
+                continue;
+            }
             let filters: Vec<_> = built
                 .processors
                 .iter()
