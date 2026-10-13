@@ -17,6 +17,7 @@ use sampler_ir::fx::timemod::{
 };
 use std::f64::consts::{PI, TAU};
 
+mod dual;
 #[cfg(test)]
 mod tests;
 
@@ -193,6 +194,7 @@ impl TimeMod {
                 Native::None => {}
                 Native::LegacyDelay { .. } => cap = LEGACY_RING,
                 Native::LegacyFlanger { .. } => cap = FLANGER_RING,
+                Native::UviDualDelay(_) => cap = dual::ring(rate) + GUARD,
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -298,6 +300,9 @@ impl TimeMod {
         }
         if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
+        }
+        if let Some(Native::UviDualDelay(d)) = cfg.line.map(|l| l.native) {
+            return self.dual_delay(state, slab, block, len, tempo, d);
         }
         if let Some(Native::LegacyFlanger { color, depth, feedback }) = cfg.line.map(|l| l.native) {
             return self.legacy_flanger(state, slab, block, len, tempo, [color, depth, feedback]);

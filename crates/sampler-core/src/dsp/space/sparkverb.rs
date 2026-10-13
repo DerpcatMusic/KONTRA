@@ -80,14 +80,6 @@ fn cut(fc: f64, high: bool) -> [f64; 3] {
     }
 }
 
-/// Linearly interpolated 256-entry sine table at a 32-bit phase.
-fn sine(phase: u32) -> f64 {
-    let at = |i: u32| (f64::from(i & 255) * (2.0 * PI / 256.0)).sin();
-    let i = phase >> 24;
-    let f = f64::from(phase & 0x00ff_ffff) / 16_777_216.0;
-    at(i) + (at(i + 1) - at(i)) * f
-}
-
 struct Ring {
     buf: Vec<f32>,
     mask: usize,
@@ -268,7 +260,7 @@ impl Spark {
         let mut glide = [(0f64, 0f64); 32];
         for (line, g) in self.lines.iter_mut().zip(&mut glide) {
             line.phase = line.phase.wrapping_add((len as u32).wrapping_mul(line.inc));
-            let target = line.base + line.amp * sine(line.phase);
+            let target = line.base + line.amp * f64::from(crate::blocks::lfo::uvi_sine(line.phase));
             let next = line.cur + (target - line.cur).clamp(-span, span);
             *g = (line.cur, (next - line.cur) / len as f64);
             line.cur = next;

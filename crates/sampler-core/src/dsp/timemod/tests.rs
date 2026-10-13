@@ -4,7 +4,7 @@ use sampler_ir::fx::timemod::{Feedback, Lfo, Line, Tap};
 
 const LFO_OFF: Lfo = Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. };
 
-fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> (Vec<[f64; 2]>, bool) {
+pub(super) fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> (Vec<[f64; 2]>, bool) {
     let tm = TimeMod::compile(cfg, rate).unwrap();
     let mut slab = vec![[7.; 2]; tm.frames()]; // stale contents must never be read
     let mut state = ProcessorState::default();
@@ -21,7 +21,7 @@ fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> 
     (out, fault)
 }
 
-fn impulse(n: usize, v: [f64; 2]) -> Vec<[f64; 2]> {
+pub(super) fn impulse(n: usize, v: [f64; 2]) -> Vec<[f64; 2]> {
     let mut x = vec![[0.; 2]; n];
     x[0] = v;
     x
