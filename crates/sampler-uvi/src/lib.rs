@@ -909,8 +909,7 @@ impl Translation {
             ..Default::default()
         };
         if ahd {
-            // Note-off behaviour of a running AHD is not measured; the default release applies.
-            self.unsupported(&at, "AHD note-off release (default release used)", "");
+            self.ahd_stages(node, &mut envelope, &at)?;
         }
         if kind != "AnalogADSR" {
             // The native envelope curve `expm1(k·t)/expm1(k)` is exactly v1's
