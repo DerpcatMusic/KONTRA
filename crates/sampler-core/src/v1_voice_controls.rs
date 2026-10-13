@@ -134,6 +134,23 @@ impl LfoFrequency {
     pub fn hertz(input: f32) -> f64 {
         Self { inverse_rate: 1. }.increment(input)
     }
+    /// The lane point whose rate is `hz` (the law is monotone), or `None` outside
+    /// the lane's 0..=1 range.
+    pub fn lane(hz: f64) -> Option<f64> {
+        if !(Self::hertz(0.)..=Self::hertz(1.)).contains(&hz) {
+            return None;
+        }
+        let (mut low, mut high) = (0f64, 1f64);
+        for _ in 0..48 {
+            let mid = (low + high) * 0.5;
+            if Self::hertz(mid as f32) < hz {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        Some(low)
+    }
     /// One normalized lane point; original 0x140b07bd9..0x140b07c69.
     pub fn increment(&self, input: f32) -> f64 {
         // COMISS treats NaN as below zero; preserve this before MINSS.

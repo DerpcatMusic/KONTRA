@@ -196,6 +196,11 @@ pub struct ModRoute {
     pub lag: u32,
     /// Depth modifier from a second source, using its selected combination law.
     pub scale: Option<ModScale>,
+    /// Multiplies a live depth control's value (a saved `depth` is already in
+    /// destination units). A lane's range span: Normalized depth is a fraction of it.
+    pub live_gain: f64,
+    /// The target's law reads the source's unipolar view (FUN_140873040 `need_uni`).
+    pub unipolar: bool,
     /// Further intensity assignments to the same route, applied in order after
     /// `scale`: each template's `$in` is the previous result.
     pub more_scales: [Option<ModScale>; MORE_SCALES],
@@ -261,6 +266,8 @@ impl ModRoute {
             shape: None,
             lag: 0,
             scale: None,
+            live_gain: 1.,
+            unipolar: false,
             more_scales: [None; MORE_SCALES],
         }
     }
@@ -588,7 +595,7 @@ impl VoiceModulation {
                     else {
                         return Err(Error::InvalidInput);
                     };
-                    let lane = frequency_lane(*hz).ok_or(Error::InvalidInput)?;
+                    let lane = crate::v1_voice_controls::LfoFrequency::lane(*hz).ok_or(Error::InvalidInput)?;
                     rate_lane[target] = lane;
                     rate_routes[target].push(index);
                 }
@@ -852,7 +859,7 @@ impl Program {
             Ok(at) => {
                 let [depth, bypass] = self.controls[at].1;
                 match (inputs.controls[depth], inputs.controls[bypass]) {
-                    (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d,
+                    (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * self.routes[i].live_gain,
                     _ => 0.,
                 }
             }
@@ -873,6 +880,9 @@ impl Program {
         onset: bool,
     ) -> (f64, f64) {
         let mut v = self.transform(route, values[route.source], self.bipolar[route.source]);
+        if route.unipolar {
+            v = unipolar(v, self.bipolar[route.source]);
+        }
         if route.lag != 0 && !onset {
             // 99% of a step in `lag` frames: Kontakt's one-pole lag law.
             let alpha = 1.0
@@ -900,25 +910,6 @@ impl Program {
         }
         v
     }
-}
-
-/// The lane point whose native rate is `hz` (inverse of the monotone ID26 law),
-/// or `None` outside the lane's 0..=1 range.
-fn frequency_lane(hz: f64) -> Option<f64> {
-    use crate::v1_voice_controls::LfoFrequency as F;
-    if !(F::hertz(0.)..=F::hertz(1.)).contains(&hz) {
-        return None;
-    }
-    let (mut low, mut high) = (0f64, 1f64);
-    for _ in 0..48 {
-        let mid = (low + high) * 0.5;
-        if F::hertz(mid as f32) < hz {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    Some(low)
 }
 
 fn unipolar(v: f64, bipolar: bool) -> f64 {
@@ -1544,7 +1535,7 @@ impl VoiceModState {
                 Some(&(index, [depth, bypass])) if index == i => {
                     controls.next();
                     match (inputs.controls[depth], inputs.controls[bypass]) {
-                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d,
+                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * route.live_gain,
                         _ => 0.,
                     }
                 }

@@ -233,6 +233,14 @@ impl Check<'_> {
                         self.within(f64::from(v), 0.0..=1.0, field)?;
                     }
                 }
+                Processor::LiveLoFi { bits, frequency, noise, color, .. } => {
+                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
+                        self.within(f64::from(v), 0.0..=1.0, field)?;
+                    }
+                }
+                Processor::LiveFormant { knobs, .. } => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }
                 Processor::Rectify(_) => {}
                 Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
                 Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {

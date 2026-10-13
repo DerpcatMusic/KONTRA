@@ -728,6 +728,9 @@ pub(crate) struct Chain {
     /// Each translated filter/EQ band slot and its index in `processors`, for
     /// modulation targets that name a module slot.
     pub filter_slots: Vec<(usize, usize)>,
+    /// Each script-addressed effect module (distortion, saturation, formant,
+    /// lo-fi) slot and its index in `processors`: modulation targets name them.
+    pub lane_slots: Vec<(usize, usize)>,
     pub send_taps: Vec<SendTap>,
 }
 
@@ -784,6 +787,12 @@ pub(crate) fn voice_chain(
     before.filter_slots.extend(
         after
             .filter_slots
+            .into_iter()
+            .map(|(slot, index)| (slot, index + boundary)),
+    );
+    before.lane_slots.extend(
+        after
+            .lane_slots
             .into_iter()
             .map(|(slot, index)| (slot, index + boundary)),
     );
@@ -881,6 +890,9 @@ pub(crate) fn chain_with(
                     && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
                 {
                     flush(&mut combined, &mut filters, &mut out);
+                    if dynamic.is_some() {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                    }
                     out.processors.push(if let Some((group, generic)) = dynamic {
                         sampler_ir::Processor::LiveDistortion {
                             transistor: *mode == 1., drive: *drive, damping: *damping,
@@ -900,6 +912,9 @@ pub(crate) fn chain_with(
             Some(Params::Saturation { shape, mode }) => {
                 if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
                     flush(&mut combined, &mut filters, &mut out);
+                    if dynamic.is_some() {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                    }
                     out.processors.push(if let Some((group, generic)) = dynamic {
                         sampler_ir::Processor::LiveSaturation { shape: *shape,
                             address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic } }
@@ -950,7 +965,15 @@ pub(crate) fn chain_with(
                 // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
                 let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
                 if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    if let Some((group, generic)) = dynamic {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                        out.processors.push(sampler_ir::Processor::LiveFormant {
+                            knobs,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        });
+                    } else {
+                        out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    }
                     combined = gain;
                 } else {
                     notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
@@ -963,12 +986,23 @@ pub(crate) fn chain_with(
                     .iter()
                     .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
                 {
-                    out.processors.push(sampler_ir::Processor::LoFi {
-                        bits: values[0],
-                        frequency: values[1],
-                        noise: values[2],
-                        color: values[3],
-                    });
+                    if let Some((group, generic)) = dynamic {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                        out.processors.push(sampler_ir::Processor::LiveLoFi {
+                            bits: values[0],
+                            frequency: values[1],
+                            noise: values[2],
+                            color: values[3],
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        });
+                    } else {
+                        out.processors.push(sampler_ir::Processor::LoFi {
+                            bits: values[0],
+                            frequency: values[1],
+                            noise: values[2],
+                            color: values[3],
+                        });
+                    }
                     combined = product(gain, combined);
                     if *flag {
                         notes.push((
@@ -1323,7 +1357,7 @@ pub(crate) fn chain_with(
                         bypass: fx.bypass,
                     },
                 );
-                for (_, at) in &mut out.filter_slots {
+                for (_, at) in out.filter_slots.iter_mut().chain(&mut out.lane_slots) {
                     if *at >= begin {
                         *at += 1;
                     }

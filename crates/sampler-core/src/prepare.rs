@@ -1072,6 +1072,10 @@ impl Prepared {
                 }
                 for (lane, binding) in consumers {
                     native_routes.push(control);
+                    // A live depth control follows the route to every consumer lane.
+                    for &(_, ids) in program.controls.iter().filter(|b| b.0 == ordinal) {
+                        controls.push((routes.len(), ids));
+                    }
                     // Compiled control addresses are private to this preparation call.
                     routes.push(super::ModRoute {
                         target: super::ParameterAddress {
@@ -1080,6 +1084,7 @@ impl Prepared {
                             parameter: u32::MAX - 13,
                         },
                         depth: route.depth * (binding.high - binding.low),
+                        live_gain: route.live_gain * (binding.high - binding.low),
                         ..*route
                     });
                 }
