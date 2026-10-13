@@ -46,7 +46,7 @@ pub(super) fn stereo_modeller(spread: f32, pan: f32, pseudo: bool) -> Config {
 
 /// Why a drive, amp or character module is not mapped: what is proved and what
 /// is missing. `None` for modules this family does not own or that are mapped.
-pub(super) fn unproved(module: u8) -> Option<&'static str> {
+pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x21 => "Skreamer: stateful four-lane core 0x140aaf220 with table lookups; saved-field to coefficient binding and the table contents are not extracted",
