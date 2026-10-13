@@ -379,8 +379,15 @@ impl Slot {
                 pseudo: r.flag()?,
             },
             0x59 => {
+                // Kontakt 8.13.1 FUN_140d019f0 (v0x10): a validated u32 room type
+                // (0 room, 1 hall), then nine floats. Reading it as f32 turned hall
+                // (1) into 1.4e-45 and every hall played as a room.
                 let mut v = [0.0; 10];
-                for x in &mut v {
+                v[0] = match r.i32()? {
+                    t @ (0 | 1) => t as f32,
+                    _ => return None,
+                };
+                for x in &mut v[1..] {
                     *x = r.f32()?;
                 }
                 Params::Reverb(v)
@@ -3531,6 +3538,26 @@ mod tests {
                 dry: 0.0
             }]
         );
+    }
+
+    #[test]
+    fn galois_reverb_room_type_is_a_native_u32_enum() {
+        // Kontakt 8.13.1 FUN_140d019f0 reads a u32 room type before nine floats.
+        // Hall (1) used to decode as the f32 1.4e-45 and play as a room.
+        let mut public = 1u32.to_le_bytes().to_vec();
+        for x in [0.25f32, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            public.extend(x.to_le_bytes());
+        }
+        let mut hall = slot(0x59, public, 1.0);
+        hall.version = 0x10;
+        let Some(Params::Reverb(v)) = hall.params() else { panic!("hall reverb decodes") };
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.25);
+        let mut notes = Vec::new();
+        let size = reverb(&v, &mut notes).size;
+        assert_eq!(size, 1.0, "hall keeps the full size factor");
+        hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(hall.params().is_none(), "Kontakt throws on room type 2");
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod bparfx_delay;
 mod bparfx_rotator;
 mod bparfx_send_level;
 mod effect_parameters;
+mod native_fx_layouts;
 mod envelope;
 mod filename;
 mod filename_list;

@@ -69,7 +69,10 @@ class Diff:
 
 
 def near(tol):
-    return lambda a, b: abs(a - b) <= tol
+    def close(a, b):
+        a, b = float(a), float(b)  # the dump writes +-inf as strings
+        return a == b or abs(a - b) <= tol
+    return close
 
 
 def diff_record(native, ours, examples=3):
@@ -96,6 +99,27 @@ def diff_record(native, ours, examples=3):
     # KONTRA folds instrument volume/pan into every zone (topology T01); compare
     # zone values net of that fold so a per-zone error is not hidden by it.
     fold_db = db(hv.get("saved", 1.0)) if hv else 0.0
+    vl = o.get("voice_limit") or {}
+    d.eq("instrument.polyphony", "instrument", k.get("polyphony"), vl.get("voices"))
+    opt = k.get("options") or {}
+    if isinstance(opt, dict) and "error" not in opt:
+        d.eq("instrument.voice_stealing_fadeout_ms", "instrument", opt.get("voice_stealing_fadeout"),
+             (vl.get("fade") or {}).get("Milliseconds"), near(0.5))
+        d.eq("instrument.voice_stealing_mode", "instrument", opt.get("voice_stealing_mode"), (vl.get("kill") or "").lower())
+    native_vg = k.get("voice_groups") if isinstance(k.get("voice_groups"), list) else []
+    for kg, og in zip(k["groups"], o["groups"]):
+        idx = kg.get("voice_group")
+        w = f"group {kg['index']} {kg['name']!r}"
+        # get_voice_group returns a 1-based Lua index into get_voice_groups.
+        if isinstance(idx, int) and 1 <= idx <= len(native_vg):
+            nv = native_vg[idx - 1]
+            ours = o["voice_limits"][og["voice_limit"]] if isinstance(og.get("voice_limit"), int) else None
+            d.eq("group.voice_group.voices", w, nv.get("voices"), ours and ours["voices"])
+            d.eq("group.voice_group.mode", w, nv.get("mode"), ours and ours["kill"].lower())
+            d.eq("group.voice_group.fade_ms", w, nv.get("fade_time"), ours and (ours["fade"] or {}).get("Milliseconds"), near(0.5))
+            d.eq("group.voice_group.prefer_released", w, nv.get("prefer_released"), ours and ours["prefer_released"])
+        elif idx is None:
+            d.eq("group.voice_group(none)", w, None, og.get("voice_limit"))
     d.eq("zone.count", "instrument", k["num_zones"], len(o["zones"]))
     for kz, oz in zip(k["zones"], o["zones"]):
         g = kz["geometry"]
@@ -118,7 +142,7 @@ def diff_record(native, ours, examples=3):
         d.eq("zone.pan(+instrument pan)", w, kz["pan"] + k["pan"], pan_percent(oz["pan"]), near(0.5))
         asset = assets[oz["asset"]] if isinstance(oz.get("asset"), int) and oz["asset"] < len(assets) else {}
         loc = (asset.get("location") or {}).get("Path")
-        d.eq("zone.sample", w, sample_tail(kz["sample"]), sample_tail(loc))
+        d.eq("zone.sample", w, [x.lower() for x in sample_tail(kz["sample"]) or []], [x.lower() for x in sample_tail(loc) or []])
         pb = oz.get("playback") or {}
         d.eq("zone.sample_start", w, kz["sample_start"], pb.get("start"))
         # Kontakt reports end <= 0 as an offset from the sample's last frame.

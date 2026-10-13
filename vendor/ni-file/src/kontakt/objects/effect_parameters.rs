@@ -152,7 +152,7 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
             ("flag_9", 'b'),
         ],
         0x59 => &[
-            ("room_type", 'f'),
+            ("room_type", 'i'), // u32 enum 0/1: Kontakt 8.13.1 FUN_140d019f0
             ("time", 'f'),
             ("size", 'f'),
             ("damping", 'f'),
@@ -234,7 +234,25 @@ impl EffectParameters {
         let mut r = Reader(public);
         let mut fields = Vec::new();
         let mut push = |name, value| fields.push(EffectField { name, value });
-        if let Some(schema) = extended_schema(module, version) {
+        if let Some(schema) = super::native_fx_layouts::native_fx_layout(module, version) {
+            // Kontakt's own reader fixes type, order and count. Names come from the
+            // hand table when its kinds agree position by position (older versions
+            // are prefixes of newer ones); otherwise they stay generic.
+            let named = effect_layout(module).filter(|names| {
+                names.len() >= schema.len()
+                    && schema.bytes().zip(names.iter()).all(|(k, &(_, c))| k == c as u8)
+            });
+            for (index, kind) in schema.bytes().enumerate() {
+                push(
+                    named.map_or(FIELD_NAMES[index], |n| n[index].0),
+                    match kind {
+                        b'b' => EffectValue::Byte(r.take::<1>()?[0]),
+                        b'i' => EffectValue::Integer(r.integer()?),
+                        _ => EffectValue::Float(r.float()?),
+                    },
+                );
+            }
+        } else if let Some(schema) = extended_schema(module, version) {
             for (index, kind) in schema.bytes().enumerate() {
                 push(
                     FIELD_NAMES[index],
