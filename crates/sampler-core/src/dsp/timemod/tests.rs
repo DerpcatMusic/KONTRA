@@ -239,6 +239,9 @@ fn legacy_delay_synced_time_follows_tempo() {
     // Tempo below 0.1 BPM reads as 120.
     let (out, _) = run(legacy(1., 1., 1., 0., 0.), 48_000, 0., &x, 4096);
     assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
+    // A synced count below one unit reads as one (0x140a74bf0, flag +0x20).
+    let (out, _) = run(legacy(0.25, 1., 1., 0., 0.), 48_000, 120., &x, 4096);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
 }
 
 fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
