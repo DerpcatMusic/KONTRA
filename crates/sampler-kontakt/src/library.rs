@@ -3632,6 +3632,7 @@ mod saved_tests {
             let name = r"C:\old\source.TXT";
             public.extend((name.len() as u32).to_le_bytes());
             public.extend(name.as_bytes());
+            public.extend(0u32.to_le_bytes()); // persistent-table count
             let mut script = vec![0, 0x50, 0];
             script.extend(public);
             let program = Program(StructuredObject {
@@ -3694,6 +3695,7 @@ mod saved_tests {
         script.extend(0u32.to_le_bytes());
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
+        script.extend(0u32.to_le_bytes()); // persistent-table count
         Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
