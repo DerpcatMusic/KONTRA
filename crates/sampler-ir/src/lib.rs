@@ -1411,6 +1411,31 @@ pub enum NativeWave {
         normalize: bool,
         digital: bool,
     },
+    /// A UVI Workstation LFO waveform (`WaveFormType` 0..=6, see [`UviWave`]).
+    Uvi(UviWave),
+}
+
+/// UVI Workstation 4.0.9 LFO waveforms with a closed-form table or recurrence
+/// (`WaveFormType` ids; registry [ref], process [ref]). The chaos
+/// ids 7 and 8 are stateful Euler maps with unproved defaults, and id 9 is a
+/// stored user table; neither is representable here.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviWave {
+    /// 0: 256-entry sine table, linear interpolation (table [ref]).
+    Sinus,
+    /// 1: +1 for entries 0..128, -1 from 128 (table [ref]).
+    Square,
+    /// 2: 0, +1, 0, -1, 0 at quarter cycles (table [ref]).
+    Triangle,
+    /// 3: -1 to +1 over entries 0..255 (table [ref]).
+    RampUp,
+    /// 4: +1 to -1 over entries 0..255 (table [ref]).
+    RampDown,
+    /// 5: odd harmonics 1..17 (table [ref]).
+    AnalogSquare,
+    /// 6: a new value from the native congruential generator at each wrap.
+    RandomHold,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
