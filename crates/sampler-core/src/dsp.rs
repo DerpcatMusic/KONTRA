@@ -193,8 +193,6 @@ pub enum Processor {
     /// Formant I with Talk, Sharp, Size as event-rate lanes (KSP ENGINE_PAR_FORMANT_*).
     LiveFormant([Parameter; 3]),
     StateVariable(StateVariableFilter),
-    /// Live gain owner for the v1 TPT peaking-band fallback.
-    PeakingEq(PeakingEq),
     /// One band of the universal EQ superset (Kontakt legacy, Solid, generic RBJ, scripted UVI).
     Eq(eq_family::EqBand),
     /// Rows are output L/R, columns input L/R; each cell follows a control.
@@ -229,7 +227,6 @@ impl Processor {
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
-            Processor::PeakingEq(settings) => settings.valid(),
             Processor::Eq(band) => band.valid(),
             Processor::ControlMatrix(cells) => cells
                 .iter()
@@ -265,7 +262,7 @@ pub use ar::ArSettings;
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;
-pub use eq_family::{EqBand, KontaktLegacyEqSettings, PeakingEq};
+pub use eq_family::{EqBand, KontaktLegacyEqSettings};
 mod live;
 pub use ladder::LadderSettings;
 mod taps;
@@ -290,7 +287,6 @@ pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
-    PeakingEq(eq_family::peaking::Peaking),
     Eq(eq_family::Stage),
     ControlMatrix([control::PreparedParameter; 4]),
     ControlGain(usize),
@@ -534,9 +530,6 @@ pub(super) fn compile_processors(
                         return Err(Error::InvalidInput);
                     }
                     PreparedProcessor::Biquad(filter)
-                }
-                Processor::PeakingEq(settings) => {
-                    PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?)
                 }
                 Processor::Eq(band) => PreparedProcessor::Eq(band.compile(rate, bindings)?),
                 Processor::ControlMatrix(cells) => {
@@ -1197,7 +1190,6 @@ pub(super) fn process<const TRACE: bool>(
                     *r = kernels::gain(*r, gain);
                 }
             }
-            PreparedProcessor::PeakingEq(eq) => eq.process(state, parameters, block, len, at),
             PreparedProcessor::Eq(eq) => eq.process(state, parameters, block, len, at),
             PreparedProcessor::ControlMatrix(cells) => {
                 live::matrix(cells, parameters, block, len, at)
@@ -1450,28 +1442,6 @@ mod tests {
             .compile(48000, &mut Vec::new(), &mut Vec::new())
             .unwrap();
             assert_eq!(chain.batches(), !pseudo);
-        }
-    }
-
-    #[test]
-    fn live_eq_keeps_other_stages_in_the_lane_path() {
-        for gain in [-12., 0., 12.] {
-            let chain = VoiceChain::new(
-                vec![Processor::PeakingEq(PeakingEq {
-                    frequency: Parameter::Constant((1000f64 / 20.).log10() / 3.),
-                    bandwidth: Parameter::Constant((1. - 0.3) / 2.7),
-                    gain_db: Parameter::Constant(gain),
-                })],
-                Vec::new(),
-                0,
-            )
-            .unwrap()
-            .compile(48000, &mut Vec::new(), &mut Vec::new())
-            .unwrap();
-            assert!(
-                chain.batches(),
-                "live EQ must not force unrelated stages out of the lane path"
-            );
         }
     }
 

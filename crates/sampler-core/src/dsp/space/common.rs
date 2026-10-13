@@ -63,6 +63,9 @@ impl Tone {
     }
     #[inline(always)]
     pub(super) fn tick(&mut self, l: f32, r: f32) -> [f32; 2] {
+        if self.width == 1.0 && self.shelf_gain == 0.0 {
+            return [l, r];
+        }
         let (mid, side) = (0.5 * (l + r), 0.5 * (l - r) * self.width);
         let mut out = [mid + side, mid - side];
         for (ch, v) in out.iter_mut().enumerate() {

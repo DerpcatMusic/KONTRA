@@ -238,6 +238,11 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
+    /// Limiter: saved input gain (2^(x/6)) and release ms.
+    Limiter {
+        input_gain: f32,
+        release_ms: f32,
+    },
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -415,6 +420,10 @@ impl Slot {
                 attack_ms: r.f32()?,
                 release_ms: r.f32()?,
                 link: r.flag()?,
+            },
+            0x1c => Params::Limiter {
+                input_gain: r.f32()?,
+                release_ms: r.f32()?,
             },
             0x1a => Params::Inverter {
                 invert: r.flag()?,
@@ -920,42 +929,23 @@ pub(crate) fn chain_with(
             Some(Params::Eq { bands }) => {
                 let live =
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
-                if bands.len() == 1 {
-                    flush(&mut combined, &mut filters, &mut out);
-                    if let Some(p) = eq::legacy_band(bands[0], live, &mut notes) {
+                flush(&mut combined, &mut filters, &mut out);
+                // Kinds 22..24 are one band, two or three; every band runs the native one-band law.
+                for band in bands.iter() {
+                    if let Some(p) = eq::legacy_band(*band, live, &mut notes) {
                         if live { out.filter_slots.push((fx.slot, out.processors.len())); }
                         out.processors.push(p);
-                    } else if bands[0][2] != 0. || live {
+                    } else if band[2] != 0. || live {
                         modelled = false;
                     }
-                    notes.push(("native legacy EQ lifecycle".into(),
-                        "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
-                        sampler_ir::Reason::UnknownLaw));
-                } else if live {
-                    flush(&mut combined, &mut filters, &mut out);
-                    let live_bands: Option<Vec<_>> = bands
-                        .iter()
-                        .map(|band| eq_band(*band, true, &mut notes))
-                        .collect();
-                    if let Some(live_bands) = live_bands {
-                        for p in live_bands {
-                            out.filter_slots.push((fx.slot, out.processors.len()));
-                            out.processors.push(p);
-                        }
-                    } else {
-                        modelled = false;
-                    }
-                } else {
-                    let generic: Vec<_> = bands.iter().filter_map(|band| eq::generic_band(*band, &mut notes)).collect();
-                    filters.extend(
-                        generic
-                            .chunks(sampler_ir::fx::eq::MAX_BANDS)
-                            .filter_map(sampler_ir::fx::eq::Config::new)
-                            .map(sampler_ir::Processor::Eq),
-                    );
                 }
+                notes.push(("native legacy EQ lifecycle".into(),
+                    "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
+                    sampler_ir::Reason::UnknownLaw));
                 if bands.len() > 1 {
-                    notes.push(("native multiband EQ".into(), "v1/generic fallback; native multiband processing and clocks unverified".into(), sampler_ir::Reason::UnknownLaw));
+                    notes.push(("multiband EQ (kinds 23/24)".into(),
+                        "bands use the proved one-band law; FilterEQ2/3 serial/parallel topology and stereo clocks unverified".into(),
+                        sampler_ir::Reason::UnknownLaw));
                 }
                 combined = product(eq_gain, combined);
             }
@@ -1096,6 +1086,19 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Limiter { input_gain, release_ms }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                match dynamics::limiter(*input_gain, *release_ms) {
+                    Ok(processor) => {
+                        out.processors.push(processor);
+                        combined = gain;
+                    }
+                    Err(note) => {
+                        notes.push(note);
+                        modelled = false;
+                    }
+                }
+            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 match dynamics::compressor(*mode, *threshold_db, *ratio, *attack_ms, *release_ms, *link) {
@@ -1581,34 +1584,6 @@ pub(crate) fn instrument_buses_with_recipes(
     (report, send_buses)
 }
 
-fn eq_band(
-    [hz, octaves, db]: [f32; 3],
-    keep_flat: bool,
-    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
-) -> Option<sampler_ir::Processor> {
-    if db == 0.0 && !keep_flat {
-        return None;
-    }
-    if !(hz.is_finite() && octaves.is_finite() && db.is_finite() && hz > 0.0 && octaves > 0.0) {
-        notes.push((
-            "EQ band".into(),
-            format!("{hz} Hz {octaves} oct {db} dB"),
-            sampler_ir::Reason::InvalidValue,
-        ));
-        return None;
-    }
-    // Measured against Kontakt 8: centre gain is GAIN_SCALE x the displayed dB and
-    // alpha = sin(w0) * sinh(ln2 * octaves).
-    let q = sampler_core::PeakingEq::q_of_octaves(f64::from(octaves));
-    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
-        kind: sampler_ir::FilterKind::Peak {
-            gain: sampler_ir::Gain::Decibels(f64::from(db) * sampler_core::PeakingEq::GAIN_SCALE),
-        },
-        cutoff: sampler_ir::Frequency::Hertz(f64::from(hz)),
-        resonance: sampler_ir::Resonance::Q(q),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1734,12 +1709,6 @@ mod tests {
                 assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
             }
             let built = chain(std::slice::from_ref(&fx), Scope::Voice);
-            if kind == 22 {
-                let sampler_ir::Processor::Eq(eq) = built.processors[0] else { panic!("native one-band EQ owner"); };
-                assert_eq!(eq.bands()[0].gain_db, bands[0][2]);
-                assert_eq!(eq.bands()[0].frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(bands[0][0]));
-                continue;
-            }
             let eq_bands: Vec<_> = built
                 .processors
                 .iter()
@@ -1751,10 +1720,9 @@ mod tests {
                 .collect();
             assert_eq!(eq_bands.len(), bands.len());
             for (band, values) in eq_bands.iter().zip(&bands) {
-                assert_eq!(band.law, sampler_ir::fx::eq::Law::Rbj);
-                assert_eq!(band.kind, sampler_ir::fx::eq::Kind::Peak);
-                assert_eq!(band.frequency, values[0]);
-                assert_eq!(band.gain_db, (f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE) as f32);
+                assert_eq!(band.law, sampler_ir::fx::eq::Law::KontaktLegacy);
+                assert_eq!(band.gain_db, values[2]);
+                assert_eq!(band.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(values[0]));
             }
             assert!(
                 built
@@ -1911,10 +1879,7 @@ mod tests {
             assert!(
                 matches!(
                     live.processors[index],
-                    sampler_ir::Processor::Filter(sampler_ir::Filter {
-                        kind: sampler_ir::FilterKind::Peak { .. },
-                        ..
-                    })
+                    sampler_ir::Processor::Eq(c) if c.count == 1
                 ),
                 "band {band} must address its actual EQ processor"
             );
@@ -3279,8 +3244,9 @@ mod tests {
                     sampler_ir::Processor::Eq(c),
                     sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
                 ] if c.count == 1
-                    && c.bands()[0].frequency == 1000.0
-                    && (f64::from(c.bands()[0].q) - 2. / 3.).abs() < 1e-6
+                    && c.bands()[0].law == sampler_ir::fx::eq::Law::KontaktLegacy
+                    && c.bands()[0].frequency == sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.0)
+                    && c.bands()[0].q == sampler_core::KontaktLegacyEqSettings::bandwidth_knob(1.0)
             ),
             "{processors:?}"
         );

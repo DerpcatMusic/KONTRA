@@ -157,6 +157,8 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
         curve: match c.curve {
             fx::Curve::Identity => Curve::Identity,
             fx::Curve::Classic { shape } => Curve::Classic(knob(P::Shape, shape)),
+            fx::Curve::Enhanced { shape } => Curve::Enhanced(knob(P::Shape, shape)),
+            fx::Curve::Drums { shape } => Curve::Drums(knob(P::Shape, shape)),
             fx::Curve::Tube { drive } => Curve::Tube(knob(P::Drive, drive)),
             fx::Curve::Transistor { drive } => Curve::Transistor(knob(P::Drive, drive)),
             fx::Curve::Rectifier(mode) => Curve::Rectifier(match mode {
@@ -170,6 +172,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             level: knob(P::LoFiNoise, n.level),
             color: knob(P::LoFiColor, n.color),
         }),
+        tone: c.tone,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
             width: Parameter::Constant(s.width),
@@ -1965,9 +1968,6 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
-            (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
-            (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
-            (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
@@ -2132,28 +2132,7 @@ impl Lowering<'_> {
         let mut starts = Vec::with_capacity(listed.len() + 1);
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
-            let mut stages = if let ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak { gain },
-                cutoff: ir::Frequency::Hertz(hz),
-                resonance: ir::Resonance::Q(q),
-            }) = **p
-                && !self.live_bound(chain, start + index)
-                && self
-                    .ir
-                    .processor_controls
-                    .iter()
-                    .any(|b| b.chain == chain && b.index == start + index)
-            {
-                vec![Processor::PeakingEq(crate::PeakingEq {
-                    frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
-                    bandwidth: Parameter::Constant(crate::PeakingEq::bandwidth_knob(
-                        crate::PeakingEq::octaves_of_q(q),
-                    )),
-                    gain_db: Parameter::Constant(
-                        20. * gain.linear().log10() / crate::PeakingEq::GAIN_SCALE,
-                    ),
-                })]
-            } else if let Some(live) = self.live_stage(chain, start + index, p) {
+            let mut stages = if let Some(live) = self.live_stage(chain, start + index, p) {
                 vec![live]
             } else {
                 self.processors(owner, **p)?
@@ -2217,7 +2196,7 @@ impl Lowering<'_> {
             })
         };
         if let ir::Processor::Eq(config) = &processor {
-            return crate::dsp::eq_family::lower(config, self.rate).map_err(core(Stage::Filter, owner));
+            return Ok(crate::dsp::eq_family::lower(config));
         }
         let kind = match processor {
             ir::Processor::Filter(f) => f.kind,

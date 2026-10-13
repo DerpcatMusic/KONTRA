@@ -247,6 +247,9 @@ struct Watch {
     disk: f32,
     disk_read: u64,
     disk_counter: Option<&'static AtomicU64>,
+    /// Test seam like `disk_counter`: the picture revision is process-wide,
+    /// so parallel tests that finish pictures would wake an idle watch.
+    picture_revision: Option<fn() -> u64>,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
     /// When the readouts were last sampled.
@@ -333,7 +336,7 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
-        pictures::revision().hash(&mut h);
+        self.picture_revision.map_or_else(pictures::revision, |f| f()).hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);

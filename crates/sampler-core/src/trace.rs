@@ -798,14 +798,6 @@ impl TraceGraph {
                     .collect(),
                 timemod.trace_frames(),
             ),
-            PreparedProcessor::PeakingEq(eq) => (
-                "v1_peaking_eq",
-                eq.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
             PreparedProcessor::Eq(eq) => (
                 "eq",
                 eq.trace_parameters().into_iter().map(|(n, p)| parameter(n, p)).collect(),
