@@ -38,7 +38,7 @@ def winpath(p: Path) -> str:
 
 
 def lua_s(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
 def all_pars() -> list[str]:
@@ -53,6 +53,9 @@ def init_preset(rel: str) -> Path:
 
 LOC = os.environ.get("PROBE_LOC", "insert")
 GEN = os.environ.get("PROBE_GENERIC", "0")
+# PROBE_PRE="EFFECT_SUBTYPE=23;..." runs these set_engine_par calls before every step (and the baseline)
+PRE = "".join(f" set_engine_par($ENGINE_PAR_{kv.split('=')[0]}, {kv.split('=')[1]}, -1, 0, {GEN})\n"
+              for kv in os.environ.get("PROBE_PRE", "").split(";") if kv)
 
 
 def lua(effects: list[tuple[str, Path]], steps: list[tuple[int, str, int]]) -> str:
@@ -62,6 +65,7 @@ local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local EFFECTS = {{{",".join(lua_s(winpath(p)) for _, p in effects)}}}
 local STEPS = {{{",".join(f'{{{e},{lua_s(par)},{v}}}' for e, par, v in steps)}}}
+local PRE = {lua_s(PRE)}
 local DIR = {lua_s(winpath(STEPS) + chr(92))}
 kt.reset_multi()
 local inst = kt.add_instrument()
@@ -71,12 +75,13 @@ for n, s in ipairs(STEPS) do
     last = s[1]
     local ok, e = pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.{LOC}_fx)
     if s[2] == "" then
+      if PRE ~= "" then pcall(kt.set_instrument_script_source, inst, 0, "on init\\n" .. PRE .. "end on\\n") end
       pcall(kt.save_instrument, inst, DIR .. string.format("base_%d.nki", last), {{}})
     end
   end
   if s[2] ~= "" then
     pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.{LOC}_fx)
-    local src = "on init\\n set_engine_par(" .. s[2] .. ", " .. s[3] .. ", -1, 0, {GEN})\\nend on\\n"
+    local src = "on init\\n" .. PRE .. " set_engine_par(" .. s[2] .. ", " .. s[3] .. ", -1, 0, {GEN})\\nend on\\n"
     pcall(kt.set_instrument_script_source, inst, 0, src)
     pcall(kt.save_instrument, inst, DIR .. string.format("s_%d.nki", n), {{}})
   end

@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Impulse responses of Kontakt effect chains, measured through Kontakt itself.
+
+    eqrender.py SPEC.json OUT_PREFIX            (EQ_REUSE=1: analyse an existing OUT_PREFIX.wav)
+
+SPEC: {"chain": ["Filters/Solid G-EQ", ...],      # preset folders loaded into insert slots 0..
+       "pre":   [[slot, "PAR", value], ...],       # baseline every step returns to
+       "steps": [{"name": "...", "set": [[slot, "PAR", value], ...]}, ...]}     (at most 126)
+
+Render step 0 is a full bypass of every slot (the reference).  Timing comes from a MIDI file played by
+aplaymidi, so it is exact: per step, CC#20 = step index (the KSP `on controller` writes that step's
+changed parameters with set_engine_par), 350 ms later note C3 plays a stereo sample whose left channel is
+a unit impulse and whose right channel is silent.  The recording (render.py: private PipeWire null sink)
+is cut at the scheduled onsets; each response is FFT-ed and divided by the reference.
+OUT_PREFIX.tsv: one row per step and channel pair with peak/bandwidth metrics and dB at fixed probe
+frequencies; OUT_PREFIX.h.npy: the LL magnitude responses in dB (rfft bins, N=16384).
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import wavutil  # noqa: E402
+
+PRESETS = Path("/home/derpcat/.wine/drive_c/Program Files/Common Files/VST3/Portapotty/Kontakt 8/Presets")
+PERIOD = 1.6      # seconds between steps
+PLAY_AT = 0.3    # note this long after the step's CC (settle time)
+PROBES = [30, 60, 100, 200, 500, 1000, 2000, 5000, 10000, 15000]
+
+
+def init_preset(rel: str) -> Path:
+    d = PRESETS / rel
+    return (sorted(d.glob("- INIT*.nkp")) or sorted(d.glob("*.nkp")))[0]
+
+
+def winpath(p) -> str:
+    return "Z:" + str(p).replace("/", "\\")
+
+
+def commands(spec):
+    """Per step (ref first) the set_engine_par calls that change the state; only changes are sent."""
+    n = len(spec["chain"])
+    base = {(s, "EFFECT_BYPASS"): 0 for s in range(n)}
+    base.update({(a, b): c for a, b, c in map(tuple, spec.get("pre", []))})
+    state, out = {}, []
+    wants = [{(s, "EFFECT_BYPASS"): 1 for s in range(n)}]
+    for st in spec["steps"]:
+        w = dict(base)
+        w.update({(a, b): c for a, b, c in map(tuple, st["set"])})
+        wants.append(w)
+    for w in wants:
+        ch = [(k[0], k[1], v) for k, v in w.items() if state.get(k) != v]
+        state.update({(a, b): c for a, b, c in ch})
+        out.append(ch)
+    return out
+
+
+def make_lua(spec, wav_dir: Path) -> str:
+    cmds, starts = [], [0]
+    for ch in commands(spec):
+        cmds += ch
+        starts.append(len(cmds))
+    m = len(cmds) + 1
+    ksp = ["on init", "  declare $k", f"  declare %cpar[{m}]", f"  declare %cslot[{m}]",
+           f"  declare %cval[{m}]", f"  declare %cstart[{len(starts) + 1}]"]
+    for i, (slot, par, val) in enumerate(cmds):
+        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  %cval[{i}] := {int(val)}"]
+    ksp += [f"  %cstart[{i}] := {s}" for i, s in enumerate(starts)]
+    ksp += ["end on", "on controller", "  if ($CC_NUM = 20)", "    $k := %cstart[%CC[20]]",
+            "    while ($k < %cstart[%CC[20] + 1])",
+            "      set_engine_par(%cpar[$k], %cval[$k], -1, %cslot[$k], 0)",
+            "      inc($k)", "    end while", "  end if", "end on"]
+    chain = ",".join(json.dumps(winpath(init_preset(c))) for c in spec["chain"])
+    ksp_text = "\\n".join(ksp)
+    return f"""
+local kt = Kontakt
+local out = assert(io.open(ORACLE_OUT, "w"))
+local function log(t) out:write(t .. "\\n") out:flush() end
+local WAV = {json.dumps(winpath(wav_dir / "impulse_lr.wav"))}
+local f = assert(io.open(WAV, "wb"))
+local n = 24000
+f:write("RIFF", string.pack("<I4", 36 + n * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", n * 8))
+for i = 0, n - 1 do f:write(string.pack("<ff", i == 0 and 0.5 or 0.0, 0.0)) end
+f:close()
+kt.reset_multi()
+local inst = kt.add_instrument()
+local z = kt.add_zone(inst, 0, WAV)
+kt.set_zone_geometry(inst, z, {{ root_key = 60, low_key = 0, high_key = 127 }})
+kt.set_instrument_volume(inst, 0)
+local chain = {{{chain}}}
+for slot, p in ipairs(chain) do log('{{"load":' .. tostring(pcall(kt.load_fx_preset, p, inst, -1, slot - 1, kt.insert_fx)) .. '}}') end
+log('{{"script":' .. tostring(pcall(kt.set_instrument_script_source, inst, 0, "{ksp_text}")) .. '}}')
+log('{{"ready":true}}')
+out:close()
+"""
+
+
+def vlq(n: int) -> bytes:
+    b = [n & 0x7F]
+    n >>= 7
+    while n:
+        b.append((n & 0x7F) | 0x80)
+        n >>= 7
+    return bytes(reversed(b))
+
+
+def make_midi(nsteps: int, path: Path):
+    """PPQ 480 at 120 bpm: 960 ticks per second."""
+    ev = []
+    for i in range(nsteps):
+        t = 0.5 + i * PERIOD
+        ev.append((t, bytes([0xB0, 20, i])))
+        for k in (0, 0.5):   # the note is sent twice: Kontakt occasionally drops one while rebuilding DSP
+            ev += [(t + PLAY_AT + k, bytes([0x90, 60, 100])), (t + PLAY_AT + k + 0.1, bytes([0x80, 60, 0]))]
+    trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
+    for t, m in sorted(ev, key=lambda e: e[0]):
+        tick = round(t * 960)
+        trk += vlq(tick - last) + m
+        last = tick
+    trk += b"\x00\xff\x2f\x00"
+    head = b"MThd" + (6).to_bytes(4, "big") + bytes([0, 0, 0, 1]) + (480).to_bytes(2, "big")
+    path.write_bytes(head + b"MTrk" + len(trk).to_bytes(4, "big") + trk)
+
+
+def metrics(freqs, db):
+    k = int(np.argmax(np.abs(db)))
+    pk = db[k]
+    half, sign = pk / 2, (1 if pk >= 0 else -1)
+    i = k
+    while i > 0 and sign * db[i] > sign * half:
+        i -= 1
+    lo = freqs[i]
+    i = k
+    while i < len(db) - 1 and sign * db[i] > sign * half:
+        i += 1
+    return freqs[k], pk, lo, freqs[i]
+
+
+def main() -> int:
+    spec = json.load(open(sys.argv[1]))
+    prefix = Path(sys.argv[2])
+    steps = spec["steps"]
+    if len(steps) > 126:
+        sys.exit("at most 126 steps per render (CC value range); split the spec")
+    work = Path("/tmp/w3/audit")
+    work.mkdir(parents=True, exist_ok=True)
+    lua, mid, wav = work / "eqrender_gen.lua", work / "eqrender.mid", prefix.with_suffix(".wav")
+    lua.write_text(make_lua(spec, work))
+    make_midi(len(steps) + 1, mid)
+    if not os.environ.get("EQ_REUSE"):
+        subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(wav),
+                        str(0.5 + (len(steps) + 1) * PERIOD + 3), str(mid)], check=True)
+    ch, rate, (L, R) = wavutil.read(wav)
+    L, R = np.array(L), np.array(R)
+    mag = np.maximum(np.abs(L), np.abs(R))
+    # MIDI order is exact but wall-clock spacing jitters by ~100 ms: step n is the loudest sample within
+    # [prev + 0.75 s, prev + 2.45 s] (each step plays two identical notes); the analysis window starts 256 samples earlier (magnitude only, so
+    # the exact alignment does not matter as long as the whole response fits in the window).
+    i0 = int(np.nonzero(mag > 0.05)[0][0])      # the reference impulse (bypassed, 0.5 peak)
+    ev = [i0 + int(np.argmax(mag[i0:i0 + int(0.05 * rate)]))]
+    for n in range(len(steps)):
+        lo = ev[-1] + int(0.75 * rate)
+        w = mag[lo:lo + int(1.7 * rate)]
+        if not len(w) or w.max() < 1e-6:
+            sys.exit(f"no impulse for step {n + 1} near t={lo / rate:.2f}s")
+        first = int(np.nonzero(w > 0.3 * w.max())[0][0])      # earliest strong sample: ringing tails stay weaker
+        ev.append(lo + first + int(np.argmax(w[first:first + int(0.05 * rate)])))
+    ev = [e - 240 for e in ev]
+    d = np.diff(ev) / rate
+    print(f"{len(ev)} impulses, spacing {d.min():.4f}..{d.max():.4f} s (scheduled {PERIOD}, jittery)")
+    N = 16384
+
+    def spectrum(x, start):
+        seg = np.zeros(N)
+        part = x[start - 16:start - 16 + N]
+        seg[:len(part)] = part
+        return np.fft.rfft(seg)
+
+    ref = spectrum(L, ev[0])
+    freqs = np.fft.rfftfreq(N, 1 / rate)
+    sel = (freqs >= 20) & (freqs <= 20000)
+    rows = ["step\tname\tpair\tpeak_hz\tpeak_db\thalf_lo_hz\thalf_hi_hz\tq_half\toctaves_half\t" + "\t".join(f"db@{p}" for p in PROBES)]
+    allh = []
+    for n, st in enumerate(steps, start=1):
+        for pair, x in (("LL", L), ("LR", R)):
+            h = spectrum(x, ev[n]) / np.where(np.abs(ref) < 1e-9, 1e-9, ref)
+            db = 20 * np.log10(np.maximum(np.abs(h), 1e-9))
+            if pair == "LL":
+                allh.append(db)
+            f0, pk, lo, hi = metrics(freqs[sel], db[sel])
+            at = [np.interp(p, freqs, db) for p in PROBES]
+            rows.append("\t".join([str(n), st["name"], pair, f"{f0:.1f}", f"{pk:.2f}", f"{lo:.1f}", f"{hi:.1f}",
+                                   f"{f0 / max(hi - lo, 1e-9):.3f}", f"{np.log2(hi / lo) if lo > 0 else float('nan'):.3f}"]
+                                  + [f"{v:.2f}" for v in at]))
+    prefix.with_suffix(".tsv").write_text("\n".join(rows) + "\n")
+    np.save(prefix.with_suffix(".h.npy"), np.array(allh))
+    print(prefix.with_suffix(".tsv"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
