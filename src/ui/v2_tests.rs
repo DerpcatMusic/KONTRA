@@ -869,6 +869,15 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
         v.parts[0].active = "Strings".into();
         v.parts[0].instrument = Some(Arc::new(inst));
         v.parts[0].report = Some(Arc::new(report));
+        let mut shelf = crate::library::Shelf::default();
+        shelf.snapshots.insert(
+            std::path::PathBuf::from("/x/Strings.nki"),
+            crate::library::Snapshots {
+                instrument: "Strings".into(),
+                paths: vec!["/x/Presets/A.nksn".into(), "/x/Presets/B.nksn".into()],
+            },
+        );
+        v.shelf = Arc::new(shelf);
     }
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(4);
@@ -876,6 +885,23 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     for id in ["perf-art-0", "perf-vol-0", "perf-needs-0"] {
         assert!(there(&h, id), "{id}");
     }
+    // Two header rows (bar, then views + performance), the old full-width
+    // strip gone, and the preset picker directly under them.
+    assert!(!there(&h, "perf-0"), "no separate CC7 row");
+    let scene = h.ui.scene().unwrap();
+    let one = scene.surface("header-0").unwrap().frame;
+    let two = scene.surface("header2-0").unwrap().frame;
+    let pick = scene.surface("snapshot-0").expect("preset picker").frame;
+    assert!(two.y >= one.y + one.size.height - 0.5, "row 2 under row 1");
+    assert!(pick.y >= two.y + two.size.height - 0.5, "picker under row 2");
+    for id in ["snapshot-prev-0", "snapshot-next-0"] {
+        assert!(there(&h, id), "{id}");
+    }
+    let vol = scene.surface("perf-vol-0").unwrap().frame;
+    assert!(
+        vol.y >= two.y && vol.y + vol.size.height <= two.y + two.size.height + 0.5,
+        "volume lives in row 2"
+    );
     assert_eq!(
         p.selection.read().unwrap().parts[0].dynamics,
         -1,
