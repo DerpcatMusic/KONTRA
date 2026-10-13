@@ -2307,6 +2307,7 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
     let mut watch = Watch {
         disk_counter: Some(&IDLE_DISK),
+        picture_revision: Some(|| 0),
         ..Default::default()
     };
     let computer = computer::Computer::default();

@@ -117,12 +117,41 @@ fn invalid_bands_are_rejected_before_rendering() {
     assert!(EqBand::rbj(Kind::Peak, 1000., 1., 0.).compile(0, &mut Vec::new()).is_err());
 }
 
+/// Steady-state dB of the lowered stages in series at `hz`.
+fn chain_db(stages: &[Processor], hz: f64) -> f64 {
+    let compiled: Vec<Stage> = stages
+        .iter()
+        .filter_map(|p| match p {
+            Processor::Eq(band) => Some(stage(*band)),
+            _ => None,
+        })
+        .collect();
+    let mut states = vec![ProcessorState::default(); compiled.len()];
+    let (mut num, mut den) = (0., 0.);
+    for block in 0..96 {
+        let mut b: Planar = std::array::from_fn(|_| {
+            std::array::from_fn(|i| {
+                ((block * BLOCK + i) as f64 * std::f64::consts::TAU * hz / f64::from(RATE)).sin()
+            })
+        });
+        let input = b[0];
+        for (s, st) in compiled.iter().zip(&mut states) {
+            s.process(st, &[], &mut b, BLOCK, (block * BLOCK) as u64);
+        }
+        if block >= 48 {
+            num += b[0].iter().map(|v| v * v).sum::<f64>();
+            den += input.iter().map(|v| v * v).sum::<f64>();
+        }
+    }
+    10. * (num / den).log10()
+}
+
 #[test]
-fn static_lowering_makes_batchable_stages_and_expands_filter_orders() {
+fn static_lowering_is_one_stage_type_and_expands_filter_orders() {
     let mut high = Band::new(Kind::HighPass, 100., 0.7, 0.);
     let mut count = |poles| {
         high.poles = poles;
-        lower(&Config::band(high), RATE).unwrap().len()
+        lower(&Config::band(high)).len()
     };
     assert_eq!([count(1), count(2), count(3), count(4)], [1, 1, 2, 2]);
     let mut cfg = Config::new(&[
@@ -132,10 +161,10 @@ fn static_lowering_makes_batchable_stages_and_expands_filter_orders() {
     ])
     .unwrap();
     cfg.output_gain_db = 6.0206;
-    let stages = lower(&cfg, RATE).unwrap();
+    let stages = lower(&cfg);
     assert_eq!(stages.len(), 2);
-    let Processor::Biquad(b) = stages[0] else { panic!("fixed bell is a plain biquad") };
-    assert!((20. * b.magnitude(1000.).log10() - 12.).abs() < 1e-9);
+    assert!(matches!(stages[0], Processor::Eq(_)));
+    assert!((chain_db(&stages[..1], 1000.) - 12.).abs() < 0.05);
     assert!(matches!(stages[1], Processor::Gain(g) if (g - 2.).abs() < 1e-3));
 }
 
@@ -153,13 +182,79 @@ fn multi_band_configs_keep_their_order() {
         Band::new(Kind::HighShelf, 8000., 0.7, -6.),
     ])
     .unwrap();
-    let mags: Vec<f64> = lower(&cfg, RATE)
-        .unwrap()
-        .iter()
-        .map(|s| match s {
-            Processor::Biquad(b) => 20. * b.magnitude(20.).log10(),
-            _ => unreachable!(),
-        })
-        .collect();
-    assert!(mags[0] > 5.9 && mags[1].abs() < 0.1);
+    let stages = lower(&cfg);
+    assert_eq!(stages.len(), 2);
+    assert!((chain_db(&stages[..1], 20.) - 6.).abs() < 0.2 && chain_db(&stages[1..], 20.).abs() < 0.1);
+}
+
+/// One magnitude table for the one kernel: every kind, at 44.1/48/96 kHz, against its analogue
+/// prototype up to 20 kHz (and below 0.45 of the rate). The design matches DC, the band
+/// frequency and Nyquist exactly; between them the error is the table's worst case.
+#[test]
+fn every_kind_matches_its_analogue_prototype() {
+    let kinds = [
+        (Kind::Peak, 12.), (Kind::Peak, -12.),
+        (Kind::LowShelf, 12.), (Kind::LowShelf, -12.),
+        (Kind::HighShelf, 12.), (Kind::HighShelf, -12.),
+        (Kind::LowPass, 0.), (Kind::HighPass, 0.), (Kind::BandPass, 0.), (Kind::Notch, 0.),
+        (Kind::FirstOrderLowShelf, 12.), (Kind::FirstOrderHighShelf, -12.),
+    ];
+    let mut worst: Vec<(Kind, f64, f64)> = Vec::new();
+    for (kind, boost) in kinds {
+        let mut max = (0f64, 0f64);
+        let mut at_case = (0u32, 0f64, 0f64);
+        let mut baseline = 0f64;
+        for rate in [44_100u32, 48_000, 96_000] {
+            for hz in [60., 500., 3_000., 9_000.] {
+                for q in [0.5, 0.707, 2.] {
+                    let f = if matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf) {
+                        kernel::first_order(kind, rate, hz, boost)
+                    } else {
+                        kernel::design(kind, rate, hz, q, boost)
+                    }
+                    .expect("stable design");
+                    let mut probe = 20.;
+                    while probe < 20_000f64.min(0.45 * f64::from(rate)) {
+                        let want = kernel::analog_db(kind, hz, q, boost, probe);
+                        let got = 20. * kernel::magnitude(&f, rate, probe).log10();
+                        // Notch and band-pass zeros: compare only where the analogue is above -30 dB
+                        // (a 3-point match does not fix stop-band depth).
+                        if want > -30. {
+                            let e = (got - want).abs();
+                            if kind == Kind::Peak {
+                                // Baseline: the RBJ bilinear bell the old generic stage used.
+                                let (a, w0) = (10f64.powf(boost / 40.), std::f64::consts::TAU * hz / f64::from(rate));
+                                let al = w0.sin() / (2. * q);
+                                let c = -2. * w0.cos();
+                                let rbj = kernel::Biquad {
+                                    b: [(1. + al * a) / (1. + al / a), c / (1. + al / a), (1. - al * a) / (1. + al / a)],
+                                    a: [c / (1. + al / a), (1. - al / a) / (1. + al / a)],
+                                };
+                                let b = (20. * kernel::magnitude(&rbj, rate, probe).log10() - want).abs();
+                                if b > baseline {
+                                    baseline = b;
+                                }
+                            }
+                            if e > max.0 {
+                                max = (e, probe);
+                                at_case = (rate, hz, q);
+                            }
+                        }
+                        probe *= 1.07;
+                    }
+                }
+            }
+        }
+        worst.push((kind, max.0, max.1));
+        eprintln!("{kind:?} boost {boost} worst case {at_case:?} (RBJ bilinear baseline {baseline:.3} dB)");
+    }
+    for (kind, error, at) in &worst {
+        eprintln!("{kind:?}: max |error| {error:.4} dB at {at:.0} Hz");
+    }
+    // The worst cases are resonant (Q 2) shelves with the band at 0.2 fs, where three matched
+    // points cannot follow the analogue overshoot; every other kind is within about 1.7 dB there
+    // and the bilinear RBJ bell it replaces is 5.3 dB off in the same corner.
+    for (kind, error, at) in &worst {
+        assert!(*error < 3.5, "{kind:?} {error} dB at {at} Hz");
+    }
 }
