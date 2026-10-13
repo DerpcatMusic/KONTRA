@@ -1,4 +1,4 @@
-//! Forward decoding of the strict v1 0cb7a8a0 wavetable admission subset.
+//! Forward decoding of the measured phase-only wavetable admission subset.
 use ni_file::kontakt::objects::WavetableSource;
 use sampler_ir::Wavetable;
 pub(crate) fn admitted(source: &WavetableSource, tracking: bool) -> Option<Wavetable> {
@@ -6,10 +6,11 @@ pub(crate) fn admitted(source: &WavetableSource, tracking: bool) -> Option<Wavet
     if !tracking || source.inharmonic_enabled || source.mod_type != 0 || source.phase_random != 0. {
         return None;
     }
-    let form = |serialized| match serialized {
-        1 => Some(0),
-        17 => Some(16),
-        _ => None,
+    // Serialized forms are one-based; the native phase switch is zero-based.
+    // NI Source Module reference; Kontakt shared phase routine 0x140567aa0.
+    let form = |serialized: u32| {
+        let kind = u8::try_from(serialized.checked_sub(1)?).ok()?;
+        Wavetable::supports_form(kind).then_some(kind)
     };
     let result = Wavetable {
         position: source.position,

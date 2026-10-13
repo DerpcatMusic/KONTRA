@@ -8,13 +8,57 @@ use sampler_ir::Wavetable;
 
 pub(super) const CYCLE: usize = 2048;
 
-/// ASYM2MP moves the cycle midpoint while keeping both endpoints fixed.
-/// Native shared phase-form routine: 140567aa0, switch16→140567e4d.
+/// NI KSP Reference, Engine Parameters / Source Module, WT_FORM_MODE.
+/// Native shared phase-form routine 0x140567aa0: PWM 0x140567d2d,
+/// asymmetric modes 0x140567d5b..0x140567e5f, Flip 0x140567e64,
+/// Seesaw 0x140567f83 and Bend2 0x140567bf7..0x140567c84.
+/// Only measured phase forms are admitted; amplitude forms need another kernel.
 fn warp(phase: f32, amount: f32, kind: u8) -> f32 {
-    if kind != 16 {
-        return phase;
+    let amount = amount.clamp(0., 1.);
+    match kind {
+        7 => {
+            let read = phase / (1. - amount * 0.9375);
+            return if read < 1. { read } else { 0. };
+        }
+        11 => {
+            let flip = if amount < 0.5 {
+                phase < amount * 2.
+            } else {
+                f64::from(phase) >= f64::from(amount) * 2. - 1.
+            };
+            return if flip { 1. - phase } else { phase };
+        }
+        17 => {
+            return if amount == 0. {
+                phase
+            } else if amount == 1. {
+                1. - phase
+            } else if phase < 1. - amount {
+                phase / (1. - amount)
+            } else {
+                (amount - (phase - (1. - amount))) / amount
+            };
+        }
+        31..=33 => {
+            let bend = match kind {
+                31 => amount * -0.9,
+                32 => amount * 0.9,
+                _ => (amount - 0.5) * 1.8,
+            };
+            let denominator = (phase - 0.5).abs() * (bend * 4.) - bend - 1.;
+            return (0.5 / denominator) * ((phase + phase - 1.) * (bend - 1.)) + 0.5;
+        }
+        _ => {}
     }
-    let offset = (amount.clamp(0., 1.) - 0.5) * 1.96;
+    let offset = match kind {
+        8 => -amount * 0.9,
+        9 => amount * 0.9,
+        10 => (amount - 0.5) * 1.8,
+        14 => -amount * 0.98,
+        15 => amount * 0.98,
+        16 => (amount - 0.5) * 1.96,
+        _ => return phase,
+    };
     if f64::from(phase) < 0.5 + f64::from(offset * 0.5) {
         phase / (1. + offset)
     } else {
@@ -118,5 +162,24 @@ impl Table {
             &mut out,
         );
         ready.then_some(out[0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn phase_forms_match_original_kontakt_instructions() {
+        let receipt: serde_json::Value = serde_json::from_str(include_str!("wavetable_native_vectors.json")).unwrap();
+        assert_eq!(receipt["entry"], "0x140567aa0");
+        assert_eq!(receipt["helper_substitutions"].as_array().unwrap().len(), 0);
+        for case in receipt["cases"].as_array().unwrap() {
+            let mode = case[0].as_u64().unwrap() as u8;
+            let phase = case[1].as_f64().unwrap() as f32;
+            let amount = case[2].as_f64().unwrap() as f32;
+            let native = case[3].as_f64().unwrap() as f32;
+            let actual = super::warp(phase, amount, mode);
+            assert!((actual - native).abs() <= 2e-7,
+                "mode{mode} phase{phase} amount{amount}: actual{actual}, native{native}");
+        }
     }
 }

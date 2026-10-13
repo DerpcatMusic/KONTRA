@@ -122,7 +122,7 @@ fn wavetable_lanes(
     instrument: &ir::Instrument,
     group: usize,
     wave: ir::Wavetable,
-) -> Result<[(ControlDefinition, crate::EngineParameterBinding); 3], LowerError> {
+) -> Result<[(ControlDefinition, crate::EngineParameterBinding); 5], LowerError> {
     let physical = if instrument.source_indices.groups.is_empty() {
         group
     } else {
@@ -141,8 +141,11 @@ fn wavetable_lanes(
         ("ENGINE_PAR_WT_POSITION", wave.position),
         ("ENGINE_PAR_WT_FORM", wave.form1),
         ("ENGINE_PAR_WT_FORM2", wave.form2),
+        ("ENGINE_PAR_WT_FORM_MODE", f32::from(wave.form1_type)),
+        ("ENGINE_PAR_WT_FORM2_MODE", f32::from(wave.form2_type)),
     ]
     .map(|(name, value)| {
+        let form = matches!(name, "ENGINE_PAR_WT_FORM_MODE" | "ENGINE_PAR_WT_FORM2_MODE");
         let address = crate::EngineParameterAddress {
             parameter: crate::engine_parameter_id(name).unwrap(),
             group: physical,
@@ -153,13 +156,14 @@ fn wavetable_lanes(
         (
             ControlDefinition {
                 id,
-                domain: ControlDomain::Real { min: 0., max: 1. },
+                domain: ControlDomain::Real { min: 0., max: if form { 33. } else { 1. } },
                 default: ControlValue::Real(f64::from(value)),
             },
             crate::EngineParameterBinding {
                 address,
                 control: id,
-                law: crate::EngineParameterLaw::Linear { low: 0., high: 1. },
+                law: if form { crate::EngineParameterLaw::WavetableForm }
+                    else { crate::EngineParameterLaw::Linear { low: 0., high: 1. } },
             },
         )
     }))

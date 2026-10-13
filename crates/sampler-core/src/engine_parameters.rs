@@ -68,6 +68,9 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 /// Module owners bind the same controls the DSP reads. No private write mirror.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub enum EngineParameterLaw {
+    /// Native WT phase-form ordinal. This is a discrete enum, not a 0..1M knob.
+    /// NI Source Module reference; Kontakt phase dispatcher 0x140567aa0.
+    WavetableForm,
     /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
     SignedNormalized,
     /// A native switch: zero is off, a nonzero write is on; readback is 0/1.
@@ -128,7 +131,7 @@ impl EngineParameterLaw {
 
     pub(crate) fn valid(self) -> bool {
         match self {
-            Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
+            Self::WavetableForm | Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high >= low
@@ -176,12 +179,15 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
+        if self == Self::WavetableForm {
+            return f64::from(value.clamp(0, 33));
+        }
         if self == Self::SignedNormalized {
             return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6;
         }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
-            Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
@@ -216,11 +222,14 @@ impl EngineParameterLaw {
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
+        if self == Self::WavetableForm {
+            return value.round().clamp(0., 33.) as i32;
+        }
         if self == Self::SignedNormalized {
             return (value * 1e6).round().clamp(-1e6, 1e6) as i32;
         }
         (match self {
-            Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
             Self::Linear { low, high } => {
@@ -754,6 +763,11 @@ impl Runtime {
             .find(|b| b.address == address)
             .copied();
         if let Some(b) = binding {
+            if b.law == EngineParameterLaw::WavetableForm
+                && !u8::try_from(value).is_ok_and(sampler_ir::Wavetable::supports_form)
+            {
+                return Err(Error::InvalidInput);
+            }
             return self
                 .edit_controls_now(
                     plan,
