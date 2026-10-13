@@ -129,6 +129,16 @@ def measure(effects, steps, timeout):
             seen.append((ei, par, v, fields(f)))
     # A field that moves for any value of a parameter is reported at every value, so laws
     # can be fitted on the whole sweep (values that happen to equal the preset included).
+    # PROBE_KEEP=dir PROBE_KEEP_STEPS="Effects/ACBox|AC_BASS|900000;..." keeps those saved
+    # instruments (a few KB each) as test fixtures.
+    if os.environ.get("PROBE_KEEP"):
+        want = {tuple(x.split("|")) for x in os.environ["PROBE_KEEP_STEPS"].split(";")}
+        Path(os.environ["PROBE_KEEP"]).mkdir(parents=True, exist_ok=True)
+        for n, (ei, par, v) in enumerate(steps, 1):
+            key = (effects[ei - 1][0], par.replace("$ENGINE_PAR_", ""), str(v))
+            if key in want:
+                name = "_".join(re.sub(r"\W+", "-", k) for k in key) + ".nki"
+                shutil.copy(STEPS / f"s_{n}.nki", Path(os.environ["PROBE_KEEP"]) / name)
     moved = {}
     for ei, par, v, got in seen:
         if classes(got) == classes(base[ei]):
