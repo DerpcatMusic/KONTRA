@@ -16,7 +16,10 @@ p.add_argument('--cold', action='store_true')
 p.add_argument('--profile', action='store_true')
 p.add_argument('--frequency', type=int, choices=[499, 1999, 9999], default=499)
 p.add_argument('--block', type=int, choices=[32, 64, 256])
-p.add_argument('--only', choices=['piano', 'strings', 'fx'])
+p.add_argument('--only', choices=['piano', 'strings', 'fx', 'afflatus', 'conflux', 'conflux-multi'])
+p.add_argument('--sustain', action='store_true', help='48k sampler-perf idle/held/release audit')
+p.add_argument('--notes', type=int, choices=[1, 8])
+p.add_argument('--seconds', type=float, default=3.0)
 a = p.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
 root = Path('/mnt/MAIN_STORAGE/Libraries/Kontakt')
@@ -26,6 +29,54 @@ scenarios = {
     'fx': ('ANALOG STRINGS', 'Instruments/ANALOG STRINGS.nki'),
 }
 heavy = '/home/derpcat/.cache/kontakto-heavy'
+if a.sustain:
+    if a.engine != 'v2' or a.cold or a.only in scenarios:
+        p.error('--sustain needs v2, no --cold, and afflatus|conflux|conflux-multi')
+    for name in ([a.only] if a.only else ['afflatus', 'conflux', 'conflux-multi']):
+        for block in ([a.block] if a.block else [64, 256]):
+            for notes in ([a.notes] if a.notes else [1, 8]):
+                tag = f'{name}-{block}-{notes}' + ('-perf' if a.profile else '')
+                done = a.out / f'{tag}.done'
+                if done.exists():
+                    continue
+                ready = a.out / f'{tag}.ready'
+                finished = a.out / f'{tag}.finished'
+                env = dict(os.environ, XDG_CACHE_HOME='/dev/null', KONTRA_SCAN_ACTIVE='1',
+                           KONTRA_DISABLE_NETWORK='1')
+                if a.profile:
+                    ready.unlink(missing_ok=True)
+                    finished.unlink(missing_ok=True)
+                    env.update(CPU_AUDIT_READY=str(ready), CPU_AUDIT_FINISHED=str(finished))
+                command = [heavy, 'timeout', '300', str(a.binary.resolve()), 'sustain',
+                           '--only', name, '--block', str(block), '--notes', str(notes),
+                           '--seconds', str(a.seconds), '--out', str((a.out/f'{tag}.json').resolve())]
+                with (a.out/f'{tag}.err').open('w') as err:
+                    job = subprocess.Popen(command, stderr=err, env=env)
+                    prof = None
+                    if a.profile:
+                        while not ready.exists() and job.poll() is None:
+                            time.sleep(.1)
+                        if ready.exists():
+                            # Frame-pointer callchains contain code addresses only, never copied sample/script stack bytes.
+                            prof = subprocess.Popen(['perf', 'record', '-g', '--call-graph', 'fp',
+                                '-F', str(a.frequency), '-e', 'cpu-clock:u', '-p', ready.read_text(),
+                                '-o', str(a.out/f'{tag}.perf.data')], stderr=err)
+                        while not finished.exists() and job.poll() is None:
+                            time.sleep(.01)
+                        if prof and prof.poll() is None:
+                            prof.send_signal(signal.SIGINT)
+                    code = job.wait()
+                    if prof:
+                        profile_code = prof.wait()
+                        with (a.out/f'{tag}.perf.txt').open('w') as report:
+                            subprocess.run(['perf', 'report', '--stdio', '--no-children',
+                                '--percent-limit', '0.5', '-i', str(a.out/f'{tag}.perf.data')],
+                                stdout=report, check=True)
+                        if profile_code != 0:
+                            code = profile_code
+                done.write_text(json.dumps({'exit_code': code})+'\n')
+                print(tag, code, flush=True)
+    raise SystemExit(0)
 for name, (library, instrument) in scenarios.items():
     if a.only and a.only != name:
         continue
