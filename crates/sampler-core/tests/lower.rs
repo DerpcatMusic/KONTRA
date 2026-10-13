@@ -2451,14 +2451,12 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
     i.chains = vec![ir::Chain {
         scope: ir::Scope::Voice,
         pre_amplitude: vec![],
-        post_amplitude: vec![ir::Processor::Compressor(ir::Compressor {
-            threshold_db: -12.,
-            ratio: 4.,
-            attack: ir::Time::Seconds(0.01),
-            release: ir::Time::Seconds(0.1),
-            makeup: ir::Gain::Linear(1.),
-            link: true,
-        })],
+        post_amplitude: vec![ir::Processor::Dynamics(ir::fx::dynamics::Config::generic(
+            -12.,
+            4.,
+            ir::Time::Seconds(0.01),
+            ir::Time::Seconds(0.1),
+        ))],
     }];
     i.register_compressor_controls();
     i.register_compressor_controls(); // Re-registration preserves identities.
