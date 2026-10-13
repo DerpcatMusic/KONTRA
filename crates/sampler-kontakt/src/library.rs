@@ -769,24 +769,96 @@ fn source_mode_name(mode: u32) -> &'static str {
     }
 }
 
-/// Speed from the common timing record (value, unit, free): the sentinel
-/// default (-1, 0) is unsynchronised and the free value is the ratio; anything
-/// else is tempo-synced, returned as the raw triple for the report.
-fn timing_speed(
+type Note = (&'static str, String, ir::Reason);
+
+/// Map a Time Machine family record (stored modes 2, 5, 8) to the IR, pushing
+/// what the core does not reproduce natively onto `notes`.
+///
+/// Spec s.3: speed is the common F at wire +7 (default 1.0) passed through the
+/// note-value helper, which returns it unchanged unless the timing F at +17 is
+/// above 1e-9 (tempo sync; the sync law is incomplete, so reported). TM2 and
+/// Pro floor the base rate at 0.01 (0x140ce6c00); TM1 does not.
+fn stretch_from_record(
     params: &ni_file::kontakt::objects::BParSrcMode,
-) -> Option<Result<f32, (f32, f32, f32)>> {
-    let float = |name: &str| {
+    notes: &mut Vec<Note>,
+) -> Option<ir::TimeStretch> {
+    use ni_file::kontakt::objects::SourceValue as V;
+    let f = |name: &str| {
         params.fields.iter().find_map(|f| match (f.name == name, f.value) {
-            (true, ni_file::kontakt::objects::SourceValue::Float(v)) => Some(v),
+            (true, V::Float(v)) => Some(v),
             _ => None,
         })
     };
-    let (value, unit, free) = (float("timing_value")?, float("timing_unit")?, float("timing_free")?);
-    Some(if unit == 0.0 && value == -1.0 {
-        Ok(free)
-    } else {
-        Err((value, unit, free))
-    })
+    let b = |name: &str| {
+        params.fields.iter().find_map(|f| match (f.name == name, f.value) {
+            (true, V::Flag(v)) => Some(v),
+            _ => None,
+        })
+    };
+    let i = |name: &str| {
+        params.fields.iter().find_map(|f| match (f.name == name, f.value) {
+            (true, V::Integer(v)) => Some(v),
+            _ => None,
+        })
+    };
+    let kind = match params.mode {
+        SOURCE_MODE_TM1 => ir::StretchKind::TimeMachine1,
+        SOURCE_MODE_TM2 => ir::StretchKind::TimeMachine2,
+        SOURCE_MODE_TM_PRO => ir::StretchKind::TimeMachinePro,
+        _ => return None,
+    };
+    let mut speed = f("common_float_7")?;
+    if f("timing_value").is_some_and(|v| v > 1e-9) {
+        notes.push(("time machine tempo-synced speed", format!("{speed}"), ir::Reason::UnknownLaw));
+    }
+    if kind != ir::StretchKind::TimeMachine1 {
+        speed = speed.max(0.01);
+    }
+    if !(speed.is_finite() && (0.0..=64.0).contains(&speed)) {
+        notes.push(("time machine speed", format!("{speed}"), ir::Reason::InvalidValue));
+        speed = 1.0;
+    }
+    let mut t = ir::TimeStretch::new(kind, speed);
+    match kind {
+        ir::StretchKind::TimeMachine1 => {
+            t.smooth = f("machine_float_1")?;
+            t.grain_ms = f("machine_float_2")?;
+            t.high_quality = b("machine_flag")?;
+            if t.high_quality {
+                notes.push((
+                    "time machine 1 HQ grain analysis (non-HQ scheduler used)",
+                    "hq".into(),
+                    ir::Reason::NotModeled,
+                ));
+            }
+        }
+        ir::StretchKind::TimeMachine2 => {
+            t.transient_copy = b("dfd_flag")?;
+            t.transient_size = i("dfd_integer_1")?;
+            t.grain_profile = i("dfd_integer_2")?;
+            notes.push((
+                "time machine 2 PSOLA mark analysis and transient scheduling (stand-in granular engine)",
+                format!("grain profile {}", t.grain_profile),
+                ir::Reason::NotModeled,
+            ));
+        }
+        ir::StretchKind::TimeMachinePro => {
+            if params.version == 0x100 {
+                notes.push(("time machine pro v0x100 record", "legacy order".into(), ir::Reason::NotModeled));
+            } else {
+                t.high_quality = b("pro_flag_1")?;
+                t.keep_formants = b("pro_flag_2")?;
+                t.formant_shift = f("pro_float_1")?;
+                t.env_order = f("pro_float_2")?;
+            }
+            notes.push((
+                "time machine pro Elastique backend (stand-in granular engine)",
+                "pro".into(),
+                ir::Reason::NotModeled,
+            ));
+        }
+    }
+    Some(t)
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -1788,13 +1860,10 @@ impl Translation {
 
     /// The `$ENGINE_PAR_*` value `on init` and `on persistence_changed` left for
     /// `(parameter, group, slot, generic)`.
-    /// A Time Machine family group (stored modes 2, 5, 8). Speed comes from the
-    /// common timing record: the sentinel default (value -1, unit 0) means
-    /// unsynchronised, and the free value is the speed ratio, matching the
-    /// manual's percent readout (default 100 %). Tempo-synced speed, the
-    /// mode-specific controls (smooth, grain, formant, transient, legato, HQ,
-    /// keep-formants) and script writes to them are reported until their field
-    /// meaning and laws are established; they play at their neutral setting.
+    /// A Time Machine family group (stored modes 2, 5, 8): fields per
+    /// specs/time-machine.md s.3-4 (BParSrcMode reader 0x140d03aa0, parameter
+    /// transfers 0x140cdad90 / 0x140cdac40 / 0x140cdacd0). What the engine does
+    /// not reproduce natively is reported, never hidden.
     fn time_stretch(
         &mut self,
         group: &ni_file::kontakt::objects::Group,
@@ -1809,41 +1878,11 @@ impl Translation {
                 return None;
             }
         };
-        let mut speed = match timing_speed(&params) {
-            Some(Ok(speed)) => speed,
-            Some(Err(sync)) => {
-                self.unsupported(at, "time machine tempo-synced speed", format!("{sync:?}"), ir::Reason::UnknownLaw);
-                1.0
-            }
-            None => {
-                self.unsupported(at, "time machine speed record (pre-v0x102)", mode, ir::Reason::UnknownLaw);
-                1.0
-            }
-        };
-        if !(speed.is_finite() && (0.0..=64.0).contains(&speed)) {
-            self.unsupported(at, "time machine speed", speed, ir::Reason::InvalidValue);
-            speed = 1.0;
+        let mut notes = Vec::new();
+        let stretch = stretch_from_record(&params, &mut notes)?;
+        for (feature, value, reason) in notes {
+            self.unsupported(at, feature, value, reason);
         }
-        // The IR carries the source; the core's voice source consumes it once
-        // wired (docs/architecture-v2/KONTAKT_TOPOLOGY.md T04). Until then the
-        // group sounds as a sampler and says so.
-        self.unsupported(
-            at,
-            &format!("{} source (played as a sampler)", source_mode_name(mode)),
-            mode,
-            ir::Reason::NotModeled,
-        );
-        let kind = match mode {
-            SOURCE_MODE_TM1 => ir::StretchKind::TimeMachine1,
-            SOURCE_MODE_TM2 => ir::StretchKind::TimeMachine2,
-            _ => ir::StretchKind::TimeMachinePro,
-        };
-        self.unsupported(
-            at,
-            "time machine controls (smooth, grain, formant, transient, legato, HQ)",
-            source_mode_name(mode),
-            ir::Reason::UnknownLaw,
-        );
         for name in [
             "ENGINE_PAR_SPEED",
             "ENGINE_PAR_SPEED_UNIT",
@@ -1858,11 +1897,8 @@ impl Translation {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
             }
         }
-        Some(ir::TimeStretch {
-            kind,
-            speed,
-            high_quality: false,
-        })
+        let _ = mode;
+        Some(stretch)
     }
 
     fn script_par(&self, parameter: &str, group: i32, slot: i32, generic: i32) -> Option<i32> {
@@ -5090,17 +5126,28 @@ mod time_machine_tests {
     }
 
     #[test]
-    fn time_machine_speed_comes_from_the_free_timing_value() {
-        // Time Machine 2 extension: flag, u32, u32.
-        let ext = [0, 1, 0, 0, 0, 1, 0, 0, 0];
-        let default = parse(record(SOURCE_MODE_TM2, (-1.0, 0.0, 1.0), &ext));
-        assert_eq!(default.mode, SOURCE_MODE_TM2);
-        assert_eq!(timing_speed(&default), Some(Ok(1.0)));
-        let half = parse(record(SOURCE_MODE_TM2, (-1.0, 0.0, 0.5), &ext));
-        assert_eq!(timing_speed(&half), Some(Ok(0.5)));
-        // A note-value unit means tempo sync: reported, not approximated.
+    fn time_machine_records_map_per_the_spec() {
+        // TM1: smooth F, grain F, HQ B.
+        let mut tail = Vec::new();
+        tail.extend(0.75f32.to_le_bytes());
+        tail.extend(12.5f32.to_le_bytes());
+        tail.push(0);
+        let tm1 = parse(record(SOURCE_MODE_TM1, (-1.0, 0.0, 1.0), &tail));
+        let mut notes = Vec::new();
+        let t = stretch_from_record(&tm1, &mut notes).unwrap();
+        assert_eq!((t.kind, t.speed, t.smooth, t.grain_ms, t.high_quality), (ir::StretchKind::TimeMachine1, 1.0, 0.75, 12.5, false));
+        assert!(notes.is_empty());
+        // TM2: transient copy B, size I, grain profile I; reported as stand-in.
+        let ext = [1, 0xe8, 3, 0, 0, 2, 0, 0, 0];
+        let tm2 = parse(record(SOURCE_MODE_TM2, (-1.0, 0.0, 1.0), &ext));
+        let t = stretch_from_record(&tm2, &mut notes).unwrap();
+        assert_eq!((t.transient_copy, t.transient_size, t.grain_profile), (true, 1000, 2));
+        assert_eq!(notes.len(), 1);
+        // A synced timing value is reported, not guessed.
         let synced = parse(record(SOURCE_MODE_TM2, (3.0, 5.0, 1.0), &ext));
-        assert_eq!(timing_speed(&synced), Some(Err((3.0, 5.0, 1.0))));
+        notes.clear();
+        stretch_from_record(&synced, &mut notes).unwrap();
+        assert!(notes.iter().any(|n| n.0.contains("tempo-synced")));
     }
 
     #[test]
