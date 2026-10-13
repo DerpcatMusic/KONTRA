@@ -1694,6 +1694,21 @@ mod tests {
     }
 
     #[test]
+    fn analog_adsr_is_unsupported_not_a_linear_envelope() {
+        let ir = translate(
+            r#"<AnalogADSR Name="E" AttackTime="0.01" DecayTime="0.03" SustainLevel="0.5" ReleaseTime="0.1"/>"#,
+            "",
+            r#"<SignalConnection Source="$Program/E" Destination="Pitch" Ratio="12"/>"#,
+        );
+        assert!(ir.zones[0].routes.is_empty(), "{:?}", ir.zones[0].routes);
+        assert!(
+            ir.unsupported.iter().any(|u| u.feature == "modulation source" && u.value.ends_with("AnalogADSR")),
+            "{:?}",
+            ir.unsupported
+        );
+    }
+
+    #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
             r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="8"/><LFO Name="V"/>"#,

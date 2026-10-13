@@ -3490,6 +3490,18 @@ mod tests {
     }
 
     #[test]
+    fn pro_compressor_is_not_modeled_not_generic() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        for x in [-18.0f32, 0.25, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        assert!(!built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Compressor(_))));
+        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
+    }
+
+    #[test]
     fn ladder_records_with_flag_bytes_parse_to_their_cutoff() {
         // Conflux (v0x92): kind, flag, kind, then leading, cutoff, resonance.
         // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind, floats.
