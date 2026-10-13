@@ -1,13 +1,13 @@
-//! The RBJ-biquad band of the universal EQ. Hertz/Q/decibel bands (UVI, scripted inserts, the
-//! generic fallback of unproved Kontakt multiband kinds) and the Solid G-EQ bands, whose knobs
-//! pass through the proved spline tables ([`super::solid`]) before the same (generic) biquad.
-//! Controls are read once per block (the control ramp still applies at the block edge); the
-//! biquad keeps its state across coefficient changes. No allocation, no per-sample trig.
+//! The Hertz/Q/decibel band stage of the universal EQ: Rbj-law bands (UVI, scripted inserts, any
+//! format that already knows physical units) and Solid G-EQ bands, whose saved knobs pass through
+//! the proved spline tables ([`super::solid`]) first. Both feed the one kernel
+//! ([`super::kernel`]). Controls are read once per block; the TPT sections keep their state across
+//! coefficient changes, and coefficients are redesigned only when a control actually moved.
 use super::super::{
-    Biquad, FilterKind, Planar, ProcessorState, flush,
+    Planar, ProcessorState, flush,
     control::{ControlRamp, PreparedParameter},
 };
-use super::{EqBand, Kind, Law, solid};
+use super::{EqBand, Kind, Law, kernel, solid};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Generic {
@@ -18,14 +18,6 @@ pub(crate) struct Generic {
     pub(super) gain: PreparedParameter,
     pub(super) reference: PreparedParameter,
     pub(super) enabled: PreparedParameter,
-}
-
-/// 6 dB/octave low or high pass as a degenerate biquad.
-fn first_order(rate: u32, hz: f64, high: bool) -> Biquad {
-    let g = (std::f64::consts::PI * hz / f64::from(rate)).tan();
-    let d = 1. + g;
-    let (b0, b1) = if high { (1. / d, -1. / d) } else { (g / d, g / d) };
-    Biquad { rate, b: [b0, b1, 0.], a: [(g - 1.) / d, 0.] }
 }
 
 impl Generic {
@@ -64,64 +56,53 @@ impl Generic {
         if self.enabled.value(parameters, at, None) < 0.5 {
             return;
         }
-        let (frequency, q, boost) = self.targets(parameters, at);
-        let kind = match self.band.kind {
-            Kind::Level => {
-                if boost.abs() > 1e-9 {
-                    let gain = 10f64.powf(boost / 20.);
-                    for channel in block.iter_mut() {
-                        channel[..len].iter_mut().for_each(|v| *v *= gain);
-                    }
+        let (hz, q, boost) = self.targets(parameters, at);
+        let kind = self.band.kind;
+        if kind == Kind::Level {
+            if boost.abs() > 1e-9 {
+                let gain = 10f64.powf(boost / 20.);
+                for channel in block.iter_mut() {
+                    channel[..len].iter_mut().for_each(|v| *v *= gain);
                 }
-                return;
             }
-            Kind::LowShelf => FilterKind::LowShelf { gain_db: boost },
-            Kind::HighShelf => FilterKind::HighShelf { gain_db: boost },
-            Kind::FirstOrderLowShelf => FilterKind::FirstOrderLowShelf { gain_db: boost },
-            Kind::FirstOrderHighShelf => FilterKind::FirstOrderHighShelf { gain_db: boost },
-            Kind::Peak => FilterKind::Peak { gain_db: boost },
-            Kind::LowPass => FilterKind::LowPass,
-            Kind::HighPass => FilterKind::HighPass,
-            Kind::BandPass => FilterKind::BandPass,
-            Kind::Notch => FilterKind::Notch,
-        };
-        if matches!(
-            self.band.kind,
-            Kind::LowShelf | Kind::HighShelf | Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf | Kind::Peak
-        ) && boost.abs() < 0.01
-        {
             return;
         }
-        // aux: frequency, q, boost, valid flag, then b0 b1 b2 a1 a2.
-        let key = [frequency, q, boost];
+        let gainful = matches!(
+            kind,
+            Kind::Peak | Kind::LowShelf | Kind::HighShelf | Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf
+        );
+        if gainful && boost.abs() < 0.01 {
+            return;
+        }
+        // aux: hertz, q, boost, valid flag, then the six TPT coefficients.
+        let key = [hz, q, boost];
         if state.aux[3] == 0. || state.aux[..3] != key {
             state.aux[3] = 0.;
-            let design = if self.band.poles == 1 && matches!(self.band.kind, Kind::LowPass | Kind::HighPass) {
-                Ok(first_order(self.rate, frequency, self.band.kind == Kind::HighPass))
-            } else {
-                Biquad::new(self.rate, kind, frequency, q)
-            };
-            if let Ok(f) = design {
+            if let Some(svf) = design(self.rate, kind, self.band.poles, hz, q, boost) {
                 state.aux[..3].copy_from_slice(&key);
                 state.aux[3] = 1.;
-                state.aux[4..7].copy_from_slice(&f.b);
-                state.aux[7..9].copy_from_slice(&f.a);
+                state.aux[4..10].copy_from_slice(&svf.to_array());
             }
         }
         if state.aux[3] == 0. {
             return;
         }
-        let filter = Biquad {
-            rate: self.rate,
-            b: [state.aux[4], state.aux[5], state.aux[6]],
-            a: [state.aux[7], state.aux[8]],
-        };
-        let [mut zl, mut zr] = state.z;
-        let [left, right] = block;
-        for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
-            (*l, zl) = filter.sample(*l, zl);
-            (*r, zr) = filter.sample(*r, zr);
-        }
-        state.z = [zl.map(flush), zr.map(flush)];
+        run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[4 + i])), state, block, len);
+    }
+}
+
+/// Design one band and realise it as the kernel's section.
+pub(super) fn design(rate: u32, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
+    let first = matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf)
+        || (poles == 1 && matches!(kind, Kind::LowPass | Kind::HighPass));
+    let f = if first { kernel::first_order(kind, rate, hz, boost) } else { kernel::design(kind, rate, hz, q, boost) };
+    kernel::Svf::from_biquad(&f?)
+}
+
+/// Both channels through one section, then flush the states.
+pub(super) fn run(svf: kernel::Svf, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+    for (channel, s) in block.iter_mut().zip(&mut state.z) {
+        svf.run(s, &mut channel[..len]);
+        *s = s.map(flush);
     }
 }

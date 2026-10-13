@@ -1095,12 +1095,10 @@ impl Translation {
                 for (band, [hz, width, db]) in bands.iter().enumerate() {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
-                        ("FREQ", if bands.len() == 1 {
-                            f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz))
-                        } else { (f64::from(*hz) / 20.).log10() / 3. }, 0., 1.),
+                        ("FREQ", f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz)), 0., 1.),
                         (
                             "BW",
-                            sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)),
+                            f64::from(sampler_core::KontaktLegacyEqSettings::bandwidth_knob(*width)),
                             0.,
                             1.,
                         ),
@@ -2055,13 +2053,6 @@ impl Translation {
                     let b = eq.bands[0];
                     [f64::from(b.gain_db), f64::from(b.frequency), f64::from(b.q)]
                 }
-                Some(ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::Peak { gain },
-                    cutoff: ir::Frequency::Hertz(hz),
-                    resonance: ir::Resonance::Q(q),
-                })) => [20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
-                    (hz / 20.).log10() / 3.,
-                    sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q))],
                 _ => continue,
             };
             let band = bands.entry(slot).or_default();
@@ -2519,14 +2510,7 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
-                    return matches!(
-                        processor,
-                        ir::Processor::Filter(ir::Filter {
-                            kind: ir::FilterKind::Peak { .. },
-                            ..
-                        }) | ir::Processor::Eq(_)
-                    )
-                    .then_some((
+                    return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
@@ -2541,13 +2525,7 @@ impl Translation {
                 );
                 let parameter = match target.param.as_str() {
                     "filterCutoff"
-                        if !matches!(
-                            processor,
-                            ir::Processor::Filter(ir::Filter {
-                                kind: ir::FilterKind::Peak { .. },
-                                ..
-                            })
-                        ) =>
+                        if !matches!(processor, ir::Processor::Eq(_)) =>
                     {
                         ir::ProcessorParameter::Cutoff
                     }
@@ -4607,16 +4585,21 @@ mod modulation {
         }
     }
 
+    /// One native legacy EQ band (the only EQ owner Kontakt translation emits).
+    fn legacy_peak(gain_db: f32) -> ir::Processor {
+        ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+            law: ir::fx::eq::Law::KontaktLegacy,
+            frequency: 0.5,
+            q: 0.25,
+            gain_db,
+            ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+        }))
+    }
+
     #[test]
     fn eq_frequency_and_width_routes_keep_the_physical_band() {
         let mut t = translation();
-        let peak = ir::Processor::Filter(ir::Filter {
-            kind: ir::FilterKind::Peak {
-                gain: ir::Gain::Decibels(6.),
-            },
-            cutoff: ir::Frequency::Hertz(1000.),
-            resonance: ir::Resonance::Q(1.),
-        });
+        let peak = legacy_peak(6.);
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
             pre_amplitude: vec![peak; 3],
@@ -4677,13 +4660,7 @@ mod modulation {
         let mut t = translation();
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(40.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            })],
+            pre_amplitude: vec![legacy_peak(40.)],
             post_amplitude: vec![],
         });
         t.eq_controls(7, ir::ChainRef(0), &[(5, 0)]);
@@ -4800,13 +4777,7 @@ mod modulation {
     fn eq_gain_routes_keep_band_and_physical_slot_identity() {
         for (name, index) in [("eqGain1", 0), ("eqGain2", 1), ("eqGain3", 2)] {
             let mut t = translation();
-            let peak = ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(0.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            });
+            let peak = legacy_peak(0.);
             t.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: vec![peak; 3],
