@@ -143,7 +143,6 @@ fn walk(
             skipped.push(format!("{path}: control type {}", c["index"]));
             continue;
         };
-        omitted_fields(v, kind, skipped);
         let prefix = match kind {
             WidgetKind::Table => '%',
             WidgetKind::TextEdit => '@',
@@ -154,44 +153,6 @@ fn walk(
         if kind == WidgetKind::Panel {
             walk(&v["controls"], &path, Some(&name), out, skipped);
         }
-    }
-}
-
-fn omitted_fields(v: &Json, kind: WidgetKind, warnings: &mut Vec<String>) {
-    let mut omitted = |field: &str| warnings.push(format!("{OMITTED_FIELD_PREFIX}{field}"));
-    if v["text"]["font"]["custom"]
-        .as_str()
-        .is_some_and(|name| !name.is_empty())
-    {
-        omitted("text.font.custom");
-    }
-    for state in [
-        "off",
-        "on",
-        "pressedOff",
-        "pressedOn",
-        "hoverOff",
-        "hoverOn",
-    ] {
-        if v["text"]["fonts"]
-            .get(state)
-            .is_some_and(|font| !font.is_null())
-        {
-            omitted(&format!("text.fonts.{state}"));
-        }
-    }
-    if v["text"]
-        .get("shiftOnPress")
-        .is_some_and(|shift| !shift.is_null())
-    {
-        omitted("text.shiftOnPress");
-    }
-    if kind == WidgetKind::Table
-        && v["steps"]
-            .get("visible")
-            .is_some_and(|visible| !visible.is_null())
-    {
-        omitted("steps.visible");
     }
 }
 
@@ -218,7 +179,9 @@ fn kind(index: i64) -> Option<WidgetKind> {
 fn control(name: String, kind: WidgetKind, v: &Json, parent: Option<&str>) -> PerformanceControl {
     let int = |v: &Json| v.as_i64().map(|n| n as i32);
     let mut props: Vec<(String, Value)> = Vec::new();
-    let mut set = |name: &str, value: Value| props.push((format!("$CONTROL_PAR_{name}"), value));
+    let mut set = |name: &str, value: Value| {
+        props.push((if name == "table_steps_shown" { name.into() } else { format!("$CONTROL_PAR_{name}") }, value));
+    };
     let common = &v["common"];
     for (key, par) in [("x", "POS_X"), ("y", "POS_Y")] {
         if let Some(n) = int(&common["position"][key]) {
@@ -279,8 +242,26 @@ fn control(name: String, kind: WidgetKind, v: &Json, parent: Option<&str>) -> Pe
     if let Some(s) = caption.filter(|s| !s.is_empty()) {
         set("TEXT", Value::Text(s.into()));
     }
-    if let Some(f) = int(&t["font"]["type"]) {
-        set("FONT_TYPE", Value::Int(f));
+    // Port from 0cb7a8a0:src/ksp/performance_view.rs, View::font/controls.
+    // KSP Reference: Control Parameters, FONT_TYPE and its responsive states.
+    // Keep custom names until init, where get_font_id's existing registry is
+    // known; assigning numeric ids here would collide with earlier script fonts.
+    let font = |v: &Json| {
+        v["custom"].as_str().filter(|s| !s.is_empty()).map(|s| Value::Text(s.into()))
+            .or_else(|| int(&v["type"]).map(Value::Int))
+    };
+    if let Some(f) = font(&t["font"]) {
+        set("FONT_TYPE", f);
+    }
+    for (state, par) in [
+        ("off", "FONT_TYPE"), ("on", "FONT_TYPE_ON"),
+        ("pressedOff", "FONT_TYPE_OFF_PRESSED"), ("pressedOn", "FONT_TYPE_ON_PRESSED"),
+        ("hoverOff", "FONT_TYPE_OFF_HOVER"), ("hoverOn", "FONT_TYPE_ON_HOVER"),
+    ] {
+        if let Some(f) = font(&t["fonts"][state]) { set(par, f); }
+    }
+    if let Some(shift) = t["shiftOnPress"].as_bool() {
+        set("DISABLE_TEXT_SHIFTING", Value::Int(i32::from(!shift)));
     }
     if let Some(a) = int(&t["horizontalAlignment"]) {
         set("TEXT_ALIGNMENT", Value::Int(a));
@@ -332,6 +313,10 @@ fn control(name: String, kind: WidgetKind, v: &Json, parent: Option<&str>) -> Pe
         set("VALUE", Value::Int(d));
     }
     let size = |key| int(&common["size"][key]).unwrap_or(0);
+    if kind == WidgetKind::Table && let Some(visible) = int(&v["steps"]["visible"]) {
+        // KSP Reference: User Interface Commands, set_table_steps_shown.
+        set("table_steps_shown", Value::Int(visible));
+    }
     let (params, len) = match kind {
         WidgetKind::Knob | WidgetKind::ValueEdit => (vec![min, max, ratio], 0),
         WidgetKind::Slider => (vec![min, max], 0),
@@ -368,52 +353,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omitted_ui_fields_are_reported_without_changing_modeled_controls() {
-        let base = serde_json::json!({"value":{"performanceView":{"controls":[
-            {"index":3,"value":{"common":{"id":"Cut"},"value":{"min":0,"max":100,"default":12},"text":{"font":{"type":3,"custom":""}}}},
-            {"index":9,"value":{"common":{"id":"Steps"},"maxValue":1000,"steps":{"total":32}}}
-        ]}}});
-        let (modeled, warnings) = parse(&serde_json::to_vec(&base).unwrap()).unwrap();
+    fn imported_ui_fields_are_no_longer_reported_as_losses() {
+        let bytes = br#"{"value":{"performanceView":{"controls":[
+            {"index":1,"value":{"common":{"id":"Button"},"text":{"font":{"type":3,"custom":"Custom"},
+                "fonts":{"on":{"type":2},"pressedOff":{"type":4},"pressedOn":{"type":5},"hoverOff":{"type":6},"hoverOn":{"type":7}},"shiftOnPress":false}}},
+            {"index":9,"value":{"common":{"id":"Steps"},"steps":{"total":32,"visible":8}}}
+        ]}}}"#;
+        let (view, warnings) = parse(bytes).unwrap();
         assert!(warnings.is_empty());
-        let mut extra = base;
-        let controls = extra["value"]["performanceView"]["controls"]
-            .as_array_mut()
-            .unwrap();
-        let text = &mut controls[0]["value"]["text"];
-        text["font"]["custom"] = "PRIVATE_CUSTOM_FONT".into();
-        text["fonts"] = serde_json::json!({"off":{"type":1},"on":{"type":2},"pressedOff":{"type":3},"pressedOn":{"type":4},"hoverOff":{"custom":"PRIVATE_HOVER_FONT"},"hoverOn":{"type":6}});
-        text["shiftOnPress"] = false.into();
-        controls[1]["value"]["steps"]["visible"] = 8.into();
-        let (still_modeled, warnings) = parse(&serde_json::to_vec(&extra).unwrap()).unwrap();
-        assert_eq!(
-            modeled, still_modeled,
-            "reporting loss must not guess new UI conversion laws"
-        );
-        let fields: Vec<_> = warnings
-            .iter()
-            .filter_map(|w| w.strip_prefix(OMITTED_FIELD_PREFIX))
-            .collect();
-        assert_eq!(
-            fields,
-            [
-                "text.font.custom",
-                "text.fonts.off",
-                "text.fonts.on",
-                "text.fonts.pressedOff",
-                "text.fonts.pressedOn",
-                "text.fonts.hoverOff",
-                "text.fonts.hoverOn",
-                "text.shiftOnPress",
-                "steps.visible"
-            ]
-        );
-        assert!(warnings.iter().all(|w| !w.contains("PRIVATE_")));
-        assert_eq!(
-            omitted_field(&format!(
-                "{OMITTED_FIELD_PREFIX}text.font.custom: control type 999"
-            )),
-            None
-        );
+        assert_eq!(view.controls[0].properties.iter().filter(|(name,_)|name.starts_with("$CONTROL_PAR_FONT_TYPE")).count(),6);
+        assert!(view.controls[1].properties.contains(&("table_steps_shown".into(),Value::Int(8))));
+        assert_eq!(omitted_field(&format!("{OMITTED_FIELD_PREFIX}text.font.custom: control type 999")),None);
     }
 
     #[test]
