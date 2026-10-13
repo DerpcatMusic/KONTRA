@@ -344,7 +344,9 @@ pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
     let tabs = scene
         .surface(&format!("face-bar-{slot}"))
         .map_or(0., |s| s.frame.size.height);
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs).max(0.)
+    // Less the one-point rule at the part's foot, so a lone part ends exactly at the
+    // rack's bottom edge (its resize edge stays inside the view, nothing scrolls).
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - 1.).max(0.)
 }
 
 pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteraction {
