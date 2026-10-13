@@ -345,6 +345,7 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
         ir::Processor::Phaser(_) => "Phaser filter".into(),
         ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
+        ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",

@@ -187,6 +187,32 @@ fn table_cells_and_source_colours_change_pixels() {
 }
 
 #[test]
+fn ksp_table_steps_show_a_column_prefix_without_value_grid_lines() {
+    let paint = |columns: usize, shown: Option<usize>, hidden: i32| {
+        let shown = shown
+            .map(|n| format!("set_table_steps_shown(%table,{n})\n"))
+            .unwrap_or_default();
+        let mut source = format!(
+            "on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(120)\ndeclare ui_table %table[{columns}] (1,1,100)\nmove_control_px(%table,10,10)\nset_control_par(get_ui_id(%table),$CONTROL_PAR_WIDTH,100)\nset_control_par(get_ui_id(%table),$CONTROL_PAR_HEIGHT,80)\n{shown}"
+        );
+        for n in 0..columns {
+            let value = if n < 16 { (n * 5) as i32 } else { hidden };
+            source.push_str(&format!("%table[{n}] := {value}\n"));
+        }
+        source.push_str("end on");
+        let script =
+            sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        pixels(&resolved(&script.ui(&|_| None).unwrap()))
+    };
+    let prefix = paint(32, Some(16), 100);
+    assert_eq!(prefix, paint(16, None, 0));
+    assert_eq!(prefix, paint(32, Some(16), 0), "hidden cells do not paint");
+    let full = paint(32, None, 100);
+    assert_ne!(prefix, full);
+    assert_eq!(full, paint(32, Some(32), 100));
+}
+
+#[test]
 fn default_dimensions_and_wallpaper_origin_are_independent() {
     let mut ui = face(Kind::Label);
     ui.widgets[0].auto_size = true;

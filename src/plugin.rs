@@ -478,8 +478,26 @@ impl SamplerParams {
 
     fn reload_ui_controls(&self) {
         // Recall of the same source still needs fresh script initialization.
-        for part in &mut self.shared.view.lock_unpoisoned().parts {
+        let sources: Vec<_> = self
+            .selection
+            .read_unpoisoned()
+            .parts
+            .iter()
+            .map(Part::source)
+            .collect();
+        for (slot, part) in self
+            .shared
+            .view
+            .lock_unpoisoned()
+            .parts
+            .iter_mut()
+            .enumerate()
+        {
             part.attempted = None;
+            // Fence recalled state immediately, before the background loader
+            // begins; cancellation/failure cannot give the old owner its identity.
+            part.recalled_source = sources.get(slot).cloned();
+            part.recall_revision = part.recall_revision.wrapping_add(1);
         }
     }
 
@@ -1001,6 +1019,14 @@ pub(crate) struct PartView {
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
+    /// The committed source owning the visible model and live controls. A
+    /// failed or pending replacement must never acquire its persistence state.
+    pub(crate) active_source: Option<(String, u32, String)>,
+    /// Host-recalled state retains its identity until a candidate commits or
+    /// the slot is explicitly cleared, including failed/canceled preparation.
+    pub(crate) recalled_source: Option<(String, u32, String)>,
+    /// Distinguishes successive recalls of the same source during preparation.
+    pub(crate) recall_revision: u64,
     pub(crate) status: String,
     pub(crate) timing_status: String,
     /// The loaded instrument's name.
@@ -1544,12 +1570,16 @@ impl Shared {
             .parts
             .iter()
             .map(|p| {
-                if p.loading {
+                // A same-source host recall has a new state identity even
+                // before it acquires an audio epoch. Preserve that candidate's
+                // recalled values rather than saving the old live values into it.
+                let same_source_recall = p.active_source.as_ref().is_some_and(|active| {
+                    p.recalled_source.as_ref() == Some(active)
+                });
+                if same_source_recall {
                     None
                 } else {
-                    p.attempted.as_ref().map(|(path, program, snapshot, ..)| {
-                        (path.clone(), *program, snapshot.clone())
-                    })
+                    p.active_source.clone()
                 }
             })
             .collect();
@@ -2273,6 +2303,21 @@ fn load_part(
     slot: usize,
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
 ) -> bool {
+    load_part_with(params, slot, prepared, |request, progress, canceled| {
+        V2Loader.prepare(request, progress, canceled)
+    })
+}
+
+fn load_part_with(
+    params: &SamplerParams,
+    slot: usize,
+    prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
+    prepare: impl FnOnce(
+        &LoadRequest,
+        &mut dyn FnMut(Progress),
+        &(dyn Fn() -> bool + Sync),
+    ) -> Result<crate::sound::Loaded<Option<Box<CorePart>>>, CoreError>,
+) -> bool {
     let shared = &params.shared;
     let atoms = shared.part(slot).unwrap();
     let (part, rack_streaming) = {
@@ -2294,38 +2339,44 @@ fn load_part(
         part.dynamics,
         streaming,
     );
-    {
+    let (previous_status, recall_revision) = {
         let mut view = shared.view.lock_unpoisoned();
         let v = &mut view.parts[slot];
         if v.attempted.as_ref() == Some(&target) {
             return false;
         }
-        *v = PartView {
-            program: part.program,
-            attempted: Some(target),
-            loading: !part.path.is_empty(),
-            status: "Loading…".into(),
-            ..Default::default()
-        };
-    }
-    atoms
-        .keep_resident
-        .store(streaming == Streaming::RamOnly, Ordering::Relaxed);
-    atoms.load_progress.store(0, Ordering::Relaxed);
-    // Serialize epoch changes with off-audio producers.
-    let generation = {
-        let mut ingress = atoms.ingress.lock_unpoisoned();
-        let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        *ingress = None;
-        atoms.engine_meters.lock_unpoisoned().clear();
-        *atoms.waveforms.lock_unpoisoned() = None;
-        epoch
+        let status = v.status.clone();
+        // The current instrument remains playable and editable while its
+        // replacement is prepared privately. A failed candidate owns no epoch.
+        v.attempted = Some(target);
+        v.loading = !part.path.is_empty();
+        v.status = "Loading…".into();
+        (status, v.recall_revision)
     };
+    atoms.load_progress.store(0, Ordering::Relaxed);
+    let active_generation = atoms.generation.load(Ordering::Acquire);
     if part.path.is_empty() {
+        let generation = {
+            let mut ingress = atoms.ingress.lock_unpoisoned();
+            let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
+            *ingress = None;
+            atoms.engine_meters.lock_unpoisoned().clear();
+            *atoms.waveforms.lock_unpoisoned() = None;
+            epoch
+        };
         *atoms.stream.lock_unpoisoned() = None;
         atoms.resident_bytes.store(0, Ordering::Relaxed);
         atoms.full_bytes.store(0, Ordering::Relaxed);
-        shared.view.lock_unpoisoned().parts[slot].status.clear();
+        let mut view = shared.view.lock_unpoisoned();
+        let attempted = view.parts[slot].attempted.take();
+        view.parts[slot] = PartView {
+            program: part.program,
+            generation,
+            attempted,
+            recall_revision,
+            ..Default::default()
+        };
+        drop(view);
         shared.publish_part((slot, generation, None));
         return true;
     }
@@ -2340,7 +2391,8 @@ fn load_part(
                     || p.mpe_upper != part.mpe_upper
                     || p.dynamics != part.dynamics
             })
-        }) || atoms.generation.load(Ordering::Acquire) != generation
+        }) || shared.view.lock_unpoisoned().parts[slot].recall_revision != recall_revision
+            || atoms.generation.load(Ordering::Acquire) != active_generation
             || shared.rate.load(Ordering::Acquire) != rate.to_bits()
     };
     let mut trace =
@@ -2389,7 +2441,7 @@ fn load_part(
         .and_then(|_| match prepared {
             Some(loaded) if !canceled() => Ok(loaded),
             Some(_) => Err(CoreError::Canceled),
-            None => V2Loader.prepare(&request, &mut progress, &canceled),
+            None => prepare(&request, &mut progress, &canceled),
         })
         .and_then(|mut loaded| {
             if let Some(runtime) = loaded.part.as_mut() {
@@ -2412,11 +2464,45 @@ fn load_part(
             }
             Ok((loaded, mapping_index))
         });
+    let result = if canceled() {
+        Err(CoreError::Canceled)
+    } else {
+        result
+    };
     let mut view = shared.view.lock_unpoisoned();
+    // A newer committed owner must never have its model changed by this job.
+    if atoms.generation.load(Ordering::Acquire) != active_generation {
+        return false;
+    }
     let v = &mut view.parts[slot];
     v.loading = false;
+    if v.recall_revision != recall_revision {
+        v.status = previous_status;
+        return false;
+    }
     match result {
         Ok((mut loaded, mapping_index)) => {
+            // Commit ownership only after preparation and persistence succeed.
+            // Serialize the fence with off-audio command producers.
+            let generation = {
+                let mut ingress = atoms.ingress.lock_unpoisoned();
+                let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
+                *ingress = None;
+                atoms.engine_meters.lock_unpoisoned().clear();
+                *atoms.waveforms.lock_unpoisoned() = None;
+                epoch
+            };
+            atoms
+                .keep_resident
+                .store(streaming == Streaming::RamOnly, Ordering::Relaxed);
+            let attempted = v.attempted.take();
+            *v = PartView {
+                program: part.program,
+                attempted,
+                active_source: Some(source.clone()),
+                recall_revision,
+                ..Default::default()
+            };
             if loaded.scripts.uvi.is_some() {
                 loaded.scripts.uvi_source = Some(source.clone());
             }
@@ -2500,17 +2586,13 @@ fn load_part(
         Err(CoreError::Canceled) => {
             // Load again on the next pass, whatever the part is then.
             v.attempted = None;
-            v.status.clear();
+            v.status = previous_status;
             false
         }
         Err(e) => {
             v.status = format!("Load failed: {e}");
-            v.fault_inbox = None;
-            v.runtime_log = None;
             trace.fail(e.to_string());
             v.trace = Some(trace.finish("failed"));
-            drop(view);
-            shared.publish_part((slot, generation, None));
             true
         }
     }
@@ -3740,6 +3822,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(part.is_none());
         assert!(params.shared.view.lock_unpoisoned().parts[0].mapping_index.is_none());
+        assert!(params.shared.view.lock_unpoisoned().parts[0].active_source.is_none());
     }
 
     #[test]
@@ -3757,6 +3840,330 @@ pub(crate) mod tests {
             view.parts[0].status
         );
         assert!(view.parts[0].trace.is_some());
+    }
+
+    fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+        use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+        let script = sampler_ksp::compile(
+            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let face = script.ui(&|_| None).unwrap();
+        let view = script.view();
+        let pcm = Pcm::new(48000, vec![[0.5; 2]; 48000].into_boxed_slice()).unwrap();
+        let plan = script
+            .bind(
+                Prepared::new(
+                    48000,
+                    vec![pcm],
+                    vec![Region {
+                        sample: 0,
+                        key_low: 0,
+                        key_high: 127,
+                        root_key: None,
+                        velocity_low: 0.,
+                        velocity_high: 1.,
+                        gain: 1.,
+                        envelope: Envelope::default(),
+                        playback: Playback::default(),
+                    }],
+                    // Prepared bounds the expanded key index, not groups or
+                    // region count. A full-range region needs 128 candidates.
+                    128,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let controls = plan
+            .controls()
+            .iter()
+            .map(|control| (sampler_ui_ir::ControlId(control.id.0), 250.))
+            .collect();
+        let limits = Limits::for_plan(&plan, 8, 4);
+        let tree = MixTree::instrument(name);
+        crate::sound::Loaded {
+            part: Some(Box::new(
+                CorePart::new(Runtime::new(plan, limits).unwrap(), tree.clone()).unwrap(),
+            )),
+            tree,
+            report: LoadReport {
+                name: name.into(),
+                ..Default::default()
+            },
+            interfaces: vec![face],
+            controls,
+            instrument: Some(Arc::new(sampler_ir::Instrument::default())),
+            scripts: crate::sound::ScriptUi {
+                views: vec![view],
+                ..Default::default()
+            },
+            stream: None,
+        }
+    }
+
+    fn transaction_fixture() -> (SamplerParams, V2Core) {
+        let params = SamplerParams::new();
+        params.selection.write_unpoisoned().parts = vec![Part {
+            path: "active.nki".into(),
+            ..Default::default()
+        }];
+        assert!(load_part(&params, 0, Some(transaction_candidate("Active"))));
+        let (slot, _, part) = params.shared.ready.pop().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(slot, part);
+        core.play(0, CoreEvent::midi1(0x90, 60, 100));
+        assert!(core.render(64).live[0]);
+        (params, core)
+    }
+
+    #[test]
+    fn failed_replacement_preserves_audio_view_controls_and_ownership() {
+        let (params, mut core) = transaction_fixture();
+        let atoms = params.shared.part(0).unwrap();
+        let epoch = atoms.generation.load(Ordering::Acquire);
+        let controls = atoms.controls.lock_unpoisoned().clone();
+        let plan = atoms.ingress.lock_unpoisoned().as_ref().unwrap().plan();
+        let previous = params.shared.view.lock_unpoisoned().parts[0].clone();
+        params.selection.write_unpoisoned().parts[0].path = "/nonexistent/replacement.nki".into();
+        assert!(load_part(&params, 0, None));
+        assert!(
+            params.shared.ready.pop().is_none(),
+            "failure cannot unload the active audio"
+        );
+        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+        assert_eq!(core.epoch(0), epoch);
+        assert_eq!(
+            atoms.ingress.lock_unpoisoned().as_ref().unwrap().plan(),
+            plan
+        );
+        assert!(Arc::ptr_eq(&controls, &atoms.controls.lock_unpoisoned()));
+        let current = params.shared.view.lock_unpoisoned().parts[0].clone();
+        assert_eq!(current.active, "Active");
+        assert_eq!(current.active_source, previous.active_source);
+        assert_eq!(current.generation, epoch);
+        assert!(!current.loading);
+        assert!(current.status.starts_with("Load failed"));
+        assert!(Arc::ptr_eq(
+            previous.report.as_ref().unwrap(),
+            current.report.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            previous.instrument.as_ref().unwrap(),
+            current.instrument.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            previous.mapping_index.as_ref().unwrap(),
+            current.mapping_index.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(&previous.interfaces, &current.interfaces));
+        assert!(params.shared.set_control_at(0, epoch, controls[0].id, 750.));
+        assert!(
+            core.render(64).live[0],
+            "held audio survives a failed replacement"
+        );
+        assert!(
+            !load_part(&params, 0, None),
+            "the failed source is not retried every poll"
+        );
+        {
+            let mut selection = params.selection.write_unpoisoned();
+            let pending = &mut selection.parts[0];
+            pending.script_state = "pending source state".into();
+            pending.script_state_source = "pending source identity".into();
+            pending.control_values = vec![SavedControl::new(sampler_ui_ir::ControlId(999), 42.)];
+        }
+        params.capture_ui_controls();
+        let saved = params.selection.read_unpoisoned().parts[0].clone();
+        assert_eq!(saved.script_state, "pending source state");
+        assert_eq!(saved.script_state_source, "pending source identity");
+        assert_eq!(saved.control_values.len(), 1);
+        assert_eq!(saved.control_values[0].id(), sampler_ui_ir::ControlId(999));
+
+        // Invalid recalled state fails before the candidate can acquire any
+        // of the old instrument's live ownership or persistence data.
+        {
+            let mut selection = params.selection.write_unpoisoned();
+            let pending = &mut selection.parts[0];
+            pending.path = "malformed-state.uvip".into();
+            pending.uvi_state = "{bad JSON".into();
+            pending.uvi_state_source = serde_json::to_string(&pending.source()).unwrap();
+        }
+        assert!(load_part(
+            &params,
+            0,
+            Some(transaction_candidate("Invalid state"))
+        ));
+        assert!(params.shared.ready.pop().is_none());
+        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+        assert!(core.render(64).live[0]);
+        assert_eq!(
+            params.shared.view.lock_unpoisoned().parts[0].active_source,
+            previous.active_source
+        );
+    }
+
+    #[test]
+    fn same_source_recall_preserves_candidate_state_during_private_preparation() {
+        let (params, mut core) = transaction_fixture();
+        let atoms = params.shared.part(0).unwrap();
+        let epoch = atoms.generation.load(Ordering::Acquire);
+        let control = atoms.controls.lock_unpoisoned()[0].id;
+        assert_eq!(core.control_value(0, control), Some(250.));
+        {
+            let mut selection = params.selection.write_unpoisoned();
+            let recalled = &mut selection.parts[0];
+            recalled.control_values = vec![SavedControl::new(control, 800.)];
+            recalled.script_state = "recalled state must stay untouched".into();
+            recalled.script_state_source = serde_json::to_string(&recalled.source()).unwrap();
+        }
+        let assert_recalled = || {
+            let recalled = params.selection.read_unpoisoned().parts[0].clone();
+            assert_eq!(recalled.control_values[0].value, 800.);
+            assert_eq!(recalled.script_state, "recalled state must stay untouched");
+        };
+        params.reload_ui_controls();
+        // A host can save synchronously after post_load, before the loader runs.
+        params.capture_ui_controls();
+        assert_recalled();
+        assert!(!load_part_with(&params, 0, None, |request, _, canceled| {
+            assert!(!canceled());
+            assert_eq!(request.control_values, vec![(control, 800.)]);
+            assert!(params.shared.view.lock_unpoisoned().parts[0].loading);
+            params.capture_ui_controls();
+            let recalled = params.selection.read_unpoisoned().parts[0].clone();
+            assert_eq!(recalled.control_values[0].value, 800.);
+            assert_eq!(recalled.script_state, "recalled state must stay untouched");
+            assert_eq!(
+                recalled.script_state_source,
+                serde_json::to_string(&recalled.source()).unwrap()
+            );
+            assert_eq!(core.control_value(0, control), Some(250.));
+            assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+            Err(CoreError::Canceled)
+        }));
+        assert!(params.shared.ready.pop().is_none());
+        params.capture_ui_controls();
+        assert_recalled();
+        assert_eq!(core.epoch(0), epoch);
+        assert!(load_part_with(&params, 0, None, |_, _, _| {
+            Err(CoreError::Invalid("failed recalled candidate".into()))
+        }));
+        params.capture_ui_controls();
+        assert_recalled();
+
+        // A second same-source recall invalidates the privately prepared job
+        // even though its source, settings, and active audio epoch are unchanged.
+        params.selection.write_unpoisoned().parts[0].script_state.clear();
+        params.reload_ui_controls();
+        assert!(!load_part_with(&params, 0, None, |_, _, canceled| {
+            assert!(!canceled());
+            params.selection.write_unpoisoned().parts[0].control_values =
+                vec![SavedControl::new(control, 900.)];
+            params.reload_ui_controls();
+            assert!(canceled());
+            Ok(transaction_candidate("Stale recalled state"))
+        }));
+        assert!(params.shared.ready.pop().is_none());
+        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+        params.capture_ui_controls();
+        assert_eq!(
+            params.selection.read_unpoisoned().parts[0].control_values[0].value,
+            900.
+        );
+
+        // Successful commit acquires the recalled identity and resumes capture.
+        params.reload_ui_controls();
+        assert!(load_part(&params, 0, Some(transaction_candidate("Recalled"))));
+        let (slot, recalled_epoch, part) = params.shared.ready.pop().unwrap();
+        assert!(recalled_epoch > epoch);
+        core.install(slot, part);
+        assert!(params.shared.set_control_at(0, recalled_epoch, control, 600.));
+        core.render(64);
+        atoms.refresh_controls(|id| core.control_value(0, id));
+        params.capture_ui_controls();
+        assert_eq!(
+            params.selection.read_unpoisoned().parts[0].control_values[0].value,
+            600.
+        );
+        assert!(
+            params.shared.view.lock_unpoisoned().parts[0]
+                .recalled_source
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn canceled_replacement_keeps_the_old_owner_and_rejects_stale_edits_after_commit() {
+        let (params, mut core) = transaction_fixture();
+        let atoms = params.shared.part(0).unwrap();
+        let epoch = atoms.generation.load(Ordering::Acquire);
+        let old = params.shared.view.lock_unpoisoned().parts[0].clone();
+        let control = atoms.controls.lock_unpoisoned()[0].id;
+        let mut active_selection = params.selection.read_unpoisoned().clone();
+        let active_source = active_selection.parts[0].source();
+        params.selection.write_unpoisoned().parts[0].path = "candidate.nki".into();
+        assert!(!load_part_with(&params, 0, None, |_, _, canceled| {
+            assert!(!canceled());
+            assert!(params.shared.view.lock_unpoisoned().parts[0].loading);
+            assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+            assert!(params.shared.set_control_at(0, epoch, control, 500.));
+            core.render(64);
+            atoms.refresh_controls(|id| core.control_value(0, id));
+            params.shared.capture_ui_controls(&mut active_selection);
+            let captured = &active_selection.parts[0];
+            assert_eq!(captured.source(), active_source);
+            assert_eq!(
+                captured.script_state_source,
+                serde_json::to_string(&active_source).unwrap()
+            );
+            assert!(!captured.script_state.is_empty());
+            assert!(
+                captured
+                    .control_values
+                    .iter()
+                    .any(|value| value.id() == control && value.value == 500.)
+            );
+            params.capture_ui_controls();
+            assert!(
+                params.selection.read_unpoisoned().parts[0]
+                    .control_values
+                    .is_empty(),
+                "pending candidate cannot receive the live old instrument's state"
+            );
+            params.selection.write_unpoisoned().parts[0].path = "newest.nki".into();
+            assert!(canceled());
+            Ok(transaction_candidate("Superseded"))
+        }));
+        assert!(params.shared.ready.pop().is_none());
+        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
+        let current = params.shared.view.lock_unpoisoned().parts[0].clone();
+        assert_eq!(current.status, old.status);
+        assert_eq!(current.active, old.active);
+        assert_eq!(current.active_source, old.active_source);
+        assert!(current.attempted.is_none());
+        assert!(core.render(64).live[0]);
+        assert!(load_part(&params, 0, Some(transaction_candidate("Newest"))));
+        let (slot, newest, part) = params.shared.ready.pop().unwrap();
+        assert!(newest > epoch);
+        assert!(!params.shared.set_control_at(0, epoch, control, 100.));
+        core.install(slot, part);
+        assert_eq!(core.epoch(0), newest);
+        assert_eq!(
+            params.shared.view.lock_unpoisoned().parts[0].active,
+            "Newest"
+        );
+        assert_eq!(
+            params.shared.view.lock_unpoisoned().parts[0].active_source,
+            Some(("newest.nki".into(), 0, String::new()))
+        );
+        params
+            .shared
+            .publish_part((0, epoch, transaction_candidate("Stale completion").part));
+        assert!(params.shared.ready.pop().is_none());
+        assert_eq!(core.epoch(0), newest);
     }
 
     #[test]
@@ -4171,7 +4578,7 @@ fn align(params: &SamplerParams) {
                 let view = shared.view.lock_unpoisoned();
                 view.parts.get(slot).is_some_and(|v| {
                     !v.loading
-                        && v.attempted
+                        && v.active_source
                             .as_ref()
                             .is_some_and(|(path, program, snapshot, ..)| {
                                 path == &part.path
