@@ -93,7 +93,7 @@ fn hertz(x: &[[f32; 2]]) -> f32 {
 }
 
 fn stretch(speed: f32) -> Option<ir::TimeStretch> {
-    Some(ir::TimeStretch { kind: ir::StretchKind::TimeMachine2, speed, high_quality: false })
+    Some(ir::TimeStretch::new(ir::StretchKind::TimeMachine2, speed))
 }
 
 #[test]
@@ -138,4 +138,78 @@ fn stretch_voices_never_allocate_on_the_audio_thread() {
         }
     });
     assert!(block.iter().any(|f| f[0].abs() > 0.01));
+}
+
+fn instrument_with(stretch: Option<ir::TimeStretch>) -> ir::Instrument {
+    ir::Instrument {
+        name: "stretch".into(),
+        assets: vec![ir::Asset {
+            location: ir::AssetLocation::Path("a".into()),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: Vec::new(),
+        }],
+        groups: vec![ir::Group {
+            time_stretch: stretch,
+            tune: ir::Pitch::Semitones(5.),
+            ..Default::default()
+        }],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            group: Some(ir::GroupRef(0)),
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..ir::Instrument::default()
+    }
+}
+
+#[test]
+fn paged_assets_stretch_like_resident_ones() {
+    use sampler_core::{PAGE_FRAMES, PageKey, PageStatus, PageUpdate, StreamCache};
+    let data: Vec<[f32; 2]> = (0..RATE)
+        .map(|n| {
+            let v = (std::f32::consts::TAU * 441. * n as f32 / RATE as f32).sin() * 0.5;
+            [v, v]
+        })
+        .collect();
+    let pages = data.len().div_ceil(PAGE_FRAMES);
+    let plan = lower(
+        &instrument_with(stretch(0.8)),
+        RATE as u32,
+        vec![Pcm::new(RATE as u32, data.clone().into_boxed_slice()).unwrap()],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut resident = Runtime::new(plan, limits()).unwrap();
+    let asset = Pcm::streamed(RATE as u32, data.len()).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(pages).unwrap();
+    for page in 0..pages {
+        assert_eq!(cache.request(&asset, page, 0), Ok(PageStatus::Pending));
+        let mut job = worker.next_job().unwrap();
+        let range = job.range();
+        job.frames_mut().copy_from_slice(&data[range]);
+        worker.complete(job, Ok(())).unwrap();
+        assert_eq!(
+            cache.poll(),
+            Some(PageUpdate::Loaded(PageKey { asset: asset.asset_id(), index: page }))
+        );
+    }
+    let plan = lower(&instrument_with(stretch(0.8)), RATE as u32, vec![asset], no_behaviors).unwrap();
+    let mut paged = Runtime::new(plan, limits()).unwrap().with_stream_cache(cache);
+    let mut a = [[0.; 2]; 480];
+    let mut b = [[0.; 2]; 480];
+    support::without_heap(|| {
+        resident.trigger(input(60), 60, 1.0).unwrap();
+        paged.trigger(input(60), 60, 1.0).unwrap();
+        for _ in 0..60 {
+            resident.render(&mut a).unwrap();
+            paged.render(&mut b).unwrap();
+            for (x, y) in a.iter().zip(&b) {
+                assert!((x[0] - y[0]).abs() < 1e-6, "paged differs from resident");
+            }
+        }
+    });
+    assert_eq!(paged.stream_underruns(), 0);
+    assert!(b.iter().any(|f| f[0].abs() > 0.01));
 }

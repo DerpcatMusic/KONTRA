@@ -996,16 +996,15 @@ impl Cursor {
 
     /// Analysis clock of the time-stretch source (see
     /// [`StretchEngine::render_with`]): the source position under the cursor,
-    /// loops, start/end and release exits already resolved, then the cursor
-    /// moves `frames` output frames on at its step (the time axis; pitch lives
+    /// loops, start/end and release exits already resolved, after the cursor
+    /// moved `elapsed` output frames on at its step (the time axis; pitch lives
     /// in the engine). `None` once the traversal has ended. A forward read:
     /// reverse playback is not a stretch mode yet.
-    pub(super) fn analysis(&mut self, frames: usize) -> Option<f64> {
-        let at = self.index(i128::from(self.position))? as f64 + self.fraction;
-        for _ in 0..frames {
+    pub(super) fn analysis(&mut self, elapsed: usize) -> Option<f64> {
+        for _ in 0..elapsed {
             self.advance();
         }
-        Some(at)
+        Some(self.index(i128::from(self.position))? as f64 + self.fraction)
     }
 
     fn advance(&mut self) {
@@ -2340,7 +2339,8 @@ pub(super) fn stretch_block(
     let params = StretchParams {
         advance: if frozen { 0. } else { voice.cursor.step() },
         step: voice.stretch_step,
-        ..Default::default()
+        smooth: link.spec.smooth,
+        grain_ms: link.spec.grain_ms,
     };
     if !link.started {
         engine.configure(link.spec.mode, link.spec.hq);
@@ -2351,7 +2351,7 @@ pub(super) fn stretch_block(
         link.started = true;
     }
     let cursor = &mut voice.cursor;
-    engine.render_with(pcm, params, out, |hop| cursor.analysis(if frozen { 0 } else { hop }))
+    engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }))
 }
 #[allow(unused_imports)] // wired by the voice source in a later commit
 pub(crate) use time_machine::{
@@ -2502,7 +2502,7 @@ mod stretch_clock_tests {
         let mut loudest = 0f32;
         for _ in 0..200 {
             // 96,000 output frames: far past the 8,000-frame sample.
-            let n = engine.render_with(&src[..], params, &mut block, |hop| cursor.analysis(hop));
+            let n = engine.render_with(&src[..], params, &mut block, |elapsed| cursor.analysis(elapsed));
             assert_eq!(n, block.len());
             loudest = block.iter().flatten().fold(loudest, |m, v| m.max(v.abs()));
         }
