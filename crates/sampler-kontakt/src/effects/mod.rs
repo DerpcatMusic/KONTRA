@@ -238,11 +238,9 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
-    /// Limiter: saved input gain (2^(x/6)) and release ms.
-    Limiter {
-        input_gain: f32,
-        release_ms: f32,
-    },
+    /// A native dynamics law (Limiter 0x1c, Transparent Limiter 0x5f), mapped
+    /// at parse time.
+    Dynamics(Result<sampler_ir::Processor, dynamics::Note>),
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -421,10 +419,18 @@ impl Slot {
                 release_ms: r.f32()?,
                 link: r.flag()?,
             },
-            0x1c => Params::Limiter {
-                input_gain: r.f32()?,
-                release_ms: r.f32()?,
-            },
+            0x1c => Params::Dynamics(dynamics::limiter(r.f32()?, r.f32()?)),
+            0x4c if self.version == 0x10 => Params::Dynamics(dynamics::feedback(
+                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                [r.flag()?, r.flag()?, r.flag()?],
+            )),
+            0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
+            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
+                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                if self.version == 0x12 { Some(r.f32()?) } else { None },
+            )),
+            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -930,7 +936,7 @@ pub(crate) fn chain_with(
                 let live =
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
                 flush(&mut combined, &mut filters, &mut out);
-                // Kinds 22..24 are one band, two or three; every band runs the native one-band law.
+                // Kinds 22..24 (BEQ1/2/3Band): bands in series, each the one-band law (eq.rs).
                 for band in bands.iter() {
                     if let Some(p) = eq::legacy_band(*band, live, &mut notes) {
                         if live { out.filter_slots.push((fx.slot, out.processors.len())); }
@@ -942,11 +948,6 @@ pub(crate) fn chain_with(
                 notes.push(("native legacy EQ lifecycle".into(),
                     "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
                     sampler_ir::Reason::UnknownLaw));
-                if bands.len() > 1 {
-                    notes.push(("multiband EQ (kinds 23/24)".into(),
-                        "bands use the proved one-band law; FilterEQ2/3 serial/parallel topology and stereo clocks unverified".into(),
-                        sampler_ir::Reason::UnknownLaw));
-                }
                 combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) => {
@@ -1086,9 +1087,9 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
-            Some(Params::Limiter { input_gain, release_ms }) => {
+            Some(Params::Dynamics(result)) => {
                 flush(&mut combined, &mut filters, &mut out);
-                match dynamics::limiter(*input_gain, *release_ms) {
+                match result.clone() {
                     Ok(processor) => {
                         out.processors.push(processor);
                         combined = gain;

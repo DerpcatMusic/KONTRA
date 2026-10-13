@@ -1,6 +1,6 @@
 //! The Hertz/Q/decibel band stage of the universal EQ: Rbj-law bands (UVI, scripted inserts, any
-//! format that already knows physical units) and Solid G-EQ bands, whose saved knobs pass through
-//! the proved spline tables ([`super::solid`]) first. Both feed the one kernel
+//! format that already knows physical units) and Solid G-EQ bands, whose saved knobs give the
+//! native G_EQ biquads ([`super::solid`]). Both feed the one kernel
 //! ([`super::kernel`]). Controls are read once per block; the TPT sections keep their state across
 //! coefficient changes, and coefficients are redesigned only when a control actually moved.
 use super::super::{
@@ -34,13 +34,7 @@ impl Generic {
     /// Hertz, Q and boost in dB for this block, by law.
     pub(super) fn targets(self, parameters: &[ControlRamp], at: u64) -> (f64, f64, f64) {
         let read = |p: PreparedParameter| p.value(parameters, at, None);
-        let (hz, q, boost) = match self.band.law {
-            Law::Solid(section) => {
-                let (hz, q, db) = solid::physical(section, read(self.frequency), read(self.q), read(self.gain));
-                (hz, q, db - read(self.reference))
-            }
-            _ => (read(self.frequency), read(self.q), read(self.gain) - read(self.reference)),
-        };
+        let (hz, q, boost) = (read(self.frequency), read(self.q), read(self.gain) - read(self.reference));
         let q = q * (1. + f64::from(self.band.proportional_q) * boost.abs() / 12.);
         (hz.clamp(1., 0.49 * f64::from(self.rate)), q.clamp(0.05, 50.), boost)
     }
@@ -56,8 +50,31 @@ impl Generic {
         if self.enabled.value(parameters, at, None) < 0.5 {
             return;
         }
-        let (hz, q, boost) = self.targets(parameters, at);
         let kind = self.band.kind;
+        if let Law::Solid(section) = self.band.law {
+            // The native G_EQ biquad `poles` of this section, from the saved knobs.
+            let read = |p: PreparedParameter| p.value(parameters, at, None);
+            let key = [read(self.frequency), read(self.q), read(self.gain)];
+            if state.aux[3] == 0. || state.aux[..3] != key {
+                let [b0, b1, b2, a1, a2] = solid::coefficients(
+                    section,
+                    kind,
+                    usize::from(self.band.poles),
+                    f64::from(self.rate),
+                    key[0],
+                    key[1],
+                    key[2],
+                );
+                let svf = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] })
+                    .unwrap_or(kernel::Svf::PASS);
+                state.aux[..3].copy_from_slice(&key);
+                state.aux[3] = 1.;
+                state.aux[4..10].copy_from_slice(&svf.to_array());
+            }
+            run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[4 + i])), state, block, len);
+            return;
+        }
+        let (hz, q, boost) = self.targets(parameters, at);
         if kind == Kind::Level {
             if boost.abs() > 1e-9 {
                 let gain = 10f64.powf(boost / 20.);

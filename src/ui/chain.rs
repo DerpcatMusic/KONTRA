@@ -387,6 +387,11 @@ fn detail(p: ir::Processor) -> String {
             ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
             ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
             ir::fx::dynamics::Law::KontaktLimiter(_) => "Limiter".into(),
+            ir::fx::dynamics::Law::KontaktHilbert(_) => "Transparent Limiter".into(),
+            ir::fx::dynamics::Law::KontaktFeedback { .. } => "Feedback Compressor".into(),
+            ir::fx::dynamics::Law::KontaktTransient { .. } => "Transient Master".into(),
+            ir::fx::dynamics::Law::KontaktBusComp { .. } => "Solid Bus Comp".into(),
+            ir::fx::dynamics::Law::UviMaximizer(_) => "Maximizer".into(),
         },
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",
