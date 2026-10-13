@@ -54,9 +54,9 @@ def fit(curve, kind):
     pk = y[np.argmax(np.abs(y))]
     model = (lambda f, g, q: peak(f, g, q)) if kind == "peak" else (lambda f, g, q: shelf(kind, f, g, q))
     best = (1e9, 0, 0, 0)
-    f_grid = np.geomspace(30, 17000, 90)
-    g_grid = pk * np.linspace(0.7, 1.4, 15)
-    q_grid = np.geomspace(0.15, 6, 40)
+    f_grid = np.geomspace(30, 17000, 45)
+    g_grid = [pk]
+    q_grid = np.geomspace(0.15, 6, 25)
     for f in f_grid:
         for g in g_grid:
             for q in q_grid:

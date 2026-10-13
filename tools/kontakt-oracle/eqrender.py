@@ -113,9 +113,9 @@ def make_midi(nsteps: int, path: Path):
     """PPQ 480 at 120 bpm: 960 ticks per second."""
     ev = []
     for i in range(nsteps):
-        t = 0.5 + i * PERIOD
+        t = 2.0 + i * PERIOD
         ev.append((t, bytes([0xB0, 20, i])))
-        for k in (0, 0.5):   # the note is sent twice: Kontakt occasionally drops one while rebuilding DSP
+        for k in ((0, 0.12, 0.24, 0.36) if i == 0 else (0, 0.5)):   # step 0: a 4-note burst marks the reference; the note is sent twice: Kontakt occasionally drops one while rebuilding DSP
             ev += [(t + PLAY_AT + k, bytes([0x90, 60, 100])), (t + PLAY_AT + k + 0.1, bytes([0x80, 60, 0]))]
     trk, last = b"\x00\xff\x51\x03" + (500000).to_bytes(3, "big"), 0
     for t, m in sorted(ev, key=lambda e: e[0]):
@@ -153,7 +153,7 @@ def run(spec, prefix, first_no=1):
     make_midi(len(steps) + 1, mid)
     if not os.environ.get("EQ_REUSE"):
         subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(wav),
-                        str((0.5 + (len(steps) + 1) * PERIOD) * 1.12 + 6), str(mid)], check=True)
+                        str((2.0 + (len(steps) + 1) * PERIOD) * 1.05 + 6), str(mid)], check=True)
     ch, rate, (L, R) = wavutil.read(wav)
     L, R = np.array(L), np.array(R)
     mag = np.maximum(np.abs(L), np.abs(R))
@@ -165,7 +165,11 @@ def run(spec, prefix, first_no=1):
     # second, identical, note).
     i0 = int(np.nonzero(mag > 0.05)[0][0])
     T0 = i0 + int(np.argmax(mag[i0:i0 + int(0.05 * rate)]))
-    ev = [T0]
+    burst = [T0 + int(k * rate) for k in (0.12, 0.24, 0.36)]
+    if any(mag[b - int(0.03 * rate):b + int(0.03 * rate)].max() < 0.05 for b in burst):
+        sys.exit("first sound is not the 4-note reference burst (notes lost at start?)")
+    last = burst[-1] - int(0.03 * rate)
+    ev = [last + int(np.argmax(mag[last:last + int(0.06 * rate)]))]   # last burst note: nothing follows it within the FFT window
     drift = 0
     for n in range(1, len(steps) + 1):
         lo = T0 + int((n * PERIOD - 0.25) * rate) + drift
