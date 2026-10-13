@@ -592,6 +592,7 @@ fn a_second_source_scales_route_depth() {
         sources: vec![ModSource::Constant, ModSource::Velocity],
         routes: vec![ModRoute {
             scale: Some(ModScale {
+                lag: 0,
                 source: 1,
                 shape: Some(0),
                 law: ModScaleLaw::Multiply,
@@ -627,7 +628,7 @@ fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
                     } else { ModSource::Velocity };
                     let p = program(vec![ModSource::Constant, second], vec![ModRoute {
                         invert: true,
-                        scale: Some(ModScale { source: 1, shape: None,
+                        scale: Some(ModScale { lag: 0, source: 1, shape: None,
                             law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit: 1. } }),
                         ..ModRoute::new(0, ModTarget::Attenuate, base)
                     }]);
@@ -650,7 +651,7 @@ fn id25_intensity_changes_each_outgoing_depth_in_render_without_heap() {
 
 #[test]
 fn id25_unverified_init_flags_range_and_live_paths_are_rejected() {
-    let scale = ModScale { source: 1, shape: None,
+    let scale = ModScale { lag: 0, source: 1, shape: None,
         law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x10, unit: 1. } };
     let route = ModRoute { scale: Some(scale),
         ..ModRoute::new(0, ModTarget::Attenuate, 0.4) };
@@ -687,7 +688,7 @@ fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
         for unit in [12., -12., 20., -20.] {
             for base in [0., 0.4, 1.] {
                 let p = program(vec![ModSource::Constant, ModSource::Velocity], vec![ModRoute {
-                    scale: Some(ModScale { source: 1, shape: None,
+                    scale: Some(ModScale { lag: 0, source: 1, shape: None,
                         law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags, unit } }),
                     ..ModRoute::new(0, ModTarget::Decibels, base * unit)
                 }]);
@@ -708,7 +709,7 @@ fn id25_additive_depth_converts_normalized_intensity_to_outgoing_units() {
 #[test]
 fn id25_preserves_independent_bases_for_two_outgoing_targets() {
     let routes = [(0., 20.), (0.4, 12.)].map(|(base, unit)| ModRoute {
-        scale: Some(ModScale { source: 1, shape: None,
+        scale: Some(ModScale { lag: 0, source: 1, shape: None,
             law: ModScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x14, unit } }),
         ..ModRoute::new(0, ModTarget::Decibels, base * unit)
     });

@@ -1537,19 +1537,22 @@ impl Lowering<'_> {
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
             };
             let source = source_of(route.source, &mut program)?;
-            let scale = match route.scale {
-                None => None,
-                Some(scale) => Some(ModScale {
-                    source: source_of(scale.source, &mut program)?,
-                    shape: None,
-                    law: match scale.law {
-                        ir::ScaleLaw::Multiply => crate::ModScaleLaw::Multiply,
-                        ir::ScaleLaw::KontaktIntensity { depth, flags, unit } => {
-                            crate::ModScaleLaw::KontaktIntensity { depth, flags, unit }
-                        }
-                    },
-                }),
-            };
+            // The first assignment, then those chained after it (ID25 lane `$in`).
+            let assignments: Vec<ir::RouteScale> = route
+                .scale
+                .into_iter()
+                .chain(
+                    self.ir
+                        .source_indices
+                        .chained_scales
+                        .iter()
+                        .filter(|c| c.0 == route_ref)
+                        .map(|c| c.1),
+                )
+                .collect();
+            if assignments.len() > crate::MORE_SCALES + 1 {
+                return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+            }
             let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
                 *shapes.entry(shape).or_insert_with(|| {
                     program.shapes.push(self.ir.shapes[shape.0].points.clone());
@@ -1557,13 +1560,20 @@ impl Lowering<'_> {
                 })
             };
             let shape = route.shape.map(|shape| shape_of(shape, &mut program));
-            let scale = scale.map(|s| ModScale {
-                shape: route
-                    .scale
-                    .and_then(|r| r.shape)
-                    .map(|shape| shape_of(shape, &mut program)),
-                ..s
-            });
+            let mut scales = Vec::with_capacity(assignments.len());
+            for scale in &assignments {
+                scales.push(ModScale {
+                    source: source_of(scale.source, &mut program)?,
+                    shape: scale.shape.map(|shape| shape_of(shape, &mut program)),
+                    law: match scale.law {
+                        ir::ScaleLaw::Multiply => crate::ModScaleLaw::Multiply,
+                        ir::ScaleLaw::KontaktIntensity { depth, flags, unit } => {
+                            crate::ModScaleLaw::KontaktIntensity { depth, flags, unit }
+                        }
+                    },
+                    lag: self.frames(ir::Time::Milliseconds(scale.lag_ms)),
+                });
+            }
             let native = ModRoute {
                 source,
                 target: target.0,
@@ -1571,7 +1581,8 @@ impl Lowering<'_> {
                 invert: route.invert,
                 shape,
                 lag: self.frames(route.smoothing),
-                scale,
+                scale: scales.first().copied(),
+                more_scales: std::array::from_fn(|n| scales.get(n + 1).copied()),
             };
             if let Some(binding) = self
                 .ir
