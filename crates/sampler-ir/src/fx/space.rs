@@ -32,6 +32,36 @@ pub enum Topology {
     /// The exact Kontakt legacy Reverb (0x15) network, driven by
     /// [`Network::freeverb`] and `predelay_seconds`/`input_cutoff_hz`.
     Freeverb,
+    /// The exact Kontakt Reverb (Galois, 0x59) core, driven by
+    /// [`Network::galois`]: 31 modulated delay lines coupled by an orthogonal
+    /// m-sequence matrix, Room or Hall tables, allpass diffusion, a 200 Hz
+    /// low shelf and a high cut. It does its own predelay, width and mix;
+    /// the other `Network` fields only describe it (UI, tail length).
+    Galois,
+}
+
+/// The ten normalized controls (`0..=1`) of the Kontakt Reverb core setter
+/// `FUN_141aea370`, in its index order: time, size, damping, modulation,
+/// diffusion, predelay, high cut, low shelf, internal dry/wet, stereo.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Galois {
+    /// Room (`true`) or Hall core: the dispatcher's control 10 (`FUN_1409ab2c0`).
+    pub room: bool,
+    pub controls: [f32; 10],
+}
+
+impl Galois {
+    pub const TIME: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const DAMPING: usize = 2;
+    pub const MODULATION: usize = 3;
+    pub const DIFFUSION: usize = 4;
+    pub const PREDELAY: usize = 5;
+    pub const HIGH_CUT: usize = 6;
+    pub const LOW_SHELF: usize = 7;
+    pub const MIX: usize = 8;
+    pub const STEREO: usize = 9;
 }
 
 /// Direct coefficients of the Kontakt legacy Reverb network (`FUN_140aa3d10`):
@@ -102,6 +132,8 @@ pub struct Network {
     pub echo_feedback: f64,
     /// Coefficients for [`Topology::Freeverb`]; ignored by other topologies.
     pub freeverb: Option<Freeverb>,
+    /// Controls for [`Topology::Galois`]; ignored by other topologies.
+    pub galois: Option<Galois>,
 }
 
 impl Network {
@@ -123,6 +155,7 @@ impl Network {
         gate_seconds: None,
         echo_feedback: 0.0,
         freeverb: None,
+        galois: None,
     };
 }
 
@@ -159,6 +192,7 @@ impl Config {
             let band = n.bands.is_none_or(|b| [b.low, b.high, b.low_hz, b.high_hz].iter().all(|v| v.is_finite()));
             band && n.gate_seconds.is_none_or(f64::is_finite)
                 && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
+                && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
                 && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
                     .iter()
                     .all(|v| v.is_finite())
