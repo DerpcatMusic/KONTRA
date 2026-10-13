@@ -139,25 +139,7 @@ impl Translation {
                     }
                 }
                 "DigitalEq" => self.digital_eq(node, &at, live, &mut out)?,
-                "ThreeBandShelves" => {
-                    let middle = number(node, "GainMid", 0.0)?;
-                    out.push(ir::Processor::Gain(db(middle)));
-                    for (name, frequency, default, low) in [
-                        ("GainLow", "FreqLowMid", 200.0, true),
-                        ("GainHigh", "FreqMidHigh", 4000.0, false),
-                    ] {
-                        let gain = db(number(node, name, 0.0)? - middle);
-                        out.push(ir::Processor::Filter(ir::Filter {
-                            kind: if low {
-                                ir::FilterKind::FirstOrderLowShelf { gain }
-                            } else {
-                                ir::FilterKind::FirstOrderHighShelf { gain }
-                            },
-                            cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
-                            resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
-                        }));
-                    }
-                }
+                "ThreeBandShelves" => self.three_band_shelves(node, &mut out)?,
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
                     // internal modes 6 (full) and 7 (half). Public numbering
@@ -186,103 +168,66 @@ impl Translation {
                         }
                     }
                     out.push(ir::Processor::Gain(db(number(node, "InputGain", 0.0)?)));
-                    out.push(ir::Processor::Rectify(rectifier));
+                    out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
-                "CompExp" => {
-                    // Falcon manual, Compressor Expander: threshold dB, ratio,
-                    // attack/release ms, manual makeup dB. The compressor law is
-                    // the shared textbook one (ir::Compressor); UVI's own is not
-                    // recovered, and the module has no stereo-link control.
-                    for (name, why, off) in [
-                        ("AutoMakeUp", "CompExp auto makeup", 0.0),
-                        ("GateRatio", "CompExp gate (expander)", 1.0),
-                    ] {
-                        let v = number(node, name, off)?;
-                        if v != off
-                            && (name != "GateRatio"
-                                || number(node, "GateThreshold", -130.0)? > -130.0)
-                        {
-                            self.unsupported(&at, why, v);
+                "BitCrusher" => {
+                    // Kernel 0x1412d1770; the public fields are the kernel's
+                    // members unchanged (ctor defaults 22050, 16, 0, 1; setters
+                    // 0x141041710.., Cutoff 0x1412d1730 -> tilt filter).
+                    let hertz = number(node, "EffectiveSampleRate", 22050.0)?;
+                    let bits = number(node, "BitSize", 16.0)?;
+                    let drive = number(node, "Drive", 0.0)?;
+                    let cutoff = number(node, "Cutoff", 0.0)?;
+                    let mix = number(node, "Mix", 1.0)?;
+                    if !(hertz >= 1.0
+                        && (1.0..=32.0).contains(&bits)
+                        && (0.0..=1.0).contains(&drive)
+                        && (-1.0..=1.0).contains(&cutoff)
+                        && (0.0..=1.0).contains(&mix))
+                    {
+                        self.unsupported(&at, "BitCrusher value outside its public range", "");
+                        out.truncate(slot);
+                        placed.push((id, slot, 0));
+                        continue;
+                    }
+                    out.push(ir::Processor::Color(ir::fx::color::Config::bit_crusher(
+                        hertz,
+                        bits,
+                        drive,
+                        cutoff as f32,
+                        mix,
+                    )));
+                }
+                k if crate::fx::dynamics::handles(k) => {
+                    crate::fx::dynamics::translate(self, node, &at, &mut out)?;
+                }
+                tag if super::fx::filter::handles(tag) => {
+                    match super::fx::filter::translate(node, key, |name, default| {
+                        number(node, name, default)
+                    })? {
+                        Ok(done) => {
+                            out.extend(done.processors);
+                            for (feature, value) in done.unsupported {
+                                self.unsupported(&at, feature, value);
+                            }
+                        }
+                        Err(gap) => {
+                            self.unsupported(&at, &format!("{} ({})", gap.name, gap.reason), "");
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
+                            continue;
                         }
                     }
-                    let mix = number(node, "Mix", 1.0)?;
-                    if mix != 1.0 {
-                        self.unsupported(&at, "CompExp mix", mix);
-                    }
-                    out.push(ir::Processor::Compressor(ir::Compressor {
-                        threshold_db: number(node, "CompThreshold", 0.0)?,
-                        ratio: number(node, "CompRatio", 10.0)?.max(1.0),
-                        attack: ir::Time::Milliseconds(number(node, "CompAttack", 10.0)?.max(0.0)),
-                        release: ir::Time::Milliseconds(
-                            number(node, "CompRelease", 100.0)?.max(0.0),
-                        ),
-                        makeup: db(number(node, "MakeUpGain", 0.0)?),
-                        link: true,
-                    }));
-                }
-                "OnePole" => {
-                    let tracking = number(node, "KeyTracking", 0.0)?;
-                    let key = key.map_or(60.0, f64::from);
-                    let hz = (number(node, "Freq", 1000.0)?
-                        * 2f64.powf(tracking * (key - 60.0) / 12.0))
-                    .clamp(20.0, 20000.0);
-                    if tracking != 0.0 {
-                        self.unsupported(
-                            &at,
-                            "OnePole key tracking (keygroup middle key)",
-                            tracking,
-                        );
-                    }
-                    let poles = 1;
-                    out.push(ir::Processor::Filter(ir::Filter {
-                        kind: if number(node, "Mode", 0.0)? == 0.0 {
-                            ir::FilterKind::LowPass { poles }
-                        } else {
-                            ir::FilterKind::HighPass { poles }
-                        },
-                        cutoff: ir::Frequency::Hertz(hz),
-                        resonance: ir::Resonance::Decibels(0.0),
-                    }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
-                    // No file (or an unreadable one) leaves a unit impulse: the
-                    // processor stays, so a script can swap an impulse in.
-                    let asset = node
-                        .attribute("SamplePath")
-                        .filter(|p| !p.is_empty())
-                        .and_then(|sample| self.asset(&at, sample));
-                    self.ir.impulses.push(ir::Impulse {
-                        rate: 48000,
-                        left: vec![1.0],
-                        right: vec![1.0],
-                        asset,
-                    });
-                    let mut shape = crate::reverb::neutral();
-                    shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
-                    if node.has_tag_name("SampledReverb") {
-                        shape.sampled_reverb = true;
-                        shape.time = number(node, "Time", 1.0)?;
-                        shape.damping_low = number(node, "DampingLow", 0.0)?;
-                        shape.damping_high = number(node, "DampingHigh", 0.0)?;
-                        shape.pre_delay_ms = number(node, "PreDelay", 50.0)?;
-                        shape.width = number(node, "Width", 0.0)?;
-                    }
-                    self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
-                    self.ir.impulse_shapes.push(Some(shape));
-                    if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
-                        self.ir.unsupported.push(ir::Unsupported {
-                            location: at.clone(),
-                            feature: "positive SampledReverb damping".into(),
-                            value: String::new(),
-                            reason: ir::Reason::UnknownLaw,
-                        });
-                    }
-                    out.push(ir::Processor::Convolution {
-                        impulse: ir::ImpulseRef(self.ir.impulses.len() - 1),
-                        dry: number(node, "Dry", 0.0)?,
-                        wet: number(node, "Wet", 1.0)?,
-                    });
+                    let processor = self.impulse_player(node, &at)?;
+                    out.push(processor);
+                }
+                "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+                    if !voice =>
+                {
+                    out.extend(self.algorithmic_reverb(node, &at)?);
                 }
                 "TrackDelay" => {
                     let time = number(node, "DelayTime", 0.0)?;
@@ -295,6 +240,13 @@ impl Translation {
                             feedback: 0.0,
                             mix: 1.0,
                         });
+                    }
+                }
+                "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay"
+                | "DualDelayX" | "TapeEcho" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
+                | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter" => {
+                    if let Some(config) = self.timemod(node, &at)? {
+                        out.push(ir::Processor::TimeMod(config));
                     }
                 }
                 "EffectRack" => {
@@ -351,7 +303,10 @@ impl Translation {
                         out.extend(inner);
                     }
                 }
-                _ => {
+                other => {
+                    if let Some(why) = crate::fx::color::unproved(other) {
+                        self.unsupported(&at, other, why);
+                    }
                     out.truncate(slot);
                     placed.push((id, slot, 0));
                     continue;
@@ -371,81 +326,6 @@ impl Translation {
             self.used.insert(node.id());
         }
         Ok((out, placed))
-    }
-
-    fn digital_eq(
-        &mut self,
-        node: Node,
-        at: &str,
-        live: bool,
-        out: &mut Vec<ir::Processor>,
-    ) -> Result<(), String> {
-        for (name, why) in [
-            ("StereoMode", "DigitalEq M/S mode"),
-            ("Transpose", "DigitalEq transpose"),
-            ("KeyTracking", "DigitalEq key tracking"),
-        ] {
-            let v = number(node, name, 0.0)?;
-            if v != 0.0 {
-                self.unsupported(at, why, v);
-            }
-        }
-        let scale = number(node, "GainScale", 1.0)?;
-        let mut unproven = false;
-        for band in 1..=16 {
-            let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
-            // A scripted bus keeps all 16 bands and the overall level so
-            // each one is a control (`engine_parameters::lanes`).
-            if get("Enabled", 0.0)? == 0.0 && !live {
-                continue;
-            }
-            let gain = db(get("Gain", 0.0)? * scale);
-            let shape = get("Type", 6.0)? as i64;
-            // Installed libraries only show types 5 (gain, high-shelf-like
-            // frequencies) and 6 (peak); 0 to 4 follow the manual's order.
-            unproven |= (0..=4).contains(&shape);
-            let kind = match shape {
-                0 => ir::FilterKind::LowPass { poles: 2 },
-                1 => ir::FilterKind::HighPass { poles: 2 },
-                2 => ir::FilterKind::BandPass { poles: 2 },
-                3 => ir::FilterKind::Notch { poles: 2 },
-                4 => ir::FilterKind::LowShelf { gain },
-                5 => ir::FilterKind::HighShelf { gain },
-                _ => ir::FilterKind::Peak { gain },
-            };
-            let flat = matches!(
-                kind,
-                ir::FilterKind::Peak { gain: g }
-                    | ir::FilterKind::LowShelf { gain: g }
-                    | ir::FilterKind::HighShelf { gain: g }
-                    if (g.linear() - 1.0).abs() < 1e-9
-            );
-            if flat && !live {
-                continue;
-            }
-            out.push(ir::Processor::Filter(ir::Filter {
-                kind,
-                cutoff: ir::Frequency::Hertz(get("Freq", 1000.0)?),
-                resonance: ir::Resonance::Q(engine_parameters::band_q(
-                    |n| node.attribute(n).and_then(|v| v.parse().ok()),
-                    band,
-                )),
-            }));
-        }
-        let overall = number(node, "OverallGain", 0.0)?;
-        if overall != 0.0 || live {
-            out.push(ir::Processor::Gain(db(overall)));
-        }
-        // The manual lists the seven shapes but not their numbering; types 5
-        // and 6 are evidenced by the installed banks, 0 to 4 are its order.
-        if unproven {
-            self.unsupported(
-                at,
-                "DigitalEq band type numbering (manual order assumed)",
-                "",
-            );
-        }
-        Ok(())
     }
 }
 
@@ -469,7 +349,7 @@ pub(super) fn fill_impulses(
                 impulse.left = frames.iter().map(|f| f[0]).collect();
                 impulse.right = frames.iter().map(|f| f[1]).collect();
                 if let Some(Some(shape)) = instrument.impulse_shapes.get(index) {
-                    let (left, right) = crate::reverb::shape(rate, &impulse.left, &impulse.right, shape);
+                    let (left, right) = sampler_core::shape_impulse(rate, &impulse.left, &impulse.right, shape);
                     (impulse.left, impulse.right) = (left, right);
                 }
             }

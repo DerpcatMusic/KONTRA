@@ -15,8 +15,9 @@ pub struct Script<'a> {
     pub password_hash: Bytes<'a>,
     pub description: Option<Bytes<'a>>,
     pub textfile_name: Option<Bytes<'a>>,
-    /// None means an old record with no table; Some(empty) is an explicit table.
-    pub persistent: Option<Strings<'a>>,
+    /// The v0x50/v0x60 reader 0x140d03920 always reads the count; an empty
+    /// table is an explicit zero count, never a missing one.
+    pub persistent: Strings<'a>,
     /// Extensions are preserved and must be admitted by the execution profile.
     pub extension: Bytes<'a>,
 }
@@ -48,9 +49,7 @@ impl<'a> Script<'a> {
         };
         let description = r.optional()?;
         let textfile_name = r.optional()?;
-        let persistent = if r.0.data.is_empty() {
-            None
-        } else {
+        let persistent = {
             let at = r.0;
             let count = r.u32()? as usize;
             if count > limits.records {
@@ -60,7 +59,7 @@ impl<'a> Script<'a> {
             for _ in 0..count {
                 r.sized()?;
             }
-            Some(Strings { bytes, count })
+            Strings { bytes, count }
         };
         Ok(Self {
             object,

@@ -8,6 +8,7 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod fx;
 pub mod kontakt;
 pub mod units;
 mod validate;
@@ -244,7 +245,22 @@ pub struct SourceIndices {
     /// bipolar source): FUN_140873040's `need_uni` targets outside its signed sets.
     #[cfg_attr(feature = "cache", serde(default))]
     pub unipolar_routes: Vec<RouteRef>,
+    /// Native identity of Kontakt external routes with a proved source type.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+/// What a Kontakt external route record says about its law: the native target
+/// id (registry id of the serialized target name), the target flag byte and
+/// the external source type (+0x544). Consumed by sampler-core
+/// `voice_mod::laws`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeRoute {
+    pub target: u16,
+    pub flags: u8,
+    pub source_type: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -666,14 +682,14 @@ impl Instrument {
                 .chain(&processors.post_amplitude)
                 .enumerate()
             {
-                let Processor::Compressor(c) = *processor else {
+                let Processor::Dynamics(c) = *processor else {
                     continue;
                 };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
                         "Threshold",
-                        c.threshold_db,
+                        c.threshold(),
                         -60_f64,
                         0_f64,
                         ControlUnit::Decibels,
@@ -681,9 +697,9 @@ impl Instrument {
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
-                        c.ratio,
-                        1_f64,
-                        20_f64,
+                        c.ratio(),
+                        if c.is_native() { 0_f64 } else { 1_f64 },
+                        if c.is_native() { 1_f64 } else { 20_f64 },
                         ControlUnit::None,
                     ),
                     (
@@ -1306,6 +1322,10 @@ impl ModulationSource {
 pub struct Breakpoints {
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
+    /// Kontakt Flex release law (transition 0x140ae5450): the first release
+    /// segment's duration is scaled by how far the current level has already
+    /// travelled, instead of running its full length from wherever it starts.
+    pub flex_release: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1397,6 +1417,41 @@ pub enum NativeWave {
     Rectangle(f32),
     /// Held noise updated twice per cycle; start phase must be below 0.5.
     Held,
+    /// Kontakt Multi (`digital` false, BLfoMulti 0x140b07290) or Digital Multi
+    /// (`digital` true, BLfoMultiDigital 0x140b078d0): a signed five-component
+    /// mix. `weights` are in native runtime order: sine, doubled saw, triangle,
+    /// pulse, held noise. `width` is the pulse width in 0..1.
+    Multi {
+        weights: [f32; 5],
+        width: f32,
+        normalize: bool,
+        digital: bool,
+    },
+    /// A UVI Workstation LFO waveform (`WaveFormType` 0..=6, see [`UviWave`]).
+    Uvi(UviWave),
+}
+
+/// UVI Workstation 4.0.9 LFO waveforms with a closed-form table or recurrence
+/// (`WaveFormType` ids; registry 0x1410f5d00, process 0x1410f8ca0). The chaos
+/// ids 7 and 8 are stateful Euler maps with unproved defaults, and id 9 is a
+/// stored user table; neither is representable here.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviWave {
+    /// 0: 256-entry sine table, linear interpolation (table 0x1428393a0).
+    Sinus,
+    /// 1: +1 for entries 0..128, -1 from 128 (table 0x1428397b0).
+    Square,
+    /// 2: 0, +1, 0, -1, 0 at quarter cycles (table 0x142839bc0).
+    Triangle,
+    /// 3: -1 to +1 over entries 0..255 (table 0x142839fd0).
+    RampUp,
+    /// 4: +1 to -1 over entries 0..255 (table 0x14283a3e0).
+    RampDown,
+    /// 5: odd harmonics 1..17 (table 0x14283a7f0).
+    AnalogSquare,
+    /// 6: a new value from the native congruential generator at each wrap.
+    RandomHold,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1606,22 +1661,13 @@ pub struct Chain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
-    /// Native smoothed gain with a dry input contribution.
-    Gainer {
-        gain: Gain,
-        dry: f64,
-    },
-    /// Native width 0..1 (.5 identity), balance -1..1 and optional pseudo stereo.
-    StereoModeller {
-        width: f64,
-        pan: f64,
-        pseudo: bool,
-    },
+    /// Drive, character and utility: one superset configured per native unit.
+    Color(fx::color::Config),
     Pan(Pan),
     Filter(Filter),
-    /// Kontakt legacy one-band EQ: native normalized frequency/width and displayed dB.
-    /// Separate from generic Peak filters and the v1 TPT approximation.
-    KontaktLegacyEq(KontaktLegacyEq),
+    /// The universal EQ superset: a serial cascade of bands under generic, Kontakt legacy or
+    /// Solid G-EQ laws (see `fx::eq`).
+    Eq(fx::eq::Config),
     Delay {
         time: Time,
         feedback: f64,
@@ -1630,32 +1676,12 @@ pub enum Processor {
     /// Linear stereo mix: rows are output left/right, columns input
     /// left/right. Width, balance, polarity and channel swaps.
     StereoMatrix([[f64; 2]; 2]),
-    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
-    Reverb(Reverb),
-    /// Feed-forward compressor on the stereo pair.
-    Compressor(Compressor),
-    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
-    /// Memoryless rectification of both channels.
-    Rectify(Rectifier),
-    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
-    Saturation(f32),
-    /// Script-addressed Classic Saturation; the saved static form remains above.
-    LiveSaturation { shape: f32, address: SlotAddress },
-    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
+    /// Reverb and convolution over a summed signal: bus and master scope.
+    Space(fx::space::Config),
+    /// Every compressor, limiter, gate and expander: one configurable superset.
+    Dynamics(fx::dynamics::Config),
     /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
     LiveFormant { knobs: [f32; 3], address: SlotAddress },
-    /// Script- and modulation-addressed Lo-Fi: saved Bits, Frequency, Noise level, color.
-    LiveLoFi { bits: f32, frequency: f32, noise: f32, color: f32, address: SlotAddress },
-    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
-    Distortion { transistor: bool, drive: f32, damping: f32 },
-    /// Pinned v1 Lo-Fi approximation; saved normalized controls.
-    LoFi {
-        bits: f32,
-        frequency: f32,
-        noise: f32,
-        color: f32,
-    },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
@@ -1664,10 +1690,12 @@ pub enum Processor {
     Ar(Ar),
     /// Native Formant I: saved Talk, Sharp, Size normalized controls.
     Formant([f32; 3]),
+    /// A filter-family configuration with no dedicated variant yet (Formant II).
+    FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
-    /// Legacy Phaser: normalized Depth, Feedback, Phase; native free/synced Speed.
-    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
+    /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
+    TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1683,13 +1711,6 @@ pub enum Processor {
         first: bool,
         last: bool,
     },
-    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
-    /// master scope. Convolution adds no latency.
-    Convolution {
-        impulse: ImpulseRef,
-        dry: f64,
-        wet: f64,
-    },
     /// The next `count` processors of the chain run beside the unprocessed
     /// signal: `dry` of it passes around them, `wet` of their output follows,
     /// and `bypass` swaps both for the dry signal alone. A script can change
@@ -1701,14 +1722,6 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
-}
-
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KontaktLegacyEq {
-    pub frequency: f32,
-    pub bandwidth: f32,
-    pub gain_db: f32,
 }
 
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
@@ -1753,22 +1766,6 @@ pub enum Rectifier {
     Full,
     /// `max(x, 0)`.
     Half,
-}
-
-/// A feed-forward compressor. The level law is the textbook hard-knee one;
-/// only the linked detector (signed channel mean) is recovered from Kontakt.
-// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Compressor {
-    pub threshold_db: f64,
-    /// At least 1.
-    pub ratio: f64,
-    pub attack: Time,
-    pub release: Time,
-    pub makeup: Gain,
-    /// Detect on the signed mean of both channels and apply one gain to both.
-    pub link: bool,
 }
 
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and
@@ -1816,27 +1813,12 @@ pub struct ImpulseShape {
     pub normalize: bool,
     /// A SampledReverb (its own gain references) rather than a Convolver.
     pub sampled_reverb: bool,
-}
-
-/// Physical reverb settings; an importing profile maps its own controls
-/// here. Wet signal only: the dry path is the bus's other send.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Seconds for the tail to fall 60 dB.
-    pub decay_seconds: f64,
-    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
-    pub size: f64,
-    pub damping_hz: f64,
-    pub modulation_seconds: f64,
-    /// Input diffusion, 0..=0.75.
-    pub diffusion: f64,
-    pub predelay_seconds: f64,
-    pub input_cutoff_hz: f64,
-    /// Wet low-frequency change in dB (zero or negative).
-    pub low_shelf_db: f64,
-    /// 0 mono .. 1 full width.
-    pub width: f64,
+    /// Play the response backwards.
+    pub reverse: bool,
+    /// Scale to Kontakt's Auto Gain (see `shape_impulse`).
+    pub auto_gain: bool,
+    /// Volume envelope knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

@@ -1296,6 +1296,26 @@ mod tests {
     }
 
     #[test]
+    fn ncw_header_sample_format_word_is_honoured_for_32_bit_0x131() {
+        let pcm: Vec<i32> = (0..64).collect();
+        let spec = ncw::PcmSpec {
+            channels: 1,
+            bits_per_sample: 16,
+            sample_rate: 48000,
+        };
+        let mut bytes = ncw::encode_pcm(&pcm, spec, ncw::StereoMode::Direct).unwrap();
+        // Declare 32-bit with the header's float bit while the block says PCM.
+        bytes[10..12].copy_from_slice(&32u16.to_le_bytes());
+        bytes[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert!(decode(&bytes).err().unwrap().contains("contradicts"));
+        // Version 0x130 ignores the word.
+        bytes[4] = 0x30;
+        let reader = ncw::NcwReader::read(Cursor::new(&bytes)).unwrap();
+        assert_eq!(reader.sample_format, ncw::SampleFormat::Pcm);
+        assert_eq!(reader.header.format_word, 1);
+    }
+
+    #[test]
     fn a_cached_archive_key_does_not_decrypt_clear_member_headers() {
         struct TestKey;
         impl LibraryKey for TestKey {

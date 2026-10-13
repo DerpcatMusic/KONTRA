@@ -1327,6 +1327,7 @@ mod tests {
         script.extend(0u32.to_le_bytes());
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
+        script.extend(0u32.to_le_bytes()); // persistent-table count
         let mut children = Vec::new();
         for child in [
             Chunk { id: 0x33, data: vec![0; 4] },
@@ -1787,6 +1788,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
             data.extend(0u32.to_le_bytes());
             data.extend(u32::MAX.to_le_bytes());
             data.extend(0u32.to_le_bytes());
+            data.extend(0u32.to_le_bytes()); // persistent-table count
             Chunk { id: 6, data }
         };
         let program = Program(StructuredObject {
@@ -1829,6 +1831,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         data.extend(0u32.to_le_bytes());
         data.extend(u32::MAX.to_le_bytes());
         data.extend(0u32.to_le_bytes());
+        data.extend(0u32.to_le_bytes()); // persistent-table count
         let program = Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
