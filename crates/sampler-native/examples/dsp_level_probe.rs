@@ -265,7 +265,7 @@ fn main() {
                 for stages in [&mut chain.pre_amplitude, &mut chain.post_amplitude] {
                     if let Some(i) = stages
                         .iter()
-                        .position(|p| matches!(p, Processor::Compressor(_)))
+                        .position(|p| matches!(p, Processor::Dynamics(_)))
                     {
                         let Processor::StereoMatrix(m) = stages[i + 1] else {
                             panic!("no output trim")
@@ -306,7 +306,7 @@ fn main() {
                     if let Processor::Mix { count, address, .. } = stage {
                         if stages[i + 1..i + 1 + usize::from(*count)]
                             .iter()
-                            .any(|p| matches!(p, Processor::Compressor(_)))
+                            .any(|p| matches!(p, Processor::Dynamics(_)))
                         {
                             addresses.push(EngineParameterAddress {
                                 parameter: engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").unwrap(),
@@ -327,7 +327,7 @@ fn main() {
                 .chains
                 .iter()
                 .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
-                .filter(|p| matches!(p, Processor::Compressor(_)))
+                .filter(|p| matches!(p, Processor::Dynamics(_)))
                 .count();
             results.push(serde_json::json!({"status":"no-addressed-compressors",
                 "static_compressors":static_compressors}));
