@@ -18,6 +18,8 @@ pub struct SourceField {
     pub value: SourceValue,
 }
 
+/// SerType: 0x0E
+/// Versions: 0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106
 #[derive(Debug, Clone, PartialEq)]
 pub struct BParSrcMode {
     pub version: u16,

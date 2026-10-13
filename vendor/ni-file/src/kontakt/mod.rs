@@ -4,6 +4,7 @@ mod chunk;
 mod chunk_set;
 mod error;
 mod instrument;
+pub mod native_schema;
 pub mod objects;
 mod patch;
 pub mod schemas;
