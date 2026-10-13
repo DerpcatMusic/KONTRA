@@ -409,19 +409,29 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .scene()
         .and_then(|s| s.surface("editor-root"))
         .is_some_and(|s| s.frame.size.height < 700.);
-    // Keep the inspector inside both the resized part and the keyboard boundary.
-    let map_height = ui
+    // The part fills the rack; the space left under (or missing from) the last row is
+    // shared between the zone map, the overlapping-zone list and the waveform, so the
+    // tab always ends at the part's bottom edge instead of at fixed heights.
+    let base = if compact { (64., STACK_ROW, 40.) } else { (144., STACK_ROW * 2., 64.) };
+    let (map_height, stack_height, wave_height) = ui
         .scene()
         .and_then(|scene| {
-            let map = scene.surface(&format!("map-{slot}"))?.frame;
-            let status = scene.surface(&format!("map-wave-status-{slot}"))?.frame;
-            let part = scene.surface(&format!("part-{slot}"))?.frame;
+            let frame = |id: String| scene.surface(&id).map(|s| s.frame);
+            let map = frame(format!("map-{slot}"))?;
+            let status = frame(format!("map-wave-status-{slot}"))?;
+            let part = frame(format!("part-{slot}"))?;
             let rack = scene.surface("rack-view")?.frame;
+            let stack = frame(format!("map-stack-{slot}")).map_or(base.1, |f| f.size.height);
+            let wave = frame(format!("map-wave-{slot}")).map_or(base.2, |f| f.size.height);
             let bottom = (part.y + part.size.height - 1.).min(rack.y + rack.size.height) - INSET;
-            Some(map.size.height + bottom - (status.y + status.size.height.max(SMALL + 2.)))
+            let spare = bottom - (status.y + status.size.height.max(SMALL + 2.));
+            Some((
+                (map.size.height + spare * 0.55).max(32.),
+                (stack + spare * 0.15).max(STACK_ROW),
+                (wave + spare * 0.30).max(base.2),
+            ))
         })
-        .unwrap_or(if compact { 64. } else { 144. })
-        .clamp(32., if compact { 64. } else { 144. });
+        .unwrap_or(base);
     let changed = cx
         .state
         .inside
@@ -746,7 +756,6 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             });
         }
     }
-    let stack_height = if compact { STACK_ROW } else { STACK_ROW * 2. };
     walk_stack(
         ui,
         slot,
@@ -969,7 +978,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     ]
     .gap(TIGHT)
     .align(Align::Center);
-    let inspector = inspector(ui, cx, slot, inst, compact);
+    let inspector = inspector(ui, cx, slot, inst, compact, wave_height);
     col![
         head,
         grid,
@@ -1076,7 +1085,14 @@ fn sample_start(playback: &ir::Playback, frames: u64) -> u64 {
     }
 }
 
-fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compact: bool) -> El {
+fn inspector(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    slot: usize,
+    inst: &ir::Instrument,
+    compact: bool,
+    wave_height: f64,
+) -> El {
     let st = &cx.state.inside[&slot].mapping;
     let n = st.selected;
     let Some(z) = inst.zones.get(n) else {
@@ -1302,7 +1318,7 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 
         draws
     })
-    .h(if compact { 40. } else { 64. })
+    .h(wave_height)
     .w(Len::Pct(100.))
     .clip()
     .named("Sample waveform with source-frame playback, loop, release-exit and crossfade boundaries; wheel to zoom, horizontal scroll to pan")

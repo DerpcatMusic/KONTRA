@@ -332,7 +332,7 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     if fit >= 1. { fit.floor() } else { fit }
 }
 
-fn room_height(ui: &Ui, slot: usize) -> f64 {
+pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (
         scene.surface("rack-view"),
@@ -1005,7 +1005,12 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
     {
         face
     } else {
-        inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0))
+        // Every tab reaches the part's bottom edge, like the interface does; taller
+        // content still grows the part and scrolls the rack.
+        let room = room_height(ui, slot);
+        inside::view(ui, cx, slot, view)
+            .map(|el| if room > 0. { el.min_h(room) } else { el })
+            .unwrap_or_else(|| spacer().h(0))
     };
     col![content]
         .gap(0)
