@@ -1930,11 +1930,13 @@ impl Translation {
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
-    /// - 346.768, the one group volume uses (0 dB at 630957).
+    /// - 346.768, the one group volume uses (0 dB at 630957). Kontakt's dB is
+    /// 6 dB per doubling (gain = 2^(dB/6)), measured with the native oracle
+    /// (tools/kontakt-oracle/probes/volume_law.lua), so this fader is cubic in v.
     fn script_bus_volume(&self, bus: usize) -> Option<f32> {
         let v = self.script_par("ENGINE_PAR_VOLUME", -1, -1, 1000 + bus as i32)?;
         let millibels = 18000.0 * f64::from(v.clamp(1, 1_000_000)).log2() - 346_768.234_247_835_1;
-        Some(10f64.powf(millibels / 20_000.0) as f32)
+        Some(kontakt_db_gain(millibels / 1000.0) as f32)
     }
 
     /// Port v1's Constant loop target aliases and signed cubic depth domain.
@@ -4757,4 +4759,10 @@ mod census {
             );
         }
     }
+}
+
+/// Kontakt's volume dB scale: 6 dB per doubling, stored gain = 2^(dB/6)
+/// (-6 dB = 0.5, -60 dB = 1/1024). Measured: tools/kontakt-oracle/probes/volume_law.lua.
+pub(crate) fn kontakt_db_gain(db: f64) -> f64 {
+    (db / 6.0).exp2()
 }
