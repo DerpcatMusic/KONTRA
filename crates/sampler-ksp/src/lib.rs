@@ -595,6 +595,20 @@ pub fn persistent_state_buffer(
 ) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
     use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
     let mut state = sampler_core::ScriptStateBuffer::default();
+    // Entries are ~336 bytes (inline text) and arrays reach a million cells:
+    // reserve once instead of doubling, and sort only when out of order.
+    state.values.reserve(
+        views
+            .iter()
+            .flat_map(|view| &view.model.persistent)
+            .map(|p| match p.location {
+                model::Location::Control(_) => 1,
+                model::Location::Cells { len, .. } | model::Location::Texts { len, .. } => {
+                    len as usize
+                }
+            })
+            .sum(),
+    );
     let mut base = 0;
     for (i, view) in views.iter().enumerate() {
         let instance =
@@ -644,8 +658,7 @@ pub fn persistent_state_buffer(
         }
         base += view.programs;
     }
-    state.values.sort_by_key(|entry| entry.address);
-    state.values.dedup_by_key(|entry| entry.address);
+    state.sort_dedup();
     Ok(state)
 }
 
