@@ -60,7 +60,17 @@ def commands(spec):
     return out
 
 
-def make_lua(spec, wav_dir: Path) -> str:
+IMPULSE_LUA = """local WAV = @WAV@
+local f = assert(io.open(WAV, "wb"))
+local n = 24000
+f:write("RIFF", string.pack("<I4", 36 + n * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", n * 8))
+for i = 0, n - 1 do f:write(string.pack("<ff", i == 0 and 0.5 or 0.0, 0.0)) end
+f:close()
+"""
+
+
+def make_lua(spec, wav_dir: Path, stimulus: Path = None) -> str:
+    """stimulus: an existing stereo WAV to play instead of the generated impulse."""
     cmds, starts = [], [0]
     for ch in commands(spec):
         cmds += ch
@@ -69,25 +79,20 @@ def make_lua(spec, wav_dir: Path) -> str:
     ksp = ["on init", "  declare $k", f"  declare %cpar[{m}]", f"  declare %cslot[{m}]",
            f"  declare %cval[{m}]", f"  declare %cstart[{len(starts) + 1}]"]
     for i, (slot, par, val) in enumerate(cmds):
-        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  %cval[{i}] := {int(val)}"]
+        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  %cval[{i}] := {val if isinstance(val, str) else int(val)}"]
     ksp += [f"  %cstart[{i}] := {s}" for i, s in enumerate(starts)]
     ksp += ["end on", "on controller", "  if ($CC_NUM = 20)", "    $k := %cstart[%CC[20]]",
             "    while ($k < %cstart[%CC[20] + 1])",
-            "      set_engine_par(%cpar[$k], %cval[$k], -1, %cslot[$k], 0)",
+            f"      set_engine_par(%cpar[$k], %cval[$k], -1, %cslot[$k], {spec.get('generic', 0)})",
             "      inc($k)", "    end while", "  end if", "end on"]
     chain = ",".join(json.dumps(winpath(init_preset(c))) for c in spec["chain"])
     ksp_text = "\\n".join(ksp)
+    gen = f"local WAV = {json.dumps(winpath(stimulus))}\n" if stimulus else IMPULSE_LUA.replace("@WAV@", json.dumps(winpath(wav_dir / "impulse_lr.wav")))
     return f"""
 local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local function log(t) out:write(t .. "\\n") out:flush() end
-local WAV = {json.dumps(winpath(wav_dir / "impulse_lr.wav"))}
-local f = assert(io.open(WAV, "wb"))
-local n = 24000
-f:write("RIFF", string.pack("<I4", 36 + n * 8), "WAVEfmt ", string.pack("<I4I2I2I4I4I2I2", 16, 3, 2, 48000, 384000, 8, 32), "data", string.pack("<I4", n * 8))
-for i = 0, n - 1 do f:write(string.pack("<ff", i == 0 and 0.5 or 0.0, 0.0)) end
-f:close()
-kt.reset_multi()
+{gen}kt.reset_multi()
 local inst = kt.add_instrument()
 local z = kt.add_zone(inst, 0, WAV)
 kt.set_zone_geometry(inst, z, {{ root_key = 60, low_key = 0, high_key = 127 }})
@@ -174,8 +179,8 @@ def run(spec, prefix, first_no=1):
     for n in range(1, len(steps) + 1):
         lo = T0 + int((n * PERIOD - 0.25) * rate) + drift
         w = mag[lo:lo + int(1.05 * rate)]
-        if not len(w) or w.max() < 0.002:
-            ev.append(None)       # Kontakt dropped both notes of this step: caller retries
+        if not len(w) or w.max() < 1e-6:
+            ev.append(None)       # Kontakt dropped both notes (recording is exact digital silence otherwise): caller retries
             continue
         ev.append(lo + int(np.argmax(w)))
     missing = [n for n, e in enumerate(ev) if e is None]
