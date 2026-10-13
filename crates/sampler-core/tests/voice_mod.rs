@@ -874,15 +874,12 @@ fn native_lanes_with_script_and_gain_pitch_ramps_match_forced_scalar_without_hea
         let chain = || {
             VoiceChain::new(
                 vec![
-                    Processor::Gainer {
-                        dry: 0.125,
-                        gain: Parameter::Constant(0.8),
-                    },
-                    Processor::StereoModeller(StereoSettings {
+                    Processor::Color(ColorSettings::gainer(Parameter::Constant(0.8), 0.125)),
+                    Processor::Color(ColorSettings::stereo(StereoSettings {
                         width: Parameter::Constant(0.7),
                         pan: Parameter::Constant(-0.2),
                         pseudo: false,
-                    }),
+                    })),
                 ],
                 vec![Processor::StateVariable(StateVariableFilter {
                     mode: SvfMode::LowPass,
