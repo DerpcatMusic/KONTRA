@@ -425,6 +425,8 @@ pub(super) struct RenderContext<'a> {
     pub at: u64,
     pub feeds: &'a mut [taps::TapFeed],
     pub trace: Option<crate::trace::VoiceTrace<'a>>,
+    /// This voice's time-stretch engine, if it has one.
+    pub stretch: Option<&'a mut crate::source::StretchEngine>,
 }
 
 /// Serial stereo processing with an explicit envelope boundary.
@@ -690,7 +692,14 @@ impl PreparedVoiceChain {
         let mut rendered = 0;
         for (chunk_index, chunk) in output.chunks_mut(BLOCK).enumerate() {
             let mut block = [[0.; BLOCK]; 2];
-            let Some(begun) = self.begin(voice, pcm, chunk.len(), kernel, &mut block) else {
+            let Some(begun) = self.begin(
+                voice,
+                pcm,
+                chunk.len(),
+                kernel,
+                &mut block,
+                context.stretch.as_deref_mut(),
+            ) else {
                 break;
             };
             let len = begun.len;
@@ -836,6 +845,7 @@ impl PreparedVoiceChain {
         frames: usize,
         kernel: &crate::resample::Kernel,
         block: &mut Planar,
+        stretch: Option<&mut crate::source::StretchEngine>,
     ) -> Option<Begun> {
         if self.done(voice) {
             return None;
@@ -856,6 +866,8 @@ impl PreparedVoiceChain {
         let count = if waiting { frames } else { frames.min(active) };
         let produced = if voice.cursor.done() || voice.envelope.done() {
             0
+        } else if let (Some(engine), false) = (stretch, waiting) {
+            crate::source::stretch_block(engine, voice, pcm, &mut raw[..count])
         } else {
             voice
                 .cursor
@@ -1427,6 +1439,10 @@ pub(super) struct DspState {
     pub buses: crate::bus::BusState,
     pub feeds: Box<[taps::TapFeed]>,
     pub trace: Option<crate::trace::Recorder>,
+    /// Time-stretch engines, allocated only for a plan with stretch groups.
+    pub stretch: Slab<crate::source::StretchEngine>,
+    /// Bit per engine in use; touched by the audio writer at voice start/end.
+    pub stretch_busy: u64,
 }
 impl DspState {
     pub fn new(
@@ -1485,6 +1501,17 @@ impl DspState {
                 .as_ref()
                 .map(|t| t.recorder())
                 .transpose()?,
+            stretch: Slab::new(
+                if plan.stretch_groups.iter().any(Option::is_some) {
+                    (0..crate::source::STRETCH_VOICES)
+                        .map(|_| crate::source::StretchEngine::with_capacity(plan.rate))
+                        .collect()
+                } else {
+                    Box::new([])
+                },
+                1,
+            ),
+            stretch_busy: 0,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).

@@ -983,6 +983,7 @@ impl Runtime {
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
+                self.assign_stretch(voice, plan, group);
                 self.enforce_voice_limits(plan, group, voice);
                 let routed = self.plans.get(plan.0).unwrap().script.bus(group, r.bus);
                 let state = self.voices.get_mut(voice.0).unwrap();
