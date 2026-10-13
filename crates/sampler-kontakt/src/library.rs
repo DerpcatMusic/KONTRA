@@ -3740,6 +3740,7 @@ mod saved_tests {
         std::fs::write(&path, [0; 16]).unwrap();
         let mut program = menu_program();
         let script = program.0.children.iter_mut().find(|c| c.id == 6).unwrap();
+        script.data.truncate(script.data.len() - 4); // the fixture's empty persistent table
         script.data.extend(2u32.to_le_bytes());
         for entry in [b"%steps ".as_slice(), b"?xy "] {
             script.data.extend((entry.len() as u32).to_le_bytes());
