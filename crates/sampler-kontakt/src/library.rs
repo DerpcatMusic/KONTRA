@@ -1229,6 +1229,7 @@ impl Translation {
                         kill: ir::Kill::Oldest,
                         prefer_released: true,
                         fade: ir::Time::Milliseconds(10.0),
+                        exclusive_set: None,
                     });
                     self.voice_groups[g] = Some(limit);
                     Some(limit)
