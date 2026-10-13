@@ -12,12 +12,17 @@ pub(super) fn distortion(mode: f32, drive: f32, damping: f32) -> Option<Config> 
         .then(|| Config::distortion(mode == 1.0, drive, damping))
 }
 
-/// 0x1d v0x80 Classic Saturator / Shaper (reader [ref]): signed Shape
-/// -1..1 (probe: `linear -1 + 2v`) and algorithm 0. Enhanced and Drums
-/// algorithms are unproved.
+/// 0x1d v0x80 Saturator / Shaper (reader [ref]): signed Shape -1..1
+/// (probe: `linear -1 + 2v`) and algorithm 0 Classic, 1 Enhanced, 2 Drums
+/// (audio [ref] dispatching to [ref]).
 pub(super) fn saturation(shape: f32, algorithm: f32) -> Option<Config> {
-    (algorithm == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(&shape))
-        .then(|| Config::classic(shape))
+    (shape.is_finite() && (-1.0..=1.0).contains(&shape)).then_some(())?;
+    match algorithm {
+        0.0 => Some(Config::classic(shape)),
+        1.0 => Some(Config::enhanced(shape)),
+        2.0 => Some(Config::drums(shape)),
+        _ => None,
+    }
 }
 
 /// 0x20 Lo-Fi (reader [ref], `FFBFF`): Bits, Frequency, flag, Noise
