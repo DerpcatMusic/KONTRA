@@ -555,6 +555,7 @@ impl Translation {
         route.scale = scale.map(|(source, points)| ir::RouteScale {
             source,
             shape: (!points.iter().all(|&(w, y)| (y - w).abs() < 1e-9)).then(|| self.shape(points)),
+            law: ir::ScaleLaw::Multiply,
         });
         let key = format!("{route:?}");
         *self.route_index.entry(key).or_insert_with(|| {

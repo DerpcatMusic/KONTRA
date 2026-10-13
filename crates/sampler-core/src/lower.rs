@@ -1538,7 +1538,12 @@ impl Lowering<'_> {
                 Some(scale) => Some(ModScale {
                     source: source_of(scale.source, &mut program)?,
                     shape: None,
-                    law: Default::default(),
+                    law: match scale.law {
+                        ir::ScaleLaw::Multiply => crate::ModScaleLaw::Multiply,
+                        ir::ScaleLaw::KontaktIntensity { depth, flags, unit } => {
+                            crate::ModScaleLaw::KontaktIntensity { depth, flags, unit }
+                        }
+                    },
                 }),
             };
             let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
