@@ -213,10 +213,29 @@ impl Check<'_> {
                     self.within(pan, -1.0..=1.0, "stereo pan")?;
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
-                Processor::KontaktLegacyEq(eq) => {
-                    self.within(f64::from(eq.frequency), 0.0..=1.0, "legacy EQ frequency")?;
-                    self.within(f64::from(eq.bandwidth), 0.0..=1.0, "legacy EQ bandwidth")?;
-                    self.within(f64::from(eq.gain_db), -18.0..=18.0, "legacy EQ gain")?;
+                Processor::Eq(eq) => {
+                    self.finite(f64::from(eq.output_gain_db), "EQ output gain")?;
+                    self.within(f64::from(eq.count), 1.0..=crate::fx::eq::MAX_BANDS as f64, "EQ band count")?;
+                    for band in eq.bands() {
+                        self.finite(f64::from(band.gain_db), "EQ gain")?;
+                        self.finite(f64::from(band.proportional_q), "EQ proportional Q")?;
+                        match band.law {
+                            crate::fx::eq::Law::Rbj => {
+                                self.within(f64::from(band.frequency), 1e-3..=1e6, "EQ frequency")?;
+                                self.within(f64::from(band.q), 1e-3..=1e3, "EQ Q")?;
+                            }
+                            crate::fx::eq::Law::KontaktLegacy => {
+                                self.within(f64::from(band.frequency), 0.0..=1.0, "legacy EQ frequency")?;
+                                self.within(f64::from(band.q), 0.0..=1.0, "legacy EQ bandwidth")?;
+                                self.within(f64::from(band.gain_db), -18.0..=18.0, "legacy EQ gain")?;
+                            }
+                            crate::fx::eq::Law::Solid(_) => {
+                                self.within(f64::from(band.frequency), 0.0..=1.0, "Solid EQ frequency")?;
+                                self.within(f64::from(band.q), 0.0..=1.0, "Solid EQ Q")?;
+                                self.within(f64::from(band.gain_db), 0.0..=1.0, "Solid EQ gain")?;
+                            }
+                        }
+                    }
                 }
                 Processor::LoFi {
                     bits,
