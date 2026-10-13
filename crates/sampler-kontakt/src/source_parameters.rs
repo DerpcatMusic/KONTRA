@@ -193,7 +193,7 @@ pub(crate) fn internal(
             }
             fields
         }
-        Modulator::Other { .. } => vec![opaque("undecoded_object", &source.data)],
+        Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) | Modulator::Other { .. } => vec![opaque("undecoded_object", &source.data)],
     };
     records.push(record(
         &format!("{location}/source"),
