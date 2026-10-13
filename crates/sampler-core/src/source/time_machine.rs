@@ -125,6 +125,31 @@ pub struct Region {
 /// Largest `step` the buffers are sized for (two octaves up).
 pub const MAX_STEP: f64 = 4.;
 
+/// The engine's own analysis clock: constant `advance` per output frame, held
+/// inside an optional loop, ending at `len` without one.
+#[derive(Clone, Debug, Default)]
+pub struct LinearClock {
+    pos: f64,
+    len: usize,
+    looped: Option<Range<usize>>,
+}
+
+impl LinearClock {
+    fn next(&mut self, hop: usize, advance: f64) -> Option<f64> {
+        if let Some(l) = &self.looped {
+            let span = (l.end - l.start).max(1) as f64;
+            if self.pos >= l.end as f64 {
+                self.pos = l.start as f64 + (self.pos - l.start as f64) % span;
+            }
+        } else if self.pos >= self.len as f64 {
+            return None;
+        }
+        let at = self.pos;
+        self.pos += hop as f64 * advance;
+        Some(at)
+    }
+}
+
 pub struct Engine {
     cfg: ModeConfig,
     grain: usize,
@@ -135,10 +160,10 @@ pub struct Engine {
     scratch: Box<[Frame]>,
     head: usize,
     until_grain: usize,
-    pos: f64,
+    clock: LinearClock,
     /// Where the last grain's content continues in the source (WSOLA target).
     follow: Option<f64>,
-    region: Region,
+    len: usize,
     params: Params,
     /// Output frames left to drain once the source ended.
     drain: Option<usize>,
@@ -168,9 +193,9 @@ impl Engine {
             scratch: vec![[0.; 2]; reach].into(),
             head: 0,
             until_grain: 0,
-            pos: 0.,
+            clock: LinearClock::default(),
             follow: None,
-            region: Region { len: 0, looped: None },
+            len: 0,
             params: Params::default(),
             drain: None,
             starved: false,
@@ -195,14 +220,34 @@ impl Engine {
         self.drain == Some(0)
     }
 
-    /// Begin playing `region` from source frame `from`. Allocation-free.
-    pub fn start(&mut self, src: &(impl ReadFrames + ?Sized), region: Region, from: f64, params: Params) {
+    /// Begin playing `region` from source frame `from` on the engine's own
+    /// linear clock. Allocation-free.
+    pub fn start(
+        &mut self,
+        src: &(impl ReadFrames + ?Sized),
+        region: Region,
+        from: f64,
+        params: Params,
+    ) {
+        self.clock = LinearClock { pos: from, len: region.len, looped: region.looped.clone() };
+        self.start_clocked(src, region.len, from, params);
+    }
+
+    /// Begin playing an asset of `len` frames whose analysis position is
+    /// supplied per grain by the caller's clock (see [`Engine::render_with`]),
+    /// currently at `from`.
+    pub fn start_clocked(
+        &mut self,
+        src: &(impl ReadFrames + ?Sized),
+        len: usize,
+        from: f64,
+        params: Params,
+    ) {
         self.acc.fill([0.; 2]);
         self.head = 0;
         self.until_grain = 0;
-        self.pos = from;
         self.follow = None;
-        self.region = region;
+        self.len = len;
         self.params = params;
         self.drain = None;
         self.starved = false;
@@ -210,30 +255,49 @@ impl Engine {
         // already at full overlap.
         for j in (1..self.cfg.overlap).rev() {
             let skip = j * self.hop;
-            let at = self.pos - skip as f64 * params.advance;
-            self.grain_at(src, at, skip);
+            self.grain_at(src, from - skip as f64 * params.advance, skip);
         }
     }
 
-    /// Source range `render(frames)` is going to read, from the current state.
-    pub fn demand(&self, frames: usize) -> Range<usize> {
+    /// Source range the next `frames` output frames will read when the
+    /// analysis position is `at`.
+    pub fn demand(&self, at: f64, frames: usize) -> Range<usize> {
         let grains = frames / self.hop + 2;
-        let lo = self.pos - self.search_radius() as f64 - 2.;
-        let hi = self.pos
+        let lo = at - self.search_radius() as f64 - 2.;
+        let hi = at
             + (grains * self.hop) as f64 * self.params.advance
             + self.grain as f64 * self.params.step.max(0.)
             + self.search_radius() as f64
             + 4.;
-        lo.max(0.) as usize..(hi.max(0.) as usize).min(self.region.len)
+        lo.max(0.) as usize..(hi.max(0.) as usize).min(self.len)
     }
 
-    /// Fill `out` with output frames, updating the controls first. Returns the
-    /// number of frames produced, short of `out.len()` once the source ended.
+    /// Fill `out` from the engine's own clock. Returns the number of frames
+    /// produced, short of `out.len()` once the source ended.
     pub fn render(
         &mut self,
         src: &(impl ReadFrames + ?Sized),
         params: Params,
         out: &mut [Frame],
+    ) -> usize {
+        let mut clock = self.clock.clone();
+        let advance = params.advance.max(0.);
+        let n = self.render_with(src, params, out, |hop| clock.next(hop, advance));
+        self.clock = clock;
+        n
+    }
+
+    /// Fill `out`, updating the controls first. Each time a grain is due,
+    /// `clock(hop)` returns the source position the grain is analysed at and
+    /// moves the caller's clock `hop` output frames on; `None` ends the
+    /// source. A voice cursor serves as this clock, which is how loops,
+    /// direction and release stay the cursor's business.
+    pub fn render_with(
+        &mut self,
+        src: &(impl ReadFrames + ?Sized),
+        params: Params,
+        out: &mut [Frame],
+        mut clock: impl FnMut(usize) -> Option<f64>,
     ) -> usize {
         self.params = Params {
             step: params.step.clamp(1. / MAX_STEP, MAX_STEP),
@@ -243,7 +307,13 @@ impl Engine {
         self.starved = false;
         for (n, frame) in out.iter_mut().enumerate() {
             if self.until_grain == 0 && self.drain.is_none() {
-                self.next_grain(src);
+                match clock(self.hop) {
+                    Some(at) => {
+                        self.grain_at(src, at, 0);
+                        self.until_grain = self.hop;
+                    }
+                    None => self.drain = Some(self.grain - self.hop),
+                }
             }
             if self.drain == Some(0) {
                 return n;
@@ -263,28 +333,6 @@ impl Engine {
 
     fn search_radius(&self) -> usize {
         (self.cfg.search * self.hop as f32) as usize
-    }
-
-    /// Schedule the grain due now at the analysis position, then move on.
-    fn next_grain(&mut self, src: &(impl ReadFrames + ?Sized)) {
-        let ended = match &self.region.looped {
-            Some(l) => {
-                // Hold inside the loop: wrap the analysis position.
-                let span = (l.end - l.start).max(1) as f64;
-                if self.pos >= l.end as f64 {
-                    self.pos = l.start as f64 + (self.pos - l.start as f64) % span;
-                }
-                false
-            }
-            None => self.pos >= self.region.len as f64,
-        };
-        if ended {
-            self.drain = Some(self.grain - self.hop);
-            return;
-        }
-        self.grain_at(src, self.pos, 0);
-        self.until_grain = self.hop;
-        self.pos += self.hop as f64 * self.params.advance;
     }
 
     /// Synthesize one grain whose nominal analysis start is `at`, writing its
@@ -391,14 +439,9 @@ impl Engine {
                 done += n;
                 continue;
             }
-            let mut index = index as usize;
-            // A loop wraps reads that pass its end; otherwise the asset ends.
-            let limit = self.region.looped.as_ref().map_or(self.region.len, |l| l.end);
-            if let Some(l) = &self.region.looped
-                && index >= l.end
-            {
-                index = l.start + (index - l.start) % (l.end - l.start).max(1);
-            }
+            let index = index as usize;
+            // Reads past the asset end are zeros (loops are the clock's business).
+            let limit = self.len;
             if index >= limit {
                 out.fill([0.; 2]);
                 done = len;

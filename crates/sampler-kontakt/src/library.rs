@@ -1824,6 +1824,15 @@ impl Translation {
             self.unsupported(at, "time machine speed", speed, ir::Reason::InvalidValue);
             speed = 1.0;
         }
+        // The IR carries the source; the core's voice source consumes it once
+        // wired (docs/architecture-v2/KONTAKT_TOPOLOGY.md T04). Until then the
+        // group sounds as a sampler and says so.
+        self.unsupported(
+            at,
+            &format!("{} source (played as a sampler)", source_mode_name(mode)),
+            mode,
+            ir::Reason::NotModeled,
+        );
         let kind = match mode {
             SOURCE_MODE_TM1 => ir::StretchKind::TimeMachine1,
             SOURCE_MODE_TM2 => ir::StretchKind::TimeMachine2,
