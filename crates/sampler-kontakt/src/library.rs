@@ -300,6 +300,7 @@ fn translate(
         cutoff_octaves: HashMap::new(),
         route_intensity: HashMap::new(),
         intensity_scales: Vec::new(),
+        lane_slots: Vec::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -718,6 +719,9 @@ struct Translation {
     /// Assignments whose destination is another modulator's `intensity`; applied
     /// to that modulator's routes once every route exists.
     intensity_scales: Vec<IntensityScale>,
+    /// Module slot -> processor index of the current group's script-addressed
+    /// effect modules (distortion, saturation, formant, lo-fi).
+    lane_slots: Vec<(usize, usize)>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
 }
@@ -1312,6 +1316,7 @@ impl Translation {
         }
         let mut chain = None;
         let mut filter_slots = Vec::new();
+        self.lane_slots.clear();
         let insert = match saved {
             Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
                 version: state.fx.0,
@@ -1350,6 +1355,7 @@ impl Translation {
                 );
                 let mut processors = c.processors;
                 filter_slots = c.filter_slots;
+                self.lane_slots = c.lane_slots;
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
@@ -1691,10 +1697,8 @@ impl Translation {
                     self.target_outcomes
                         .insert((index, usize::from(slot), true, _ordinal), route.is_some());
                     if let Some(route) = route {
-                        if matches!(
-                            self.ir.routes[route.0].target,
-                            ir::Target::LoopStart | ir::Target::LoopLength
-                        ) {
+                        let live = self.script_depth_target(route);
+                        if live {
                             self.loop_route_controls(index, usize::from(slot), _ordinal, route);
                         }
                     }
@@ -1708,6 +1712,12 @@ impl Translation {
             #[cfg(feature = "scan")]
             self.target_outcomes
                 .insert((index, _slot, _external, _ordinal), route.is_some());
+            if let Some(route) = route
+                && _external
+                && self.script_depth_target(route)
+            {
+                self.loop_route_controls(index, _slot, _ordinal, route);
+            }
             routes.extend(route);
         }
         if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
@@ -1970,7 +1980,7 @@ impl Translation {
         });
         let depth = ir::ControlRef(self.ir.controls.len());
         self.ir.controls.push(ir::Control {
-            key: format!("kontakt/group/{group}/external/{slot}/target/{ordinal}/loop-depth"),
+            key: format!("kontakt/group/{group}/external/{slot}/target/{ordinal}/{}", if matches!(self.ir.routes[route.0].target, ir::Target::LoopStart | ir::Target::LoopLength) { "loop-depth" } else { "module-depth" }),
             label: "Loop depth".into(),
             value: ir::ControlValue::Continuous {
                 min: -1.,
@@ -2031,6 +2041,22 @@ impl Translation {
             .index;
         let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
+    }
+
+    /// Whether a script can set this external route's intensity live: loop
+    /// ranges, LFO rates and script-addressed effect knobs (not filters).
+    fn script_depth_target(&self, route: ir::RouteRef) -> bool {
+        match self.ir.routes[route.0].target {
+            ir::Target::LoopStart | ir::Target::LoopLength | ir::Target::SourceRate(_) => true,
+            ir::Target::Processor { parameter, .. } => !matches!(
+                parameter,
+                ir::ProcessorParameter::Gain
+                    | ir::ProcessorParameter::Cutoff
+                    | ir::ProcessorParameter::Resonance
+                    | ir::ProcessorParameter::Response
+            ),
+            _ => false,
+        }
     }
 
     /// An enabled modulation shaper as an IR transfer curve.
@@ -2145,14 +2171,36 @@ impl Translation {
                 matches!(
                     self.ir.modulators[destination.0].source,
                     ir::ModulationSource::Lfo(ir::Lfo {
-                        rate: ir::Frequency::Hertz(_),
+                        rate: ir::Frequency::Hertz(hz),
                         ..
-                    })
+                    }) if sampler_core::v1_voice_controls::LfoFrequency::lane(hz).is_some()
                 )
                 .then_some((ir::Target::SourceRate(destination), ir::Depth::Normalized(i)))
             })
             .flatten();
-        let phase_target = phase_target.or(rate_target);
+        // Script-addressed effect knobs: normalized, additive lane (set D/F of the
+        // law compiler: shaper 98, bitdepth 101, downsample 102, formant 36..38).
+        // `distortionIntensity` (64) is outside both sets, so its source is read
+        // through the unipolar view (`need_uni`).
+        let lane_target = filters.and_then(|(chain, _)| {
+            use ir::ProcessorParameter as P;
+            let slot = usize::from(target.slot?);
+            let &(_, index) = self.lane_slots.iter().find(|(s, _)| *s == slot)?;
+            let chain_data = self.ir.chains.get(chain.0)?;
+            let processor = chain_data.pre_amplitude.iter().chain(&chain_data.post_amplitude).nth(index)?;
+            let parameter = match (processor, target.param.as_str()) {
+                (ir::Processor::LiveSaturation { .. }, "shaper") => P::Shape,
+                (ir::Processor::LiveDistortion { .. }, "distortionIntensity") => P::Drive,
+                (ir::Processor::LiveFormant { .. }, "formantTalk") => P::FormantTalk,
+                (ir::Processor::LiveFormant { .. }, "formantSharp") => P::FormantSharp,
+                (ir::Processor::LiveFormant { .. }, "formantSize") => P::FormantSize,
+                (ir::Processor::LiveLoFi { .. }, "bitdepth") => P::LoFiBits,
+                (ir::Processor::LiveLoFi { .. }, "downsample") => P::LoFiFrequency,
+                _ => return None,
+            };
+            Some((ir::Target::Processor { chain, index, parameter }, ir::Depth::Normalized(i)))
+        });
+        let phase_target = phase_target.or(rate_target).or(lane_target);
         // Native Ladder/Daft use normalized knob addition (v1 filter.rs);
         // the generic filter fallback retains its octave law.
         let addressed = phase_target.or_else(|| {
@@ -2354,6 +2402,10 @@ impl Translation {
             }
         };
         self.route_intensity.insert(self.ir.routes.len(), (i, unit));
+        if target.param == "distortionIntensity" {
+            let route = ir::RouteRef(self.ir.routes.len());
+            self.ir.source_indices.unipolar_routes.push(route);
+        }
         self.ir.routes.push(ir::Route {
             source,
             target: route_target,
@@ -3695,6 +3747,7 @@ mod modulation {
             cutoff_octaves: HashMap::new(),
             route_intensity: HashMap::new(),
             intensity_scales: Vec::new(),
+            lane_slots: Vec::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),

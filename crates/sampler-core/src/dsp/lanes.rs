@@ -278,6 +278,8 @@ pub(crate) fn process(
             | PreparedProcessor::Phaser(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveDistortion(_)
+            | PreparedProcessor::LiveFormant { .. }
+            | PreparedProcessor::LiveLoFi { .. }
             | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }

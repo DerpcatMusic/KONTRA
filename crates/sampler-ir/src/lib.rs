@@ -240,6 +240,10 @@ pub struct SourceIndices {
     /// application order; each combination's input is the previous result.
     #[cfg_attr(feature = "cache", serde(default))]
     pub chained_scales: Vec<(RouteRef, RouteScale)>,
+    /// Routes whose target law reads the source's unipolar view ((v + 1) / 2 of a
+    /// bipolar source): FUN_140873040's `need_uni` targets outside its signed sets.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub unipolar_routes: Vec<RouteRef>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -1481,6 +1485,19 @@ pub enum ProcessorParameter {
     CellLR,
     CellRL,
     CellRR,
+    /// Normalized knobs of a script-addressed Kontakt effect module (native
+    /// engine-parameter lanes): Classic Saturation shape, Distortion drive and
+    /// damping, Formant I talk/sharp/size, Lo-Fi bits/frequency/noise/color.
+    Shape,
+    Drive,
+    Damping,
+    FormantTalk,
+    FormantSharp,
+    FormantSize,
+    LoFiBits,
+    LoFiFrequency,
+    LoFiNoise,
+    LoFiColor,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1545,6 +1562,10 @@ pub enum Processor {
     /// Script-addressed Classic Saturation; the saved static form remains above.
     LiveSaturation { shape: f32, address: SlotAddress },
     LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
+    /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
+    LiveFormant { knobs: [f32; 3], address: SlotAddress },
+    /// Script- and modulation-addressed Lo-Fi: saved Bits, Frequency, Noise level, color.
+    LiveLoFi { bits: f32, frequency: f32, noise: f32, color: f32, address: SlotAddress },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.
