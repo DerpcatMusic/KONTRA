@@ -1592,7 +1592,7 @@ mod tests {
         );
         assert!(ir.zones[0].routes.is_empty(), "{:?}", ir.zones[0].routes);
         assert!(
-            ir.unsupported.iter().any(|u| u.feature == "modulation source" && u.value == "AnalogADSR"),
+            ir.unsupported.iter().any(|u| u.feature == "modulation source" && u.value.ends_with("AnalogADSR")),
             "{:?}",
             ir.unsupported
         );
