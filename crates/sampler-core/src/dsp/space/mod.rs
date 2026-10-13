@@ -224,10 +224,6 @@ impl Space {
         Ok(())
     }
 
-    pub(crate) fn has_convolution(&self) -> bool {
-        self.conv.is_some()
-    }
-
     /// Process up to [`crate::dsp::BLOCK`] frames of each channel in place.
     pub(crate) fn process(&mut self, [left, right]: [&mut [f32]; 2]) {
         let n = left.len().min(right.len()).min(crate::dsp::BLOCK);

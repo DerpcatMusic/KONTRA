@@ -106,7 +106,7 @@ impl Translation {
             Ok(pick(node, name, default)? * if beats { SYNC_SECONDS_PER_BEAT } else { 1.0 })
         };
         let mut network = Network::DEFAULT;
-        let mut mix = 0.5;
+        let mix: f64;
         match kind {
             "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" => {
                 network.topology = Topology::CombAllpass;
@@ -163,7 +163,7 @@ impl Translation {
                 if kind == "SparkVerb" && flag(node, "HiCut")? || kind == "Bloom" {
                     network.input_cutoff_hz = number(node, "Rolloff", 20_000.0)?;
                 }
-                mix = number(node, "Mix", 0.5)?;
+                let mix = number(node, "Mix", 0.5)?;
                 let gain = 10f64.powf(number(node, "ReverbGain", 0.0)? / 20.0);
                 for (name, off) in [
                     ("Freeze", 0.0),
