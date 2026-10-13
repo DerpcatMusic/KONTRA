@@ -1836,6 +1836,7 @@ impl ControlState {
             .position(|p| p.index == index)
             .map(|i| self.pitch[i].level())
     }
+    #[cfg(test)]
     pub(crate) fn invalidate_inputs(&mut self) { self.settled = None; }
     pub(crate) fn amplitude(&self) -> Primary {
         Primary { value: self.amplitude, rate: self.rate }
@@ -2054,6 +2055,28 @@ mod adapter_tests {
                 state.plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| intensity),
                 forced.plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| intensity)
             );
+        }
+        // Raw controller writes and unfinished lag must still reevaluate on
+        // every cell. Compare the pinned recomputation path at variable lengths.
+        for lag in [0., 0.005] {
+            let plan = ControlPlan::prepare(ControlDescription {
+                mods:ModTable::new(vec![Mod { route:Some((Source::Cc(1),Target::Volume)),
+                    intensity:1., lag, curve:Some(Arc::new(std::array::from_fn(|i| (i as f32/127.).powi(2)))) }].into_boxed_slice()).unwrap(),
+                ..Default::default()
+            }, 48000.).unwrap();
+            let mut cached = ControlState::new(&plan);
+            cached.reset_read(&plan, |_,_| 0.1, 0);
+            let mut forced = cached.clone();
+            for cell in 0..400 {
+                let value = [0.1,0.9,0.3,0.3][(cell / 100).min(3)];
+                let frames = [1,7,64][cell % 3];
+                let depth = if cell < 200 { 0.7 } else { -0.4 };
+                forced.invalidate_inputs();
+                let a = cached.plan_controls_read_with_intensity(&plan, |_,_|value, 11, frames, |_,_|depth);
+                let b = forced.plan_controls_read_with_intensity(&plan, |_,_|value, 11, frames, |_,_|depth);
+                assert_eq!(a,b,"lag={lag} cell={cell}");
+                assert_eq!(cached.mods,forced.mods);
+            }
         }
     }
 

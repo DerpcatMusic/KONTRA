@@ -1725,8 +1725,44 @@ pub(crate) struct Ramp {
     pub script_fade: Option<crate::script_params::Fade>,
 }
 
+/// Cell slopes prepared once; preserve the original F32 operation order and
+/// physical sample-clock fade. Port the v1 0cb7a8a0:src/engine/voice.rs block
+/// delta preparation, retaining v2's absolute offset law. NI group amplifier
+/// scope and Kontakt topology B11 effect-owned cadence remain unchanged.
+/// No recursive accumulation or cadence change.
+pub(crate) struct GainRamp {
+    from: [f32; 2],
+    step: [f32; 2],
+    begin: u64,
+    script_fade: Option<crate::script_params::Fade>,
+}
+impl GainRamp {
+    pub(crate) fn at(&self, at: u64) -> [f32; 2] {
+        let offset = at.saturating_sub(self.begin) as f32;
+        let gains = std::array::from_fn(|c| self.from[c] + self.step[c] * offset);
+        match self.script_fade {
+            Some(fade) => {
+                let factor = fade.at(at) as f32;
+                gains.map(|gain| gain * factor)
+            },
+            None => gains,
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! { pub(crate) static SAMPLE_GAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 impl Ramp {
+    pub(crate) fn prepare_gains(self) -> GainRamp {
+        let len = self.end.saturating_sub(self.begin).max(1) as f32;
+        GainRamp { from:self.from.gains,
+            step:std::array::from_fn(|c| (self.to.gains[c] - self.from.gains[c]) / len),
+            begin:self.begin, script_fade:self.script_fade }
+    }
     pub(crate) fn gains_at(self, at: u64) -> [f32; 2] {
+        #[cfg(test)]
+        SAMPLE_GAIN_CALLS.set(SAMPLE_GAIN_CALLS.get() + 1);
         let len = self.end.saturating_sub(self.begin).max(1) as f32;
         let offset = at.saturating_sub(self.begin) as f32;
         let gains = std::array::from_fn(|c| {
