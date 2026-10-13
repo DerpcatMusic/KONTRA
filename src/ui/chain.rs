@@ -362,6 +362,7 @@ fn detail(p: ir::Processor) -> String {
                     ir::fx::space::Topology::Plate => "Plate reverb",
                     ir::fx::space::Topology::Diffuser => "Diffusion",
                     ir::fx::space::Topology::Freeverb => "Reverb (legacy)",
+                    ir::fx::space::Topology::Galois => "Reverb",
                 },
                 n.decay_seconds,
                 n.size * 100.,
