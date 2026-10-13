@@ -9,7 +9,7 @@
 mod programs;
 mod vm;
 
-pub use vm::{accepts, decode, decode_prefix, readers, synthesize, Decoded, Field, ReaderInfo, Undecoded};
+pub use vm::{accepts, class_of, decode, decode_prefix, readers, synthesize, synthesize_all, Decoded, Field, ReaderInfo, Undecoded};
 
 #[cfg(test)]
 mod tests {

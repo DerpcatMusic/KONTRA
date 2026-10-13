@@ -20,7 +20,7 @@ from pathlib import Path
 here = Path(__file__).parent
 sys.path.insert(0, str(here))
 from cparse import parse_functions  # noqa: E402
-from reader_lower import OVERRIDES, PRIMS, PRIM_STREAM_ARG, load_functions, mentions, stream_params, vars_in  # noqa: E402
+from reader_lower import EXTRA_SEEDS, OVERRIDES, PRIMS, PRIM_STREAM_ARG, load_functions, mentions, stream_params, vars_in  # noqa: E402
 
 NOISE = re.compile(r"FUN_(1443c|140517|1407fa|1407f6|140714|1404f6|1407039d|140709720|140711)")
 
@@ -120,7 +120,7 @@ def query(addrs):
 
 def main():
     classes, out = sys.argv[1], sys.argv[2]
-    seeds = {"FUN_" + r["reader_va"][2:] for r in csv.DictReader(open(classes), delimiter="\t")}
+    seeds = {"FUN_" + r["reader_va"][2:] for r in csv.DictReader(open(classes), delimiter="\t")} | set(EXTRA_SEEDS)
     tried = set()
     while True:
         funcs = load_functions([out]) if Path(out).exists() else {}
