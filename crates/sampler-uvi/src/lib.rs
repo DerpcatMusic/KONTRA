@@ -20,6 +20,7 @@ mod coverage;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod engine_parameters;
+mod fx;
 mod inserts;
 pub use inserts::InsertNode;
 mod modulation;
