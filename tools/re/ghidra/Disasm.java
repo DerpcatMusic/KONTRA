@@ -1,6 +1,7 @@
 // Print instructions from an address (or a whole function when count is 0).
 //   RE_SCRIPT=Disasm.java tools/re/query.sh 0x140962c60 40
-// Args: <address> [count, 0 = the containing function]. Output: `<addr> <instruction>` per line.
+// Args: <address> [count, 0 = the containing function | 0x<end> = linear range]. Output: `<addr> <instruction>` per line.
+//   RE_SCRIPT=Disasm.java tools/re/query.sh 0x14156bc40 0x14156bd60
 // @category KONTRA
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
@@ -12,8 +13,9 @@ public class Disasm extends GhidraScript {
     public void run() throws Exception {
         String[] args = getScriptArgs();
         Address at = toAddr(args[0]);
-        int n = args.length > 2 ? 0 : args.length > 1 ? Integer.parseInt(args[1]) : 40;
-        if (args.length > 2) {  // range sweep: <start> <end> <ignored>: disassemble gaps linearly
+        boolean range = args.length > 2 || (args.length == 2 && args[1].startsWith("0x"));
+        int n = range ? 0 : args.length > 1 ? Integer.parseInt(args[1]) : 40;
+        if (range) {  // linear sweep <start> <end>, disassembling gaps
             Address stop = toAddr(args[1]);
             Address a = at;
             while (a.compareTo(stop) < 0) {
@@ -25,7 +27,7 @@ public class Disasm extends GhidraScript {
             }
             return;
         }
-        if (n == 0 && args.length <= 2) {
+        if (n == 0) {
             Function f = getFunctionContaining(at);
             if (f == null) { println("// no function"); return; }
             for (Instruction i : currentProgram.getListing().getInstructions(f.getBody(), true)) println(i.getAddress() + " " + i);

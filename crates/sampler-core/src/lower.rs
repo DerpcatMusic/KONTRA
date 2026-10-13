@@ -3,11 +3,11 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, CompressorSettings, ControlDefinition,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, DynamicsSettings,
     ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
     Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
     LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
-    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region, ReverbSettings,
+    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
     SelectionPolicy, Selector, Sequence, SequenceScope, SlotKind, StateVariableFilter, SvfMode,
     Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
     slot_control,
@@ -157,6 +157,8 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
         curve: match c.curve {
             fx::Curve::Identity => Curve::Identity,
             fx::Curve::Classic { shape } => Curve::Classic(knob(P::Shape, shape)),
+            fx::Curve::Enhanced { shape } => Curve::Enhanced(knob(P::Shape, shape)),
+            fx::Curve::Drums { shape } => Curve::Drums(knob(P::Shape, shape)),
             fx::Curve::Tube { drive } => Curve::Tube(knob(P::Drive, drive)),
             fx::Curve::Transistor { drive } => Curve::Transistor(knob(P::Drive, drive)),
             fx::Curve::Rectifier(mode) => Curve::Rectifier(match mode {
@@ -170,6 +172,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             level: knob(P::LoFiNoise, n.level),
             color: knob(P::LoFiColor, n.color),
         }),
+        tone: c.tone,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
             width: Parameter::Constant(s.width),
@@ -1037,10 +1040,7 @@ impl Lowering<'_> {
                 .iter()
                 .chain(&chain.post_amplitude)
                 .any(|p| {
-                    matches!(
-                        p,
-                        ir::Processor::Reverb(_) | ir::Processor::Convolution { .. }
-                    )
+                    matches!(p, ir::Processor::Space(_))
                 })
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
@@ -1968,18 +1968,15 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
-            (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
-            (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
-            (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
             (Processor::Eq(eq), ReferenceDecibels) => eq.reference_db = parameter,
             (Processor::Eq(eq), Enabled) => eq.enabled = parameter,
-            (Processor::Compressor(c), Threshold) => c.threshold_db = parameter,
-            (Processor::Compressor(c), Ratio) => c.ratio = parameter,
-            (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
-            (Processor::Compressor(c), Release) => c.release_seconds = parameter,
+            (Processor::Dynamics(c), Threshold) => c.threshold = parameter,
+            (Processor::Dynamics(c), Ratio) => c.ratio = parameter,
+            (Processor::Dynamics(c), Attack) => c.attack_seconds = parameter,
+            (Processor::Dynamics(c), Release) => c.release_seconds = parameter,
             (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Width) => s.width = parameter,
             (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Pan) => s.pan = parameter,
             (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
@@ -2135,28 +2132,7 @@ impl Lowering<'_> {
         let mut starts = Vec::with_capacity(listed.len() + 1);
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
-            let mut stages = if let ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak { gain },
-                cutoff: ir::Frequency::Hertz(hz),
-                resonance: ir::Resonance::Q(q),
-            }) = **p
-                && !self.live_bound(chain, start + index)
-                && self
-                    .ir
-                    .processor_controls
-                    .iter()
-                    .any(|b| b.chain == chain && b.index == start + index)
-            {
-                vec![Processor::PeakingEq(crate::PeakingEq {
-                    frequency: Parameter::Constant(((hz / 20.).log10() / 3.).clamp(0., 1.)),
-                    bandwidth: Parameter::Constant(crate::PeakingEq::bandwidth_knob(
-                        crate::PeakingEq::octaves_of_q(q),
-                    )),
-                    gain_db: Parameter::Constant(
-                        20. * gain.linear().log10() / crate::PeakingEq::GAIN_SCALE,
-                    ),
-                })]
-            } else if let Some(live) = self.live_stage(chain, start + index, p) {
+            let mut stages = if let Some(live) = self.live_stage(chain, start + index, p) {
                 vec![live]
             } else {
                 self.processors(owner, **p)?
@@ -2207,7 +2183,7 @@ impl Lowering<'_> {
         Ok(processors)
     }
 
-    /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
+    /// One or more runtime stages: a 4- or 6-pole filter is two or three cascaded 2-pole sections.
     fn processors(
         &self,
         owner: &str,
@@ -2220,23 +2196,20 @@ impl Lowering<'_> {
             })
         };
         if let ir::Processor::Eq(config) = &processor {
-            return crate::dsp::eq_family::lower(config, self.rate).map_err(core(Stage::Filter, owner));
+            return Ok(crate::dsp::eq_family::lower(config));
         }
         let kind = match processor {
             ir::Processor::Filter(f) => f.kind,
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        let half = match kind {
-            ir::FilterKind::LowPass { poles: 4 } => ir::FilterKind::LowPass { poles: 2 },
-            ir::FilterKind::HighPass { poles: 4 } => ir::FilterKind::HighPass { poles: 2 },
-            ir::FilterKind::BandPass { poles: 4 } => ir::FilterKind::BandPass { poles: 2 },
-            ir::FilterKind::Notch { poles: 4 } => ir::FilterKind::Notch { poles: 2 },
+        let (half, sections) = match kind {
+            ir::FilterKind::LowPass { poles: poles @ (4 | 6) } => (ir::FilterKind::LowPass { poles: 2 }, poles / 2),
+            ir::FilterKind::HighPass { poles: poles @ (4 | 6) } => (ir::FilterKind::HighPass { poles: 2 }, poles / 2),
+            ir::FilterKind::BandPass { poles: poles @ (4 | 6) } => (ir::FilterKind::BandPass { poles: 2 }, poles / 2),
+            ir::FilterKind::Notch { poles: poles @ (4 | 6) } => (ir::FilterKind::Notch { poles: 2 }, poles / 2),
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        Ok(vec![
-            self.processor(owner, two(half))?,
-            self.processor(owner, two(half))?,
-        ])
+        (0..sections).map(|_| self.processor(owner, two(half))).collect()
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
@@ -2245,24 +2218,16 @@ impl Lowering<'_> {
             ir::Processor::Color(c) => Processor::Color(color_settings(c)),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
-            ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
-                decay_seconds: r.decay_seconds,
-                size: r.size,
-                damping_hz: r.damping_hz,
-                modulation_seconds: r.modulation_seconds,
-                diffusion: r.diffusion,
-                predelay_seconds: r.predelay_seconds,
-                input_cutoff_hz: r.input_cutoff_hz,
-                low_shelf_db: r.low_shelf_db,
-                width: r.width,
-            }),
-            ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
-                threshold_db: Parameter::Constant(c.threshold_db),
-                ratio: Parameter::Constant(c.ratio),
+            ir::Processor::Space(config) => Processor::Space(config),
+            ir::Processor::Dynamics(c) => Processor::Dynamics(DynamicsSettings {
+                law: c.law,
+                link: c.link,
+                makeup: c.makeup.linear(),
+                mix: c.mix,
+                threshold: Parameter::Constant(c.threshold()),
+                ratio: Parameter::Constant(c.ratio()),
                 attack_seconds: Parameter::Constant(c.attack.seconds()),
                 release_seconds: Parameter::Constant(c.release.seconds()),
-                makeup: c.makeup.linear(),
-                link: c.link,
             }),
             ir::Processor::Branch {
                 gain, first, last, ..
@@ -2313,11 +2278,14 @@ impl Lowering<'_> {
                 Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
             }
             ir::Processor::TimeMod(config) => Processor::TimeMod(config),
-            ir::Processor::KontaktEnhancedCompressor { knobs, link } => {
-                Processor::KontaktEnhancedCompressor { knobs, link }
-            }
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
+            ir::Processor::FilterBank(c) => match c.topology {
+                ir::fx::filter::Topology::FormantII => {
+                    Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
+                }
+                _ => return Err(unsupported(owner, Feature::Controls)),
+            },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
@@ -2330,11 +2298,6 @@ impl Lowering<'_> {
                 high: 0.0,
                 ..self.slot_range(SlotKind::Bypass, address)
             }),
-            ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
-                impulse: impulse.0,
-                dry,
-                wet,
-            },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             // An EQ lowers to several stages: `processors` handles it before this point.
             ir::Processor::Eq(_) => return Err(unsupported(owner, Feature::Controls)),
@@ -2483,13 +2446,15 @@ impl Lowering<'_> {
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
                     | Processor::ControlMatrix(_)
-                    | Processor::Compressor(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
-                    Processor::Reverb(r) => r.tail_frames(self.rate),
-                    Processor::Convolution { impulse, .. } => {
-                        crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32
-                    }
+                    Processor::Space(config) => crate::dsp::space::tail_frames(
+                        config,
+                        self.rate,
+                        config.impulse.map(|i| &impulses[i.0]),
+                    ),
+                    // The look-ahead of a dynamics stage is delay the signal rings out of.
+                    Processor::Dynamics(d) => d.latency_frames(self.rate),
                     _ => (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32,
                 })
                 .max()

@@ -500,8 +500,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
 #[test]
 fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
     use sampler_core::{
-        ControlDefinition, ControlDomain, ControlId, ControlRange, ControlValue, Parameter,
-        PeakingEq,
+        ControlDefinition, ControlDomain, ControlId, ControlRange, ControlValue, EqBand,
     };
     let lane = |i| ControlRange {
         control: ControlId(i),
@@ -532,11 +531,7 @@ fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
                             wet: lane(1),
                             bypass: lane(2),
                         },
-                        Processor::PeakingEq(PeakingEq {
-                            frequency: Parameter::Constant(0.6),
-                            bandwidth: Parameter::Constant(0.4),
-                            gain_db: Parameter::Constant(6.),
-                        }),
+                        Processor::Eq(EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, 2000., 1., 6.)),
                     ],
                     vec![],
                     0,

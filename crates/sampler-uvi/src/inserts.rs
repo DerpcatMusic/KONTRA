@@ -171,100 +171,63 @@ impl Translation {
                     out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
-                "CompExp" => {
-                    // Falcon manual, Compressor Expander: threshold dB, ratio,
-                    // attack/release ms, manual makeup dB. The compressor law is
-                    // the shared textbook one (ir::Compressor); UVI's own is not
-                    // recovered, and the module has no stereo-link control.
-                    for (name, why, off) in [
-                        ("AutoMakeUp", "CompExp auto makeup", 0.0),
-                        ("GateRatio", "CompExp gate (expander)", 1.0),
-                    ] {
-                        let v = number(node, name, off)?;
-                        if v != off
-                            && (name != "GateRatio"
-                                || number(node, "GateThreshold", -130.0)? > -130.0)
-                        {
-                            self.unsupported(&at, why, v);
+                "BitCrusher" => {
+                    // Kernel 0x1412d1770; the public fields are the kernel's
+                    // members unchanged (ctor defaults 22050, 16, 0, 1; setters
+                    // 0x141041710.., Cutoff 0x1412d1730 -> tilt filter).
+                    let hertz = number(node, "EffectiveSampleRate", 22050.0)?;
+                    let bits = number(node, "BitSize", 16.0)?;
+                    let drive = number(node, "Drive", 0.0)?;
+                    let cutoff = number(node, "Cutoff", 0.0)?;
+                    let mix = number(node, "Mix", 1.0)?;
+                    if !(hertz >= 1.0
+                        && (1.0..=32.0).contains(&bits)
+                        && (0.0..=1.0).contains(&drive)
+                        && (-1.0..=1.0).contains(&cutoff)
+                        && (0.0..=1.0).contains(&mix))
+                    {
+                        self.unsupported(&at, "BitCrusher value outside its public range", "");
+                        out.truncate(slot);
+                        placed.push((id, slot, 0));
+                        continue;
+                    }
+                    out.push(ir::Processor::Color(ir::fx::color::Config::bit_crusher(
+                        hertz,
+                        bits,
+                        drive,
+                        cutoff as f32,
+                        mix,
+                    )));
+                }
+                k if crate::fx::dynamics::handles(k) => {
+                    crate::fx::dynamics::translate(self, node, &at, &mut out)?;
+                }
+                tag if super::fx::filter::handles(tag) => {
+                    match super::fx::filter::translate(node, key, |name, default| {
+                        number(node, name, default)
+                    })? {
+                        Ok(done) => {
+                            out.extend(done.processors);
+                            for (feature, value) in done.unsupported {
+                                self.unsupported(&at, feature, value);
+                            }
+                        }
+                        Err(gap) => {
+                            self.unsupported(&at, &format!("{} ({})", gap.name, gap.reason), "");
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
+                            continue;
                         }
                     }
-                    let mix = number(node, "Mix", 1.0)?;
-                    if mix != 1.0 {
-                        self.unsupported(&at, "CompExp mix", mix);
-                    }
-                    out.push(ir::Processor::Compressor(ir::Compressor {
-                        threshold_db: number(node, "CompThreshold", 0.0)?,
-                        ratio: number(node, "CompRatio", 10.0)?.max(1.0),
-                        attack: ir::Time::Milliseconds(number(node, "CompAttack", 10.0)?.max(0.0)),
-                        release: ir::Time::Milliseconds(
-                            number(node, "CompRelease", 100.0)?.max(0.0),
-                        ),
-                        makeup: db(number(node, "MakeUpGain", 0.0)?),
-                        link: true,
-                    }));
-                }
-                "OnePole" => {
-                    let tracking = number(node, "KeyTracking", 0.0)?;
-                    let key = key.map_or(60.0, f64::from);
-                    let hz = (number(node, "Freq", 1000.0)?
-                        * 2f64.powf(tracking * (key - 60.0) / 12.0))
-                    .clamp(20.0, 20000.0);
-                    if tracking != 0.0 {
-                        self.unsupported(
-                            &at,
-                            "OnePole key tracking (keygroup middle key)",
-                            tracking,
-                        );
-                    }
-                    let poles = 1;
-                    out.push(ir::Processor::Filter(ir::Filter {
-                        kind: if number(node, "Mode", 0.0)? == 0.0 {
-                            ir::FilterKind::LowPass { poles }
-                        } else {
-                            ir::FilterKind::HighPass { poles }
-                        },
-                        cutoff: ir::Frequency::Hertz(hz),
-                        resonance: ir::Resonance::Decibels(0.0),
-                    }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
-                    // No file (or an unreadable one) leaves a unit impulse: the
-                    // processor stays, so a script can swap an impulse in.
-                    let asset = node
-                        .attribute("SamplePath")
-                        .filter(|p| !p.is_empty())
-                        .and_then(|sample| self.asset(&at, sample));
-                    self.ir.impulses.push(ir::Impulse {
-                        rate: 48000,
-                        left: vec![1.0],
-                        right: vec![1.0],
-                        asset,
-                    });
-                    let mut shape = sampler_core::neutral_impulse_shape();
-                    shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
-                    if node.has_tag_name("SampledReverb") {
-                        shape.sampled_reverb = true;
-                        shape.time = number(node, "Time", 1.0)?;
-                        shape.damping_low = number(node, "DampingLow", 0.0)?;
-                        shape.damping_high = number(node, "DampingHigh", 0.0)?;
-                        shape.pre_delay_ms = number(node, "PreDelay", 50.0)?;
-                        shape.width = number(node, "Width", 0.0)?;
-                    }
-                    self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
-                    self.ir.impulse_shapes.push(Some(shape));
-                    if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
-                        self.ir.unsupported.push(ir::Unsupported {
-                            location: at.clone(),
-                            feature: "positive SampledReverb damping".into(),
-                            value: String::new(),
-                            reason: ir::Reason::UnknownLaw,
-                        });
-                    }
-                    out.push(ir::Processor::Convolution {
-                        impulse: ir::ImpulseRef(self.ir.impulses.len() - 1),
-                        dry: number(node, "Dry", 0.0)?,
-                        wet: number(node, "Wet", 1.0)?,
-                    });
+                    let processor = self.impulse_player(node, &at)?;
+                    out.push(processor);
+                }
+                "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+                    if !voice =>
+                {
+                    out.extend(self.algorithmic_reverb(node, &at)?);
                 }
                 "TrackDelay" => {
                     let time = number(node, "DelayTime", 0.0)?;
