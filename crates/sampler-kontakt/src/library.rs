@@ -4299,6 +4299,32 @@ mod modulation {
         }
     }
 
+    /// A saved-bypassed LFO with module targets keeps a live depth lane (unit =
+    /// the route's own depth per intensity); a route with no known unit is not bound.
+    #[test]
+    fn internal_module_routes_bind_live_depth_in_route_units() {
+        let mut out = translation();
+        out.ir.routes.push(ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter: ir::ProcessorParameter::Resonance,
+            },
+            depth: ir::Depth::Normalized(0.),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        });
+        let mut bypass = None;
+        let t = target("filterQ", 0.);
+        assert!(!out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        out.route_intensity.insert(0, (0., 1.));
+        assert!(out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        assert_eq!(out.ir.source_indices.route_controls.len(), 1);
+    }
+
     /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
     /// envelope minus sustain falls 0.51, 0.23, 0.085, 0.02 at 0.25 s steps
     /// from the 2 s peak (1 - 0.25 = 0.75 of travel, so ratios .67/.30/.11/.026).
