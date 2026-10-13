@@ -140,7 +140,7 @@ fn authored_program_translates_loads_and_renders() {
     assert!(matches!(
         ir.modulators[route.source.0].source,
         ir::ModulationSource::Lfo(ir::Lfo {
-            shape: ir::LfoShape::Sine,
+            shape: ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Sinus)),
             rate: ir::Frequency::Hertz(5.0),
             ..
         })

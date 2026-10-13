@@ -5,4 +5,5 @@ pub mod envelope;
 pub mod follower;
 pub mod glide;
 pub mod lfo;
+pub mod pattern_arp;
 pub mod step_table;

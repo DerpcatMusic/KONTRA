@@ -325,6 +325,8 @@ pub use stereo::StereoSettings;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 mod reverb;
+mod impulse_shape;
+pub use impulse_shape::{neutral_impulse_shape, shape_impulse};
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
