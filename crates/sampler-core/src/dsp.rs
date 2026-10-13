@@ -165,7 +165,6 @@ pub enum Processor {
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
     KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
-    LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
     /// output joins the sum. The last branch leaves the sum as the signal.
@@ -176,16 +175,8 @@ pub enum Processor {
         first: bool,
         last: bool,
     },
-    /// Kontakt Gainer (DSP_SYSTEM_INVENTORY "Gainer", KONTAKT_REFERENCE s.25):
-    /// `x * (dry + g)` where `g` follows `gain` through a one-pole using the
-    /// native per-frame coefficient, starting at its first target. Constant
-    /// or control targets only; per-voice scalar path.
-    Gainer {
-        dry: f64,
-        gain: Parameter,
-    },
-    /// Native Stereo Modeller width/balance smoothing and optional right delay.
-    StereoModeller(StereoSettings),
+    /// Drive, character and utility: the universal color unit (see [`color`]).
+    Color(color::Settings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
     /// Pinned v1 native Ladder LP4, with separate preallocated family state.
@@ -197,21 +188,8 @@ pub enum Processor {
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
     LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
-    /// WaveShaper rectification (stateless).
-    Rectify(Rectifier),
-    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
-    Saturation(f32),
-    /// NI Saturator Shape / KSP ENGINE_PAR_SHAPE; direct template copy 0x1408378f0.
-    LiveSaturation(Parameter),
-    LiveDistortion { transistor: bool, drive: Parameter, damping: Parameter },
     /// Formant I with Talk, Sharp, Size as event-rate lanes (KSP ENGINE_PAR_FORMANT_*).
     LiveFormant([Parameter; 3]),
-    /// Lo-Fi with Bits, Frequency, Noise level and color as lanes.
-    LiveLoFi { bits: Parameter, frequency: Parameter, noise: Parameter, color: Parameter },
-    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
-    Distortion { transistor: bool, drive: f32, damping: f32 },
-    /// Formant Crusher decimation; per-voice scalar path.
-    Decimate(Decimator),
     StateVariable(StateVariableFilter),
     /// Live gain owner for the v1 TPT peaking-band fallback.
     PeakingEq(PeakingEq),
@@ -268,26 +246,15 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
             Processor::Compressor(settings) => settings.valid(),
-            Processor::Decimate(decimator) => decimator.valid(),
-            Processor::LoFi(settings) => settings.valid(),
+            Processor::Color(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
             Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
-            Processor::Rectify(_) => true,
-            Processor::LiveSaturation(shape) => shape.valid() && !matches!(shape, Parameter::Expression { .. }) && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v)),
             Processor::LiveFormant(knobs) => knobs.iter().all(live_knob),
-            Processor::LiveLoFi { bits, frequency, noise, color } => [bits, frequency, noise, color].into_iter().all(live_knob),
-            Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| p.valid() && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. })) && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))),
-            Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
-            Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            Processor::Gainer { dry, gain } => {
-                dry.is_finite() && gain.valid() && !matches!(gain, Parameter::Expression { .. })
-            }
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -307,7 +274,6 @@ mod enhanced_compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
-mod distortion;
 mod formant;
 mod phaser;
 pub use ar::ArSettings;
@@ -321,20 +287,15 @@ pub use native_eq::KontaktLegacyEqSettings;
 mod live;
 pub use live::{LiveFilter, LiveShape};
 mod ladder_kernel;
-mod lofi;
-pub use lofi::LoFiSettings;
 mod ladder;
 pub use ladder::LadderSettings;
 mod delay;
-mod stereo;
 mod taps;
-pub use stereo::StereoSettings;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 mod reverb;
 mod impulse_shape;
 pub use impulse_shape::{neutral_impulse_shape, shape_impulse};
-mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
 pub(super) use control::ControlRamp;
@@ -346,7 +307,10 @@ pub use daft::DaftSettings;
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
-pub use shaping::{Decimator, Rectifier};
+pub use color::{
+    CurveSettings, Decimator, GainerSettings, HoldSettings, NoiseSettings, QuantizerSettings, Rectifier,
+    Settings as ColorSettings, StereoSettings,
+};
 pub use svf::{OutputLowPass, StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
@@ -364,24 +328,15 @@ pub(super) enum PreparedProcessor {
     },
     Compressor(compressor::Compressor),
     KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
-    Rectify(Rectifier),
-    Saturation(f32),
-    LiveSaturation(control::PreparedParameter),
-    LiveDistortion(distortion::LiveDistortion),
     LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
-    LiveLoFi { knobs: [control::PreparedParameter; 4], rate: u32 },
     Formant(formant::Formant),
     Phaser(phaser::Phaser),
     LegacyPhaser(phaser::LegacyPhaser),
-    Distortion(distortion::Distortion),
-    Gainer {
-        dry: f64,
-        gain: control::PreparedParameter,
-        /// Per-sample one-pole coefficient.
-        k: f64,
+    Color {
+        color: color::Color,
+        /// Pseudo-stereo ring cells in the stage's delay storage.
+        offset: usize,
     },
-    Decimate(Decimator),
-    LoFi(lofi::LoFi),
     Daft(daft::Daft),
     LadderLP4 {
         ladder: ladder::Ladder,
@@ -389,10 +344,6 @@ pub(super) enum PreparedProcessor {
     },
     Ar {
         ar: ar::Ar,
-        offset: usize,
-    },
-    StereoModeller {
-        stereo: stereo::Stereo,
         offset: usize,
     },
     Branch {
@@ -557,7 +508,6 @@ pub(super) fn compile_processors(
                     first,
                     last,
                 },
-                Processor::LoFi(settings) => PreparedProcessor::LoFi(settings.compile(rate)),
                 Processor::Daft(settings) => {
                     let mut daft = settings.compile(rate, bindings);
                     daft.modulation_index = filters.len();
@@ -580,32 +530,18 @@ pub(super) fn compile_processors(
                     filters.push(svf::PreparedFilter::NativeControl);
                     PreparedProcessor::Ar { ar, offset }
                 }
-                Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
-                Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
-                Processor::LiveSaturation(shape) => PreparedProcessor::LiveSaturation(shape.compile(bindings)),
-                Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
-                Processor::LiveLoFi { bits, frequency, noise, color } => PreparedProcessor::LiveLoFi { knobs: [bits, frequency, noise, color].map(|k| k.compile(bindings)), rate },
                 Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
                 Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
-                Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
-                Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
-                    dry,
-                    gain: gain.compile(bindings),
-                    k: f64::from(f32::from_bits(0x3a11a2b4)),
-                },
-                Processor::StereoModeller(settings) => {
+                Processor::Color(settings) => {
                     let offset = *delay_frames;
-                    if settings.pseudo {
-                        *delay_frames = offset.checked_add(1024).ok_or(Error::Capacity)?;
-                    }
-                    PreparedProcessor::StereoModeller {
-                        stereo: settings.compile(rate, bindings),
+                    *delay_frames = offset.checked_add(settings.ring_frames()).ok_or(Error::Capacity)?;
+                    PreparedProcessor::Color {
+                        color: settings.compile(rate, bindings),
                         offset,
                     }
                 }
-                Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
                     reverbs.push((settings, 0));
@@ -963,16 +899,11 @@ impl PreparedVoiceChain {
                     stage,
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
-                        | PreparedProcessor::Decimate(_)
-                        | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::LegacyPhaser(_)
                         | PreparedProcessor::KontaktEnhancedCompressor(_)
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
-                        | PreparedProcessor::LiveDistortion(_)
                         | PreparedProcessor::LiveFormant { .. }
-                        | PreparedProcessor::LiveLoFi { .. }
-                        | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Ar { .. }
@@ -980,7 +911,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::LiveFilter(_)
                         | PreparedProcessor::KontaktLegacyEq(_)
                         | PreparedProcessor::ControlMatrix(_)
-                ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
+                ) || matches!(stage, PreparedProcessor::Color { color, .. } if !color.batches())
             })
     }
 
@@ -1046,6 +977,8 @@ pub(super) struct ProcessorState {
     aux: [f64; 16],
     delay_position: u32,
     delay_filled: u32,
+    /// The color unit's stage histories.
+    color: color::State,
 }
 impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
@@ -1054,6 +987,7 @@ impl ProcessorState {
             .flatten()
             .chain(&self.aux)
             .all(|v| v.is_finite())
+            && self.color.finite()
     }
 }
 
@@ -1249,30 +1183,14 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Compressor(compressor) => {
                 compressor.process(state, parameters, block, len, at)
             }
-            PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
-            PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
             PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
             PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
-            PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
-            PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
             PreparedProcessor::LiveFormant { knobs, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
                 formant::Formant::compile([talk, sharp, size], *rate).process(state, block, len)
-            }
-            PreparedProcessor::LiveLoFi { knobs, rate } => {
-                let [bits, frequency, noise, color] = knobs.map(|k| k.value(parameters, at, None) as f32);
-                LoFiSettings { bits, frequency, noise, color }.compile(*rate).process(state, block, len)
-            }
-            PreparedProcessor::LiveSaturation(shape) => {
-                for i in 0..len {
-                    let value = shape.value(parameters, at + i as u64, None) as f32;
-                    for channel in block.iter_mut() {
-                        channel[i] = shaping::saturation(channel[i], value);
-                    }
-                }
             }
             PreparedProcessor::Daft(daft) => daft.process(
                 state,
@@ -1304,44 +1222,9 @@ pub(super) fn process<const TRACE: bool>(
                     filters.bank.native_knobs(ar.modulation_index),
                 );
             }
-            PreparedProcessor::StereoModeller { stereo, offset } => {
-                stereo.process(
-                    state,
-                    parameters,
-                    block,
-                    len,
-                    at,
-                    &mut delay_samples[*offset..],
-                );
-            }
-            PreparedProcessor::Rectify(mode) => {
-                for channel in block.iter_mut() {
-                    channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
-                }
-            }
-            PreparedProcessor::Saturation(shape) => {
-                for channel in block.iter_mut() {
-                    channel[..len]
-                        .iter_mut()
-                        .for_each(|v| *v = shaping::saturation(*v, *shape));
-                }
-            }
-            PreparedProcessor::Gainer { dry, gain, k } => {
-                // z[0][0] is the smoothed gain; aux[0] marks it initialised
-                // (a new state starts at the first target, not at zero).
-                let [left, right] = block;
-                let mut current = state.z[0][0] as f32;
-                for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
-                    let target = gain.value(parameters, at + i as u64, None) as f32;
-                    if state.aux[0] == 0. {
-                        (current, state.aux[0]) = (target, 1.);
-                    }
-                    let (m, next) = kernels::gainer(current, target, *dry, *k as f32);
-                    *l = kernels::gain(*l, m);
-                    *r = kernels::gain(*r, m);
-                    current = next;
-                }
-                state.z[0][0] = f64::from(current);
+            PreparedProcessor::Color { color, offset } => {
+                let ring = &mut delay_samples[*offset..];
+                color.process(&mut state.color, parameters, block, len, at, ring);
             }
             PreparedProcessor::Gain(gain) => {
                 applied = [*gain; 2];
@@ -1612,17 +1495,15 @@ mod tests {
     fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {
         for pseudo in [false, true] {
             let chain = VoiceChain::new(
-                vec![
-                    Processor::Gainer {
-                        dry: 0.1,
-                        gain: Parameter::Constant(0.8),
-                    },
-                    Processor::StereoModeller(StereoSettings {
+                vec![Processor::Color(ColorSettings {
+                    gainer: Some(GainerSettings { gain: Parameter::Constant(0.8), dry: 0.1 }),
+                    stereo: Some(StereoSettings {
                         width: Parameter::Constant(0.7),
                         pan: Parameter::Constant(-0.2),
                         pseudo,
                     }),
-                ],
+                    ..ColorSettings::IDENTITY
+                })],
                 Vec::new(),
                 0,
             )

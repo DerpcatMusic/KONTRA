@@ -1,5 +1,7 @@
-//! Port from v1 0cb7a8a0:src/fx/blocks.rs, native Distortion core and filters.
-use super::{Planar, ProcessorState};
+//! Kontakt Distortion (0x1e): the Tube/Transistor transfer curves (port from v1
+//! 0cb7a8a0:src/fx/blocks.rs) and the damping low-pass plus fixed DC blocker that
+//! follow them (template copy 0x1408373c0, embedded LP copy 0x140837e40).
+use super::super::Planar;
 
 /// Native Tube Distortion scalar core; filters and Output follow it.
 #[inline(always)]
@@ -58,7 +60,7 @@ const ANTI_DENORMAL: f32 = 1e-20;
 /// Native steady-state Distortion damping pole. The normalized cutoff uses
 /// an exponential polynomial followed by a sine-ratio bilinear transform.
 /// Script updates use the template-copy law; internal modulation is separate.
-fn distortion_damping(damping: f32, rate: f32) -> f32 {
+pub(super) fn distortion_damping(damping: f32, rate: f32) -> f32 {
     let p = (1.0 - 0.4 * damping.clamp(0.0, 1.0)).clamp(0.0, 1.0);
     let x = (f64::from(p) * 6.15) as f32;
     let exp = 1.0
@@ -84,7 +86,7 @@ fn distortion_damping(damping: f32, rate: f32) -> f32 {
 
 /// Native fixed DC filter preparation: order-two, zero-resonance prototype,
 /// all-pass frequency transform, HP sign change, then unity Nyquist gain.
-fn distortion_dc(rate: f32) -> [f32; 5] {
+pub(super) fn distortion_dc(rate: f32) -> [f32; 5] {
     let tangent = 0.5f64.tan();
     let pole = -std::f64::consts::FRAC_1_SQRT_2 * 8.0 * tangent;
     let square = 4.0 * tangent * tangent;
@@ -125,77 +127,84 @@ fn distortion_dc(rate: f32) -> [f32; 5] {
     [b0, b1, b2, a1, a2]
 }
 
-pub(crate) struct Distortion {
-    curve: [f32; 6],
+/// A Kontakt Distortion transfer curve, prepared from its normalized Drive.
+#[derive(Clone, Copy)]
+pub(super) enum Shape {
+    Tube { k: f32, negative: f32, positive: f32 },
+    Transistor { drive: f32, power: f32, threshold: f32, scale: f32, inverse_power: f64 },
+}
+
+impl Shape {
+    pub(super) fn tube(drive: f32) -> Self {
+        let negative = if drive > 0.75 {
+            1.
+        } else {
+            (0.5625 - (0.75 - drive).powi(2)) * (16. / 9.)
+        };
+        let positive = if drive < 0.25 {
+            0.
+        } else {
+            (0.5625 - (1. - drive).powi(2)) * (16. / 9.)
+        };
+        Self::Tube { k: 1. + 1.5 * drive, negative, positive }
+    }
+
+    pub(super) fn transistor(drive: f32) -> Self {
+        let threshold = f64::from(8. * drive - 12.).exp2() as f32;
+        let power = -60. / (48. * drive - 60.);
+        Self::Transistor {
+            drive,
+            power,
+            threshold,
+            scale: (1. / 4096.) / threshold,
+            inverse_power: 1. / f64::from(power),
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn apply(&self, x: f32) -> f32 {
+        match *self {
+            Self::Tube { k, negative, positive } => tube_curve(x, k, negative, positive),
+            Self::Transistor { drive, power, threshold, scale, inverse_power } => {
+                transistor_curve(x, drive, power, threshold, scale, inverse_power)
+            }
+        }
+    }
+}
+
+/// The damping low-pass and DC blocker, per channel
+/// `[previous, lp, lp2, hp, hp2]` (binary32 values kept in f64 state).
+#[derive(Clone, Copy)]
+pub(super) struct Damper {
+    pole: f32,
     dc: [f32; 5],
 }
 
-impl Distortion {
-    pub(super) fn compile(transistor: bool, drive: f32, damping: f32, rate: u32) -> Self {
-        Self {
-            curve: Self::curve(transistor, drive, damping, rate),
-            dc: distortion_dc(rate as f32),
-        }
+impl Damper {
+    /// `dc` is [`distortion_dc`] for `rate`, computed once per unit.
+    pub(super) fn new(damping: f32, rate: u32, dc: [f32; 5]) -> Self {
+        Self { pole: distortion_damping(damping, rate as f32), dc }
     }
 
-    fn curve(transistor: bool, drive: f32, damping: f32, rate: u32) -> [f32; 6] {
-        let pole = distortion_damping(damping, rate as f32);
-        if transistor {
-            let threshold = f64::from(8. * drive - 12.).exp2() as f32;
-            [
-                drive,
-                -60. / (48. * drive - 60.),
-                pole,
-                1.,
-                threshold,
-                (1. / 4096.) / threshold,
-            ]
-        } else {
-            let negative = if drive > 0.75 {
-                1.
-            } else {
-                (0.5625 - (0.75 - drive).powi(2)) * (16. / 9.)
-            };
-            let positive = if drive < 0.25 {
-                0.
-            } else {
-                (0.5625 - (1. - drive).powi(2)) * (16. / 9.)
-            };
-            [1. + 1.5 * drive, 1., pole, 0., negative, positive]
-        }
-    }
-
-    pub(super) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
-        let [drive, power, pole, transistor, c4, c5] = self.curve;
+    pub(super) fn process(&self, history: &mut [[f64; 5]; 2], block: &mut Planar, len: usize) {
         let [b0, b1, b2, a1, a2] = self.dc;
-        let inverse_power = 1. / f64::from(power);
+        let pole = self.pole;
         let b = 0.5 * (1. - pole);
-        for (channel, buffer) in block.iter_mut().enumerate() {
-            let base = 5 * channel;
-            let [mut previous, mut lp, mut lp2, mut hp, mut hp2] =
-                std::array::from_fn(|i| state.aux[base + i] as f32);
+        for (buffer, state) in block.iter_mut().zip(history) {
+            let [mut previous, mut lp, mut lp2, mut hp, mut hp2] = state.map(|v| v as f32);
             for x in &mut buffer[..len] {
-                let y = if transistor > 0. {
-                    transistor_curve(*x as f32, drive, power, c4, c5, inverse_power)
-                } else {
-                    tube_curve(*x as f32, drive, c4, c5)
-                };
+                let y = *x as f32;
                 let damped = b * y + b * previous + pole * lp + ANTI_DENORMAL;
                 let output = (((damped * b0 + lp * b1) + lp2 * b2) + hp * a1) + hp2 * a2;
                 (previous, lp2, lp, hp2, hp) = (y, lp, damped, hp, output);
                 *x = f64::from(output);
             }
-            for (out, value) in state.aux[base..base + 5]
-                .iter_mut()
-                .zip([previous, lp, lp2, hp, hp2])
-            {
-                *out = f64::from(value);
-            }
+            *state = [previous, lp, lp2, hp, hp2].map(f64::from);
         }
     }
 
-    pub(crate) fn damping_pole(&self) -> f64 {
-        f64::from(self.curve[2])
+    pub(super) fn pole(&self) -> f64 {
+        f64::from(self.pole)
     }
 }
 
@@ -245,81 +254,44 @@ mod tests {
             -0.9972348213195801,
         ];
         assert_eq!(distortion_dc(48000.), dc);
-        let kernel = Distortion::compile(false, 0.523648, 0., 48000);
-        let mut whole = [[0.; super::super::BLOCK]; 2];
+    }
+
+    #[test]
+    fn prepared_shapes_reproduce_the_saved_drive_laws() {
+        // Drive 1 transistor: p = -60 / (48 - 60) = 5, threshold 2^-4.
+        let Shape::Transistor { power, threshold, .. } = Shape::transistor(1.) else { panic!() };
+        assert_eq!((power, threshold), (5., 0.0625));
+        // Tube drive 0.5: k = 1.75, positive blend (0.5625 - 0.25) * 16/9.
+        let Shape::Tube { k, negative, positive } = Shape::tube(0.5) else { panic!() };
+        assert_eq!(k, 1.75);
+        assert!((negative - (0.5625 - 0.0625) * 16. / 9.).abs() < 1e-6);
+        assert!((positive - (0.5625 - 0.25) * 16. / 9.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn damper_is_block_partition_invariant() {
+        let damper = Damper::new(0.523648, 48000, distortion_dc(48000.));
+        let mut whole = [[0.; crate::dsp::BLOCK]; 2];
         for (i, x) in whole[0][..32].iter_mut().enumerate() {
             *x = ((i as f64 * 0.7).sin()) * 0.1;
         }
         whole[1] = whole[0];
         let input = whole;
-        let mut full_state = ProcessorState::default();
-        kernel.process(&mut full_state, &mut whole, 32);
-        let mut split_state = ProcessorState::default();
+        let mut full = [[0.; 5]; 2];
+        damper.process(&mut full, &mut whole, 32);
+        let mut split = [[0.; 5]; 2];
         let mut output = Vec::new();
         let mut at = 0;
         for count in [1, 7, 24] {
-            let mut block = [[0.; super::super::BLOCK]; 2];
+            let mut block = [[0.; crate::dsp::BLOCK]; 2];
             for c in 0..2 {
                 block[c][..count].copy_from_slice(&input[c][at..at + count]);
             }
-            kernel.process(&mut split_state, &mut block, count);
+            damper.process(&mut split, &mut block, count);
             output.extend_from_slice(&block[0][..count]);
             at += count;
         }
         assert_eq!(output, whole[0][..32]);
-        assert_eq!(split_state.aux, full_state.aux);
-    }
-}
-
-/// NI Distortion: template copy 0x1408373c0 and embedded LP copy 0x140837e40
-/// replace Drive/current Damping directly when no internal modulator is attached.
-/// shortcut: internal modulation has a separate 32-frame clock; wire it when admitted.
-pub(crate) struct LiveDistortion {
-    pub(crate) drive: super::control::PreparedParameter,
-    pub(crate) damping: super::control::PreparedParameter,
-    transistor: bool,
-    rate: u32,
-    dc: [f32; 5],
-}
-impl LiveDistortion {
-    pub(super) fn compile(
-        transistor: bool,
-        drive: super::control::PreparedParameter,
-        damping: super::control::PreparedParameter,
-        rate: u32,
-    ) -> Self {
-        Self {
-            transistor,
-            drive,
-            damping,
-            rate,
-            dc: distortion_dc(rate as f32),
-        }
-    }
-    pub(super) fn process(
-        &self,
-        state: &mut ProcessorState,
-        block: &mut Planar,
-        len: usize,
-        parameters: &[super::ControlRamp],
-        at: u64,
-    ) {
-        let drive = self.drive.value(parameters, at, None) as f32;
-        let damping = self.damping.value(parameters, at, None) as f32;
-        // These event-rate lanes are constant within a render fragment. Retain
-        // coefficients and audio histories independently across parameter edits.
-        if state.z[1][0] == 0. || state.z[0] != [f64::from(drive), f64::from(damping)] {
-            let curve = Distortion::curve(self.transistor, drive, damping, self.rate);
-            for (out, value) in state.aux[10..16].iter_mut().zip(curve) {
-                *out = f64::from(value);
-            }
-            state.z[0] = [f64::from(drive), f64::from(damping)];
-            state.z[1][0] = 1.;
-        }
-        Distortion {
-            curve: std::array::from_fn(|i| state.aux[10 + i] as f32),
-            dc: self.dc,
-        }
-        .process(state, block, len);
+        assert_eq!(split, full);
     }
 }
