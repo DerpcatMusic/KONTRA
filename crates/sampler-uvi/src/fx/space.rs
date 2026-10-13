@@ -74,14 +74,6 @@ impl Translation {
         }
         self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
         self.ir.impulse_shapes.push(Some(shape));
-        if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
-            self.ir.unsupported.push(ir::Unsupported {
-                location: at.into(),
-                feature: "positive SampledReverb damping".into(),
-                value: String::new(),
-                reason: ir::Reason::UnknownLaw,
-            });
-        }
         Ok(ir::Processor::Space(Config::convolution(
             ir::ImpulseRef(self.ir.impulses.len() - 1),
             dry,
