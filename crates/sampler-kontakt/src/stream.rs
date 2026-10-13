@@ -1181,6 +1181,83 @@ mod tests {
     }
 
     #[test]
+    fn ksp_residency_purge_cannot_be_undone_by_an_in_flight_cold_reloader() {
+        let (mut streamer, assets) = reload_fixture(1, 32 * 16);
+        assets[0].set_ranges(vec![(0, vec![[0.25; 2]; 32].into())]).unwrap();
+        let (entered, received) = std::sync::mpsc::channel();
+        let (resume, resume_received) = std::sync::mpsc::channel();
+        streamer.sources = Arc::new(HashMap::from([(
+            assets[0].asset_id(), Arc::new(PausedHead {
+                entered, resume: Mutex::new(resume_received), frame: [0.5; 2],
+            }) as Arc<dyn AssetSource>,
+        )]));
+        let plan = sampler_core::Prepared::new(48000, assets.clone(), vec![sampler_core::Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Default::default(), playback: Default::default(),
+        }], 1).unwrap().with_groups(1, vec![Some(0)]).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        let plan = rt.active_plan();
+        assets[0].mark_cold();
+        std::thread::scope(|scope| {
+            let loading = scope.spawn(|| streamer.reload(&assets));
+            let entered = received.recv_timeout(Duration::from_secs(3)).is_ok();
+            if entered { rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0)).unwrap(); }
+            resume.send(()).unwrap();
+            assert!(entered);
+            assert_eq!(loading.join().unwrap().unwrap(), 1);
+        });
+        let until = Instant::now() + Duration::from_secs(3);
+        while assets[0].head_bytes() != 0 {
+            rt.service_residency().unwrap();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!rt.group_resident(plan, 0).unwrap());
+        assets[0].mark_cold();
+        assert_eq!(streamer.reload(&assets).unwrap(), 0);
+        assert_eq!(assets[0].head_bytes(), 0);
+    }
+
+    #[test]
+    fn ksp_residency_streamer_installs_reload_recipe_for_authored_heads() {
+        struct Head;
+        impl AssetSource for Head {
+            fn open(&self) -> io::Result<SampleReader> {
+                Ok(SampleReader::custom(48000, 64, |_, out| { out.fill([0.25; 2]); Ok(()) }))
+            }
+        }
+        let pcm = Pcm::streamed(48000, 64).unwrap();
+        let sources = HashMap::from([(pcm.asset_id(), Arc::new(Head) as Arc<dyn AssetSource>)]);
+        let (cache, worker) = StreamCache::new(4).unwrap();
+        let (_streamer, bytes) = Streamer::start(sources, std::slice::from_ref(&pcm), vec![vec![8..24, 40..56]], worker, 1, false, 1024, HashSet::new()).unwrap();
+        assert_eq!(bytes, 64);
+        let plan = sampler_core::Prepared::new(48000, vec![pcm.clone()], vec![sampler_core::Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Default::default(), playback: sampler_core::Playback { start: 8, ..Default::default() },
+        }], 1).unwrap().with_groups(1, vec![Some(0)]).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        let plan = rt.active_plan();
+        rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0)).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while pcm.head_bytes() != 0 {
+            rt.render(&mut []).unwrap();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        rt.request_group_residency(plan, 0, true, sampler_core::ScriptInstanceId(0)).unwrap();
+        while !rt.group_resident(plan, 0).unwrap() {
+            rt.render(&mut []).unwrap();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(pcm.head_frames(), 32);
+        assert_eq!(pcm.head_bytes(), bytes);
+    }
+
+    #[test]
     fn concurrent_reloads_share_the_same_admission_budget() {
         let (mut streamer, assets) = reload_fixture(2, 32 * 8);
         let (entered, received) = std::sync::mpsc::channel();

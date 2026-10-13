@@ -1129,41 +1129,24 @@ impl Lowering<'_> {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
         let envelope = self.adsr(owner, e, one_shot)?;
-        let source =
-            zone.group.and_then(|group| {
-                let mut sources = self.ir.source_indices.modulators.iter().filter(|source| {
-                    self.ir
-                        .source_indices
-                        .groups
-                        .get(source.group)
-                        .copied()
-                        .flatten()
-                        .unwrap_or(ir::GroupRef(source.group))
-                        == group
-                        && !source.external
-                        && source.runtime == zone.amplitude
-                });
-                let address = sources.next()?;
-                if sources.next().is_some() {
-                    return None;
-                }
-                let mut raw =
-                    self.ir.source_indices.ahdsrs.iter().filter(|source| {
-                        source.group == address.group && source.slot == address.slot
-                    });
-                let source = raw.next()?;
-                (raw.next().is_none() && source.native_amplitude).then_some(source)
-            });
+        let source = zone.group.and_then(|group| {
+            let mut sources = self.ir.source_indices.modulators.iter().filter(|source|
+                self.ir.source_indices.groups.get(source.group).copied().flatten()
+                    .unwrap_or(ir::GroupRef(source.group)) == group
+                    && !source.external && source.runtime == zone.amplitude);
+            let address = sources.next()?;
+            if sources.next().is_some() { return None; }
+            let mut raw = self.ir.source_indices.ahdsrs.iter().filter(|source|
+                source.group == address.group && source.slot == address.slot);
+            let source = raw.next()?;
+            (raw.next().is_none() && source.native_amplitude).then_some(source)
+        });
         if let Some(source) = source {
-            if !crate::v1_voice_controls::valid_ahdsr(&crate::v1_voice_controls::Ahdsr::from(
-                source,
-            )) {
+            if !crate::v1_voice_controls::valid_ahdsr(&crate::v1_voice_controls::Ahdsr::from(source)) {
                 return Err(core(Stage::Envelope, owner)(Error::InvalidInput));
             }
             if !one_shot && crate::whole_voice::ahdsr_agrees(source, e) {
-                return envelope
-                    .with_native_primary(source, self.rate)
-                    .map_err(core(Stage::Envelope, owner));
+                return envelope.with_native_primary(source, self.rate).map_err(core(Stage::Envelope, owner));
             }
         }
         Ok(envelope)
@@ -1314,10 +1297,7 @@ impl Lowering<'_> {
 
     /// One voice modulation program per distinct zone route list.
     fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self.mpe.is_none()
-            && self.ir.source_indices.ahdsrs.is_empty()
-            && self.ir.zones.iter().all(|z| z.routes.is_empty())
-        {
+        if self.mpe.is_none() && self.ir.source_indices.ahdsrs.is_empty() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
             return Ok(plan);
         }
         let mut programs: Vec<ModProgram> = Vec::new();
@@ -1329,12 +1309,7 @@ impl Lowering<'_> {
                 bindings.push(None);
                 continue;
             }
-            let index = match known.get(&(
-                &zone.routes,
-                plan.region_chain(i),
-                zone.group,
-                zone.amplitude,
-            )) {
+            let index = match known.get(&(&zone.routes, plan.region_chain(i), zone.group, zone.amplitude)) {
                 Some(&index) => index,
                 None => {
                     let program = self.program(&format!("zone {i}"), i, zone, &plan)?;
@@ -1342,22 +1317,12 @@ impl Lowering<'_> {
                     let index = programs.len();
                     native.push(controls);
                     programs.push(program);
-                    known.insert(
-                        (
-                            &zone.routes,
-                            plan.region_chain(i),
-                            zone.group,
-                            zone.amplitude,
-                        ),
-                        index,
-                    );
+                    known.insert((&zone.routes, plan.region_chain(i), zone.group, zone.amplitude), index);
                     index
                 }
             };
             // A program whose routes all belong to native expression is no program.
-            bindings.push(
-                (native[index].is_some() || !programs[index].routes.is_empty()).then_some(index),
-            );
+            bindings.push((native[index].is_some() || !programs[index].routes.is_empty()).then_some(index));
         }
         let ranges = self
             .ir
@@ -1691,8 +1656,11 @@ impl Lowering<'_> {
                 shape: match lfo.shape {
                     ir::LfoShape::DigitalSine { level, fade_ms } => LfoShape::DigitalSine {
                         level,
-                        fade: crate::KontaktLfoFade::from_saved(fade_ms, self.rate as f32)
-                            .map_err(core(Stage::Modulation, owner))?,
+                        fade: crate::KontaktLfoFade::from_saved(
+                            fade_ms,
+                            self.rate as f32,
+                        )
+                        .map_err(core(Stage::Modulation, owner))?,
                     },
                     ir::LfoShape::SineScaled(level) => LfoShape::SineScaled(level),
                     ir::LfoShape::Zero => LfoShape::Zero,
@@ -2087,13 +2055,11 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
-            ir::Processor::KontaktLegacyEq(eq) => {
-                Processor::KontaktLegacyEq(crate::KontaktLegacyEqSettings {
-                    frequency: Parameter::Constant(f64::from(eq.frequency)),
-                    bandwidth: Parameter::Constant(f64::from(eq.bandwidth)),
-                    gain_db: Parameter::Constant(f64::from(eq.gain_db)),
-                })
-            }
+            ir::Processor::KontaktLegacyEq(eq) => Processor::KontaktLegacyEq(crate::KontaktLegacyEqSettings {
+                frequency: Parameter::Constant(f64::from(eq.frequency)),
+                bandwidth: Parameter::Constant(f64::from(eq.bandwidth)),
+                gain_db: Parameter::Constant(f64::from(eq.gain_db)),
+            }),
             ir::Processor::Gainer { gain, dry } => Processor::Gainer {
                 gain: Parameter::Constant(gain.linear()),
                 dry,
