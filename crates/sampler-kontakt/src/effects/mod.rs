@@ -936,7 +936,7 @@ pub(crate) fn chain_with(
                 let live =
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
                 flush(&mut combined, &mut filters, &mut out);
-                // Kinds 22..24 are one band, two or three; every band runs the native one-band law.
+                // Kinds 22..24 (BEQ1/2/3Band): bands in series, each the one-band law (eq.rs).
                 for band in bands.iter() {
                     if let Some(p) = eq::legacy_band(*band, live, &mut notes) {
                         if live { out.filter_slots.push((fx.slot, out.processors.len())); }
@@ -948,11 +948,6 @@ pub(crate) fn chain_with(
                 notes.push(("native legacy EQ lifecycle".into(),
                     "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
                     sampler_ir::Reason::UnknownLaw));
-                if bands.len() > 1 {
-                    notes.push(("multiband EQ (kinds 23/24)".into(),
-                        "bands use the proved one-band law; FilterEQ2/3 serial/parallel topology and stereo clocks unverified".into(),
-                        sampler_ir::Reason::UnknownLaw));
-                }
                 combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) => {
