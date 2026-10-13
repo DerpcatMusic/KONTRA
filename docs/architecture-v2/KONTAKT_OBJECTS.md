@@ -237,13 +237,21 @@ Native writer/reader inspection establishes the serialized/internal mapping:
 | 0 | 0 | Sampler |
 | 1 | 1 | Tone Machine |
 | 2 | 3 | Time Machine 1 |
-| 3 | 4 | Time Machine 2 |
+| 3 | 4 | DFD (Direct From Disk) |
 | 4 | 5 | Beat Machine |
-| 5 | 6 | DFD |
-| 6 | 7 | MPC60 |
-| 7 | 8 | S1200 |
+| 5 | 6 | Time Machine 2 |
+| 6 | 7 | S1200 Machine |
+| 7 | 8 | MP60 Machine |
 | 8 | 9 | Time Machine Pro |
 | 9 | 2 | Wavetable |
+
+Names follow Kontakt 8.13.1's own enum-name table (file offset 0x7555700:
+Sampler, ToneMachine, TimeMachine, DirectFromDisk, BeatMachine, TimeMachine2,
+S1200Machine, MP60Machine, TimeMachinePro), which also matches the field shapes
+below (only 2/5/8 carry control fields; 3 carries none) and the corpus (stored 3
+is the dominant non-sampler mode). An earlier revision of this table named 3 as
+Time Machine 2 and 5 as DFD; that was wrong, so Conflux's 90 mode-3 groups are
+DFD, not Time Machine 2.
 
 The internal/serialized permutation is verified directly; the names other
 than Wavetable still need a controlled saved-mode/native-query cross-check.
@@ -271,7 +279,7 @@ the 32-byte snapshot identity blob as if it were a uniform source schema.
 | 0, 3, 6, 7 | None | Common fields only |
 | 1, 2 | f32, f32, bool | `machine_float_1/2`, `machine_flag` |
 | 4 | f32, f32, bool | `slice_float_1/2`, `slice_flag_1`; another bool at v0x106 |
-| 5 | bool, u32, u32 | `dfd_flag`, `dfd_integer_1/2`; do not assume sample-frame offsets |
+| 5 | bool, u32, u32 | Time Machine 2 controls (decoder names `dfd_*` are historical); meaning unassigned |
 | 8 | bool, bool, f32, f32 | v0x100 uses u32 instead of second bool; retain original version |
 | 9 | Four f32, two u32 | Position, form1, phase, phase_random, form_type, quality at v0x103 |
 | 9 | bool, f32 | Inharmonic enable/value appended at v0x104 |

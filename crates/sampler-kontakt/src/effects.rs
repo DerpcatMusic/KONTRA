@@ -3574,6 +3574,7 @@ mod tests {
             groups: vec![ir::Group {
                 muted: false,
                 wavetable: None,
+                time_stretch: None,
                 start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,

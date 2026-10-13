@@ -418,6 +418,10 @@ pub struct Group {
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
+    /// Independent time/pitch source (Kontakt Time Machine family). Absent for
+    /// plain sampler playback, where transposition also changes tempo.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub time_stretch: Option<TimeStretch>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -441,6 +445,65 @@ pub struct Group {
     /// Set by [`Instrument::tap_group`]: the bus that carries this group's
     /// fader and sends.
     pub tap: Option<GroupTap>,
+}
+
+/// Which time-stretch engine configuration a group's source uses. The engine
+/// is shared (`sampler-core` `StretchEngine`); the kind only picks its
+/// configuration, so formats add kinds without new DSP code paths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StretchKind {
+    TimeMachine1,
+    TimeMachine2,
+    TimeMachinePro,
+}
+
+/// Saved controls of a time-stretch source. Pitch is the group/zone tuning
+/// plus key tracking, exactly as for sampler playback; these controls only
+/// decouple tempo from it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeStretch {
+    pub kind: StretchKind,
+    /// Playback speed as a ratio of the original; 0 freezes the position.
+    pub speed: f32,
+    /// Time Machine 1: Smooth as stored (0..=1) and Grain in milliseconds.
+    pub smooth: f32,
+    pub grain_ms: f32,
+    /// Time Machine 1 HQ analysis / Time Machine Pro resource class.
+    pub high_quality: bool,
+    /// Time Machine 2 controls as stored: Transient Copy, Transient Size (in
+    /// source positions) and the analysis Grain profile index (0..=4).
+    /// Carried for the TM2 engine; the stand-in engine does not use them.
+    pub transient_copy: bool,
+    pub transient_size: u32,
+    pub grain_profile: u32,
+    /// Time Machine Pro controls as stored (Keep Formants, Frm Shift, Env
+    /// Order); carried, unused until a Pro backend exists.
+    pub keep_formants: bool,
+    pub formant_shift: f32,
+    pub env_order: f32,
+}
+impl TimeStretch {
+    /// Neutral controls (authored defaults are not established).
+    pub fn new(kind: StretchKind, speed: f32) -> Self {
+        Self {
+            kind,
+            speed,
+            smooth: 0.5,
+            grain_ms: 20.,
+            high_quality: false,
+            transient_copy: false,
+            transient_size: 0,
+            grain_profile: 0,
+            keep_formants: false,
+            formant_shift: 0.,
+            env_order: 0.25,
+        }
+    }
+    pub fn valid(self) -> bool {
+        self.speed.is_finite() && (0. ..=64.).contains(&self.speed)
+    }
 }
 
 /// Saved controls for the measured 2048-frame Kontakt wavetable subset.
