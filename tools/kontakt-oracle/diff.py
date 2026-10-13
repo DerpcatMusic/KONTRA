@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Diff KONTRA's translation against Kontakt's own post-load state.
 
-    tools/kontakt-oracle/diff.py NATIVE.jsonl OURS.json [--examples N]
+    tools/kontakt-oracle/diff.py NATIVE.jsonl OURS.json [--examples N]   # one instrument
+    tools/kontakt-oracle/diff.py NATIVE.jsonl                            # all records; runs ir_json
 
 NATIVE.jsonl: one record from dump.py. OURS.json: the ir_json example's output for
 the same .nki. Zones and groups are compared by index (Kontakt's order). Every
@@ -71,21 +72,14 @@ def near(tol):
     return lambda a, b: abs(a - b) <= tol
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("native")
-    ap.add_argument("ours")
-    ap.add_argument("--examples", type=int, default=3)
-    a = ap.parse_args()
-    native = json.loads(open(a.native).readline())
-    ours = json.load(open(a.ours))
-    print("input:", native["input"])
-    if "load_error" in native or "load_error" in ours:
-        print("load errors: native", native.get("load_error"), "ours", ours.get("load_error"))
-        return
+def diff_record(native, ours, examples=3):
+    """Field-by-field Diff of one native record against one ir_json output."""
+    d = Diff(examples)
+    if "load_error" in native or "load_error" in ours or "instrument" not in native:
+        d.eq("load", "instrument", native.get("load_error"), ours.get("load_error"))
+        return d
     k, o = native["instrument"], ours["instrument"]
     assets = o["assets"]
-    d = Diff(a.examples)
 
     d.eq("group.count", "instrument", k["num_groups"], len(o["groups"]))
     for kg, og in zip(k["groups"], o["groups"]):
@@ -145,6 +139,10 @@ def main():
             d.eq("zone.loop_count_value", f"{w} loop {n}", kl["count"], ol["count"])
             d.eq("zone.loop_until_release", f"{w} loop {n}", kl["mode"].startswith("until_release"), ol["until_release"])
 
+    return d
+
+
+def report(d):
     width = max(len(f) for f in d.checked)
     print(f"\n{'field':<{width}}  mismatches / checked")
     for field in d.checked:
@@ -154,6 +152,42 @@ def main():
         print(f"{field:<{width}}  {n:>6} / {d.checked[field]:<6}{mark}")
     total = sum(d.count.values())
     print(f"\n{total} mismatches across {sum(d.checked.values())} checked values")
+
+
+IR_JSON = "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-t3-41d67f01/debug/examples/ir_json"
+
+
+def ours_for(native_input):
+    import subprocess
+    unix = subprocess.check_output(["winepath", "-u", native_input], text=True,
+                                   stderr=subprocess.DEVNULL).strip()
+    out = subprocess.run([IR_JSON, unix], capture_output=True, text=True, timeout=600)
+    try:
+        return json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return {"load_error": (out.stderr or out.stdout)[-300:] or f"exit {out.returncode}"}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("native", help="dump.py output (one or more records)")
+    ap.add_argument("ours", nargs="?", help="ir_json output for a single-record native file")
+    ap.add_argument("--examples", type=int, default=3)
+    a = ap.parse_args()
+    records = [json.loads(l) for l in open(a.native) if l.strip()]
+    if a.ours:
+        print("input:", records[0]["input"])
+        report(diff_record(records[0], json.load(open(a.ours)), a.examples))
+        return
+    print(f"{'instrument':<60} {'checked':>8} {'mismatch':>8}  top fields")
+    for r in records:
+        d = diff_record(r, ours_for(r["input"]), a.examples)
+        top = ", ".join(f"{f}={n}" for f, n in d.count.most_common(4))
+        name = r["input"].replace("\\", "/").rsplit("/", 1)[-1][:60]
+        print(f"{name:<60} {sum(d.checked.values()):>8} {sum(d.count.values()):>8}  {top}")
+        for f, ex in d.examples.items():
+            if d.count[f]:
+                print(f"    {f}: " + "; ".join(f"{w}: kontakt={nv!r} kontra={ov!r}" for w, nv, ov in ex[:2])[:300])
 
 
 if __name__ == "__main__":
