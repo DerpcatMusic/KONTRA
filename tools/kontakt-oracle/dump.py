@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 EXE = os.environ.get("KONTAKT_EXE", "/home/derpcat/.wine/drive_c/Program Files/Common Files/"
                      "VST3/Portapotty/Kontakt 8/x64/Kontakt 8.exe")
 SETTINGS = Path(EXE).parents[2] / "UserData/Settings.cfg"
-WORK = Path.home() / ".cache/kontra-native-oracle/run"
+WORK = Path.home() / ".cache/kontra-native-oracle/run" / str(os.getpid())
 DISPLAY = ":78"  # not :77, which the audio reference harness owns
 
 
@@ -33,16 +33,28 @@ def winpath(p: Path) -> str:
 
 
 # Modal startup dialogs that stop the Lua script from running: (window title, key).
-DIALOGS = [("Audio and MIDI Settings", "Return")]
+# Mouse input only reaches windows inside a Wine virtual desktop, so each dialog is
+# dismissed by clicking its button at a position relative to the dialog.
+#   (title regex, max dialog width, x, y of the button relative to the dialog)
+DIALOGS = [
+    ("^Audio and MIDI Settings$", 2000, 823, 470),  # OK
+    ("^Kontakt 8$", 700, None, 125),                # "library not installed" etc.: centred OK
+]
 
 
 def dismiss_dialogs(env: dict) -> None:
-    for title, key in DIALOGS:
-        found = subprocess.run(["xdotool", "search", "--name", f"^{title}$"], env=env,
+    for title, max_width, x, y in DIALOGS:
+        found = subprocess.run(["xdotool", "search", "--name", title], env=env,
                                capture_output=True, text=True).stdout.split()
         for window in found:
-            subprocess.run(["xdotool", "windowactivate", "--sync", window, "key", key],
-                           env=env, check=False, capture_output=True)
+            geo = subprocess.run(["xdotool", "getwindowgeometry", window], env=env,
+                                 capture_output=True, text=True).stdout
+            size = next((l.split()[1] for l in geo.splitlines() if "Geometry" in l), "0x0")
+            width = int(size.split("x")[0])
+            if width >= max_width or width == 0:
+                continue
+            subprocess.run(["xdotool", "mousemove", "--window", window, str(x if x is not None else width // 2),
+                            str(y), "click", "1"], env=env, check=False, capture_output=True)
 
 
 def lua_str(s: str) -> str:
@@ -57,6 +69,8 @@ def main() -> int:
     inputs = [Path(p).resolve() for p in sys.argv[2:]]
     if b"DeveloperFeatures=dw:1" not in SETTINGS.read_bytes():
         sys.exit(f"enable Options > Developer first: DeveloperFeatures=dw:1 in {SETTINGS}")
+    if subprocess.run(["pgrep", "-f", "[K]ontakt 8.exe"], capture_output=True).returncode == 0:
+        sys.exit("another Kontakt is running; one oracle session at a time")
     WORK.mkdir(parents=True, exist_ok=True)
     raw = WORK / "oracle.jsonl"
     raw.unlink(missing_ok=True)
@@ -92,6 +106,7 @@ def main() -> int:
         xvfb.terminate()
     if not raw.exists():
         sys.exit(f"no oracle output; see {WORK / 'kontakt.log'}")
+    # Dialogs dismissed above leave Kontakt's own error in the record (load_error).
     records = [json.loads(line) for line in raw.read_text().splitlines() if line.strip()]
     records = [r for r in records if not r.get("done")]
     out.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in records))

@@ -51,10 +51,14 @@ def functions(path):
 def layouts(lines):
     """Map version -> read sequence by walking the body from each version entry."""
     labels, entries, order = {}, {}, []
+    on_version = False  # inside `switch(param_3)` rather than a switch on a read value
     for i, l in enumerate(lines):
         if re.match(r"^\s*(code_r0x[0-9a-f]+|LAB_[0-9a-f]+):", l):
             labels[l.strip().rstrip(":")] = i
-        for v in re.findall(r"param_3 == (0x[0-9a-f]+|\d+)\)", l) + re.findall(r"^\s*case (0x[0-9a-f]+|\d+):", l):
+        if "switch(" in l:
+            on_version = "param_3" in l
+        cases = re.findall(r"^\s*case (0x[0-9a-f]+|\d+):", l) if on_version else []
+        for v in re.findall(r"param_3 == (0x[0-9a-f]+|\d+)\)", l) + cases:
             entries.setdefault(int(v, 0), i)
             order.append(int(v, 0))
         # `if (param_3 != V) { throw }` guards a single-version body after the block.
