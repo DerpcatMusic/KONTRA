@@ -1,7 +1,9 @@
 //! Arpeggiator: turns the held notes into a stepped note stream. Control-rate,
 //! fixed capacity, no allocation. Events are delivered through a callback with
-//! the frame offset inside the advanced span. Kontakt's stored arp (0x09) has
-//! no decoded reader or proven law yet; formats supply `Arp` once they do.
+//! the frame offset inside the advanced span. Not Kontakt's "Arp" (0x09): that
+//! runtime object, `BArp32Step`, is a note-blind 32-step table modulator and
+//! lives in [`crate::blocks::step_table`]. This block serves formats with a
+//! real arpeggiator (UVI).
 
 pub const MAX_HELD: usize = 16;
 

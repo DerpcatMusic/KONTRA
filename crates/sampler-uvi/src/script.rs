@@ -859,7 +859,7 @@ impl Shared {
             None => {}
         }
         let base = &impulses[&node];
-        let mut shape = crate::reverb::neutral();
+        let mut shape = sampler_core::neutral_impulse_shape();
         shape.normalize = read("NormalizePower") != 0.0;
         if kind == "SampledReverb" {
             shape.sampled_reverb = true;
@@ -869,7 +869,7 @@ impl Shared {
             shape.pre_delay_ms = read("PreDelay");
             shape.width = read("Width");
         }
-        let (left, right) = crate::reverb::shape(base.rate, &base.left, &base.right, &shape);
+        let (left, right) = sampler_core::shape_impulse(base.rate, &base.left, &base.right, &shape);
         let shaped = sampler_ir::Impulse { rate: base.rate, left, right, asset: None };
         drop(impulses);
         let Ok(upload) = sampler_core::ConvolutionUpload::from_ir(

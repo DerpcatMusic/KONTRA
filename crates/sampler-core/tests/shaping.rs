@@ -21,6 +21,10 @@ fn limits() -> Limits {
     }
 }
 
+fn rectify(mode: Rectifier) -> Processor {
+    Processor::Color(ColorSettings::curve(CurveSettings::Rectifier(mode)))
+}
+
 const FRAMES: usize = 300;
 const RATE: u32 = 48000;
 
@@ -127,8 +131,8 @@ fn rectifiers_follow_their_branches() {
             .map(|f2| [f(f64::from(f2[0])), f(f64::from(f2[1]))])
             .collect()
     };
-    both_scopes(Processor::Rectify(Rectifier::Full), &wide(f64::abs));
-    both_scopes(Processor::Rectify(Rectifier::Half), &wide(|x| x.max(0.)));
+    both_scopes(rectify(Rectifier::Full), &wide(f64::abs));
+    both_scopes(rectify(Rectifier::Half), &wide(|x| x.max(0.)));
 }
 
 #[test]
@@ -157,14 +161,17 @@ fn decimator_holds_and_ramps_at_a_fractional_period() {
             out
         })
         .collect();
-    both_scopes(Processor::Decimate(Decimator { period, blend }), &expected);
+    both_scopes(
+        Processor::Color(ColorSettings::decimator(Decimator { period, blend })),
+        &expected,
+    );
 }
 
 #[test]
 fn batched_voices_rectify_like_scalar_voices() {
     let prepared = plan()
         .with_voice_chains(
-            vec![VoiceChain::new(vec![Processor::Rectify(Rectifier::Full)], vec![], 0).unwrap()],
+            vec![VoiceChain::new(vec![rectify(Rectifier::Full)], vec![], 0).unwrap()],
             vec![Some(0)],
         )
         .unwrap();
@@ -213,7 +220,7 @@ fn rack_branches_sum_at_their_gains_with_nested_stages() {
             first: true,
             last: false,
         },
-        Processor::Rectify(Rectifier::Full),
+        rectify(Rectifier::Full),
         Processor::Gain(2.),
         Processor::Branch {
             count: 0,

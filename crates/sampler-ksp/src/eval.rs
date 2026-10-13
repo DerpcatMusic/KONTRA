@@ -38,6 +38,43 @@ pub struct Environment {
     /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
     /// empty entry is a folder the host does not have.
     pub folders: [String; 4],
+    /// Host transport values for `$DURATION_*`, `$SIGNATURE_*` and `$NI_BPM`. The
+    /// manual makes them tempo dependent, so with `None` `on init` reading one
+    /// is a fault; no fixed 120 BPM / 4/4 is invented.
+    pub transport: Option<Transport>,
+}
+
+/// Host-provided transport values, in the units of the matching KSP variables.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transport {
+    pub quarter: i32,
+    pub eighth: i32,
+    pub sixteenth: i32,
+    pub quarter_triplet: i32,
+    pub eighth_triplet: i32,
+    pub sixteenth_triplet: i32,
+    pub bar: i32,
+    pub signature_num: i32,
+    pub signature_denom: i32,
+    pub tempo: i32,
+}
+
+impl Transport {
+    /// A host with no playing transport: 120 BPM in 4/4. A loader that has no
+    /// DAW transport at load time passes this explicitly (reads are warned),
+    /// instead of every script that reads `$SIGNATURE_NUM` failing to initialize.
+    pub const STANDALONE: Self = Self {
+        quarter: 500_000,
+        eighth: 250_000,
+        sixteenth: 125_000,
+        quarter_triplet: 333_333,
+        eighth_triplet: 166_666,
+        sixteenth_triplet: 83_333,
+        bar: 2_000_000,
+        signature_num: 4,
+        signature_denom: 4,
+        tempo: 120,
+    };
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -671,7 +708,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 if matches!(sys, EventId | EventNote | EventVelocity | NoteHeld | CcNum) {
                     self.warn(e.span, format!("{sys:?} has no event in on init; reads 0"));
                 }
-                V::I(self.sys(*sys))
+                V::I(self.sys(*sys, e.span)?)
             }
             ExprKind::SysElem(array, i) => {
                 let i = self.expr(i)?.int();
@@ -737,26 +774,40 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         })
     }
 
-    fn sys(&self, sys: b::SysVar) -> i32 {
+    fn sys(&mut self, sys: b::SysVar, span: Span) -> Result<i32> {
         use b::SysVar::*;
-        match sys {
+        if matches!(
+            sys,
+            DurationQuarter | DurationEighth | DurationSixteenth | DurationQuarterTriplet
+                | DurationEighthTriplet | DurationSixteenthTriplet | DurationBar
+                | SignatureNum | SignatureDenom | Tempo
+        ) {
+            let Some(t) = self.env.transport else {
+                return fault(span, format!("{sys:?} depends on host transport, which `on init` does not have"));
+            };
+            self.warn(span, format!("{sys:?} read in on init takes the host transport the loader supplied"));
+            return Ok(match sys {
+                DurationQuarter => t.quarter,
+                DurationEighth => t.eighth,
+                DurationSixteenth => t.sixteenth,
+                DurationQuarterTriplet => t.quarter_triplet,
+                DurationEighthTriplet => t.eighth_triplet,
+                DurationSixteenthTriplet => t.sixteenth_triplet,
+                DurationBar => t.bar,
+                SignatureNum => t.signature_num,
+                SignatureDenom => t.signature_denom,
+                _ => t.tempo,
+            });
+        }
+        Ok(match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
             AsyncId => self.async_result.map_or(0, |v| v.0),
             AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
-            DurationQuarter => 500_000,
-            DurationEighth => 250_000,
-            DurationSixteenth => 125_000,
-            DurationQuarterTriplet => 333_333,
-            DurationEighthTriplet => 166_666,
-            DurationSixteenthTriplet => 83_333,
-            DurationBar => 2_000_000,
-            SignatureNum | SignatureDenom => 4,
-            Tempo => 120,
             NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
-        }
+        })
     }
 
     fn arg(&mut self, args: &[Arg], i: usize) -> Result<V> {
@@ -1133,11 +1184,9 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (a, n) = (self.int(args, 0)?, self.int(args, 1)?);
                 V::I(a.wrapping_shr(n as u32))
             }
-            Random => {
-                // Deterministic during init; scripts only see an in-range value.
-                let (lo, hi) = (self.int(args, 0)?, self.int(args, 1)?);
-                V::I(lo.min(hi))
-            }
+            // The native generator's seed and sequence are unproved, and the lowered runtime
+            // draws from its own xorshift stream, so init cannot honestly produce a value.
+            Random => return fault(span, "random() during on init has no native-proved value"),
             IntToReal | Real => V::R(f64::from(self.int(args, 0)?)),
             RealToInt | Int => V::I(real_to_int(self.arg(args, 0)?.real())),
             Round => real(self.arg(args, 0)?.real().round()),
