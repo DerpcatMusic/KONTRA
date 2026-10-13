@@ -69,6 +69,9 @@ impl<T: AsRef<[Frame]>> PartialEq<T> for ResidentFrames<'_> {
         &**self == other.as_ref()
     }
 }
+impl From<ResidentFrames<'_>> for Box<[Frame]> {
+    fn from(value: ResidentFrames<'_>) -> Self { value.to_vec().into_boxed_slice() }
+}
 impl AsRef<[Frame]> for ResidentFrames<'_> {
     fn as_ref(&self) -> &[Frame] {
         self
@@ -951,21 +954,13 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        let native = std::iter::repeat_with(|| None)
-            .take(programs.len())
-            .collect();
+        let native = std::iter::repeat_with(|| None).take(programs.len()).collect();
         self.with_voice_modulation_and_v1(programs, regions, start_ranges, native)
     }
-    pub(crate) fn with_voice_modulation_and_v1(
-        mut self,
-        programs: Vec<super::ModProgram>,
-        regions: Vec<Option<usize>>,
-        start_ranges: Vec<u32>,
-        mut native: Vec<Option<crate::whole_voice::Program>>,
-    ) -> Result<Self, Error> {
-        if native.len() != programs.len() {
-            return Err(Error::InvalidInput);
-        }
+    pub(crate) fn with_voice_modulation_and_v1(mut self,
+        programs: Vec<super::ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
+        mut native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        if native.len() != programs.len() { return Err(Error::InvalidInput); }
         if regions.len() != self.regions.len()
             || programs.iter().any(|p| {
                 p.controls.iter().any(|&(index, _)| {
@@ -1045,9 +1040,7 @@ impl Prepared {
             let mut controls = Vec::new();
             let mut native_routes = Vec::new();
             for (ordinal, route) in program.routes.iter().enumerate() {
-                let control = native[index]
-                    .as_ref()
-                    .map_or(crate::whole_voice::Route::Residual, |n| n.routes[ordinal]);
+                let control = native[index].as_ref().map_or(crate::whole_voice::Route::Residual, |n| n.routes[ordinal]);
                 if route.target.compiled().is_some() {
                     for &(_, ids) in program.controls.iter().filter(|b| b.0 == ordinal) {
                         controls.push((routes.len(), ids));
@@ -1089,9 +1082,7 @@ impl Prepared {
             }
             program.routes = routes;
             program.controls = controls;
-            if let Some(native) = &mut native[index] {
-                native.routes = native_routes;
-            }
+            if let Some(native) = &mut native[index] { native.routes = native_routes; }
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
             programs,

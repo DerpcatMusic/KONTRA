@@ -463,8 +463,7 @@ mod law_tests {
     use super::*;
     #[test]
     fn display_is_the_bare_number_because_scripts_append_the_unit() {
-        let show =
-            |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);
+        let show = |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);
         assert_eq!(show("ENGINE_PAR_ATTACK", 0), "0.0");
         assert_eq!(show("ENGINE_PAR_SUSTAIN", 0), "-inf");
         assert_eq!(show("ENGINE_PAR_SUSTAIN", 1_000_000), "0.0");
@@ -878,9 +877,7 @@ pub(crate) fn display(parameter: u16, value: i32, text: &mut Text) {
             );
         }
         // The bare number: scripts append the unit themselves (`& " ms"`, `& " dB"`).
-        name @ ("$ENGINE_PAR_ATTACK"
-        | "$ENGINE_PAR_HOLD"
-        | "$ENGINE_PAR_DECAY"
+        name @ ("$ENGINE_PAR_ATTACK" | "$ENGINE_PAR_HOLD" | "$ENGINE_PAR_DECAY"
         | "$ENGINE_PAR_RELEASE") => {
             let stage = match name {
                 "$ENGINE_PAR_ATTACK" => crate::EnvelopeStage::Attack,
@@ -888,11 +885,7 @@ pub(crate) fn display(parameter: u16, value: i32, text: &mut Text) {
                 "$ENGINE_PAR_DECAY" => crate::EnvelopeStage::Decay,
                 _ => crate::EnvelopeStage::Release,
             };
-            let _ = write!(
-                text,
-                "{:.1}",
-                EngineParameterLaw::envelope(stage, 1000).decode(value)
-            );
+            let _ = write!(text, "{:.1}", EngineParameterLaw::envelope(stage, 1000).decode(value));
         }
         "$ENGINE_PAR_SUSTAIN" => {
             let gain = f64::from(value.clamp(0, 1_000_000)) / 1e6;

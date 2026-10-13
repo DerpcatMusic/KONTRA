@@ -78,15 +78,15 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    ArSettings, Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings,
-    Decimator, Delay, FilterKind, Impulse, KontaktLegacyEqSettings, LadderSettings, LiveFilter,
-    LiveShape, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, PeakingEq, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, StereoSettings, SvfMode, VoiceChain,
-    VoiceSendPosition, VoiceSendTap,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
+    LiveFilter, LiveShape, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter,
+    StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
+mod whole_voice;
 mod envelope;
 pub mod v1_voice_controls;
-mod whole_voice;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod engine_parameter_names;
@@ -114,8 +114,8 @@ pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProg
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
-    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw,
-    ModSource, ModTarget,
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
+    ModTarget,
 };
 mod ownership;
 use modulation::RenderedExpression;
@@ -123,9 +123,9 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod residency;
 mod native_start;
 mod note_event;
-mod residency;
 pub use note_event::NoteProperties;
 mod packed;
 mod plans;
@@ -145,15 +145,17 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
+    ResidencyRanges, ResidentFrames,
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
-    ResidencyRanges, ResidentFrames, Tuning, VelocityCurve, ZoneFades, service_mipmaps,
+    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod array_file;
 pub use array_file::{
-    ARRAY_FILE_JOBS, ARRAY_FILE_SERVICE, ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
+    ARRAY_FILE_JOBS, ARRAY_FILE_SERVICE,
+    ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
 };
 mod midi_object;
 mod ops;

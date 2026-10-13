@@ -240,20 +240,12 @@ impl Envelope {
         self
     }
 
-    pub(crate) fn with_native_primary(
-        mut self,
-        source: &sampler_ir::SourceAhdsr,
-        rate: u32,
-    ) -> Result<Self, Error> {
+    pub(crate) fn with_native_primary(mut self, source: &sampler_ir::SourceAhdsr, rate: u32) -> Result<Self, Error> {
         let params = crate::v1_voice_controls::Ahdsr::from(source);
         if !crate::v1_voice_controls::valid_ahdsr(&params) || rate < 10 {
             return Err(Error::InvalidInput);
         }
-        self.native = Some(crate::v1_voice_controls::Primary::new(
-            &params,
-            rate as f32,
-            true,
-        ));
+        self.native = Some(crate::v1_voice_controls::Primary::new(&params, rate as f32, true));
         Ok(self)
     }
 
@@ -302,22 +294,12 @@ pub(super) struct EnvelopeState {
 }
 
 impl EnvelopeState {
-    pub(crate) fn admits_v1_controls(&self) -> bool {
-        !self.shape.controlled && !self.shape.one_shot && self.shape.delay == 0
-    }
-    pub(crate) fn set_v1_amplitude(
-        &mut self,
-        primary: crate::v1_voice_controls::Primary,
-        _rate: f32,
-    ) {
-        if !self.shape.controlled {
-            self.shape.native = Some(primary);
-        }
+    pub(crate) fn admits_v1_controls(&self) -> bool { !self.shape.controlled && !self.shape.one_shot && self.shape.delay == 0 }
+    pub(crate) fn set_v1_amplitude(&mut self, primary: crate::v1_voice_controls::Primary, _rate: f32) {
+        if !self.shape.controlled { self.shape.native = Some(primary); }
     }
 
-    pub(crate) fn trace_parameters(&self) -> [f64; 10] {
-        self.shape.trace_parameters().map(|(_, v)| v)
-    }
+    pub(crate) fn trace_parameters(&self) -> [f64; 10] { self.shape.trace_parameters().map(|(_,v)|v) }
     pub(super) fn new(shape: Envelope) -> Self {
         let mut state = Self {
             shape,
@@ -446,38 +428,16 @@ impl EnvelopeState {
     }
 
     pub(super) fn releasing(&self) -> bool {
-        if let Some(native) = &self.shape.native {
-            return matches!(
-                native.phase(),
-                crate::v1_voice_controls::Phase::Release | crate::v1_voice_controls::Phase::Done
-            );
-        }
+        if let Some(native) = &self.shape.native { return matches!(native.phase(), crate::v1_voice_controls::Phase::Release | crate::v1_voice_controls::Phase::Done); }
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
-    pub(super) fn editor_phase(&self) -> u8 {
+    pub(super) fn editor_phase(&self)->u8 {
         if let Some(native) = &self.shape.native {
             use crate::v1_voice_controls::Phase as N;
-            return match native.phase() {
-                N::Attack => 0,
-                N::Hold => 1,
-                N::Decay => 2,
-                N::Sustain => 3,
-                N::Release => 4,
-                N::Done => 6,
-                N::Flex => 5,
-            };
+            return match native.phase() { N::Attack=>0, N::Hold=>1, N::Decay=>2, N::Sustain=>3, N::Release=>4, N::Done=>6, N::Flex=>5 };
         }
-        match self.phase {
-            Phase::Attack => 0,
-            Phase::Hold => 1,
-            Phase::Decay => 2,
-            Phase::Sustain => 3,
-            Phase::Release => 4,
-            Phase::Delay => 5,
-            Phase::Done => 6,
-        }
-    }
+        match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
     /// The level the next frame starts from.
     pub(super) fn current(&self) -> f32 {
         self.level()
@@ -610,24 +570,11 @@ mod tests {
     use super::*;
 
     fn native_shape(ahd_only: bool) -> Envelope {
-        Envelope::new(96, 32, 96, 0.3, 96)
-            .unwrap()
-            .with_native_primary(
-                &sampler_ir::SourceAhdsr {
-                    group: 0,
-                    slot: 0,
-                    attack_ms: 2.,
-                    attack_curve: -0.5,
-                    hold_ms: 1.,
-                    decay_ms: 2.,
-                    sustain: 0.3,
-                    release_ms: 2.,
-                    ahd_only,
-                    native_amplitude: true,
-                },
-                48000,
-            )
-            .unwrap()
+        Envelope::new(96, 32, 96, 0.3, 96).unwrap().with_native_primary(&sampler_ir::SourceAhdsr {
+            group: 0, slot: 0, attack_ms: 2., attack_curve: -0.5,
+            hold_ms: 1., decay_ms: 2., sustain: 0.3, release_ms: 2.,
+            ahd_only, native_amplitude: true,
+        }, 48000).unwrap()
     }
 
     #[test]
@@ -636,16 +583,11 @@ mod tests {
             for offset in [0, 1, 7, 31, 32, 33, 87, 150] {
                 let mut state = EnvelopeState::new(native_shape(ahd));
                 state.advance(offset);
-                if !ahd {
-                    state.release();
-                }
+                if !ahd { state.release(); }
                 let initial = state.remaining();
                 assert!(initial < 1024);
                 for remaining in (1..=initial).rev() {
-                    assert!(
-                        !state.done(),
-                        "ahd={ahd} offset={offset} initial={initial} remaining={remaining}"
-                    );
+                    assert!(!state.done(), "ahd={ahd} offset={offset} initial={initial} remaining={remaining}");
                     assert_eq!(state.remaining(), remaining, "ahd={ahd} offset={offset}");
                     state.next();
                 }
@@ -679,10 +621,9 @@ mod tests {
         releasing.release();
         let mut unchanged = releasing;
         releasing.choke(releasing.remaining() as u32 + 1);
-        for _ in 0..128 {
-            assert_eq!(releasing.next().to_bits(), unchanged.next().to_bits());
-        }
+        for _ in 0..128 { assert_eq!(releasing.next().to_bits(), unchanged.next().to_bits()); }
     }
+
 
     #[test]
     fn step_curves_survive_zero_duration_stage_edits() {

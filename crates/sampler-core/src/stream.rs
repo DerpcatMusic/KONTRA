@@ -191,9 +191,7 @@ impl StreamCache {
         // Reserve on the control thread; only touch sample pages when decoding.
         for _ in 0..pages {
             let mut frames = Vec::new();
-            frames
-                .try_reserve_exact(PAGE_FRAMES)
-                .map_err(|_| Error::Capacity)?;
+            frames.try_reserve_exact(PAGE_FRAMES).map_err(|_| Error::Capacity)?;
             free.push(frames);
         }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);

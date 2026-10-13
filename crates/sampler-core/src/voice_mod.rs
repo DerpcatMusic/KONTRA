@@ -149,10 +149,7 @@ pub enum ModSource {
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(
-            self,
-            Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_)
-        )
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
     }
 }
 
@@ -272,10 +269,10 @@ impl ModScaleLaw {
         let source = unipolar(source, source_bipolar);
         match self {
             Self::Multiply => base * source,
-            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 => {
-                base * (1. - (1. - source) * depth)
-            }
-            Self::KontaktIntensity { depth, .. } => 1. - (1. - base) * (1. - source * depth),
+            Self::KontaktIntensity { depth, flags, .. } if flags & 4 == 0 =>
+                base * (1. - (1. - source) * depth),
+            Self::KontaktIntensity { depth, .. } =>
+                1. - (1. - base) * (1. - source * depth),
         }
     }
 }
@@ -407,7 +404,7 @@ impl VoiceModulation {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
             }
-            if let Some((_, Some(indices))) = program.native_flex_control {
+            if let Some((_,Some(indices))) = program.native_flex_control {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
             }
@@ -419,8 +416,8 @@ impl VoiceModulation {
             for (indices, _) in program.native_controls.iter_mut().flatten() {
                 *indices = [resolve(indices[0])?, resolve(indices[1])?];
             }
-            if let Some((_, Some(indices))) = &mut program.native_flex_control {
-                *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            if let Some((_,Some(indices))) = &mut program.native_flex_control {
+                *indices = [resolve(indices[0])?,resolve(indices[1])?];
             }
         }
         Ok(())
@@ -446,10 +443,8 @@ impl VoiceModulation {
         if self.is_empty() {
             return 0;
         }
-        usize::from(self.programs.iter().any(|p| p.native.is_some()))
-            * size_of::<Option<crate::v1_voice_controls::ControlState>>()
-            + usize::from(self.programs.iter().any(|p| p.native.is_some()))
-                * size_of::<std::sync::atomic::AtomicBool>()
+        usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<Option<crate::v1_voice_controls::ControlState>>()
+            + usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<std::sync::atomic::AtomicBool>()
             + size_of::<Option<u32>>()
             + size_of::<u64>()
             + size_of::<u32>()
@@ -494,74 +489,68 @@ impl VoiceModulation {
         let mut compiled = Vec::with_capacity(programs.len());
         for program in programs {
             let mut envelopes = Vec::new();
-            let sources =
-                program
-                    .sources
-                    .iter()
-                    .map(|source| {
-                        Ok(match *source {
-                            ModSource::Lfo(lfo) => {
-                                if let LfoShape::DigitalSine { level, .. }
-                                | LfoShape::SineScaled(level) = lfo.shape
-                                    && !(-1.0..=1.0).contains(&level)
-                                {
-                                    return Err(Error::InvalidInput);
-                                }
-                                if matches!(lfo.shape, LfoShape::DigitalSine { .. })
-                                    && (lfo.delay != 0
-                                        || lfo.fade != 0
-                                        || !lfo.retrigger
-                                        || lfo.shared
-                                        || matches!(lfo.rate, LfoRate::Beats(_)))
-                                {
-                                    return Err(Error::InvalidInput);
-                                }
-                                let rate = match lfo.rate {
-                                    LfoRate::Hertz(r) | LfoRate::Beats(r) => r,
-                                };
-                                if !(rate.is_finite() && rate > 0.0)
-                                    || !(0.0..=1.0).contains(&lfo.phase)
-                                {
-                                    return Err(Error::InvalidInput);
-                                }
-                                Prepared::Lfo(lfo)
-                            }
-                            ModSource::Envelope(envelope) => {
-                                envelopes.push(envelope);
-                                Prepared::Envelope(envelopes.len() - 1)
-                            }
-                            ModSource::Breakpoints(index) => {
-                                let b =
-                                    program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
-                                if b.points.len() > u32::MAX as usize - 1
-                                    || b.sustain.is_some_and(|s| s >= b.points.len())
-                                    || b.points.iter().any(|p| !p.level.is_finite())
-                                {
-                                    return Err(Error::InvalidInput);
-                                }
-                                Prepared::Breakpoints(index)
-                            }
-                            ModSource::Velocity => Prepared::Velocity,
-                            ModSource::Key => Prepared::Key,
-                            ModSource::Controller(cc) if cc < 128 => Prepared::Controller(cc),
-                            ModSource::Controller(_) => return Err(Error::InvalidInput),
-                            ModSource::Pressure => Prepared::Pressure,
-                            ModSource::Timbre => Prepared::Timbre,
-                            ModSource::Random => Prepared::Random,
-                            ModSource::Constant => Prepared::Constant,
-                            ModSource::ReleaseCounter { frames: 0 } => {
+            let sources = program
+                .sources
+                .iter()
+                .map(|source| {
+                    Ok(match *source {
+                        ModSource::Lfo(lfo) => {
+                            if let LfoShape::DigitalSine { level, .. }
+                            | LfoShape::SineScaled(level) = lfo.shape
+                                && !(-1.0..=1.0).contains(&level)
+                            {
                                 return Err(Error::InvalidInput);
                             }
-                            ModSource::ReleaseCounter { frames } => {
-                                Prepared::ReleaseCounter(frames)
+                            if matches!(lfo.shape, LfoShape::DigitalSine { .. })
+                                && (lfo.delay != 0
+                                    || lfo.fade != 0
+                                    || !lfo.retrigger
+                                    || lfo.shared
+                                    || matches!(lfo.rate, LfoRate::Beats(_)))
+                            {
+                                return Err(Error::InvalidInput);
                             }
-                            ModSource::Script(id) | ModSource::ScriptBipolar(id) => {
-                                Prepared::Script(id)
+                            let rate = match lfo.rate {
+                                LfoRate::Hertz(r) | LfoRate::Beats(r) => r,
+                            };
+                            if !(rate.is_finite() && rate > 0.0)
+                                || !(0.0..=1.0).contains(&lfo.phase)
+                            {
+                                return Err(Error::InvalidInput);
                             }
-                            ModSource::PitchBend => Prepared::PitchBend,
-                        })
+                            Prepared::Lfo(lfo)
+                        }
+                        ModSource::Envelope(envelope) => {
+                            envelopes.push(envelope);
+                            Prepared::Envelope(envelopes.len() - 1)
+                        }
+                        ModSource::Breakpoints(index) => {
+                            let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
+                            if b.points.len() > u32::MAX as usize - 1
+                                || b.sustain.is_some_and(|s| s >= b.points.len())
+                                || b.points.iter().any(|p| !p.level.is_finite())
+                            {
+                                return Err(Error::InvalidInput);
+                            }
+                            Prepared::Breakpoints(index)
+                        }
+                        ModSource::Velocity => Prepared::Velocity,
+                        ModSource::Key => Prepared::Key,
+                        ModSource::Controller(cc) if cc < 128 => Prepared::Controller(cc),
+                        ModSource::Controller(_) => return Err(Error::InvalidInput),
+                        ModSource::Pressure => Prepared::Pressure,
+                        ModSource::Timbre => Prepared::Timbre,
+                        ModSource::Random => Prepared::Random,
+                        ModSource::Constant => Prepared::Constant,
+                        ModSource::ReleaseCounter { frames: 0 } => {
+                            return Err(Error::InvalidInput);
+                        }
+                        ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
+                        ModSource::PitchBend => Prepared::PitchBend,
                     })
-                    .collect::<Result<Box<[_]>, Error>>()?;
+                })
+                .collect::<Result<Box<[_]>, Error>>()?;
             let mut shapes = Vec::with_capacity(program.shapes.len());
             for shape in &program.shapes {
                 if shape.is_empty()
@@ -682,16 +671,12 @@ impl VoiceModulation {
             if controls.windows(2).any(|b| b[0].0 == b[1].0) {
                 return Err(Error::InvalidInput);
             }
-            let fades = sources
-                .iter()
-                .map(|s| match s {
-                    Prepared::Lfo(Lfo {
-                        shape: LfoShape::DigitalSine { fade, .. },
-                        ..
-                    }) => Some(fade.gains()),
-                    _ => None,
-                })
-                .collect();
+            let fades = sources.iter().map(|s| match s {
+                Prepared::Lfo(Lfo { shape: LfoShape::DigitalSine { fade, .. }, .. }) => {
+                    Some(fade.gains())
+                }
+                _ => None,
+            }).collect();
             let native_program = native.next().flatten();
             let mut native_controls = native_program.as_ref().map_or_else(Vec::new, |n| {
                 vec![None; n.plan.description().mods.assignments().len()]
@@ -699,31 +684,15 @@ impl VoiceModulation {
             if let Some(n) = &native_program {
                 for &(route, ids) in &controls {
                     if let crate::whole_voice::Route::External(assignment) = n.routes[route] {
-                        let target = n.plan.description().mods.assignments()[assignment as usize]
-                            .route
-                            .unwrap()
-                            .1;
-                        let scale = if target == crate::v1_voice_controls::Target::Pitch {
-                            12.
-                        } else {
-                            1.
-                        };
+                        let target = n.plan.description().mods.assignments()[assignment as usize].route.unwrap().1;
+                        let scale = if target == crate::v1_voice_controls::Target::Pitch { 12. } else { 1. };
                         native_controls[assignment as usize] = Some((ids, scale));
                     }
                 }
             }
             let native_flex_control = native_program.as_ref().and_then(|native| {
-                let route = native
-                    .routes
-                    .iter()
-                    .position(|r| matches!(r, crate::whole_voice::Route::Flex))?;
-                Some((
-                    program.routes[route].depth,
-                    controls
-                        .iter()
-                        .find(|(index, _)| *index == route)
-                        .map(|(_, ids)| *ids),
-                ))
+                let route = native.routes.iter().position(|r| matches!(r,crate::whole_voice::Route::Flex))?;
+                Some((program.routes[route].depth,controls.iter().find(|(index,_)| *index == route).map(|(_,ids)| *ids)))
             });
             compiled.push(Program {
                 controls: controls.into_boxed_slice(),
@@ -821,18 +790,17 @@ impl VoiceModulation {
             let at_start = |index: usize| match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
                     let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
-                    program.fades[index]
-                        .as_ref()
-                        .map_or(signal, |gains| f64::from(signal as f32 * gains[0]))
+                    program.fades[index].as_ref().map_or(signal, |gains| {
+                        f64::from(signal as f32 * gains[0])
+                    })
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let depth = route.scale.map_or(route.depth, |s| {
-                program.depth(route.depth, s, at_start(s.source))
-            });
+            let depth = route.scale.map_or(route.depth,
+                |s| program.depth(route.depth, s, at_start(s.source)));
             fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
@@ -874,9 +842,8 @@ impl Program {
         };
         match scale.law {
             ModScaleLaw::Multiply => base * unipolar(source, bipolar),
-            ModScaleLaw::KontaktIntensity { unit, .. } => {
-                scale.law.apply(base / unit, source, bipolar) * unit
-            }
+            ModScaleLaw::KontaktIntensity { unit, .. } =>
+                scale.law.apply(base / unit, source, bipolar) * unit,
         }
     }
 
@@ -1129,10 +1096,7 @@ impl VoiceModState {
             return Ok(Self::empty());
         }
         Ok(Self {
-            native: sampler_pool::Slab::new(
-                crate::dsp::allocate(if modulation.native { voices } else { 0 })?,
-                1,
-            ),
+            native: sampler_pool::Slab::new(crate::dsp::allocate(if modulation.native { voices } else { 0 })?, 1),
             native_starts: 0,
             native_blocks: std::sync::atomic::AtomicU64::new(0),
             sources: modulation.sources,
@@ -1340,16 +1304,9 @@ impl VoiceModState {
     }
 
     pub fn start(
-        &mut self,
-        modulation: &VoiceModulation,
-        voice: usize,
-        region: usize,
-        inputs: &Inputs<'_>,
-        clock: Clock,
-        seed: u64,
-    ) {
-        self.start_with_controls(modulation, voice, region, inputs, clock, seed, true);
-    }
+        &mut self, modulation: &VoiceModulation, voice: usize, region: usize,
+        inputs: &Inputs<'_>, clock: Clock, seed: u64,
+    ) { self.start_with_controls(modulation, voice, region, inputs, clock, seed, true); }
     pub(crate) fn start_with_controls(
         &mut self,
         modulation: &VoiceModulation,
@@ -1357,12 +1314,9 @@ impl VoiceModState {
         region: usize,
         inputs: &Inputs<'_>,
         clock: Clock,
-        seed: u64,
-        native_allowed: bool,
+        seed: u64, native_allowed: bool,
     ) {
-        if let Some(state) = self.native.as_mut_slice().get_mut(voice) {
-            *state = None;
-        }
+        if let Some(state) = self.native.as_mut_slice().get_mut(voice) { *state = None; }
         let Some(program) = self.program.get_mut(voice) else {
             return;
         };
@@ -1373,11 +1327,7 @@ impl VoiceModState {
         let p = &modulation.programs[index as usize];
         if native_allowed && let Some(native) = &p.native {
             let mut state = crate::v1_voice_controls::ControlState::new(&native.plan);
-            state.reset_read(
-                &native.plan,
-                |s, t| crate::whole_voice::read(inputs, s, t),
-                clock.now,
-            );
+            state.reset_read(&native.plan, |s,t| crate::whole_voice::read(inputs,s,t), clock.now);
             self.native.as_mut_slice()[voice] = Some(state);
             self.native_starts += 1;
         }
@@ -1428,36 +1378,22 @@ impl VoiceModState {
         Some(offsets)
     }
 
-    pub(crate) fn native_render<'a>(
-        &'a self,
-        modulation: &'a VoiceModulation,
-        voice: usize,
-        state: &'a mut Option<crate::v1_voice_controls::ControlState>,
-        controls: &[crate::ControlValue],
-    ) -> Option<crate::whole_voice::Render<'a>> {
+    pub(crate) fn native_render<'a>(&'a self, modulation: &'a VoiceModulation, voice: usize,
+        state: &'a mut Option<crate::v1_voice_controls::ControlState>, controls: &[crate::ControlValue]) -> Option<crate::whole_voice::Render<'a>> {
         let program = &modulation.programs[self.program(voice)? as usize];
         let native = program.native.as_ref()?;
-        let flex_depth = program.native_flex_control.map_or(1., |(base, ids)| {
-            ids.map_or(base, |[depth, bypass]| {
-                match (controls[depth], controls[bypass]) {
-                    (crate::ControlValue::Real(depth), crate::ControlValue::Real(0.)) => depth,
-                    _ => 0.,
-                }
+        let flex_depth = program.native_flex_control.map_or(1., |(base,ids)| {
+            ids.map_or(base, |[depth,bypass]| match (controls[depth],controls[bypass]) {
+                (crate::ControlValue::Real(depth),crate::ControlValue::Real(0.)) => depth,
+                _ => 0.,
             })
         });
-        Some(crate::whole_voice::Render {
-            plan: &native.plan,
-            state: state.as_mut()?,
-            blocks: &self.native_blocks,
-            flex_depth,
-        })
+        Some(crate::whole_voice::Render { plan: &native.plan, state: state.as_mut()?, blocks: &self.native_blocks, flex_depth })
     }
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {
             let p = &modulation.programs[program as usize];
-            if let (Some(native), Some(Some(state))) =
-                (&p.native, self.native.as_mut_slice().get_mut(voice))
-            {
+            if let (Some(native), Some(Some(state))) = (&p.native, self.native.as_mut_slice().get_mut(voice)) {
                 state.release(&native.plan);
             }
             for state in &mut self.envelope[voice * self.envelopes..][..p.envelopes.len()] {
@@ -1524,12 +1460,7 @@ impl VoiceModState {
         frames: u32,
         onset: bool,
     ) -> Outputs {
-        let native = p.native.as_ref().filter(|_| {
-            self.native
-                .as_mut_slice()
-                .get(voice)
-                .is_some_and(Option::is_some)
-        });
+        let native = p.native.as_ref().filter(|_| self.native.as_mut_slice().get(voice).is_some_and(Option::is_some));
         let seed = self.seed[voice];
         let age = self.age[voice].saturating_add(frames);
         self.age[voice] = age;
@@ -1603,26 +1534,16 @@ impl VoiceModState {
         }
         let native_point = native.map(|native| {
             let state = self.native.as_mut_slice()[voice].as_mut().unwrap();
-            if changed || p.native_controls.iter().any(Option::is_some) {
-                state.invalidate_inputs();
-            }
-            state.plan_controls_read_with_intensity(
-                &native.plan,
-                |s, t| crate::whole_voice::read(inputs, s, t),
-                0,
-                frames as usize,
+            if changed || p.native_controls.iter().any(Option::is_some) { state.invalidate_inputs(); }
+            state.plan_controls_read_with_intensity(&native.plan,
+                |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize,
                 |assignment, m| match p.native_controls[assignment] {
-                    Some(([depth, bypass], scale)) => {
-                        match (inputs.controls[depth], inputs.controls[bypass]) {
-                            (crate::ControlValue::Real(value), crate::ControlValue::Real(0.)) => {
-                                (value / scale) as f32
-                            }
-                            _ => 0.,
-                        }
-                    }
+                    Some(([depth, bypass], scale)) => match (inputs.controls[depth], inputs.controls[bypass]) {
+                        (crate::ControlValue::Real(value), crate::ControlValue::Real(0.)) => (value / scale) as f32,
+                        _ => 0.,
+                    },
                     None => m.intensity,
-                },
-            )
+                })
         });
         let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
         let previous_processor_values =
@@ -1656,24 +1577,16 @@ impl VoiceModState {
             match control {
                 crate::whole_voice::Route::Flex => continue,
                 crate::whole_voice::Route::External(assignment) => {
-                    let m =
-                        &native.unwrap().plan.description().mods.assignments()[assignment as usize];
-                    let (source, target) = m.route.unwrap();
-                    if target != crate::v1_voice_controls::Target::Module {
-                        continue;
-                    }
+                    let m = &native.unwrap().plan.description().mods.assignments()[assignment as usize];
+                    let (source,target) = m.route.unwrap();
+                    if target != crate::v1_voice_controls::Target::Module { continue; }
                     let input = crate::whole_voice::read(inputs, source, target);
                     let mut value = *lagged as f32;
-                    if onset {
-                        value = m.shape(input);
-                    } else {
-                        m.follow_value(&mut value, input, frames as usize, clock.rate as f32);
-                    }
+                    if onset { value = m.shape(input); }
+                    else { m.follow_value(&mut value, input, frames as usize, clock.rate as f32); }
                     *lagged = f64::from(value);
                     processor_values[i] = f64::from(base as f32 * value);
-                    if onset {
-                        previous_processor_values[i] = processor_values[i];
-                    }
+                    if onset { previous_processor_values[i] = processor_values[i]; }
                     continue;
                 }
                 crate::whole_voice::Route::Residual => {}
@@ -1722,9 +1635,7 @@ impl VoiceModState {
         if p.filter {
             out.filter = [(cutoff / 12.0).exp2(), 10f64.powf(resonance / 20.0)];
         }
-        if let Some((gain, _, _)) = native_point {
-            out.gains = out.gains.map(|g| g * gain);
-        }
+        if let Some((gain,_,_)) = native_point { out.gains = out.gains.map(|g| g * gain); }
         out.tone = if p.tone { out.tone.min(0.0) } else { 0.0 };
         out
     }
@@ -2005,7 +1916,8 @@ mod tests {
             Lfo {
                 shape: LfoShape::DigitalSine {
                     level: f64::NAN,
-                    fade: crate::KontaktLfoFade::from_saved(10., 48000.).unwrap(),
+                    fade: crate::KontaktLfoFade::from_saved(10., 48000.)
+                        .unwrap(),
                 },
                 ..valid
             },
