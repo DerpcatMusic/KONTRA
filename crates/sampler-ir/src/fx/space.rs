@@ -38,6 +38,39 @@ pub enum Topology {
     /// low shelf and a high cut. It does its own predelay, width and mix;
     /// the other `Network` fields only describe it (UI, tail length).
     Galois,
+    /// The exact UVI SparkVerb engine, driven by [`Network::spark`]: `2^q`
+    /// prime-length lines coupled by a Hadamard matrix, two-shelf feedback
+    /// filters, per-line cent-depth modulation, an optional input diffuser.
+    /// It does its own predelay and width; the unit's dry/wet mixes it.
+    SparkVerb,
+}
+
+/// UVI SparkVerb's controls (Workstation 4.0.9, engine `0x1416799a0`) in
+/// their native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SparkVerb {
+    /// Lines are `2^quality` (Quality 2..=4 in the catalog).
+    pub quality: u8,
+    pub room_m: f32,
+    pub shape: f32,
+    pub decay: f32,
+    pub decay_low: f32,
+    pub decay_high: f32,
+    pub freq_low: f32,
+    pub freq_high: f32,
+    pub low_cut: bool,
+    pub high_cut: bool,
+    pub mod_cents: f32,
+    pub mod_hz: f32,
+    /// Delay-read interpolation (Mode): 0 floor, 1 linear, 2 Lagrange.
+    pub mode: u8,
+    pub freeze: bool,
+    /// Input diffuser gain and first length in ms, when on.
+    pub diffuser: Option<(f32, f32)>,
+    pub width: f32,
+    pub rolloff_hz: f32,
+    pub predelay_seconds: f32,
 }
 
 /// The ten normalized controls (`0..=1`) of the Kontakt Reverb core setter
@@ -136,6 +169,8 @@ pub struct Network {
     pub freeverb: Option<Freeverb>,
     /// Controls for [`Topology::Galois`]; ignored by other topologies.
     pub galois: Option<Galois>,
+    /// Controls for [`Topology::SparkVerb`]; ignored by other topologies.
+    pub spark: Option<SparkVerb>,
 }
 
 impl Network {
@@ -158,6 +193,7 @@ impl Network {
         echo_feedback: 0.0,
         freeverb: None,
         galois: None,
+        spark: None,
     };
 }
 
@@ -195,6 +231,12 @@ impl Config {
             band && n.gate_seconds.is_none_or(f64::is_finite)
                 && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
                 && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
+                && n.spark.is_none_or(|s| {
+                    let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
+                    [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]
+                        .iter()
+                        .all(|v| v.is_finite())
+                })
                 && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
                     .iter()
                     .all(|v| v.is_finite())

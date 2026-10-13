@@ -2,9 +2,10 @@
 //!
 //! The IR players (`Convolver`, `SampledReverb`) load a library impulse
 //! response whose controls are applied by `sampler_core::shape_impulse`
-//! (measured against the official processor by the frozen v1 engine). Every
-//! algorithmic reverb (`PlainReverb`, `GateReverb`, `FilteredReverb`,
-//! `DelayedReverb`, `SparkVerb`, `Bloom`, `Diffusion`) has a catalog of
+//! (measured against the official processor by the frozen v1 engine).
+//! `SparkVerb` runs its native engine. The other algorithmic reverbs
+//! (`PlainReverb`, `GateReverb`, `FilteredReverb`, `DelayedReverb`, `Bloom`,
+//! `Diffusion`) have a catalog of
 //! parameter names and ranges but no recovered algorithm or control law, so
 //! each maps onto the generic network of the same kind and says so
 //! (`Reason::UnknownLaw`). `IReverb`, `Opal`, `Simple Reverb` and
@@ -13,7 +14,7 @@
 use super::super::{Translation, number};
 use roxmltree::Node;
 use sampler_ir as ir;
-use sampler_ir::fx::space::{Config, DecayBands, Network, Topology};
+use sampler_ir::fx::space::{Config, DecayBands, Network, SparkVerb, Topology};
 
 /// The first attribute of `names` present on `node`. The factory XML
 /// prefixes some names with the element's own ("SampledReverbTime",
@@ -44,6 +45,58 @@ fn modulation_seconds(cents: f64, hz: f64) -> f64 {
 }
 
 impl Translation {
+    /// SparkVerb onto the native engine (`sampler_core` `dsp/space/sparkverb.rs`).
+    fn spark_verb(&mut self, node: Node, at: &str, synced: bool) -> Result<ir::Processor, String> {
+        let n = |name: &str, default: f64| number(node, name, default);
+        let on = |name: &str, default: f64| -> Result<bool, String> { Ok(n(name, default)? != 0.0) };
+        let predelay_ms = n("PreDelay", 0.0)?;
+        if synced {
+            self.unsupported(at, "SparkVerb PreDelay host sync", predelay_ms);
+        }
+        // Absent in Workstation 4.0.9, whose engine fixes them at these values.
+        for (name, fixed) in [("UseOldInputMatrix", 1.0), ("UseOldOutputMatrix", 1.0), ("UseFilterInFeedback", 1.0), ("EarlyShape", 0.0)] {
+            let v = n(name, fixed)?;
+            if v != fixed {
+                self.unsupported(at, &format!("SparkVerb {name}"), v);
+            }
+        }
+        let (decay, room, low, high) = (n("DecayTime", 1.0)?, n("RoomSize", 20.0)?, n("DecayLow", 1.0)?, n("DecayHigh", 1.0)?);
+        let (low_cut, high_cut, freeze) = (on("LowCut", 0.0)?, on("HiCut", 0.0)?, on("Freeze", 0.0)?);
+        let spark = SparkVerb {
+            quality: n("Quality", 3.0)?.clamp(1.0, 5.0) as u8,
+            room_m: room as f32,
+            shape: n("Shape", 0.0)? as f32,
+            decay: decay as f32,
+            decay_low: low as f32,
+            decay_high: high as f32,
+            freq_low: n("FreqLow", 250.0)? as f32,
+            freq_high: n("FreqHigh", 12_000.0)? as f32,
+            low_cut,
+            high_cut,
+            mod_cents: n("ModDepth", 4.0)? as f32,
+            mod_hz: n("ModRate", 1.0)? as f32,
+            mode: n("Mode", 1.0)?.clamp(0.0, 2.0) as u8,
+            freeze,
+            diffuser: on("DiffusionOnOff", 0.0)?.then_some((n("Diffusion", 0.618)? as f32, n("DiffusionStart", 5.0)? as f32)),
+            width: n("Width", 1.0)? as f32,
+            rolloff_hz: n("Rolloff", 20_000.0)? as f32,
+            predelay_seconds: (predelay_ms * 0.001).clamp(0.0, 0.1) as f32,
+        };
+        // Tail (0x141321310): 2·RT60 of the slowest band plus the predelay.
+        let slowest = 1f64.max(if low_cut { 1.0 } else { low }).max(if high_cut { 1.0 } else { high });
+        let network = Network {
+            topology: Topology::SparkVerb,
+            decay_seconds: if freeze { 60.0 } else { (0.1 * room * decay * slowest).clamp(0.01, 60.0) },
+            predelay_seconds: (predelay_ms * 0.001).clamp(0.0, 0.1),
+            width: f64::from(spark.width).clamp(0.0, 1.0),
+            spark: Some(spark),
+            ..Network::DEFAULT
+        };
+        let mix = n("Mix", 0.5)?.clamp(0.0, 1.0);
+        let (dry, wet) = if n("MixMode", 1.0)? != 0.0 { ((1.0 - mix).sqrt(), mix.sqrt()) } else { (1.0 - mix, mix) };
+        Ok(ir::Processor::Space(Config { network: Some(network), impulse: None, dry, wet }))
+    }
+
     /// `Convolver` and `SampledReverb`: an impulse response from the library.
     pub(crate) fn impulse_player(&mut self, node: Node, at: &str) -> Result<ir::Processor, String> {
         // No file (or an unreadable one) leaves a unit impulse: the
@@ -99,6 +152,9 @@ impl Translation {
         };
         let mut network = Network::DEFAULT;
         let mix: f64;
+        if kind == "SparkVerb" {
+            return self.spark_verb(node, at, beats).map(Some);
+        }
         match kind {
             "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" => {
                 network.topology = Topology::CombAllpass;
@@ -132,14 +188,13 @@ impl Translation {
                     });
                 }
             }
-            "SparkVerb" | "Bloom" => {
+            "Bloom" => {
                 network.topology = Topology::Fdn;
                 network.decay_seconds = number(node, "DecayTime", 1.0)?.max(0.01);
                 network.size = (number(node, "RoomSize", 20.0)? / 20.0).clamp(0.05, 1.5);
                 network.predelay_seconds = time(&["PreDelay"], 0.0)? * if beats { 1.0 } else { 0.001 };
                 network.width = number(node, "Width", 1.0)?.clamp(0.0, 1.0);
-                let diffusion_on = kind == "Bloom" || flag(node, "DiffusionOnOff")?;
-                network.diffusion = if diffusion_on { 0.75 * number(node, "Diffusion", 0.618)?.clamp(0.0, 1.0) } else { 0.0 };
+                network.diffusion = 0.75 * number(node, "Diffusion", 0.618)?.clamp(0.0, 1.0);
                 let (low, high) = (number(node, "DecayLow", 1.0)?, number(node, "DecayHigh", 1.0)?);
                 if low != 1.0 || high != 1.0 {
                     network.bands = Some(DecayBands {
@@ -152,9 +207,7 @@ impl Translation {
                 let rate = number(node, "ModRate", 1.0)?;
                 network.modulation_hz = rate;
                 network.modulation_seconds = modulation_seconds(number(node, "ModDepth", 4.0)?, rate);
-                if kind == "SparkVerb" && flag(node, "HiCut")? || kind == "Bloom" {
-                    network.input_cutoff_hz = number(node, "Rolloff", 20_000.0)?;
-                }
+                network.input_cutoff_hz = number(node, "Rolloff", 20_000.0)?;
                 let mix = number(node, "Mix", 0.5)?;
                 let gain = 10f64.powf(number(node, "ReverbGain", 0.0)? / 20.0);
                 for (name, off) in [
