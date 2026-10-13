@@ -35,6 +35,7 @@ fn source(kind: usize) -> ir::Instrument {
                     shape: ir::Curve::Linear,
                 }],
                 sustain: Some(0),
+                flex_release: false,
             })
         } else {
             ir::ModulationSource::Envelope(ir::Envelope {

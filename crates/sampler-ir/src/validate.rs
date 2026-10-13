@@ -497,6 +497,14 @@ impl Instrument {
                     {
                         check.within(level, -1.0..=1.0, "sine level")?;
                     }
+                    if let crate::LfoShape::Native(crate::NativeWave::Multi { weights, width, .. }) =
+                        lfo.shape
+                    {
+                        for weight in weights {
+                            check.within(f64::from(weight), f64::MIN..=f64::MAX, "multi weight")?;
+                        }
+                        check.within(f64::from(width), 0.0..=1.0, "multi pulse width")?;
+                    }
                     if let crate::LfoShape::DigitalSine { fade_ms, .. } = lfo.shape {
                         check.within(f64::from(fade_ms), 0.0..=5000.0, "digital fade")?;
                         if modulator.scope != Scope::Voice

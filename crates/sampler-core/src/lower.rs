@@ -1783,6 +1783,7 @@ impl Lowering<'_> {
                     points,
                     sustain: b.sustain,
                     loop_range: None,
+                    flex_release: b.flex_release,
                 });
                 ModSource::Breakpoints(program.breakpoints.len() - 1)
             }
