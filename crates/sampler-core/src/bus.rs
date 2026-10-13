@@ -343,6 +343,11 @@ impl BusState {
     pub fn active(&self) -> bool {
         self.tone_ringing || self.buffers.iter().any(|b| b.remaining != 0)
     }
+    /// Render scheduling includes one pending history reset; ownership still
+    /// uses `active`, so a diagnostic reset does not extend a plan's tail.
+    pub fn needs_render(&self) -> bool {
+        self.tone_ringing || self.buffers.iter().any(|b| b.remaining != 0 || b.state_dirty)
+    }
     pub fn reset(&mut self) {
         self.begin();
         self.cells.fill(ProcessorState::default());
