@@ -1191,59 +1191,18 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
-            Some(Params::Compressor { mode: 1.0, threshold_db, ratio, attack_ms, release_ms, link }) => {
+            Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                let knobs = [*threshold_db, *ratio, *attack_ms, *release_ms];
-                if knobs.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack_ms > 0. && *release_ms >= 0. {
-                    out.processors.push(sampler_ir::Processor::KontaktEnhancedCompressor { knobs, link: *link });
-                    combined = gain;
-                } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
-            }
-            Some(Params::Compressor { mode, .. }) if *mode != 0.0 => {
-                // The dispatcher 0x1409047a0 runs a separate core per mode (Classic
-                // 0x140ab2250, Enhanced 0x140ab2c80, Pro 0x140ab35d0). Mode 1 is
-                // admitted above; Pro's coefficients are unrecovered and unknown
-                // modes have no core, so neither takes the textbook compressor.
-                notes.push((
-                    "compressor mode".into(),
-                    format!("{mode}"),
-                    sampler_ir::Reason::NotModeled,
-                ));
-                modelled = false;
-            }
-            Some(Params::Compressor {
-                mode: _,
-                threshold_db,
-                ratio,
-                attack_ms,
-                release_ms,
-                link,
-            }) => {
-                // Group inserts are per voice; instrument/bus inserts see their
-                // corresponding sum. The chain's scope preserves that distinction.
-                // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
-                // the linked detector is the signed channel mean. The level law
-                // is the textbook one (ir::Compressor); the stored units are the
-                // importer's labels.
-                // KONTAKT_REFERENCE (ANALOG STRINGS C4/E4/G4, compressor on vs
-                // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
-                // output gain with about 0.3-0.7 dB of reduction. Only mode 0
-                // (Classic) is taken to share the kernel; its native core is not
-                // extracted, so this stays a measured approximation.
-                flush(&mut combined, &mut filters, &mut out);
-                out.processors
-                    .push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
-                        threshold_db: f64::from(*threshold_db),
-                        // Stored as the inverse ratio (Analog Strings: 0.501 beside a
-                        // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
-                        // slope 1 - 1/ratio would read the same here.
-                        ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
-                        attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
-                        release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
-                        makeup: sampler_ir::Gain::UNITY,
-                        link: *link,
-                    }));
-                combined = gain;
+                match dynamics::compressor(*mode, *threshold_db, *ratio, *attack_ms, *release_ms, *link) {
+                    Ok(processor) => {
+                        out.processors.push(processor);
+                        combined = gain;
+                    }
+                    Err(note) => {
+                        notes.push(note);
+                        modelled = false;
+                    }
+                }
             }
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
@@ -1908,8 +1867,8 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn compressor_modes_without_a_proved_core_are_not_modeled() {
-        for mode in [2i32, 3, -1] {
+    fn compressor_modes_without_a_core_are_not_modeled() {
+        for mode in [3i32, -1] {
             let mut bytes = mode.to_le_bytes().to_vec();
             for v in [-12f32, 0.5, 10., 100.] {
                 bytes.extend(v.to_le_bytes());
@@ -1920,7 +1879,7 @@ mod tests {
             let built = super::chain(&[fx], super::Scope::Voice);
             assert!(
                 built.processors.is_empty(),
-                "mode {mode} must not use the textbook compressor"
+                "mode {mode} has no core"
             );
             assert!(built.notes.iter().any(|(_, feature, _, reason)| {
                 feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
@@ -3327,7 +3286,7 @@ mod tests {
         assert!(
             c.processors
                 .iter()
-                .any(|p| matches!(p, sampler_ir::Processor::Compressor(_))),
+                .any(|p| matches!(p, sampler_ir::Processor::Dynamics(_))),
             "{:?}",
             c.notes
         );
@@ -3474,31 +3433,39 @@ mod tests {
     }
 
     #[test]
-    fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
+    fn classic_compressor_slot_is_the_native_classic_law_with_its_link_flag() {
         let mut bytes = Vec::new();
         for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
-        assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
+        use sampler_ir::fx::dynamics::{Law, Link, Native};
+        assert_eq!(c.law, Law::KontaktClassic(Native { threshold_db: -18.0, ratio: 0.25 }));
+        assert_eq!(c.link, Link::Mean);
         assert_eq!(c.attack.seconds(), 0.01);
+        assert_eq!(c.release.seconds(), 0.12);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]
-    fn pro_compressor_is_not_modeled_not_generic() {
+    fn pro_compressor_is_the_native_pro_law_and_always_max_linked() {
         let mut bytes = 2i32.to_le_bytes().to_vec();
         for x in [-18.0f32, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        assert!(!built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Compressor(_))));
-        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        use sampler_ir::fx::dynamics::{Law, Link};
+        assert!(matches!(c.law, Law::KontaktPro(_)));
+        assert_eq!(c.link, Link::Max);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]

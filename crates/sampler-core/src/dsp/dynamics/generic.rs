@@ -26,6 +26,8 @@ pub(crate) struct Coefficients {
     /// `1 - 1/ratio` (compression) or `ratio - 1` (expansion).
     slope: f64,
     knee_db: f64,
+    /// Largest reduction or boost in dB.
+    range: f64,
     attack: f64,
     release: f64,
     rms: f64,
@@ -54,6 +56,7 @@ impl Coefficients {
                 _ => 1. - 1. / ratio,
             },
             knee_db: g.knee_db,
+            range: if g.range_db > 0. { g.range_db } else { f64::INFINITY },
             attack: pole(attack, rate),
             release: pole(release, rate),
             rms: pole(window, rate),
@@ -74,18 +77,18 @@ impl Coefficients {
                 // Linear gate: skip the log while the level cannot reach the knee.
                 if self.knee_db == 0. {
                     if level > self.threshold {
-                        (DB_PER_NEPER * level.ln() - self.threshold_db) * self.slope
+                        ((DB_PER_NEPER * level.ln() - self.threshold_db) * self.slope).min(self.range)
                     } else {
                         0.
                     }
                 } else if level * 10f64.powf(self.knee_db / 40.) <= self.threshold {
                     0.
                 } else {
-                    self.curve(DB_PER_NEPER * level.ln() - self.threshold_db, MAX_CUT_DB)
+                    self.curve(DB_PER_NEPER * level.ln() - self.threshold_db, MAX_CUT_DB.min(self.range))
                 }
             }
-            Direction::Upward => self.curve(self.threshold_db - db(level), MAX_BOOST_DB),
-            Direction::Expand => self.curve(self.threshold_db - db(level), MAX_CUT_DB),
+            Direction::Upward => self.curve(self.threshold_db - db(level), MAX_BOOST_DB.min(self.range)),
+            Direction::Expand => self.curve(self.threshold_db - db(level), MAX_CUT_DB.min(self.range)),
         }
     }
 
@@ -228,6 +231,7 @@ mod tests {
             topology: Topology::FeedForward,
             lookahead: Time::ZERO,
             sidechain_highpass_hz: 0.,
+            range_db: 0.,
         }
     }
 
