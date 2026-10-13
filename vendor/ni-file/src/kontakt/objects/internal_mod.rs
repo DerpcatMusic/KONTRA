@@ -8,7 +8,7 @@ use crate::{
 
 use super::{
     modulation::{ensure_consumed, read_assignment_name, read_targets},
-    EnvelopeAhdsr, EnvelopeFlex, Lfo, ModTarget,
+    EnvelopeAhdsr, EnvelopeDbd, EnvelopeFlex, EnvelopeFollower, Glide, Lfo, ModTarget,
 };
 
 const CHUNK_ID: u16 = 0x0D;
@@ -50,6 +50,10 @@ pub enum Modulator {
     Ahdsr(EnvelopeAhdsr),
     Flex(EnvelopeFlex),
     Lfo(Lfo),
+    /// Raw stored values only; the native runtime mapping is unproved.
+    Dbd(EnvelopeDbd),
+    Glide(Glide),
+    Follower(EnvelopeFollower),
     /// Undecoded modulator, identified by its chunk id.
     Other {
         chunk_id: u16,
@@ -107,6 +111,9 @@ impl InternalMod {
         Ok(match inner.id {
             0x3F => Modulator::Ahdsr(EnvelopeAhdsr::try_from(inner)?),
             0x40 => Modulator::Flex(EnvelopeFlex::try_from(inner)?),
+            0x41 => Modulator::Dbd(EnvelopeDbd::try_from(inner)?),
+            0x0B => Modulator::Glide(Glide::try_from(inner)?),
+            0x0A => Modulator::Follower(EnvelopeFollower::try_from(inner)?),
             0x08 => match Lfo::read_supported(inner)? {
                 Some(lfo) => Modulator::Lfo(lfo),
                 None => Modulator::Other { chunk_id: inner.id },
