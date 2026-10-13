@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>KONTRA coverage</title>
+<style>
+:root{--bg:#111418;--fg:#d8dde3;--mut:#8b95a1;--line:#252b33;--exact:#2e9e5b;--mapped:#4f8fd8;--approx:#d7a331;--reported:#d9693f;--absent:#7a4a8a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.35 system-ui,sans-serif}
+header{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+h1{font-size:16px;margin:0}.mut{color:var(--mut)}
+nav{display:flex;gap:2px;padding:8px 14px 0;border-bottom:1px solid var(--line)}
+nav button{background:none;border:1px solid transparent;border-bottom:0;color:var(--mut);padding:6px 12px;cursor:pointer;font:inherit}
+nav button.on{color:var(--fg);background:#1a1f26;border-color:var(--line)}
+main{padding:10px 14px}
+.legend,.bar,.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.chip{padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;cursor:pointer;border:1px solid transparent;user-select:none}
+.chip.off{opacity:.3}.chip.cat{background:#2a313b}
+.s-exact{background:var(--exact)}.s-mapped{background:var(--mapped)}.s-approx{background:var(--approx);color:#111}
+.s-reported{background:var(--reported)}.s-absent{background:var(--absent)}.s-stale{outline:2px dashed #f55}
+.seg{display:flex;height:14px;width:100%;max-width:900px;border-radius:3px;overflow:hidden;background:#222}
+.seg i{display:block;height:100%}
+input[type=search]{background:#0b0d10;border:1px solid var(--line);color:var(--fg);padding:4px 8px;min-width:260px;font:inherit}
+table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);padding:2px 6px;text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:#171b21;cursor:pointer;white-space:nowrap}tr:hover td{background:#171c23}
+td.n{font-family:ui-monospace,monospace;font-size:12px}td.ev{color:var(--mut);font-size:12px}
+.card{border:1px solid var(--line);margin:10px 0;padding:8px 10px;background:#14181d}.card h3{margin:0 0 4px;font-size:14px}
+.ok{color:var(--exact)}.bad{color:var(--reported)}
+</style>
+<header><h1>KONTRA coverage</h1><span class="mut" id="gen"></span>
+<span class="mut">regenerate: <code>python3 tools/coverage/build.py</code></span></header>
+<nav id="tabs"></nav>
+<main id="main"></main>
+<script>
+const D = /*DATA*/null;
+const ST = ["exact","mapped","approx","reported","absent"];
+const COL = {exact:"--exact",mapped:"--mapped",approx:"--approx",reported:"--reported",absent:"--absent"};
+const LEGEND = {exact:"law proved on the binary or native oracle",mapped:"implemented, law not independently proved",
+  approx:"implemented with a labelled approximation",reported:"translator reports it unsupported",absent:"not decoded or not translated"};
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const $ = (t, a = {}, h = "") => Object.assign(document.createElement(t), a, h ? {innerHTML: h} : {});
+document.getElementById("gen").textContent = "generated " + D.generated;
+
+function seg(counts, total) {
+  const s = $("div", {className: "seg"});
+  for (const k of ST) if (counts[k]) s.append($("i", {title: `${k}: ${counts[k]}`, style: `width:${100 * counts[k] / total}%;background:var(${COL[k]})`}));
+  return s;
+}
+function legend(counts) {
+  const l = $("div", {className: "legend"});
+  for (const k of ST) l.append($("span", {className: "chip s-" + k, title: LEGEND[k]}, `${k} ${counts[k] || 0}`), $("span", {className: "mut"}, LEGEND[k] + " "));
+  return l;
+}
+// A filterable, sortable table. cols: [[header, row => html, row => sortKey]]
+function table(rows, cols, opts = {}) {
+  const box = $("div"), ctl = $("div", {className: "ctl"}), q = $("input", {type: "search", placeholder: "filter (text, any column)"});
+  const on = new Set(ST), cats = opts.cat ? [...new Set(rows.map(opts.cat))] : [], catOn = new Set(cats);
+  const info = $("span", {className: "mut"}), t = $("table"), head = $("tr"), body = $("tbody");
+  ctl.append(q);
+  if (opts.status) for (const k of ST) {
+    const c = $("span", {className: "chip s-" + k}, k);
+    c.onclick = () => { on.has(k) ? on.delete(k) : on.add(k); c.classList.toggle("off", !on.has(k)); draw(); };
+    ctl.append(c);
+  }
+  for (const k of cats) {
+    const c = $("span", {className: "chip cat"}, esc(k));
+    c.onclick = () => { catOn.has(k) ? catOn.delete(k) : catOn.add(k); c.classList.toggle("off", !catOn.has(k)); draw(); };
+    ctl.append(c);
+  }
+  ctl.append(info);
+  let sort = -1, dir = 1;
+  cols.forEach((c, i) => { const th = $("th", {}, esc(c[0])); th.onclick = () => { dir = sort === i ? -dir : 1; sort = i; draw(); }; head.append(th); });
+  t.append($("thead", {}, "")); t.tHead.append(head); t.append(body);
+  q.oninput = draw;
+  function draw() {
+    const needle = q.value.toLowerCase();
+    let v = rows.filter(r => (!opts.status || on.has(r.status)) && (!opts.cat || catOn.has(opts.cat(r)))
+      && (!needle || cols.some(c => String(c[2] ? c[2](r) : c[1](r)).toLowerCase().includes(needle))));
+    if (sort >= 0) { const f = cols[sort][2] || cols[sort][1]; v = v.slice().sort((a, b) => { const x = f(a), y = f(b); return (x > y ? 1 : x < y ? -1 : 0) * dir; }); }
+    body.innerHTML = v.map(r => "<tr>" + cols.map(c => `<td class="${c[3] || ""}">${c[1](r)}</td>`).join("") + "</tr>").join("");
+    info.textContent = `${v.length} / ${rows.length}`;
+  }
+  draw(); box.append(ctl, t); return box;
+}
+const chip = r => `<span class="chip s-${r.status}${r.probe_ok === false ? " s-stale" : ""}" title="${r.probe_ok === false ? "code probe no longer matches: re-check this row" : ""}">${r.status}${r.probe_ok === false ? " ?" : ""}</span>`;
+
+const views = {
+  format() {
+    const m = $("div"), rows = D.format, c = Object.fromEntries(ST.map(k => [k, rows.filter(r => r.status === k).length]));
+    m.append($("p", {className: "mut"}, `${rows.length} serializable Kontakt classes. exact = decoded by the native-schema VM, mapped = hand reader only, absent = no stream reader (stub or not a reader). Typed = schema layouts with fully typed fields / all layouts.`), seg(c, rows.length), legend(c));
+    m.append(table(rows, [
+      ["SerType", r => r.sertype, null, "n"], ["Class", r => esc(r.class)], ["Native ver", r => r.native_version, null, "n"],
+      ["Status", chip, r => r.status], ["Native schema", r => esc(r.native_schema), null, "n"], ["Hand reader", r => esc(r.hand_reader), null, "n"],
+      ["Typed", r => r.typed, null, "n"], ["Layout (latest)", r => esc(r.layout), null, "n"], ["Note", r => esc(r.note), null, "ev"], ["Reader VA", r => r.reader_va, null, "n"]], {status: true}));
+    return m;
+  },
+  engine() {
+    const m = $("div"), rows = D.engine, c = Object.fromEntries(ST.map(k => [k, rows.filter(r => r.status === k).length]));
+    const names = {modulator:"modulator types",["lfo-wave"]:"LFO waveforms",["source-mode"]:"source modes",["start-mode"]:"start modes",["start-join"]:"start joins",["mod-source"]:"mod sources",target:"modulation targets",effect:"effects (BParFX*)"};
+    m.append($("p", {className: "mut"}, `${rows.length} engine items. Status is hand-assigned in tools/coverage/engine.tsv (or derived from route()/effects.rs), and each row carries an evidence path. A dashed red outline means the row's code probe no longer matches the source: the status may be stale.`), seg(c, rows.length), legend(c));
+    const per = $("div", {className: "bar"});
+    for (const k of Object.keys(names)) { const rs = rows.filter(r => r.category === k); if (!rs.length) continue;
+      const cc = Object.fromEntries(ST.map(s => [s, rs.filter(r => r.status === s).length]));
+      per.append($("span", {className: "mut"}, `${names[k]} ${rs.length}: ` + ST.filter(s => cc[s]).map(s => `${cc[s]} ${s}`).join(", ") + " | ")); }
+    m.append(per);
+    m.append(table(rows, [
+      ["Layer", r => names[r.category] || r.category, r => r.category], ["Key", r => esc(r.key), null, "n"], ["Name", r => esc(r.name)],
+      ["Status", chip, r => r.status], ["Note", r => esc(r.note)], ["Evidence", r => esc(r.evidence), null, "ev"]], {status: true, cat: r => names[r.category] || r.category}));
+    return m;
+  },
+  libraries() {
+    const m = $("div"), L = D.libraries.libraries;
+    if (!L.length) return $("p", {className: "mut"}, "No survey cache yet: run python3 tools/coverage/survey.py once, then build.py.");
+    const all = {};
+    for (const l of L) for (const [f, reason, n] of l.unsupported) { const a = all[f] ??= {feature: f, reason, count: 0, libs: new Set()}; a.count += n; a.libs.add(l.library); }
+    const rank = Object.values(all).map(a => ({...a, libs: [...a.libs].join(", ")})).sort((a, b) => b.count - a.count);
+    m.append($("p", {className: "mut"}, `Survey of ${L.length} installed Kontakt libraries (one instrument each), run ${D.libraries.surveyed}. Oracle = Kontakt's own post-load state diffed against KONTRA's translation (tools/kontakt-oracle/diff.py).`));
+    m.append(table(L.map(l => ({...l, status: ""})), [
+      ["Library", r => esc(r.library)], ["Instrument", r => esc(r.instrument)],
+      ["Prepare", r => `<span class="${r.prepare?.ok ? "ok" : "bad"}">${esc(r.prepare?.text)}</span>`, r => r.prepare?.text],
+      ["Oracle mismatches", r => !r.oracle ? "-" : r.oracle.error ? `<span class="mut">${esc(r.oracle.error)}</span>` : `<span class="${r.oracle.mismatch ? "bad" : "ok"}">${r.oracle.mismatch} / ${r.oracle.checked}</span>`, r => r.oracle?.mismatch ?? -1],
+      ["Unsupported kinds", r => r.unsupported.length, r => r.unsupported.length], ["Unsupported total", r => r.unsupported.reduce((s, u) => s + u[2], 0), r => r.unsupported.reduce((s, u) => s + u[2], 0)]]));
+    m.append($("h3", {}, "Unsupported features, ranked corpus-wide"));
+    m.append(table(rank, [["Feature", r => esc(r.feature)], ["Reason", r => esc(r.reason)], ["Count", r => r.count, null, "n"], ["Libraries", r => esc(r.libs), null, "ev"]]));
+    m.append($("h3", {}, "Per library"));
+    for (const l of L) {
+      const c = $("div", {className: "card"}, `<h3>${esc(l.library)} <span class="mut">${esc(l.instrument)}</span></h3>`);
+      if (l.oracle?.fields) c.append($("div", {className: "mut"}, "oracle fields with mismatches: " + (l.oracle.fields.filter(f => f[1]).map(f => `${f[0]} ${f[1]}/${f[2]}`).join(", ") || "none")));
+      c.append(table(l.unsupported.map(u => ({feature: u[0], reason: u[1], count: u[2]})), [["Feature", r => esc(r.feature)], ["Reason", r => esc(r.reason)], ["Count", r => r.count, null, "n"]]));
+      m.append(c);
+    }
+    return m;
+  },
+  uvi() {
+    const u = D.uvi;
+    if (!u.present) return $("p", {className: "mut"}, "UVI layer: waiting for ~/.cache/kontakto-wave3/specs/uvi-elements.tsv (B-uvi). It will appear here on the next build.");
+    return table(u.rows.map(r => ({...r, status: r.status || ""})), u.columns.map(c => [c, r => c === "status" ? chip(r) : esc(r[c])]), {status: u.columns.includes("status")});
+  },
+};
+const tabs = document.getElementById("tabs"), main = document.getElementById("main");
+const labels = {format: "Format layer", engine: "Engine layer", libraries: "Library layer", uvi: "UVI layer"};
+function show(k) { main.replaceChildren(views[k]()); [...tabs.children].forEach(b => b.classList.toggle("on", b.dataset.k === k)); location.hash = k; }
+for (const k of Object.keys(views)) { const b = $("button", {}, labels[k]); b.dataset.k = k; b.onclick = () => show(k); tabs.append(b); }
+show(views[location.hash.slice(1)] ? location.hash.slice(1) : "format");
+</script>
