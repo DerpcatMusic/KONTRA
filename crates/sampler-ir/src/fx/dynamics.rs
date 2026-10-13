@@ -123,6 +123,21 @@ pub enum Law {
     /// `128 * int(rate / 44100)` frames, Hilbert-envelope detector, Hann-FIR
     /// gain smoothing, brick-wall at the ceiling.
     KontaktHilbert(Native),
+    /// Kontakt Feedback Compressor (SerType 0x4c), core `NI::DSP::FBComp`
+    /// (process `0x141aa80d0`): `threshold_db` is the linear input drive
+    /// (`10^(2.5x - 0.5)`), `ratio` the ratio `1 + 19x`; attack and release
+    /// are the core's time constants in seconds; the output gain is the
+    /// make-up and the saved mix the wet share; link is `Max` or `Off`.
+    /// `high_quality` runs four detector sub-steps per frame instead of two.
+    KontaktFeedback { native: Native, high_quality: bool },
+    /// Kontakt Transient Master (SerType 0x43), process variants `0x141a4a9d0`
+    /// / `0x141a59d40`: saved normalized attack, sustain and gain (0.5 is
+    /// neutral) and the output clip. The four knobs are unused.
+    KontaktTransient { attack: f64, sustain: f64, gain: f64, clip: bool },
+    /// Kontakt Solid Bus Comp (SerType 0x46), core `G_BusComp` `0x141aaa1e0`:
+    /// normalized core controls 0..=4 and the link switch; mix is `Config::mix`.
+    /// The four knobs are unused.
+    KontaktBusComp { threshold: f64, makeup: f64, attack: f64, release: f64, ratio: f64, link: bool },
 }
 
 /// A dynamics processor.
@@ -166,24 +181,28 @@ impl Config {
     /// Threshold in the law's own unit (dB; Kontakt saved dB).
     pub fn threshold(&self) -> f64 {
         match self.law {
+            Law::KontaktTransient { .. } | Law::KontaktBusComp { .. } => 0.,
             Law::Generic(g) => g.threshold_db,
             Law::KontaktClassic(n)
             | Law::KontaktEnhanced(n)
             | Law::KontaktPro(n)
             | Law::KontaktLimiter(n)
-            | Law::KontaktHilbert(n) => n.threshold_db,
+            | Law::KontaktHilbert(n)
+            | Law::KontaktFeedback { native: n, .. } => n.threshold_db,
         }
     }
 
     /// Ratio in the law's own unit (ratio:1; Kontakt saved 0..=1).
     pub fn ratio(&self) -> f64 {
         match self.law {
+            Law::KontaktTransient { .. } | Law::KontaktBusComp { .. } => 1.,
             Law::Generic(g) => g.ratio,
             Law::KontaktClassic(n)
             | Law::KontaktEnhanced(n)
             | Law::KontaktPro(n)
             | Law::KontaktLimiter(n)
-            | Law::KontaktHilbert(n) => n.ratio,
+            | Law::KontaktHilbert(n)
+            | Law::KontaktFeedback { native: n, .. } => n.ratio,
         }
     }
 

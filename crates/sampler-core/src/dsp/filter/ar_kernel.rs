@@ -18,7 +18,7 @@ fn table() -> &'static [f32; TABLE_LEN] {
     })
 }
 
-fn exponential(position: f32) -> f32 {
+pub(crate) fn exponential(position: f32) -> f32 {
     // Native table guards use signed AX, including the second Hz-lane lookup.
     let index = position as i32 as i16;
     if index < 0 {
