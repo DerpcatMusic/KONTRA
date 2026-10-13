@@ -17,6 +17,7 @@ use sampler_ir::fx::timemod::{
 };
 use std::f64::consts::{PI, TAU};
 
+mod choral;
 #[cfg(test)]
 mod tests;
 
@@ -114,6 +115,8 @@ pub(crate) struct TimeMod {
     voice_delay: f64,
     /// UVI table LFO: the table and whether the increment is the direct form.
     uvi: Option<(&'static [f32; 257], bool)>,
+    /// Kontakt Choral's seven-voice law (`Native::Choral`).
+    choral: Option<Box<choral::Choral>>,
 }
 
 /// UVI LFO tables (built at 0x14163c3c0..0x14163cbbb): 257 points, the last
@@ -246,6 +249,7 @@ impl TimeMod {
         let mut voice_gain = 1.;
         let mut min_delay = 1.;
         let mut voice_delay = 0.;
+        let mut choral = None;
         if let Some(line) = &cfg.line {
             voice_delay = line.voice_delay_ms * 0.001 * rate;
             taps = usize::from(line.tap_count);
@@ -286,6 +290,11 @@ impl TimeMod {
                 Native::None => {}
                 Native::LegacyDelay { .. } => cap = LEGACY_RING,
                 Native::LegacyModDelay { .. } => cap = FLANGER_RING,
+                Native::Choral { amount, rate: speed, delay, voices, width, feedback, mix, invert, scatter, mode } => {
+                    let law = choral::Choral::new([amount, speed, delay, voices, width, feedback, mix], invert, scatter, mode, rate);
+                    cap = law.frames();
+                    choral = Some(Box::new(law));
+                }
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -300,7 +309,7 @@ impl TimeMod {
             ap_at,
             fb_at,
             tap_at,
-            frames: tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 },
+            frames: if choral.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } },
             heads,
             taps,
             voices,
@@ -313,6 +322,7 @@ impl TimeMod {
                 LfoShape::Uvi { wave, direct } => Some((uvi_table(wave), direct)),
                 _ => None,
             },
+            choral,
         })
     }
 
@@ -413,6 +423,9 @@ impl TimeMod {
                 }
             }
             state.aux[15] = 1.;
+        }
+        if let Some(law) = &self.choral {
+            return law.process(slab, block, len, [cfg.dry, cfg.wet]);
         }
         if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);

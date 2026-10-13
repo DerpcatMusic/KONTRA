@@ -107,6 +107,23 @@ pub enum Native {
         /// One-pole `y += (head - y) * k` on each head (Chorus 0.95; 0 = off).
         smoothing: f32,
     },
+    /// Kontakt Choral (0x5d, core audio 0x14193be50): seven modulated voices
+    /// on this line, each a filtered ring read with Catmull-Rom, fed back
+    /// through a 7x7 circulant, rotated into the stereo field and shelved.
+    /// Fields are the saved values (all in [0, 1]); `mode` 0..=3 picks the
+    /// voice table (0x14193cd70). The kernel owns its dry/wet (`mix`).
+    Choral {
+        amount: f32,
+        rate: f32,
+        delay: f32,
+        voices: f32,
+        width: f32,
+        feedback: f32,
+        mix: f32,
+        invert: bool,
+        scatter: bool,
+        mode: u8,
+    },
 }
 
 /// Modulated multi-tap delay line.
@@ -331,6 +348,11 @@ impl Config {
                 {
                     return Err("legacy modulated delay");
                 }
+            }
+            if let Native::Choral { amount, rate, delay, voices, width, feedback, mix, mode, .. } = l.native
+                && !([amount, rate, delay, voices, width, feedback, mix].iter().all(|v| v.is_finite() && (0. ..=1.).contains(v)) && mode <= 3)
+            {
+                return Err("choral");
             }
             if !(l.voice_delay_ms.is_finite() && l.voice_delay_ms >= 0.) {
                 return Err("voice delay");

@@ -351,7 +351,7 @@ impl Slot {
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
-            0x10..=0x12 | 0x14 => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
+            0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let bits = r.f32()?;

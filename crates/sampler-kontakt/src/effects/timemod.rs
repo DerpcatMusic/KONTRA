@@ -20,10 +20,17 @@ pub(crate) enum Unit {
     Delay { time: f32, feedback: f32, pan: f32, damping: f32, unit: f32 },
     Chorus { depth: f32, speed: f32, phase: f32, unit: f32 },
     Flanger { depth: f32, feedback: f32, speed: f32, phase: f32, color: f32, unit: f32 },
+    /// Choral (0x5d, reader schema 7 f32, 2 flags, i32): amount, rate, delay,
+    /// voices, width, feedback, mix, invert, scatter, mode.
+    Choral { fields: [f32; 7], invert: bool, scatter: bool, mode: i32 },
 }
 
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
 pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
+    if module == 0x5d {
+        let fields = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+        return Some(Unit::Choral { fields, invert: r.flag()?, scatter: r.flag()?, mode: r.i32()? });
+    }
     let unit = match module {
         0x14 => Unit::Phaser { depth: r.f32()?, feedback: r.f32()?, speed: r.f32()?, phase: r.f32()?, unit: r.f32()? },
         0x10 => Unit::Delay { time: r.f32()?, feedback: r.f32()?, pan: r.f32()?, damping: r.f32()?, unit: r.f32()? },
@@ -49,7 +56,6 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x5a => "Replika: modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38); the core class, its style kernels and the saved-field binding are not extracted",
         0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
         0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
-        0x5d => "Choral: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
         0x63 => "Psyche Delay: modern wrapper core not located; no saved-field binding measured",
         0x69 => "Vibrato Chorus: modern wrapper core not located; no saved-field binding measured",
         _ => return None,
@@ -147,6 +153,18 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
+        Unit::Choral { fields: [amount, rate, delay, voices, width, feedback, mix], invert, scatter, mode } => {
+            // Core 0x14193be50; saved fields bind 1:1 to core params p0-p5, p8 and the
+            // flags to p7 / p6 (fx_other.tsv); the mode index is (int)(p9 * 4) clamped
+            // 0..=3 (0x14193a230). The kernel owns its dry/wet.
+            if !(0..=3).contains(&mode) {
+                notes.push(("mode".into(), mode.to_string(), Reason::InvalidValue));
+                return None;
+            }
+            let mut line = Line::single(DelayTime::Frames(1), 0.);
+            line.native = Native::Choral { amount, rate, delay, voices, width, feedback, mix, invert, scatter, mode: mode as u8 };
+            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry: 0., wet: 1. }
+        }
     };
     match cfg.check() {
         Ok(()) => Some(cfg),
@@ -218,8 +236,36 @@ mod tests {
     }
 
     #[test]
+    fn choral_reads_seven_floats_two_flags_and_the_mode() {
+        let mut public: Vec<u8> = [0.25f32, 0.5, 0.18, 1., 0.75, 0.3, 0.6].iter().flat_map(|f| f.to_le_bytes()).collect();
+        public.extend([1, 0]);
+        public.extend(2i32.to_le_bytes());
+        let mut s = slot(0x5d, 0x51, &[]);
+        s.public = public;
+        let built = chain(&[s], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(cfg) = built.processors[0] else { panic!("{:?}", built.processors) };
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        assert_eq!(
+            cfg.line.unwrap().native,
+            sampler_ir::fx::timemod::Native::Choral {
+                amount: 0.25,
+                rate: 0.5,
+                delay: 0.18,
+                voices: 1.,
+                width: 0.75,
+                feedback: 0.3,
+                mix: 0.6,
+                invert: true,
+                scatter: false,
+                mode: 2
+            }
+        );
+        assert_eq!((cfg.dry, cfg.wet), (0., 1.));
+    }
+
+    #[test]
     fn replika_and_friends_stay_unsupported_with_a_reason() {
-        for module in [0x5a, 0x5b, 0x5c, 0x5d, 0x22] {
+        for module in [0x5a, 0x5b, 0x5c, 0x22] {
             let built = chain(&[slot(module, 0x50, &[0.; 12])], Scope::Voice);
             assert!(built.processors.is_empty());
             assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
