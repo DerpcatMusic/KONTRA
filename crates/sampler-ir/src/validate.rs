@@ -256,6 +256,11 @@ impl Check<'_> {
                 }
                 Processor::Formant(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }
+                Processor::FilterBank(c) => {
+                    for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
+                        self.within(v, 0.0..=1.0, field)?;
+                    }
                 }                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => {
                     for knob in [depth, feedback, phase] { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
                     self.within(f64::from(speed), 0.0..=f64::MAX, "phaser speed")?;

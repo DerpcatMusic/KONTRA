@@ -15,7 +15,7 @@ pub(crate) fn prepare() {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Ladder {
+pub(crate) struct Ladder {
     state: [[f32; 5]; 2],
     controls: Controls,
     g: f32,
@@ -210,13 +210,13 @@ fn lp4_compensation(q: f32) -> f32 {
 /// These readers enable the separate cutoff path whose native constructor
 /// and rate preparation leave its clock inverse zero. Other versions remain
 /// unknown; their ordinary cutoff clock is an explicitly diagnosed fallback.
-pub(super) fn instant_cutoff(version: u16) -> bool {
+pub(crate) fn instant_cutoff(version: u16) -> bool {
     matches!(version, 0x90..=0x92)
 }
 
 impl Ladder {
     /// Native output selector 1..=12, stored in spare bits without growing state.
-    pub(super) fn set_taps(&mut self, taps: u8) {
+    pub(crate) fn set_taps(&mut self, taps: u8) {
         let taps = taps.clamp(1, 12);
         self.controls.modes = (self.controls.modes & 3) | (if taps == 4 { 0 } else { taps } << 2);
     }
@@ -226,20 +226,20 @@ impl Ladder {
         if taps == 0 { 4 } else { taps }
     }
 
-    pub(super) fn record_version(&mut self, version: u16) {
+    pub(crate) fn record_version(&mut self, version: u16) {
         self.controls.modes = (self.controls.modes & !1) | u8::from(instant_cutoff(version));
     }
 
     /// Enabled native target routes write at every control tick, including
     /// unchanged or zero-depth targets. Route switches preserve audio history
     /// and phase; their next write occurs on the existing 32-frame clock.
-    pub(super) fn enabled_modulation(&mut self, enabled: bool) {
+    pub(crate) fn enabled_modulation(&mut self, enabled: bool) {
         self.controls.modes = (self.controls.modes & !2) | (u8::from(enabled) << 1);
     }
 
     /// Small-signal response, including the correction in the feedback path.
     /// Large signals additionally undergo the input soft clip.
-    pub(super) fn magnitude(knobs: [f32; 3], hz: f32, rate: f32) -> f32 {
+    pub(crate) fn magnitude(knobs: [f32; 3], hz: f32, rate: f32) -> f32 {
         let mut filter = Self::default();
         filter.tune(knobs, rate);
         let mul = |[a, b]: [f64; 2], [c, d]: [f64; 2]| [a * c - b * d, a * d + b * c];
@@ -278,7 +278,7 @@ impl Ladder {
             * f64::from(filter.gain * filter.compensation)) as f32
     }
 
-    pub(super) fn tune(&mut self, [frequency, resonance, gain]: [f32; 3], rate: f32) {
+    pub(crate) fn tune(&mut self, [frequency, resonance, gain]: [f32; 3], rate: f32) {
         let target = [
             exponential(1200.0 + 119.589_41 * gain),
             frequency,
@@ -317,12 +317,12 @@ impl Ladder {
         self.gain = gain;
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.state = [[0.0; 5]; 2];
         self.controls.started = false;
     }
 
-    pub(super) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
         if n == 0 {
             return;
@@ -924,7 +924,7 @@ mod tests {
 
 // Plan-owned numeric storage: only Ladder stages reserve these cells.
 impl Ladder {
-    pub(super) fn restore(cells: &[[f64; 2]]) -> Self {
+    pub(crate) fn restore(cells: &[[f64; 2]]) -> Self {
         let mut out = Self::default();
         out.state[0][0] = cells[0][0] as f32;
         out.state[0][1] = cells[0][1] as f32;
@@ -962,7 +962,7 @@ impl Ladder {
         out.correction_gain = cells[16][1] as f32;
         out
     }
-    pub(super) fn retain(&self, cells: &mut [[f64; 2]]) {
+    pub(crate) fn retain(&self, cells: &mut [[f64; 2]]) {
         cells[0][0] = f64::from(self.state[0][0]);
         cells[0][1] = f64::from(self.state[0][1]);
         cells[1][0] = f64::from(self.state[0][2]);

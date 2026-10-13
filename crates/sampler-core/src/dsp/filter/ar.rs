@@ -4,7 +4,7 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::{Planar, ProcessorState};
 
 const QUANTUM: u32 = 32;
-pub(super) const CELLS: usize = 22;
+pub(crate) const CELLS: usize = 22;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ArSettings {
@@ -14,7 +14,7 @@ pub struct ArSettings {
 }
 
 impl ArSettings {
-    pub(super) fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         self.mode < 9
             && [self.cutoff, self.resonance].iter().all(|p| {
                 p.valid()
@@ -23,7 +23,7 @@ impl ArSettings {
             })
     }
 
-    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ar {
+    pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ar {
         ar_kernel::prepare();
         let rate = rate as f32;
         Ar {
@@ -94,7 +94,7 @@ impl Ar {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process(
+    pub(crate) fn process(
         &self,
         state: &mut ProcessorState,
         cells: &mut [[f64; 2]],

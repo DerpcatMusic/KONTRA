@@ -194,6 +194,8 @@ pub enum Processor {
     Ar(ArSettings),
     /// Native three-parallel-bandpass Formant I (Talk, Sharp, Size).
     Formant([f32; 3]),
+    /// Formant core table 2 (rows 5..=9): Kontakt Formant II.
+    FormantII([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
     LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
@@ -275,7 +277,7 @@ impl Processor {
             Processor::Ar(settings) => settings.valid(),
             Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -583,7 +585,8 @@ pub(super) fn compile_processors(
                 Processor::LiveLoFi { bits, frequency, noise, color } => PreparedProcessor::LiveLoFi { knobs: [bits, frequency, noise, color].map(|k| k.compile(bindings)), rate },
                 Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
                 Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
-            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
+            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
+            Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
                 Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
@@ -1255,7 +1258,7 @@ pub(super) fn process<const TRACE: bool>(
             // coefficients follow them while the filter and noise states persist.
             PreparedProcessor::LiveFormant { knobs, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
-                formant::Formant::compile([talk, sharp, size], *rate).process(state, block, len)
+                formant::Formant::compile([talk, sharp, size], false, *rate).process(state, block, len)
             }
             PreparedProcessor::LiveLoFi { knobs, rate } => {
                 let [bits, frequency, noise, color] = knobs.map(|k| k.value(parameters, at, None) as f32);
