@@ -13,6 +13,7 @@ mod lofi;
 mod saturator;
 mod shaping;
 mod stereo;
+mod tone;
 
 pub use shaping::{Decimator, Rectifier};
 pub use stereo::StereoSettings;
@@ -83,6 +84,8 @@ pub struct Settings {
     /// Normalized damping of the Kontakt Distortion low-pass (plus DC blocker).
     pub damping: Option<Parameter>,
     pub noise: Option<NoiseSettings>,
+    /// UVI BitCrusher Cutoff, -1..1 (negative low-pass, positive high-pass).
+    pub tone: Option<f32>,
     /// Wet share, 0..=1.
     pub mix: f64,
     pub stereo: Option<StereoSettings>,
@@ -97,6 +100,7 @@ impl Settings {
         curve: CurveSettings::Identity,
         damping: None,
         noise: None,
+        tone: None,
         mix: 1.0,
         stereo: None,
     };
@@ -147,6 +151,7 @@ impl Settings {
             }
             && self.damping.as_ref().is_none_or(live_knob)
             && self.noise.is_none_or(|n| live_knob(&n.level) && live_knob(&n.color))
+            && self.tone.is_none_or(|t| t.is_finite() && (-1.0..=1.0).contains(&t))
             && self.mix.is_finite()
             && (0.0..=1.0).contains(&self.mix)
             && self.stereo.is_none_or(StereoSettings::valid)
@@ -159,6 +164,7 @@ impl Settings {
             && self.decimator.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
+            && self.tone.is_none()
             && self.stereo.is_none()
             && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_))
     }
@@ -222,6 +228,7 @@ impl Settings {
             curve,
             damping,
             noise: self.noise.map(|n| [n.level.compile(bindings), n.color.compile(bindings)]),
+            tone: self.tone.and_then(|cutoff| tone::Tone::new(cutoff, rate)),
             mix: self.mix as f32,
             stereo: self.stereo.map(|s| s.compile(rate, bindings)),
         }
@@ -264,6 +271,7 @@ pub(crate) struct Color {
     curve: Curve,
     damping: Option<Damping>,
     noise: Option<[PreparedParameter; 2]>,
+    tone: Option<tone::Tone>,
     mix: f32,
     stereo: Option<stereo::Stereo>,
 }
@@ -278,6 +286,7 @@ pub(super) struct State {
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
+    tone: tone::ToneState,
     stereo: stereo::StereoState,
 }
 
@@ -289,6 +298,7 @@ impl State {
             && self.decimator.z.iter().flatten().chain(&self.decimator.delta).chain([&self.decimator.phase]).all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
+            && self.tone.finite()
     }
 }
 
@@ -301,6 +311,7 @@ impl Color {
             && self.quantizer.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
+            && self.tone.is_none()
             && self.mix == 1.0
             && matches!(self.curve, Curve::Identity | Curve::Classic(_) | Curve::Rectifier(_))
             && self.stereo.as_ref().is_none_or(stereo::Stereo::batches)
@@ -465,6 +476,9 @@ impl Color {
         self.shape(state, parameters, block, len, at);
         if let Some(damping) = &self.damping {
             self.damper(damping, parameters, at).process(&mut state.damper, block, len);
+        }
+        if let Some(tone) = &self.tone {
+            tone.process(&mut state.tone, block, len);
         }
         if let Some([level, color]) = self.noise {
             let [level, color] = [level, color].map(|p| p.value(parameters, at, None) as f32);

@@ -596,6 +596,29 @@ fn wave_shaper_rectifies_and_comp_exp_compresses() {
 }
 
 #[test]
+fn bit_crusher_holds_quantizes_and_mixes_like_the_native_kernel() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "crusher-plain");
+    let changes = |out: &[[f32; 2]]| out[1000..].windows(2).filter(|w| w[0][0] != w[1][0]).count();
+    // 4 bits: every output is a multiple of 1/16; a 6 kHz target rate holds
+    // each capture for about eight 48 kHz frames.
+    let crushed = through(
+        r#"<BitCrusher EffectiveSampleRate="6000" BitSize="4" Drive="0" Cutoff="0" Mix="1"/>"#,
+        "crusher",
+    );
+    assert!(crushed[1000..].iter().flatten().all(|x| ((x * 16.0).round() - x * 16.0).abs() < 1e-3));
+    assert!(changes(&crushed) * 3 < changes(&plain), "{} {}", changes(&crushed), changes(&plain));
+    // Mix 0 is the untouched input.
+    let dry = through(r#"<BitCrusher BitSize="4" Mix="0"/>"#, "crusher-dry");
+    for (a, b) in dry.iter().zip(&plain) {
+        assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    }
+    // A positive Cutoff is a high-pass above 6.6 kHz: a 440 Hz tone is removed.
+    let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let high = through(r#"<BitCrusher BitSize="24" EffectiveSampleRate="48000" Cutoff="1"/>"#, "crusher-hp");
+    assert!(peak(&high) < peak(&plain) * 0.2, "{} {}", peak(&high), peak(&plain));
+}
+
+#[test]
 fn track_delay_moves_the_impulse_without_feedback() {
     let plain = through(r#"<Gain Volume="1"/>"#, "delay-plain");
     let delayed = through(r#"<TrackDelay DelayTime="0.01"/>"#, "track-delay");
