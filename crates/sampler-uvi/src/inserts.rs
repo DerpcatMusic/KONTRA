@@ -258,7 +258,7 @@ impl Translation {
                         right: vec![1.0],
                         asset,
                     });
-                    let mut shape = crate::reverb::neutral();
+                    let mut shape = sampler_core::neutral_impulse_shape();
                     shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
                     if node.has_tag_name("SampledReverb") {
                         shape.sampled_reverb = true;
@@ -469,7 +469,7 @@ pub(super) fn fill_impulses(
                 impulse.left = frames.iter().map(|f| f[0]).collect();
                 impulse.right = frames.iter().map(|f| f[1]).collect();
                 if let Some(Some(shape)) = instrument.impulse_shapes.get(index) {
-                    let (left, right) = crate::reverb::shape(rate, &impulse.left, &impulse.right, shape);
+                    let (left, right) = sampler_core::shape_impulse(rate, &impulse.left, &impulse.right, shape);
                     (impulse.left, impulse.right) = (left, right);
                 }
             }

@@ -26,7 +26,6 @@ mod modulation;
 mod no_access;
 pub mod parity;
 mod resources;
-mod reverb;
 pub mod script;
 pub use parity::parity_reports;
 pub use resources::{ResourceError, Resources};
