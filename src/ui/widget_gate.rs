@@ -939,3 +939,35 @@ fn original_host_state_roundtrip() {
         "host recall preserves exact parameter values"
     );
 }
+
+/// Every part tab of a real instrument, at the minimum and a large editor size,
+/// for layout review. Pixels only; nothing from the library is written besides them.
+#[test]
+#[ignore = "installed library tab capture; set KONTRA_WIDGET_GATE_PATH and KONTRA_TAB_SHOTS"]
+fn tab_layout_shots() {
+    let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
+    let output = std::path::PathBuf::from(std::env::var_os("KONTRA_TAB_SHOTS").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path, ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    for _ in 0..50 {
+        gate.settle();
+    }
+    for (w, h) in [(900u16, 600u16), (1500, 1100)] {
+        gate.editor.resize(Size::new(w as f64, h as f64));
+        for view in ["Interface", "Articulations", "Mapping", "Sound", "Info", "Scripts"] {
+            let id = format!("view-0-{view}");
+            if gate.editor.ui.scene().unwrap().surface(&id).is_none() {
+                gate.editor.press("header-0");
+            }
+            gate.editor.press(&id);
+            for _ in 0..10 {
+                gate.settle();
+            }
+            gate.editor.settle_art();
+            moose::core::screenshot::save_png(&output.join(format!("{view}-{w}.png")),
+                &super::tests::pixels(&gate.editor.ui, w, h), w.into(), h.into());
+        }
+    }
+}

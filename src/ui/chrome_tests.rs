@@ -162,7 +162,7 @@ fn performance_dynamics_fit_the_minimum_rack() {
     let p = specimen();
     let h = Harness::new(&p, 900., 600.);
     let scene = h.ui.scene().unwrap();
-    let strip = scene.surface("perf-0").unwrap().frame;
+    let strip = scene.surface("header2-0").unwrap().frame;
     let last = scene.surface("dyn-0-127").unwrap().frame;
     assert!(
         last.x + last.size.width <= strip.x + strip.size.width - TIGHT + 0.5,

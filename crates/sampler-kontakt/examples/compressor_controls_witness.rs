@@ -23,7 +23,7 @@ fn main() -> Result<()> {
                 .chain(&c.post_amplitude)
                 .enumerate()
                 .find_map(|(index, p)| match p {
-                    ir::Processor::Compressor(s) => Some((chain, index, *s)),
+                    ir::Processor::Dynamics(s) => Some((chain, index, *s)),
                     _ => None,
                 })
         })
@@ -48,8 +48,8 @@ fn main() -> Result<()> {
     println!(
         "COMPRESSOR_OWNER {{\"source_scope\":\"{:?}\",\"threshold_db\":{},\"ratio\":{},\"attack_seconds\":{},\"release_seconds\":{},\"probe_input_scale\":{},\"isolated\":true,\"native_parity\":\"UNVERIFIED\"}}",
         library.instrument.chains[chain].scope,
-        settings.threshold_db,
-        settings.ratio,
+        settings.threshold(),
+        settings.ratio(),
         settings.attack.seconds(),
         settings.release.seconds(),
         0.8 / peak
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
             pre_amplitude: vec![],
-            post_amplitude: vec![ir::Processor::Compressor(settings)],
+            post_amplitude: vec![ir::Processor::Dynamics(settings)],
         }],
         ..Default::default()
     };
