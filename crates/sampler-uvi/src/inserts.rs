@@ -168,7 +168,7 @@ impl Translation {
                         }
                     }
                     out.push(ir::Processor::Gain(db(number(node, "InputGain", 0.0)?)));
-                    out.push(ir::Processor::Rectify(rectifier));
+                    out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
                 "CompExp" => {
@@ -333,7 +333,10 @@ impl Translation {
                         out.extend(inner);
                     }
                 }
-                _ => {
+                other => {
+                    if let Some(why) = crate::fx::color::unproved(other) {
+                        self.unsupported(&at, other, why);
+                    }
                     out.truncate(slot);
                     placed.push((id, slot, 0));
                     continue;

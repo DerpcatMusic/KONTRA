@@ -275,43 +275,53 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ),
     }
 }
+fn color_detail(c: &ir::fx::color::Config) -> String {
+    use ir::fx::color::{Curve, Hold, Quantizer};
+    let db = |g: ir::Gain| format!("{:+.1} dB", 20. * g.linear().max(1e-10).log10());
+    if let Some(g) = c.gainer {
+        return format!("Gainer · {} · dry {:.0}%", db(g.gain), g.dry * 100.);
+    }
+    if let Some(s) = c.stereo {
+        return format!(
+            "Stereo modeller · width {:.0}% · pan {}{}",
+            s.width * 200.,
+            pan_text(s.pan),
+            if s.pseudo { " · pseudo stereo" } else { "" }
+        );
+    }
+    match c.curve {
+        Curve::Rectifier(ir::Rectifier::Full) => return "Rectifier · full wave".into(),
+        Curve::Rectifier(ir::Rectifier::Half) => return "Rectifier · half wave".into(),
+        Curve::Classic { shape } => return format!("Saturation · shape {shape:+.2}"),
+        Curve::Tube { drive } | Curve::Transistor { drive } => {
+            return format!(
+                "{} distortion · drive {:.0}% · damping {:.0}%",
+                if matches!(c.curve, Curve::Transistor { .. }) { "Transistor" } else { "Tube" },
+                drive * 100.,
+                c.damping.unwrap_or(0.) * 100.
+            );
+        }
+        _ => {}
+    }
+    match (c.quantizer, c.hold, c.noise) {
+        (None, None, None) => c.label().into(),
+        (q, h, n) => format!(
+            "LoFi · bits {} · rate {} · noise {:.2}",
+            match q { Some(Quantizer::Native { bits }) => format!("{bits:.2}"), _ => "off".into() },
+            match h { Some(Hold::Native { frequency }) => format!("{frequency:.2}"), _ => "off".into() },
+            n.map_or(0., |n| n.level)
+        ),
+    }
+}
 fn detail(p: ir::Processor) -> String {
     let db = |g: ir::Gain| format!("{:+.1} dB", 20. * g.linear().max(1e-10).log10());
     match p {
         ir::Processor::Gain(g) => format!("Gain · {}", db(g)),
-        ir::Processor::Gainer { gain, dry } => {
-            format!("Gainer · {} · dry {:.0}%", db(gain), dry * 100.)
-        }
-        ir::Processor::LoFi {
-            bits,
-            frequency,
-            noise,
-            color,
-        }
-        | ir::Processor::LiveLoFi {
-            bits,
-            frequency,
-            noise,
-            color,
-            ..
-        } => format!(
-            "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
-        ),
+        ir::Processor::Color(c) => color_detail(&c),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], .. } => {
             format!("Formant · talk {talk:.2} · sharp {sharp:.2} · size {size:.2}")
         }
-        ir::Processor::Saturation(shape) | ir::Processor::LiveSaturation { shape, .. } => format!("Saturation · shape {shape:+.2}"),
-        ir::Processor::Distortion { transistor, drive, damping } | ir::Processor::LiveDistortion { transistor, drive, damping, .. } => format!(
-            "{} distortion · drive {:.0}% · damping {:.0}%",
-            if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
-        ),
-        ir::Processor::StereoModeller { width, pan, pseudo } => format!(
-            "Stereo modeller · width {:.0}% · pan {}{}",
-            width * 200.,
-            pan_text(pan),
-            if pseudo { " · pseudo stereo" } else { "" }
-        ),
         ir::Processor::Filter(f) => format!(
             "{} · {}",
             match f.kind {
@@ -354,8 +364,6 @@ fn detail(p: ir::Processor) -> String {
             c.attack.seconds() * 1000.,
             c.release.seconds() * 1000.
         ),
-        ir::Processor::Rectify(ir::Rectifier::Full) => "Rectifier · full wave".into(),
-        ir::Processor::Rectify(ir::Rectifier::Half) => "Rectifier · half wave".into(),
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",
             if d.highpass { "high-pass" } else { "low-pass" },

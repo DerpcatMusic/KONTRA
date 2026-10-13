@@ -950,10 +950,8 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     rt.set_engine_offsets(&[]).unwrap();
     rt.render(&mut out).unwrap();
     assert!((out[32][0] / before - 0.25).abs() < 0.001);
-    instrument.chains[0].pre_amplitude[0] = ir::Processor::Gainer {
-        gain: ir::Gain::UNITY,
-        dry: 0.,
-    };
+    instrument.chains[0].pre_amplitude[0] =
+        ir::Processor::Color(ir::fx::color::Config::gainer(ir::Gain::UNITY, 0.));
     let mut rt = Runtime::new(prepare(&instrument, constant(0.5)), limits()).unwrap();
     rt.trigger(input(60), 60, 1.).unwrap();
     rt.render(&mut out).unwrap();
@@ -1087,11 +1085,7 @@ fn native_stereo_width_and_pan_controls_reach_the_processor() {
         }],
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::StereoModeller {
-                width: 0.5,
-                pan: 0.,
-                pseudo: false,
-            }],
+            pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0., false))],
             post_amplitude: vec![],
         }],
         controls: keys
@@ -1436,11 +1430,7 @@ fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
             feedback: 0.0,
             mix: 1.0,
         },
-        ir::Processor::StereoModeller {
-            width: 0.5,
-            pan: 0.0,
-            pseudo: true,
-        },
+        ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0.0, true)),
     ] {
         let instrument = ir::Instrument {
             assets: vec![asset("tail probe")],
@@ -3817,7 +3807,7 @@ fn routes_move_scripted_effect_lanes_additively() {
             }],
             chains: vec![ir::Chain {
                 scope: ir::Scope::Voice,
-                pre_amplitude: vec![ir::Processor::LiveSaturation { shape, address }],
+                pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::classic(shape).at(address))],
                 post_amplitude: vec![],
             }],
             modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Key }],

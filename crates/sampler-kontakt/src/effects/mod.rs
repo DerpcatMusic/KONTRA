@@ -547,15 +547,30 @@ type Notes = Vec<(String, String, sampler_ir::Reason)>;
 type Matrix = [[f64; 2]; 2];
 const IDENTITY: Matrix = [[1.0, 0.0], [0.0, 1.0]];
 
+/// A color unit at the end of the chain, addressed by its slot when a script may write it.
+fn push_color(
+    out: &mut Chain,
+    slot: usize,
+    dynamic: Option<(i32, i32)>,
+    config: sampler_ir::fx::color::Config,
+) {
+    let config = match dynamic {
+        Some((group, generic)) => {
+            out.lane_slots.push((slot, out.processors.len()));
+            config.at(sampler_ir::SlotAddress { group, slot: slot as i32, generic })
+        }
+        None => config,
+    };
+    out.processors.push(sampler_ir::Processor::Color(config));
+}
+
 fn product(a: Matrix, b: Matrix) -> Matrix {
     std::array::from_fn(|i| std::array::from_fn(|j| a[i][0] * b[0][j] + a[i][1] * b[1][j]))
 }
 
 /// The stereo matrix of a linear module, and what it leaves out.
-fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
-    use sampler_ir::Reason::NotModeled;
+fn matrix(params: &Params, _notes: &mut Notes) -> Option<Matrix> {
     Some(match *params {
-        Params::Gainer { gain } => [[f64::from(gain), 0.0], [0.0, f64::from(gain)]],
         Params::Inverter { invert, swap } => {
             // Kontakt 8 Effect Reference: Inverter. Reader FUN_140d01db0,
             // assignment FUN_1409619b0 at 0x140961f91, audio FUN_140908e60:
@@ -566,35 +581,6 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
             } else {
                 [[sign, 0.0], [0.0, sign]]
             }
-        }
-        Params::StereoModeller {
-            spread,
-            pan,
-            pseudo,
-        } => {
-            if pseudo {
-                notes.push((
-                    "stereo modeller pseudo stereo".into(),
-                    "on".into(),
-                    NotModeled,
-                ));
-            }
-            // KONTAKT_REFERENCE.md s.20 (measured 2x2 fits, pure matrix): spread
-            // s in -1..=1 (GUI percent / 100). s < 0: M/S width 1 + s, mono at
-            // -1. s > 0: [[1+s, -s], [-s, 1+s]], clamped at 1. Pan p is a
-            // linear balance: the opposite channel is scaled by 1 - |p|.
-            let s = f64::from(spread).clamp(-1.0, 1.0);
-            let pan = f64::from(pan);
-            let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
-            let (same, other) = if s < 0.0 {
-                ((2.0 + s) / 2.0, -s / 2.0)
-            } else {
-                (1.0 + s, -s)
-            };
-            [
-                [same * gains[0], other * gains[0]],
-                [other * gains[1], same * gains[1]],
-            ]
         }
         _ => return None,
     })
@@ -899,44 +885,26 @@ pub(crate) fn chain_with(
                     None => modelled = false,
                 }
             }
-            Some(Params::Distortion { mode, drive, damping }) => {
-                if matches!(*mode, 0.0 | 1.0)
-                    && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
-                {
+            Some(Params::Distortion { mode, drive, damping }) => match color::distortion(*mode, *drive, *damping) {
+                Some(config) => {
                     flush(&mut combined, &mut filters, &mut out);
-                    if dynamic.is_some() {
-                        out.lane_slots.push((fx.slot, out.processors.len()));
-                    }
-                    out.processors.push(if let Some((group, generic)) = dynamic {
-                        sampler_ir::Processor::LiveDistortion {
-                            transistor: *mode == 1., drive: *drive, damping: *damping,
-                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
-                        }
-                    } else {
-                        sampler_ir::Processor::Distortion {
-                            transistor: *mode == 1., drive: *drive, damping: *damping,
-                        }
-                    });
+                    push_color(&mut out, fx.slot, dynamic, config);
                     combined = gain;
-                } else {
+                }
+                None => {
                     notes.push(("distortion parameters".into(), format!("{mode}/{drive}/{damping}"), sampler_ir::Reason::InvalidValue));
                     modelled = false;
                 }
-            }
-            Some(Params::Saturation { shape, mode }) => {
-                if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
+            },
+            // 0x1d is also the Surround Panner (version 0x70): not a shaper.
+            Some(Params::Saturation { .. }) if fx.version == 0x70 => modelled = false,
+            Some(Params::Saturation { shape, mode }) => match color::saturation(*shape, *mode) {
+                Some(config) => {
                     flush(&mut combined, &mut filters, &mut out);
-                    if dynamic.is_some() {
-                        out.lane_slots.push((fx.slot, out.processors.len()));
-                    }
-                    out.processors.push(if let Some((group, generic)) = dynamic {
-                        sampler_ir::Processor::LiveSaturation { shape: *shape,
-                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic } }
-                    } else {
-                        sampler_ir::Processor::Saturation(*shape)
-                    });
+                    push_color(&mut out, fx.slot, dynamic, config);
                     combined = gain;
-                } else {
+                }
+                None => {
                     notes.push((
                         "saturation algorithm/shape".into(),
                         format!("{mode}/{shape}"),
@@ -944,7 +912,7 @@ pub(crate) fn chain_with(
                     ));
                     modelled = false;
                 }
-            }
+            },
             Some(Params::LegacyPhaser { depth, feedback, speed, phase, unit }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 if [*depth, *feedback, *phase].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && unit.is_finite() {
@@ -996,27 +964,8 @@ pub(crate) fn chain_with(
             }
             Some(Params::LoFi { values, flag }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                if values
-                    .iter()
-                    .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
-                {
-                    if let Some((group, generic)) = dynamic {
-                        out.lane_slots.push((fx.slot, out.processors.len()));
-                        out.processors.push(sampler_ir::Processor::LiveLoFi {
-                            bits: values[0],
-                            frequency: values[1],
-                            noise: values[2],
-                            color: values[3],
-                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
-                        });
-                    } else {
-                        out.processors.push(sampler_ir::Processor::LoFi {
-                            bits: values[0],
-                            frequency: values[1],
-                            noise: values[2],
-                            color: values[3],
-                        });
-                    }
+                if let Some(config) = color::lofi(values) {
+                    push_color(&mut out, fx.slot, dynamic, config);
                     combined = product(gain, combined);
                     if *flag {
                         notes.push((
@@ -1298,16 +1247,10 @@ pub(crate) fn chain_with(
             // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
             Some(Params::Gainer { gain: parameter }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(sampler_ir::Processor::Gainer {
-                    gain: sampler_ir::Gain::Linear(
-                        f64::from(*parameter) * if mix.is_some() { 1.0 } else { wet },
-                    ),
-                    dry: if mix.is_some() {
-                        0.0
-                    } else {
-                        f64::from(fx.dry_level)
-                    },
-                });
+                out.processors.push(sampler_ir::Processor::Color(color::gainer(
+                    f64::from(*parameter) * if mix.is_some() { 1.0 } else { wet },
+                    if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                )));
             }
             Some(Params::StereoModeller {
                 spread,
@@ -1315,11 +1258,8 @@ pub(crate) fn chain_with(
                 pseudo,
             }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(sampler_ir::Processor::StereoModeller {
-                    width: (f64::from(*spread).clamp(-1.0, 1.0) + 1.0) * 0.5,
-                    pan: f64::from(*pan).clamp(-1.0, 1.0),
-                    pseudo: *pseudo,
-                });
+                out.processors
+                    .push(sampler_ir::Processor::Color(color::stereo_modeller(*spread, *pan, *pseudo)));
                 combined = gain;
             }
             Some(p) => match matrix(p, &mut notes) {
@@ -1390,7 +1330,10 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
+                match color::unproved(fx.module) {
+                    Some(why) => format!("{name} v{:#x} len {}: {why}", fx.version, fx.public.len()),
+                    None => format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
+                },
                 sampler_ir::Reason::NotModeled,
             ));
         }
@@ -2445,10 +2388,7 @@ mod tests {
             assert_eq!(
                 chain(&racks[index].1, Scope::Voice).processors,
                 // Existing rack law: wet Gainer 2 plus saved dry level 1.
-                [sampler_ir::Processor::Gainer {
-                    gain: sampler_ir::Gain::Linear(2.0),
-                    dry: 1.0
-                }]
+                [sampler_ir::Processor::Color(color::gainer(2.0, 1.0))]
             );
         }
         assert_eq!(errors.len(), 8, "{errors:?}");
@@ -2856,7 +2796,7 @@ mod tests {
         for scope in [Scope::Voice, Scope::Bus] {
             let out = chain(std::slice::from_ref(&effect), scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
-            assert!(matches!(out.processors.first(), Some(sampler_ir::Processor::Distortion { transistor: true, .. })));
+            assert_eq!(out.processors.first(), Some(&sampler_ir::Processor::Color(color::distortion(1., 0.8, 0.2).unwrap())));
         }
         let mut saturation = 0.5f32.to_le_bytes().to_vec();
         saturation.extend(1i32.to_le_bytes());
@@ -2869,7 +2809,7 @@ mod tests {
         for scope in [Scope::Voice, Scope::Bus] {
             let out = chain(std::slice::from_ref(&effect), scope);
             assert!(out.notes.is_empty(), "{:?}", out.notes);
-            assert!(matches!(out.processors.first(), Some(sampler_ir::Processor::LoFi { bits: 0.4, frequency: 0.2, noise: 0.3, color: 0.5 })));
+            assert_eq!(out.processors.first(), Some(&sampler_ir::Processor::Color(color::lofi(&[0.4, 0.2, 0.3, 0.5]).unwrap())));
         }
     }
 
@@ -3301,9 +3241,10 @@ mod tests {
         let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
         g.dry_level = 0.5;
         let c = chain(&[g], Scope::Bus);
-        let [sampler_ir::Processor::Gainer { gain, dry }] = c.processors[..] else {
+        let [sampler_ir::Processor::Color(config)] = c.processors[..] else {
             panic!("{:?}", c.processors)
         };
+        let sampler_ir::fx::color::Gainer { gain, dry } = config.gainer.unwrap();
         assert!((dry + gain.linear() - 0.7505).abs() < 1e-6);
     }
 
@@ -3348,17 +3289,11 @@ mod tests {
         assert_eq!(chain.processors.len(), 2);
         assert_eq!(
             chain.processors[0],
-            sampler_ir::Processor::Gainer {
-                gain: sampler_ir::Gain::Linear(2.0),
-                dry: 0.0
-            }
+            sampler_ir::Processor::Color(color::gainer(2.0, 0.0))
         );
         assert_eq!(
             chain.processors[1],
-            sampler_ir::Processor::Gainer {
-                gain: sampler_ir::Gain::Linear(3.0),
-                dry: 0.0
-            }
+            sampler_ir::Processor::Color(color::gainer(3.0, 0.0))
         );
     }
 
@@ -3398,7 +3333,7 @@ mod tests {
                         },
                         ..
                     },
-                    sampler_ir::Processor::Gainer { .. }
+                    sampler_ir::Processor::Color(_)
                 ]
             ),
             "{:?}",
@@ -3417,41 +3352,22 @@ mod tests {
                 .as_slice()
             {
                 [
-                    sampler_ir::Processor::StereoModeller {
-                        width,
-                        pan: imported_pan,
-                        pseudo: false,
-                    },
+                    sampler_ir::Processor::Color(config),
                 ] => {
-                    assert_eq!(*width, (f64::from(spread).clamp(-1.0, 1.0) + 1.0) * 0.5);
-                    assert_eq!(*imported_pan, f64::from(pan));
-                    matrix(
-                        &Params::StereoModeller {
-                            spread,
-                            pan,
-                            pseudo: false,
-                        },
-                        &mut Vec::new(),
-                    )
-                    .unwrap()
+                    let stereo = config.stereo.unwrap();
+                    assert!(!stereo.pseudo);
+                    assert_eq!(stereo.width, (f64::from(spread).clamp(-1.0, 1.0) + 1.0) * 0.5);
+                    assert_eq!(stereo.pan, f64::from(pan));
                 }
                 other => panic!("{other:?}"),
             }
         };
-        let near = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
-            for (a, b) in m.iter().flatten().zip(want.iter().flatten()) {
-                assert!((a - b).abs() < 1e-6, "{m:?} against {want:?}");
-            }
-        };
-        // KONTAKT_REFERENCE.md s.20, divided by the base gain 0.3838 (vel 100):
-        // 100%: 0.7677 / -0.3838; 50%: 0.5757 / -0.1919; -50%: 0.2879 / 0.0960.
-        near(modeller(1.0, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
-        near(modeller(0.5, 0.0), [[1.5, -0.5], [-0.5, 1.5]]);
-        near(modeller(1.5, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
-        near(modeller(-0.5, 0.0), [[0.75, 0.25], [0.25, 0.75]]);
-        near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
-        // Pan -50: R x0.5.
-        near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
+        // The width/pan fields reach the kernel; its measured laws (KONTAKT_REFERENCE.md
+        // s.20) are tested in sampler-core's color::stereo.
+        modeller(1.0, 0.0);
+        modeller(1.5, 0.0);
+        modeller(-0.5, 0.0);
+        modeller(0.0, -0.5);
         // An Inverter that changes nothing still applies its Output (Una's tone
         // groups store +6 dB against -6 dB on their instrument bus).
         let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
@@ -3559,16 +3475,9 @@ mod tests {
         assert_eq!(
             processors,
             vec![
-                sampler_ir::Processor::Gainer {
-                    gain: sampler_ir::Gain::Linear(2.0),
-                    dry: 0.0
-                },
+                sampler_ir::Processor::Color(color::gainer(2.0, 0.0)),
                 sampler_ir::Processor::StereoMatrix([[0.0, -0.5], [-0.5, 0.0]]),
-                sampler_ir::Processor::StereoModeller {
-                    width: 0.5,
-                    pan: 0.0,
-                    pseudo: false
-                },
+                sampler_ir::Processor::Color(color::stereo_modeller(0.0, 0.0, false)),
                 sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]]),
             ]
         );
@@ -3600,10 +3509,7 @@ mod tests {
         let processors = chain(&[unity], Scope::Voice).processors;
         assert_eq!(
             processors,
-            vec![sampler_ir::Processor::Gainer {
-                gain: sampler_ir::Gain::UNITY,
-                dry: 0.0
-            }]
+            vec![sampler_ir::Processor::Color(color::gainer(1.0, 0.0))]
         );
     }
 
@@ -3788,7 +3694,7 @@ mod tests {
         for (bus, gain) in [(0, 2.0), (2, 3.0)] {
             let stages = &ir.chains[ir.buses[bus].chain.unwrap().0].pre_amplitude;
             assert!(
-                matches!(stages[..], [ir::Processor::Gainer { gain: ir::Gain::Linear(g), dry: 0.0 }] if g == gain)
+                matches!(stages[..], [ir::Processor::Color(c)] if c.gainer.is_some_and(|x| x.gain == ir::Gain::Linear(gain) && x.dry == 0.0))
             );
         }
         ir.validate().unwrap();
