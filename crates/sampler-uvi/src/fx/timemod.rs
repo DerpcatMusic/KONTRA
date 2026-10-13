@@ -1,9 +1,9 @@
 //! UVI delay, chorus, flanger, phaser and ensemble inserts onto
 //! `sampler_ir::fx::timemod`.
 //!
-//! UVI's native laws for these modules are unproved (`uvi-dsp-laws.md` covers
-//! LFO, OnePole, WaveShaper and the crushers only), so every mapping here is a
-//! documented-parameter, generic topology. Each one reports `UnknownLaw` for
+//! TrackDelay and DualDelay(X) run their native laws. The others' laws are
+//! unproved, so each of those mappings is a documented-parameter, generic
+//! topology. Each one reports `UnknownLaw` for
 //! the effect and `NotModeled` for each control it cannot honour, so the
 //! inspector shows "generic", never "exact".
 use crate::{Translation, number};
@@ -11,7 +11,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Order, Rate, SweepLaw, Tap,
+        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap,
     },
 };
 
@@ -35,7 +35,78 @@ fn feedback(line: &mut Line, fb: f64) {
     line.feedback.matrix = [[fb, 0.], [0., fb]];
 }
 
+/// UVI TrackDelay (ctor 0x141339b70, process 0x14133a2e0): a pure delay of
+/// `ceil(seconds·rate)` frames replacing the input, at most 5 s; synced, the
+/// time is `60/tempo·beats` (0x1411c8250). `None` at zero delay.
+fn track_delay(time: f64, synced: bool) -> Option<Config> {
+    if !(time > 0.) {
+        return None;
+    }
+    let time = if synced { DelayTime::Beats(time) } else { DelayTime::Ms(time.min(5.) * 1000.) };
+    let mut line = Line::single(time, 5000.);
+    line.interpolation = Interpolation::Ceil;
+    Some(Config { dry: 0., wet: 1., ..delay_config(line, 1.) })
+}
+
 impl Translation {
+    /// DualDelay / DualDelayX onto the native kernel (`sampler_core`
+    /// `dsp/timemod/dual.rs`). DualDelayX's extra stages are reported when on.
+    fn dual_delay(&mut self, node: Node, at: &str, tag: &str, synced: bool) -> Result<Config, String> {
+        let n = |name: &str, default: f64| -> Result<f32, String> { Ok(number(node, name, default)? as f32) };
+        let x = tag == "DualDelayX";
+        let modulation = !x || number(node, "Modulation", 1.)? != 0.;
+        let filters = !x || number(node, "Filtering", 1.)? != 0.;
+        let peak = number(node, "PeakGain", 0.)?;
+        if filters && peak != 0. {
+            self.unsupported(at, &format!("{tag} PeakGain (peaking bandwidth law 0x141645d00 unproved)"), peak);
+        }
+        if number(node, "Interpolation", 1.)? > 2. {
+            self.unsupported(at, &format!("{tag} Interpolation"), number(node, "Interpolation", 1.)?);
+        }
+        if x {
+            for (name, why) in [
+                ("Crusher", "crusher table 0x141f8f908 and quantizer unproved"),
+                ("Dispersion", "dispersion allpass 0x14164ccd0 unproved"),
+                ("Diffusion", "diffusion network 0x14165b160 unproved"),
+                ("TapeSaturation", "tape curve 0x1419f245c unproved"),
+                ("Reflection", "reflected rotation 0x14165df70 unproved"),
+            ] {
+                if number(node, name, 0.)? != 0. {
+                    self.unsupported(at, &format!("{tag} {name} ({why})"), 1);
+                }
+            }
+            if number(node, "DuckerBypass", 1.)? == 0. {
+                self.unsupported(at, &format!("{tag} Ducker (envelope 0x14165e350 unproved)"), 1);
+            }
+        }
+        let d = DualDelay {
+            time: n("DelayTime", 0.125)?.clamp(0., 5.),
+            synced,
+            delay_ratio: n("DelayRatio", 0.)?.clamp(-1., 1.),
+            feedback: n("Feedback", 0.3)?.clamp(0., 1.),
+            feedback_ratio: n("FeedbackRatio", 0.)?.clamp(-1., 1.),
+            filters,
+            low_cut_hz: n("LowCut", 20.)?.max(1.),
+            high_cut_hz: n("HighCut", 20_000.)?.max(1.),
+            rotation: n("Rotation", 0.)?,
+            input: [n("InputWidth", 1.)?, n("InputRotation", 0.)?],
+            output: [n("OutputWidth", 1.)?, n("OutputRotation", 0.)?],
+            mod_cents: if modulation { n("ModDepth", 0.)?.max(0.) } else { 0. },
+            mod_hz: n("ModRate", 1.)?.max(0.01),
+            mod_offset: n("ModChannelOffset", 1.)?,
+        };
+        let mut line = Line::single(DelayTime::Ms(0.), 5000.);
+        line.native = Native::UviDualDelay(d);
+        line.interpolation = match number(node, "Interpolation", 1.)? as i64 {
+            0 => Interpolation::Floor,
+            1 => Interpolation::Linear,
+            _ => Interpolation::Lagrange,
+        };
+        // Equal-power mix: sqrt(1 - Mix) dry, sqrt(Mix) wet.
+        let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
+        Ok(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) })
+    }
+
     fn generic_law(&mut self, at: &str, feature: &str, value: impl std::fmt::Display) {
         self.ir.unsupported.push(ir::Unsupported {
             location: at.into(),
@@ -63,6 +134,12 @@ impl Translation {
         let tag = node.tag_name().name();
         let mix = number(node, "Mix", 1.)?.clamp(0., 1.);
         let synced = number(node, "SyncToHost", 0.)? != 0.;
+        if tag == "TrackDelay" {
+            return Ok(track_delay(number(node, "DelayTime", 0.)?, synced));
+        }
+        if tag == "DualDelay" || tag == "DualDelayX" {
+            return self.dual_delay(node, at, tag, synced).map(Some);
+        }
         if synced {
             self.unsupported(at, &format!("{tag} host sync"), "free time used");
         }
@@ -92,33 +169,6 @@ impl Translation {
                     }
                 }
                 delay_config(line, mix)
-            }
-            "DualDelay" | "DualDelayX" => {
-                let t = number(node, "DelayTime", 0.125)?.clamp(0.001, 5.);
-                let ratio = number(node, "DelayRatio", 0.)?.clamp(-0.9, 0.9);
-                let mut line = Line::single(DelayTime::Ms(t * 1000.), t * 1000. * (1. + ratio.max(0.)));
-                line.right_scale = 1. + ratio;
-                feedback(&mut line, number(node, "Feedback", 0.3)?);
-                let depth = number(node, "ModDepth", 0.)?;
-                if depth > 0. {
-                    line.taps[0].depth_ms = depth.min(line.max_ms - t * 1000.).max(0.);
-                }
-                line.interpolation = match number(node, "Interpolation", 1.)? as i64 {
-                    0 => Interpolation::Nearest,
-                    1 => Interpolation::Linear,
-                    _ => Interpolation::Hermite,
-                };
-                self.not_modeled(
-                    at,
-                    node,
-                    tag,
-                    &[
-                        ("FeedbackRatio", 0.), ("LowCut", 20.), ("HighCut", 20000.), ("PeakGain", 0.), ("InputWidth", 1.),
-                        ("InputRotation", 0.), ("OutputWidth", 1.), ("OutputRotation", 0.), ("Rotation", 0.),
-                        ("Diffusion", 0.), ("Dispersion", 0.), ("Crusher", 0.), ("TapeSaturation", 0.), ("Reflection", 0.),
-                    ],
-                )?;
-                Config { lfo: lfo(number(node, "ModRate", 1.)?), ..delay_config(line, mix) }
             }
             "TapeEcho" => {
                 let mut line = Line::single(DelayTime::Ms(165.), 500.);

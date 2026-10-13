@@ -2568,6 +2568,79 @@ fn editor_opens_while_parts_load() {
     assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
 }
 
+/// Numeric-only: editor frames (the host's GUI thread) while `PROBE_PATH`
+/// loads, and after. Prints `FRAMES {json}`: worst frame per progress band,
+/// time spent at >= 95%, and the first frames after publication.
+#[test]
+#[ignore]
+fn probe_load_frames() {
+    use crate::plugin::Load;
+    use moose::prelude::BackgroundTask;
+    let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+    let p = Arc::new(SamplerParams::new());
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
+    let mut h = Harness::new(&p, 1180., 760.);
+    p.selection.write().unwrap().parts = vec![Part {
+        path,
+        program: std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0),
+        ..Default::default()
+    }];
+    let t0 = Instant::now();
+    let loader = {
+        let p = p.clone();
+        std::thread::spawn(move || {
+            Load.run(&p);
+            t0.elapsed()
+        })
+    };
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let (mut bands, mut at95, mut first95) = ([0f64; 11], 0f64, None);
+    let (mut frames, mut sum, mut worst, mut worst_at) = (0, 0f64, 0f64, 0u32);
+    let mut last = Instant::now();
+    while !loader.is_finished() {
+        let t = Instant::now();
+        h.idle(1);
+        let frame = ms(t.elapsed());
+        let progress = p.shared.part(0).unwrap().load_progress.load(Ordering::Relaxed);
+        let band = (progress / 100).min(10) as usize;
+        bands[band] = bands[band].max(frame);
+        if progress >= 950 && progress < 1000 {
+            first95.get_or_insert(ms(t0.elapsed()));
+            at95 += ms(last.elapsed());
+        }
+        last = Instant::now();
+        (frames, sum) = (frames + 1, sum + frame);
+        if frame > worst {
+            (worst, worst_at) = (frame, progress);
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    let load_ms = ms(loader.join().unwrap());
+    // Publication: the frames that first show the loaded part.
+    let after: Vec<f64> = (0..8)
+        .map(|_| {
+            let t = Instant::now();
+            h.idle(1);
+            ms(t.elapsed())
+        })
+        .collect();
+    let kb = |key: &str| {
+        std::fs::read_to_string("/proc/self/status").unwrap().lines()
+            .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let trace = p.shared.view.lock().unwrap().parts[0].trace.as_deref().map(|t| {
+        serde_json::json!({"elapsed_ms": t["elapsed_ms"], "stages_ms": t["stages_ms"], "status": t["status"]})
+    });
+    println!(
+        "FRAMES {}",
+        serde_json::json!({"load_ms": load_ms, "frames": frames, "mean_frame_ms": sum / f64::from(frames.max(1)),
+            "worst_frame_ms": worst, "worst_at_progress": worst_at, "worst_by_decile": bands,
+            "first_95_ms": first95, "ms_at_95": at95, "after_publish_ms": after,
+            "hwm_mb": kb("VmHWM:") as f64 / 1024., "rss_mb": kb("VmRSS:") as f64 / 1024., "trace": trace})
+    );
+}
+
 fn key_spot(ui: &Ui, note: u8) -> Point {
     let r = ui
         .scene()

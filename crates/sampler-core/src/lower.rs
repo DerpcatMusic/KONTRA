@@ -13,6 +13,7 @@ use crate::{
     slot_control,
 };
 use sampler_ir as ir;
+use std::collections::HashMap;
 use std::fmt;
 
 /// Retain native lookup identity independently of which DSP nodes were lowered.
@@ -505,6 +506,7 @@ pub fn switching(
         rate: 1,
         pcm: &[],
         mpe: None,
+        amplitude_sources: HashMap::new(),
     }
     .switching(switching)
 }
@@ -542,6 +544,7 @@ pub fn lower_with(
         mpe: options
             .mpe
             .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
+        amplitude_sources: amplitude_sources(instrument),
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
@@ -864,16 +867,29 @@ pub fn lower_with(
     }
     engine_bindings.extend(native.into_values());
     engine_bindings.extend(wave_bindings);
+    // One pass over route controls: per-alias scans of routes x zones were
+    // quadratic (ANALOG STRINGS spent ~90 s here at 95% load progress).
+    let mut zone_routes = vec![false; instrument.routes.len()];
+    for zone in &instrument.zones {
+        for route in &zone.routes {
+            zone_routes[route.0] = true;
+        }
+    }
+    let mut route_bound = vec![false; instrument.controls.len()];
+    let mut zone_bound = vec![false; instrument.controls.len()];
+    let mut loop_bound = vec![false; instrument.controls.len()];
+    for &(route, depth, bypass) in &instrument.source_indices.route_controls {
+        for control in [depth, bypass] {
+            route_bound[control.0] = true;
+            zone_bound[control.0] |= zone_routes[route.0];
+        }
+        loop_bound[depth.0] |= matches!(
+            instrument.routes[route.0].target,
+            ir::Target::LoopStart | ir::Target::LoopLength
+        );
+    }
     for alias in &instrument.source_indices.control_aliases {
-        let routes = &instrument.source_indices.route_controls;
-        if routes
-            .iter()
-            .any(|b| b.1 == alias.control || b.2 == alias.control)
-            && !routes.iter().any(|b| {
-                (b.1 == alias.control || b.2 == alias.control)
-                    && instrument.zones.iter().any(|z| z.routes.contains(&b.0))
-            })
-        {
+        if route_bound[alias.control.0] && !zone_bound[alias.control.0] {
             continue;
         }
         let control = &instrument.controls[alias.control.0];
@@ -890,13 +906,7 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if routes.iter().any(|b| {
-                b.1 == alias.control
-                    && matches!(
-                        instrument.routes[b.0.0].target,
-                        ir::Target::LoopStart | ir::Target::LoopLength
-                    )
-            }) {
+            law: if loop_bound[alias.control.0] {
                 crate::EngineParameterLaw::SignedCubic
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
@@ -973,6 +983,38 @@ struct Lowering<'a> {
     rate: u32,
     pcm: &'a [Pcm],
     mpe: Option<MpeDefaults>,
+    /// [`amplitude_sources`], built once rather than scanned per zone.
+    amplitude_sources: HashMap<(ir::GroupRef, ir::ModulatorRef), &'a ir::SourceAhdsr>,
+}
+
+/// The native AHDSR behind each (group, amplitude modulator): its one
+/// internal source modulator and that slot's one AHDSR, when it is the
+/// native amplitude envelope. Per-zone scans of these lists were
+/// zones x modulators (seconds on large orchestral instruments).
+fn amplitude_sources(
+    ir: &ir::Instrument,
+) -> HashMap<(ir::GroupRef, ir::ModulatorRef), &ir::SourceAhdsr> {
+    let mut modulators = HashMap::new();
+    for source in &ir.source_indices.modulators {
+        let (Some(runtime), false) = (source.runtime, source.external) else {
+            continue;
+        };
+        let group = ir.source_indices.groups.get(source.group).copied().flatten()
+            .unwrap_or(ir::GroupRef(source.group));
+        modulators.entry((group, runtime)).and_modify(|unique| *unique = None).or_insert(Some(source));
+    }
+    let mut ahdsrs = HashMap::new();
+    for ahdsr in &ir.source_indices.ahdsrs {
+        ahdsrs.entry((ahdsr.group, ahdsr.slot)).and_modify(|unique| *unique = None).or_insert(Some(ahdsr));
+    }
+    modulators
+        .into_iter()
+        .filter_map(|(key, source)| {
+            let source = source?;
+            let ahdsr = (*ahdsrs.get(&(source.group, source.slot))?)?;
+            ahdsr.native_amplitude.then_some((key, ahdsr))
+        })
+        .collect()
 }
 
 impl Lowering<'_> {
@@ -1230,18 +1272,10 @@ impl Lowering<'_> {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
         let envelope = self.adsr(owner, e, one_shot)?;
-        let source = zone.group.and_then(|group| {
-            let mut sources = self.ir.source_indices.modulators.iter().filter(|source|
-                self.ir.source_indices.groups.get(source.group).copied().flatten()
-                    .unwrap_or(ir::GroupRef(source.group)) == group
-                    && !source.external && source.runtime == zone.amplitude);
-            let address = sources.next()?;
-            if sources.next().is_some() { return None; }
-            let mut raw = self.ir.source_indices.ahdsrs.iter().filter(|source|
-                source.group == address.group && source.slot == address.slot);
-            let source = raw.next()?;
-            (raw.next().is_none() && source.native_amplitude).then_some(source)
-        });
+        let source = zone
+            .group
+            .zip(zone.amplitude)
+            .and_then(|key| self.amplitude_sources.get(&key).copied());
         if let Some(source) = source {
             if !crate::v1_voice_controls::valid_ahdsr(&crate::v1_voice_controls::Ahdsr::from(source)) {
                 return Err(core(Stage::Envelope, owner)(Error::InvalidInput));

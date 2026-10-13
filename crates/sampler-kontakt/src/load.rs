@@ -313,7 +313,22 @@ pub fn load_read_streamed_cancelable(
         );
     }
     drop(span);
-    let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
+    let opened = crate::stream::Streamer::open(
+        registry,
+        options.rate,
+        policy,
+        32,
+        canceled,
+        &mut |done, total| {
+            if let Some(&sample) = listed.get(done.min(total.saturating_sub(1))) {
+                progress(Progress::Decoding {
+                    done,
+                    total,
+                    sample,
+                })
+            }
+        },
+    )?;
     if !hit && !canceled() {
         if let Some(preset) = options.library.as_deref() {
             crate::header_cache::store(preset, &listed, &sources, &opened.assets);
@@ -349,7 +364,8 @@ pub fn stream_instrument(
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false)?;
+    let opened =
+        crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false, &mut |_, _| ())?;
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
