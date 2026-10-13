@@ -174,29 +174,23 @@ impl Translation {
                 k if crate::fx::dynamics::handles(k) => {
                     crate::fx::dynamics::translate(self, node, &at, &mut out)?;
                 }
-                "OnePole" => {
-                    let tracking = number(node, "KeyTracking", 0.0)?;
-                    let key = key.map_or(60.0, f64::from);
-                    let hz = (number(node, "Freq", 1000.0)?
-                        * 2f64.powf(tracking * (key - 60.0) / 12.0))
-                    .clamp(20.0, 20000.0);
-                    if tracking != 0.0 {
-                        self.unsupported(
-                            &at,
-                            "OnePole key tracking (keygroup middle key)",
-                            tracking,
-                        );
+                tag if super::fx::filter::handles(tag) => {
+                    match super::fx::filter::translate(node, key, |name, default| {
+                        number(node, name, default)
+                    })? {
+                        Ok(done) => {
+                            out.extend(done.processors);
+                            for (feature, value) in done.unsupported {
+                                self.unsupported(&at, feature, value);
+                            }
+                        }
+                        Err(gap) => {
+                            self.unsupported(&at, &format!("{} ({})", gap.name, gap.reason), "");
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
+                            continue;
+                        }
                     }
-                    let poles = 1;
-                    out.push(ir::Processor::Filter(ir::Filter {
-                        kind: if number(node, "Mode", 0.0)? == 0.0 {
-                            ir::FilterKind::LowPass { poles }
-                        } else {
-                            ir::FilterKind::HighPass { poles }
-                        },
-                        cutoff: ir::Frequency::Hertz(hz),
-                        resonance: ir::Resonance::Decibels(0.0),
-                    }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
                     let processor = self.impulse_player(node, &at)?;

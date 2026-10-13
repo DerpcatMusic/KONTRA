@@ -1690,6 +1690,8 @@ pub enum Processor {
     Ar(Ar),
     /// Native Formant I: saved Talk, Sharp, Size normalized controls.
     Formant([f32; 3]),
+    /// A filter-family configuration with no dedicated variant yet (Formant II).
+    FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).

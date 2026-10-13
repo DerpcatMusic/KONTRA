@@ -1,5 +1,5 @@
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{BLOCK, Planar, flush};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{BLOCK, Planar, flush};
 use crate::Error;
 
 #[derive(Clone, Copy, Debug)]
@@ -20,6 +20,12 @@ pub enum SvfMode {
 
 /// Stereo trapezoidal state-variable filter. Smoothing occurs in hertz and Q,
 /// before coefficient calculation; histories belong to the voice or summed bus.
+///
+/// A generic TPT stand-in, not the Kontakt SV kernel: the validation domain, coefficient law,
+/// mode mixes, state recurrence, one-pole conversion, coefficient cache cadence and the
+/// modulation midpoint adaptation are KONTRA's own (audit CORE-FILTERS-065..072, 080, 090).
+/// What is measured against Kontakt 8 is the response of SV LP2 (cutoff and Q laws live in
+/// `sampler_ir::fx::filter`), not this recurrence.
 #[derive(Clone, Copy, Debug)]
 pub struct StateVariableFilter {
     pub mode: SvfMode,
@@ -28,11 +34,11 @@ pub struct StateVariableFilter {
 }
 
 impl StateVariableFilter {
-    pub(super) fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         self.cutoff_hz.valid() && self.q.valid()
     }
 
-    pub(super) fn compile(
+    pub(crate) fn compile(
         self,
         rate: u32,
         bindings: &mut Vec<ControlRange>,
@@ -154,7 +160,7 @@ impl PreparedFilter {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(super) struct Coefficients {
+pub(crate) struct Coefficients {
     pub a1: f64,
     pub a2: f64,
     pub a3: f64,
@@ -193,8 +199,8 @@ pub(crate) struct FilterCache {
     start: Option<u64>,
     filled: usize,
     /// Every filled entry equals the first: the block runs on hoisted values.
-    pub(super) uniform: bool,
-    pub(super) coefficients: [Coefficients; BLOCK],
+    pub(crate) uniform: bool,
+    pub(crate) coefficients: [Coefficients; BLOCK],
     last_values: Option<[f64; 2]>,
     last: Coefficients,
 }
@@ -215,12 +221,12 @@ impl FilterCache {
         }
     }
 
-    pub(super) fn one_pole_high(&self) -> Option<bool> {
+    pub(crate) fn one_pole_high(&self) -> Option<bool> {
         self.filter.mode.one_pole_high()
     }
 
     /// The response's output mix: `[m0, mk, m2]`.
-    pub(super) fn mix(&self) -> [f64; 3] {
+    pub(crate) fn mix(&self) -> [f64; 3] {
         self.filter.mode.mix()
     }
 
@@ -288,13 +294,13 @@ impl FilterCache {
 
 /// `y += (x - y) b` per channel in `state[0]`; the band-state row stays zero.
 #[inline(always)]
-pub(super) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f64, f64) {
+pub(crate) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f64, f64) {
     let next = state + (input - state) * b;
     (if high { input - next } else { next }, next)
 }
 
 #[inline(always)]
-pub(super) fn sample(
+pub(crate) fn sample(
     x: f64,
     [ic1, ic2]: [f64; 2],
     [a1, a2, a3, km]: [f64; 4],
@@ -368,7 +374,7 @@ impl SvfMode {
         }
     }
 
-    pub(super) fn one_pole_high(self) -> Option<bool> {
+    pub(crate) fn one_pole_high(self) -> Option<bool> {
         match self {
             Self::OnePoleLowPass => Some(false),
             Self::OnePoleHighPass => Some(true),
@@ -456,7 +462,7 @@ pub(crate) struct FilterContext<'a> {
     pub expression: Option<(crate::ExpressionId, crate::Expression)>,
     /// A bus's reverbs and convolutions, by `PreparedProcessor::Space` index;
     /// empty elsewhere.
-    pub spaces: &'a mut [super::Space],
+    pub spaces: &'a mut [super::super::Space],
 }
 /// Which cache a voice's filter resolved to for this block.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -485,7 +491,7 @@ impl FilterBank {
         self.addressed_modulation[index]
     }
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
-    pub(super) fn prepare(
+    pub(crate) fn prepare(
         &mut self,
         index: usize,
         len: usize,
@@ -515,7 +521,7 @@ impl FilterBank {
         cache
     }
 
-    pub(super) fn cache(&self, cache: CacheRef) -> &FilterCache {
+    pub(crate) fn cache(&self, cache: CacheRef) -> &FilterCache {
         match cache {
             CacheRef::Shared(i) => &self.shared[i],
             CacheRef::Expression(i) => &self.expressions[i],

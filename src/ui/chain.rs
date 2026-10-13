@@ -393,6 +393,13 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::Phaser(_) => "Phaser filter".into(),
         ir::Processor::Eq(_) => "EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
+        ir::Processor::FilterBank(c) => match c.topology {
+            ir::fx::filter::Topology::FormantII => format!(
+                "Formant II · talk {:.2} · sharp {:.2} · size {:.2}",
+                c.cutoff, c.resonance, c.extra
+            ),
+            _ => "Filter".into(),
+        },
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
             ["2", "4", "2/4"][usize::from(d.mode / 3)],

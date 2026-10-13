@@ -186,6 +186,8 @@ pub enum Processor {
     Ar(ArSettings),
     /// Native three-parallel-bandpass Formant I (Talk, Sharp, Size).
     Formant([f32; 3]),
+    /// Formant core table 2 (rows 5..=9): Kontakt Formant II.
+    FormantII([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
     /// Formant I with Talk, Sharp, Size as event-rate lanes (KSP ENGINE_PAR_FORMANT_*).
@@ -243,7 +245,7 @@ impl Processor {
             Processor::Ar(settings) => settings.valid(),
             Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant(knobs) => knobs.iter().all(live_knob),
             Processor::Biquad(_) | Processor::Delay(_) => true,
@@ -258,24 +260,19 @@ pub(crate) mod eq_family;
 pub(crate) mod filter;
 pub(crate) mod space;
 pub(crate) mod timemod;
-mod ar;
-mod ar_kernel;
 pub(super) mod control;
-mod daft;
-mod formant;
 pub use ar::ArSettings;
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;
 pub use eq_family::{EqBand, KontaktLegacyEqSettings, PeakingEq};
 mod live;
-mod ladder_kernel;
-mod ladder;
 pub use ladder::LadderSettings;
 mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
-pub(super) mod svf;
+use filter::{ar, daft, formant, ladder};
+pub(super) use filter::svf;
 pub use dynamics::DynamicsSettings;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
@@ -503,7 +500,8 @@ pub(super) fn compile_processors(
                     PreparedProcessor::Ar { ar, offset }
                 }
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
-            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
+            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
+            Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(settings.ring_frames()).ok_or(Error::Capacity)?;
@@ -1132,7 +1130,7 @@ pub(super) fn process<const TRACE: bool>(
             // coefficients follow them while the filter and noise states persist.
             PreparedProcessor::LiveFormant { knobs, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
-                formant::Formant::compile([talk, sharp, size], *rate).process(state, block, len)
+                formant::Formant::compile([talk, sharp, size], false, *rate).process(state, block, len)
             }
             PreparedProcessor::Daft(daft) => daft.process(
                 state,

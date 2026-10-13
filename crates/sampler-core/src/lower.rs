@@ -2204,7 +2204,7 @@ impl Lowering<'_> {
         Ok(processors)
     }
 
-    /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
+    /// One or more runtime stages: a 4- or 6-pole filter is two or three cascaded 2-pole sections.
     fn processors(
         &self,
         owner: &str,
@@ -2223,17 +2223,14 @@ impl Lowering<'_> {
             ir::Processor::Filter(f) => f.kind,
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        let half = match kind {
-            ir::FilterKind::LowPass { poles: 4 } => ir::FilterKind::LowPass { poles: 2 },
-            ir::FilterKind::HighPass { poles: 4 } => ir::FilterKind::HighPass { poles: 2 },
-            ir::FilterKind::BandPass { poles: 4 } => ir::FilterKind::BandPass { poles: 2 },
-            ir::FilterKind::Notch { poles: 4 } => ir::FilterKind::Notch { poles: 2 },
+        let (half, sections) = match kind {
+            ir::FilterKind::LowPass { poles: poles @ (4 | 6) } => (ir::FilterKind::LowPass { poles: 2 }, poles / 2),
+            ir::FilterKind::HighPass { poles: poles @ (4 | 6) } => (ir::FilterKind::HighPass { poles: 2 }, poles / 2),
+            ir::FilterKind::BandPass { poles: poles @ (4 | 6) } => (ir::FilterKind::BandPass { poles: 2 }, poles / 2),
+            ir::FilterKind::Notch { poles: poles @ (4 | 6) } => (ir::FilterKind::Notch { poles: 2 }, poles / 2),
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        Ok(vec![
-            self.processor(owner, two(half))?,
-            self.processor(owner, two(half))?,
-        ])
+        (0..sections).map(|_| self.processor(owner, two(half))).collect()
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
@@ -2304,6 +2301,12 @@ impl Lowering<'_> {
             ir::Processor::TimeMod(config) => Processor::TimeMod(config),
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
+            ir::Processor::FilterBank(c) => match c.topology {
+                ir::fx::filter::Topology::FormantII => {
+                    Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
+                }
+                _ => return Err(unsupported(owner, Feature::Controls)),
+            },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
