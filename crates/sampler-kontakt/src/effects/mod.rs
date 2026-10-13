@@ -2189,7 +2189,7 @@ mod tests {
             assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
-                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_one_pole_hertz(0.5996094, false))
+                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0.5996094, sampler_ir::fx::filter::Warp::LowPass))
             );
             assert_eq!(
                 filter.resonance,
@@ -2227,7 +2227,7 @@ mod tests {
             assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
-                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_one_pole_hertz(0., true))
+                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0., sampler_ir::fx::filter::Warp::HighPass))
             );
             assert_eq!(
                 filter.resonance,
@@ -2239,7 +2239,7 @@ mod tests {
         };
         assert_eq!(
             filter.cutoff,
-            sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_one_pole_hertz(0.4, true))
+            sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0.4, sampler_ir::fx::filter::Warp::HighPass))
         );
         assert_eq!(
             filter.resonance,
