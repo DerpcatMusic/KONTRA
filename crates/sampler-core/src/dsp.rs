@@ -162,6 +162,8 @@ pub enum Processor {
     Biquad(Biquad),
     ControlGain(ControlRange),
     Delay(Delay),
+    /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
+    TimeMod(sampler_ir::fx::timemod::Config),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
     KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
@@ -196,7 +198,6 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
-    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
@@ -273,7 +274,7 @@ impl Processor {
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
-            Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
+            Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
@@ -309,7 +310,6 @@ mod convolution;
 mod daft;
 mod distortion;
 mod formant;
-mod phaser;
 pub use ar::ArSettings;
 mod eq;
 #[cfg(test)]
@@ -325,7 +325,6 @@ mod lofi;
 pub use lofi::LoFiSettings;
 mod ladder;
 pub use ladder::LadderSettings;
-mod delay;
 mod stereo;
 mod taps;
 pub use stereo::StereoSettings;
@@ -343,7 +342,7 @@ pub use convolution::ConvolutionUpload;
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use daft::DaftSettings;
-pub use delay::Delay;
+pub use timemod::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
 pub use shaping::{Decimator, Rectifier};
@@ -358,8 +357,8 @@ pub(super) enum PreparedProcessor {
     LiveFilter(live::Live),
     ControlMatrix([control::PreparedParameter; 4]),
     ControlGain(usize),
-    Delay {
-        delay: Delay,
+    TimeMod {
+        timemod: timemod::TimeMod,
         offset: usize,
     },
     Compressor(compressor::Compressor),
@@ -371,8 +370,6 @@ pub(super) enum PreparedProcessor {
     LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
     LiveLoFi { knobs: [control::PreparedParameter; 4], rate: u32 },
     Formant(formant::Formant),
-    Phaser(phaser::Phaser),
-    LegacyPhaser(phaser::LegacyPhaser),
     Distortion(distortion::Distortion),
     Gainer {
         dry: f64,
@@ -535,12 +532,18 @@ pub(super) fn compile_processors(
                     filters.push(filter.compile(rate, bindings)?);
                     PreparedProcessor::StateVariable(index)
                 }
-                Processor::Delay(delay) => {
+                Processor::Delay(_) | Processor::TimeMod(_) | Processor::Phaser(_) => {
+                    let timemod = match stage {
+                        Processor::Delay(delay) => timemod::TimeMod::compile(delay.config(), rate)?,
+                        Processor::TimeMod(config) => timemod::TimeMod::compile(config, rate)?,
+                        Processor::Phaser(knobs) => timemod::TimeMod::phaser_filter(knobs)?,
+                        _ => unreachable!(),
+                    };
                     let offset = *delay_frames;
                     *delay_frames = offset
-                        .checked_add(delay.frames as usize)
+                        .checked_add(timemod.frames())
                         .ok_or(Error::Capacity)?;
-                    PreparedProcessor::Delay { delay, offset }
+                    PreparedProcessor::TimeMod { timemod, offset }
                 }
                 Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
                 Processor::Compressor(settings) => {
@@ -586,8 +589,6 @@ pub(super) fn compile_processors(
                 Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
                 Processor::LiveLoFi { bits, frequency, noise, color } => PreparedProcessor::LiveLoFi { knobs: [bits, frequency, noise, color].map(|k| k.compile(bindings)), rate },
-                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
-                Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
                 Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -961,13 +962,11 @@ impl PreparedVoiceChain {
             && !self.pre.iter().chain(&self.post).any(|stage| {
                 matches!(
                     stage,
-                    PreparedProcessor::Delay { .. }
+                    PreparedProcessor::TimeMod { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
-                        | PreparedProcessor::LegacyPhaser(_)
                         | PreparedProcessor::KontaktEnhancedCompressor(_)
-                        | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::LiveDistortion(_)
                         | PreparedProcessor::LiveFormant { .. }
@@ -1237,12 +1236,13 @@ pub(super) fn process<const TRACE: bool>(
                         .for_each(|(v, w)| *v = f64::from(*w));
                 }
             }
-            PreparedProcessor::Delay { delay, offset } => {
-                fault |= delay.process(
+            PreparedProcessor::TimeMod { timemod, offset } => {
+                fault |= timemod.process(
                     state,
-                    &mut delay_samples[*offset..*offset + delay.frames as usize],
+                    &mut delay_samples[*offset..*offset + timemod.frames()],
                     block,
                     len,
+                    filters.tempo,
                 );
             }
             PreparedProcessor::KontaktEnhancedCompressor(c) => c.process(state, block, len),
@@ -1251,8 +1251,6 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
-            PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
-            PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
             PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
