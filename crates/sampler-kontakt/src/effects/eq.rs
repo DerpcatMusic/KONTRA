@@ -1,8 +1,8 @@
 //! Kontakt `eq` effects onto `sampler_ir::fx::eq`.
 //!
 //! - Filter 0x18 kind 22 (legacy one-band EQ): exact native law (`Law::KontaktLegacy`).
-//! - Filter 0x18 kinds 23/24 (multiband): the native law is unproved (`FilterEQ2/3` classes exist,
-//!   topology, stereo and clocks do not), so `mod.rs` keeps the labelled v1/generic fallback.
+//! - Filter 0x18 kinds 23/24 (multiband): every band runs the same native law; the multiband
+//!   topology and stereo clocks are unproved and noted by `mod.rs`.
 //! - Solid G-EQ 0x44 (`BParFXSSLGEQ`, reader 0x140d029f0, v0x10 12 fields, v0x11 four more):
 //!   saved knobs through the proved spline tables (`Law::Solid`); band topology generic.
 use super::{Notes, Reader};
@@ -29,26 +29,6 @@ pub(super) fn legacy_band(
         gain_db: db.clamp(-18., 18.),
         ..Band::new(Kind::Peak, 0., 0., 0.)
     })))
-}
-
-/// One band of legacy EQ kinds 23/24 as a generic RBJ peak. GENERIC FALLBACK: the native
-/// multiband law is unproved (FilterEQ2/3 class and lifecycle shapes are known; topology, stereo
-/// and clocks are not). The gain scale and width->Q mapping are the measured one-band
-/// observations (centre gain 2^(3g)), not a multiband law.
-pub(super) fn generic_band([hz, octaves, db]: [f32; 3], notes: &mut Notes) -> Option<Band> {
-    if db == 0.0 {
-        return None;
-    }
-    if !(hz.is_finite() && octaves.is_finite() && db.is_finite() && hz > 0.0 && octaves > 0.0) {
-        notes.push(("EQ band".into(), format!("{hz} Hz {octaves} oct {db} dB"), Reason::InvalidValue));
-        return None;
-    }
-    Some(Band::new(
-        Kind::Peak,
-        hz,
-        sampler_core::PeakingEq::q_of_octaves(f64::from(octaves)) as f32,
-        (f64::from(db) * sampler_core::PeakingEq::GAIN_SCALE) as f32,
-    ))
 }
 
 /// The saved Solid G-EQ knobs, in serialized order (FFBFx8BFFBB).

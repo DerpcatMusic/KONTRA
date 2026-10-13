@@ -1,29 +1,27 @@
 //! Universal `eq` DSP (wave 4): one band stage covers every equaliser.
 //!
-//! A band is [`EqBand`]: a response [`Kind`] under a coefficient [`Law`].
-//! - [`Law::KontaktLegacy`] runs the exact native one-band recurrence (`legacy.rs`, coefficient
-//!   generator 0x1409591c0) with its knob laws and 32-frame control cadence.
-//! - [`Law::Solid`] maps the saved knobs through the proved Solid G-EQ splines (`solid.rs`) into a
-//!   generic RBJ biquad (the native topology is unproved).
-//! - [`Law::Rbj`] is the generic Hertz/Q/dB biquad (`generic.rs`), also the home of scripted
-//!   UVI EQ inserts.
+//! There is ONE kernel (`kernel.rs`): a matched-response second-order design (Vicanek 2016) run
+//! as a TPT state-variable section. A band is [`EqBand`]: a response [`Kind`] under a knob
+//! [`Law`] that only decides which (Hz, Q, dB) or which native coefficients feed that kernel.
+//! - [`Law::KontaktLegacy`]: the native one-band knob laws, coefficient generator 0x1409591c0 and
+//!   32-frame control cadence (`legacy.rs`); its coefficients are realised by the kernel.
+//! - [`Law::Solid`]: saved knobs through the proved Solid G-EQ splines (`solid.rs`) into the
+//!   kernel's (Hz, Q, dB) design (the native topology is unproved).
+//! - [`Law::Rbj`]: physical Hertz/Q/dB (`generic.rs`), also the home of scripted UVI EQ inserts.
 //! A [`sampler_ir::fx::eq::Config`] is a serial cascade of bands, lowered here into one stage per
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the
 //! stage's `ProcessorState`, so nothing allocates while rendering.
 //!
-//! `peaking.rs` holds [`PeakingEq`], the v1 TPT bell: a GENERIC FALLBACK, not native and not a
-//! band of the superset; it is kept only for the v1-parity bands of legacy EQ kinds 23/24.
-pub(super) mod generic;
+mod generic;
+mod kernel;
 pub(super) mod legacy;
-pub(super) mod peaking;
 mod solid;
 
 pub use legacy::KontaktLegacyEqSettings;
-pub use peaking::PeakingEq;
 pub use sampler_ir::fx::eq::{Kind, Law};
 
 use super::{
-    Biquad, ControlRamp, ControlRange, FilterKind, Parameter, Planar, Processor, ProcessorState, StateVariableFilter, SvfMode,
+    ControlRamp, ControlRange, Parameter, Planar, Processor, ProcessorState,
     control::PreparedParameter,
 };
 use crate::Error;
@@ -153,7 +151,7 @@ fn butterworth_q(n: u8, k: u8) -> f64 {
     0.5 / (std::f64::consts::PI * f64::from(2 * k - 1) / f64::from(2 * n)).sin()
 }
 
-/// A band as a control-driven stage (constants seeded), for live-bound owners.
+/// A band as an `EqBand` with constant controls (live-bound owners rebind them).
 pub(crate) fn live_band(b: &sampler_ir::fx::eq::Band) -> EqBand {
     let c = Parameter::Constant;
     EqBand {
@@ -169,69 +167,39 @@ pub(crate) fn live_band(b: &sampler_ir::fx::eq::Band) -> EqBand {
     }
 }
 
-/// Static lowering: fixed bands become plain biquads and state-variable filters (which batch
-/// across voices, like every other fixed filter), the native legacy law stays a stateful stage. A 3-pole filter is first order plus a pair; an output gain
-/// follows when it is not 0 dB. Band order is signal order; disabled and flat bands add nothing.
-pub(crate) fn lower(config: &sampler_ir::fx::eq::Config, rate: u32) -> Result<Vec<Processor>, Error> {
+/// Lowering: one stage per filter section of every enabled band (a 3-pole filter is a first-order
+/// section plus a pair), then an output gain when it is not 0 dB. Band order is signal order.
+/// Every stage is the one kernel; only the knob law differs. Exactly-flat generic gain bands
+/// add nothing.
+pub(crate) fn lower(config: &sampler_ir::fx::eq::Config) -> Vec<Processor> {
     let mut stages = Vec::new();
     for b in config.bands().iter().filter(|b| b.enabled) {
-        if b.law == Law::KontaktLegacy {
-            stages.push(Processor::Eq(live_band(b)));
+        let band = live_band(b);
+        let gainful = matches!(
+            b.kind,
+            Kind::Peak | Kind::LowShelf | Kind::HighShelf | Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf
+        );
+        if gainful && b.law == Law::Rbj && b.gain_db == 0. {
             continue;
         }
-        let (hz, q, boost) = match b.law {
-            Law::Solid(section) => {
-                solid::physical(section, f64::from(b.frequency), f64::from(b.q), f64::from(b.gain_db))
-            }
-            _ => (f64::from(b.frequency), f64::from(b.q), f64::from(b.gain_db)),
-        };
-        let q = (q * (1. + f64::from(b.proportional_q) * boost.abs() / 12.)).clamp(0.05, 50.);
-        let hz = hz.clamp(1., 0.49 * f64::from(rate));
-        let biquad = |kind, q| Biquad::new(rate, kind, hz, q).map(Processor::Biquad);
-        let svf = |mode, q| {
-            Processor::StateVariable(StateVariableFilter { mode, cutoff_hz: Parameter::Constant(hz), q: Parameter::Constant(q) })
-        };
-        let gain_kind = |make: fn(f64) -> FilterKind| (boost.abs() > 1e-9).then(|| biquad(make(boost), q));
-        match b.kind {
-            Kind::Level => {
-                if boost.abs() > 1e-9 {
-                    stages.push(Processor::Gain(10f64.powf(boost / 20.)));
-                }
-            }
-            Kind::Peak => stages.extend(gain_kind(|g| FilterKind::Peak { gain_db: g }).transpose()?),
-            Kind::LowShelf => stages.extend(gain_kind(|g| FilterKind::LowShelf { gain_db: g }).transpose()?),
-            Kind::HighShelf => stages.extend(gain_kind(|g| FilterKind::HighShelf { gain_db: g }).transpose()?),
-            Kind::FirstOrderLowShelf => {
-                stages.extend(gain_kind(|g| FilterKind::FirstOrderLowShelf { gain_db: g }).transpose()?)
-            }
-            Kind::FirstOrderHighShelf => {
-                stages.extend(gain_kind(|g| FilterKind::FirstOrderHighShelf { gain_db: g }).transpose()?)
-            }
-            Kind::BandPass => stages.push(svf(SvfMode::BandPass, q)),
-            Kind::Notch => stages.push(svf(SvfMode::Notch, q)),
-            Kind::LowPass | Kind::HighPass => {
-                let high = b.kind == Kind::HighPass;
-                // Solid HP/LP sections are one 2-pole Butterworth (their spline has no Q).
-                let n = if matches!(b.law, Law::Solid(_)) { 2 } else { b.poles.clamp(1, 4) };
-                let (one, two) = if high {
-                    (SvfMode::OnePoleHighPass, SvfMode::HighPass)
-                } else {
-                    (SvfMode::OnePoleLowPass, SvfMode::LowPass)
-                };
-                if n % 2 == 1 {
-                    stages.push(svf(one, q));
-                }
-                for k in 1..=n / 2 {
-                    // The band's own Q only shapes a 2-pole filter.
-                    stages.push(svf(two, if n == 2 { q } else { butterworth_q(n, k) }));
-                }
-            }
+        // Solid HP/LP sections are one 2-pole Butterworth (their spline has no Q).
+        let n = if matches!(b.law, Law::Solid(_)) { 2 } else { b.poles.clamp(1, 4) };
+        if !matches!(b.kind, Kind::LowPass | Kind::HighPass) || n == 2 {
+            stages.push(Processor::Eq(EqBand { poles: 2, ..band }));
+            continue;
+        }
+        // Other orders: Butterworth sections (the band's own Q only shapes a 2-pole filter).
+        if n % 2 == 1 {
+            stages.push(Processor::Eq(EqBand { poles: 1, ..band }));
+        }
+        for k in 1..=n / 2 {
+            stages.push(Processor::Eq(EqBand { poles: 2, q: Parameter::Constant(butterworth_q(n, k)), ..band }));
         }
     }
     if config.output_gain_db != 0. {
         stages.push(Processor::Gain(10f64.powf(f64::from(config.output_gain_db) / 20.)));
     }
-    Ok(stages)
+    stages
 }
 
 #[cfg(test)]
