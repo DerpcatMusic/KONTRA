@@ -332,7 +332,7 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     if fit >= 1. { fit.floor() } else { fit }
 }
 
-fn room_height(ui: &Ui, slot: usize) -> f64 {
+pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (
         scene.surface("rack-view"),
@@ -344,10 +344,9 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     let tabs = scene
         .surface(&format!("face-bar-{slot}"))
         .map_or(0., |s| s.frame.size.height);
-    let perf = scene
-        .surface(&format!("perf-{slot}"))
-        .map_or(0., |s| s.frame.size.height);
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - perf).max(0.)
+    // Less the one-point rule at the part's foot, so a lone part ends exactly at the
+    // rack's bottom edge (its resize edge stays inside the view, nothing scrolls).
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - 1.).max(0.)
 }
 
 pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteraction {
@@ -874,16 +873,17 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
     }
 }
 
-/// What the part plays and listens to, in one line under its header: the
-/// articulation (with its effective trigger), the instrument volume, the dynamics
-/// controller it waits for (one click sets where it starts) and MPE.
-pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
-    let v = cx.view.parts.get(slot)?;
+/// What the part plays and listens to, as chips for the header's second row:
+/// the articulation (with its effective trigger), the instrument volume and
+/// the dynamics controller it waits for (one click sets where it starts).
+fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
+    let Some(v) = cx.view.parts.get(slot) else {
+        return Vec::new();
+    };
     let (inst, report) = (v.instrument.clone(), v.report.clone());
     if inst.is_none() && report.is_none() {
-        return None;
+        return Vec::new();
     }
-    let mut rows = Vec::new();
     let mut items = Vec::new();
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
@@ -895,13 +895,14 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
                 inside::mode(cx, slot, inst),
             );
             let text = format!("{} · {}", a.name, inside::input_label(&input));
-            rows.push(
+            items.push(
                 row![
                     caption("Articulation").fill(secondary()).lines(1).shrink(0),
                     body(text.clone()).lines(1).flex(1).min_w(0)
                 ]
                 .gap(SPACE)
                 .align(Align::Center)
+                .shrink(0)
                 .tip(text)
                 .named("Articulation")
                 .id(format!("perf-art-{slot}")),
@@ -976,59 +977,49 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             .min_w(CONTROL * 9.),
         );
     }
-    if !items.is_empty() {
-        rows.push(
-            row(items)
-                .wrap()
-                .gap(SPACE * 2.)
-                .line_gap(TIGHT)
-                .align(Align::Center),
-        );
-    }
-    Some(
-        col(rows)
-            .gap(TIGHT)
-            .align(Align::Stretch)
+    items
+}
+
+/// The header's second row: the view switch (interface, articulations,
+/// mapping, sound, info) then the performance chips, on one wrapping line.
+/// The row is `None` when the part has neither.
+pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Option<El>) {
+    let (view, tabs) = inside::bar(ui, cx, slot);
+    let items: Vec<El> = tabs.into_iter().chain(performance(ui, cx, slot)).collect();
+    let row2 = (!items.is_empty()).then(|| {
+        row(items)
+            .wrap()
+            .gap(SPACE * 2.)
+            .line_gap(TIGHT)
+            .align(Align::Center)
             .pad((INSET, TIGHT))
             .w(Len::Pct(100.))
             .shrink(0)
-            .id(format!("perf-{slot}")),
-    )
+            .id(format!("header2-{slot}"))
+    });
+    (view, row2)
 }
 
-/// The part's view switch, then the view: its interface, articulations,
-/// mapping, sound or info.
-pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
-    let (view, tabs) = inside::bar(ui, cx, slot);
-    let perf = performance(ui, cx, slot);
-    if view == inside::View::Interface
-        && let Some(face) = interface(ui, cx, slot, tabs.clone())
+/// The picked view's body: its interface, articulations, mapping, sound or info.
+pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
+    let content = if view == inside::View::Interface
+        && let Some(face) = interface(ui, cx, slot, None)
     {
-        return col(perf.into_iter().chain([face]).collect::<Vec<_>>())
-            .gap(0)
-            .align(Align::Stretch)
-            .w(Len::Pct(100.))
-            .shrink(0)
-            .id(format!("stage-{slot}"));
-    }
-    let tabs = tabs.map(|t| {
-        row![t, spacer()]
-            .align(Align::Center)
-            .pad((TIGHT, INSET))
-            .w(Len::Pct(100.))
-            .shrink(0)
-    });
-    let body = inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0));
-    col(perf
-        .into_iter()
-        .chain(tabs)
-        .chain([body])
-        .collect::<Vec<_>>())
-    .gap(0)
-    .align(Align::Stretch)
-    .w(Len::Pct(100.))
-    .shrink(0)
-    .id(format!("stage-{slot}"))
+        face
+    } else {
+        // Every tab reaches the part's bottom edge, like the interface does; taller
+        // content still grows the part and scrolls the rack.
+        let room = room_height(ui, slot);
+        inside::view(ui, cx, slot, view)
+            .map(|el| if room > 0. { el.min_h(room) } else { el })
+            .unwrap_or_else(|| spacer().h(0))
+    };
+    col![content]
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .shrink(0)
+        .id(format!("stage-{slot}"))
 }
 
 #[cfg(test)]

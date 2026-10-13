@@ -1,0 +1,738 @@
+id	file:line	native_thing	verdict
+KO001	crates/sampler-kontakt/src/snapshot.rs:110	compact group snapshot gain	UNPROVEN
+KO002	crates/sampler-kontakt/src/snapshot.rs:111	compact group snapshot pan	UNPROVEN
+KO003	crates/sampler-kontakt/src/snapshot.rs:112	compact group snapshot tune	PROVED
+KO004	crates/sampler-kontakt/src/snapshot.rs:113	compact group key tracking	UNPROVEN
+KO005	crates/sampler-kontakt/src/snapshot.rs:114	compact group reverse	UNPROVEN
+KO006	crates/sampler-kontakt/src/snapshot.rs:103	snapshot group binding identity	UNPROVEN
+KO007	crates/sampler-kontakt/src/snapshot.rs:45	snapshot modulation overlay scope	DEBUNKED
+KO008	crates/sampler-kontakt/src/snapshot.rs:152	snapshot persistent merge	UNPROVEN
+KO009	crates/sampler-kontakt/src/snapshot.rs:149	snapshot script slot identity	UNPROVEN
+KO010	crates/sampler-kontakt/src/snapshot.rs:90	snapshot instrument identity metadata	UNPROVEN
+KO011	crates/sampler-kontakt/src/snapshot.rs:115	snapshot insert-rack state	UNPROVEN
+KO012	crates/sampler-kontakt/src/snapshot.rs:127	snapshot instrument effect/bus replacement	UNPROVEN
+KO013	crates/sampler-kontakt/src/container.rs:31	multi slot order	UNPROVEN
+KO014	crates/sampler-kontakt/src/container.rs:69	multi zone ownership	UNPROVEN
+KO015	crates/sampler-kontakt/src/container.rs:71	muted multi groups sample discovery	UNPROVEN
+KO016	crates/sampler-kontakt/src/container.rs:157	monolith preset identity	UNPROVEN
+KO017	crates/sampler-kontakt/src/resource_container.rs:42	NICNT resource archive location	UNPROVEN
+KO018	crates/sampler-kontakt/src/resource_container.rs:123	resource name identity	UNPROVEN
+KO019	crates/sampler-kontakt/src/resources.rs:138	program resource-container filename reference F0	DEBUNKED
+KO020	crates/sampler-kontakt/src/resources.rs:149	authored resource-container kind	UNPROVEN
+KO021	crates/sampler-kontakt/src/resources.rs:161	authored resource owner loose-file root	UNPROVEN
+KO022	crates/sampler-kontakt/src/resources.rs:175	implicit library root	UNPROVEN
+KO023	crates/sampler-kontakt/src/resources.rs:209	loose resource tree precedence	UNPROVEN
+KO024	crates/sampler-kontakt/src/resources.rs:228	resource provider precedence	UNPROVEN
+KO025	crates/sampler-kontakt/src/resources.rs:286	linked script resource fallback	UNPROVEN
+KO026	crates/sampler-kontakt/src/resources.rs:357	resource failure/absence fallback	UNPROVEN
+KO027	crates/sampler-kontakt/src/resources.rs:363	picture companion mapping	UNPROVEN
+KO028	crates/sampler-kontakt/src/resources.rs:378	linked source encoding	UNPROVEN
+KO029	crates/sampler-kontakt/src/access.rs:14	library ownership for access data	UNPROVEN
+KO030	crates/sampler-kontakt/src/access.rs:31	NICNT access-field meaning	UNPROVEN
+KO031	crates/sampler-kontakt/src/access.rs:89	resource cipher stream mixing	UNPROVEN
+KO032	crates/sampler-kontakt/src/access.rs:102	resource cipher periodic/position mapping	UNPROVEN
+KO033	crates/sampler-kontakt/src/snapshot.rs:109	remaining snapshot group public state	DEBUNKED
+KO034	crates/sampler-kontakt/src/snapshot.rs:109	snapshot group trailing selection/v4 extension	DEBUNKED
+KO035	crates/sampler-kontakt/src/script.rs:37	script absent versus empty source	DEBUNKED
+KO036	crates/sampler-kontakt/src/script.rs:38	script editor/touched/bypass flag meaning	UNPROVEN
+KO037	crates/sampler-kontakt/src/script.rs:41	script password field version mapping	UNPROVEN
+KO038	crates/sampler-kontakt/src/script.rs:51	script persistent-table presence	DEBUNKED
+KO039	crates/sampler-kontakt/src/persistence.rs:130	KSP saved sigil/widget mapping	UNPROVEN
+KO040	crates/sampler-kontakt/src/persistence.rs:152	saved menu value	UNPROVEN
+KO041	crates/sampler-kontakt/src/persistence.rs:144	saved numeric array tail rule	UNPROVEN
+KO042	crates/sampler-kontakt/src/persistence.rs:168	saved string-array separators	UNPROVEN
+KO043	crates/sampler-kontakt/src/persistence.rs:151	saved scalar numeric units	UNPROVEN
+KO044	crates/sampler-kontakt/src/persistence.rs:112	saved value permitted syntax	UNPROVEN
+KO045	crates/sampler-kontakt/src/lib.rs:389	optional native string absence sentinel	DEBUNKED
+KO046	crates/sampler-kontakt/src/lib.rs:377	boolean wire interpretation	UNPROVEN
+KO047	crates/sampler-kontakt/src/lib.rs:523	group and zone list meanings	UNPROVEN
+KO048	crates/sampler-kontakt/src/metadata.rs:25	filename segment kinds	UNPROVEN
+KO049	crates/sampler-kontakt/src/metadata.rs:113	modern filename table v2 namespace meaning	UNPROVEN
+KO050	crates/sampler-kontakt/src/metadata.rs:130	filename table v3 category flattening	UNPROVEN
+KO051	crates/sampler-kontakt/src/metadata.rs:182	SaveSettings filename reference identity	UNPROVEN
+KO052	crates/sampler-kontakt/src/metadata.rs:259	bank gain/tune/tempo units	UNPROVEN
+KO053	crates/sampler-kontakt/src/metadata.rs:305	SlotList native slot mask	UNPROVEN
+KO054	crates/sampler-kontakt/src/metadata.rs:283	ProgramList program identity	UNPROVEN
+KO055	crates/sampler-kontakt/src/nis.rs:108	NIS logical item IDs/FOURCC mapping	UNPROVEN
+KO056	crates/sampler-kontakt/src/nis.rs:122	compressed NIS subtree algorithm	UNPROVEN
+KO057	crates/sampler-kontakt/src/nks.rs:32	NKS 4.2 native format word/profile	UNPROVEN
+KO058	crates/sampler-kontakt/src/nks.rs:96	FastLZ compression token law	PROVED
+KO059	crates/sampler-kontakt/src/coverage.rs:54	DSP module kind classification	PROVED
+KO060	crates/sampler-kontakt/src/coverage.rs:250	instrument rack/bus address classification	UNPROVEN
+KO061	crates/sampler-kontakt/src/coverage.rs:309	internal modulator disabled flag	UNPROVEN
+KO062	crates/sampler-kontakt/src/coverage.rs:325	default velocity route folded as implemented	UNPROVEN
+KO063	crates/sampler-kontakt/src/coverage.rs:63	convolution coverage admission probe	UNPROVEN
+KO064	crates/sampler-kontakt/src/parity.rs:135	read-only report resource ownership	UNPROVEN
+KO065	crates/sampler-kontakt/src/parity.rs:147	NativeUI performance view namespace	UNPROVEN
+KE001	crates/sampler-kontakt/src/effects.rs:15-16	Rack/bus chunk IDs 0x3a/0x45	PROVED
+KE002	crates/sampler-kontakt/src/effects.rs:3-7	Program FX topology	UNPROVEN
+KE003	crates/sampler-kontakt/src/effects.rs:139-169	KSP generic rack addresses	UNPROVEN
+KE004	crates/sampler-kontakt/src/effects.rs:181	KSP bus generic address	UNPROVEN
+KE005	crates/sampler-kontakt/src/effects.rs:98-103	Array occupancy byte	PROVED
+KE006	vendor/ni-file/src/kontakt/objects/bparam_array_fx_8.rs:25-52	BParameterArraySer<BParFX,8> versions	PROVED
+KE007	vendor/ni-file/src/kontakt/objects/bparam_array_fx_8.rs:84-98	Structured v0x11 array branch	UNPROVEN
+KE008	vendor/ni-file/src/kontakt/objects/bparam_array_fx_8.rs:55-69	Malformed/non-BParFX array items	UNPROVEN
+KE009	crates/sampler-kontakt/src/effects.rs:81-119	BParFX wrapper child selection	PROVED
+KE010	vendor/ni-file/src/kontakt/objects/bparfx.rs:54-85	BParFX private record framing	PROVED
+KE011	vendor/ni-file/src/kontakt/objects/bparfx.rs:64-70	FX bypass byte	UNPROVEN
+KE012	vendor/ni-file/src/kontakt/objects/bparfx.rs:72-75	FX output_gain/dry_level stored f32	UNPROVEN
+KE013	crates/sampler-kontakt/src/effects.rs:18-72	Concrete child serialization IDs	PROVED
+KE014	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x10 (BParFXDelay)	PROVED
+KE015	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x11 (BParFXChorus)	PROVED
+KE016	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x12 (BParFXFlanger)	PROVED
+KE017	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x13 (BParFXGainer)	PROVED
+KE018	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x14 (BParFXPhaser)	PROVED
+KE019	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x15 (BParFXReverb)	PROVED
+KE020	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x16 (BParFXIRC)	PROVED
+KE021	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x17 (BParFXSendLevels)	PROVED
+KE022	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x18 (BParFXFilter)	PROVED
+KE023	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x19 (BParFXCompressor)	PROVED
+KE024	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1a (BParFXInverter)	PROVED
+KE025	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1b (BParFXDYX)	PROVED
+KE026	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1c (BParFXLimiter)	PROVED
+KE027	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1d (BParFXShaper v0x80 / collision)	UNPROVEN
+KE028	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1e (BParFXDistortion)	PROVED
+KE029	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x1f (BParFXStereoSpread)	PROVED
+KE030	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x20 (BParFXLoFi)	PROVED
+KE031	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x21 (BParFXSkreamer)	PROVED
+KE032	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x22 (BParFXRotator)	PROVED
+KE033	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x23 (BParFXTwang)	PROVED
+KE034	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x24 (BParFXCabinet)	PROVED
+KE035	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x42 (BParFXTape)	PROVED
+KE036	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x43 (BParFXTrans)	PROVED
+KE037	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x44 (BParFXSSLGEQ)	PROVED
+KE038	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x46 (BParFXSSLGBusComp)	PROVED
+KE039	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x4c (BParFXFBComp)	PROVED
+KE040	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x4d (BParFXJump)	PROVED
+KE041	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x52 (BParFXVan51)	PROVED
+KE042	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x53 (BParFXACBox)	PROVED
+KE043	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x54 (BParFXHotSolo v0x10 / Bass Invader v0x52)	UNPROVEN
+KE044	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x55 (BParFXCat)	PROVED
+KE045	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x56 (BParFXDStortion)	PROVED
+KE046	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x57 (BParFXPlateReverb)	PROVED
+KE047	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x58 (BParFXCryWah)	PROVED
+KE048	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x59 (BParFXGaloisReverb)	PROVED
+KE049	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5a (BParFXReplikaDelay)	PROVED
+KE050	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5b (BParFXPhasis)	PROVED
+KE051	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5c (BParFXFlair)	PROVED
+KE052	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5d (BParFXChoral)	PROVED
+KE053	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5e (BParFXCoreCell)	PROVED
+KE054	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x5f (BParFXHilbertLimiter)	PROVED
+KE055	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x60 (BParFXSupercharger)	PROVED
+KE056	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x61 (BParFXBassPro)	PROVED
+KE057	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x63 (BParFXPsycheDelay)	PROVED
+KE058	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x64 (BParFXRingModulator)	PROVED
+KE059	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x65 (BParFXRaum)	PROVED
+KE060	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x66 (BParFXBite)	PROVED
+KE061	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x68 (BParFXFreak)	PROVED
+KE062	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x69 (BParFXVibratoChorus)	PROVED
+KE063	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x6a (BParFXWowFlutter)	PROVED
+KE064	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x72 (BParFXGater)	PROVED
+KE065	crates/sampler-kontakt/src/effects.rs:19-71	Serialization ID 0x74 (BParFXReverseGrain / TransposeStretch collision)	UNPROVEN
+KE153	crates/sampler-kontakt/src/effects.rs:19-71	Known native IDs absent from MODULES (0x67,0x6b,0x6c,0x6e-0x71,0x73,0x75-0x7a)	UNPROVEN
+KE154	crates/sampler-kontakt/src/effects.rs:189-195	ENGINE_PAR_*_EFFECT_OUTPUT_GAIN and SEND_EFFECT_DRY_LEVEL integer	UNPROVEN
+KE066	crates/sampler-kontakt/src/effects.rs:217-225	Bypass engine writes	UNPROVEN
+KE067	crates/sampler-kontakt/src/effects.rs:226-227,328-338	ENGINE_PAR_SHAPE/DRIVE/DAMPING writes	PROVED
+KE068	crates/sampler-kontakt/src/effects.rs:229-231,340-355	ENGINE_PAR_GAIN1..3 init writes	UNPROVEN
+KE069	crates/sampler-kontakt/src/effects.rs:241-245,366	Gainer stored f32	PROVED
+KE070	crates/sampler-kontakt/src/effects.rs:1273-1288	Gainer dry/wet output	UNPROVEN
+KE071	crates/sampler-kontakt/src/effects.rs:250-255,1290-1301	Stereo Modeller settled matrix and spread/pan	PROVED
+KE072	crates/sampler-kontakt/src/effects.rs:575-580,1290-1301	Stereo Modeller pseudo byte	PROVED
+KE073	crates/sampler-kontakt/src/effects.rs:257-260,559-569	Inverter BB fields	PROVED
+KE074	crates/sampler-kontakt/src/effects.rs:282-286,1063-1089	SendLevels first list	PROVED
+KE075	crates/sampler-kontakt/src/effects.rs:282-286,1063-1089	SendLevels second 17-value list	UNPROVEN
+KE076	crates/sampler-kontakt/src/effects.rs:288-299,441-499	Filter framing/repeated kind and EQ triples	PROVED
+KE077	crates/sampler-kontakt/src/effects.rs:651-702	Legacy filter types 2/3	UNPROVEN
+KE078	crates/sampler-kontakt/src/effects.rs:671-701,621-631	SV filter types 52/54/55/57	UNPROVEN
+KE079	crates/sampler-kontakt/src/effects.rs:704-718	Unknown filter types	UNPROVEN
+KE080	crates/sampler-kontakt/src/effects.rs:711-718,1173-1193	Fallback filter DSP	UNPROVEN
+KE081	crates/sampler-kontakt/src/effects.rs:946-955	Filter kind 13 Phaser	UNPROVEN
+KE082	crates/sampler-kontakt/src/effects.rs:957-981	Filter kind 90 Formant I	UNPROVEN
+KE083	crates/sampler-kontakt/src/effects.rs:1091-1128	Ladder kinds 30..41	UNPROVEN
+KE084	crates/sampler-kontakt/src/effects.rs:1130-1151	Adaptive resonance kinds 100..108	PROVED
+KE085	crates/sampler-kontakt/src/effects.rs:1153-1171	Daft kinds 70/71	UNPROVEN
+KE086	crates/sampler-kontakt/src/effects.rs:1194-1241	Compressor mode dispatch	DEBUNKED
+KE087	crates/sampler-kontakt/src/effects.rs:1194-1201	Enhanced compressor mode 1	PROVED
+KE088	crates/sampler-kontakt/src/effects.rs:1231-1238	Classic compressor ratio	UNPROVEN
+KE089	crates/sampler-kontakt/src/effects.rs:420-426,1194-1241	Compressor mode field	PROVED
+KE090	crates/sampler-kontakt/src/effects.rs:1242-1261	Modern Reverb 0x59	UNPROVEN
+KE091	crates/sampler-kontakt/src/effects.rs:1485-1520	Reverb normalized physical laws	UNPROVEN
+KE092	crates/sampler-kontakt/src/effects.rs:395-418,1387-1483	Convolution public fields and flags	UNPROVEN
+KE093	crates/sampler-kontakt/src/effects.rs:1425-1453	Convolution volume envelope	UNPROVEN
+KE094	crates/sampler-kontakt/src/effects.rs:1454-1457	Convolution predelay	UNPROVEN
+KE095	crates/sampler-kontakt/src/effects.rs:1397-1402	Convolution reverse flag	UNPROVEN
+KE096	crates/sampler-kontakt/src/effects.rs:1458-1471	Convolution Auto Gain	PROVED
+KE097	crates/sampler-kontakt/src/effects.rs:1485-1520	Legacy Reverb 0x15/modern Galois distinction	PROVED
+KE098	crates/sampler-kontakt/src/effects.rs:1523-1554,1681-1690	InsertBus volume/pan/output	UNPROVEN
+KE099	vendor/ni-file/src/kontakt/objects/insert_bus.rs:42-48	InsertBus public framing	PROVED
+KE100	crates/sampler-kontakt/src/effects.rs:1557-1663	Instrument rack routing	PROVED
+KE101	crates/sampler-kontakt/src/effects.rs:1649-1663	Instrument-bus Send Levels	UNPROVEN
+KE102	crates/sampler-kontakt/src/effects.rs:1681-1689	Bus pan	PROVED
+KE103	crates/sampler-kontakt/src/effects.rs:1675-1677,1842-1846	Bus volume	UNPROVEN
+KE104	crates/sampler-kontakt/src/effects.rs:810-885	Output gain/dry handling	UNPROVEN
+KE105	crates/sampler-kontakt/src/effects.rs:1326-1365	Dynamic Mix ownership	UNPROVEN
+KE106	crates/sampler-kontakt/src/effects.rs:1856-1900	EQ one-band vs multi-band	PROVED
+KE107	crates/sampler-kontakt/src/effects.rs:1870	EQ gain clamp	UNPROVEN
+KE108	crates/sampler-kontakt/src/effects.rs:1488-1500,1099-1105	Normalized parameter clamping	UNPROVEN
+KE109	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:31-172	Hand semantic field names	UNPROVEN
+KE110	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:186-240	EffectParameters native-schema decoder	PROVED
+KE111	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:216-222	0x1d names only Shaper v0x80, generic names SurroundPanner v0x70	PROVED
+KE112	vendor/ni-file/src/kontakt/objects/bparfx.rs:104-175	Ladder unknown flag	UNPROVEN
+KE113	vendor/ni-file/src/kontakt/objects/bparfx_delay.rs:19-32	Legacy Delay params	UNPROVEN
+KE114	vendor/ni-file/src/kontakt/objects/bparfx_send_level.rs:17-35	Send Levels object payload	UNPROVEN
+KE115	vendor/ni-file/src/kontakt/objects/bparfx_rotator.rs:19-43	Rotator params	PROVED
+KE116	vendor/ni-file/src/kontakt/objects/insert_bus.rs:39-48	InsertBus parser versions	PROVED
+KE117	crates/sampler-kontakt/src/effects.rs:1399-1402,1458-1470	Convolution flags array ordering	UNPROVEN
+KE118	crates/sampler-kontakt/src/effects.rs:1507-1518	Modern Reverb display-derived laws	UNPROVEN
+KE119	crates/sampler-kontakt/src/effects.rs:103-117	BParFX private effect_type enum vs child ID	UNPROVEN
+KE120	crates/sampler-kontakt/src/effects.rs:511-515,532-534	Generic byte-to-bool conversion	UNPROVEN
+KE121	crates/sampler-kontakt/src/effects.rs:511-515	Finite-f32 admission	UNPROVEN
+KE122	crates/sampler-kontakt/src/effects.rs:535-540	Count-prefixed curve list	UNPROVEN
+KE123	crates/sampler-kontakt/src/effects.rs:934-944	Legacy Phaser field validation and unit handling	PROVED
+KE124	crates/sampler-kontakt/src/effects.rs:360-365	Legacy Phaser v0x51 trailing fields	UNPROVEN
+KE125	crates/sampler-kontakt/src/effects.rs:983-1013	Lo-Fi four-value DSP mapping	UNPROVEN
+KE126	crates/sampler-kontakt/src/effects.rs:888-910	Distortion mode/drive/damping DSP	UNPROVEN
+KE127	crates/sampler-kontakt/src/effects.rs:912-932	Shaper mode 0 curve	UNPROVEN
+KE128	crates/sampler-kontakt/src/effects.rs:1023-1062	Multiband EQ fallback processors	UNPROVEN
+KE129	crates/sampler-kontakt/src/effects.rs:1058-1062	EQ band ordering/commutation	UNPROVEN
+KE130	crates/sampler-kontakt/src/effects.rs:1080-1088	Send Levels position	UNPROVEN
+KE131	crates/sampler-kontakt/src/effects.rs:1617-1647	Send return bypass	UNPROVEN
+KE132	crates/sampler-kontakt/src/effects.rs:856-862	Static bypass admission	UNPROVEN
+KE133	crates/sampler-kontakt/src/effects.rs:832-862,1326-1365	Dynamic unsupported module handling	UNPROVEN
+KE134	crates/sampler-kontakt/src/effects.rs:832-843,1242-1261	Scope restrictions	UNPROVEN
+KE135	crates/sampler-kontakt/src/effects.rs:1377-1382	Fallback diagnostics	UNPROVEN
+KE136	crates/sampler-kontakt/src/effects.rs:1485-1520	Reverb room enum physical branch	UNPROVEN
+KE137	crates/sampler-kontakt/src/effects.rs:1411-1416	Convolution early/late filter fallback	UNPROVEN
+KE138	crates/sampler-kontakt/src/effects.rs:1418-1423	Convolution decimation	UNPROVEN
+KE139	crates/sampler-kontakt/src/effects.rs:1404-1409	Convolution early/late length	UNPROVEN
+KE140	crates/sampler-kontakt/src/effects.rs:1428-1445	Convolution envelope interpolation	UNPROVEN
+KE141	crates/sampler-kontakt/src/effects.rs:1454-1457	Convolution predelay splice	UNPROVEN
+KE142	crates/sampler-kontakt/src/effects.rs:1473-1482	Convolution recipes/cache	UNPROVEN
+KE143	crates/sampler-kontakt/src/effects.rs:1523-1554	BusPlan output field	UNPROVEN
+KE144	crates/sampler-kontakt/src/effects.rs:1653-1697	Dynamic bus volume	UNPROVEN
+KE145	crates/sampler-kontakt/src/effects.rs:1681-1694	Nonfinite bus pan fallback	UNPROVEN
+KE146	crates/sampler-kontakt/src/effects.rs:1706-1853	Bus DAG order/continuation	UNPROVEN
+KE147	crates/sampler-kontakt/src/effects.rs:1856-1871	Native EQ one-band conversion	PROVED
+KE148	crates/sampler-kontakt/src/effects.rs:1882-1899	Generic EQ multiband conversion	UNPROVEN
+KE149	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:64-73	Phaser semantic hand names	UNPROVEN
+KE150	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:75-81	Compressor semantic names/units	UNPROVEN
+KE151	vendor/ni-file/src/kontakt/objects/effect_parameters.rs:159-169	Galois semantic names/order	UNPROVEN
+KE152	vendor/ni-file/src/kontakt/objects/bparfx.rs:119-153	Ladder version framing	PROVED
+KL001	crates/sampler-kontakt/src/library.rs:21	Program chunk ID 0x28	PROVED
+KL002	crates/sampler-kontakt/src/library.rs:22	Group list ID 0x33	PROVED
+KL003	crates/sampler-kontakt/src/library.rs:23	Zone list ID 0x34	PROVED
+KL004	crates/sampler-kontakt/src/library.rs:24	Loop array ID 0x39	UNPROVEN
+KL005	crates/sampler-kontakt/src/library.rs:25	Internal modulation ID 0x3b	PROVED
+KL006	crates/sampler-kontakt/src/library.rs:26	External modulation ID 0x3c	PROVED
+KL007	crates/sampler-kontakt/src/library.rs:27	Modern file table ID 0x4b	PROVED
+KL008	crates/sampler-kontakt/src/library.rs:28	Legacy file table ID 0x3d	PROVED
+KL009	crates/sampler-kontakt/src/library.rs:29	Script child ID 6	PROVED
+KL010	crates/sampler-kontakt/src/library.rs:108	Special-file resource type	UNPROVEN
+KL011	crates/sampler-kontakt/src/library.rs:274	Program default key switch	UNPROVEN
+KL012	crates/sampler-kontakt/src/library.rs:286	Host volume controller	UNPROVEN
+KL013	crates/sampler-kontakt/src/library.rs:288	Program volume units	UNPROVEN
+KL014	crates/sampler-kontakt/src/library.rs:321	Automation mode 1	UNPROVEN
+KL015	crates/sampler-kontakt/src/library.rs:325	Automation mode 2	UNPROVEN
+KL016	crates/sampler-kontakt/src/library.rs:329	Automation endpoint domain	UNPROVEN
+KL017	crates/sampler-kontakt/src/library.rs:419	Script slot narrowing	UNPROVEN
+KL018	crates/sampler-kontakt/src/library.rs:736	EQ band number parser	UNPROVEN
+KL019	crates/sampler-kontakt/src/library.rs:750	Stored source mode 2	PROVED
+KL020	crates/sampler-kontakt/src/library.rs:751	Stored source mode 5	PROVED
+KL021	crates/sampler-kontakt/src/library.rs:752	Stored source mode 8	PROVED
+KL022	crates/sampler-kontakt/src/library.rs:761	Stored source mode 3	UNPROVEN
+KL023	crates/sampler-kontakt/src/library.rs:763	Source display names	PROVED
+KL024	crates/sampler-kontakt/src/library.rs:814	Time-machine speed field	PROVED
+KL025	crates/sampler-kontakt/src/library.rs:818	TM2/Pro speed floor	PROVED
+KL026	crates/sampler-kontakt/src/library.rs:821	Time speed invalid fallback	UNPROVEN
+KL027	crates/sampler-kontakt/src/library.rs:828	TM1 tails	PROVED
+KL028	crates/sampler-kontakt/src/library.rs:840	TM2 tails	PROVED
+KL029	crates/sampler-kontakt/src/library.rs:853	TM Pro version branch	PROVED
+KL030	crates/sampler-kontakt/src/library.rs:1928	Time-machine script writes	UNPROVEN
+KL031	crates/sampler-kontakt/src/library.rs:875	Voice kill enum	UNPROVEN
+KL032	crates/sampler-kontakt/src/library.rs:883	Voice max clamp	UNPROVEN
+KL033	crates/sampler-kontakt/src/library.rs:884	Voice exclusion domain	UNPROVEN
+KL034	crates/sampler-kontakt/src/library.rs:887	Voice fade clamp	UNPROVEN
+KL035	crates/sampler-kontakt/src/library.rs:1344	Absent voice-group override	PROVED
+KL036	crates/sampler-kontakt/src/library.rs:897	AHDSR curves	PROVED
+KL037	crates/sampler-kontakt/src/library.rs:898	AHDSR attack curve clamp	UNPROVEN
+KL038	crates/sampler-kontakt/src/library.rs:940	Send tap gain/ramp	UNPROVEN
+KL039	crates/sampler-kontakt/src/library.rs:1097	Single-band EQ frequency	UNPROVEN
+KL040	crates/sampler-kontakt/src/library.rs:1098	Multi-band EQ frequency	UNPROVEN
+KL041	crates/sampler-kontakt/src/library.rs:1101	EQ bandwidth	UNPROVEN
+KL042	crates/sampler-kontakt/src/library.rs:1165	Primary AHDSR identity	UNPROVEN
+KL043	crates/sampler-kontakt/src/library.rs:1530	Internal primary-volume admission	UNPROVEN
+KL044	crates/sampler-kontakt/src/library.rs:1554	AHDSR times/sustain clamp	UNPROVEN
+KL045	crates/sampler-kontakt/src/library.rs:1566	AHDSR one-shot	UNPROVEN
+KL046	crates/sampler-kontakt/src/library.rs:1599	Flex curve BOW_K	UNPROVEN
+KL047	crates/sampler-kontakt/src/library.rs:1605	Flex sustain index	UNPROVEN
+KL048	crates/sampler-kontakt/src/library.rs:1710	Synthetic Flex release	UNPROVEN
+KL049	crates/sampler-kontakt/src/library.rs:1748	Velocity shortcut	UNPROVEN
+KL050	crates/sampler-kontakt/src/library.rs:1759	External source enums	UNPROVEN
+KL051	crates/sampler-kontakt/src/library.rs:1769	Release counter units	UNPROVEN
+KL052	crates/sampler-kontakt/src/library.rs:1775	Script source ID range	UNPROVEN
+KL053	crates/sampler-kontakt/src/library.rs:1794	Pitch bend shaper polarity	UNPROVEN
+KL054	crates/sampler-kontakt/src/library.rs:2077	Internal route units	UNPROVEN
+KL055	crates/sampler-kontakt/src/library.rs:2102	Live ENGINE_PAR normalization	UNPROVEN
+KL056	crates/sampler-kontakt/src/library.rs:2153	Instrument bus volume law	UNPROVEN
+KL057	crates/sampler-kontakt/src/library.rs:2175	Loop/module depth codec	UNPROVEN
+KL058	crates/sampler-kontakt/src/library.rs:2239	External intensity codec	UNPROVEN
+KL059	crates/sampler-kontakt/src/library.rs:2302	Intensity target alias	PROVED
+KL060	crates/sampler-kontakt/src/library.rs:2357	LFO frequency route	UNPROVEN
+KL061	crates/sampler-kontakt/src/library.rs:2387	Effect target names	PROVED
+KL062	crates/sampler-kontakt/src/library.rs:2442	Generic filter fallback	UNPROVEN
+KL063	crates/sampler-kontakt/src/library.rs:2489	Script processor aliases	UNPROVEN
+KL064	crates/sampler-kontakt/src/library.rs:2540	Volume target	UNPROVEN
+KL065	crates/sampler-kontakt/src/library.rs:2542	Pitch target	UNPROVEN
+KL066	crates/sampler-kontakt/src/library.rs:2545	playPos target	UNPROVEN
+KL067	crates/sampler-kontakt/src/library.rs:2546	Constant loop route gate	UNPROVEN
+KL068	crates/sampler-kontakt/src/library.rs:2565	Group pan target	UNPROVEN
+KL069	crates/sampler-kontakt/src/library.rs:2573	Invert with shaper	UNPROVEN
+KL070	crates/sampler-kontakt/src/library.rs:2588	Zero-intensity unit defaults	UNPROVEN
+KL071	crates/sampler-kontakt/src/library.rs:2628	LFO waveform IDs	PROVED
+KL072	crates/sampler-kontakt/src/library.rs:2674	Held-noise phase gate	UNPROVEN
+KL073	crates/sampler-kontakt/src/library.rs:2631	Zero Multi weights	PROVED
+KL074	crates/sampler-kontakt/src/library.rs:2637	Digital single-sine Multi	PROVED
+KL075	crates/sampler-kontakt/src/library.rs:2659	Legacy single-sine Multi	PROVED
+KL076	crates/sampler-kontakt/src/library.rs:2685	LFO note/rate conversion	UNPROVEN
+KL077	crates/sampler-kontakt/src/library.rs:2710	LFO fade/phase	UNPROVEN
+KL078	crates/sampler-kontakt/src/library.rs:2730	Asset encoding by suffix	UNPROVEN
+KL079	crates/sampler-kontakt/src/library.rs:2752	Empty sample range	UNPROVEN
+KL080	crates/sampler-kontakt/src/library.rs:2766	Loop validity/modes	UNPROVEN
+KL081	crates/sampler-kontakt/src/library.rs:2804	Loop mode 2	UNPROVEN
+KL082	crates/sampler-kontakt/src/library.rs:2813	Zone tune	UNPROVEN
+KL083	crates/sampler-kontakt/src/library.rs:2839	Zone/program gain	UNPROVEN
+KL084	crates/sampler-kontakt/src/library.rs:2847	Crossfade order/clamp	UNPROVEN
+KL085	crates/sampler-kontakt/src/library.rs:2857	Zone/program pan	UNPROVEN
+KL086	crates/sampler-kontakt/src/library.rs:2828	Release trigger	UNPROVEN
+KL087	crates/sampler-kontakt/src/library.rs:2833	Key tracking	UNPROVEN
+KL088	crates/sampler-kontakt/src/library.rs:2865	playPos range	UNPROVEN
+KL089	crates/sampler-kontakt/src/library.rs:2866	Loop crossfade shortcut	UNPROVEN
+KL090	crates/sampler-kontakt/src/library.rs:2985	Sampleless-zone defaults	UNPROVEN
+KL091	crates/sampler-kontakt/src/library.rs:3005	Raw zone validation	UNPROVEN
+KL092	crates/sampler-kontakt/src/library.rs:3030	start_mod negative clamp	UNPROVEN
+KL093	crates/sampler-kontakt/src/library.rs:5074	Flex/shaper bow constant	UNPROVEN
+KL094	crates/sampler-kontakt/src/library.rs:5075	Curve discretization	UNPROVEN
+KL095	crates/sampler-kontakt/src/library.rs:5199	dB gain codec	UNPROVEN
+KL096	crates/sampler-kontakt/src/library.rs:5253	Intensity-scale flags	UNPROVEN
+KL097	crates/sampler-kontakt/src/library.rs:5271	Intensity-scale restrictions	UNPROVEN
+KL098	crates/sampler-kontakt/src/keyswitch.rs:26	Start-on-key mode 1	PROVED
+KL099	crates/sampler-kontakt/src/keyswitch.rs:76	Controller mode 2	PROVED
+KL100	crates/sampler-kontakt/src/keyswitch.rs:90	Round-robin mapping	DEBUNKED
+KL101	crates/sampler-kontakt/src/keyswitch.rs:91	Random mode 4	PROVED
+KL102	crates/sampler-kontakt/src/keyswitch.rs:104	Join IDs 0/1/2	PROVED
+KL103	crates/sampler-kontakt/src/keyswitch.rs:104	Mixed join precedence	UNPROVEN
+KL104	crates/sampler-kontakt/src/keyswitch.rs:64	Occupied mask/four slots	PROVED
+KL105	crates/sampler-kontakt/src/keyswitch.rs:118	Sequencer-only criterion	UNPROVEN
+KL106	crates/sampler-kontakt/src/keyswitch.rs:130	Key-range articulation partition	UNPROVEN
+KL107	crates/sampler-kontakt/src/keyswitch.rs:160	Default articulation	UNPROVEN
+KL108	crates/sampler-kontakt/src/keyswitch.rs:225	CC32 fallback	UNPROVEN
+KL109	crates/sampler-kontakt/src/keyswitch.rs:232	Key name octave	UNPROVEN
+KL110	crates/sampler-kontakt/src/keyswitch.rs:263	Recognizer MIDI bounds	UNPROVEN
+KL111	crates/sampler-kontakt/src/keyswitch.rs:279	Indexed range heuristic	UNPROVEN
+KL112	crates/sampler-kontakt/src/keyswitch.rs:303	Equality/select heuristic	UNPROVEN
+KL113	crates/sampler-kontakt/src/keyswitch.rs:355	Primary pattern selection	UNPROVEN
+KL114	crates/sampler-kontakt/src/keyswitch.rs:379	Single-key rejection	UNPROVEN
+KL115	crates/sampler-kontakt/src/keyswitch.rs:407	Default indexed value	UNPROVEN
+KL116	crates/sampler-kontakt/src/keyswitch.rs:584	Saved-value precedence	UNPROVEN
+KL117	crates/sampler-kontakt/src/keyswitch.rs:648	Declared scalar default	UNPROVEN
+KL118	crates/sampler-kontakt/src/keyswitch_ui.rs:8	Grid placement	UNPROVEN
+KL119	crates/sampler-kontakt/src/keyswitch_ui.rs:45	Choice widget filter	UNPROVEN
+KL120	crates/sampler-kontakt/src/keyswitch_ui.rs:60	Aspect-ratio gate	UNPROVEN
+KL121	crates/sampler-kontakt/src/keyswitch_ui.rs:63	Hidden overlay dedupe	UNPROVEN
+KL122	crates/sampler-kontakt/src/keyswitch_ui.rs:74	Run gap threshold	UNPROVEN
+KL123	crates/sampler-kontakt/src/keyswitch_ui.rs:91	Run minimum	UNPROVEN
+KL124	crates/sampler-kontakt/src/keyswitch_ui.rs:113	Label association	UNPROVEN
+KL125	crates/sampler-kontakt/src/keyswitch_ui.rs:123	Key association	UNPROVEN
+KL126	crates/sampler-kontakt/src/keyswitch_ui.rs:134	Control identity	UNPROVEN
+KL127	crates/sampler-kontakt/src/keyswitch_ui.rs:149	Colored-key fallback	UNPROVEN
+KL128	crates/sampler-kontakt/src/keyswitch_ui.rs:188	UI alternatives	UNPROVEN
+KL129	crates/sampler-kontakt/src/keyswitch_ui.rs:198	Articulation enrichment	UNPROVEN
+KL130	crates/sampler-kontakt/src/coverage.rs:54	Effect module ID 0x18	UNPROVEN
+KL131	crates/sampler-kontakt/src/coverage.rs:324	Default velocity identity	UNPROVEN
+KL132	crates/sampler-kontakt/src/library.rs:1361	Group MIDI-channel filter	UNPROVEN
+KL133	crates/sampler-kontakt/src/library.rs:1373	Source mode 9	UNPROVEN
+KL134	crates/sampler-kontakt/src/library.rs:1380	Wavetable live position/phase/form writes	UNPROVEN
+KL135	crates/sampler-kontakt/src/library.rs:1390	Wavetable form mode writes	UNPROVEN
+KL136	crates/sampler-kontakt/src/library.rs:1422	Unsupported source-engine fallback	UNPROVEN
+KL137	crates/sampler-kontakt/src/library.rs:1333	Voice-group index conversion	UNPROVEN
+KL138	crates/sampler-kontakt/src/library.rs:1880	Group volume domain	UNPROVEN
+KL139	crates/sampler-kontakt/src/library.rs:1881	Group pan domain/law	UNPROVEN
+KL140	crates/sampler-kontakt/src/library.rs:1884	Group tune domain	UNPROVEN
+KL141	crates/sampler-kontakt/src/library.rs:1886	Monophonic release flag	UNPROVEN
+KL142	crates/sampler-kontakt/src/library.rs:1899	Group bus address precedence	UNPROVEN
+KL143	crates/sampler-kontakt/src/library.rs:1973	EQ physical-to-control conversion	UNPROVEN
+KL144	crates/sampler-kontakt/src/library.rs:2011	EQ script control normalization	UNPROVEN
+KL145	crates/sampler-kontakt/src/library.rs:2060	Output channel bus decode	UNPROVEN
+KL146	crates/sampler-kontakt/src/library.rs:2330	Start-phase target admission	UNPROVEN
+KL147	crates/sampler-kontakt/src/library.rs:2540	Volume target unit	UNPROVEN
+KL148	crates/sampler-kontakt/src/library.rs:2817	Zone velocity lower bound	UNPROVEN
+KL149	crates/sampler-kontakt/src/library.rs:2813	Zone tune composition	UNPROVEN
+KL150	crates/sampler-kontakt/src/library.rs:617	Zone end encoding	UNPROVEN
+KL151	crates/sampler-kontakt/src/library.rs:2824	Release trigger collapse	UNPROVEN
+KL152	crates/sampler-kontakt/src/library.rs:2866	Loop-control crossfade selection	UNPROVEN
+KL153	crates/sampler-kontakt/src/keyswitch.rs:68	Always start criterion mode 0	UNPROVEN
+KL154	crates/sampler-kontakt/src/keyswitch.rs:69	Start-key bounds	UNPROVEN
+KL155	crates/sampler-kontakt/src/keyswitch.rs:78	Controller criterion bounds	UNPROVEN
+KL156	crates/sampler-kontakt/src/keyswitch.rs:667	KSP array index bounds	UNPROVEN
+KL157	crates/sampler-kontakt/src/keyswitch_ui.rs:25	UI key table size	UNPROVEN
+KL158	crates/sampler-kontakt/src/library.rs:1544	Internal live-lane admission exclusions	UNPROVEN
+KL159	crates/sampler-kontakt/src/library.rs:1612	DBD/Glide/Follower constructor support	UNPROVEN
+KL160	crates/sampler-kontakt/src/library.rs:1718	Script intensity overwrite/exemption	UNPROVEN
+KL161	crates/sampler-kontakt/src/library.rs:2381	Live effect target matrix	UNPROVEN
+KL162	crates/sampler-kontakt/src/library.rs:2489	Script formantSharp alias	UNPROVEN
+KL163	crates/sampler-kontakt/src/library.rs:2631	Multi-LFO all-zero weight admission	UNPROVEN
+KL164	crates/sampler-kontakt/src/library.rs:2670	LFO rectangle width gate	UNPROVEN
+KL165	crates/sampler-kontakt/src/library.rs:2674	LFO held waveform phase gate	UNPROVEN
+KL166	crates/sampler-kontakt/src/library.rs:2691	LFO rate/fade/phase validation	UNPROVEN
+KL167	crates/sampler-kontakt/src/keyswitch.rs:167	Native-versus-script switch ownership	UNPROVEN
+KL168	crates/sampler-kontakt/src/keyswitch_ui.rs:25	Cross-script key metadata merge	UNPROVEN
+KL169	crates/sampler-kontakt/src/keyswitch_ui.rs:143	UI run key requirement	UNPROVEN
+KL170	crates/sampler-kontakt/src/library.rs:274	Default-key conversion sentinel	UNPROVEN
+KL171	crates/sampler-kontakt/src/library.rs:1379	Wavetable form control target identity	UNPROVEN
+KL172	crates/sampler-kontakt/src/coverage.rs:323	Coverage velocity fold predicate	UNPROVEN
+KL173	crates/sampler-kontakt/src/coverage.rs:54	Module 0x18 subtype classification	UNPROVEN
+KL174	crates/sampler-kontakt/src/coverage.rs:173	Unassigned/empty modulation outcome	UNPROVEN
+KL175	crates/sampler-kontakt/src/library.rs:1380	Wavetable write codec	UNPROVEN
+KL176	crates/sampler-kontakt/src/library.rs:969	Voice override table and exclusion handling	UNPROVEN
+KL177	crates/sampler-kontakt/src/library.rs:1869	Group validation policy	UNPROVEN
+KL178	crates/sampler-kontakt/src/library.rs:2691	LFO invalid-value policy	UNPROVEN
+KL180	crates/sampler-kontakt/src/library.rs:761	Stored source mode 3 identity	PROVED
+KL181	crates/sampler-kontakt/src/library.rs:1411	Stored DFD runtime substitution	UNPROVEN
+KL182	crates/sampler-kontakt/src/library.rs:3016	Loop chunk absence fallback	UNPROVEN
+KM001	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target volume (native ID 2) has no module slot	PROVED
+KM002	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target pan (native ID 3) has no module slot	PROVED
+KM003	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target pitch (native ID 6) has no module slot	PROVED
+KM004	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target loopStart (native ID 7) has no module slot	PROVED
+KM005	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target loopLength (native ID 8) has no module slot	PROVED
+KM006	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target warpFactor (native ID 11) has no module slot	PROVED
+KM007	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target warpFactor2 (native ID 12) has no module slot	PROVED
+KM008	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target wavetablePosition (native ID 13) has no module slot	PROVED
+KM009	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target wavetableInharmonic (native ID 14) has no module slot	PROVED
+KM010	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target wavetableModAmount (native ID 15) has no module slot	PROVED
+KM011	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target wavetableModFrequency (native ID 16) has no module slot	PROVED
+KM012	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target formantShift (native ID 17) has no module slot	PROVED
+KM013	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target overlap (native ID 18) has no module slot	PROVED
+KM014	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target grainSize (native ID 19) has no module slot	PROVED
+KM015	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target grainSpeed (native ID 21) has no module slot	PROVED
+KM016	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target playDirection (native ID 177) has no module slot	PROVED
+KM017	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target playPos (native ID 176) has no module slot	PROVED
+KM018	vendor/ni-file/src/kontakt/objects/modulation.rs:14-36	canonical target legacyAddIntensity (native ID 244) has no module slot	PROVED
+KM019	vendor/ni-file/src/kontakt/objects/modulation.rs:14-17	GROUP_TARGETS comment says “six wavetable names”	DEBUNKED
+KM020	vendor/ni-file/src/kontakt/objects/modulation.rs:48-66	target intensity range and signed depth flag	UNPROVEN
+KM021	vendor/ni-file/src/kontakt/objects/modulation.rs:71-74	signed_intensity()	UNPROVEN
+KM022	vendor/ni-file/src/kontakt/objects/modulation.rs:181-199	lag_ms wire type and sign	DEBUNKED
+KM023	vendor/ni-file/src/kontakt/objects/modulation.rs:186-199	lag unit/runtime smoothing	UNPROVEN
+KM024	vendor/ni-file/src/kontakt/objects/modulation.rs:89-125	table shaper evaluate	UNPROVEN
+KM025	vendor/ni-file/src/kontakt/objects/modulation.rs:100-105	shaper input clamp to 0..=1	UNPROVEN
+KM026	vendor/ni-file/src/kontakt/objects/modulation.rs:107-125	breakpoint shaper segment interpolation	UNPROVEN
+KM027	vendor/ni-file/src/kontakt/objects/modulation.rs:115-124	breakpoint ordering and duplicate-x fallback	UNPROVEN
+KM028	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 1 -> PitchBend	UNPROVEN
+KM029	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 2 -> PolyAftertouch	UNPROVEN
+KM030	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 3 -> MonoAftertouch	UNPROVEN
+KM031	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 4 -> MidiCc	UNPROVEN
+KM032	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 5 -> KeyPosition	UNPROVEN
+KM033	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 6 -> Velocity	UNPROVEN
+KM034	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 7 -> ReleaseVelocity	UNPROVEN
+KM035	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 8 -> ReleaseTriggerCounter	UNPROVEN
+KM036	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 9 -> Constant	UNPROVEN
+KM037	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 10 -> RandomUnipolar	UNPROVEN
+KM038	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 11 -> RandomBipolar	UNPROVEN
+KM039	vendor/ni-file/src/kontakt/objects/modulation.rs:264-286	external source code 12 -> Script	UNPROVEN
+KM040	vendor/ni-file/src/kontakt/objects/modulation.rs:216-225	external category code 1/2 and payload lengths	UNPROVEN
+KM041	vendor/ni-file/src/kontakt/objects/modulation.rs:244-246	external footer_len(version)	PROVED
+KM042	vendor/ni-file/src/kontakt/objects/modulation.rs:435-447	legacy u32::MAX assignment/target name sentinel	UNPROVEN
+KM043	vendor/ni-file/src/kontakt/objects/modulation.rs:447	UTF-8 lossy name decoding	UNPROVEN
+KM044	vendor/ni-file/src/kontakt/objects/modulation.rs:37	MAX_TARGETS=16	UNPROVEN
+KM045	vendor/ni-file/src/kontakt/objects/modulation.rs:38	MAX_NAME_BYTES=4096	UNPROVEN
+KM046	vendor/ni-file/src/kontakt/objects/modulation.rs:376-433	parameter-array presence byte and physical slot iteration	PROVED
+KM047	vendor/ni-file/src/kontakt/objects/modulation.rs:419-431	v0x11 ambiguous framing fallback	UNPROVEN
+KM048	vendor/ni-file/src/kontakt/objects/internal_mod.rs:14-18	internal assignment SerType 0x0D and versions 0x80/0x81	PROVED
+KM049	vendor/ni-file/src/kontakt/objects/internal_mod.rs:34-43	internal unknown_flags semantic names	UNPROVEN
+KM050	vendor/ni-file/src/kontakt/objects/internal_mod.rs:80-88	category values 1/2	UNPROVEN
+KM051	vendor/ni-file/src/kontakt/objects/internal_mod.rs:99-120	wrapper missing fallback to first child	UNPROVEN
+KM052	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x3F -> AHDSR	PROVED
+KM053	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x40 -> Flex/FM7	PROVED
+KM054	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x41 -> DBD	PROVED
+KM055	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x0B -> Glide	PROVED
+KM056	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x0A -> Follower	PROVED
+KM057	vendor/ni-file/src/kontakt/objects/internal_mod.rs:110-120	internal child ID 0x08 -> LFO	PROVED
+KM058	crates/sampler-kontakt/src/modulation_objects.rs:64-69	decoded DBD/Glide/Follower sources	UNPROVEN
+KM059	crates/sampler-kontakt/src/source_parameters.rs:123	AHDSR field attack_curve	PROVED
+KM060	crates/sampler-kontakt/src/source_parameters.rs:124	AHDSR field attack_ms	PROVED
+KM061	crates/sampler-kontakt/src/source_parameters.rs:125	AHDSR field decay_ms	PROVED
+KM062	crates/sampler-kontakt/src/source_parameters.rs:126	AHDSR field hold_ms	PROVED
+KM063	crates/sampler-kontakt/src/source_parameters.rs:127	AHDSR field release_ms	PROVED
+KM064	crates/sampler-kontakt/src/source_parameters.rs:128	AHDSR field sustain	PROVED
+KM065	crates/sampler-kontakt/src/source_parameters.rs:128	AHDSR sustain_linear	UNPROVEN
+KM066	crates/sampler-kontakt/src/source_parameters.rs:129	AHDSR unknown_flag / ahd_only	UNPROVEN
+KM067	crates/sampler-kontakt/src/source_parameters.rs:26-32,135-140	AHDSR timing record 1 (three floats + flag)	PROVED
+KM068	crates/sampler-kontakt/src/source_parameters.rs:26-32,135-140	AHDSR timing record 2 (three floats + flag)	PROVED
+KM069	crates/sampler-kontakt/src/source_parameters.rs:26-32,135-140	AHDSR timing record 3 (three floats + flag)	PROVED
+KM070	crates/sampler-kontakt/src/source_parameters.rs:26-32,135-140	AHDSR timing record 4 (three floats + flag)	PROVED
+KM071	crates/sampler-kontakt/src/source_parameters.rs:143-169	Flex point order and point fields	PROVED
+KM072	vendor/ni-file/src/kontakt/objects/envelope.rs:202-225	Flex sustain and unknown_index semantics	UNPROVEN
+KM073	vendor/ni-file/src/kontakt/objects/envelope.rs:209-211	Flex max 32 points	UNPROVEN
+KM074	vendor/ni-file/src/kontakt/objects/envelope.rs:247-253	Flex level/curve/time validation	DEBUNKED
+KM075	crates/sampler-kontakt/src/source_parameters.rs:153-156	Flex point curve	UNPROVEN
+KM076	crates/sampler-kontakt/src/source_parameters.rs:153	Flex delta_ms	UNPROVEN
+KM077	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 0	PROVED
+KM078	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 1	PROVED
+KM079	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 2	PROVED
+KM080	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 3	PROVED
+KM081	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 4	UNPROVEN
+KM082	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 5	PROVED
+KM083	vendor/ni-file/src/kontakt/objects/lfo.rs:18-23	LFO waveform enum 6	PROVED
+KM084	vendor/ni-file/src/kontakt/objects/lfo.rs:63-91	LFO v0x70 fallback	UNPROVEN
+KM085	vendor/ni-file/src/kontakt/objects/lfo.rs:18-29	LFO structured flag	PROVED
+KM086	vendor/ni-file/src/kontakt/objects/lfo.rs:87-91	LFO multi payload condition	PROVED
+KM087	crates/sampler-kontakt/src/source_parameters.rs:174-186	LFO initial values and sync records	UNPROVEN
+KM088	vendor/ni-file/src/kontakt/objects/lfo.rs:29-44	LFO trailing weight order	UNPROVEN
+KM089	vendor/ni-file/src/kontakt/objects/lfo.rs:52-61	LFO packed flags are booleans	UNPROVEN
+KM090	crates/sampler-kontakt/src/automation.rs:25-29	Program automation outer-version legacy split	UNPROVEN
+KM091	crates/sampler-kontakt/src/automation.rs:35-57	two pre-record arrays and mode values 1/2	UNPROVEN
+KM092	crates/sampler-kontakt/src/automation.rs:59-64	legacy inner.min(outer) count fallback	UNPROVEN
+KM093	crates/sampler-kontakt/src/automation.rs:71-110	automation v0x70/v0x71 field layout	PROVED
+KM094	crates/sampler-kontakt/src/automation.rs:73-76	automation mode numeric meaning 0,1,2	UNPROVEN
+KM095	crates/sampler-kontakt/src/automation.rs:94-95	automation low/high finite requirement	UNPROVEN
+KM096	crates/sampler-kontakt/src/mapping.rs:49-63	Group gain/pan/tune and flags	UNPROVEN
+KM097	crates/sampler-kontakt/src/mapping.rs:72-88	Zone end/start and metadata	UNPROVEN
+KM098	crates/sampler-kontakt/src/mapping.rs:141-145	Loop array cardinality and sparse slots	PROVED
+KM099	crates/sampler-kontakt/src/mapping.rs:131-137	Loop mode/count/tune/crossfade units	UNPROVEN
+KM100	crates/sampler-kontakt/src/objects.rs:47-73	Group source identity fallback	UNPROVEN
+KM101	crates/sampler-kontakt/src/objects.rs:100-114	start criteria mode/controller/CC mapping	UNPROVEN
+KM102	crates/sampler-kontakt/src/objects.rs:153-158	zone loops zip dense items with sparse slots	UNPROVEN
+KM103	crates/sampler-kontakt/src/source_parameters.rs:95-119	internal source wrapper selection	UNPROVEN
+KM104	crates/sampler-kontakt/src/source_parameters.rs:121-141	AHDSR version branch	PROVED
+KM105	crates/sampler-kontakt/src/source_parameters.rs:170-194	LFO sync flag/value labels	UNPROVEN
+KM106	crates/sampler-kontakt/src/source_parameters.rs:196-197	unsupported DBD/Glide/Follower/Other raw fallback	UNPROVEN
+KM107	crates/sampler-kontakt/src/source_parameters.rs:209-223	ModSource code/payload export	UNPROVEN
+KM108	crates/sampler-kontakt/src/modulation_objects.rs:25-79	internal descriptor to IR	UNPROVEN
+KM109	crates/sampler-kontakt/src/modulation_objects.rs:82-107	external descriptor to IR	UNPROVEN
+KM110	crates/sampler-kontakt/src/modulation_objects.rs:110-135	target intensity/lag/invert/shaper copied as runtime route fields	UNPROVEN
+KM111	crates/sampler-kontakt/src/modulation_descriptor_tests.rs:25-55	synthetic target names/flags/shaper table	UNPROVEN
+KM112	crates/sampler-kontakt/src/modulation_descriptor_tests.rs:74-92	synthetic waveform 6 and LFO fields	UNPROVEN
+KM113	crates/sampler-kontakt/src/modulation_descriptor_tests.rs:93-108	synthetic Flex sustain/curve values	UNPROVEN
+KM114	crates/sampler-kontakt/src/modulation_descriptor_tests.rs:231-247	synthetic external code 11/4 mapping	UNPROVEN
+KM115	vendor/ni-file/src/kontakt/objects/src_mode.rs:39-45	BParSrcMode versions and mode <=9	PROVED
+KM116	vendor/ni-file/src/kontakt/objects/src_mode.rs:53-64	common timing field growth at v0x102	PROVED
+KM117	vendor/ni-file/src/kontakt/objects/src_mode.rs:65-128	mode-specific field names/types and version gates	UNPROVEN
+KM118	vendor/ni-file/src/kontakt/objects/src_mode.rs:94-124	mode 9 wavetable field mapping	UNPROVEN
+KM119	crates/sampler-kontakt/src/source_parameters.rs:257-320	FX rack numeric fields and EffectParameters names	UNPROVEN
+KM120	crates/sampler-kontakt/src/source_parameters.rs:243-270	physical FX slot identity	PROVED
+KM121	crates/sampler-kontakt/src/source_parameters.rs:325-360	program bus count/order fallback	UNPROVEN
+KM122	crates/sampler-kontakt/src/objects.rs:5-33	Program direct field mapping	PROVED
+KM123	crates/sampler-kontakt/src/objects.rs:36-45	VoiceLimit direct mapping	UNPROVEN
+KM124	crates/sampler-kontakt/src/coverage.rs:54,139	FX module ID 0x18 -> DspSlotKind::Filter	PROVED
+KM125	crates/sampler-kontakt/src/coverage.rs:323-325	default-velocity identity fold	UNPROVEN
+KM126	crates/sampler-kontakt/src/library.rs:1746-1757	default-velocity identity fold (mirrored translator)	UNPROVEN
+KM127	crates/sampler-kontakt/src/library.rs:2277-2280	volume modulation formula	UNPROVEN
+KM128	crates/sampler-kontakt/src/library.rs:2279	pitch modulation scale	UNPROVEN
+KM129	crates/sampler-kontakt/src/library.rs:2279,2545	playPos modulation range	UNPROVEN
+KM130	crates/sampler-kontakt/src/library.rs:2546-2563	loopStart/loopLength constant routes	UNPROVEN
+KM131	crates/sampler-kontakt/src/library.rs:2670-2683	LFO waveform support table	UNPROVEN
+KM132	crates/sampler-kontakt/src/library.rs:2685-2690	LFO note value -1/free vs beat sync	UNPROVEN
+KM133	crates/sampler-kontakt/src/library.rs:2710-2712	LFO fade and phase normalization	UNPROVEN
+KM134	crates/sampler-kontakt/src/library.rs:2812-2813	zone/program tune -> semitones	UNPROVEN
+KM135	crates/sampler-kontakt/src/library.rs:2820-2822	zone velocity low/high clamp	UNPROVEN
+KM136	crates/sampler-kontakt/src/library.rs:2848-2853	zone fade bounds	UNPROVEN
+KM137	crates/sampler-kontakt/src/library.rs:2857-2858	group+zone pan clamp and Balance law	UNPROVEN
+KM138	crates/sampler-kontakt/src/library.rs:2839	zone/program gain multiplication	UNPROVEN
+KM139	crates/sampler-kontakt/src/effects.rs:651-702	filter subtype IDs -> IR filter kind/law	UNPROVEN
+KM140	crates/sampler-kontakt/src/coverage.rs:56-58	coverage filter module display name	PROVED
+KV001	vendor/ni-file/src/kontakt/objects/program.rs:52	BProgram common public prefix primitive fields	PROVED
+KV002	vendor/ni-file/src/kontakt/objects/program.rs:195	Program public version-gated suffix fields	PROVED
+KV003	vendor/ni-file/src/kontakt/objects/program.rs:25	Program volume/pan/tune f32 fields	UNPROVEN
+KV004	vendor/ni-file/src/kontakt/objects/group.rs:131	BGroup public f32 volume/pan/tune and booleans	UNPROVEN
+KV005	vendor/ni-file/src/kontakt/objects/group.rs:182	Group private tail byte	UNPROVEN
+KV006	vendor/ni-file/src/kontakt/objects/group.rs:210	BParSrcMode identity flag/version/mode	PROVED
+KV007	vendor/ni-file/src/kontakt/objects/group.rs:244	Mode-9 v106 wavetable extension	PROVED
+KV008	vendor/ni-file/src/kontakt/objects/group.rs:88	Mode-9 enum/range validation	UNPROVEN
+KV009	vendor/ni-file/src/kontakt/objects/zone_data.rs:51	BZone versioned sample flags and filename ID	PROVED
+KV010	vendor/ni-file/src/kontakt/objects/zone_data.rs:97	Zone sample/key/gain/pan/tune primitive fields	UNPROVEN
+KV011	vendor/ni-file/src/kontakt/objects/filename_table.rs:198	FNTableImpl v2/v3 framing and records	PROVED
+KV012	vendor/ni-file/src/kontakt/objects/filename_table.rs:246	v2 sample timestamp u64	UNPROVEN
+KV013	vendor/ni-file/src/kontakt/objects/filename.rs:135	Filename segment kind IDs	UNPROVEN
+KV014	vendor/ni-file/src/kontakt/objects/loop_data.rs:22	BLoop v60 seven primitive fields	UNPROVEN
+KV015	vendor/ni-file/src/kontakt/objects/loop_array.rs:22	BLoop array mask and eight slots	UNPROVEN
+KV016	vendor/ni-file/src/kontakt/objects/start_criteria.rs:62	BParStartCriteria v70 fields and mode ID	UNPROVEN
+KV017	vendor/ni-file/src/kontakt/objects/start_criteria_list.rs:46	Start criteria occupancy mask	UNPROVEN
+KV018	vendor/ni-file/src/kontakt/objects/bpar_script.rs:52	BParScript v50/v60 persistent u32 count	DEBUNKED
+KV019	vendor/ni-file/src/kontakt/objects/bpar_script.rs:39	Script text charset fallback	UNPROVEN
+KV020	vendor/ni-file/src/kontakt/objects/snapshot.rs:64	Snapshot v1/v3 flags/groups/effects/persistence framing	PROVED
+KV021	vendor/ni-file/src/kontakt/objects/snapshot.rs:32	Compact snapshot minimum record size	UNPROVEN
+KV022	vendor/ni-file/src/kontakt/objects/snapshot_group.rs:54	Compact v4 mode9 source tail exception	PROVED
+KV023	vendor/ni-file/src/kontakt/objects/snapshot_group.rs:80	External modulation array capacity fallback	UNPROVEN
+KV024	vendor/ni-file/src/kontakt/objects/voice_groups.rs:29	VoiceGroups v60 mask and 128 overrides	PROVED
+KV025	vendor/ni-file/src/kontakt/objects/voice_limit.rs:12	BVoiceLimit fields/defaults and bool normalization	PROVED
+KV026	vendor/ni-file/src/file_container/mod.rs:114	FileContainer TOC entries/ranges	PROVED
+KV027	vendor/ni-file/src/nkr/archive.rs:221	NKX/NKR directory kinds and kind-2 XOR offset	PROVED
+KV028	vendor/ni-file/src/nks/container.rs:49	NKS compression by header family	PROVED
+KV029	vendor/ni-file/src/nks/detect.rs:15	NKS magic to family enum	PROVED
+KV030	vendor/ni-file/src/detect.rs:52	Top-level magic aliases and NIS fallback	UNPROVEN
+KV031	vendor/ni-file/src/nifile/mod.rs:107	NIFile top-level type dispatch	UNPROVEN
+KV032	vendor/ni-file/src/nis/container/header.rs:31	NIS ItemHeader version/magic/header_flags/deferred bit	PROVED
+KV033	vendor/ni-file/src/nis/container/data/item_type.rs:49	NIS domain and item IDs	PROVED
+KV034	vendor/ni-file/src/nis/schema/nis_object.rs:14	NIS ItemType to NISObject	UNPROVEN
+KV035	vendor/ni-file/src/nis/properties/preset.rs:114	NIS authoring-app numeric IDs	UNPROVEN
+KV036	vendor/ni-file/src/nis/properties/repository_root.rs:27	Packed NIS repository version word	UNPROVEN
+KV037	vendor/ni-file/src/nis/properties/encryption_item.rs:40	EncryptionItem marker and key requirement	UNPROVEN
+KV038	vendor/ni-file/src/nis/properties/subtree_item.rs:77	Subtree compression marker and FastLZ lengths	PROVED
+KV039	vendor/ni-file/src/read_bytes.rs:112	Generic serialized bool conversion	UNPROVEN
+KV040	vendor/ni-file/src/nis/properties/authorization.rs:31	Authorization version/license-info/default comments	UNPROVEN
+KV047	vendor/ni-file/src/kontakt/objects/program_list.rs:25	ProgramList signed program count and ignored slot/index word	UNPROVEN
+KV048	vendor/ni-file/src/kontakt/objects/slot_list.rs:34	SlotList 8-byte occupancy mask over 64 slots	UNPROVEN
+KV049	vendor/ni-file/src/kontakt/objects/zone_list.rs:27	ZoneList count/group ID mapping	UNPROVEN
+KV050	vendor/ni-file/src/kontakt/objects/program_container.rs:32	ProgramContainer volume/pan f32 public fields	UNPROVEN
+KV051	vendor/ni-file/src/kontakt/objects/quick_browse_data.rs:29	QuickBrowseData first i32	UNPROVEN
+KV052	vendor/ni-file/src/kontakt/objects/save_settings.rs:27	SaveSettings bool structured flag	UNPROVEN
+KV053	vendor/ni-file/src/kontakt/objects/meta_info.rs:15	NKS V42 metadata footer magic and fields	UNPROVEN
+KV054	vendor/ni-file/src/kontakt/schemas/preset.rs:36	Kontakt app-signature/patch-type dispatch	UNPROVEN
+KV055	vendor/ni-file/src/kontakt/objects/header.rs:25	NKS header-version thresholds	PROVED
+KV056	vendor/ni-file/src/kontakt/objects/header.rs:400	NKS patch type IDs	UNPROVEN
+KV057	vendor/ni-file/src/kontakt/schemas/kon1.rs:11	Kontakt V1 payload boundary and XML encoding	UNPROVEN
+KV058	vendor/ni-file/src/kontakt/schemas/kon2.rs:12	Kontakt V2 payload boundary and XML encoding	UNPROVEN
+KV059	vendor/ni-file/src/kontakt/schemas/kon4.rs:25	Kontakt V42 chunk placement	UNPROVEN
+KV060	vendor/ni-file/src/kontakt/schemas/kon5.rs:29	Kontakt Kon5 chunk placement and ordering	UNPROVEN
+KV061	vendor/ni-file/src/kontakt/schemas/kon6.rs:29	Kontakt Kon6 chunk placement and ordering	UNPROVEN
+KV062	vendor/ni-file/src/kontakt/schemas/kon7.rs:30	Kontakt Kon7 chunk placement and additional FX array	UNPROVEN
+KV063	vendor/ni-file/src/kontakt/schemas/xml.rs:15	Compressed Kontakt XML decoding	UNPROVEN
+KV064	vendor/ni-file/src/kontakt/schemas/xml.rs:19	Compressed XML expansion limit	UNPROVEN
+KV065	vendor/ni-file/src/kontakt/patch.rs:27	KontaktPatch::program preset-variant exclusions	UNPROVEN
+KV066	vendor/ni-file/src/kontakt/objects/loop_data.rs:28	BLoop alternating-loop flag domain	UNPROVEN
+KV067	vendor/ni-file/src/kontakt/objects/loop_data.rs:12	BLoop field units and behavioral meanings	UNPROVEN
+KV068	vendor/ni-file/src/nis/container/data/item_data_header.rs:3	NIS ItemDataHeader 20-byte field layout	UNPROVEN
+KV069	vendor/ni-file/src/nis/container/data/item_data_header.rs:23	NIS ItemDataHeader version gate	UNPROVEN
+KV070	vendor/ni-file/src/nis/properties/preset_chunk_item.rs:23	PresetChunkItem outer version and auth checksum	UNPROVEN
+KV071	vendor/ni-file/src/nis/properties/preset_chunk_item.rs:36	PresetChunkItem inner BinaryChunk framing	UNPROVEN
+KV072	vendor/ni-file/src/nis/schema/repository.rs:21	Repository schema inference	UNPROVEN
+KV073	vendor/ni-file/src/kontakt/objects/private_raw_object.rs:6	Kontakt PrivateRawObject chunk ID and payload	UNPROVEN
+KV074	vendor/ni-file/src/kontakt/objects/quick_browse_data.rs:9	QuickBrowseData chunk ID and structured public value	UNPROVEN
+KV075	vendor/ni-file/src/kontakt/objects/meta_info.rs:20	BPatchMetaInfoHeader magic and scalar fields	UNPROVEN
+KV076	vendor/ni-file/src/kontakt/objects/meta_info.rs:39	BPatchMetaInfoHeader soundinfo payload	UNPROVEN
+KV077	vendor/ni-file/src/kontakt/schemas/multi.rs:16	Kontakt multi bank/filename-table order	UNPROVEN
+KS001	crates/sampler-kontakt/src/load.rs:13	Output sample rate default	UNPROVEN
+KS002	crates/sampler-kontakt/src/load.rs:15	Key selection default	UNPROVEN
+KS003	crates/sampler-kontakt/src/load.rs:18	Script compilation default	UNPROVEN
+KS004	crates/sampler-kontakt/src/load.rs:24	MPE defaults	UNPROVEN
+KS005	crates/sampler-kontakt/src/load.rs:27	Dynamics power-on values	UNPROVEN
+KS006	crates/sampler-kontakt/src/load.rs:36	Plan output-rate behavior	UNPROVEN
+KS007	crates/sampler-kontakt/src/load.rs:185	Zone key overlap filtering	UNPROVEN
+KS008	crates/sampler-kontakt/src/load.rs:386	Pitch range ratio	UNPROVEN
+KS009	crates/sampler-kontakt/src/load.rs:510	Key tracking pitch conversion	UNPROVEN
+KS010	crates/sampler-kontakt/src/load.rs:518	Fixed-pitch admission	UNPROVEN
+KS011	crates/sampler-kontakt/src/load.rs:520	Scaled-pitch admission	UNPROVEN
+KS012	crates/sampler-kontakt/src/load.rs:552	Sample-end fallback/clamp	UNPROVEN
+KS013	crates/sampler-kontakt/src/load.rs:560	Empty playback range	UNPROVEN
+KS014	crates/sampler-kontakt/src/load.rs:591	Loop before start fallback	UNPROVEN
+KS015	crates/sampler-kontakt/src/load.rs:610	Loop crossfade room/clamp	UNPROVEN
+KS016	crates/sampler-kontakt/src/load.rs:394	Wavetable cycle geometry	UNPROVEN
+KS017	crates/sampler-kontakt/src/load.rs:465	Host-volume saved normalization	UNPROVEN
+KS018	crates/sampler-kontakt/src/load.rs:451	Host-volume shape discretization	UNPROVEN
+KS019	crates/sampler-kontakt/src/load.rs:480	CC11/other controller initialization	UNPROVEN
+KS020	crates/sampler-kontakt/src/samples.rs:61	Library root boundary	UNPROVEN
+KS021	crates/sampler-kontakt/src/samples.rs:130	Path separator normalization	UNPROVEN
+KS022	crates/sampler-kontakt/src/samples.rs:135	Embedded monolith exact/suffix/basename fallback	UNPROVEN
+KS023	crates/sampler-kontakt/src/samples.rs:169	Relative ancestor search	UNPROVEN
+KS024	crates/sampler-kontakt/src/samples.rs:207	Content/ install fallback	UNPROVEN
+KS025	crates/sampler-kontakt/src/samples.rs:222	Moved archive suffix fallback	UNPROVEN
+KS026	crates/sampler-kontakt/src/samples.rs:236	Moved loose-file fallback	UNPROVEN
+KS027	crates/sampler-kontakt/src/samples.rs:395	Archive key-index mapping	UNPROVEN
+KS028	crates/sampler-kontakt/src/samples.rs:521	Header frame-count dispatch	UNPROVEN
+KS029	crates/sampler-kontakt/src/samples.rs:789	NCW frame count	PROVED
+KS030	crates/sampler-kontakt/src/samples.rs:805	WAV frame count	UNPROVEN
+KS031	crates/sampler-kontakt/src/samples.rs:786	AIFF frame count	UNPROVEN
+KS032	crates/sampler-kontakt/src/samples.rs:825	NCW channel projection	UNPROVEN
+KS033	crates/sampler-kontakt/src/samples.rs:839	NCW numeric normalization	UNPROVEN
+KS034	crates/sampler-kontakt/src/samples.rs:838	NCW format source	DEBUNKED
+KS035	crates/sampler-kontakt/src/samples.rs:843	Nonfinite NCW float fallback	UNPROVEN
+KS036	crates/sampler-kontakt/src/samples.rs:876	WAV 8-bit unsigned normalization	UNPROVEN
+KS037	crates/sampler-kontakt/src/samples.rs:886	WAV/AIFF integer normalization	UNPROVEN
+KS038	crates/sampler-kontakt/src/samples.rs:958	WAV extensible subtype mapping	UNPROVEN
+KS039	crates/sampler-kontakt/src/samples.rs:1052	AIFF 80-bit sample-rate conversion	UNPROVEN
+KS040	crates/sampler-kontakt/src/samples.rs:1062	AIFC codec enum mapping	UNPROVEN
+KS041	crates/sampler-kontakt/src/stream.rs:174	Source format dispatch	UNPROVEN
+KS042	crates/sampler-kontakt/src/stream.rs:199	Streamed PCM frame count	UNPROVEN
+KS043	crates/sampler-kontakt/src/stream.rs:220	Streamed NCW rate/frame mapping	PROVED
+KS044	crates/sampler-kontakt/src/stream.rs:273	Streamed NCW conversion law	UNPROVEN
+KS045	crates/sampler-kontakt/src/stream.rs:348	Streaming headroom default	UNPROVEN
+KS046	crates/sampler-kontakt/src/stream.rs:349	Streaming step ceiling	UNPROVEN
+KS047	crates/sampler-kontakt/src/stream.rs:369	Head frame budget law	UNPROVEN
+KS048	crates/sampler-kontakt/src/stream.rs:390	Zone source-step law	UNPROVEN
+KS049	crates/sampler-kontakt/src/stream.rs:411	Wavetable residency span	UNPROVEN
+KS050	crates/sampler-kontakt/src/stream.rs:424	Resampling guard radius	UNPROVEN
+KS051	crates/sampler-kontakt/src/stream.rs:425	Forward/reverse start range sizing	UNPROVEN
+KS052	crates/sampler-kontakt/src/header_cache.rs:80	Persisted header rate/frame trust	UNPROVEN
+KS053	crates/sampler-kontakt/src/header_cache.rs:82	Header bit depth handling	UNPROVEN
+KS054	crates/sampler-kontakt/src/header_cache.rs:88	Cached archive source identity	UNPROVEN
+KS055	crates/sampler-kontakt/src/pcm.rs:14	Seek-ahead threshold	UNPROVEN
+KS056	crates/sampler-kontakt/src/pcm.rs:26	AIFF authoritative frame count	UNPROVEN
+KS057	crates/sampler-kontakt/src/pcm.rs:68	Decoded sample-rate source	UNPROVEN
+KS058	crates/sampler-kontakt/src/pcm.rs:69	Mono/stereo channel admission	UNPROVEN
+KS059	crates/sampler-kontakt/src/pcm.rs:145	Symphonia PCM-to-f32/channel projection	UNPROVEN
+KS060	crates/sampler-kontakt/src/wavetable.rs:6	Wavetable admission flags	UNPROVEN
+KS061	crates/sampler-kontakt/src/wavetable.rs:12	Serialized form ordinal	UNPROVEN
+KS062	crates/sampler-kontakt/src/wavetable.rs:16	Wavetable scalar forwarding	UNPROVEN
+KS063	crates/sampler-kontakt/src/wavetable.rs:23	Wavetable IR validity fallback	UNPROVEN
+KS064	crates/sampler-kontakt/src/cache_zones.rs:85	Cached Pitch enum tags	UNPROVEN
+KS065	crates/sampler-kontakt/src/cache_zones.rs:123	Cached Gain enum tags	UNPROVEN
+KS066	crates/sampler-kontakt/src/cache_zones.rs:130	Cached pan-law enum	UNPROVEN
+KS067	crates/sampler-kontakt/src/cache_zones.rs:135	Cached key-tracking enum	UNPROVEN
+KS068	crates/sampler-kontakt/src/cache_zones.rs:149	Cached velocity-response enum	UNPROVEN
+KS069	crates/sampler-kontakt/src/cache_zones.rs:157	Cached playback defaults	UNPROVEN
+KS070	crates/sampler-kontakt/src/cache_zones.rs:176	Cached physical zone signed fields	UNPROVEN
+KS071	crates/sampler-kontakt/src/cache_zones.rs:205	Cached physical source identifiers	UNPROVEN
+KS072	crates/sampler-kontakt/src/cache.rs:170	Impulse cache restoration	UNPROVEN
+KS073	crates/sampler-kontakt/src/cache.rs:162	Cached source resolution	UNPROVEN
+KS074	crates/sampler-kontakt/src/load.rs:213	Eager residency loader source recipe	UNPROVEN
+KS075	crates/sampler-kontakt/src/load.rs:185	Asset deduplication on zone retention	UNPROVEN
+KS076	crates/sampler-kontakt/src/load.rs:420	PCM filtering after dropped zones	UNPROVEN
+KS077	crates/sampler-kontakt/src/load.rs:489	Initial controller level application	UNPROVEN
+KS078	crates/sampler-kontakt/src/load.rs:676	Script group lookup fallback	UNPROVEN
+KS079	crates/sampler-kontakt/src/samples.rs:789	NCW no-magic fallback	UNPROVEN
+KS080	crates/sampler-kontakt/src/samples.rs:805	WAV frame count ignores declared sample count	UNPROVEN
+KS081	crates/sampler-kontakt/src/samples.rs:797	WAV chunk traversal boundary	UNPROVEN
+KS082	crates/sampler-kontakt/src/samples.rs:999	AIFF metadata traversal bound	UNPROVEN
+KS083	crates/sampler-kontakt/src/samples.rs:1034	AIFF SSND offset mapping	UNPROVEN
+KS084	crates/sampler-kontakt/src/samples.rs:1082	AIFF sample-rate rounding	UNPROVEN
+KS085	crates/sampler-kontakt/src/stream.rs:43	Streaming read buffer	UNPROVEN
+KS086	crates/sampler-kontakt/src/stream.rs:270	NCW page block size	PROVED
+KS087	crates/sampler-kontakt/src/stream.rs:557	Header-cache bypass of codec open	UNPROVEN
+KS088	crates/sampler-kontakt/src/stream.rs:569	Latency probe sample size	UNPROVEN
+KS089	crates/sampler-kontakt/src/stream.rs:617	Latency percentile indexing	UNPROVEN
+KS090	crates/sampler-kontakt/src/stream.rs:623	Head latency percentile choice	UNPROVEN
+KS091	crates/sampler-kontakt/src/stream.rs:631	Pool pages per voice	UNPROVEN
+KS092	crates/sampler-kontakt/src/stream.rs:672	Wavetable mandatory budget rejection	UNPROVEN
+KS093	crates/sampler-kontakt/src/stream.rs:682	Lazy residency fallback	UNPROVEN
+KS094	crates/sampler-kontakt/src/stream.rs:848	Reload admission budget	UNPROVEN
+KS095	crates/sampler-kontakt/src/stream.rs:916	Reader open failure fallback	UNPROVEN
+KS096	crates/sampler-kontakt/src/pcm.rs:55	AIFF declared frame count	UNPROVEN
+KS097	crates/sampler-kontakt/src/pcm.rs:119	Accurate seek state reset	UNPROVEN
+KS098	crates/sampler-kontakt/src/pcm.rs:147	AIFF channel output projection	UNPROVEN
+KS099	crates/sampler-kontakt/src/cache_zones.rs:336	Cached signed conversion	UNPROVEN
+KS100	crates/sampler-kontakt/src/cache_zones.rs:420	Cache trailing-byte rejection	UNPROVEN
+KS101	crates/sampler-kontakt/src/header_cache.rs:12	Header-cache magic/version fallback	UNPROVEN
+KS102	crates/sampler-kontakt/src/cache.rs:139	Product-cache source validity	UNPROVEN
+KS103	crates/sampler-kontakt/src/cache.rs:170	Product-cache impulse decode	UNPROVEN
+KS108	crates/sampler-kontakt/src/stream.rs:43	Stream byte-buffer size	UNPROVEN
+KS109	crates/sampler-kontakt/src/stream.rs:181	FORM dispatch order	UNPROVEN
+KS110	crates/sampler-kontakt/src/stream.rs:188	Stream WAV frame alignment	UNPROVEN
+KS111	crates/sampler-kontakt/src/stream.rs:255	Random-access bounds check	UNPROVEN
+KS112	crates/sampler-kontakt/src/stream.rs:348	StreamPolicy default block horizon	UNPROVEN
+KS113	crates/sampler-kontakt/src/stream.rs:350	StreamPolicy default slack	UNPROVEN
+KS114	crates/sampler-kontakt/src/stream.rs:557	Cached-header source rate/frame construction	UNPROVEN
+KS115	crates/sampler-kontakt/src/stream.rs:609	Full-byte accounting	UNPROVEN
+KS116	crates/sampler-kontakt/src/stream.rs:617	Latency quantile index	UNPROVEN
+KS117	crates/sampler-kontakt/src/stream.rs:631	Pool size fallback	UNPROVEN
+KS118	crates/sampler-kontakt/src/stream.rs:1006	Wavetable asset pinning	UNPROVEN
+KS119	crates/sampler-kontakt/src/cache_zones.rs:76	Optional native index sentinel	UNPROVEN
+KS120	crates/sampler-kontakt/src/cache_zones.rs:158	Optional playback end encoding	UNPROVEN
+KS121	crates/sampler-kontakt/src/cache_zones.rs:372	Cached loop field conversion	UNPROVEN
+KS122	crates/sampler-kontakt/src/header_cache.rs:76	Cached source size sentinel	UNPROVEN
+KS123	crates/sampler-kontakt/src/header_cache.rs:85	Cached key flag mapping	UNPROVEN
+KS124	crates/sampler-kontakt/src/cache.rs:76	Product-cache import signature fallback	UNPROVEN
+KS125	crates/sampler-kontakt/src/cache.rs:155	Resource dependency equivalence	UNPROVEN
+KS127	crates/sampler-kontakt/src/wavetable.rs:9	Wavetable phase/form index origin	UNPROVEN
+KS128	crates/sampler-kontakt/src/wavetable.rs:6	Wavetable modulation fallback	UNPROVEN
+KS104	crates/sampler-kontakt/src/samples.rs:869	WAV/AIFF float conversion	UNPROVEN
+KS105	crates/sampler-kontakt/src/samples.rs:891	WAV/AIFF channel projection	UNPROVEN
+KS107	crates/sampler-kontakt/src/samples.rs:1057	AIFF 80-bit sample-rate conversion	UNPROVEN

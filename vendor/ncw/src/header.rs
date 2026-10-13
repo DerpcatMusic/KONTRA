@@ -7,8 +7,8 @@ type Error = crate::NcwError;
 pub const HEADER_SIZE: usize = 120;
 const FILE_MAGICS: [u64; 2] = [0x01A89ED631010000, 0x01A89ED630010000];
 
-/// The parsed fields of the 120-byte file header. The sample-format word at
-/// offset 32 is not exposed here; template writing preserves the full header.
+/// The parsed fields of the 120-byte file header. Template writing preserves
+/// the full header bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NcwHeader {
     pub channels: u16,
@@ -21,16 +21,29 @@ pub struct NcwHeader {
     /// Absolute offset of the first block.
     pub data_offset: u32,
     pub data_size: u32,
+    /// Signature version bytes 4..6 (0x131 seen, 0x130 accepted).
+    pub version: u16,
+    /// Sample-format word at offset 32. In version 0x131 bit 0 selects the
+    /// 32-bit output type; version 0x130 ignores it (FORMAT.md field probes).
+    pub format_word: u32,
 }
 
 impl NcwHeader {
+    /// The header's 32-bit output type, where the format defines one: only
+    /// 32-bit version 0x131 files. Other files take their type from block flags.
+    pub fn declared_float(&self) -> Option<bool> {
+        (self.bits_per_sample == 32 && self.version == 0x131).then_some(self.format_word & 1 != 0)
+    }
+
     pub fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let buf = reader.read_bytes(HEADER_SIZE)?;
         let mut reader = buf.as_slice();
 
-        if !FILE_MAGICS.contains(&reader.read_u64_be()?) {
+        let magic = reader.read_u64_be()?;
+        if !FILE_MAGICS.contains(&magic) {
             return Err(Error::InvalidFileSignature);
         }
+        let version = u16::from_le_bytes([(magic >> 24) as u8, (magic >> 16) as u8]);
 
         Ok(Self {
             channels: reader.read_u16_le()?,
@@ -40,6 +53,8 @@ impl NcwHeader {
             blocks_offset: reader.read_u32_le()?,
             data_offset: reader.read_u32_le()?,
             data_size: reader.read_u32_le()?,
+            version,
+            format_word: reader.read_u32_le()?,
         })
     }
 

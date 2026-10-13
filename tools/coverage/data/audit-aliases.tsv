@@ -1,0 +1,5 @@
+# regex over native_thing or file:line <TAB> feature id. Joins audit rows the keyword matcher cannot.
+round-robin start	kontakt/start-conditions/3
+Stored source mode 3	kontakt/source-modes/3
+LFO waveform enum	kontakt/lfo-waveforms/2
+^LFO@	uvi/modulators/lfo

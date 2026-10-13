@@ -3,8 +3,8 @@
 //! A header, one compact line, names the part, steps its preset, routes it
 //! and mixes it; its chevron folds the part down to the header alone (the
 //! height springs), its ✕ removes it.
-//! Below an open header sit the part's notices and performance controls,
-//! as much of them as the part's height shows: its foot drags to size it.
+//! Below an open header sit its second row (views and performance chips),
+//! the preset picker and the part's notices, as much as the part's height shows: its foot drags to size it.
 //! With sticky headers on, parts scrolled out of view keep their headers
 //! stacked at the rack's edges. Presets dropped on a header replace that
 //! part; parts dragged by their name reorder; anything dropped on the
@@ -466,11 +466,14 @@ fn part(
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
-            let mut body: Vec<El> = snapshot_row(ui, cx, slot)
+            // Header row 2 (views and performance), then the preset picker.
+            let (view, row2) = instrument::header_row(ui, cx, slot);
+            let mut body: Vec<El> = row2
                 .into_iter()
+                .chain(snapshot_row(ui, cx, slot))
                 .chain(instrument::notices(cx, slot))
                 .collect();
-            let stage = instrument::stage(ui, cx, slot);
+            let stage = instrument::stage(ui, cx, slot, view);
             body.push(behind(cx, slot, stage));
             col(body)
                 .gap(0)
