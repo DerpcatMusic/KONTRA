@@ -335,7 +335,6 @@ pub(super) fn table(
     samples: Vec<f64>,
     range: ir::Range,
     bipolar: bool,
-    steps: Option<u32>,
     colors: ir::Colors,
 ) -> El {
     let bar = colors.bar.map_or(Role::Ink.alpha(0.6), |c| {
@@ -380,13 +379,6 @@ pub(super) fn table(
             rect(0., s.height * (1. - zero), s.width, 1.),
             zero_ink.clone(),
         ));
-        for step in 1..steps.unwrap_or(0).min(128) {
-            let count = steps.unwrap().min(128);
-            draws.push(Draw::fill(
-                rect(0., s.height * step as f64 / count as f64, s.width, 1.),
-                Role::Ink.alpha(0.1),
-            ));
-        }
         draws
     })
     .fill(colors.background.map_or(Role::Ink.alpha(0.06), |c| {

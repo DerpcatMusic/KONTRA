@@ -208,6 +208,7 @@ mod tests {
         *atoms.ingress.lock_unpoisoned() = part.ui_controls.take();
         let mut view = params.shared.view.lock_unpoisoned();
         view.parts[0].generation = generation;
+        view.parts[0].active_source = Some(("effect fixture".into(), 0, String::new()));
         view.parts[0].effects = effects;
         view.parts[0].attempted = Some((
             "effect fixture".into(),

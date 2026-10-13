@@ -2148,7 +2148,9 @@ impl ScriptHost {
             "run",
             lua.create_function(move |lua, (f, args): (Function, MultiValue)| {
                 let thread = lua.create_thread(f)?;
-                resume(&s, thread, args, s.current.get());
+                // Immediate execution does not transfer the calling note's
+                // ownership to this independent coroutine (as with spawn).
+                resume(&s, thread, args, None);
                 Ok(())
             })?,
         )?;
@@ -2564,9 +2566,9 @@ impl ScriptHost {
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
         };
-        let note = event
-            .as_ref()
-            .and_then(|e| field(e, "id"))
+        let note = (name == "onNote")
+            .then(|| event.as_ref().and_then(|e| field(e, "id")))
+            .flatten()
             .map(|id| id as u64);
         let args: MultiValue = event.map(Value::Table).into_iter().collect();
         resume(&self.shared, thread, args, note);
@@ -3194,7 +3196,7 @@ mod tests {
     #[test]
     fn wait_for_release_resumes_on_note_off_and_release_is_called() {
         let mut h = host(
-            "function onNote(e) run(function() waitForRelease(); releaseVoice(e.id) end) end\n\
+            "function onNote(e) waitForRelease(); releaseVoice(e.id) end\n\
              function onRelease(e) playNote(e.note, 1) end",
         );
         h.note_on(3, 60, 100, 0);
