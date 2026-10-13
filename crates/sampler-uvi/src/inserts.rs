@@ -229,20 +229,7 @@ impl Translation {
                 {
                     out.extend(self.algorithmic_reverb(node, &at)?);
                 }
-                "TrackDelay" => {
-                    let time = number(node, "DelayTime", 0.0)?;
-                    if number(node, "SyncToHost", 0.0)? != 0.0 {
-                        self.unsupported(&at, "TrackDelay host sync", time);
-                    }
-                    if time > 0.0 {
-                        out.push(ir::Processor::Delay {
-                            time: ir::Time::Seconds(time),
-                            feedback: 0.0,
-                            mix: 1.0,
-                        });
-                    }
-                }
-                "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay"
+                "TrackDelay" | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay"
                 | "DualDelayX" | "TapeEcho" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
                 | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter" => {
                     if let Some(config) = self.timemod(node, &at)? {

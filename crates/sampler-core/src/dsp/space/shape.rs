@@ -4,7 +4,7 @@
 //! The laws follow authored-impulse probes of the official processor (the
 //! frozen v1 engine's measurements): Time keeps `floor(len * Time)` frames under
 //! a half-cosine window, damping splits the response into a zero-phase one-pole
-//! low band and its remainder and weights each by age, Width mixes the stereo
+//! low band and its remainder and weights each by age (`0x141532fe0`), Width mixes the stereo
 //! pair sequentially, NormalizePower scales the mean channel energy.
 //! Every control is linear and time-invariant, so shaping the response is the
 //! same as shaping the wet path.
@@ -49,6 +49,42 @@ fn low_band(x: &[f32]) -> Vec<f32> {
     low
 }
 
+/// Modified Bessel function of the first kind, order 0 (power series).
+fn bessel_i0(x: f64) -> f64 {
+    let (mut sum, mut term, q) = (1.0, 1.0, x * x / 4.0);
+    for k in 1..200 {
+        term *= q / f64::from(k * k);
+        sum += term;
+        if term < sum * 1e-17 {
+            break;
+        }
+    }
+    sum
+}
+
+/// UVI SampledReverb damping envelope over `len` frames (`0x141534d80`), or
+/// `None` at 0. Positive `d` decays: the second half of a `2·len` Kaiser
+/// window of `β = 6d`, raised to `1 + 90d²`; negative `d` lifts the tail:
+/// `1 / (w·e^(-10i/len) + 1 - w)`, `w = (-d)^0.2`. Values below 1e-10 are 0.
+fn damping_envelope(d: f64, len: usize) -> Option<Vec<f64>> {
+    let d = d.clamp(-1.0, 1.0);
+    if d == 0.0 || len == 0 {
+        return None;
+    }
+    let env = (0..len).map(|i| {
+        let g = if d > 0.0 {
+            let beta = 6.0 * d;
+            let x = (2 * i + 1) as f64 / (2 * len - 1).max(1) as f64;
+            (bessel_i0(beta * (1.0 - x * x).max(0.0).sqrt()) / bessel_i0(beta)).powf(1.0 + 90.0 * d * d)
+        } else {
+            let w = (-d).powf(0.2);
+            1.0 / (w * (-10.0 * i as f64 / len as f64).exp() + 1.0 - w)
+        };
+        if g < 1e-10 { 0.0 } else { g }
+    });
+    Some(env.collect())
+}
+
 /// Eight knots `[time fraction, dB]`, sorted in time, interpolated in amplitude.
 fn apply_envelope(channels: &mut [&mut Vec<f32>; 2], knots: [[f32; 2]; 8]) {
     let mut knots = knots.map(|[x, db]| (x, (db * 0.05 * std::f32::consts::LN_10).exp()));
@@ -85,16 +121,15 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
         apply_envelope(&mut [&mut l, &mut r], knots);
     }
     let len = l.len();
-    for channel in [&mut l, &mut r] {
-        // Positive damping is not measured; only the attenuating (negative) side acts.
-        let (lo, hi) = ((-s.damping_low).clamp(0.0, 1.0).powf(0.2), (-s.damping_high).clamp(0.0, 1.0).powf(0.2));
-        if lo != 0.0 || hi != 0.0 {
+    let lo = damping_envelope(s.damping_low, len);
+    let hi = damping_envelope(s.damping_high, len);
+    if lo.is_some() || hi.is_some() {
+        for channel in [&mut l, &mut r] {
             let low = low_band(channel);
             for (i, (x, low)) in channel.iter_mut().zip(low).enumerate() {
-                let decay = (-10.0 * i as f64 / len as f64).exp();
-                let gain = |w: f64| 1.0 / (1.0 - w + w * decay);
                 let high = f64::from(*x) - f64::from(low);
-                *x = (f64::from(low) * gain(lo) + high * gain(hi)) as f32;
+                let (gl, gh) = (lo.as_ref().map_or(1.0, |e| e[i]), hi.as_ref().map_or(1.0, |e| e[i]));
+                *x = (f64::from(low) * gl + high * gh) as f32;
             }
         }
     }
@@ -195,6 +230,19 @@ mod tests {
     fn width_mixes_the_pair() {
         let (a, b) = shape_impulse(48000, &[1.0], &[0.0], &ImpulseShape { width: 1.0, ..neutral_impulse_shape() });
         assert!(a[0] > 0.0 && b[0] < 0.0, "{a:?} {b:?}");
+    }
+
+    /// UVI `0x141534d80` vectors, four frames.
+    #[test]
+    fn damping_envelopes_match_native_vectors() {
+        let close = |d: f64, want: [f64; 4]| {
+            let e = damping_envelope(d, 4).unwrap();
+            assert!(e.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-5), "{d}: {e:?}");
+        };
+        close(0.5, [0.557_179, 0.004_375, 0.0, 0.0]);
+        close(0.1, [0.996_663, 0.970_26, 0.919_018, 0.845_946]);
+        close(-0.5, [1.0, 4.977_388, 7.390_155, 7.696_397]);
+        assert_eq!(low_band(&[1.0, 0.0, 0.0, 0.0]), [0.715_456, 0.288_64, 0.121_6, 0.064]);
     }
 
     #[test]

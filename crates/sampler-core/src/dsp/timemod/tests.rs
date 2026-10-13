@@ -278,3 +278,16 @@ fn legacy_flanger_is_partition_independent_and_stays_bounded() {
     assert!(a.iter().flatten().all(|v| v.abs() < 10.));
     assert!(a.iter().any(|f| f[0] != f[1]), "the second channel's LFO is phase offset");
 }
+
+/// UVI reads: TrackDelay's `ceil(seconds·rate)` (0.01049 s at 48 kHz is 504
+/// frames, 0x14133a2e0) and ring mode 0's floor (0x1416485a0).
+#[test]
+fn floor_and_ceil_reads_land_on_whole_frames() {
+    for (kind, frame) in [(Interpolation::Ceil, 504), (Interpolation::Floor, 503)] {
+        let mut l = line(&[Tap::at(DelayTime::Ms(10.49))], 20.);
+        l.interpolation = kind;
+        let (out, _) = run(wrap(l, LFO_OFF), 48_000, 120., &impulse(600, [1., 1.]), 64);
+        let hits: Vec<usize> = (0..600).filter(|&i| out[i][0] != 0.).collect();
+        assert_eq!(hits, [frame], "{kind:?}");
+    }
+}

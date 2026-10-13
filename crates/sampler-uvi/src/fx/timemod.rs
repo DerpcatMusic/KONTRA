@@ -35,6 +35,19 @@ fn feedback(line: &mut Line, fb: f64) {
     line.feedback.matrix = [[fb, 0.], [0., fb]];
 }
 
+/// UVI TrackDelay (ctor 0x141339b70, process 0x14133a2e0): a pure delay of
+/// `ceil(seconds·rate)` frames replacing the input, at most 5 s; synced, the
+/// time is `60/tempo·beats` (0x1411c8250). `None` at zero delay.
+fn track_delay(time: f64, synced: bool) -> Option<Config> {
+    if !(time > 0.) {
+        return None;
+    }
+    let time = if synced { DelayTime::Beats(time) } else { DelayTime::Ms(time.min(5.) * 1000.) };
+    let mut line = Line::single(time, 5000.);
+    line.interpolation = Interpolation::Ceil;
+    Some(Config { dry: 0., wet: 1., ..delay_config(line, 1.) })
+}
+
 impl Translation {
     fn generic_law(&mut self, at: &str, feature: &str, value: impl std::fmt::Display) {
         self.ir.unsupported.push(ir::Unsupported {
@@ -63,6 +76,9 @@ impl Translation {
         let tag = node.tag_name().name();
         let mix = number(node, "Mix", 1.)?.clamp(0., 1.);
         let synced = number(node, "SyncToHost", 0.)? != 0.;
+        if tag == "TrackDelay" {
+            return Ok(track_delay(number(node, "DelayTime", 0.)?, synced));
+        }
         if synced {
             self.unsupported(at, &format!("{tag} host sync"), "free time used");
         }

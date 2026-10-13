@@ -158,7 +158,7 @@ impl TimeMod {
             taps = usize::from(line.tap_count);
             voices = usize::from(line.voices);
             voice_gain = 1. / voices as f64;
-            if line.interpolation != Interpolation::Nearest && line.interpolation != Interpolation::Linear {
+            if matches!(line.interpolation, Interpolation::Hermite | Interpolation::Lagrange) {
                 min_delay = 2.;
             }
             let scale = line.right_scale.max(1.);
@@ -598,8 +598,11 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
         let m = position + cap - k;
         slab[if m >= cap { m - cap } else { m }][c]
     };
-    if kind == Interpolation::Nearest {
-        return at((d + 0.5) as usize);
+    match kind {
+        Interpolation::Nearest => return at((d + 0.5) as usize),
+        Interpolation::Floor => return at(d as usize),
+        Interpolation::Ceil => return at(d.ceil() as usize),
+        _ => {}
     }
     let i = d as usize;
     let x = d - i as f64;
@@ -620,6 +623,6 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
             let (xm, xp, x2) = (x - 1., x + 1., x - 2.);
             -x * xm * x2 / 6. * m + xp * xm * x2 / 2. * a - xp * x * x2 / 2. * b + xp * x * xm / 6. * n
         }
-        Interpolation::Nearest => unreachable!(),
+        Interpolation::Nearest | Interpolation::Floor | Interpolation::Ceil => unreachable!(),
     }
 }
