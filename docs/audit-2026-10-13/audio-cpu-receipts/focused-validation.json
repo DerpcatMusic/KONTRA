@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "build_rule": "only crate-scoped focused tests/checks after NEVER BUILD",
+  "fix_tests": [
+    {
+      "test": "bus::cpu_tests::sleeping_bus_clears_once_and_wakes_with_identical_pcm",
+      "before": "101 history clears",
+      "after": "1 history clear",
+      "failing_first_verified": true
+    },
+    {
+      "test": "source::tests::integer_crossfade_runs_skip_cubic_and_preserve_pcm_cursor_and_envelope",
+      "before": "0 direct center-tap runs",
+      "after": "1 direct run for each eligible block",
+      "failing_first_verified": true
+    },
+    {
+      "test": "v1_voice_controls::adapter_tests::live_native_intensity_writes_invalidate_only_changed_cached_controls",
+      "before": "same-stamp depth write returns 0.25",
+      "after": "0.625, exact forced-recompute/lag comparisons pass",
+      "failing_first_verified": true
+    },
+    {
+      "test": "render::cpu_tests::dormant_sum_graph_skips_cells_but_keeps_events_clock_and_wake_pcm",
+      "before": "32 idle tile traversals",
+      "after": "0 idle tile traversals",
+      "failing_first_verified": true
+    },
+    {
+      "test": "script_params::tests::amplifier_prepares_gain_slopes_once_with_exact_pcm_and_fade_clock",
+      "before": "12 sample gain preparation calls",
+      "after": "0 sample gain preparation calls",
+      "failing_first_verified": true
+    }
+  ],
+  "additional_focused_test": "sampler-core --test buses bus_tail_retains_only_its_generation_after_host_note_retirement: passed",
+  "checks": [
+    "cargo check -j 4 -p sampler-core: passed",
+    "cargo check -j 4 -p sampler-perf: passed",
+    "Python driver AST parse: passed"
+  ],
+  "cpu_after": "not measured; user prohibits worker measurement"
+}

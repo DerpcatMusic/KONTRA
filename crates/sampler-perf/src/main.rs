@@ -30,6 +30,9 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     static CALLS: Cell<u64> = const { Cell::new(0) };
     static EVENT_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static SERVICE_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static SERVICE_MASK: Cell<u8> = const { Cell::new(0) };
+    static STREAM_SERVICE_ERRORS: Cell<u64> = const { Cell::new(0) };
     static BEHAVIOR_ERRORS: Cell<u64> = const { Cell::new(0) };
 }
 // SAFETY: forwards every call unchanged to System; only counts on the thread that asked.
@@ -498,6 +501,7 @@ fn render(
                 let t = Instant::now();
                 let r = rt.service_streaming(*h);
                 service = t.elapsed().as_nanos() as u64;
+                if r.is_err() { STREAM_SERVICE_ERRORS.set(STREAM_SERVICE_ERRORS.get() + 1); }
                 match r {
                     Err(e) if std::env::var_os("PERF_DEBUG").is_some() => {
                         eprintln!("service_streaming: {e:?} voices {}", rt.voice_count())
@@ -529,7 +533,21 @@ fn render(
                 }
             });
             EVENT_ERRORS.set(EVENT_ERRORS.get() + errors + u64::from(result.is_err()));
-            rt.drain_effects(|_| true);
+            // Match sampler-native's headless service policy: retain external
+            // async work and fail the cell, rather than pretending it completed.
+            // UI presentation effects may be discarded by this headless audit.
+            rt.drain_effects(|effect| {
+                let bit = match effect.service {
+                    sampler_core::MIDI_SERVICE => 1,
+                    sampler_core::ARRAY_FILE_SERVICE => 2,
+                    _ => 0,
+                };
+                if bit != 0 {
+                    SERVICE_ERRORS.set(SERVICE_ERRORS.get() + 1);
+                    SERVICE_MASK.set(SERVICE_MASK.get() | bit);
+                    false
+                } else { true }
+            });
             rt.flush_behaviors(|_, _, outcome| {
                 if matches!(
                     outcome,
@@ -964,7 +982,7 @@ fn main() {
         Some("sustain") => sustain::run(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
-        _ => Err("usage: sampler-perf run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
+        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
     };
     match result {
         Ok(true) => {}
