@@ -37,7 +37,7 @@ pub mod ui;
 mod waveform;
 
 pub use diag::{Error, Kind};
-pub use eval::Environment;
+pub use eval::{Environment, Transport};
 pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
 pub const PROFILE: &str = "ksp-8.12-v2";
