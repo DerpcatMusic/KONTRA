@@ -193,7 +193,8 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
 }
 
 fn unit_set(unit: f32) -> Option<f32> {
-    // Kontakt's sync threshold 0x144f38cd0 (speed getter 0x140a736a0).
+    // Readers set the sync flag when unit > 1e-9 (0x144737708, Chorus reader
+    // 0x140d00760); the speed getter 0x140a736a0 tests that flag.
     (unit > f32::from_bits(0x3089705f)).then_some(unit)
 }
 
@@ -249,7 +250,8 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             // code constant. The reader 0x140d00760 fills +0xc/+0x10/+0x14/+0x30/+0x3c/+0x40
             // (CH_PHASE is +0x14), the writer 0x140d104e0 saves the same, and the only
             // vtable 0x144e74dc8 store is the container constructor (lea 0x140701ad7), which
-            // leaves +8 alone; the container is memset to zero on allocation (0x1408b01c9,
+            // leaves +8 alone (kemu: the ctor 0x140701a80 run on a 0xAA-filled object
+            // writes none of +8..+0x17); the container is memset to zero on allocation (0x1408b01c9,
             // 0x1406e9458), so base = 0 frames, the excursion clamps to base - 1 = -1 and
             // Depth has no effect. Two heads (base, base >> 1) on LFOs 0.015 cycles
             // apart, each one-pole 0.95, summed; Speed through the sync getter
