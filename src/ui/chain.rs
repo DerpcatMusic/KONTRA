@@ -381,6 +381,7 @@ fn detail(p: ir::Processor) -> String {
             ir::fx::dynamics::Law::KontaktClassic(_) => "Compressor (Classic)".into(),
             ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
             ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
+            ir::fx::dynamics::Law::KontaktLimiter(_) => "Limiter".into(),
         },
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",
