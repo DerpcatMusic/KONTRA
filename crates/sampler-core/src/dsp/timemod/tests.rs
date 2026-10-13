@@ -213,6 +213,7 @@ fn legacy_delay_native_vector_echoes_and_ping_pong() {
             5 => g,
             10 => g * g,
             15 => g * g * g,
+            20 => g * g * g * g,
             _ => 0.,
         };
         assert!((f[0] - f64::from(expect)).abs() < 1e-7 && f[1] == 0., "frame {i}: {f:?}");
@@ -238,4 +239,42 @@ fn legacy_delay_synced_time_follows_tempo() {
     // Tempo below 0.1 BPM reads as 120.
     let (out, _) = run(legacy(1., 1., 1., 0., 0.), 48_000, 0., &x, 4096);
     assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
+}
+
+fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
+    let mut l = Line::single(DelayTime::Ms(f64::from(color)), 6.);
+    l.native = sampler_ir::fx::timemod::Native::LegacyFlanger { color, depth, feedback };
+    wrap(l, Lfo { shape: LfoShape::Sine, rate: Rate::Hz(hz), phase: 0.25 })
+}
+
+#[test]
+fn legacy_flanger_native_vector_delay_and_negative_feedback() {
+    // 1 ms at 48 kHz = 48 frames; the read sits one frame further (position - 1).
+    let mut x = vec![[0.; 2]; 200];
+    x[0] = [1., 0.5];
+    let (out, fault) = run(flanger(1., 0., 1., 0.), 48_000, 120., &x, 64);
+    assert!(!fault);
+    let fb = 1.0f32 * 0.95;
+    for (i, f) in out.iter().enumerate() {
+        let expect = match i {
+            49 => [1., 0.5],
+            98 => [-f64::from(fb), -0.5 * f64::from(fb)],
+            147 => [f64::from(fb * fb), 0.5 * f64::from(fb * fb)],
+            196 => [-f64::from(fb * fb * fb), -0.5 * f64::from(fb * fb * fb)],
+            _ => [0., 0.],
+        };
+        assert!((f[0] - expect[0]).abs() < 1e-6 && (f[1] - expect[1]).abs() < 1e-6, "frame {i}: {f:?}");
+    }
+}
+
+#[test]
+fn legacy_flanger_is_partition_independent_and_stays_bounded() {
+    let x: Vec<[f64; 2]> = (0..2000).map(|i| [(i as f64 * 0.05).sin(), (i as f64 * 0.031).cos()]).collect();
+    let (a, fault) = run(flanger(3., 0.8, 0.9, 1.5), 48_000, 120., &x, 7);
+    let (b, _) = run(flanger(3., 0.8, 0.9, 1.5), 48_000, 120., &x, 64);
+    // The native float position origin is rebased per block, so partitions agree to f32 rounding.
+    assert!(!fault);
+    assert!(a.iter().zip(&b).all(|(p, q)| (p[0] - q[0]).abs() < 2e-3 && (p[1] - q[1]).abs() < 2e-3));
+    assert!(a.iter().flatten().all(|v| v.abs() < 10.));
+    assert!(a.iter().any(|f| f[0] != f[1]), "the second channel's LFO is phase offset");
 }
