@@ -1000,7 +1000,6 @@ impl Cursor {
     /// moves `frames` output frames on at its step (the time axis; pitch lives
     /// in the engine). `None` once the traversal has ended. A forward read:
     /// reverse playback is not a stretch mode yet.
-    #[allow(dead_code)] // wired by the voice source; exercised by tests meanwhile
     pub(super) fn analysis(&mut self, frames: usize) -> Option<f64> {
         let at = self.index(i128::from(self.position))? as f64 + self.fraction;
         for _ in 0..frames {
@@ -2290,8 +2289,75 @@ mod tests {
 mod demand;
 pub use demand::SampleDemand;
 mod time_machine;
+
+/// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
+/// sampler voice: scaled by the voice envelope (when `enveloped`), `gain` and
+/// the channel `gains`.
+pub(super) fn stretch_mix(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    output: &mut [Frame],
+    gain: f32,
+    gains: [f32; 2],
+    enveloped: bool,
+) -> usize {
+    let mut raw = [[0.; 2]; 256];
+    let mut done = 0;
+    while done < output.len() && !(enveloped && voice.envelope.done()) {
+        let mut n = (output.len() - done).min(raw.len());
+        if enveloped {
+            n = n.min(voice.envelope.remaining());
+        }
+        let got = stretch_block(engine, voice, pcm, &mut raw[..n]);
+        for (out, frame) in output[done..done + got].iter_mut().zip(&raw) {
+            let amplitude = if enveloped { voice.envelope.next() * gain } else { gain };
+            for c in 0..2 {
+                out[c] += frame[c] * amplitude * gains[c];
+            }
+        }
+        done += got;
+        if got < n {
+            break;
+        }
+    }
+    done
+}
+
+/// One block of a time-stretch voice: the cursor is the analysis clock, the
+/// engine plays the pitch. The first block configures and starts the engine
+/// (pre-roll included). A frozen voice (speed 0) holds the clock still.
+pub(super) fn stretch_block(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    out: &mut [Frame],
+) -> usize {
+    let Some(link) = voice.stretch.as_mut() else {
+        return 0;
+    };
+    let frozen = link.spec.speed == 0.;
+    let params = StretchParams {
+        advance: if frozen { 0. } else { voice.cursor.step() },
+        step: voice.stretch_step,
+        ..Default::default()
+    };
+    if !link.started {
+        engine.configure(link.spec.mode, link.spec.hq);
+        let Some(from) = voice.cursor.analysis(0) else {
+            return 0;
+        };
+        engine.start_clocked(pcm, link.frames, from, params);
+        link.started = true;
+    }
+    let cursor = &mut voice.cursor;
+    engine.render_with(pcm, params, out, |hop| cursor.analysis(if frozen { 0 } else { hop }))
+}
 #[allow(unused_imports)] // wired by the voice source in a later commit
-pub(crate) use time_machine::{Engine as StretchEngine, Mode as StretchMode, ModeConfig, Params as StretchParams, Region as StretchRegion};
+pub(crate) use time_machine::{
+    Engine as StretchEngine, Mode as StretchMode, Params as StretchParams, Region as StretchRegion,
+    Spec as StretchSpec, VOICES as STRETCH_VOICES,
+};
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
 /// Largest window `render_run` gathers across storage boundaries.
