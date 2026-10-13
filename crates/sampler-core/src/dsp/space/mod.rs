@@ -311,6 +311,78 @@ mod tests {
         (l, r)
     }
 
+    /// Presets for the CPU measurement and cross-preset checks.
+    pub(super) fn presets() -> Vec<(&'static str, Network)> {
+        use sampler_ir::fx::space::{Freeverb as Fv, Galois, SparkVerb};
+        let spark = |quality| SparkVerb {
+            quality,
+            room_m: 20.0,
+            shape: 0.3,
+            decay: 2.0,
+            decay_low: 1.5,
+            decay_high: 0.5,
+            freq_low: 250.0,
+            freq_high: 12_000.0,
+            low_cut: false,
+            high_cut: false,
+            mod_cents: 4.0,
+            mod_hz: 1.0,
+            mode: 1,
+            freeze: false,
+            diffuser: Some((0.618, 5.0)),
+            width: 0.5,
+            rolloff_hz: 20_000.0,
+            predelay_seconds: 0.01,
+        };
+        vec![
+            ("fdn", Network::DEFAULT),
+            ("comb", Network { topology: Topology::CombAllpass, ..Network::DEFAULT }),
+            ("plate", Network { topology: Topology::Plate, ..Network::DEFAULT }),
+            ("diffuser", Network { topology: Topology::Diffuser, ..Network::DEFAULT }),
+            (
+                "freeverb",
+                Network {
+                    topology: Topology::Freeverb,
+                    predelay_seconds: 0.02,
+                    input_cutoff_hz: 8_000.0,
+                    freeverb: Some(Fv { feedback: 0.84, damp: 0.2, allpass: 0.5, input_gain: 0.015, width: 0.75 }),
+                    ..Network::DEFAULT
+                },
+            ),
+            ("galois room", Network { topology: Topology::Galois, galois: Some(Galois { hall: false, controls: [0.5; 10] }), ..Network::DEFAULT }),
+            ("galois hall", Network { topology: Topology::Galois, galois: Some(Galois { hall: true, controls: [0.5; 10] }), ..Network::DEFAULT }),
+            ("spark q3", Network { topology: Topology::SparkVerb, spark: Some(spark(3)), ..Network::DEFAULT }),
+            ("spark q5", Network { topology: Topology::SparkVerb, spark: Some(spark(5)), ..Network::DEFAULT }),
+        ]
+    }
+
+    /// CPU per instance: `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn cpu_per_instance() {
+        const RATE: u32 = 48_000;
+        let seconds = 20;
+        for (name, net) in presets() {
+            let mut s = Space::new(&Config::network(net), RATE, &[]).unwrap();
+            let mut l = vec![0f32; 64];
+            let mut r = vec![0f32; 64];
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let t = std::time::Instant::now();
+                for b in 0..(seconds * RATE as usize / 64) {
+                    for (k, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+                        let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 0.0 };
+                        (*a, *c) = (v, -v);
+                    }
+                    s.process([&mut l, &mut r]);
+                }
+                std::hint::black_box(&l);
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            println!("cpu {name:12} {:6.3} % of one core at 48 kHz ({:.1} ns/frame)", best / seconds as f64 * 100.0, best * 1e9 / (seconds as f64 * f64::from(RATE)));
+        }
+    }
+
     #[test]
     fn every_topology_rings_and_stays_finite() {
         for topology in [Topology::Fdn, Topology::CombAllpass, Topology::Plate, Topology::Diffuser] {
