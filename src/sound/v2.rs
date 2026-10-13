@@ -2963,19 +2963,14 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
-            ir::Processor::Gainer { .. } => "Gainer",
-            ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
-            ir::Processor::LoFi { .. } | ir::Processor::LiveLoFi { .. } => "LoFi",
             ir::Processor::LiveFormant { .. } => "Formant",
-            ir::Processor::Saturation(_) | ir::Processor::LiveSaturation { .. } => "Saturation",
-            ir::Processor::Distortion { .. } | ir::Processor::LiveDistortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
             ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ",
             ir::Processor::Compressor(_) => "Compressor",
-            ir::Processor::Rectify(_) => "Rectify",
+            ir::Processor::Color(c) => c.label(),
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
                 [usize::from(d.taps.clamp(1, 12)) - 1],
@@ -3706,8 +3701,10 @@ mod tests {
             let buses = (0..3)
                 .map(|b| sampler_core::Bus {
                     processors: if b == 1 {
-                        vec![sampler_core::Processor::Rectify(
-                            sampler_core::Rectifier::Full,
+                        vec![sampler_core::Processor::Color(
+                            sampler_core::ColorSettings::curve(sampler_core::CurveSettings::Rectifier(
+                                sampler_core::Rectifier::Full,
+                            )),
                         )]
                     } else {
                         vec![]
