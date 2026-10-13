@@ -1,4 +1,6 @@
-//! Universal convolution-impulse shaping (moved from sampler-uvi): shaping of a sampled reverb's impulse response by its source controls.
+//! Shaping of an impulse response by its source controls, for every format
+//! (Kontakt Convolution reverse/envelope/predelay/Auto Gain; UVI SampledReverb
+//! and Convolver time/damping/width/normalize).
 //! The laws follow authored-impulse probes of the official processor (the
 //! frozen v1 engine's measurements): Time keeps `floor(len * Time)` frames under
 //! a half-cosine window, damping splits the response into a zero-phase one-pole
@@ -21,6 +23,9 @@ pub fn neutral_impulse_shape() -> ImpulseShape {
         width: 0.0,
         normalize: false,
         sampled_reverb: false,
+        reverse: false,
+        auto_gain: false,
+        envelope: None,
     }
 }
 
@@ -44,9 +49,28 @@ fn low_band(x: &[f32]) -> Vec<f32> {
     low
 }
 
+/// Eight knots `[time fraction, dB]`, sorted in time, interpolated in amplitude.
+fn apply_envelope(channels: &mut [&mut Vec<f32>; 2], knots: [[f32; 2]; 8]) {
+    let mut knots = knots.map(|[x, db]| (x, (db * 0.05 * std::f32::consts::LN_10).exp()));
+    knots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let len = channels[0].len();
+    for pair in knots.windows(2) {
+        let at = |x: f32| (len as f32 * x.clamp(0.0, 1.0) + 0.5) as usize;
+        let (start, end) = (at(pair[0].0), at(pair[1].0));
+        for n in start..end.min(len) {
+            let g = pair[0].1 + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
+            channels.iter_mut().for_each(|ch| ch[n] *= g);
+        }
+    }
+}
+
 /// `left`/`right` (equal length, at `rate`) as `shape` leaves them.
 pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -> (Vec<f32>, Vec<f32>) {
     let (mut l, mut r) = (left.to_vec(), right.to_vec());
+    if s.reverse {
+        l.reverse();
+        r.reverse();
+    }
     let time = s.time.clamp(0.0, 1.0);
     if time < 1.0 {
         let keep = ((l.len() as f64 * time).floor() as usize).max(1).min(l.len());
@@ -56,6 +80,9 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
             let w = (0.5 + 0.5 * (std::f64::consts::PI * i as f64 / (keep + 1) as f64).cos()) as f32;
             (*a, *b) = (*a * w, *b * w);
         }
+    }
+    if let Some(knots) = s.envelope {
+        apply_envelope(&mut [&mut l, &mut r], knots);
     }
     let len = l.len();
     for channel in [&mut l, &mut r] {
@@ -79,7 +106,19 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
             *b = ((f64::from(*b) + alpha * f64::from(*a)) * scale) as f32;
         }
     }
-    let gain = if s.normalize {
+    let gain = if s.auto_gain {
+        // Kontakt CConvolver 0x1419b31f0..0x1419b326e: f32 squares summed in f64,
+        // the largest channel energy, f32 sqrt(0.5 / energy), capped at 2.
+        let energy = [&l, &r]
+            .iter()
+            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
+            .fold(0.0, f64::max);
+        if energy > f64::from(0.001f32) {
+            f64::from((0.5 / energy as f32).sqrt().min(2.0))
+        } else {
+            1.0
+        }
+    } else if s.normalize {
         let energy = l.iter().chain(&r).map(|v| f64::from(*v).powi(2)).sum::<f64>() / 2.0;
         if energy > 0.0 {
             (if s.sampled_reverb { 1.25 } else { 1.0 }) / energy.sqrt()

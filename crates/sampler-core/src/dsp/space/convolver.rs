@@ -1,4 +1,5 @@
-//! Zero-latency non-uniformly partitioned FFT convolution.
+//! Zero-latency non-uniformly partitioned FFT convolution (every stage is a
+//! uniformly partitioned overlap-add convolver).
 //!
 //! The head covers the first `TAIL_FACTOR * head_block` samples of the IR with
 //! small partitions and recomputes the current partial block on every call, so
@@ -344,19 +345,15 @@ pub(crate) fn tail_frames(impulse: &Impulse) -> usize {
     impulse.frames() + 2 * MAX_STAGE_BLOCK
 }
 
-/// `dry * x + wet * (x * impulse)` on both channels.
-pub(crate) struct Convolution {
+/// Both channels convolved with their halves of an impulse.
+pub(crate) struct Conv {
     convolvers: [Convolver; 2],
-    dry: f32,
-    wet: f32,
 }
 
-impl Convolution {
-    pub(crate) fn new(impulse: &Impulse, dry: f64, wet: f64) -> Self {
+impl Conv {
+    pub(crate) fn new(impulse: &Impulse) -> Self {
         Self {
-            convolvers: [0, 1].map(|c| Convolver::new(&impulse.channels[c], super::BLOCK)),
-            dry: dry as f32,
-            wet: wet as f32,
+            convolvers: [0, 1].map(|c| Convolver::new(&impulse.channels[c], crate::dsp::BLOCK)),
         }
     }
 
@@ -364,26 +361,23 @@ impl Convolution {
         self.convolvers.iter_mut().for_each(Convolver::clear);
     }
 
-    /// Process up to [`super::BLOCK`] frames of each channel in place.
+    /// Replace up to [`crate::dsp::BLOCK`] frames of each channel with the convolution.
     pub(crate) fn process(&mut self, channels: [&mut [f32]; 2]) {
         for (convolver, io) in self.convolvers.iter_mut().zip(channels) {
-            let mut input = [0f32; super::BLOCK];
-            let n = io.len().min(super::BLOCK);
-            input[..n].copy_from_slice(&io[..n]);
+            let n = io.len().min(crate::dsp::BLOCK);
             convolver.process(&mut io[..n]);
-            for (y, x) in io[..n].iter_mut().zip(&input) {
-                *y = *y * self.wet + *x * self.dry;
-            }
         }
     }
 }
 
 /// A convolution built on the control side to replace a live one without
 /// allocating on the audio thread: [`crate::Runtime::swap_convolution`]
-/// exchanges it with the running processor, leaving the old one here to be
+/// exchanges it with the running unit's, leaving the old one here to be
 /// dropped off the audio thread.
 pub struct ConvolutionUpload {
-    pub(crate) conv: Convolution,
+    pub(crate) conv: Conv,
+    pub(crate) dry: f32,
+    pub(crate) wet: f32,
     pub(crate) tail: u32,
 }
 
@@ -391,7 +385,9 @@ impl ConvolutionUpload {
     /// An impulse already at the output rate, mixed `dry * x + wet * (x * impulse)`.
     pub fn new(impulse: &Impulse, dry: f64, wet: f64) -> Self {
         Self {
-            conv: Convolution::new(impulse, dry, wet),
+            conv: Conv::new(impulse),
+            dry: dry as f32,
+            wet: wet as f32,
             tail: tail_frames(impulse) as u32,
         }
     }
