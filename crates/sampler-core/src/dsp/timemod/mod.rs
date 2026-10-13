@@ -25,6 +25,8 @@ mod tests;
 const CHUNK: usize = 32;
 /// Legacy Delay ring frames (setter clamp 0x40000, mask 0x27c).
 const LEGACY_RING: usize = 0x40000;
+/// Legacy Flanger ring frames (0x140960f00: length 0x1000, mask 0xfff).
+const FLANGER_RING: usize = 0x1000;
 /// Samples the ring keeps beyond the longest read for neighbour taps.
 const GUARD: usize = 4;
 
@@ -187,8 +189,10 @@ impl TimeMod {
                 *slot = ((cycles * TAU).cos(), (cycles * TAU).sin(), cycles);
             }
             cap = longest.ceil() as usize + GUARD;
-            if line.native != Native::None {
-                cap = LEGACY_RING;
+            match line.native {
+                Native::None => {}
+                Native::LegacyDelay { .. } => cap = LEGACY_RING,
+                Native::LegacyFlanger { .. } => cap = FLANGER_RING,
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -294,6 +298,9 @@ impl TimeMod {
         }
         if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
+        }
+        if let Some(Native::LegacyFlanger { color, depth, feedback }) = cfg.line.map(|l| l.native) {
+            return self.legacy_flanger(state, slab, block, len, tempo, [color, depth, feedback]);
         }
         let hz = self.hz(tempo);
         let step = (2. * (f64::from(hz) * PI / self.rate).sin()) as f32;
@@ -489,6 +496,51 @@ impl TimeMod {
 }
 
 impl TimeMod {
+    /// Kontakt Legacy Flanger audio (0x140aa2350), f32 operation order. Wet-only:
+    /// the 4-point Lagrange read of a ring the input and the negated output feed.
+    fn legacy_flanger(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, [color, depth, feedback]: [f32; 3]) -> bool {
+        const MASK: usize = FLANGER_RING - 1;
+        let base = ((color * self.rate as f32 * f32::from_bits(0x3a83126f)) as i32).clamp(0, FLANGER_RING as i32);
+        let mut excursion = f64::from(depth) * 50.;
+        if excursion as i32 >= base {
+            excursion = f64::from(base - 1);
+        }
+        let fb = feedback * f32::from_bits(0x3f733333);
+        let step = (2. * (f64::from(self.hz(tempo)) * PI / self.rate).sin()) as f32;
+        let mut w = state.delay_position as usize & MASK;
+        let origin = ((w as i32 - base + FLANGER_RING as i32) % FLANGER_RING as i32) as f32 + FLANGER_RING as f32;
+        let mut finite = true;
+        let [left, right] = block;
+        for i in 0..len {
+            let input = [left[i] as f32, right[i] as f32];
+            slab[w] = input.map(f64::from);
+            let mut out = [0f32; 2];
+            for c in 0..2 {
+                let [mut s, mut co] = state.z[c].map(|v| v as f32);
+                s -= co * step;
+                co += s * step;
+                state.z[c] = [f64::from(s), f64::from(co)];
+                let position = (f64::from(s) * excursion + f64::from(origin + i as f32)) as f32;
+                let whole = position as u32;
+                let t = position - whole as f32;
+                let at = |k: u32| slab[(k as usize) & MASK][c] as f32;
+                let (a, b, cc, d) = (at(whole.wrapping_sub(2)), at(whole.wrapping_sub(1)), at(whole), at(whole.wrapping_add(1)));
+                let (up, down) = (t + 1., t - 1.);
+                let y = (up * d * t * down - t * a * (down + -1.) * down) * f32::from_bits(0x3e2aaaab) + (up * b * down - up * cc * t) * (down + -1.) * 0.5;
+                out[c] = y;
+                slab[w][c] = f64::from(slab[w][c] as f32 - y * fb);
+                finite &= y.is_finite();
+            }
+            (left[i], right[i]) = (self.cfg.dry * f64::from(input[0]) + self.cfg.wet * f64::from(out[0]), self.cfg.dry * f64::from(input[1]) + self.cfg.wet * f64::from(out[1]));
+            w = (w + 1) & MASK;
+        }
+        state.delay_position = w as u32;
+        for frame in &mut slab[..FLANGER_RING] {
+            *frame = frame.map(flush);
+        }
+        !finite
+    }
+
     /// Kontakt Legacy Delay audio (0x140aa1130, stereo branch), f32 operation
     /// order. The low-pass states lag one sample and are both the wet output
     /// and the recirculated signal; `pan` crosses the channels.
@@ -497,7 +549,8 @@ impl TimeMod {
         let ms = if unit > f32::from_bits(0x3089705f) {
             let tempo = tempo as f32;
             let tempo = if tempo < f32::from_bits(0x3dcccccd) { 120. } else { tempo };
-            ((unit * 60.) / tempo) * time * 1000.
+            // Clamp [0, 5800] ms: the time object's constructor fields (0x140701ac2/ac6).
+            (((unit * 60.) / tempo) * time * 1000.).clamp(0., 5800.)
         } else {
             time
         };

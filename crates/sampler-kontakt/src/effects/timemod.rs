@@ -115,15 +115,17 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{color}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "flanger delay, depth, feedback sign and color laws", format!("{depth}/{feedback}/{color}"));
-            if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced modulation speed", "Phaser getter assumed".into());
+            if !(0. ..=5.).contains(&color) {
+                notes.push(("parameters".into(), format!("color {color}"), Reason::InvalidValue));
+                return None;
             }
-            let mut line = Line::single(DelayTime::Ms(2.5), 6.);
-            line.taps[0] = Tap { time: DelayTime::Ms(2.5), level: 1., pan: 0., depth_ms: f64::from(depth) * 2.4 };
-            line.interpolation = Interpolation::Hermite;
-            let fb = f64::from(feedback).min(0.99);
-            line.feedback.matrix = [[fb, 0.], [0., fb]];
+            // Setter case 0x12 @0x1409637f0, audio 0x140aa2350: color is the base delay in ms,
+            // depth * 50 frames of excursion, feedback * 0.95 subtracted, phase * 0.25 cycles.
+            if unit_set(unit).is_some() {
+                generic(notes, "tempo-synced modulation speed", "Phaser Hz getter; the speed object's class was not confirmed".into());
+            }
+            let mut line = Line::single(DelayTime::Ms(f64::from(color)), 6.);
+            line.native = Native::LegacyFlanger { color, depth, feedback };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
     };
@@ -181,8 +183,9 @@ mod tests {
         assert_eq!(chorus.lfo.rate, sampler_ir::fx::timemod::Rate::Hz(2.));
         assert!(!notes.is_empty());
 
-        let (flanger, _) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
-        assert!(flanger.line.unwrap().feedback.matrix[0][0] > 0.4);
+        let (flanger, notes) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
+        assert_eq!(flanger.line.unwrap().native, sampler_ir::fx::timemod::Native::LegacyFlanger { color: 2., depth: 0.5, feedback: 0.5 });
+        assert!(notes.is_empty());
     }
 
     #[test]

@@ -85,6 +85,11 @@ pub enum Native {
     /// when `unit` > 1e-9 the delay is `unit * 60 / tempo * time * 1000` ms
     /// (getter 0x140a74bf0).
     LegacyDelay { time: f32, unit: f32, feedback: f32, damping: f32, pan: f32 },
+    /// Kontakt Legacy Flanger (0x12): 4096-frame ring, 4-point Lagrange read,
+    /// negative feedback, LFO excursion `depth * 50` frames around `color` ms
+    /// (audio 0x140aa2350, setter 0x1409637f0). Rate and phase come from
+    /// [`Config::lfo`] (phase already scaled by 0.25).
+    LegacyFlanger { color: f32, depth: f32, feedback: f32 },
 }
 
 /// Modulated multi-tap delay line.
@@ -259,8 +264,14 @@ impl Config {
             }
             if let Native::LegacyDelay { time, unit, feedback, damping, pan } = l.native {
                 let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
-                if !(time.is_finite() && time >= 0. && unit.is_finite() && unit >= 0. && unit_interval(feedback) && unit_interval(damping) && unit_interval(pan)) {
+                if !(time.is_finite() && time >= 0. && unit.is_finite() && unit_interval(feedback) && unit_interval(damping) && unit_interval(pan)) {
                     return Err("legacy delay");
+                }
+            }
+            if let Native::LegacyFlanger { color, depth, feedback } = l.native {
+                let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !(color.is_finite() && (0. ..=5.).contains(&color) && unit_interval(depth) && unit_interval(feedback)) {
+                    return Err("legacy flanger");
                 }
             }
             for v in [l.voice_phase, l.voice_spread, l.feedback.drive] {
