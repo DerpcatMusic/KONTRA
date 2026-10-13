@@ -1,5 +1,5 @@
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{BLOCK, Planar, flush};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{BLOCK, Planar, flush};
 use crate::Error;
 
 #[derive(Clone, Copy, Debug)]
@@ -455,9 +455,9 @@ pub(crate) struct FilterContext<'a> {
     pub bank: &'a mut FilterBank,
     pub expression: Option<(crate::ExpressionId, crate::Expression)>,
     /// A bus's reverbs, by `PreparedProcessor::Reverb` index; empty elsewhere.
-    pub reverbs: &'a mut [super::Reverb],
+    pub reverbs: &'a mut [super::super::Reverb],
     /// A bus's convolutions, by `PreparedProcessor::Convolution` index.
-    pub convolutions: &'a mut [super::Convolution],
+    pub convolutions: &'a mut [super::super::Convolution],
 }
 /// Which cache a voice's filter resolved to for this block.
 #[derive(Clone, Copy, PartialEq, Eq)]

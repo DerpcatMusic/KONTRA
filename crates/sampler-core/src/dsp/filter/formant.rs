@@ -1,7 +1,7 @@
 //! Kontakt 8 Filter Reference: Formant I (Talk, Sharp, Size).
 //! Same-SHA Ghidra [ref], radare2 tables
 //! [ref] and polynomials [ref].
-use super::{Planar, ProcessorState};
+use super::super::{Planar, ProcessorState};
 
 #[rustfmt::skip]
 const FREQUENCIES: [[f32; 3]; 5] = [

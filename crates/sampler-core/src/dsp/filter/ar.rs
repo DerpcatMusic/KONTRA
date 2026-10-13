@@ -1,7 +1,7 @@
 //! Native FilterDJ controls and worker-reserved stereo state (saved types 100..=108).
 use super::ar_kernel::{self, ArKernel};
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{Planar, ProcessorState};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{Planar, ProcessorState};
 
 const QUANTUM: u32 = 32;
 pub(super) const CELLS: usize = 22;
@@ -289,7 +289,7 @@ mod tests {
             let mut offset = 0;
             while offset < QUANTUM as usize {
                 let len = partition.min(QUANTUM as usize - offset);
-                let mut block = [[0.; super::super::BLOCK]; 2];
+                let mut block = [[0.; crate::dsp::BLOCK]; 2];
                 for ch in 0..2 {
                     for i in 0..len {
                         let at = quantum * QUANTUM as usize + offset + i;
@@ -385,16 +385,16 @@ mod tests {
             ((seed >> 11) as f64 / (1u64 << 53) as f64 * 2. - 1.) * 0.65
         };
         let (mut input, mut output) = (Vec::new(), Vec::new());
-        for block_index in 0..(96_000 / super::super::BLOCK) {
-            let mut block = [[0.; super::super::BLOCK]; 2];
-            for i in 0..super::super::BLOCK {
+        for block_index in 0..(96_000 / crate::dsp::BLOCK) {
+            let mut block = [[0.; crate::dsp::BLOCK]; 2];
+            for i in 0..crate::dsp::BLOCK {
                 let v = noise();
                 block[0][i] = v;
                 block[1][i] = v;
             }
             input.extend_from_slice(&block[0]);
-            ar.process(&mut state, &mut cells, &[], &mut block, super::super::BLOCK,
-                (block_index * super::super::BLOCK) as u64, [0.; 4]);
+            ar.process(&mut state, &mut cells, &[], &mut block, crate::dsp::BLOCK,
+                (block_index * crate::dsp::BLOCK) as u64, [0.; 4]);
             output.extend_from_slice(&block[0]);
         }
         let power = |v: &[f64], hz: f64| {
