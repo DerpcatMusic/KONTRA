@@ -696,6 +696,11 @@ impl Runtime {
             if !offset.is_finite() {
                 return Err(Error::InvalidInput);
             }
+            // Phase mode uses raw ordinals; no continuous normalized player
+            // offset law has been admitted for this discrete selector.
+            if binding.law == EngineParameterLaw::WavetableForm && offset != 0. {
+                return Err(Error::InvalidInput);
+            }
             changed |= generation.controls.offsets[index] != offset;
         }
         if !changed {
