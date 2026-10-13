@@ -242,23 +242,36 @@ fn schema(
     views: &[sampler_ksp::ScriptView],
     state: &ScriptStateBuffer,
 ) -> Result<String, CoreError> {
-    use std::io::Write;
-    // Streams the same bytes `format!` produced, without a String per entry
-    // (persistent arrays reach hundreds of thousands of entries).
+    use std::fmt::Write;
+    // Hashes the same bytes as one `format!` per entry, through one reused
+    // buffer: persistent arrays reach hundreds of thousands of entries, and
+    // Debug's many tiny writes are slow straight into the hasher.
     let mut hash = blake3::Hasher::new();
+    let mut buffer = String::with_capacity(1 << 16);
+    let mut flush = |buffer: &mut String, hash: &mut blake3::Hasher, last: bool| {
+        if last || buffer.len() >= 1 << 16 {
+            hash.update(buffer.as_bytes());
+            buffer.clear();
+        }
+    };
     for view in views {
-        write!(hash, "{:?}", view.model().persistent).expect("hasher write");
+        write!(buffer, "{:?}", view.model().persistent).expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
     for entry in &state.values {
-        write!(hash, "{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).expect("hasher write");
+        write!(buffer, "{:?}:{}", entry.address, Atom::new(entry.value, 0).kind)
+            .expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
     for widget in runtime
         .widget_definitions(runtime.active_plan())
         .map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?
     {
-        write!(hash, "{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage)
-            .expect("hasher write");
+        write!(buffer, "{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage)
+            .expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
+    flush(&mut buffer, &mut hash, true);
     Ok(hash.finalize().to_hex().to_string())
 }
 
@@ -540,6 +553,48 @@ impl Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Saved projects carry this hash: buffered hashing must keep the bytes
+    /// of the original one-`format!`-per-entry schema.
+    #[test]
+    fn schema_hash_is_unchanged_by_buffered_hashing() {
+        let script = sampler_ksp::compile(
+            "on init\n declare %big[20000]\n declare @name\n make_persistent(%big)\n make_persistent(@name)\n end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let views = [script.view()];
+        let plan = script
+            .bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 8, 0);
+        let mut runtime = Runtime::new(plan, limits).unwrap();
+        let mut state = sampler_ksp::persistent_state_buffer(&views).unwrap();
+        runtime
+            .capture_script_state(runtime.active_plan(), &mut state)
+            .unwrap();
+        let mut legacy = blake3::Hasher::new();
+        for view in &views {
+            legacy.update(format!("{:?}", view.model().persistent).as_bytes());
+        }
+        for entry in &state.values {
+            legacy.update(
+                format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes(),
+            );
+        }
+        for widget in runtime.widget_definitions(runtime.active_plan()).unwrap() {
+            legacy.update(
+                format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
+            );
+        }
+        assert!(state.values.len() > 20000, "crosses the 64 KiB flush");
+        assert_eq!(
+            schema(&runtime, &views, &state).unwrap(),
+            legacy.finalize().to_hex().to_string()
+        );
+    }
 
     #[test]
     fn adding_dsp_owners_recalls_only_the_exact_previous_script_schema() {
