@@ -647,7 +647,7 @@ mod tests {
                     shape: None,
                     lag: 0,
                     scale: None,
-                    more_scales: [None; 2],
+                    more_scales: [None; crate::voice_mod::MORE_SCALES],
                 }],
                 ..Default::default()
             }],

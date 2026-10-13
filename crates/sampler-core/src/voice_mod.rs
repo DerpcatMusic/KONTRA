@@ -202,7 +202,7 @@ pub struct ModRoute {
 }
 
 /// Intensity assignments a route takes beyond its first.
-pub const MORE_SCALES: usize = 2;
+pub const MORE_SCALES: usize = 8;
 const SCALE_LAGS: usize = MORE_SCALES + 1;
 
 /// Changes an outgoing route's depth using another source. The default law
@@ -267,7 +267,7 @@ impl ModRoute {
 
     /// Every intensity assignment of the route, in application order.
     pub fn scales(&self) -> impl Iterator<Item = ModScale> + '_ {
-        self.scale.into_iter().chain(self.more_scales.into_iter().flatten())
+        self.scale.iter().chain(self.more_scales.iter().flatten()).copied()
     }
 }
 
@@ -557,10 +557,7 @@ impl VoiceModulation {
                                 || !unit.is_finite() || unit == 0.
                                 || !(0. ..=1.).contains(&(route.depth / unit))
                                 || !matches!(flags & !0x02, 0x10 | 0x14)
-                                || route.target == ModTarget::SampleStart
-                                || matches!(sources.get(s.source), Some(Prepared::Controller(_)
-                                    | Prepared::Pressure | Prepared::Timbre
-                                    | Prepared::PitchBend | Prepared::Script(_))))
+                                || route.target == ModTarget::SampleStart)
                     })
                 {
                     return Err(Error::InvalidInput);
