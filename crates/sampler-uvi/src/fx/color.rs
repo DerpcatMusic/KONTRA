@@ -7,9 +7,6 @@
 /// Why a drive, lo-fi, amp, cabinet or utility element is not mapped.
 pub(crate) fn unproved(element: &str) -> Option<&'static str> {
     Some(match element {
-        "BitCrusher" => {
-            "kernel 0x1412d1770 is proved and runs in the color superset (hold, floor quantizer, rational drive), but the public parameter conversion (BitSize, EffectSampleRate, Drive, Cutoff biquad) is not established"
-        }
         "Redux" | "Redux2" | "FormantCrusher" => {
             "crusher/decimator public parameter conversion is not established"
         }
