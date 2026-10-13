@@ -172,6 +172,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             level: knob(P::LoFiNoise, n.level),
             color: knob(P::LoFiColor, n.color),
         }),
+        tone: c.tone,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
             width: Parameter::Constant(s.width),
