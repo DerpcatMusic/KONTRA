@@ -18,6 +18,7 @@ use sampler_ir::fx::timemod::{
 use std::f64::consts::{PI, TAU};
 
 mod choral;
+mod dual;
 #[cfg(test)]
 mod tests;
 
@@ -255,7 +256,7 @@ impl TimeMod {
             taps = usize::from(line.tap_count);
             voices = usize::from(line.voices);
             voice_gain = 1. / voices as f64;
-            if line.interpolation != Interpolation::Nearest && line.interpolation != Interpolation::Linear {
+            if matches!(line.interpolation, Interpolation::Hermite | Interpolation::Lagrange) {
                 min_delay = 2.;
             }
             let scale = line.right_scale.max(1.);
@@ -295,6 +296,7 @@ impl TimeMod {
                     cap = law.frames();
                     choral = Some(Box::new(law));
                 }
+                Native::UviDualDelay(_) => cap = dual::ring(rate) + GUARD,
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -429,6 +431,9 @@ impl TimeMod {
         }
         if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
+        }
+        if let Some(Native::UviDualDelay(d)) = cfg.line.map(|l| l.native) {
+            return self.dual_delay(state, slab, block, len, tempo, d);
         }
         if let Some(Native::LegacyModDelay { base_ms, excursion, feedback, second_head, smoothing }) = cfg.line.map(|l| l.native) {
             return self.legacy_mod_delay(state, slab, block, len, tempo, (base_ms, excursion, feedback, second_head, smoothing));
@@ -738,8 +743,10 @@ impl TimeMod {
         let ms = if unit > f32::from_bits(0x3089705f) {
             let tempo = tempo as f32;
             let tempo = if tempo < f32::from_bits(0x3dcccccd) { 120. } else { tempo };
-            // Clamp [0, 5800] ms: the time object's constructor fields (0x140701ac2/ac6).
-            (((unit * 60.) / tempo) * time * 1000.).clamp(0., 5800.)
+            // Getter 0x140a74bf0 via 0x14072b380: a synced count below one
+            // unit reads as one (flag +0x20, set by 0x140a723e0), and the
+            // result clamps to [0, 5800] ms (constructor 0x140701ac2/ac6).
+            (((unit * 60.) / tempo) * time.max(1.) * 1000.).clamp(0., 5800.)
         } else {
             time
         };
@@ -787,8 +794,11 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
         let m = position + cap - k;
         slab[if m >= cap { m - cap } else { m }][c]
     };
-    if kind == Interpolation::Nearest {
-        return at((d + 0.5) as usize);
+    match kind {
+        Interpolation::Nearest => return at((d + 0.5) as usize),
+        Interpolation::Floor => return at(d as usize),
+        Interpolation::Ceil => return at(d.ceil() as usize),
+        _ => {}
     }
     let i = d as usize;
     let x = d - i as f64;
@@ -809,6 +819,6 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
             let (xm, xp, x2) = (x - 1., x + 1., x - 2.);
             -x * xm * x2 / 6. * m + xp * xm * x2 / 2. * a - xp * x * x2 / 2. * b + xp * x * xm / 6. * n
         }
-        Interpolation::Nearest => unreachable!(),
+        Interpolation::Nearest | Interpolation::Floor | Interpolation::Ceil => unreachable!(),
     }
 }

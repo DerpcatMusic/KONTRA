@@ -24,6 +24,10 @@ pub enum Interpolation {
     Hermite,
     /// 4-point third-order Lagrange.
     Lagrange,
+    /// The frame at or before the delay (UVI ring read mode 0, `0x1416485a0`).
+    Floor,
+    /// The frame at or after the delay (UVI TrackDelay's `ceil(seconds·rate)`).
+    Ceil,
 }
 
 /// A tap's base delay.
@@ -124,6 +128,37 @@ pub enum Native {
         scatter: bool,
         mode: u8,
     },
+    /// UVI DualDelay / DualDelayX core (Workstation 4.0.9 kernel
+    /// `0x14165c960`); the line's `interpolation` is its read mode and the
+    /// unit's dry/wet its equal-power mix.
+    UviDualDelay(DualDelay),
+}
+
+/// UVI DualDelay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualDelay {
+    /// Seconds, or quarter-note beats when synced; at most 5 s either way.
+    pub time: f32,
+    pub synced: bool,
+    /// DelayRatio / FeedbackRatio, `-1..=1`: shorten / weaken one side.
+    pub delay_ratio: f32,
+    pub feedback: f32,
+    pub feedback_ratio: f32,
+    /// Loop one-poles; off (DualDelayX Filtering off) skips both.
+    pub filters: bool,
+    pub low_cut_hz: f32,
+    pub high_cut_hz: f32,
+    /// Loop rotation in degrees.
+    pub rotation: f32,
+    /// Input and output width and rotation (rotation in eighth turns).
+    pub input: [f32; 2],
+    pub output: [f32; 2],
+    /// Peak delay-time modulation in cents, its rate and the right
+    /// channel's phase offset in half cycles.
+    pub mod_cents: f32,
+    pub mod_hz: f32,
+    pub mod_offset: f32,
 }
 
 /// Modulated multi-tap delay line.
@@ -335,6 +370,21 @@ impl Config {
                 let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
                 if !(time.is_finite() && time >= 0. && unit.is_finite() && unit_interval(feedback) && unit_interval(damping) && unit_interval(pan)) {
                     return Err("legacy delay");
+                }
+            }
+            if let Native::UviDualDelay(d) = l.native {
+                let all = [d.time, d.delay_ratio, d.feedback, d.feedback_ratio, d.low_cut_hz, d.high_cut_hz, d.rotation, d.mod_cents, d.mod_hz, d.mod_offset];
+                if !(all.iter().chain(&d.input).chain(&d.output).all(|v| v.is_finite())
+                    && d.time >= 0.
+                    && d.delay_ratio.abs() <= 1.
+                    && d.feedback_ratio.abs() <= 1.
+                    && (0. ..=1.).contains(&d.feedback)
+                    && d.low_cut_hz > 0.
+                    && d.high_cut_hz > 0.
+                    && d.mod_hz > 0.
+                    && d.mod_cents >= 0.)
+                {
+                    return Err("uvi dual delay");
                 }
             }
             if let Native::LegacyModDelay { base_ms, excursion, feedback, smoothing, .. } = l.native {
