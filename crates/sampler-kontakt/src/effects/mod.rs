@@ -1656,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn convolution_auto_gain_keeps_native_double_energy_sum() {
+    fn convolution_auto_gain_sums_energy_in_f32() {
         let recipe = super::Convolution {
             decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
             late: [1., 20., 20_000.], xpoint: 0.5,
@@ -1665,9 +1665,9 @@ mod tests {
         };
         let mut frames = vec![[0.0001, 0.00005]; 10_001];
         frames[0] = [1., 0.5];
-        let impulse = super::restore_impulse(&recipe, (48_000, frames)).unwrap();
-        // f32 products, f64 sum, f32 division/sqrt: CConvolver 0x1419b3200..3267.
-        assert_eq!(impulse.left[0].to_bits(), 0x3f3502a2);
+        let impulse = super::restore_impulse(&recipe, (44_100, frames)).unwrap();
+        // The wrapper's f32 sum (0x140ab6740) of 1 + 10000·1e-8 stays 1.0.
+        assert_eq!(impulse.left[0].to_bits(), 0x3f3504f3);
         assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
     }
 
@@ -2955,23 +2955,15 @@ mod tests {
     }
 
     #[test]
-    fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
-        let r = |time: f32, cut: f32, shelf: f32| {
-            space::galois(
-                &[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0],
-                &mut Vec::new(),
-            )
-            .network
-            .unwrap()
-        };
-        // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
-        assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
-        assert!((r(1.0, 0.0, 0.0).decay_seconds - 16.16).abs() < 0.5);
-        let end = r(0.0, 1.0, 1.0);
-        assert!(
-            (end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9
-        );
-        assert_eq!(r(0.0, 0.0, 0.0).input_cutoff_hz, 21_000.0);
+    fn reverb_drives_the_native_galois_core() {
+        let v = [0.0, 0.5, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9];
+        let n = space::galois(&v, &mut Vec::new()).network.unwrap();
+        assert_eq!(n.topology, sampler_ir::fx::space::Topology::Galois);
+        let g = n.galois.unwrap();
+        assert!(!g.hall);
+        assert_eq!(g.controls, [0.5, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 1.0, 0.9]);
+        // Time shows 3.2k ms at x = 0.5 (KONTAKT_REFERENCE s.21).
+        assert!((n.decay_seconds - 3.18).abs() < 0.01);
     }
 
     #[test]
@@ -3275,8 +3267,8 @@ mod tests {
         assert_eq!(v[0], 1.0);
         assert_eq!(v[1], 0.25);
         let mut notes = Vec::new();
-        let size = space::galois(&v, &mut notes).network.unwrap().size;
-        assert_eq!(size, 1.0, "hall keeps the full size factor");
+        let core = space::galois(&v, &mut notes).network.unwrap().galois.unwrap();
+        assert!(core.hall, "type 1 runs the Hall core");
         hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
         assert!(hall.params().is_none(), "Kontakt throws on room type 2");
     }

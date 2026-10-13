@@ -8,7 +8,29 @@ use crate::{
     ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+/// Recently opened banks, in memory only. Each load walked the bank's whole
+/// record chain and re-derived its content key (Augmented Orchestra: 0.5 s
+/// warm, 13 s cold), so every preset switch within a bank paid it again.
+struct Recent {
+    ufs: Arc<Ufs>,
+    directory: Directory,
+    paths: HashMap<String, Option<usize>>,
+    content_key: Option<u64>,
+}
+static RECENT: Mutex<Vec<Recent>> = Mutex::new(Vec::new());
+/// Large banks hold ~100k member records; keep the last few only.
+const RECENT_BANKS: usize = 2;
+
+fn recent<T>(ufs: &Ufs, f: impl FnOnce(&mut Recent) -> T) -> Option<T> {
+    let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    recent.iter_mut().find(|r| r.ufs.same_bank(ufs)).map(f)
+}
 
 /// An open bank. Deliberately not Debug: it holds access values.
 pub struct Bank {
@@ -99,8 +121,11 @@ impl Bank {
         let mut bank = Self::open_metadata(path)?;
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
+        let cached = recent(&bank.ufs, |r| r.content_key).flatten();
         // Only banks with encrypted members need a content state prepared.
-        let content_key = if bank
+        let content_key = if cached.is_some() {
+            cached
+        } else if bank
             .directory
             .files
             .iter()
@@ -114,6 +139,7 @@ impl Bank {
             None
         };
         drop(span);
+        recent(&bank.ufs, |r| r.content_key = content_key);
         bank.content_key = content_key;
         Ok(bank)
     }
@@ -127,10 +153,21 @@ impl Bank {
         drop(span);
         let span = sampler_kontakt::audit::Span::new("uvi_directory_namespace");
         let namespaces = Namespaces::native();
+        let program_namespace = namespaces.program;
+        if let Some((ufs, directory, paths)) =
+            recent(&ufs, |r| (r.ufs.clone(), r.directory.clone(), r.paths.clone()))
+        {
+            return Ok(Self {
+                ufs,
+                directory,
+                content_key: None,
+                program_namespace,
+                paths,
+            });
+        }
         let directory = ufs
             .decode_directory(&namespaces.metadata)
             .map_err(bank_error)?;
-        let program_namespace = namespaces.program;
         drop(span);
         let mut paths = HashMap::with_capacity(directory.files.len());
         for (index, member) in directory.files.iter().enumerate() {
@@ -141,8 +178,22 @@ impl Bank {
                     .or_insert(Some(index));
             }
         }
+        let ufs = Arc::new(ufs);
+        let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+        recent.retain(|r| !r.ufs.same_bank(&ufs));
+        recent.insert(
+            0,
+            Recent {
+                ufs: ufs.clone(),
+                directory: directory.clone(),
+                paths: paths.clone(),
+                content_key: None,
+            },
+        );
+        recent.truncate(RECENT_BANKS);
+        drop(recent);
         Ok(Self {
-            ufs: Arc::new(ufs),
+            ufs,
             directory,
             content_key: None,
             program_namespace,
@@ -678,6 +729,31 @@ mod tests {
                 .xml
                 .contains("ScriptLive=")
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Reopening reuses the recent bank's directory; a rewritten file never does.
+    #[test]
+    fn recent_bank_metadata_is_reused_only_for_the_same_file() {
+        let path = std::env::temp_dir().join(format!(
+            "kontra-recent-bank-{}-{}.ufs",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let text = |bank: &Bank| bank.program("preset.uvip").unwrap().0;
+        let (first, first_xml) = clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"One\"/></UVI4>");
+        std::fs::write(&path, first).unwrap();
+        assert_eq!(text(&Bank::open(&path).unwrap()).as_bytes(), first_xml);
+        let reopened = Bank::open(&path).unwrap();
+        assert!(recent(&reopened.ufs, |_| ()).is_some(), "reopen hits the recent bank");
+        assert_eq!(text(&reopened).as_bytes(), first_xml);
+        let (second, second_xml) =
+            clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"Second program\"/></UVI4>");
+        std::fs::write(&path, second).unwrap();
+        assert_eq!(text(&Bank::open(&path).unwrap()).as_bytes(), second_xml);
         std::fs::remove_file(path).unwrap();
     }
 
