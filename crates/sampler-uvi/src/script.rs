@@ -597,6 +597,10 @@ struct Shared {
     impulses: RefCell<std::collections::HashMap<usize, sampler_ir::Impulse>>,
     /// Uploads sent to the audio thread; dropped here once it has let go.
     retired: RefCell<Vec<ImpulseUpload>>,
+    /// Convolver elements whose impulse fields changed since commands were
+    /// last taken. A script sets fields one by one (Time, Damping, Width...)
+    /// and each rebuild costs a whole impulse, so they rebuild once per batch.
+    stale_impulses: RefCell<Vec<usize>>,
     files: Box<dyn Files>,
     config: Config,
     tempo: Cell<f64>,
@@ -801,6 +805,14 @@ impl Shared {
     fn next_id(&self) -> u64 {
         self.ids.set(self.ids.get() + 1);
         self.ids.get()
+    }
+
+    /// Rebuild the impulses whose fields changed, once each.
+    fn rebuild_stale_impulses(&self) {
+        let stale = std::mem::take(&mut *self.stale_impulses.borrow_mut());
+        for id in stale {
+            self.rebuild_impulse(id, None);
+        }
     }
 
     /// Rebuild element `id`'s bus convolver from its parameters and source
@@ -1306,6 +1318,7 @@ impl ScriptHost {
             saved: RefCell::new(BTreeMap::new()),
             impulses: RefCell::new(Default::default()),
             retired: RefCell::new(Vec::new()),
+            stale_impulses: RefCell::new(Vec::new()),
             files: Box::new(files),
             config,
             tempo: Cell::new(120.0),
@@ -1777,7 +1790,12 @@ impl ScriptHost {
                             None => params.push((name.clone(), value.to_string())),
                         }
                     }
-                    return Ok(s.rebuild_impulse(id, None).then_some(true));
+                    // Rebuilt when commands are next taken, once for all fields.
+                    let mut stale = s.stale_impulses.borrow_mut();
+                    if !stale.contains(&id) {
+                        stale.push(id);
+                    }
+                    return Ok(Some(true));
                 }
                 let engine = |name: &str, value: f64| {
                     let (name, value) = {
@@ -2842,6 +2860,7 @@ impl ScriptHost {
     }
 
     pub fn take_commands(&mut self) -> Vec<Command> {
+        self.shared.rebuild_stale_impulses();
         std::mem::take(&mut *self.shared.commands.borrow_mut())
     }
 
