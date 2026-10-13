@@ -763,6 +763,7 @@ fn voice_limit(
     };
     Ok(ir::VoiceLimit {
         voices: v.max_num_voices.max(1) as u32,
+        exclusive_set: u32::try_from(v.exclusion_group).ok(),
         kill,
         prefer_released: v.prefer_released,
         fade: ir::Time::Milliseconds(f64::from(v.ms_fade_time.max(0))),
