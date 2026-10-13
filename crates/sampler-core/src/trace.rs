@@ -785,8 +785,8 @@ impl TraceGraph {
                 ],
                 0,
             ),
-            PreparedProcessor::Compressor(c) => (
-                "compressor",
+            PreparedProcessor::Dynamics(c) => (
+                "dynamics",
                 c.trace_parameters()
                     .into_iter()
                     .map(|(n, v)| parameter(n, v))
@@ -906,7 +906,6 @@ impl TraceGraph {
             PreparedProcessor::LiveDistortion(d) => ("kontakt_distortion", vec![parameter("drive", d.drive), parameter("damping", d.damping)], 0),
             PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
             PreparedProcessor::LegacyPhaser(p) => ("kontakt_legacy_phaser", vec![constant("depth", f64::from(p.depth)), constant("feedback", f64::from(p.feedback))], 0),
-            PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::Phaser(p) => ("kontakt_phaser_filter", vec![constant("coefficient", f64::from(p.coefficient)), constant("feedback", f64::from(p.feedback))], 0),
             PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),

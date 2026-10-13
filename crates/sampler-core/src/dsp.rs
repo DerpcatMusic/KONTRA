@@ -162,9 +162,8 @@ pub enum Processor {
     Biquad(Biquad),
     ControlGain(ControlRange),
     Delay(Delay),
-    /// Stereo compressor; the smoothed reduction lives in the stage's state.
-    Compressor(CompressorSettings),
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
+    /// Every compressor, limiter, gate and expander (`dsp/dynamics/`).
+    Dynamics(DynamicsSettings),
     LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
@@ -266,8 +265,7 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
-            Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
-            Processor::Compressor(settings) => settings.valid(),
+            Processor::Dynamics(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
@@ -302,8 +300,6 @@ pub(crate) mod space;
 pub(crate) mod timemod;
 mod ar;
 mod ar_kernel;
-mod compressor;
-mod enhanced_compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
@@ -336,7 +332,7 @@ mod impulse_shape;
 pub use impulse_shape::{neutral_impulse_shape, shape_impulse};
 mod shaping;
 pub(super) mod svf;
-pub use compressor::CompressorSettings;
+pub use dynamics::DynamicsSettings;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub use convolution::ConvolutionUpload;
@@ -362,8 +358,7 @@ pub(super) enum PreparedProcessor {
         delay: Delay,
         offset: usize,
     },
-    Compressor(compressor::Compressor),
-    KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
+    Dynamics(dynamics::Dynamics),
     Rectify(Rectifier),
     Saturation(f32),
     LiveSaturation(control::PreparedParameter),
@@ -542,9 +537,8 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
                 }
-                Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
-                Processor::Compressor(settings) => {
-                    PreparedProcessor::Compressor(settings.prepare(rate, bindings))
+                Processor::Dynamics(settings) => {
+                    PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
                 }
                 Processor::Branch {
                     count,
@@ -962,11 +956,10 @@ impl PreparedVoiceChain {
                 matches!(
                     stage,
                     PreparedProcessor::Delay { .. }
-                        | PreparedProcessor::Compressor(_)
+                        | PreparedProcessor::Dynamics(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::LoFi(_)
                         | PreparedProcessor::LegacyPhaser(_)
-                        | PreparedProcessor::KontaktEnhancedCompressor(_)
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::LiveDistortion(_)
@@ -1245,10 +1238,14 @@ pub(super) fn process<const TRACE: bool>(
                     len,
                 );
             }
-            PreparedProcessor::KontaktEnhancedCompressor(c) => c.process(state, block, len),
-            PreparedProcessor::Compressor(compressor) => {
-                compressor.process(state, parameters, block, len, at)
-            }
+            PreparedProcessor::Dynamics(dynamics) => dynamics.process(
+                state,
+                &mut delay_samples[dynamics.cells()],
+                parameters,
+                block,
+                len,
+                at,
+            ),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
             PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
