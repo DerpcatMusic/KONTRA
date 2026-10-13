@@ -613,6 +613,8 @@ pub struct Prepared {
     pub(super) authored_engine_parameters: Box<[(super::EngineParameterAddress, i32)]>,
     pub(super) envelope_controls: Box<[[Option<super::ControlId>; 6]]>,
     pub(super) wavetable_controls: Box<[Option<[super::ControlId; 5]>]>,
+    /// Time-stretch source per group (empty: the plan has none).
+    pub(super) stretch_groups: Box<[Option<super::source::StretchSpec>]>,
     pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
@@ -849,6 +851,7 @@ impl Prepared {
             authored_engine_parameters: Box::new([]),
             envelope_controls: Box::new([]),
             wavetable_controls: Box::new([]),
+            stretch_groups: Box::new([]),
             engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),

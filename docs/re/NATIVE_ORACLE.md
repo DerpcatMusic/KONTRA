@@ -79,7 +79,11 @@ expose: effects, modulation, scripts, DSP.
    negative-depth flags, shaped/inverted). Next: Kontakt's modulation-law compiler
    FUN_140873040 (15 KB; templates `$out := $in * {} * $intensity`, `$in + {} * $intensity`,
    `table($c, %s($signal))`, `fcinv_neg`, ...) gives every target's native law.
-2. Conflux: 90 of 92 groups are Time Machine 2; they play as plain sampler.
+2. ~~Conflux: 90 of 92 groups are Time Machine 2~~ — corrected 2026-10-13: Conflux stores
+   source mode 3 = DFD on 90 groups (Kontakt's enum-name table at exe offset 0x7555700:
+   Sampler, Tone, TimeMachine, DirectFromDisk, BeatMachine, TimeMachine2, S1200, MP60,
+   TimeMachinePro). No corpus library uses Time Machine yet; the engine exists
+   (sampler-core source/time_machine.rs; TM1 native, TM2/Pro labelled approximations).
 3. Modulators never decoded: DBD envelope 0x41, Glide 0x0B, envelope follower 0x0A, Arp 0x09,
    group dynamics 0x4A, zone level envelope 0x2D.
 4. Random Bipolar external source law (550 in Conflux).
