@@ -387,8 +387,10 @@ impl<'a> Reader<'a> {
         self.take(length)
     }
     fn optional(&mut self) -> Result<Option<Bytes<'a>>, Error> {
+        // Native optional-string helper 0x140743010: every signed-negative length
+        // is absent, zero is a present empty string.
         let length = self.u32()?;
-        if length == u32::MAX {
+        if (length as i32) < 0 {
             Ok(None)
         } else {
             self.take(length as usize).map(Some)

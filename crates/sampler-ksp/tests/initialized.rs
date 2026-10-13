@@ -69,3 +69,21 @@ fn deferred_lowering_keeps_each_slots_initializer_observation() {
     assert_eq!(second.persistence_changed.present, Some(false));
     assert_eq!(second.error.as_ref().unwrap().phase, "lower");
 }
+
+#[test]
+fn init_transport_values_come_from_the_host_or_are_rejected() {
+    let source = "on init\ndeclare $x\n$x := $NI_BPM + $DURATION_BAR\nset_engine_par($ENGINE_PAR_VOLUME, $x, -1, -1, -1)\nend on";
+    assert!(sampler_ksp::initialize(source, Limits::LIBRARY, &Environment::default()).is_err());
+    let env = Environment {
+        transport: Some(sampler_ksp::Transport { tempo: 137, bar: 100, ..Default::default() }),
+        ..Default::default()
+    };
+    let initialized = sampler_ksp::initialize(source, Limits::LIBRARY, &env).unwrap();
+    assert_eq!(initialized.engine_pars()[0].value, 237);
+}
+
+#[test]
+fn init_random_is_rejected_not_the_lower_bound() {
+    let source = "on init\ndeclare $x\n$x := random(5, 9)\nset_engine_par($ENGINE_PAR_VOLUME, $x, -1, -1, -1)\nend on";
+    assert!(sampler_ksp::initialize(source, Limits::LIBRARY, &Environment::default()).is_err());
+}

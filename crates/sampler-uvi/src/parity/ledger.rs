@@ -160,7 +160,10 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         for module in modules {
             let (file, anchor, supported) = match module {
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer" | "AuxEffect" | "ScriptProcessor" => ("script.rs", "fn build_program", true),
-                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb" => ("inserts.rs", "fn inserts", true),
+                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb"
+                | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho"
+                | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser"
+                | "Phasor" | "PhasorFilter" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" => ("inserts.rs", "fn inserts", true),
                 "ConstantModulation" | "ScriptEventModulation" | "DAHDSR" | "AHD" | "LFO" | "MultiLFO" | "StepEnvelope" => ("modulation.rs", "fn signal", true),
                 _ => ("inserts.rs", "fn inserts", false),
             };
@@ -169,7 +172,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
                 if supported { "host element / partial IR translation" } else { "unbound module" }));
             for p in crate::script::parameters::definitions(module) {
                 let live = !crate::engine_parameters::lanes(module, p.name).is_empty()
-                    || p.name == "Bypass" && matches!(module, "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "WaveShaper" | "Convolver" | "SampledReverb" | "AuxEffect")
+                    || p.name == "Bypass" && matches!(module, "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "WaveShaper" | "Convolver" | "SampledReverb" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" | "AuxEffect")
                     || matches!((module, p.name), ("Program" | "Layer" | "Keygroup" | "SamplePlayer", "Gain" | "Pan") | ("SamplePlayer", "Pitch") | ("Program", "Polyphony") | ("ConstantModulation", "Value" | "Style"))
                     || matches!(module, "Convolver" | "SampledReverb") && crate::script::IMPULSE_FIELDS.contains(&p.name);
                 add(row(&format!("setParameter {module}.{}", p.name), K::LuaParameter, if live {S::Approximate} else {S::Stub}, "script.rs", "\"setParam\"",

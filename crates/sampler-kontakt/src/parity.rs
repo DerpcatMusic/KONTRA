@@ -252,6 +252,7 @@ mod tests {
         data.extend(u32::MAX.to_le_bytes());
         data.extend((link.len() as u32).to_le_bytes());
         data.extend(link.as_bytes());
+        data.extend(0u32.to_le_bytes()); // persistent-table count
         Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
