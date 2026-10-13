@@ -2274,6 +2274,9 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
+mod time_machine;
+#[allow(unused_imports)] // wired by the voice source in a later commit
+pub(crate) use time_machine::{Engine as StretchEngine, Mode as StretchMode, ModeConfig, Params as StretchParams, Region as StretchRegion};
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
 /// Largest window `render_run` gathers across storage boundaries.
