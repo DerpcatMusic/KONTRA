@@ -43,6 +43,7 @@ fn omitted_voice_group_override_still_binds_its_native_shared_limit() {
         start_criteria: vec![],
         voice_groups: vec![],
         snapshot_groups: vec![],
+        retained_snapshot: Default::default(),
         engine: vec![],
         dynamic: false,
         eq_mod_slots: HashMap::new(),
