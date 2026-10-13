@@ -122,6 +122,17 @@ pub struct Region {
     pub looped: Option<Range<usize>>,
 }
 
+const MODES: [Mode; 3] = [Mode::TimeMachine, Mode::TimeMachine2, Mode::TimeMachinePro];
+
+/// `(grain, scratch reach, hop)` frames of a configuration at `rate`.
+fn dims(cfg: ModeConfig, rate: u32) -> (usize, usize, usize) {
+    let hop = ((cfg.grain_ms * rate as f32 / 1000.) as usize / cfg.overlap).max(8);
+    let grain = hop * cfg.overlap;
+    let search = (cfg.search * hop as f32) as usize;
+    // Grain read at the largest step + interpolation guard + both search directions.
+    (grain, (grain as f64 * MAX_STEP) as usize + 2 * search + 8, hop)
+}
+
 /// Largest `step` the buffers are sized for (two octaves up).
 pub const MAX_STEP: f64 = 4.;
 
@@ -152,6 +163,7 @@ impl LinearClock {
 
 pub struct Engine {
     cfg: ModeConfig,
+    rate: u32,
     grain: usize,
     hop: usize,
     window: Box<[f32]>,
@@ -171,24 +183,29 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Allocates every buffer the engine will ever use.
+    /// Allocates every buffer for `mode` and nothing else.
     pub fn new(mode: Mode, hq: bool, rate: u32) -> Self {
-        let cfg = mode.config(hq);
-        let hop = ((cfg.grain_ms * rate as f32 / 1000.) as usize / cfg.overlap).max(8);
-        let grain = hop * cfg.overlap;
-        let search = (cfg.search * hop as f32) as usize;
-        // Window reach + interpolation guard + both search directions.
-        let reach = (grain as f64 * MAX_STEP) as usize + 2 * search + 8;
-        // Periodic Hann at constant overlap-add, normalised to unity gain.
-        let norm = 2. / cfg.overlap as f32;
-        let window = (0..grain)
-            .map(|n| norm * (0.5 - 0.5 * (std::f32::consts::TAU * n as f32 / grain as f32).cos()))
-            .collect();
+        let mut engine = Self::with_capacity(rate);
+        engine.configure(mode, hq);
+        engine
+    }
+
+    /// Sizes for the largest configuration of any mode, so [`Self::configure`]
+    /// can switch modes per voice without allocating. Control side.
+    pub fn with_capacity(rate: u32) -> Self {
+        let (mut grain, mut reach) = (0, 0);
+        for mode in MODES {
+            for hq in [false, true] {
+                let (g, r, _) = dims(mode.config(hq), rate);
+                (grain, reach) = (grain.max(g), reach.max(r));
+            }
+        }
         Self {
-            cfg,
-            grain,
-            hop,
-            window,
+            cfg: Mode::TimeMachine2.config(false),
+            rate,
+            grain: 0,
+            hop: 1,
+            window: vec![0.; grain].into(),
             acc: vec![[0.; 2]; grain].into(),
             scratch: vec![[0.; 2]; reach].into(),
             head: 0,
@@ -199,6 +216,21 @@ impl Engine {
             params: Params::default(),
             drain: None,
             starved: false,
+        }
+    }
+
+    /// Switch mode (grain size, overlap, search) inside the allocated capacity;
+    /// the window is recomputed in place. Call before [`Self::start`].
+    pub fn configure(&mut self, mode: Mode, hq: bool) {
+        let cfg = mode.config(hq);
+        let (grain, _, hop) = dims(cfg, self.rate);
+        self.cfg = cfg;
+        self.grain = grain;
+        self.hop = hop;
+        // Periodic Hann at constant overlap-add, normalised to unity gain.
+        let norm = 2. / cfg.overlap as f32;
+        for (n, w) in self.window[..grain].iter_mut().enumerate() {
+            *w = norm * (0.5 - 0.5 * (std::f32::consts::TAU * n as f32 / grain as f32).cos());
         }
     }
 
