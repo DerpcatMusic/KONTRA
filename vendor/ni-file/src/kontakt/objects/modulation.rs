@@ -11,9 +11,10 @@ use crate::{
     Error,
 };
 
-/// Group/source parameters stored without a module slot byte. The six
-/// wavetable names map to native target IDs 11..=16; both native target
-/// readers and writers omit the module slot for these IDs.
+/// Group/source parameters stored without a module slot byte: the native
+/// target registry's group/source IDs 2, 3, 6, 7, 8, 11..=19, 21, 176, 177 and
+/// 244, not only wavetables (IDs 11..=16 are the six wavetable names). Both
+/// native target readers and writers omit the module slot for these IDs.
 const GROUP_TARGETS: [&str; 18] = [
     "volume",
     "pan",
@@ -46,8 +47,11 @@ pub struct ModTarget {
     pub param: String,
     /// Modulation depth; every local preset stores 0..=1.
     pub intensity: f32,
-    /// Lag (smoothing) time; the Kontakt manual gives this knob in milliseconds.
-    pub lag_ms: u16,
+    /// Signed 16-bit route lag (target stride 0x30, +0xe in the native route
+    /// compiler FUN_140873040). Positive values are the manual's milliseconds;
+    /// negative values select a different native smoothing law whose cadence is
+    /// unproved, so consumers must report them rather than smooth.
+    pub lag_ms: i16,
     /// KSP target name (`find_target`); `<none>` or empty when unnamed.
     pub name: String,
     /// Owning module slot for module parameters; `None` for group parameters.
@@ -308,7 +312,7 @@ pub(crate) fn read_targets(
         }
         let unknown_i16 = reader.read_i16_le()?;
         let unknown_flags = reader.read_u8()?;
-        let lag_ms = reader.read_u16_le()?;
+        let lag_ms = reader.read_i16_le()?;
         let name = read_assignment_name(reader, legacy)?;
         let slot = if GROUP_TARGETS.contains(&param.as_str()) {
             None
@@ -482,7 +486,8 @@ mod tests {
                 data.extend(0.25f32.to_le_bytes());
                 data.extend((-1i16).to_le_bytes());
                 data.push(0x12);
-                data.extend(250u16.to_le_bytes());
+                let lag: i16 = if source % 2 == 0 { -250 } else { 250 };
+                data.extend(lag.to_le_bytes());
                 data.extend(0u32.to_le_bytes());
                 data.push(1);
                 data.extend([1, 1]);
@@ -513,7 +518,7 @@ mod tests {
                 let p = object.params().unwrap();
                 assert_eq!(p.targets[0].signed_intensity(), -0.25);
                 assert!(p.targets[0].invert);
-                assert_eq!(p.targets[0].lag_ms, 250);
+                assert_eq!(p.targets[0].lag_ms, if source % 2 == 0 { -250 } else { 250 });
                 let ShaperCurve::Table(table) = &p.targets[0].shaper.as_ref().unwrap().curve else {
                     panic!("table")
                 };
