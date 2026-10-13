@@ -1,10 +1,9 @@
 //! Kontakt `filter` effects onto sampler_ir::fx::filter.
 //!
-//! The saved type ids and names come from the Kontakt 8 binary: the KSP constant registration
-//! order ($FILTER_TYPE_*, file offset 0x4e7c288) matches the ids accepted by the probe
-//! (`filter_subtypes.tsv`) and the GUI-verified ids 3 (Legacy HP1), 13 (Phaser), 19 (3x2
-//! Versatile), 22..24 (EQ), 30..41 (Ladder), 52, 54, 55, 57 (SV), 70/71 (Daft), 90, 100..108.
-//! Ids marked "inferred" are placed by that order only; 5 and 18 are the two gaps in it.
+//! The saved type ids are measured: each `$FILTER_TYPE_*` constant set through
+//! `set_engine_par(EFFECT_SUBTYPE)` in real Kontakt 8 and read back from the saved
+//! BParFXFilter (docs/re/kontakt-bindings/filter-type-ids.tsv, filter_subtypes.tsv: every id
+//! below is accepted, every other id in 0..=140 is stored as 0).
 //!
 //! The native class behind each id (RTTI): BFilter1Pole{LP,HP}, BFilter2Pole{LP,HP,BP},
 //! BFilter4Pole{LP,HP,BP,BR}, BFilter6PoleLP, BFilterPhaser, BFilterPro52, BFilterLadder,
@@ -49,7 +48,7 @@ const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
-const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; binding of type 91 to that offset is inferred";
+const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; type 91 is measured ($FILTER_TYPE_FORMANT_2)";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
     use Build::{Config as C, Elsewhere, Gap};
@@ -65,10 +64,10 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         11 => ("Legacy BR4", C(cascade(Nt, 4), Exact, LEGACY)),
         12 => ("Legacy LP6", C(cascade(Lp, 6), Exact, LEGACY)),
         13 => ("Phaser", Elsewhere("Processor::Phaser arm")),
-        14 => ("Vowel A", Gap("BFilterVowelA core not extracted (id inferred)")),
-        15 => ("Vowel B", Gap("BFilterVowelB core not extracted (id inferred)")),
-        16 => ("Pro-53", Gap("BFilterPro52 core not extracted; passband +3.3 dB measured only (id inferred)")),
-        17 => ("Legacy Ladder", Gap("BFilterLadder_legacy core not extracted (id inferred)")),
+        14 => ("Vowel A", Gap("BFilterVowelA core not extracted")),
+        15 => ("Vowel B", Gap("BFilterVowelB core not extracted")),
+        16 => ("Pro-53", Gap("BFilterPro52 core not extracted; passband +3.3 dB measured only")),
+        17 => ("Legacy Ladder", Gap("BFilterLadder_legacy core not extracted")),
         19 => ("3x2 Versatile", Gap("Filter3x2 module and BFilterVersatile core not extracted")),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
@@ -98,9 +97,9 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         60 => ("SV BP6", C(svf(Bp, 6), Partial, SV)),
         61 => ("SV HP6", C(svf(Hp, 6), Partial, SV)),
         62 => ("SV Notch 6", C(svf(Nt, 6), Partial, SV)),
-        63 => ("SV Par LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted (id inferred)")),
-        64 => ("SV Par BP/BP", Gap("BFilterMultiSV topology and its extra controls not extracted (id inferred)")),
-        65 => ("SV Ser LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted (id inferred)")),
+        63 => ("SV Par LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
+        64 => ("SV Par BP/BP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
+        65 => ("SV Ser LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
         70 => ("Daft LP", C(native(Topology::Daft, Lp, 2), Partial, DAFT)),
         71 => ("Daft HP", C(native(Topology::Daft, Hp, 2), Partial, DAFT)),
         90 => ("Formant I", C(native(Topology::Formant, Lp, 0), Exact, "")),
@@ -114,6 +113,12 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         106 => ("AR LP2/4", C(native(Topology::Ar, Lp, 0), Exact, AR)),
         107 => ("AR BP2/4", C(native(Topology::Ar, Bp, 0), Exact, AR)),
         108 => ("AR HP2/4", C(native(Topology::Ar, Hp, 0), Exact, AR)),
+        120 => ("Simple LP/HP", Gap("BFilterSimpleLPHP (vtable 0x144f11f40) core not extracted")),
+        130 => ("Dual SKF", Gap("BFilterDualSKF (vtable 0x144f12808) core not extracted")),
+        140 => ("Monark LP1", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
+        141 => ("Monark LP2", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
+        142 => ("Monark LP4", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
+        143 => ("Monark BP", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
         _ => return None,
     })
 }
@@ -170,7 +175,7 @@ pub(crate) fn cutoff_octaves(id: i32) -> Option<f64> {
 /// Every saved type with its name and how it is realised, for the coverage report.
 #[cfg(test)]
 pub(crate) fn coverage() -> Vec<(i32, &'static str, String)> {
-    (0..=108)
+    (0..=143)
         .filter_map(|id| {
             let (name, b) = build(id)?;
             let status = match b {
