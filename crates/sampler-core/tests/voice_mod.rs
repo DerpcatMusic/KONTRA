@@ -745,6 +745,7 @@ fn breakpoint_envelope_glides_holds_at_sustain_and_releases() {
     program.breakpoints = vec![Breakpoints {
         points: vec![point(64, 1.), point(128, 0.)],
         sustain: Some(0),
+        loop_range: None,
     }];
     let mut rt = Runtime::new(
         modulated(

@@ -11,7 +11,11 @@
 //! Layout: every prepared program is flat arrays (sources, routes, shapes);
 //! runtime state is structure-of-arrays sized at runtime construction for the
 //! largest program, so rendering never allocates.
-use crate::{Envelope, EnvelopeCurve, Error, envelope::EnvelopeState};
+use crate::{Envelope, Error, blocks::envelope::EnvelopeState};
+pub use crate::blocks::envelope::{Breakpoint, Breakpoints};
+use crate::blocks::envelope::Segment;
+pub use crate::blocks::lfo::{Lfo, LfoInputs, LfoRate, LfoShape};
+use crate::blocks::lfo::{hash, uniform, wave};
 
 struct Shape {
     points: Box<[(f32, f32)]>,
@@ -66,51 +70,6 @@ impl Shape {
         };
         interpolate(points, x, after)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LfoShape {
-    /// Saved Digital Multi sine; prepared native fade gains, separate from the linear `Lfo::fade`.
-    DigitalSine {
-        level: f64,
-        fade: crate::KontaktLfoFade,
-    },
-    /// Signed bipolar peak, prepared in -1..=1.
-    SineScaled(f64),
-    /// Bipolar zero, including every phase, delay and fade state.
-    Zero,
-    Sine,
-    Triangle,
-    Square,
-    SawUp,
-    SawDown,
-    SampleAndHold,
-    /// A new random value each cycle, reached linearly by the cycle's end.
-    Random,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LfoRate {
-    Hertz(f64),
-    /// Cycle length in quarter-note beats at [`crate::Runtime::set_tempo`].
-    Beats(f64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lfo {
-    pub shape: LfoShape,
-    pub rate: LfoRate,
-    /// Cycle position at the start, 0..1.
-    pub phase: f64,
-    /// Silent frames after the voice starts.
-    pub delay: u32,
-    /// Frames of linear depth ramp after the delay.
-    pub fade: u32,
-    /// Per-voice cycle from `phase`; otherwise one cycle on the runtime clock.
-    pub retrigger: bool,
-    /// With `retrigger`: one instance shared by every voice, restarted at
-    /// `phase` (and its delay and fade) whenever any voice starts.
-    pub shared: bool,
 }
 
 /// What a route reads. Lfo is bipolar (-1..=1); every other source is 0..=1.
@@ -294,24 +253,6 @@ impl ModRoute {
             scale: None,
         }
     }
-}
-
-/// A point a breakpoint envelope glides to from the previous level (0 at the
-/// start) over `frames`, along `curve`.
-#[derive(Clone, Copy, Debug)]
-pub struct Breakpoint {
-    pub frames: u32,
-    pub level: f32,
-    pub curve: EnvelopeCurve,
-}
-
-/// A multi-segment envelope. It holds at `points[sustain]` while gated; a
-/// release glides from the current level through the points after
-/// `sustain` (jumping there if it is not reached yet), then holds the last.
-#[derive(Clone, Debug, Default)]
-pub struct Breakpoints {
-    pub points: Vec<Breakpoint>,
-    pub sustain: Option<usize>,
 }
 
 /// One voice modulation program, shared by the regions bound to it.
@@ -510,6 +451,9 @@ impl VoiceModulation {
                             {
                                 return Err(Error::InvalidInput);
                             }
+                            if !lfo.shape.valid() {
+                                return Err(Error::InvalidInput);
+                            }
                             if matches!(lfo.shape, LfoShape::DigitalSine { .. })
                                 && (lfo.delay != 0
                                     || lfo.fade != 0
@@ -535,10 +479,7 @@ impl VoiceModulation {
                         }
                         ModSource::Breakpoints(index) => {
                             let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
-                            if b.points.len() > u32::MAX as usize - 1
-                                || b.sustain.is_some_and(|s| s >= b.points.len())
-                                || b.points.iter().any(|p| !p.level.is_finite())
-                            {
+                            if !b.valid() {
                                 return Err(Error::InvalidInput);
                             }
                             Prepared::Breakpoints(index)
@@ -978,58 +919,6 @@ fn interpolate(points: &[(f32, f32)], x: f32, after: usize) -> f32 {
     }
 }
 
-/// splitmix64 of a seed, source and cycle: deterministic per voice and cycle,
-/// and identical across voices for free-running sources (seed 0).
-fn hash(seed: u64, source: u64, cycle: u64) -> u64 {
-    let mut z = seed
-        .wrapping_add(source.wrapping_mul(0x9e37_79b9_7f4a_7c15))
-        .wrapping_add(cycle.wrapping_mul(0xbf58_476d_1ce4_e5b9));
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
-fn uniform(bits: u64) -> f64 {
-    (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-}
-
-/// Waveform value at cycle position `phase` (any real; the integer part counts
-/// cycles for the random shapes).
-fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
-    let cycle = phase.floor();
-    let t = phase - cycle;
-    match shape {
-        LfoShape::DigitalSine { level, .. } | LfoShape::SineScaled(level) => {
-            f64::from((t * std::f64::consts::TAU).sin() as f32 * level as f32)
-        }
-        LfoShape::Zero => 0.,
-        LfoShape::Sine => (t * std::f64::consts::TAU).sin(),
-        LfoShape::Triangle => {
-            if t < 0.25 {
-                4.0 * t
-            } else if t < 0.75 {
-                2.0 - 4.0 * t
-            } else {
-                4.0 * t - 4.0
-            }
-        }
-        LfoShape::Square => {
-            if t < 0.5 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        LfoShape::SawUp => 2.0 * t - 1.0,
-        LfoShape::SawDown => 1.0 - 2.0 * t,
-        LfoShape::SampleAndHold => 2.0 * uniform(hash(seed, 0, cycle as i64 as u64)) - 1.0,
-        LfoShape::Random => {
-            let from = 2.0 * uniform(hash(seed, 0, cycle as i64 as u64)) - 1.0;
-            let to = 2.0 * uniform(hash(seed, 0, (cycle as i64 + 1) as u64)) - 1.0;
-            from + (to - from) * t
-        }
-    }
-}
 
 /// Note and controller inputs read by a voice's sources.
 pub(crate) struct Inputs<'a> {
@@ -1120,55 +1009,6 @@ pub(crate) struct VoiceModState {
     /// Runtime frame and seed of the latest voice start: the restart of every
     /// shared retriggered LFO.
     restart: (u64, u64),
-}
-
-/// A voice's position in one breakpoint envelope.
-#[derive(Clone, Copy, Debug, Default)]
-struct Segment {
-    /// The point being glided to; past the end, the last level holds.
-    index: u32,
-    age: u32,
-    from: f32,
-    level: f32,
-    released: bool,
-}
-
-impl Segment {
-    fn advance(&mut self, envelope: &Breakpoints, mut frames: u32) -> f32 {
-        while let Some(point) = envelope.points.get(self.index as usize) {
-            let left = point.frames - self.age;
-            if frames < left {
-                self.age += frames;
-                let t = f64::from(self.age) / f64::from(point.frames);
-                self.level = self.from + (point.level - self.from) * point.curve.value(t) as f32;
-                return self.level;
-            }
-            frames -= left;
-            self.age = point.frames;
-            self.level = point.level;
-            if !self.released && envelope.sustain == Some(self.index as usize) {
-                return self.level;
-            }
-            self.index += 1;
-            self.age = 0;
-            self.from = self.level;
-        }
-        self.level
-    }
-
-    fn release(&mut self, envelope: &Breakpoints) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        if let Some(sustain) = envelope.sustain
-            && self.index as usize <= sustain
-        {
-            self.index = sustain as u32 + 1;
-            self.age = 0;
-            self.from = self.level;
-        }
-    }
 }
 
 impl VoiceModState {
@@ -1574,25 +1414,25 @@ impl VoiceModState {
                 _ if native.is_some_and(|n| n.flex_source == Some(i)) => 0.,
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
-                    let hz = match lfo.rate {
-                        LfoRate::Hertz(_) if !p.rate_routes[i].is_empty() => {
-                            // Rate routes settle first (source_order); the lane
-                            // moves, the cycle integrates it, so no phase jumps.
-                            let mut lane = p.rate_lane[i];
-                            for &r in &p.rate_routes[i] {
-                                let base = p.base_depth(r, inputs);
-                                let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], base, frames, onset);
-                                processor_values[r] = d * v;
-                                if onset {
-                                    previous_processor_values[r] = processor_values[r];
-                                }
-                                lane += d * v;
+                    let mut inputs_lfo = LfoInputs::UNITY;
+                    if !p.rate_routes[i].is_empty() {
+                        // Rate routes settle first (source_order); the lane
+                        // moves, the cycle integrates it, so no phase jumps.
+                        // LfoInputs.rate is relative to the saved rate.
+                        let mut lane = p.rate_lane[i];
+                        for &r in &p.rate_routes[i] {
+                            let base = p.base_depth(r, inputs);
+                            let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], base, frames, onset);
+                            processor_values[r] = d * v;
+                            if onset {
+                                previous_processor_values[r] = processor_values[r];
                             }
-                            crate::v1_voice_controls::LfoFrequency::hertz(lane as f32)
+                            lane += d * v;
                         }
-                        LfoRate::Hertz(hz) => hz,
-                        LfoRate::Beats(beats) => clock.tempo / (60.0 * beats),
-                    };
+                        let saved = lfo.hertz(clock.tempo, LfoInputs::UNITY);
+                        inputs_lfo.rate = crate::v1_voice_controls::LfoFrequency::hertz(lane as f32) / saved;
+                    }
+                    let hz = lfo.hertz(clock.tempo, inputs_lfo);
                     let since = clock.now.saturating_sub(self.restart.0);
                     let age = if lfo.shared && lfo.retrigger {
                         u32::try_from(since).unwrap_or(u32::MAX)
@@ -1618,14 +1458,7 @@ impl VoiceModState {
                         let gain = gains.get((age / 32) as usize).copied().unwrap_or(1.);
                         f64::from(wave(lfo.shape, phase, seed) as f32 * gain)
                     } else {
-                        let depth = if age < lfo.delay {
-                            0.0
-                        } else if lfo.fade == 0 {
-                            1.0
-                        } else {
-                            (f64::from(age - lfo.delay) / f64::from(lfo.fade)).min(1.0)
-                        };
-                        depth * wave(lfo.shape, phase, seed)
+                        lfo.value(phase, seed, age, LfoInputs::UNITY)
                     }
                 }
                 Prepared::Envelope(e) => {
