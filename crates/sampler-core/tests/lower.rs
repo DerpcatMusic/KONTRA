@@ -553,8 +553,8 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
     assert_eq!(voices, 5);
 }
 
-/// A 4-pole filter lowers as two cascaded 2-pole sections: it attenuates a
-/// tone well above the cutoff more than one 2-pole section does.
+/// A 4-pole filter lowers as two cascaded 2-pole sections (6-pole: three): each
+/// attenuates a tone well above the cutoff more than the one before.
 #[test]
 fn four_pole_filters_lower_to_two_cascaded_sections() {
     let tone = |poles| {
@@ -586,9 +586,11 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
         rt.render(&mut out).unwrap();
         out[256..].iter().map(|f| f[0] * f[0]).sum::<f32>()
     };
-    let (two, four) = (tone(2), tone(4));
-    assert!(two.is_finite() && four.is_finite());
+    let (two, four, six) = (tone(2), tone(4), tone(6));
+    assert!(two.is_finite() && four.is_finite() && six.is_finite());
     assert!(four < two * 0.5, "two {two}, four {four}");
+    // Three sections: SV LP6 is six cascaded one-poles at zero resonance.
+    assert!(six < four * 0.5, "four {four}, six {six}");
 }
 
 #[test]

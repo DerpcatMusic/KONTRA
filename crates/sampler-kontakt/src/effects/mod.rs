@@ -586,113 +586,39 @@ pub(crate) enum Scope {
     Bus,
 }
 
-/// How one Kontakt filter type (the `kind` stored in a Filter slot) maps to
-/// an IR filter: the response, and the laws taking its normalized cutoff and
-/// resonance (0..=1) to Hz and Q.
-struct FilterType {
-    kind: sampler_ir::FilterKind,
-    hertz: fn(f32) -> f64,
-    q: fn(f32) -> f64,
+/// The Kontakt filter type table (names, laws, coverage) lives in `filter.rs`.
+pub(crate) use filter::cutoff_octaves;
+use sampler_ir::fx::filter::{Gap, Topology};
+
+/// Report a filter that is configured but not fully proved, so a stand-in never passes silently.
+fn note_fidelity(notes: &mut Notes, kind: i32, mapped: &filter::Mapped) {
+    if mapped.fidelity != sampler_ir::fx::filter::Fidelity::Exact {
+        notes.push((
+            "filter law".into(),
+            format!("{} ({:?}): {}", filter::name(kind).unwrap_or("?"), mapped.fidelity, mapped.caveat),
+            sampler_ir::Reason::UnknownLaw,
+        ));
+    }
 }
 
-/// Kontakt's SV filters: the knob is 25 Hz * 800^x, and resonance r gives
-/// k = 1/Q = (2 - 0.013) * (1 - r)^3.1 + 0.013 (measured on SV LP2 against
-/// Kontakt 8). The IR has no passband-gain field, so the measured loss at
-/// high resonance (-6 dB at r = 1) is not reproduced.
-fn sv_hertz(x: f32) -> f64 {
-    25.0 * 800f64.powf(f64::from(x))
-}
-
-fn sv_q(r: f32) -> f64 {
-    1.0 / ((2.0 - 0.013) * (1.0 - f64::from(r)).powf(3.1) + 0.013)
-}
-
-pub(crate) const LEGACY_CUTOFF_OCTAVES: f64 = 8.96;
-
-// Port from v1 0cb7a8a0:src/engine/filter.rs::filter_settings and Unit::key.
-fn legacy_hertz(x: f32) -> f64 {
-    f64::from(43.6f32 * (LEGACY_CUTOFF_OCTAVES as f32 * x.clamp(0., 1.)).exp2())
-}
-
-fn legacy_q(r: f32) -> f64 {
-    f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(r.clamp(0., 1.)))
-}
-
-/// The types with a map to a Kontakt 8 filter name (read from its GUI):
-/// 52 SV LP2, 54 SV HP2, 55 SV LP4, 57 SV HP4. Only SV LP2's laws were
-/// measured; the other three are taken to share them (same family, same
-/// knobs). Other types are reported by number, not guessed: 90 is
-/// Formant I (not a low pass), and 106 "AR LP2/4" has a cutoff law that
-/// differs from SV (stored 0.5135 reads 603 Hz, SV would give 774 Hz).
-/// Legacy types 2/3 retain the pinned v1 low/highpass proxies and knob laws.
-const FILTER_TYPES: &[(i32, FilterType)] = &[
-    (
-        2,
-        FilterType {
-            // ponytail: v1's two-pole proxy; upgrade after native Legacy LP1 topology is measured.
-            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
-            hertz: legacy_hertz,
-            q: legacy_q,
-        },
-    ),
-    (
-        3,
-        FilterType {
-            // ponytail: v1's two-pole proxy; upgrade after native Legacy HP1 topology is measured.
-            kind: sampler_ir::FilterKind::HighPass { poles: 2 },
-            hertz: legacy_hertz,
-            q: legacy_q,
-        },
-    ),
-    (
-        52,
-        FilterType {
-            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        54,
-        FilterType {
-            kind: sampler_ir::FilterKind::HighPass { poles: 2 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        55,
-        FilterType {
-            kind: sampler_ir::FilterKind::LowPass { poles: 4 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        57,
-        FilterType {
-            kind: sampler_ir::FilterKind::HighPass { poles: 4 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-];
-
-fn filter_type(kind: i32) -> Option<&'static FilterType> {
-    FILTER_TYPES
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, t)| t)
-}
-
-/// A Filter slot as an IR filter, or `None` for a type without a table entry.
-fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<sampler_ir::Processor> {
-    let t = filter_type(kind)?;
-    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
-        kind: t.kind,
-        cutoff: sampler_ir::Frequency::Hertz((t.hertz)(cutoff)),
-        resonance: sampler_ir::Resonance::Q((t.q)(resonance)),
-    }))
+/// A Filter slot as IR processors, or why its type cannot be configured.
+fn filter(
+    kind: i32,
+    cutoff: f32,
+    resonance: f32,
+    extra: Option<f32>,
+) -> Result<(Vec<sampler_ir::Processor>, filter::Mapped), Gap> {
+    let mapped = filter::map(kind, cutoff, resonance, extra)?;
+    // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
+    // check the record version, the leading Gain value and the knob ranges.
+    if !matches!(mapped.config.topology, Topology::Svf | Topology::FormantII) {
+        return Err(Gap {
+            name: filter::name(kind).unwrap_or("filter"),
+            reason: "the stored record does not meet the native kernel's admission",
+        });
+    }
+    let processors = mapped.config.processors(None)?;
+    Ok((processors, mapped))
 }
 
 /// A rack as serial processors plus the levels its Send Levels slots feed
@@ -928,7 +854,7 @@ pub(crate) fn chain_with(
                 }
             }
             Some(Params::Filter {
-                kind: 90,
+                kind: kind @ (90 | 91),
                 cutoff,
                 resonance,
                 extra,
@@ -936,20 +862,37 @@ pub(crate) fn chain_with(
                 flush(&mut combined, &mut filters, &mut out);
                 // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
                 // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
+                // Formant II is the same core on its second table (filter.rs).
                 let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
                 if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    if let Some((group, generic)) = dynamic {
+                    if *kind == 91 {
+                        if dynamic.is_some() {
+                            notes.push(("Formant II live controls".into(), "script/modulation lanes exist for Formant I only".into(), sampler_ir::Reason::NotModeled));
+                        }
+                        match filter(91, knobs[0], knobs[1], Some(knobs[2])) {
+                            Ok((processors, mapped)) => {
+                                out.processors.extend(processors);
+                                note_fidelity(&mut notes, 91, &mapped);
+                                combined = gain;
+                            }
+                            Err(gap) => {
+                                notes.push((gap.name.into(), gap.reason.into(), sampler_ir::Reason::NotModeled));
+                                modelled = false;
+                            }
+                        }
+                    } else if let Some((group, generic)) = dynamic {
                         out.lane_slots.push((fx.slot, out.processors.len()));
                         out.processors.push(sampler_ir::Processor::LiveFormant {
                             knobs,
                             address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
                         });
+                        combined = gain;
                     } else {
                         out.processors.push(sampler_ir::Processor::Formant(knobs));
+                        combined = gain;
                     }
-                    combined = gain;
                 } else {
-                    notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                    notes.push(("Formant parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
                     modelled = false;
                 }
             }
@@ -1061,18 +1004,21 @@ pub(crate) fn chain_with(
                 {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
-                    filters.push(sampler_ir::Processor::LadderLP4(sampler_ir::LadderLP4 {
-                        address: Some(sampler_ir::SlotAddress {
+                    let mapped = filter::template(*kind).expect("ladder rows are in the table");
+                    let mut config = mapped.config;
+                    config.drive = f64::from(values[0]);
+                    config.cutoff = f64::from(values[1]);
+                    config.resonance = f64::from(values[2]);
+                    config.binding = Some(sampler_ir::fx::filter::Binding {
+                        address: sampler_ir::SlotAddress {
                             group: physical.0,
                             slot: fx.slot as i32,
                             generic: physical.1,
-                        }),
-                        gain: f64::from(values[0]),
-                        cutoff: f64::from(values[1]),
-                        resonance: f64::from(values[2]),
+                        },
                         record_version: fx.version,
-                        taps: (kind - 29) as u8,
-                    }));
+                    });
+                    filters.extend(config.processors(None).expect("ladder rows configure"));
+                    note_fidelity(&mut notes, *kind, &mapped);
                     combined = product(gain, combined);
                 } else {
                     notes.push((
@@ -1099,11 +1045,12 @@ pub(crate) fn chain_with(
                 // host recording acceptance still requires calibrated paired captures.
                 out.filter_slots
                     .push((fx.slot, out.processors.len() + filters.len()));
-                filters.push(sampler_ir::Processor::Ar(sampler_ir::Ar {
-                    mode: (kind - 100) as u8,
-                    cutoff: f64::from(*cutoff),
-                    resonance: f64::from(*resonance),
-                }));
+                let mapped = filter::template(*kind).expect("AR rows are in the table");
+                let mut config = mapped.config;
+                config.cutoff = f64::from(*cutoff);
+                config.resonance = f64::from(*resonance);
+                filters.extend(config.processors(None).expect("AR rows configure"));
+                note_fidelity(&mut notes, *kind, &mapped);
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1118,12 +1065,13 @@ pub(crate) fn chain_with(
                 // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
                 out.filter_slots
                     .push((fx.slot, out.processors.len() + filters.len()));
-                filters.push(sampler_ir::Processor::Daft(sampler_ir::Daft {
-                    gain: f64::from(extra[0]).clamp(0.0, 1.0),
-                    cutoff: f64::from(*cutoff).clamp(0.0, 1.0),
-                    resonance: f64::from(*resonance).clamp(0.0, 1.0),
-                    highpass: *kind == 71,
-                }));
+                let mapped = filter::template(*kind).expect("Daft rows are in the table");
+                let mut config = mapped.config;
+                config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+                config.cutoff = f64::from(*cutoff).clamp(0.0, 1.0);
+                config.resonance = f64::from(*resonance).clamp(0.0, 1.0);
+                filters.extend(config.processors(None).expect("Daft rows configure"));
+                note_fidelity(&mut notes, *kind, &mapped);
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1131,16 +1079,17 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 ..
-            }) => match filter(*kind, *cutoff, *resonance) {
-                Some(f) => {
+            }) => match filter(*kind, *cutoff, *resonance, None) {
+                Ok((processors, mapped)) => {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
-                    filters.push(f);
+                    filters.extend(processors);
+                    note_fidelity(&mut notes, *kind, &mapped);
                     combined = product(gain, combined);
                 }
-                None => {
+                Err(gap) => {
                     notes.push((
-                        "filter type".into(),
+                        format!("filter type ({}: {})", gap.name, gap.reason),
                         format!("{kind} cutoff {cutoff} resonance {resonance}"),
                         sampler_ir::Reason::NotModeled,
                     ));
@@ -2016,6 +1965,11 @@ mod tests {
         }
     }
 
+    /// A configured-but-unproved filter is reported as an unknown law and nothing else.
+    fn only_law_notes(notes: &[(usize, String, String, sampler_ir::Reason)]) -> bool {
+        notes.iter().all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
+    }
+
     #[test]
     fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
         let mut public = 33i32.to_le_bytes().to_vec();
@@ -2042,7 +1996,7 @@ mod tests {
             (7, -1),
             &[],
         );
-        assert!(chain.notes.is_empty());
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
                 && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
@@ -2069,7 +2023,7 @@ mod tests {
             public,
         };
         let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
-        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
                 && d.resonance == 0.0 && d.record_version == 0x95)));
@@ -2266,7 +2220,8 @@ mod tests {
             let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
                 panic!("missing filter")
             };
-            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 2 });
+            // Saved type 2 is Legacy LP1 (KSP $FILTER_TYPE_LP1POLE order; one pole measured, no resonance).
+            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
                 sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.5996094f32).exp2()))
@@ -2276,7 +2231,7 @@ mod tests {
                 sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
             );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7).unwrap() else {
+        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!(
@@ -2304,7 +2259,7 @@ mod tests {
             let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
                 panic!("missing filter")
             };
-            assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 2 });
+            assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
                 sampler_ir::Frequency::Hertz(f64::from(43.6f32))
@@ -2314,7 +2269,7 @@ mod tests {
                 sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
             );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7).unwrap() else {
+        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7, None).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!(
@@ -2329,7 +2284,7 @@ mod tests {
 
     #[test]
     fn sv_filters_follow_the_measured_laws() {
-        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else {
+        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
             panic!()
         };
         let sampler_ir::Frequency::Hertz(hz) = f.cutoff else {
@@ -2343,7 +2298,9 @@ mod tests {
             (q - 1.0 / 2.0).abs() < 1e-9,
             "r = 0 is k = 1.987 + 0.013 = 2"
         );
-        assert!(filter(106, 0.5, 0.5).is_none());
+        // Legacy LP4 needs a Butterworth cascade the IR cannot express; it is a precise gap, not a guess.
+        assert!(filter(8, 0.5, 0.5, None).is_err());
+        assert!(filter(1, 0.5, 0.5, None).is_err());
     }
 
     use super::*;

@@ -1,22 +1,31 @@
-//! Kontakt 8 Filter Reference: Formant I (Talk, Sharp, Size).
+//! Kontakt 8 Filter Reference: Formant I and II (Talk, Sharp, Size).
 //! Same-SHA Ghidra FUN_140b05ac0/FUN_140b00750, radare2 tables
 //! 0x144fcea10/0x144fcea90/0x144fceb10 and polynomials 0x149e745e0/0x149e74600.
-use super::{Planar, ProcessorState};
+//! The tables hold ten rows. The core setter FUN_140b05ac0 adds 5.0 to the Talk position
+//! while its fourth control (index 3) is above 0.5, which selects rows 5..=9; the module
+//! that drives that control is Formant II (the type 91 binding is inferred, not measured).
+use super::super::{Planar, ProcessorState};
 
 #[rustfmt::skip]
-const FREQUENCIES: [[f32; 3]; 5] = [
+const FREQUENCIES: [[f32; 3]; 10] = [
     [233., 326., 1914.], [317., 451., 2270.], [726., 1190., 2383.],
     [429., 1920., 2987.], [370., 2578., 4731.],
+    [247., 698., 2055.], [165., 830., 2082.], [632., 1095., 2463.],
+    [695., 1760., 2470.], [165., 2160., 3235.],
 ];
 #[rustfmt::skip]
-const RADII: [[f32; 3]; 5] = [
+const RADII: [[f32; 3]; 10] = [
     [0.9039, 0.9233, 0.9785], [0.9039, 0.9233, 0.9339], [0.9436, 0.9613, 0.9132],
     [0.9573, 0.9573, 0.9556], [0.9436, 0.9706, 0.9666],
+    [0.9039, 0.9233, 0.9785], [0.9039, 0.9233, 0.9344], [0.9436, 0.9613, 0.9132],
+    [0.9573, 0.9573, 0.9556], [0.9436, 0.973, 0.975],
 ];
 #[rustfmt::skip]
-const AMPLITUDES: [[f32; 3]; 5] = [
+const AMPLITUDES: [[f32; 3]; 10] = [
     [0.44669, 0.044976, 0.029107], [0.21727, 0.27102, 0.10339], [0.5176, 0.4384, 0.3303],
     [0.56235, 0.71781, 0.37498], [0.45, 0.6675, 0.5295],
+    [0.153, 0.2353, 0.3523], [0.11831, 0.38681, 0.5389], [0.25792, 0.69024, 0.58885],
+    [0.40272, 0.68783, 0.77625], [0.16481, 0.63096, 0.56235],
 ];
 
 pub(crate) struct Formant {
@@ -26,11 +35,12 @@ pub(crate) struct Formant {
 
 impl Formant {
     // shortcut: saved controls only; add native 15ms ramps when live Formant controls are bound.
-    pub(super) fn compile([talk, sharp, size]: [f32; 3], rate: u32) -> Self {
-        let position = talk * 4.;
-        let row = (position as usize).min(3);
+    pub(crate) fn compile([talk, sharp, size]: [f32; 3], second: bool, rate: u32) -> Self {
+        // FUN_140b054e0: row = (5 if second else 0) + 4 Talk, clamped to 9 - 1 ulp.
+        let position = (if second { 5. } else { 0. } + talk * 4.).min(f32::from_bits(0x410f_ffff));
+        let row = position as usize;
         let fraction = position - row as f32;
-        let interpolate = |table: [[f32; 3]; 5], band| {
+        let interpolate = |table: [[f32; 3]; 10], band| {
             table[row][band] + (table[row + 1][band] - table[row][band]) * fraction
         };
         let frequency_scale = (1. / rate as f32) * std::f32::consts::TAU;
@@ -67,7 +77,7 @@ impl Formant {
         }
     }
 
-    pub(super) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+    pub(crate) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
         for (channel, samples) in block.iter_mut().enumerate() {
             for sample in &mut samples[..len] {
                 let input = *sample as f32;
@@ -83,6 +93,41 @@ impl Formant {
                 }
                 *sample = f64::from(output);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_table_starts_five_rows_in() {
+        // FUN_140b054e0: the flag adds 5.0 rows to 4 Talk, so Talk 0 of table 2 is Talk 1.25 of table 1.
+        let a = Formant::compile([0., 0.5, 0.5], true, 48_000);
+        let b = Formant::compile([1.25, 0.5, 0.5], false, 48_000);
+        assert_eq!(a.bands, b.bands);
+    }
+
+    #[test]
+    fn second_table_row_five_matches_libm_coefficients() {
+        let (sharp, size, rate) = (0.5f64, 0.5f64, 48_000f64);
+        let f = Formant::compile([0., sharp as f32, size as f32], true, 48_000);
+        let t = (2. - sharp) * sharp;
+        let radius_scale = 0.9 + 0.1 * t;
+        let amplitude_scale = 5. * (1. + t * t);
+        for (band, (hz, radius, amplitude)) in
+            [(247., 0.9039, 0.153), (698., 0.9233, 0.2353), (2055., 0.9785, 0.3523)]
+                .into_iter()
+                .enumerate()
+        {
+            let z = hz * std::f64::consts::TAU / rate * (size + size.max(0.5));
+            let g = z.sin() * (1. - radius * radius_scale);
+            let [b0, a1, a2, amp] = f.bands[band].map(f64::from);
+            assert!((b0 - g / (1. + g)).abs() < 1e-4, "band {band} b0");
+            assert!((a1 + 2. * z.cos() / (1. + g)).abs() < 1e-4, "band {band} a1");
+            assert!((a2 - (1. - g) / (1. + g)).abs() < 1e-4, "band {band} a2");
+            assert!((amp - amplitude * amplitude_scale).abs() < 1e-4, "band {band} amplitude");
         }
     }
 }

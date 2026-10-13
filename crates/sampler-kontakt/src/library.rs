@@ -1493,16 +1493,15 @@ impl Translation {
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                     for &(slot, processor) in &filter_slots {
-                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s| {
-                            matches!(
-                                s.params(),
-                                Some(crate::effects::Params::Filter { kind: 2 | 3, .. })
-                            )
+                        if let Some(octaves) = slots.iter().find(|s| s.slot == slot).and_then(|s| {
+                            match s.params() {
+                                Some(crate::effects::Params::Filter { kind, .. }) => {
+                                    crate::effects::cutoff_octaves(kind)
+                                }
+                                _ => None,
+                            }
                         }) {
-                            self.cutoff_octaves.insert(
-                                (chain.unwrap().0, processor),
-                                crate::effects::LEGACY_CUTOFF_OCTAVES,
-                            );
+                            self.cutoff_octaves.insert((chain.unwrap().0, processor), octaves);
                         }
                     }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
@@ -4584,7 +4583,7 @@ mod modulation {
             post_amplitude: vec![filter],
         });
         t.cutoff_octaves
-            .insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+            .insert((0, 1), sampler_ir::fx::filter::LEGACY_CUTOFF_OCTAVES);
         for (slot, expected) in [(0, -30.), (5, -26.88)] {
             let route = t
                 .route(
