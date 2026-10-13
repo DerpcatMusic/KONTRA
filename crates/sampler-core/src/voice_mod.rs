@@ -533,12 +533,14 @@ impl VoiceModulation {
                     || route.scale.is_some_and(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
                             // Native lag/init/inversion/live paths have no numeric proof.
+                            // The target's own shape and lag act on its source
+                            // expression; `$intensity` is a separate variable
+                            // (FUN_140873040 templates), so they stay admissible.
                             || matches!(s.law, ModScaleLaw::KontaktIntensity { depth, flags, unit }
-                                if !depth.is_finite() || !(0. ..=1.).contains(&depth)
+                                if !depth.is_finite() || !(-1. ..=1.).contains(&depth)
                                 || !unit.is_finite() || unit == 0.
                                 || !(0. ..=1.).contains(&(route.depth / unit))
-                                || !matches!(flags, 0x10 | 0x14)
-                                || s.shape.is_some() || route.lag != 0
+                                || !matches!(flags & !0x02, 0x10 | 0x14)
                                 || route.target == ModTarget::SampleStart
                                 || matches!(sources.get(s.source), Some(Prepared::Controller(_)
                                     | Prepared::Pressure | Prepared::Timbre
