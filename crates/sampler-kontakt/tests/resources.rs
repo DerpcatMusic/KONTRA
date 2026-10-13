@@ -1,6 +1,48 @@
 use sampler_kontakt::ResourceContainer;
 
 #[cfg(feature = "library-access")]
+#[test]
+#[ignore = "installed Conflux multi; set KONTRA_WIDGET_GATE_PATH and KONTRA_KONTAKT_CONTENT"]
+fn installed_conflux_multi_resolves_each_authored_resource_owner() {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("KONTRA_WIDGET_GATE_PATH").expect("multi path required"),
+    );
+    let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+    let table = chunks.filename_tables().unwrap().unwrap();
+    let programs = sampler_kontakt::read_multi(&path).unwrap().programs;
+    assert_eq!(programs.len(), 2);
+    let mut roots = Vec::new();
+    for (n, (_, program)) in programs.iter().enumerate() {
+        let record = program.public_record().unwrap();
+        let reference = record.resource_container_filename_ref.unwrap();
+        let declared = table
+            .special_filetable
+            .get(&(reference as u32))
+            .expect("F0 belongs to the special filename table");
+        println!("CONFLUX_RESOURCE_OWNER program={n} reference={reference} declared={declared:?}");
+        let mut owned = sampler_kontakt::Resources::for_program(&path, n as u32).unwrap();
+        assert!(
+            owned
+                .read_result("Resources/native_ui/main.nui")
+                .unwrap()
+                .is_some(),
+            "authored entry must resolve for program {n}"
+        );
+        let names = owned.names("resources/native_ui/");
+        println!(
+            "CONFLUX_RESOURCE_RESOLVED program={n} root={:?} modules={}",
+            owned.root(),
+            names.len()
+        );
+        roots.push(owned.root().to_path_buf());
+    }
+    assert_ne!(
+        roots[0], roots[1],
+        "the factory controller cannot use Conflux's same-named main module"
+    );
+}
+
+#[cfg(feature = "library-access")]
 fn authored_png() -> Vec<u8> {
     // A black 1x1 RGBA pixel, using a stored DEFLATE block and Adler checksum.
     let ihdr = [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0];

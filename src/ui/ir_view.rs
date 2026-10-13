@@ -146,12 +146,6 @@ fn drive_mapped(
     held
 }
 
-/// The frame a switch or button shows: Kontakt's strips run off, on, then
-/// pressed and hovered states.
-fn switch_frame(on: bool, frames: usize) -> usize {
-    usize::from(on).min(frames.saturating_sub(1))
-}
-
 /// Decoded images the interface draws, by asset index; `None` failed to load.
 #[derive(Default)]
 pub struct Assets {
@@ -1158,6 +1152,17 @@ pub(super) fn widget_state(
         .find(|i| i.role == Use::Strip)
         .and_then(|i| i.frame)
         .map(|f| f as usize);
+    let held = ui.get(id.as_str()).held;
+    let state_frame = |on, frames| {
+        if matches!(
+            face.source,
+            ir::Source::Ksp { .. } | ir::Source::PerformanceView
+        ) {
+            ir::kontakt_picture_frame(on, held, hovered, frames)
+        } else {
+            usize::from(on).min(frames.saturating_sub(1))
+        }
+    };
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
         _ => None,
@@ -1234,12 +1239,25 @@ pub(super) fn widget_state(
             false,
         )
     };
+    let button_shift = if wd.text_shift_on_press && ui.get(id.as_str()).held {
+        scale
+    } else {
+        0.
+    };
     let button_caption = || {
-        let shift = if wd.text_shift_on_press && ui.get(id.as_str()).held { scale } else { 0. };
         super::render_art::words(
-            if wd.hide.title { "" } else { &wd.text }, style, assets, bitmap,
-            ink.clone(), w, h, scale, wd.text_y, false,
-        ).offset(shift, shift)
+            if wd.hide.title { "" } else { &wd.text },
+            style,
+            assets,
+            bitmap,
+            ink.clone(),
+            w,
+            h,
+            scale,
+            wd.text_y,
+            false,
+        )
+        .offset(button_shift, button_shift)
     };
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
@@ -1381,10 +1399,13 @@ pub(super) fn widget_state(
             }
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
-                Some(p) => stack![block(w, h).radius(0).fill(
-                    picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len())))
-                        .unwrap_or(Fill::from(Role::Field)),
-                ), button_caption()],
+                Some(p) => stack![
+                    block(w, h).radius(0).fill(
+                        picture(p, fixed.unwrap_or_else(|| state_frame(v > 0.5, p.len())))
+                            .unwrap_or(Fill::from(Role::Field)),
+                    ),
+                    button_caption()
+                ],
                 None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
@@ -1400,10 +1421,13 @@ pub(super) fn widget_state(
             }
             let on = v > 0.5;
             match state_picture(on) {
-                Some(p) => stack![block(w, h).radius(0).fill(
-                    picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.len())))
-                        .unwrap_or(Fill::from(Role::Field)),
-                ), button_caption()],
+                Some(p) => stack![
+                    block(w, h).radius(0).fill(
+                        picture(p, fixed.unwrap_or_else(|| state_frame(on, p.len())))
+                            .unwrap_or(Fill::from(Role::Field)),
+                    ),
+                    button_caption()
+                ],
                 None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
@@ -1446,9 +1470,19 @@ pub(super) fn widget_state(
                 .unwrap_or_default();
             match strip {
                 Some(p) => stack![
-                    block(w, h)
-                        .radius(0)
-                        .fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))),
+                    block(w, h).radius(0).fill(
+                        picture(
+                            p,
+                            fixed.unwrap_or_else(|| {
+                                if face.source == ir::Source::FalconLua {
+                                    0
+                                } else {
+                                    state_frame(input.menu == Some(n), p.len())
+                                }
+                            })
+                        )
+                        .unwrap_or(Fill::from(Role::Field))
+                    ),
                     row![words(label)]
                         .align(Align::Center)
                         .pad((TIGHT * scale, 0.))

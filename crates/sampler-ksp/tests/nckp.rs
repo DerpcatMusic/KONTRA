@@ -49,9 +49,18 @@ fn nckp_state_fonts_override_base_and_keep_absent_state_inheritance() {
 
 #[test]
 fn nckp_press_shift_flag_reaches_the_authored_control_property() {
-    for shift in [false,true] {
-        let script = authored_view(serde_json::json!({"shiftOnPress":shift}),false);
-        assert_eq!(script.model().interface.widgets[0].int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING"),Some(i32::from(!shift)));
+    for shift in [false, true] {
+        let script = authored_view(serde_json::json!({"shiftOnPress":shift}), false);
+        assert_eq!(
+            script.model().interface.widgets[0].int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING"),
+            Some(i32::from(!shift))
+        );
+        let face = script.ui(&|_| None).unwrap();
+        assert_eq!(face.widgets[0].text_shift_on_press, shift);
+        assert!(
+            face.unsupported.is_empty(),
+            "the imported flag must reach presentation, not become another unsupported property"
+        );
     }
 }
 

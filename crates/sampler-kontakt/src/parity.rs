@@ -325,16 +325,10 @@ mod tests {
             .iter()
             .filter(|c| c.name.starts_with("@performance-view-field:"))
             .collect();
-        assert!(fields.is_empty(), "implemented resource fields cannot remain losses");
-        for field in fields {
-            assert_eq!(field.status, sampler_parity::Status::Unsupported);
-            assert_eq!(field.span.line, 2);
-            assert_eq!(
-                field.span.start as usize,
-                source.find("load_performance_view").unwrap()
-            );
-            assert!(!field.detail.contains("PRIVATE_"));
-        }
+        assert!(
+            fields.is_empty(),
+            "implemented resource fields cannot remain losses"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
