@@ -41,6 +41,7 @@ def load(classes_path, decompiled_path):
     progs = rl.lower_all(funcs, {"FUN_" + r["reader_va"][2:] for r in rows})
     readers = {}
     for r in rows:
+        ir_sim.CURRENT.setdefault(int(r["sertype"], 16), int(r["version"], 16))
         readers.setdefault(int(r["sertype"], 16), "FUN_" + r["reader_va"][2:])
     return rows, progs, readers
 
@@ -62,6 +63,33 @@ def reachable_callx(progs, name, seen=None):
     return out
 
 
+def mark_benign(progs, sites):
+    """Fix the direction of host-state branches that never change what is read.
+
+    A site qualifies when no flip decoded differently and every flip that failed agrees on
+    the direction the accepted streams took (that arm is the validated one).
+    """
+    count = 0
+    for (name, pc), obs in sites.items():
+        if any(res == "diff" for _, res in obs):
+            continue
+        forced = {d for d, res in obs if res == "fail"}
+        if len(forced) > 1:
+            continue
+        direction = forced.pop() if forced else 0
+        ops = progs[name]["ops"]
+        i = -1
+        for line_no, line in enumerate(ops):
+            if not line.startswith("(label "):
+                i += 1
+                if i == pc:
+                    if line.startswith("(br "):
+                        ops[line_no] = ("(brt " if direction else "(brb ") + line[4:]
+                        count += 1
+                    break
+    return count
+
+
 def render(reads):
     """Compact layout string from read records."""
     seq = []
@@ -73,13 +101,17 @@ def render(reads):
         j = i
         while j < len(seq) and seq[j] == seq[i]:
             j += 1
-        out.append(seq[i] if j - i < 4 else f"{seq[i]}x{j - i}")
+        out.append(seq[i] * (j - i) if j - i < 4 else f"{seq[i]}x{j - i}")
         i = j
     return "".join(out)
 
 
-def analyze(rows, progs, readers):
-    """-> {reader_name: {versions: {v: info}, reasons, stub}}"""
+def analyze(rows, progs, readers, sites=None):
+    """-> {reader_name: {versions: {v: info}, reasons, stub}}.
+
+    `sites` (optional dict) collects, per host-state branch site, how flipping it behaves
+    (see ir_sim.host_dependent), for mark_benign.
+    """
     out = OrderedDict()
     for r in rows:
         name = "FUN_" + r["reader_va"][2:]
@@ -99,13 +131,19 @@ def analyze(rows, progs, readers):
         cls = ELEMENT_CLASS.get(sertype)
         top = min(native + 2, 0x2800)
         for v in range(0, top + 1) if native < 0x400 else [native]:
-            st, s0, m0, _ = ir_sim.search(progs, readers, name, v, None, cls=cls, budget=1500, need_reads=True)
+            values = sorted(set(ir_sim.SYNTH_VALUES) | set(ir_sim.constants(progs, [name])))
+            st, s0, m0, _ = ir_sim.search(progs, readers, name, v, None, values=values, cls=cls, budget=3000, need_reads=True)
             if st != "ok" or not s0.reads:
                 continue
             kept = ir_sim.explore(progs, readers, name, v, cls)
             runs = [(s0, m0)] + [(k[1], k[2]) for k in kept]
-            values = sorted(set(ir_sim.SYNTH_VALUES) | set(ir_sim.constants(progs, [name])))
-            host = any(ir_sim.host_dependent(progs, readers, name, v, values, cls, (k[1], k[3])) for k in kept[:6])
+            host = False
+            for k in kept[:8]:
+                obs = ir_sim.host_dependent(progs, readers, name, v, values, cls, (k[1], k[3]))
+                host |= any(res == "diff" for o in obs.values() for _, res in o)
+                if sites is not None:
+                    for site, o in obs.items():
+                        sites.setdefault(site, []).extend(o)
             longest = max(runs, key=lambda r: len(r[0].reads))[0]
             hits = sorted({h for _, m in runs for h in m.undef_hits})
             exprs = sorted({str(e) for _, m in runs for e in m.undef_exprs})
@@ -128,9 +166,17 @@ def analyze(rows, progs, readers):
     return out
 
 
+def analyze_final(rows, progs, readers):
+    """Two passes: find the host branches that never matter, mark them, analyze again."""
+    sites = {}
+    analyze(rows, progs, readers, sites)
+    mark_benign(progs, sites)
+    return analyze(rows, progs, readers)
+
+
 def main():
     rows, progs, readers = load(sys.argv[1], sys.argv[2])
-    res = analyze(rows, progs, readers)
+    res = analyze_final(rows, progs, readers)
     print("class\tsertype\tnative_version\tstored_version\tlayout\tstatus\treader_va")
     for r in rows:
         name = "FUN_" + r["reader_va"][2:]
