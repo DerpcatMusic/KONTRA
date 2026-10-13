@@ -85,7 +85,7 @@ pub use dsp::{
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod whole_voice;
-mod blocks;
+pub mod blocks;
 pub mod v1_voice_controls;
 use blocks::envelope::EnvelopeState;
 pub use blocks::envelope::{Envelope, EnvelopeCurve};

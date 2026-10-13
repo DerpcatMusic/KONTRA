@@ -1313,6 +1313,11 @@ pub enum LfoShape {
     Triangle,
     /// +1 for the first half cycle.
     Square,
+    /// +1 for the first `width` (0..=1) of the cycle, then -1.
+    Rectangle(f64),
+    /// Weighted mix of sine, rectangle(`width`), triangle, saw-up and
+    /// sample-and-hold, divided by max(1, sum(abs(weights))) when `normalize`.
+    Multi { weights: [f64; 5], width: f64, normalize: bool },
     /// -1 to +1.
     SawUp,
     /// +1 to -1.

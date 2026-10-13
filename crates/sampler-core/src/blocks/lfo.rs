@@ -37,6 +37,19 @@ pub enum LfoShape {
     },
 }
 
+impl LfoShape {
+    /// Parameters a prepared program may carry: finite, widths in 0..=1.
+    pub fn valid(&self) -> bool {
+        match *self {
+            Self::Rectangle(w) => (0.0..=1.0).contains(&w),
+            Self::Multi { weights, width, .. } => {
+                (0.0..=1.0).contains(&width) && weights.iter().all(|w| w.is_finite())
+            }
+            _ => true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoRate {
     Hertz(f64),
@@ -242,6 +255,16 @@ mod tests {
         assert!((wave(multi([1., 0., 1., 0., 0.], true), p, 0) - sum / 2.).abs() < 1e-12);
         assert!((wave(multi([0.5, 0., 0., 0., 0.], true), p, 0) - 0.5 * wave(LfoShape::Sine, p, 0)).abs() < 1e-12);
         assert!((wave(multi([1., 0., 1., 0., 0.], false), p, 0) - sum).abs() < 1e-12);
+    }
+
+    #[test]
+    fn invalid_shapes_are_rejected() {
+        assert!(LfoShape::Rectangle(0.0).valid() && LfoShape::Rectangle(1.0).valid());
+        assert!(!LfoShape::Rectangle(1.5).valid() && !LfoShape::Rectangle(f64::NAN).valid());
+        let multi = |weights, width| LfoShape::Multi { weights, width, normalize: true };
+        assert!(multi([0.; 5], 0.5).valid());
+        assert!(!multi([f64::INFINITY, 0., 0., 0., 0.], 0.5).valid());
+        assert!(!multi([0.; 5], -0.1).valid());
     }
 
     #[test]
