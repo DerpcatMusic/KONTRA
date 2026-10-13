@@ -99,11 +99,9 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 return None;
             }
             // Setter case 0x43 @0x1409645ae, audio 0x140aa1130: feedback * 0.98, damping * 0.7,
-            // pan crossing, ring 2^18. The sync getter's min/max arguments (xmm3, [rsp+0x28])
-            // are stale registers at the call, so the synced time is unclamped except by the ring.
-            if unit_set(unit).is_some() {
-                notes.push(("tempo-synced delay time clamp".into(), format!("unit {unit}"), Reason::UnknownLaw));
-            }
+            // pan crossing, ring 2^18. The synced time goes through the time object's vtable
+            // slot 5 (0x14072b380), which passes its own [0, 5800] ms bounds to getter
+            // 0x140a74bf0 (counts below one read as one).
             let mut line = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
             line.native = Native::LegacyDelay { time, unit, feedback, damping, pan };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
