@@ -1674,9 +1674,9 @@ pub enum Processor {
     },
     Pan(Pan),
     Filter(Filter),
-    /// Kontakt legacy one-band EQ: native normalized frequency/width and displayed dB.
-    /// Separate from generic Peak filters and the v1 TPT approximation.
-    KontaktLegacyEq(KontaktLegacyEq),
+    /// The universal EQ superset: a serial cascade of bands under generic, Kontakt legacy or
+    /// Solid G-EQ laws (see `fx::eq`).
+    Eq(fx::eq::Config),
     Delay {
         time: Time,
         feedback: f64,
@@ -1756,14 +1756,6 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
-}
-
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KontaktLegacyEq {
-    pub frequency: f32,
-    pub bandwidth: f32,
-    pub gain_db: f32,
 }
 
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
