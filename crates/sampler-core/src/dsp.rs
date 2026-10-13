@@ -709,6 +709,7 @@ impl PreparedVoiceChain {
             } else { levels(voice, len, begun.held) };
 
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
+            let amplifier = context.amplifier.map(|r| r.prepare_gains());
             let [left, right] = &mut block;
             for (i, ((l, r), level)) in left[..len]
                 .iter_mut()
@@ -716,9 +717,7 @@ impl PreparedVoiceChain {
                 .zip(&levels)
                 .enumerate()
             {
-                let gains = context
-                    .amplifier
-                    .map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+                let gains = amplifier.as_ref().map_or([1.0; 2], |r| r.at(at + i as u64 + 1));
                 *l *= level * f64::from(gains[0]);
                 *r *= level * f64::from(gains[1]);
             }
