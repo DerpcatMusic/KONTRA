@@ -284,8 +284,7 @@ pub(crate) fn process(
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
             | PreparedProcessor::Ar { .. }
-            | PreparedProcessor::LiveFilter(_)
-            | PreparedProcessor::KontaktLegacyEq(_)
+            | PreparedProcessor::Eq(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")

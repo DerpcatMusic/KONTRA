@@ -139,25 +139,7 @@ impl Translation {
                     }
                 }
                 "DigitalEq" => self.digital_eq(node, &at, live, &mut out)?,
-                "ThreeBandShelves" => {
-                    let middle = number(node, "GainMid", 0.0)?;
-                    out.push(ir::Processor::Gain(db(middle)));
-                    for (name, frequency, default, low) in [
-                        ("GainLow", "FreqLowMid", 200.0, true),
-                        ("GainHigh", "FreqMidHigh", 4000.0, false),
-                    ] {
-                        let gain = db(number(node, name, 0.0)? - middle);
-                        out.push(ir::Processor::Filter(ir::Filter {
-                            kind: if low {
-                                ir::FilterKind::FirstOrderLowShelf { gain }
-                            } else {
-                                ir::FilterKind::FirstOrderHighShelf { gain }
-                            },
-                            cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
-                            resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
-                        }));
-                    }
-                }
+                "ThreeBandShelves" => self.three_band_shelves(node, &mut out)?,
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
                     // internal modes 6 (full) and 7 (half). Public numbering
@@ -371,81 +353,6 @@ impl Translation {
             self.used.insert(node.id());
         }
         Ok((out, placed))
-    }
-
-    fn digital_eq(
-        &mut self,
-        node: Node,
-        at: &str,
-        live: bool,
-        out: &mut Vec<ir::Processor>,
-    ) -> Result<(), String> {
-        for (name, why) in [
-            ("StereoMode", "DigitalEq M/S mode"),
-            ("Transpose", "DigitalEq transpose"),
-            ("KeyTracking", "DigitalEq key tracking"),
-        ] {
-            let v = number(node, name, 0.0)?;
-            if v != 0.0 {
-                self.unsupported(at, why, v);
-            }
-        }
-        let scale = number(node, "GainScale", 1.0)?;
-        let mut unproven = false;
-        for band in 1..=16 {
-            let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
-            // A scripted bus keeps all 16 bands and the overall level so
-            // each one is a control (`engine_parameters::lanes`).
-            if get("Enabled", 0.0)? == 0.0 && !live {
-                continue;
-            }
-            let gain = db(get("Gain", 0.0)? * scale);
-            let shape = get("Type", 6.0)? as i64;
-            // Installed libraries only show types 5 (gain, high-shelf-like
-            // frequencies) and 6 (peak); 0 to 4 follow the manual's order.
-            unproven |= (0..=4).contains(&shape);
-            let kind = match shape {
-                0 => ir::FilterKind::LowPass { poles: 2 },
-                1 => ir::FilterKind::HighPass { poles: 2 },
-                2 => ir::FilterKind::BandPass { poles: 2 },
-                3 => ir::FilterKind::Notch { poles: 2 },
-                4 => ir::FilterKind::LowShelf { gain },
-                5 => ir::FilterKind::HighShelf { gain },
-                _ => ir::FilterKind::Peak { gain },
-            };
-            let flat = matches!(
-                kind,
-                ir::FilterKind::Peak { gain: g }
-                    | ir::FilterKind::LowShelf { gain: g }
-                    | ir::FilterKind::HighShelf { gain: g }
-                    if (g.linear() - 1.0).abs() < 1e-9
-            );
-            if flat && !live {
-                continue;
-            }
-            out.push(ir::Processor::Filter(ir::Filter {
-                kind,
-                cutoff: ir::Frequency::Hertz(get("Freq", 1000.0)?),
-                resonance: ir::Resonance::Q(engine_parameters::band_q(
-                    |n| node.attribute(n).and_then(|v| v.parse().ok()),
-                    band,
-                )),
-            }));
-        }
-        let overall = number(node, "OverallGain", 0.0)?;
-        if overall != 0.0 || live {
-            out.push(ir::Processor::Gain(db(overall)));
-        }
-        // The manual lists the seven shapes but not their numbering; types 5
-        // and 6 are evidenced by the installed banks, 0 to 4 are its order.
-        if unproven {
-            self.unsupported(
-                at,
-                "DigitalEq band type numbering (manual order assumed)",
-                "",
-            );
-        }
-        Ok(())
     }
 }
 

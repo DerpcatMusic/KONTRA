@@ -811,17 +811,9 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::KontaktLegacyEq(eq) => (
-                "kontakt_legacy_eq",
+            PreparedProcessor::Eq(eq) => (
+                "eq",
                 eq.trace_parameters().into_iter().map(|(n, p)| parameter(n, p)).collect(),
-                0,
-            ),
-            PreparedProcessor::LiveFilter(live) => (
-                "live_filter",
-                live.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
                 0,
             ),
             PreparedProcessor::ControlMatrix(cells) => (

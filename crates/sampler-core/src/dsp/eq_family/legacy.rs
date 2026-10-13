@@ -1,7 +1,7 @@
 //! Kontakt legacy one-band EQ, standalone SHA 0fe6356e... (KONTAKT_DSP_LAWS).
 //! Saved conversion 1409590a0, coefficients 1409591c0, scalar 140aeada0,
 //! frozen-target wrapper cadence 140904770. Other native EQ families are distinct.
-use super::{
+use super::super::{
     ControlRamp, ControlRange, Parameter, Planar, ProcessorState, control::PreparedParameter,
 };
 use crate::Error;
@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     fn vectors() -> serde_json::Value {
         serde_json::from_str(include_str!(
-            "../../../../docs/architecture-v2/KONTAKT_DSP_LAWS.vectors.json"
+            "../../../../../docs/architecture-v2/KONTAKT_DSP_LAWS.vectors.json"
         ))
         .unwrap()
     }
@@ -406,7 +406,7 @@ mod tests {
             // Engine processor state is cleared on voice reuse. Its next saved
             // initialization snaps controls and cannot retain the old tail.
             let mut reused = ProcessorState::default();
-            let mut silent = [[0.; super::super::BLOCK]; 2];
+            let mut silent = [[0.; super::super::super::BLOCK]; 2];
             eq.process(&mut reused, &[], &mut silent, 4, 129);
             assert!(
                 silent
