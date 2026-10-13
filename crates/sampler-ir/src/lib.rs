@@ -1306,6 +1306,10 @@ impl ModulationSource {
 pub struct Breakpoints {
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
+    /// Kontakt Flex release law (transition 0x140ae5450): the first release
+    /// segment's duration is scaled by how far the current level has already
+    /// travelled, instead of running its full length from wherever it starts.
+    pub flex_release: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1397,6 +1401,16 @@ pub enum NativeWave {
     Rectangle(f32),
     /// Held noise updated twice per cycle; start phase must be below 0.5.
     Held,
+    /// Kontakt Multi (`digital` false, BLfoMulti 0x140b07290) or Digital Multi
+    /// (`digital` true, BLfoMultiDigital 0x140b078d0): a signed five-component
+    /// mix. `weights` are in native runtime order: sine, doubled saw, triangle,
+    /// pulse, held noise. `width` is the pulse width in 0..1.
+    Multi {
+        weights: [f32; 5],
+        width: f32,
+        normalize: bool,
+        digital: bool,
+    },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
