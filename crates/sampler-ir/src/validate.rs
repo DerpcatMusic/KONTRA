@@ -306,19 +306,14 @@ impl Check<'_> {
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
                     self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
-                Processor::Reverb(r) => {
-                    for (v, field) in [
-                        (r.decay_seconds, "reverb decay"),
-                        (r.size, "reverb size"),
-                        (r.damping_hz, "reverb damping"),
-                        (r.modulation_seconds, "reverb modulation"),
-                        (r.diffusion, "reverb diffusion"),
-                        (r.predelay_seconds, "reverb predelay"),
-                        (r.input_cutoff_hz, "reverb input cutoff"),
-                        (r.low_shelf_db, "reverb low shelf"),
-                        (r.width, "reverb width"),
-                    ] {
-                        self.finite(v, field)?;
+                Processor::Space(c) => {
+                    self.finite(c.dry, "space dry")?;
+                    self.finite(c.wet, "space wet")?;
+                    if !c.finite() {
+                        self.finite(f64::NAN, "space parameter")?;
+                    }
+                    if let Some(impulse) = c.impulse {
+                        self.exists(Reference::Impulse(impulse.0))?;
                     }
                 }
                 Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
@@ -333,11 +328,6 @@ impl Check<'_> {
                     self.time(c.attack, "compressor attack")?;
                     self.time(c.release, "compressor release")?;
                     self.gain(c.makeup, "compressor makeup")?;
-                }
-                Processor::Convolution { impulse, dry, wet } => {
-                    self.exists(Reference::Impulse(impulse.0))?;
-                    self.finite(dry, "convolution dry")?;
-                    self.finite(wet, "convolution wet")?;
                 }
                 Processor::Mix { dry, wet, .. } => {
                     self.within(dry, 0.0..=16.0, "mix dry")?;

@@ -198,7 +198,7 @@ pub(crate) fn process(
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
-            PreparedProcessor::Reverb(_) | PreparedProcessor::Convolution(_) => {
+            PreparedProcessor::Space(_) => {
                 unreachable!("reverbs and convolutions are bus processors")
             }
         }
@@ -542,8 +542,7 @@ mod tests {
                                                 tempo: 120.0,
                                                 bank: &mut bank,
                                                 expression: None,
-                                                reverbs: &mut [],
-                                                convolutions: &mut [],
+                                                spaces: &mut [],
                                             },
                                             None,
                                         );

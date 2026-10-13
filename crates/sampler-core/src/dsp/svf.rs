@@ -454,10 +454,9 @@ pub(crate) struct FilterContext<'a> {
     pub tempo: f64,
     pub bank: &'a mut FilterBank,
     pub expression: Option<(crate::ExpressionId, crate::Expression)>,
-    /// A bus's reverbs, by `PreparedProcessor::Reverb` index; empty elsewhere.
-    pub reverbs: &'a mut [super::Reverb],
-    /// A bus's convolutions, by `PreparedProcessor::Convolution` index.
-    pub convolutions: &'a mut [super::Convolution],
+    /// A bus's reverbs and convolutions, by `PreparedProcessor::Space` index;
+    /// empty elsewhere.
+    pub spaces: &'a mut [super::Space],
 }
 /// Which cache a voice's filter resolved to for this block.
 #[derive(Clone, Copy, PartialEq, Eq)]
