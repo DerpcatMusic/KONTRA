@@ -869,7 +869,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }),
         _ => Value::Null,
     };
-    let views: Vec<sampler_ksp::ScriptView> = match &subject {
+    let mut views: Vec<sampler_ksp::ScriptView> = match &subject {
         Subject::Plan(l) => l.scripts.clone(),
         Subject::Streamed(s) => s.loaded.scripts.clone(),
         _ => Vec::new(),
@@ -1204,6 +1204,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             let Rig::Midi { rt, .. } = &mut rig else {
                 unreachable!()
             };
+            // Off the measured audio interval, exactly like the existing native
+            // headless host. A callback can emit more than the bounded outbox.
+            // Draining lets its next render retry the suspended instruction.
+            sampler_ksp::service_ui_effects(rt, &mut views)
+                .map_err(|e| format!("KSP host service: {e}"))?;
             rt.flush_behaviors_at(|_, _, outcome, program| {
                 if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
                     let callback = sampler_ksp::callback_of(&views, program);
