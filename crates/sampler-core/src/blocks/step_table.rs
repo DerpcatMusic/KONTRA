@@ -1,10 +1,11 @@
 //! 32-step table stepper (BArp32Step slot 6, 0x140a768e0): emits the raw table
 //! value at the integer part of a binary64 phase and advances it by a step.
 //! Free-run wraps by the table length; one-shot holds the last entry. The
-//! step comes from [`crate::blocks::lfo::native_phase_step`]. Not modelled
-//! because they are unproved: the end-of-call phase correction (the unit of
-//! object field +0x5c), the per-lookup sequence mutation (byte +0xdd), and how
-//! stored arp fields become table, length and mode.
+//! step comes from [`crate::blocks::lfo::native_phase_step`]. This is what
+//! Kontakt's stored "Arp" (0x09, `BArp32Step`) is: a 32-step table modulator
+//! that never sees notes (the musical arpeggiator is [`crate::blocks::arp`]).
+//! Not modelled because they are unproved: the per-lookup sequence mutation
+//! (byte +0xdd), and how stored arp fields become table, length and mode.
 
 pub const STEPS: usize = 32;
 
@@ -25,6 +26,17 @@ pub struct StepState {
 impl StepTable {
     pub fn valid(&self) -> bool {
         (1..=STEPS).contains(&self.len)
+    }
+
+    /// The end-of-call correction (0x140a768e0): `pending` is the caller's
+    /// partial-quantum count (object `+0x5c`, `32 * ceil(N / 32) - N` on the audio
+    /// route). The phase moves back by `pending / 32` outputs' worth of step and
+    /// adds the table length once if that went below zero.
+    pub fn correct(&self, s: &mut StepState, pending: i32) {
+        s.phase -= f64::from(pending) * 0.03125 * s.step;
+        if s.phase < 0.0 {
+            s.phase += self.len as f64;
+        }
     }
 
     /// Fill `out` with one value per output, then advance.
@@ -67,6 +79,20 @@ mod tests {
         table(true).render(&mut s, &mut out);
         assert_eq!(out, [0., 0.5, 1., 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]);
         assert_eq!(s.step, 0.0);
+    }
+
+    #[test]
+    fn end_of_call_correction_rewinds_the_partial_quantum() {
+        let t = table(false);
+        let mut s = StepState { phase: 2.0, step: 0.5 };
+        t.correct(&mut s, 16);
+        assert_eq!(s.phase, 2.0 - 16.0 * 0.03125 * 0.5);
+        let mut s = StepState { phase: 0.1, step: 1.0 };
+        t.correct(&mut s, 32);
+        assert!((s.phase - (0.1 - 1.0 + 4.0)).abs() < 1e-12, "wrapped once by the length");
+        let mut s = StepState { phase: 1.0, step: 0.5 };
+        t.correct(&mut s, 0);
+        assert_eq!(s.phase, 1.0);
     }
 
     #[test]
