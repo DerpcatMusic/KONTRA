@@ -7,7 +7,7 @@ use crate::{
     ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
     Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
     LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
-    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region, ReverbSettings,
+    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
     SelectionPolicy, Selector, Sequence, SequenceScope, SlotKind, StateVariableFilter, SvfMode,
     Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
     slot_control,
@@ -1037,10 +1037,7 @@ impl Lowering<'_> {
                 .iter()
                 .chain(&chain.post_amplitude)
                 .any(|p| {
-                    matches!(
-                        p,
-                        ir::Processor::Reverb(_) | ir::Processor::Convolution { .. }
-                    )
+                    matches!(p, ir::Processor::Space(_))
                 })
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
@@ -2245,17 +2242,7 @@ impl Lowering<'_> {
             ir::Processor::Color(c) => Processor::Color(color_settings(c)),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
-            ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
-                decay_seconds: r.decay_seconds,
-                size: r.size,
-                damping_hz: r.damping_hz,
-                modulation_seconds: r.modulation_seconds,
-                diffusion: r.diffusion,
-                predelay_seconds: r.predelay_seconds,
-                input_cutoff_hz: r.input_cutoff_hz,
-                low_shelf_db: r.low_shelf_db,
-                width: r.width,
-            }),
+            ir::Processor::Space(config) => Processor::Space(config),
             ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
                 threshold_db: Parameter::Constant(c.threshold_db),
                 ratio: Parameter::Constant(c.ratio),
@@ -2330,11 +2317,6 @@ impl Lowering<'_> {
                 high: 0.0,
                 ..self.slot_range(SlotKind::Bypass, address)
             }),
-            ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
-                impulse: impulse.0,
-                dry,
-                wet,
-            },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             // An EQ lowers to several stages: `processors` handles it before this point.
             ir::Processor::Eq(_) => return Err(unsupported(owner, Feature::Controls)),
@@ -2486,10 +2468,11 @@ impl Lowering<'_> {
                     | Processor::Compressor(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
-                    Processor::Reverb(r) => r.tail_frames(self.rate),
-                    Processor::Convolution { impulse, .. } => {
-                        crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32
-                    }
+                    Processor::Space(config) => crate::dsp::space::tail_frames(
+                        config,
+                        self.rate,
+                        config.impulse.map(|i| &impulses[i.0]),
+                    ),
                     _ => (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32,
                 })
                 .max()

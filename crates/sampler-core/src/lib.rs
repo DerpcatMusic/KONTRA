@@ -84,7 +84,7 @@ pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     ArSettings, ColorSettings, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
     MAX_IMPULSE_FRAMES, NoiseSettings, OutputLowPass, QuantizerSettings,
-    EqBand, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
+    EqBand, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier,
     StateVariableFilter, neutral_impulse_shape, shape_impulse,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };

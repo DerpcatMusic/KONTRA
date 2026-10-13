@@ -1676,8 +1676,8 @@ pub enum Processor {
     /// Linear stereo mix: rows are output left/right, columns input
     /// left/right. Width, balance, polarity and channel swaps.
     StereoMatrix([[f64; 2]; 2]),
-    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
-    Reverb(Reverb),
+    /// Reverb and convolution over a summed signal: bus and master scope.
+    Space(fx::space::Config),
     /// Feed-forward compressor on the stereo pair.
     Compressor(Compressor),
     /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
@@ -1710,13 +1710,6 @@ pub enum Processor {
         gain: Gain,
         first: bool,
         last: bool,
-    },
-    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
-    /// master scope. Convolution adds no latency.
-    Convolution {
-        impulse: ImpulseRef,
-        dry: f64,
-        wet: f64,
     },
     /// The next `count` processors of the chain run beside the unprocessed
     /// signal: `dry` of it passes around them, `wet` of their output follows,
@@ -1836,27 +1829,12 @@ pub struct ImpulseShape {
     pub normalize: bool,
     /// A SampledReverb (its own gain references) rather than a Convolver.
     pub sampled_reverb: bool,
-}
-
-/// Physical reverb settings; an importing profile maps its own controls
-/// here. Wet signal only: the dry path is the bus's other send.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Seconds for the tail to fall 60 dB.
-    pub decay_seconds: f64,
-    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
-    pub size: f64,
-    pub damping_hz: f64,
-    pub modulation_seconds: f64,
-    /// Input diffusion, 0..=0.75.
-    pub diffusion: f64,
-    pub predelay_seconds: f64,
-    pub input_cutoff_hz: f64,
-    /// Wet low-frequency change in dB (zero or negative).
-    pub low_shelf_db: f64,
-    /// 0 mono .. 1 full width.
-    pub width: f64,
+    /// Play the response backwards.
+    pub reverse: bool,
+    /// Scale to Kontakt's Auto Gain (see `shape_impulse`).
+    pub auto_gain: bool,
+    /// Volume envelope knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

@@ -228,43 +228,13 @@ impl Translation {
                     }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
-                    // No file (or an unreadable one) leaves a unit impulse: the
-                    // processor stays, so a script can swap an impulse in.
-                    let asset = node
-                        .attribute("SamplePath")
-                        .filter(|p| !p.is_empty())
-                        .and_then(|sample| self.asset(&at, sample));
-                    self.ir.impulses.push(ir::Impulse {
-                        rate: 48000,
-                        left: vec![1.0],
-                        right: vec![1.0],
-                        asset,
-                    });
-                    let mut shape = sampler_core::neutral_impulse_shape();
-                    shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
-                    if node.has_tag_name("SampledReverb") {
-                        shape.sampled_reverb = true;
-                        shape.time = number(node, "Time", 1.0)?;
-                        shape.damping_low = number(node, "DampingLow", 0.0)?;
-                        shape.damping_high = number(node, "DampingHigh", 0.0)?;
-                        shape.pre_delay_ms = number(node, "PreDelay", 50.0)?;
-                        shape.width = number(node, "Width", 0.0)?;
-                    }
-                    self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
-                    self.ir.impulse_shapes.push(Some(shape));
-                    if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
-                        self.ir.unsupported.push(ir::Unsupported {
-                            location: at.clone(),
-                            feature: "positive SampledReverb damping".into(),
-                            value: String::new(),
-                            reason: ir::Reason::UnknownLaw,
-                        });
-                    }
-                    out.push(ir::Processor::Convolution {
-                        impulse: ir::ImpulseRef(self.ir.impulses.len() - 1),
-                        dry: number(node, "Dry", 0.0)?,
-                        wet: number(node, "Wet", 1.0)?,
-                    });
+                    let processor = self.impulse_player(node, &at)?;
+                    out.push(processor);
+                }
+                "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+                    if !voice =>
+                {
+                    out.extend(self.algorithmic_reverb(node, &at)?);
                 }
                 "TrackDelay" => {
                     let time = number(node, "DelayTime", 0.0)?;
