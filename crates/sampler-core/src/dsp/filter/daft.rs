@@ -225,7 +225,8 @@ impl Daft {
     }
 }
 
-/// Unity-slope soft limit to +-1 (a rational tanh).
+/// Unity-slope soft limit to +-1 (a rational tanh). A stand-in: the native saturation transfer
+/// is not recovered (CORE-FILTERS-029), and the interpolation around it is likewise a proxy.
 fn soft(x: f64) -> f64 {
     if x.abs() >= 3. {
         x.signum()
