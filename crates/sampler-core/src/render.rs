@@ -65,24 +65,8 @@ impl Runtime {
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
-            v1_control_starts: self
-                .plans
-                .slots
-                .iter()
-                .filter_map(|s| s.value.as_ref())
-                .map(|g| g.modulation.native_starts)
-                .sum(),
-            v1_control_blocks: self
-                .plans
-                .slots
-                .iter()
-                .filter_map(|s| s.value.as_ref())
-                .map(|g| {
-                    g.modulation
-                        .native_blocks
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                })
-                .sum(),
+            v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
+            v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
             refused_starts: self.refused_starts,
             cold_starts: self.cold_started,
@@ -841,14 +825,7 @@ impl Runtime {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| {
-            plan.modulation.native_render(
-                &plan.prepared.voice_modulation,
-                i,
-                state,
-                &plan.controls.base,
-            )
-        });
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
         let context = super::dsp::RenderContext {
             controls,
             trace,
@@ -982,40 +959,16 @@ pub(super) fn render_source<const TRACE: bool>(
         let active = voice.envelope.remaining();
         let mut unity = crate::envelope::EnvelopeState::new(if waiting {
             crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
-        } else {
-            crate::Envelope::default()
-        });
+        } else { crate::Envelope::default() });
         let remaining = unity.remaining();
-        let count = if waiting {
-            output.len()
-        } else {
-            output.len().min(active)
-        };
-        let produced = voice.cursor.render(
-            source,
-            &mut output[..count],
-            &mut unity,
-            1.,
-            [1.; 2],
-            kernel,
-        );
-        let held = if waiting {
-            produced - (remaining - unity.remaining())
-        } else {
-            0
-        };
+        let count = if waiting { output.len() } else { output.len().min(active) };
+        let produced = voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel);
+        let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
         let levels = controls.levels(voice, produced, held);
         for (i, frame) in output[..produced].iter_mut().enumerate() {
-            for c in 0..2 {
-                frame[c] =
-                    (f64::from(frame[c]) * levels[i] * f64::from(context.expression[c])) as f32;
-            }
+            for c in 0..2 { frame[c] = (f64::from(frame[c]) * levels[i] * f64::from(context.expression[c])) as f32; }
         }
-        (
-            produced,
-            voice.cursor.done() || voice.envelope.done() || controls.done(),
-            0,
-        )
+        (produced, voice.cursor.done() || voice.envelope.done() || controls.done(), 0)
     } else {
         let produced = voice.cursor.render(
             source,

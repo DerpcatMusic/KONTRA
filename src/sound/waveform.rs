@@ -174,7 +174,7 @@ fn envelope(
                 return None;
             }
             let len = (end - at).min(scratch.len());
-            let frames = if let Some(frames) = resident {
+            let frames = if let Some(frames) = resident.as_ref() {
                 &frames[at..at + len]
             } else {
                 reader.as_mut()?.read(at, &mut scratch[..len]).ok()?;

@@ -379,9 +379,8 @@ impl Op {
             } => (usize::from(*args) + action.arguments())
                 .max(usize::from(*local) + 1)
                 .max(text.as_ref().map_or(0, reg)),
-            Self::Waveform { args, local, .. } => {
-                (usize::from(*args) + 4).max(usize::from(*local) + 1)
-            }
+            Self::Waveform { args, local, .. } =>
+                (usize::from(*args) + 4).max(usize::from(*local) + 1),
             Self::MidiFilename { text } => reg(text),
             Self::Real { lhs, rhs, .. }
             | Self::CompareReal { lhs, rhs, .. }
@@ -624,8 +623,7 @@ impl Store {
     }
     pub(crate) fn clear_waveform_table(&mut self, ui: i32) {
         self.entries.retain(|(key, _)| {
-            !(key[0] == ui
-                && key[1] == crate::waveform::Property::Table as i32
+            !(key[0] == ui && key[1] == crate::waveform::Property::Table as i32
                 && key[3] == crate::waveform::STATE_TAG)
         });
     }
@@ -1540,9 +1538,13 @@ impl Runtime {
                     .prepared
                     .group_source_ids
                     .iter()
-                    .position(|&g| i64::from(g) == group)
-                    .or_else(|| usize::try_from(group).ok());
-                let value = if let Some(group) = dense {
+                    .position(|&g| i64::from(g) == group);
+                let dense = if self.plans.get(plan.0).unwrap().prepared.group_source_ids.is_empty() {
+                    usize::try_from(group).ok()
+                } else {
+                    dense
+                };
+                let value = if let Some(group) = dense.and_then(|g| u32::try_from(g).ok()) {
                     if write {
                         let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
                         let instance = self.plans.get(plan.0).unwrap().prepared.programs
@@ -1550,10 +1552,10 @@ impl Runtime {
                             .script_instance
                             .unwrap_or(crate::ScriptInstanceId(0));
                         let reload = self.reg(id, local)? != 0;
-                        self.request_group_residency(plan, group as u32, reload, instance)
+                        self.request_group_residency(plan, group, reload, instance)
                             .map_or(-1, i64::from)
                     } else {
-                        i64::from(self.group_resident(plan, group as u32).unwrap_or(false))
+                        i64::from(self.group_resident(plan, group).unwrap_or(false))
                     }
                 } else {
                     if write { -1 } else { 0 }
@@ -1767,61 +1769,39 @@ impl Runtime {
                 )?;
             }
             Op::ResetTimer => self.ops.timer_origin = std::time::Instant::now(),
-            Op::Waveform {
-                action,
-                args,
-                local,
-                services,
-            } => {
+            Op::Waveform { action, args, local, services } => {
                 use crate::waveform::Action;
                 let count = if action == Action::Set { 4 } else { 3 };
                 // Reject the complete window before any operand read or state access.
-                args.checked_add((count - 1) as u16)
-                    .ok_or(Error::InvalidInput)?;
+                args.checked_add((count - 1) as u16).ok_or(Error::InvalidInput)?;
                 let mut values = [0; 4];
                 for (i, value) in values.iter_mut().take(count).enumerate() {
                     *value = i32_of(self.reg(id, args + i as u16)?)?;
                 }
-                let admitted =
-                    crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
                 let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
                 let plan = self.behavior_plan(c.owner)?;
-                let instance =
-                    self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
+                let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
                 let service = services[usize::from(action == Action::Set)];
                 // Only the immediate tail setter may coalesce. Attachments and
                 // every intervening command are ordering boundaries.
-                let coalesce = action == Action::Set
-                    && self.ops.effects.back().is_some_and(|e| {
-                        e.plan == plan
-                            && e.instance == instance
-                            && e.service == service
-                            && e.count == 4
-                            && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
-                    });
+                let coalesce = action == Action::Set && self.ops.effects.back().is_some_and(|e| {
+                    e.plan == plan && e.instance == instance && e.service == service
+                        && e.count == 4 && (0..3).all(|i| e.args[i] == i64::from(admitted.args[i]))
+                });
                 if action != Action::Get && !coalesce && self.ops.effects.len() == EFFECT_CAPACITY {
                     return Err(Error::Capacity);
                 }
-                let result =
-                    crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
+                let result = crate::waveform::commit(&mut self.behavior_bank_mut(id)?.store, &admitted);
                 self.set_reg(id, local, result)?;
                 if action != Action::Get {
                     let mut values = [0; EFFECT_ARGS];
                     for (value, arg) in values.iter_mut().zip(admitted.args).take(count) {
                         *value = i64::from(arg);
                     }
-                    let effect = Effect {
-                        plan,
-                        instance,
-                        service,
-                        args: values,
-                        count: count as u8,
-                        text: None,
-                    };
+                    let effect = Effect { plan, instance, service, args: values, count: count as u8, text: None };
                     if coalesce {
-                        if let Some(tail) = self.ops.effects.back_mut() {
-                            *tail = effect;
-                        }
+                        if let Some(tail) = self.ops.effects.back_mut() { *tail = effect; }
                     } else {
                         self.ops.effects.push_back(effect);
                     }

@@ -14,7 +14,6 @@ use std::sync::{
 const JOBS: usize = 1024;
 struct Group {
     assets: Box<[Pcm]>,
-    desired: AtomicBool,
     loaded: AtomicBool,
     revision: AtomicU64,
 }
@@ -70,9 +69,8 @@ impl Residency {
                 .into_iter()
                 .map(|assets| Group {
                     assets: assets.into(),
-                    desired: AtomicBool::new(true),
                     loaded: AtomicBool::new(true),
-                    revision: AtomicU64::new(0),
+                    revision: AtomicU64::new(1),
                 })
                 .collect(),
             pinned: pinned.into(),
@@ -82,7 +80,7 @@ impl Residency {
                     group: AtomicUsize::new(0),
                     id: AtomicI32::new(0),
                     instance: AtomicUsize::new(0),
-                    revision: AtomicU64::new(0),
+                    revision: AtomicU64::new(1),
                     reload: AtomicBool::new(false),
                     success: AtomicBool::new(false),
                 })
@@ -108,6 +106,23 @@ impl Residency {
                         if reload && success {
                             success &= pcm.residency_reload().is_ok();
                         }
+                    }
+                    // A failed multi-asset reload rolls back its ownership before
+                    // completion. Mode and revision share one CAS so a newer
+                    // request cannot lose its reference to this older failure.
+                    if reload
+                        && !success
+                        && group
+                            .revision
+                            .compare_exchange(revision, revision & !1, AcqRel, Acquire)
+                            .is_ok()
+                    {
+                        for pcm in &group.assets {
+                            pcm.residency_release();
+                        }
+                        slot.revision.store(revision & !1, Relaxed);
+                    }
+                    for pcm in &group.assets {
                         // Check after I/O as well: a newer purge owns eligibility and
                         // must not leave a stale head resident when no other owner needs it.
                         while !pcm.residency_collect() && !worker.stop.load(Acquire) {
@@ -151,14 +166,19 @@ impl Residency {
         if !self.room() {
             return Err(Error::Capacity);
         }
-        let revision = group_state
+        #[allow(deprecated, reason = "fetch_update supports Rust 1.92")]
+        let previous = group_state
             .revision
-            .load(Relaxed)
-            .checked_add(1)
-            .ok_or(Error::Capacity)?;
+            .fetch_update(AcqRel, Acquire, |state| {
+                (state >> 1)
+                    .checked_add(1)
+                    .and_then(|revision| revision.checked_mul(2))
+                    .map(|revision| revision | u64::from(reload))
+            })
+            .map_err(|_| Error::Capacity)?;
         group_state.loaded.store(false, Release);
-        group_state.revision.store(revision, Release);
-        if group_state.desired.swap(reload, AcqRel) != reload {
+        let revision = ((previous >> 1) + 1) * 2 | u64::from(reload);
+        if (previous & 1 != 0) != reload {
             for pcm in &group_state.assets {
                 if reload {
                     pcm.residency_acquire();
@@ -201,22 +221,34 @@ impl Residency {
         self.thread.as_ref().unwrap().thread().unpark();
     }
 }
+impl Drop for Shared {
+    fn drop(&mut self) {
+        for g in &self.groups {
+            if g.revision.load(Acquire) & 1 != 0 {
+                for p in &g.assets {
+                    p.residency_release();
+                }
+            }
+        }
+        for p in &self.pinned {
+            p.residency_release();
+        }
+        for p in self
+            .groups
+            .iter()
+            .flat_map(|g| g.assets.iter())
+            .chain(&self.pinned)
+        {
+            p.residency_collect();
+        }
+    }
+}
 impl Drop for Residency {
     fn drop(&mut self) {
         self.shared.stop.store(true, Release);
         self.thread.as_ref().unwrap().thread().unpark();
         // Join belongs to Prepared/control-side destruction, never rendering.
         let _ = self.thread.take().unwrap().join();
-        for g in &self.shared.groups {
-            if g.desired.load(Acquire) {
-                for p in &g.assets {
-                    p.residency_release();
-                }
-            }
-        }
-        for p in &self.shared.pinned {
-            p.residency_release();
-        }
     }
 }
 impl Runtime {
@@ -241,16 +273,19 @@ impl Runtime {
         if !residency.room() {
             return Err(Error::Capacity);
         }
+        let callbacks = generation.callbacks.checked_add(1).ok_or(Error::Capacity)?;
         let id = generation.midi_object.allocate_async_id()?;
         residency.request(group as usize, reload, id, instance)?;
-        generation.callbacks += 1;
-        for index in 0..self.voices.slots.len() {
-            let Some(v) = &self.voices.slots[index].value else {
-                continue;
-            };
-            let note = self.families.get(v.family.0).unwrap().note;
-            if v.group == Some(group) && self.notes.get(note.0).unwrap().plan == plan {
-                self.end_voice(crate::VoiceId(self.voices.id(index)));
+        generation.callbacks = callbacks;
+        if !reload {
+            for index in 0..self.voices.slots.len() {
+                let Some(v) = &self.voices.slots[index].value else {
+                    continue;
+                };
+                let note = self.families.get(v.family.0).unwrap().note;
+                if v.group == Some(group) && self.notes.get(note.0).unwrap().plan == plan {
+                    self.end_voice(crate::VoiceId(self.voices.id(index)));
+                }
             }
         }
         if !reload {

@@ -3,9 +3,8 @@
 //! are read once per 64-frame block (the control ramp still applies at the
 //! block edge); the biquad keeps its state across coefficient changes.
 use super::{
-    Biquad, FilterKind, Parameter, Planar, ProcessorState,
+    Biquad, FilterKind, Parameter, Planar, ProcessorState, flush, kernels,
     control::{ControlRamp, ControlRange, PreparedParameter},
-    flush, kernels,
 };
 use crate::Error;
 
@@ -50,11 +49,7 @@ impl LiveFilter {
         .all(|p| p.valid() && !matches!(p, Parameter::Expression { .. }))
     }
 
-    pub(super) fn compile(
-        self,
-        rate: u32,
-        bindings: &mut Vec<ControlRange>,
-    ) -> Result<Live, Error> {
+    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Result<Live, Error> {
         if rate == 0 || !self.valid() {
             return Err(Error::InvalidInput);
         }
