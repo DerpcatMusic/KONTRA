@@ -16,8 +16,8 @@
 //!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
 //!   applied; IR size and decimation (unextracted resamplers) are reported
 //!   unmodeled.
-//! - 0x65 Raum, 0x7a Reverb Delight: framing only; reported unmodeled with
-//!   the reason in the slot's `effect` note.
+//! - 0x65 Raum, 0x7a Reverb Delight: field bindings measured, cores not
+//!   extracted; reported unmodeled with the reason in the slot's `effect` note.
 
 use super::{Impulses, Notes};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
@@ -268,8 +268,8 @@ pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
 /// translated; empty for every other module.
 pub(super) fn why_unbound(module: u16) -> &'static str {
     match module {
-        0x65 => ": Raum fields unbound (probe: set each ENGINE_PAR_RAUM_* alone and save)",
-        0x7a => ": Reverb Delight fields unbound (amp, tremolo and spring-reverb controls)",
+        0x65 => ": Raum field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); its modern reverb core is not extracted",
+        0x7a => ": Reverb Delight field binding measured (MONO unproved: field 11 bytes unstable); its amp, tremolo and spring-reverb cores are not extracted",
         _ => "",
     }
 }

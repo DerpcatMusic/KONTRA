@@ -241,7 +241,11 @@ fn legacy_delay_synced_time_follows_tempo() {
     assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
     // A synced count below one unit reads as one (0x140a74bf0, flag +0x20).
     let (out, _) = run(legacy(0.25, 1., 1., 0., 0.), 48_000, 120., &x, 4096);
-    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);    // Count 6 of half notes (factor 2) is 6 s at 120 BPM: clamped to 5800 ms.
+    let mut x = vec![[0.; 2]; 255_790];
+    x[0] = [1., 0.];
+    let (out, _) = run(legacy(6., 2., 1., 0., 0.), 44_100, 120., &x, 4096);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 255_781);
 }
 
 fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
