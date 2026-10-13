@@ -4,7 +4,7 @@
 //!
 //! Evaluation is pure: no state beyond the caller's phase, no allocation.
 
-pub use sampler_ir::NativeWave;
+pub use sampler_ir::{NativeWave, UviWave};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
@@ -267,7 +267,86 @@ fn native(w: NativeWave, p: f64, seed: u64, phase: f64) -> f64 {
         NativeWave::Triangle => f64::from(table(TRIANGLE, p * 4096.0)),
         NativeWave::Rectangle(w) => rectangle_native(p, w),
         NativeWave::Held => held_native(phase, seed),
+        NativeWave::Uvi(w) => uvi(w, p, seed, phase),
     }
+}
+
+const UVI_ENTRIES: usize = 256;
+
+/// The six UVI Workstation 4.0.9 LFO tables, 256 entries plus the guard entry
+/// the interpolator reads at index 256 (generators at 0x14163c3a0 and
+/// 0x14163c956; addresses per wave in [`UviWave`]). Sine arguments are float32
+/// products with `2*pi/256` (0x141e4e3cc). The analog square sums the odd
+/// harmonics 1..=17 with float32 reciprocal weights and gain 0.8; the exact
+/// native addition order is not recovered (law proved, bit order open).
+fn uvi_tables() -> &'static [[f32; UVI_ENTRIES + 1]; 6] {
+    static TABLES: std::sync::OnceLock<[[f32; UVI_ENTRIES + 1]; 6]> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let step = std::f32::consts::TAU / 256.0;
+        let ramp = 1.0f32 / 255.0;
+        let mut t = [[0f32; UVI_ENTRIES + 1]; 6];
+        for i in 0..=UVI_ENTRIES {
+            let x = i as f32;
+            t[0][i] = (x * step).sin();
+            t[1][i] = if i < 128 { 1.0 } else { -1.0 };
+            t[2][i] = if i <= 64 {
+                x / 64.0
+            } else if i <= 192 {
+                (128.0 - x) / 64.0
+            } else {
+                (x - 256.0) / 64.0
+            };
+            let r = x.min(255.0);
+            t[3][i] = 2.0 * r * ramp - 1.0;
+            t[4][i] = 1.0 - 2.0 * r * ramp;
+            let mut sum = 0f32;
+            for k in (1..=17).step_by(2) {
+                sum += ((k as f32 * x) * step).sin() * (1.0 / k as f32);
+            }
+            t[5][i] = 0.8 * sum;
+        }
+        t
+    })
+}
+
+/// `seed` advanced `n` steps of `z' = a*z + c (mod 2^32)`.
+fn lcg_jump_with(a: u32, c: u32, mut seed: u32, mut n: u64) -> u32 {
+    let (mut a, mut c) = (a, c);
+    while n > 0 {
+        if n & 1 == 1 {
+            seed = seed.wrapping_mul(a).wrapping_add(c);
+        }
+        c = c.wrapping_mul(a).wrapping_add(c);
+        a = a.wrapping_mul(a);
+        n >>= 1;
+    }
+    seed
+}
+
+/// UVI LFO value at cycle fraction `p` in 0..1 (process 0x1410f8ca0): the phase
+/// is a uint32 accumulator; entry `Q >> 24` and weight `(Q & 0xffffff) / 2^24`
+/// give `(1 - u) T[j] + u T[j + 1]` in float32. Random S&H holds
+/// `2 F(z' / 2^32) - 1` from `z' = 1664525 z + 1013904223`, one step per
+/// completed cycle; the reset seed and first draw are unproved, so the draw
+/// after `cycle + 1` steps from the voice seed is held for `cycle`.
+fn uvi(w: UviWave, p: f64, seed: u64, phase: f64) -> f64 {
+    let index = match w {
+        UviWave::Sinus => 0,
+        UviWave::Square => 1,
+        UviWave::Triangle => 2,
+        UviWave::RampUp => 3,
+        UviWave::RampDown => 4,
+        UviWave::AnalogSquare => 5,
+        UviWave::RandomHold => {
+            let start = (seed ^ (seed >> 32)) as u32;
+            let z = lcg_jump_with(1_664_525, 1_013_904_223, start, phase.floor().max(0.0) as u64 + 1);
+            return f64::from(2.0 * (z as f32 * (1.0 / 4_294_967_296.0)) - 1.0);
+        }
+    };
+    let q = (p.clamp(0.0, 1.0) * 4_294_967_296.0).min(4_294_967_295.0) as u32;
+    let (j, u) = ((q >> 24) as usize, (q & 0xff_ffff) as f32 * (1.0 / 16_777_216.0));
+    let t = &uvi_tables()[index];
+    f64::from((1.0 - u) * t[j] + u * t[j + 1])
 }
 
 /// Native normalized-frequency lane (BLfo* and BArp32Step slot 6, e.g.
@@ -581,5 +660,75 @@ mod tests {
         assert_eq!(l.hertz(120., half), 4.0);
         l.rate = LfoRate::Beats(1.0);
         assert_eq!(l.hertz(120., LfoInputs::UNITY), 2.0);
+    }
+
+    fn u(w: UviWave, p: f64) -> f64 {
+        wave(LfoShape::Native(NativeWave::Uvi(w)), p, 0)
+    }
+
+    /// 0x1428393a0: sine table entries are sin(i*2pi/256); between entries the
+    /// native interpolation is linear, so the midpoint is the chord, not the sine.
+    #[test]
+    fn uvi_sinus_is_a_linearly_interpolated_256_entry_table() {
+        assert!((u(UviWave::Sinus, 64.0 / 256.0) - 1.0).abs() < 1e-6);
+        let chord = (u(UviWave::Sinus, 10.0 / 256.0) + u(UviWave::Sinus, 11.0 / 256.0)) / 2.0;
+        assert!((u(UviWave::Sinus, 10.5 / 256.0) - chord).abs() < 1e-6);
+        assert!((chord - (10.5 * std::f64::consts::TAU / 256.0).sin()).abs() > 1e-6);
+    }
+
+    /// 0x1428397b0: +1 for entries 0..128, -1 from 128, so the falling edge is
+    /// one interpolated entry wide and the rising edge at the wrap is hard.
+    #[test]
+    fn uvi_square_has_one_entry_wide_falling_edge() {
+        assert_eq!(u(UviWave::Square, 100.0 / 256.0), 1.0);
+        assert_eq!(u(UviWave::Square, 127.0 / 256.0), 1.0);
+        assert!(u(UviWave::Square, 127.5 / 256.0).abs() < 1e-6);
+        assert_eq!(u(UviWave::Square, 128.0 / 256.0), -1.0);
+        assert_eq!(u(UviWave::Square, 255.9 / 256.0), -1.0);
+        assert_eq!(u(UviWave::Square, 0.0), 1.0);
+    }
+
+    /// 0x142839bc0: 0 -> +1 -> 0 -> -1 -> 0 at quarter cycles.
+    #[test]
+    fn uvi_triangle_visits_quarter_cycle_extremes() {
+        for (p, v) in [(0.0, 0.0), (0.25, 1.0), (0.5, 0.0), (0.75, -1.0)] {
+            assert!((u(UviWave::Triangle, p) - v).abs() < 1e-6, "{p}");
+        }
+    }
+
+    /// 0x142839fd0 / 0x14283a3e0: 2i/255 - 1 over entries 0..255, guard holds
+    /// the last entry, so the ramps reach +-1 at 255/256 of the cycle (not 1).
+    #[test]
+    fn uvi_ramps_span_255_steps_and_hold_the_last_entry() {
+        assert!((u(UviWave::RampUp, 0.0) + 1.0).abs() < 1e-6);
+        assert!((u(UviWave::RampUp, 255.0 / 256.0) - 1.0).abs() < 1e-6);
+        assert!((u(UviWave::RampUp, 255.5 / 256.0) - 1.0).abs() < 1e-6);
+        assert!((u(UviWave::RampUp, 1.0 / 256.0) - (2.0 / 255.0 - 1.0)).abs() < 1e-6);
+        assert!((u(UviWave::RampDown, 0.0) - 1.0).abs() < 1e-6);
+        assert!((u(UviWave::RampDown, 255.0 / 256.0) + 1.0).abs() < 1e-6);
+    }
+
+    /// 0x14283a7f0: 0.8 * sum of sin(k x)/k for odd k = 1..17.
+    #[test]
+    fn uvi_analog_square_sums_nine_odd_harmonics() {
+        for i in [10usize, 40, 64, 100, 128, 200] {
+            let x = i as f64 * std::f64::consts::TAU / 256.0;
+            let expect: f64 = (1..=17).step_by(2).map(|k| (k as f64 * x).sin() / k as f64).sum::<f64>() * 0.8;
+            assert!((u(UviWave::AnalogSquare, i as f64 / 256.0) - expect).abs() < 1e-5, "{i}");
+        }
+    }
+
+    /// 0x1410f8ca0: z' = 1664525 z + 1013904223; value 2 F(z' 2^-32) - 1, held for a cycle.
+    #[test]
+    fn uvi_random_hold_follows_the_native_congruential_generator() {
+        let seed = 12345u64;
+        let at = |cycle: f64| wave(LfoShape::Native(NativeWave::Uvi(UviWave::RandomHold)), cycle + 0.3, seed);
+        let mut z = 12345u32;
+        for c in 0..5 {
+            z = z.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = 2.0 * (z as f32 * (1.0 / 4_294_967_296.0)) - 1.0;
+            assert_eq!(at(c as f64), f64::from(v), "cycle {c}");
+        }
+        assert_eq!(wave(LfoShape::Native(NativeWave::Uvi(UviWave::RandomHold)), 2.1, seed), at(2.0));
     }
 }
