@@ -81,6 +81,7 @@ fn omitted_voice_group_override_still_binds_its_native_shared_limit() {
             kill: ir::Kill::Oldest,
             prefer_released: true,
             fade: ir::Time::Milliseconds(10.),
+            exclusive_set: None,
         }
     );
     let explicit = out.ir.groups[2].voice_limit.unwrap();

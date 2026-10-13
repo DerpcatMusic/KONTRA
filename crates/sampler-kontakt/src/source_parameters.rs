@@ -360,34 +360,6 @@ pub(crate) fn program(program: &Program) -> Result<Vec<Record>, ni_file::Error> 
     Ok(out)
 }
 
-pub(crate) fn muted_group(group: &Group, index: usize) -> Result<Vec<Record>, ni_file::Error> {
-    let mut out = Vec::new();
-    for chunk in &group.0.children {
-        match chunk.id {
-            0x3b => {
-                for (slot, m) in InternalModArray16::try_from(chunk)?.slots()? {
-                    out.extend(internal(
-                        &format!("group {index} internal slot {slot}"),
-                        &m,
-                        &m.params()?,
-                    )?);
-                }
-            }
-            0x3c => {
-                for (slot, m) in ExternalModArray32::try_from(chunk)?.slots()? {
-                    out.push(external(
-                        &format!("group {index} external slot {slot}"),
-                        &m,
-                        &m.params()?,
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
