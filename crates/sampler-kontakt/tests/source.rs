@@ -104,7 +104,7 @@ fn source_views_preserve_wire_identity_and_all_unknown_bytes_without_allocating(
         assert_eq!(source.description.unwrap().data(), [0u8; 0]);
         assert!(source.textfile_name.is_none());
         assert_eq!(
-            source.persistent.unwrap().iter().nth(1).unwrap().data(),
+            source.persistent.iter().nth(1).unwrap().data(),
             [0xff, 0, 0x81]
         );
         assert_eq!(source.extension.data(), [0xde, 0xad]);
@@ -207,7 +207,16 @@ fn malformed_lengths_counts_flags_and_saved_tables_fail_at_the_source_boundary()
             .unwrap();
         assert!(root.records(LIMITS).is_err());
     }
-    let absent = script(None, &[]);
+    let absent = script(None, &0u32.to_le_bytes());
+    let missing = script(None, &[]);
+    assert!(
+        Script::parse(
+            Chunks::parse(&missing, LIMITS).unwrap().iter().next().unwrap(),
+            LIMITS
+        )
+        .is_err(),
+        "the persistent count is required (0x140d03920)"
+    );
     let empty = script(Some(&[]), &0u32.to_le_bytes());
     let decode = |b| {
         Script::parse(
@@ -217,9 +226,9 @@ fn malformed_lengths_counts_flags_and_saved_tables_fail_at_the_source_boundary()
         .unwrap()
     };
     assert!(decode(&absent).text.is_none());
-    assert!(decode(&absent).persistent.is_none());
+    assert!(decode(&absent).persistent.is_empty());
     assert_eq!(decode(&empty).text.unwrap().data(), [0u8; 0]);
-    assert!(decode(&empty).persistent.unwrap().is_empty());
+    assert!(decode(&empty).persistent.is_empty());
 }
 
 #[test]

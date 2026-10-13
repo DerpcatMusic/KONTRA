@@ -190,7 +190,7 @@ fn typed_script_entries_retain_their_absolute_wire_offsets() {
     support::without_heap(|| {
         let chunks = Chunks::parse(&wire, LIMITS).unwrap();
         let script = Script::parse(chunks.iter().next().unwrap(), LIMITS).unwrap();
-        let mut entries = script.persistent.unwrap().iter();
+        let mut entries = script.persistent.iter();
         let bytes = entries.next().unwrap();
         let menu = SavedEntry::from_bytes(bytes, Some(Widget::Menu), LIMITS).unwrap();
         assert_eq!(menu.value, SavedValue::MenuIndex(2));
@@ -224,7 +224,7 @@ fn legacy_script_password_string_and_saved_table_follow_the_v50_layout() {
             let chunks = Chunks::parse(&wire, LIMITS).unwrap();
             let script = Script::parse(chunks.iter().next().unwrap(), LIMITS).unwrap();
             assert_eq!(script.password_hash.data(), password.unwrap_or(&[]));
-            let raw = script.persistent.unwrap().iter().next().unwrap();
+            let raw = script.persistent.iter().next().unwrap();
             assert_eq!(
                 SavedEntry::from_bytes(raw, Some(Widget::Menu), LIMITS)
                     .unwrap()
