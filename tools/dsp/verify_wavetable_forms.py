@@ -15,7 +15,7 @@ p=pefile.PE(data=raw,fast_load=True);base=p.OPTIONAL_HEADER.ImageBase;cpu=Uc(UC_
 stack,stop=0x2200000,0x2300000
 for a in [stack,stop]:cpu.mem_map(a,0x10000)
 cpu.mem_write(stop,b'\xcc');rows=[]
-for mode in [0,7,8,9,10,11,14,15,16,17,31,32,33]:
+for mode in [0,7,8,9,10,11,12,14,15,16,17,31,32,33]:
  for amount in [0.,.125,.5,.875,1.]:
   for phase in [0.,.125,.25,.5,.75,.875,.999999]:
    rsp=stack+0xff00-8;cpu.mem_write(rsp,struct.pack('<Q',stop));cpu.reg_write(UC_X86_REG_RSP,rsp);cpu.reg_write(UC_X86_REG_MXCSR,0x1f80)
