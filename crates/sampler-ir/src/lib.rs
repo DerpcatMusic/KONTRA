@@ -452,7 +452,7 @@ impl Wavetable {
     /// Phase-only forms verified against Kontakt's 0x140567aa0 instructions.
     /// Amplitude forms and the unmeasured phase forms remain outside admission.
     pub const fn supports_form(kind: u8) -> bool {
-        matches!(kind, 0 | 7..=11 | 14..=17 | 31..=33)
+        matches!(kind, 0 | 7..=12 | 14..=17 | 31..=33)
     }
     pub fn valid(self) -> bool {
         [self.position, self.phase, self.form1, self.form2]

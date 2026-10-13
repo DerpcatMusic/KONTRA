@@ -11,7 +11,7 @@ pub(super) const CYCLE: usize = 2048;
 /// NI KSP Reference, Engine Parameters / Source Module, WT_FORM_MODE.
 /// Native shared phase-form routine 0x140567aa0: PWM 0x140567d2d,
 /// asymmetric modes 0x140567d5b..0x140567e5f, Flip 0x140567e64,
-/// Seesaw 0x140567f83 and Bend2 0x140567bf7..0x140567c84.
+/// Mirror 0x140567ed5, Seesaw 0x140567f83 and Bend2 0x140567bf7..0x140567c84.
 /// Only measured phase forms are admitted; amplitude forms need another kernel.
 fn warp(phase: f32, amount: f32, kind: u8) -> f32 {
     let amount = amount.clamp(0., 1.);
@@ -27,6 +27,18 @@ fn warp(phase: f32, amount: f32, kind: u8) -> f32 {
                 f64::from(phase) >= f64::from(amount) * 2. - 1.
             };
             return if flip { 1. - phase } else { phase };
+        }
+        12 => {
+            // Native Mirror folds phase at its midpoint before applying the
+            // asymmetric slopes. Preserve the small upper-branch seam offset:
+            // 0x144714910 / 0x1447148cc / 0x1447148fc, not idealized constants.
+            let folded = if phase > 0.5 { 1. - phase } else { phase };
+            let width = amount * f32::from_bits(0x3f51758e) + f32::from_bits(0x3da7913f);
+            return if folded < width * 0.5 {
+                folded / width
+            } else {
+                (folded - f32::from_bits(0x3f000011)) / (1. - width) + 1.
+            };
         }
         17 => {
             return if amount == 0. {
