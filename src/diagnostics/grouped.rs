@@ -550,15 +550,16 @@ mod tests {
         .unwrap();
         assert_eq!(sidecar["locations"].as_array().unwrap().len(), 2);
         let snapshot = super::super::snapshot();
-        assert_eq!(
-            snapshot
-                .events
-                .iter()
-                .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
-                    && e.load_id.as_deref() == Some(id.as_str()))
-                .count(),
-            1,
-            "one journal summary per load, not per refresh"
+        // The history is a bounded process-wide ring that parallel tests can evict from.
+        let logged = snapshot
+            .events
+            .iter()
+            .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
+                && e.load_id.as_deref() == Some(id.as_str()))
+            .count();
+        assert!(
+            logged == 1 || (logged == 0 && snapshot.status.history_evicted > 0),
+            "one journal summary per load, not per refresh: {logged}"
         );
     }
 
