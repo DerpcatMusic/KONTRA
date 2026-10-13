@@ -19,6 +19,18 @@ fn main() {
                 loaded.instrument.routes.len(),
                 unsupported
             );
+            let mut by_feature = std::collections::BTreeMap::<&str, usize>::new();
+            for u in &loaded.instrument.unsupported {
+                *by_feature.entry(&u.feature).or_default() += 1;
+            }
+            let mut top: Vec<_> = by_feature.into_iter().collect();
+            top.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+            for u in loaded.instrument.unsupported.iter().filter(|u| u.feature == "script") {
+                println!("  script: {}: {}", u.location, u.value);
+            }
+            for (feature, n) in top.iter().take(12) {
+                println!("  {n:6} {feature}");
+            }
         }
         Err(e) => {
             println!("ERROR {e}");
