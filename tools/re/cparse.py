@@ -186,7 +186,7 @@ class Parser:
         if k == "chr":
             self.i += 1
             body = v[1:-1]
-            n = int(body[2:], 16) if body.startswith("\\x") else (ord(body[1]) if body.startswith("\\") and len(body) == 2 else ord(body))
+            n = int(body[2:], 16) if body.startswith("\\x") else ({"0": 0, "n": 10, "r": 13, "t": 9}.get(body[1], ord(body[1])) if body.startswith("\\") and len(body) == 2 else ord(body))
             return ("num", n, ("char", 0))
         if k == "str":
             self.i += 1
