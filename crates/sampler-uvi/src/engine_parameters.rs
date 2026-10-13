@@ -75,7 +75,8 @@ pub(crate) fn bypassable(node: roxmltree::Node) -> bool {
         "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole"
         | "TrackDelay" | "EffectRack" => true,
         "WaveShaper" => matches!(number("Mode", 0.) as i64, 6 | 7),
-        "Convolver" | "SampledReverb" => bus_scope(node),
+        "Convolver" | "SampledReverb" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb"
+        | "SparkVerb" | "Bloom" | "Diffusion" => bus_scope(node),
         // A program aux wraps its inserts; a rack chain's bypass is its gain.
         "AuxEffect" => node.parent().is_some_and(|p| p.has_tag_name("Auxs")),
         _ => false,
@@ -466,7 +467,7 @@ pub(crate) fn convolver_slots(
         let processors = &instrument.chains[chain.0];
         let all = processors.pre_amplitude.iter().chain(&processors.post_amplitude);
         for (index, processor) in all.enumerate() {
-            if matches!(processor, ir::Processor::Convolution { .. }) {
+            if matches!(processor, ir::Processor::Space(c) if c.impulse.is_some()) {
                 if let Some(insert) = inserts
                     .iter()
                     .find(|n| n.chain == chain && (n.first..n.first + n.count).contains(&index))
