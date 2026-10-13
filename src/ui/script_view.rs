@@ -1038,8 +1038,12 @@ fn inspector(ui: &mut Ui, state: &mut State, key: &str) -> El {
     col![
         section_bar("In → Out", vec![callback]),
         row![
-            col![section("Construct"), body(detail).text_size(TEXT).shrink(0)]
-                .gap(TIGHT)
+            // A scroll node hands its paragraphs no wrap width, so they measure
+            // one long line and paint their wrapped lines over the heading; a
+            // one-column grid gives them its width back.
+            col![
+                grid![1; section("Construct"), body(detail).text_size(TEXT)].line_gap(TIGHT)
+            ]
                 .pad(SPACE)
                 .align(Align::Stretch)
                 .flex(1)
@@ -1051,11 +1055,13 @@ fn inspector(ui: &mut Ui, state: &mut State, key: &str) -> El {
                 .id(format!("{key}-detail")),
             vrule(),
             col![
-                body(out).font(mono()).text_size(TEXT).shrink(0),
-                section("Faults"),
-                body(faults).text_size(TEXT).shrink(0)
+                grid![1;
+                    body(out).font(mono()).text_size(TEXT),
+                    section("Faults"),
+                    body(faults).text_size(TEXT)
+                ]
+                .line_gap(SPACE)
             ]
-            .gap(SPACE)
             .pad(SPACE)
             .align(Align::Stretch)
             .flex(1)
