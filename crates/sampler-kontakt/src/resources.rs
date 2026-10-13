@@ -65,6 +65,106 @@ fn normalize(name: &str) -> Option<String> {
     Some(name.to_lowercase())
 }
 impl Resources {
+    /// Resource ownership of one preset program. A multi may contain a factory
+    /// MIDI tool and a library instrument whose NativeUI entries are both
+    /// named `main`; the saved BProgram/F0 reference disambiguates them.
+    pub fn for_program(instrument: &Path, program: u32) -> Result<Self, LoadError> {
+        use ni_file::kontakt::objects::{Bank, FileNameListPreK51, Program};
+        // Synthetic UI fixtures have only a loose Resources tree.
+        if !instrument.is_file() {
+            return Ok(Self::of(instrument));
+        }
+        let chunks = crate::read_chunks(instrument)?;
+        let decode = |what, error| LoadError::decode(instrument, what, error);
+        let selected = if let Some(chunk) = chunks.find_first(3) {
+            let bank = Bank::try_from(chunk).map_err(|e| decode("resource bank", e))?;
+            let mut slots: Vec<_> = bank
+                .slot_list()
+                .map_err(|e| decode("resource slots", e))?
+                .slots
+                .into_iter()
+                .collect();
+            slots.sort_by_key(|(slot, _)| *slot);
+            let mut programs = Vec::new();
+            for (_, slot) in slots {
+                programs.extend(
+                    slot.program_list()
+                        .map_err(|e| decode("resource programs", e))?
+                        .programs,
+                );
+            }
+            programs.into_iter().nth(program as usize)
+        } else if program == 0 {
+            chunks
+                .find_first(0x28)
+                .map(Program::try_from)
+                .transpose()
+                .map_err(|e| decode("resource program", e))?
+        } else {
+            None
+        };
+        let selected = selected.ok_or_else(|| LoadError::Invalid {
+            path: instrument.into(),
+            reason: "resource program is absent".into(),
+        })?;
+        let specials = match chunks
+            .filename_tables()
+            .map_err(|e| decode("resource filenames", e))?
+        {
+            Some(table) => table.special_filetable,
+            None => chunks
+                .find_first(0x3d)
+                .map(FileNameListPreK51::try_from)
+                .transpose()
+                .map_err(|e| decode("resource legacy filenames", e))?
+                .map(|t| t.special_filetable)
+                .unwrap_or_default(),
+        };
+        Self::program_resources(instrument, &selected, &specials)
+    }
+
+    fn program_resources(
+        instrument: &Path,
+        program: &ni_file::kontakt::objects::Program,
+        specials: &std::collections::HashMap<u32, String>,
+    ) -> Result<Self, LoadError> {
+        let invalid = |reason: &str| LoadError::Invalid {
+            path: instrument.into(),
+            reason: reason.into(),
+        };
+        let record = program
+            .public_record()
+            .map_err(|e| LoadError::decode(instrument, "resource owner", e))?;
+        let Some(reference) = record.resource_container_filename_ref.filter(|r| *r != -1) else {
+            return Ok(Self::of(instrument));
+        };
+        let name = specials
+            .get(&(reference as u32))
+            .ok_or_else(|| invalid("authored resource container reference is absent"))?;
+        if name.is_empty() {
+            return Ok(Self::of(instrument));
+        }
+        if !Path::new(&name.replace('\\', "/"))
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt"))
+        {
+            return Err(invalid(
+                "authored resource owner is not a resource container",
+            ));
+        }
+        let base = Self::of(instrument);
+        let mut resolver = crate::Samples::new(base.root());
+        let container = resolver
+            .resolve(instrument.parent().unwrap_or(Path::new(".")), name)?
+            .filter(|p| p.is_file())
+            .ok_or_else(|| invalid("authored resource container is unavailable"))?;
+        // Rebase loose resources as well as the archive. Never let another
+        // program's same-named module satisfy an explicit resource owner.
+        let mut owned = Self::of(&container);
+        owned.containers = vec![container];
+        Ok(owned)
+    }
+
     pub fn of(instrument: &Path) -> Self {
         let path = std::fs::canonicalize(instrument).unwrap_or_else(|_| {
             std::path::absolute(instrument).unwrap_or_else(|_| instrument.into())
@@ -296,6 +396,80 @@ fn script_text(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn program_container_reference_disambiguates_same_named_native_modules() {
+        use ni_file::kontakt::{StructuredObject, objects::Program};
+        let root = std::env::temp_dir().join(format!(
+            "kontakt-program-resource-owner-{}",
+            std::process::id()
+        ));
+        let library = root.join("Library");
+        let factory = library.join("Factory/Tool");
+        for (folder, text) in [
+            (&library, b"library main".as_slice()),
+            (&factory, b"controller main".as_slice()),
+        ] {
+            std::fs::create_dir_all(folder.join("Resources/native_ui")).unwrap();
+            std::fs::create_dir_all(folder.join("Samples")).unwrap();
+            std::fs::write(folder.join("Resources/native_ui/main.nui"), text).unwrap();
+            // Empty valid NKR index; loose resources keep their documented precedence.
+            let mut archive = 0x5e70ac54u32.to_le_bytes().to_vec();
+            archive.extend(0x110u16.to_le_bytes());
+            archive.extend([0; 16]);
+            std::fs::write(folder.join("Samples/owner.nkr"), archive).unwrap();
+        }
+        std::fs::create_dir_all(library.join("Instruments")).unwrap();
+        let path = library.join("Instruments/Multi.nkm");
+        let specials = [
+            (0, "Samples/owner.nkr".into()),
+            (1, "Factory/Tool/Samples/owner.nkr".into()),
+        ]
+        .into();
+        let program = |reference: i32| {
+            // Verified v0x91 BProgram prefix and F0; no later optional suffix.
+            let mut public_data = vec![0; 70];
+            public_data.extend(reference.to_le_bytes());
+            Program(StructuredObject {
+                version: 0x91,
+                public_data,
+                private_data: vec![],
+                children: vec![],
+            })
+        };
+        assert_eq!(
+            super::Resources::of(&path)
+                .read("Resources/native_ui/main.nui")
+                .unwrap(),
+            b"library main"
+        );
+        for (reference, expected) in [
+            (0, b"library main".as_slice()),
+            (1, b"controller main".as_slice()),
+        ] {
+            let mut owned =
+                super::Resources::program_resources(&path, &program(reference), &specials).unwrap();
+            assert_eq!(
+                owned.read("Resources/native_ui/main.nui").unwrap(),
+                expected
+            );
+            assert_eq!(
+                owned
+                    .locations()
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|e| e == "nkr"))
+                    .count(),
+                1,
+                "only the authored container can satisfy this program's module names"
+            );
+        }
+        assert!(
+            super::Resources::program_resources(&path, &program(7), &specials).is_err(),
+            "an unresolved owner must not silently borrow the library's main"
+        );
+        assert!(super::Resources::program_resources(&path, &program(-7), &specials).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn linked_scripts_reload_from_resources_and_decode_saved_encodings() {
         let dir =

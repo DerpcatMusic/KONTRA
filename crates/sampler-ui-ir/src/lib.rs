@@ -139,6 +139,9 @@ pub struct Widget {
     /// Vertical offset of the text inside the widget, in pixels (KSP
     /// `TEXTPOS_Y`); `None` centres it.
     pub text_y: Option<i32>,
+    /// Shift a button/switch caption while pressed (KSP's stock behavior).
+    /// Sources without this behavior leave it false.
+    pub text_shift_on_press: bool,
     pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
@@ -195,6 +198,7 @@ impl Widget {
             binding: Binding::None,
             text: String::new(),
             text_y: None,
+            text_shift_on_press: false,
             value_y: None,
             value_text: None,
             tooltip: String::new(),
@@ -626,6 +630,25 @@ impl Default for ImageMeta {
     }
 }
 
+/// Kontakt switch/button/dropdown strips: off, on, off pressed, on pressed,
+/// off hover, on hover (NI Kontakt 4 Player Developer Guide §5.4.2).
+/// A short legacy strip retains its off/on fallback; a held pointer wins over hover.
+pub fn kontakt_picture_frame(on: bool, held: bool, hovered: bool, frames: usize) -> usize {
+    let state = usize::from(on)
+        + if frames >= 6 {
+            if held {
+                2
+            } else if hovered {
+                4
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+    state.min(frames.saturating_sub(1))
+}
+
 /// Fixed edges of a stretchable image, in pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Margins {
@@ -1005,6 +1028,26 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kontakt_picture_strip_uses_all_six_responsive_states() {
+        assert_eq!(
+            [false, true]
+                .into_iter()
+                .flat_map(|on| {
+                    [(false, false), (true, true), (false, true)]
+                        .map(|(held, hover)| kontakt_picture_frame(on, held, hover, 6))
+                })
+                .collect::<Vec<_>>(),
+            [0, 2, 4, 1, 3, 5]
+        );
+        for frames in 0..=2 {
+            assert_eq!(
+                kontakt_picture_frame(true, true, true, frames),
+                frames.saturating_sub(1)
+            );
+            assert_eq!(kontakt_picture_frame(false, false, true, frames), 0);
+        }
+    }
     use super::*;
 
     #[test]
