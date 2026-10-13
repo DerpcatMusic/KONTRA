@@ -4,7 +4,7 @@ use sampler_ir::fx::timemod::{Feedback, Lfo, Line, Tap};
 
 const LFO_OFF: Lfo = Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. };
 
-fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> (Vec<[f64; 2]>, bool) {
+pub(super) fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> (Vec<[f64; 2]>, bool) {
     let tm = TimeMod::compile(cfg, rate).unwrap();
     let mut slab = vec![[7.; 2]; tm.frames()]; // stale contents must never be read
     let mut state = ProcessorState::default();
@@ -21,7 +21,7 @@ fn run(cfg: Config, rate: u32, tempo: f64, input: &[[f64; 2]], block: usize) -> 
     (out, fault)
 }
 
-fn impulse(n: usize, v: [f64; 2]) -> Vec<[f64; 2]> {
+pub(super) fn impulse(n: usize, v: [f64; 2]) -> Vec<[f64; 2]> {
     let mut x = vec![[0.; 2]; n];
     x[0] = v;
     x
@@ -239,6 +239,13 @@ fn legacy_delay_synced_time_follows_tempo() {
     // Tempo below 0.1 BPM reads as 120.
     let (out, _) = run(legacy(1., 1., 1., 0., 0.), 48_000, 0., &x, 4096);
     assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
+    // A synced count below one unit reads as one (0x140a74bf0, flag +0x20).
+    let (out, _) = run(legacy(0.25, 1., 1., 0., 0.), 48_000, 120., &x, 4096);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);    // Count 6 of half notes (factor 2) is 6 s at 120 BPM: clamped to 5800 ms.
+    let mut x = vec![[0.; 2]; 255_790];
+    x[0] = [1., 0.];
+    let (out, _) = run(legacy(6., 2., 1., 0., 0.), 44_100, 120., &x, 4096);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 255_781);
 }
 
 fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
@@ -277,4 +284,17 @@ fn legacy_flanger_is_partition_independent_and_stays_bounded() {
     assert!(a.iter().zip(&b).all(|(p, q)| (p[0] - q[0]).abs() < 2e-3 && (p[1] - q[1]).abs() < 2e-3));
     assert!(a.iter().flatten().all(|v| v.abs() < 10.));
     assert!(a.iter().any(|f| f[0] != f[1]), "the second channel's LFO is phase offset");
+}
+
+/// UVI reads: TrackDelay's `ceil(seconds·rate)` (0.01049 s at 48 kHz is 504
+/// frames, 0x14133a2e0) and ring mode 0's floor (0x1416485a0).
+#[test]
+fn floor_and_ceil_reads_land_on_whole_frames() {
+    for (kind, frame) in [(Interpolation::Ceil, 504), (Interpolation::Floor, 503)] {
+        let mut l = line(&[Tap::at(DelayTime::Ms(10.49))], 20.);
+        l.interpolation = kind;
+        let (out, _) = run(wrap(l, LFO_OFF), 48_000, 120., &impulse(600, [1., 1.]), 64);
+        let hits: Vec<usize> = (0..600).filter(|&i| out[i][0] != 0.).collect();
+        assert_eq!(hits, [frame], "{kind:?}");
+    }
 }
