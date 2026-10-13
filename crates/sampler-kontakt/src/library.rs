@@ -2099,7 +2099,7 @@ impl Translation {
                     flags: target.unknown_flags,
                     // Invert does not act through an enabled shaper (see below).
                     inverted: target.invert && shaper.is_none(),
-                    lagged: target.lag_ms != 0,
+                    lag_ms: target.lag_ms,
                     shape,
                 });
                 return None;
@@ -2132,16 +2132,19 @@ impl Translation {
                 ))
             })
             .flatten();
-        // LFO `frequency`: Digital Multi's normalized lane, additive (ID26, law
-        // compiler FUN_140873040 set D; lane 0x140b07bd9). Other LFO kinds'
-        // frequency lanes are not proved and stay reported.
+        // LFO `frequency`: the module's normalized frequency parameter, additive
+        // (ID26 is in FUN_140873040's set D: `$in + E * $intensity`). Its rate
+        // codec is parameter 713 / lane 0x140b07bd9, and every saved Hz in the
+        // corpus (legacy and Digital kinds alike) is that codec of the saved point.
+        // A beat-synced cycle has no frequency lane and stays reported.
         let rate_target = (target.param == "frequency")
             .then(|| {
                 let destination = self.slot_modulator(source, usize::from(target.slot?))?;
+                // A shared (instrument-scope) cycle has one phase for every voice.
+                (self.ir.modulators[destination.0].scope == ir::Scope::Voice).then_some(())?;
                 matches!(
                     self.ir.modulators[destination.0].source,
                     ir::ModulationSource::Lfo(ir::Lfo {
-                        shape: ir::LfoShape::DigitalSine { .. },
                         rate: ir::Frequency::Hertz(_),
                         ..
                     })
@@ -3657,7 +3660,7 @@ mod modulation {
             depth: 0.5,
             flags,
             inverted: false,
-            lagged: false,
+            lag_ms: 0,
             shape: None,
         };
         t.intensity_scales.push(assignment(0x10));
@@ -3668,6 +3671,7 @@ mod modulation {
                 source: ir::ModulatorRef(0),
                 shape: None,
                 law: ir::ScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x10, unit: 1.0 },
+                lag_ms: 0.,
             })
         );
         t.ir.routes[0].scale = None;
@@ -4913,10 +4917,10 @@ struct IntensityScale {
     flags: u8,
     /// Inversion helpers (`fcinv_flip`/`fcinv_neg`) have no proved meaning yet.
     inverted: bool,
-    /// Assignment lag smooths the source before ID25; its cadence is unproved.
-    lagged: bool,
     /// The assignment's shaper, applied to the unipolar source (`ftable`).
     shape: Option<ir::ShapeRef>,
+    /// Saved lag milliseconds (0: none).
+    lag_ms: u16,
 }
 
 impl Translation {
@@ -4971,8 +4975,6 @@ impl Translation {
                 why = Some(format!("depth {}", scale.depth));
             } else if scale.inverted {
                 why = Some("inverted".into());
-            } else if scale.lagged {
-                why = Some("lagged".into());
             } else if scale.shape.is_some() && bipolar {
                 // The compiler's fifth argument picks ftable($c, frange_uni(s))
                 // or ftable($c, s); they agree only for unipolar sources.
@@ -4987,9 +4989,7 @@ impl Translation {
                 let (saved, unit) = self.route_intensity.get(&r).copied().unwrap_or((f64::NAN, f64::NAN));
                 let route = &self.ir.routes[r];
                 let reason = why.clone().or_else(|| {
-                    if route.scale.is_some() {
-                        Some("second intensity modulator on one route".into())
-                    } else if !unit.is_finite() || unit == 0. || !(0. ..=1.).contains(&saved) {
+                    if !unit.is_finite() || unit == 0. || !(0. ..=1.).contains(&saved) {
                         Some(format!("route intensity {saved}"))
                     } else if route.target == ir::Target::SampleStart {
                         Some("start-offset route".into())
@@ -5006,11 +5006,48 @@ impl Translation {
                     );
                     continue;
                 }
-                self.ir.routes[r].scale = Some(ir::RouteScale {
+                let assignment = ir::RouteScale {
                     source: scale.source,
                     shape: scale.shape,
                     law: ir::ScaleLaw::KontaktIntensity { depth: scale.depth, flags: scale.flags, unit },
-                });
+                    lag_ms: f64::from(scale.lag_ms),
+                };
+                let route = ir::RouteRef(r);
+                match self.ir.routes[r].scale {
+                    None => self.ir.routes[r].scale = Some(assignment),
+                    Some(first) => {
+                        // Each template's `$in` is the lane's current value, so
+                        // assignments chain; same-expression ones commute, which
+                        // is the only order-independent case proved.
+                        let same = |a: ir::ScaleLaw, b: ir::ScaleLaw| match (a, b) {
+                            (
+                                ir::ScaleLaw::KontaktIntensity { flags: a, .. },
+                                ir::ScaleLaw::KontaktIntensity { flags: b, .. },
+                            ) => a & 4 == b & 4,
+                            _ => false,
+                        };
+                        let chained = &self.ir.source_indices.chained_scales;
+                        let held = chained.iter().filter(|c| c.0 == route).count();
+                        let reason = if held >= sampler_core::MORE_SCALES {
+                            Some("more intensity assignments than the router chains")
+                        } else if !same(first.law, assignment.law)
+                            || chained.iter().any(|c| c.0 == route && !same(c.1.law, assignment.law))
+                        {
+                            Some("mixed combination expressions on one route")
+                        } else {
+                            None
+                        };
+                        match reason {
+                            Some(reason) => self.unsupported(
+                                &scale.at,
+                                "modulation of a modulator's intensity",
+                                reason.into(),
+                                ir::Reason::NotModeled,
+                            ),
+                            None => self.ir.source_indices.chained_scales.push((route, assignment)),
+                        }
+                    }
+                }
             }
         }
     }
