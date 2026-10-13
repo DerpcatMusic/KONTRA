@@ -51,6 +51,10 @@ def init_preset(rel: str) -> Path:
     return inits[0]
 
 
+LOC = os.environ.get("PROBE_LOC", "insert")
+GEN = os.environ.get("PROBE_GENERIC", "0")
+
+
 def lua(effects: list[tuple[str, Path]], steps: list[tuple[int, str, int]]) -> str:
     """steps: (effect index, par, value)."""
     return f"""
@@ -65,14 +69,14 @@ local last = 0
 for n, s in ipairs(STEPS) do
   if s[1] ~= last then
     last = s[1]
-    local ok, e = pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.insert_fx)
+    local ok, e = pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.{LOC}_fx)
     if s[2] == "" then
       pcall(kt.save_instrument, inst, DIR .. string.format("base_%d.nki", last), {{}})
     end
   end
   if s[2] ~= "" then
-    pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.insert_fx)
-    local src = "on init\\n set_engine_par(" .. s[2] .. ", " .. s[3] .. ", -1, 0, 0)\\nend on\\n"
+    pcall(kt.load_fx_preset, EFFECTS[last], inst, -1, 0, kt.{LOC}_fx)
+    local src = "on init\\n set_engine_par(" .. s[2] .. ", " .. s[3] .. ", -1, 0, {GEN})\\nend on\\n"
     pcall(kt.set_instrument_script_source, inst, 0, src)
     pcall(kt.save_instrument, inst, DIR .. string.format("s_%d.nki", n), {{}})
   end
