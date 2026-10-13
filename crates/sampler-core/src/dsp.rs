@@ -178,12 +178,8 @@ pub enum Processor {
     },
     /// Drive, character and utility: the universal color unit (see [`color`]).
     Color(color::Settings),
-    /// Kontakt Daft filter; per-voice scalar path.
-    Daft(DaftSettings),
-    /// Pinned v1 native Ladder LP4, with separate preallocated family state.
-    LadderLP4(LadderSettings),
-    /// Native adaptive-resonance filter (FilterDJ), saved types 100..=108.
-    Ar(ArSettings),
+    /// The filter engine (`dsp/filter/`): native-knob cores (legacy cascade, ladder, AR, Daft).
+    Filter(FilterSettings),
     /// Native three-parallel-bandpass Formant I (Talk, Sharp, Size).
     Formant([f32; 3]),
     /// Formant core table 2 (rows 5..=9): Kontakt Formant II.
@@ -237,9 +233,7 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Dynamics(settings) => settings.valid(),
             Processor::Color(settings) => settings.valid(),
-            Processor::Daft(settings) => settings.valid(),
-            Processor::LadderLP4(settings) => settings.valid(),
-            Processor::Ar(settings) => settings.valid(),
+            Processor::Filter(settings) => settings.valid(),
             Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
@@ -259,6 +253,8 @@ pub(crate) mod space;
 pub(crate) mod timemod;
 pub(super) mod control;
 pub use ar::ArSettings;
+pub use filter::Settings as FilterSettings;
+pub use filter::cascade::{CascadeSettings, Legacy as LegacyFilter};
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;
@@ -269,6 +265,7 @@ mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 use filter::{ar, daft, formant, ladder};
+pub(crate) use filter::Knob as FilterKnob;
 pub(super) use filter::svf;
 pub use dynamics::DynamicsSettings;
 pub(super) use control::ControlRamp;
@@ -302,13 +299,9 @@ pub(super) enum PreparedProcessor {
         /// Pseudo-stereo ring cells in the stage's delay storage.
         offset: usize,
     },
-    Daft(daft::Daft),
-    LadderLP4 {
-        ladder: ladder::Ladder,
-        offset: usize,
-    },
-    Ar {
-        ar: ar::Ar,
+    /// The filter engine with its cells at `offset` of the delay storage.
+    Filter {
+        engine: filter::Engine,
         offset: usize,
     },
     Branch {
@@ -473,27 +466,13 @@ pub(super) fn compile_processors(
                     first,
                     last,
                 },
-                Processor::Daft(settings) => {
-                    let mut daft = settings.compile(rate, bindings);
-                    daft.modulation_index = filters.len();
-                    filters.push(svf::PreparedFilter::NativeControl);
-                    PreparedProcessor::Daft(daft)
-                }
-                Processor::LadderLP4(settings) => {
+                Processor::Filter(settings) => {
                     let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
-                    let mut ladder = settings.compile(rate, bindings);
-                    ladder.modulation_index = filters.len();
+                    *delay_frames = offset.checked_add(settings.cells()).ok_or(Error::Capacity)?;
+                    let mut engine = settings.compile(rate, bindings);
+                    engine.modulation_index = filters.len();
                     filters.push(svf::PreparedFilter::NativeControl);
-                    PreparedProcessor::LadderLP4 { ladder, offset }
-                }
-                Processor::Ar(settings) => {
-                    let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(ar::CELLS).ok_or(Error::Capacity)?;
-                    let mut ar = settings.compile(rate, bindings);
-                    ar.modulation_index = filters.len();
-                    filters.push(svf::PreparedFilter::NativeControl);
-                    PreparedProcessor::Ar { ar, offset }
+                    PreparedProcessor::Filter { engine, offset }
                 }
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
@@ -555,14 +534,8 @@ impl PreparedVoiceChain {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
                     u32::try_from(*filter).ok()
                 }
-                PreparedProcessor::Daft(daft) if stages.contains(&i) => {
-                    u32::try_from(daft.modulation_index).ok()
-                }
-                PreparedProcessor::LadderLP4 { ladder, .. } if stages.contains(&i) => {
-                    u32::try_from(ladder.modulation_index).ok()
-                }
-                PreparedProcessor::Ar { ar, .. } if stages.contains(&i) => {
-                    u32::try_from(ar.modulation_index).ok()
+                PreparedProcessor::Filter { engine, .. } if stages.contains(&i) => {
+                    u32::try_from(engine.modulation_index).ok()
                 }
                 _ => None,
             })
@@ -852,9 +825,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Dynamics(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::LiveFormant { .. }
-                        | PreparedProcessor::Daft(_)
-                        | PreparedProcessor::LadderLP4 { .. }
-                        | PreparedProcessor::Ar { .. }
+                        | PreparedProcessor::Filter { .. }
                         | PreparedProcessor::Branch { .. }
                         | PreparedProcessor::Eq(_)
                         | PreparedProcessor::ControlMatrix(_)
@@ -1125,34 +1096,15 @@ pub(super) fn process<const TRACE: bool>(
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
                 formant::Formant::compile([talk, sharp, size], false, *rate).process(state, block, len)
             }
-            PreparedProcessor::Daft(daft) => daft.process(
-                state,
-                parameters,
-                block,
-                len,
-                at,
-                filters.bank.native_knobs(daft.modulation_index),
-            ),
-            PreparedProcessor::LadderLP4 { ladder, offset } => {
-                fault |= ladder.process(
+            PreparedProcessor::Filter { engine, offset } => {
+                fault |= engine.process(
                     state,
-                    &mut delay_samples[*offset..*offset + ladder::CELLS],
+                    &mut delay_samples[*offset..*offset + engine.cells()],
                     parameters,
                     block,
                     len,
                     at,
-                    filters.bank.native_knobs(ladder.modulation_index),
-                );
-            }
-            PreparedProcessor::Ar { ar, offset } => {
-                fault |= ar.process(
-                    state,
-                    &mut delay_samples[*offset..*offset + ar::CELLS],
-                    parameters,
-                    block,
-                    len,
-                    at,
-                    filters.bank.native_knobs(ar.modulation_index),
+                    filters.bank.native_knobs(engine.modulation_index),
                 );
             }
             PreparedProcessor::Color { color, offset } => {

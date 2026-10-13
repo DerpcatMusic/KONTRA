@@ -63,7 +63,6 @@ impl DaftSettings {
             lanes: self.parameters().map(|p| p.compile(bindings)),
             // About 2 ms of input frames, in whole control quanta.
             ramp_quanta: ((0.002 * f64::from(rate) / QUANTUM as f64).ceil() as u32).max(1),
-            modulation_index: usize::MAX,
         }
     }
 }
@@ -74,7 +73,6 @@ pub(crate) struct Daft {
     rate: f64,
     lanes: [PreparedParameter; 4],
     ramp_quanta: u32,
-    pub(crate) modulation_index: usize,
 }
 
 // Layout of `ProcessorState::aux`.
