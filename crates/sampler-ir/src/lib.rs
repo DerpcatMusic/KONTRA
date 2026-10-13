@@ -1383,6 +1383,23 @@ pub struct Route {
 pub struct RouteScale {
     pub source: ModulatorRef,
     pub shape: Option<ShapeRef>,
+    /// How `source` combines with the route's saved depth.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law: ScaleLaw,
+}
+
+/// Combination law of a [`RouteScale`].
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ScaleLaw {
+    /// depth × shape(x).
+    #[default]
+    Multiply,
+    /// Kontakt modulation of a modulator's intensity (native law ID25, see
+    /// sampler-core `ModScaleLaw::KontaktIntensity`): `depth` is the scaling
+    /// assignment's intensity, `flags` its stored target flags, `unit` the
+    /// route's depth per unit of its saved normalized intensity.
+    KontaktIntensity { depth: f64, flags: u8, unit: f64 },
 }
 
 impl Route {

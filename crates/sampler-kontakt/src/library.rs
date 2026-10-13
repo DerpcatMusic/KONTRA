@@ -298,6 +298,8 @@ fn translate(
         dynamic: false,
         eq_mod_slots: HashMap::new(),
         cutoff_octaves: HashMap::new(),
+        route_intensity: HashMap::new(),
+        intensity_scales: Vec::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -628,6 +630,7 @@ fn translate(
     }
     drop(span);
     let _span = crate::audit::Span::new("translate_keys_validate");
+    out.apply_intensity_scales();
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.register_compressor_controls();
     out.ir.unsupported.dedup();
@@ -709,6 +712,12 @@ struct Translation {
     eq_mod_slots: HashMap<usize, Vec<usize>>,
     cutoff_octaves: HashMap<(usize, usize), f64>,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
+    /// Each translated route's saved signed intensity and its depth value per
+    /// unit intensity (for the ID25 intensity law's `unit`).
+    route_intensity: HashMap<usize, (f64, f64)>,
+    /// Assignments whose destination is another modulator's `intensity`; applied
+    /// to that modulator's routes once every route exists.
+    intensity_scales: Vec<IntensityScale>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
 }
@@ -2047,6 +2056,22 @@ impl Translation {
             );
             None
         };
+        // Modulating another modulator's intensity scales that modulator's own
+        // routes (Kontakt ID25 law); it is not a route of its own.
+        if target.param == "intensity" {
+            if let Some(slot) = target.slot {
+                // The destination resolves after the group's modulators are indexed.
+                self.intensity_scales.push(IntensityScale {
+                    at: at.to_string(),
+                    slot: usize::from(slot),
+                    source,
+                    depth: i,
+                    flags: target.unknown_flags,
+                    plain: !target.invert && target.shaper.as_ref().is_none_or(|s| !s.enabled) && target.lag_ms == 0,
+                });
+                return None;
+            }
+        }
         let phase_target = (target.param == "startPhase" && target.lag_ms == 0)
             .then(|| {
                 let slot = usize::from(target.slot?);
@@ -2268,6 +2293,12 @@ impl Translation {
                 Some(ir::ShapeRef(self.ir.shapes.len() - 1))
             }
         };
+        let per_unit = match depth {
+            ir::Depth::Normalized(d) => d,
+            ir::Depth::Pitch(p) => p.semitones(),
+            ir::Depth::Gain(g) => 20. * g.linear().log10(),
+        };
+        self.route_intensity.insert(self.ir.routes.len(), (i, if i != 0. { per_unit / i } else { f64::NAN }));
         self.ir.routes.push(ir::Route {
             source,
             target: route_target,
@@ -3543,6 +3574,55 @@ mod modulation {
         assert!(curve(attack, 0.5) < 0.5);
     }
 
+    #[test]
+    fn modulator_intensity_assignment_scales_the_target_modulators_routes() {
+        // Conflux "MOD ENV -> LFO 1 AMT": an assignment whose destination is
+        // another modulator's intensity becomes an ID25 scale on that
+        // modulator's routes, never a route of its own. Outside the proved
+        // envelope (here negative depth, flags 0x12) it is reported instead.
+        let mut t = translation();
+        t.ir.modulators = vec![
+            ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity },
+            ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Key },
+        ];
+        for (slot, runtime) in [(1, 0), (2, 1)] {
+            t.ir.source_indices.modulators.push(ir::SourceModulator {
+                group: 0,
+                slot,
+                external: false,
+                name: String::new(),
+                runtime: Some(ir::ModulatorRef(runtime)),
+                settings: None,
+            });
+        }
+        // The destination modulator (slot 2) drives volume at intensity 0.8.
+        t.route_intensity.insert(0, (0.8, 1.0));
+        t.ir.routes.push(ir::Route::new(ir::ModulatorRef(1), ir::Target::Amplitude, ir::Depth::Normalized(0.8)));
+        let assignment = |flags| IntensityScale {
+            at: "group 0 modulator slot 1".into(),
+            slot: 2,
+            source: ir::ModulatorRef(0),
+            depth: 0.5,
+            flags,
+            plain: true,
+        };
+        t.intensity_scales.push(assignment(0x10));
+        t.apply_intensity_scales();
+        assert_eq!(
+            t.ir.routes[0].scale,
+            Some(ir::RouteScale {
+                source: ir::ModulatorRef(0),
+                shape: None,
+                law: ir::ScaleLaw::KontaktIntensity { depth: 0.5, flags: 0x10, unit: 1.0 },
+            })
+        );
+        t.ir.routes[0].scale = None;
+        t.intensity_scales.push(assignment(0x12));
+        t.apply_intensity_scales();
+        assert_eq!(t.ir.routes[0].scale, None);
+        assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
+    }
+
     fn translation() -> Translation {
         Translation {
             ir: ir::Instrument::default(),
@@ -3555,6 +3635,8 @@ mod modulation {
             dynamic: false,
             eq_mod_slots: HashMap::new(),
             cutoff_octaves: HashMap::new(),
+            route_intensity: HashMap::new(),
+            intensity_scales: Vec::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -4765,4 +4847,99 @@ mod census {
 /// (-6 dB = 0.5, -60 dB = 1/1024). Measured: tools/kontakt-oracle/probes/volume_law.lua.
 pub(crate) fn kontakt_db_gain(db: f64) -> f64 {
     (db / 6.0).exp2()
+}
+
+/// A modulation assignment whose destination is another modulator's intensity.
+struct IntensityScale {
+    at: String,
+    /// Module slot of the destination modulator in the source's group.
+    slot: usize,
+    source: ir::ModulatorRef,
+    depth: f64,
+    flags: u8,
+    /// No invert, enabled shaper or lag: the only form the ID25 law is proved for.
+    plain: bool,
+}
+
+impl Translation {
+    /// The internal modulator in `source`'s group at module slot `slot`.
+    fn slot_modulator(&self, source: ir::ModulatorRef, slot: usize) -> Option<ir::ModulatorRef> {
+        let mods = &self.ir.source_indices.modulators;
+        let group = mods.iter().find(|m| m.runtime == Some(source))?.group;
+        mods.iter().find(|m| m.group == group && m.slot == slot && !m.external)?.runtime
+    }
+
+    /// Attach each intensity assignment to the routes of the modulator it
+    /// targets. Only what sampler-core's ID25 preparation accepts is attached
+    /// (saved flags 0x10/0x14, depth and route intensity in 0..=1, unshaped and
+    /// unlagged, a non-live source); the rest is reported, never approximated.
+    fn apply_intensity_scales(&mut self) {
+        for scale in std::mem::take(&mut self.intensity_scales) {
+            let Some(destination) = self.slot_modulator(scale.source, scale.slot) else {
+                self.unsupported(
+                    &scale.at,
+                    "modulation of a modulator's intensity",
+                    format!("no translated modulator at slot {}", scale.slot),
+                    ir::Reason::NotModeled,
+                );
+                continue;
+            };
+            let live = matches!(
+                self.ir.modulators.get(scale.source.0).map(|m| &m.source),
+                Some(
+                    ir::ModulationSource::Controller(_)
+                        | ir::ModulationSource::PitchBend
+                        | ir::ModulationSource::ChannelPressure
+                        | ir::ModulationSource::PolyPressure
+                        | ir::ModulationSource::Timbre
+                        | ir::ModulationSource::Script(_)
+                        | ir::ModulationSource::ScriptBipolar(_)
+                )
+            );
+            let mut why = None;
+            if !matches!(scale.flags, 0x10 | 0x14) {
+                why = Some(format!("flags 0x{:02x}", scale.flags));
+            } else if !(0. ..=1.).contains(&scale.depth) {
+                why = Some(format!("depth {}", scale.depth));
+            } else if !scale.plain {
+                why = Some("inverted, shaped or lagged".into());
+            } else if live {
+                why = Some("live source".into());
+            }
+            let targets: Vec<usize> = (0..self.ir.routes.len())
+                .filter(|&r| self.ir.routes[r].source == destination)
+                .collect();
+            for r in targets {
+                let (saved, unit) = self.route_intensity.get(&r).copied().unwrap_or((f64::NAN, f64::NAN));
+                let route = &self.ir.routes[r];
+                let reason = why.clone().or_else(|| {
+                    if route.scale.is_some() {
+                        Some("second intensity modulator on one route".into())
+                    } else if !unit.is_finite() || unit == 0. || !(0. ..=1.).contains(&saved) {
+                        Some(format!("route intensity {saved}"))
+                    } else if route.shape.is_some() || route.smoothing != ir::Time::ZERO
+                        || route.target == ir::Target::SampleStart
+                    {
+                        Some("shaped, lagged or start-offset route".into())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(reason) = reason {
+                    self.unsupported(
+                        &scale.at,
+                        "modulation of a modulator's intensity",
+                        reason,
+                        ir::Reason::NotModeled,
+                    );
+                    continue;
+                }
+                self.ir.routes[r].scale = Some(ir::RouteScale {
+                    source: scale.source,
+                    shape: None,
+                    law: ir::ScaleLaw::KontaktIntensity { depth: scale.depth, flags: scale.flags, unit },
+                });
+            }
+        }
+    }
 }
