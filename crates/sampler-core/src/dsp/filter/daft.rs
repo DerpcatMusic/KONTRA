@@ -6,8 +6,8 @@
 // filter at twice the rate, with linear-interpolation up- and two-tap
 // down-sampling, not the original's resampler or feedback nonlinearity. The
 // cadence follows the absolute sample clock, not a per-instance countdown.
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{Planar, ProcessorState};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{Planar, ProcessorState};
 use std::sync::OnceLock;
 
 const TABLE: usize = 2401;
@@ -220,7 +220,7 @@ impl Daft {
             i += run;
         }
         for v in &mut state.z.iter_mut().flatten() {
-            *v = super::flush(*v);
+            *v = super::super::flush(*v);
         }
     }
 }
