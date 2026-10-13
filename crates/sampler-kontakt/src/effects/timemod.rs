@@ -54,10 +54,11 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x5a => "Replika: modern core behind wrapper [ref] (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38); the core class, its style kernels and the saved-field binding are not extracted",
-        0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
-        0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
+        0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
+        0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x63 => "Psyche Delay: modern wrapper core not located; no saved-field binding measured",
-        0x69 => "Vibrato Chorus: modern wrapper core not located; no saved-field binding measured",
+        0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
+        0x22 => "Rotator: horn/drum law located (control [ref], audio [ref], setter case 0xe [ref]) but the runtime-initialised lane vectors at [ref]..[ref] and the setter's parameter binding are not yet verified",
         _ => return None,
     })
 }
@@ -114,9 +115,12 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{speed}/{phase}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            // Setter case @[ref], audio [ref]: the base delay is the param
-            // object's +8, which no reader, writer or constructor writes; the
-            // per-slot param container is memset to zero on allocation ([ref],
+            // Setter case @[ref], audio [ref]: the base delay is
+            // `BParFXChorus +8 * rate * 0.001` (container slot 1 = +0x58, [ref]), not a
+            // code constant. The reader [ref] fills +0xc/+0x10/+0x14/+0x30/+0x3c/+0x40
+            // (CH_PHASE is +0x14), the writer [ref] saves the same, and the only
+            // vtable [ref] store is the container constructor (lea [ref]), which
+            // leaves +8 alone; the container is memset to zero on allocation ([ref],
             // [ref]), so base = 0 frames, the excursion clamps to base - 1 = -1 and
             // Depth has no effect. Two heads (base, base >> 1) on LFOs 0.015 cycles
             // apart, each one-pole 0.95, summed; Speed through the sync getter
