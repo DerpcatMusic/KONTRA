@@ -101,3 +101,10 @@ keys 0..127 and velocities 1..127; script range/learning applies additional
 musical filtering. Saved group inserts contain 91 filter objects (82 active,
 9 bypassed). Instrument insert slot 3 is a bypassed convolution and slot 7 is
 active module 0x13. Group/send/main ownership remains distinct from UI FX order.
+
+The current translator explicitly reports the 90 Time Machine 2 groups as
+"played as a sampler". Normal sample playback is therefore an approximation
+of this layer's authored time/pitch processing, even if a note becomes audible.
+The source-selection writes also require access to bank zones after their group
+and key bounds change; a loader that prunes zones/assets by the initial played
+key must account for that future topology rather than treating it as immutable.
