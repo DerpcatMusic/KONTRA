@@ -231,6 +231,84 @@ pub fn combine(c: &CombineCtx, x: f32, e: f32, i: f32) -> f32 {
     }
 }
 
+/// True when [`combine`] reduces to the plain `x + E*i` branch for this target.
+pub fn is_add(id: u16, route_flags: u8) -> bool {
+    !is_h(id, route_flags)
+        && !(0x8d..=0xac).contains(&id)
+        && id != 0xc2
+        && !(0xce..=0xd5).contains(&id)
+        && !(id == 0x19 && route_flags & 4 != 0)
+}
+
+/// Native canonical target registry (initializer 0x140a6d410..0x140a6e3fd,
+/// inserter FUN_140981410): serialized target name -> native id. 166 entries.
+const TARGET_IDS: &[(&str, u16)] = &[
+    ("volume", 2), ("pan", 3), ("pitch", 6), ("loopStart", 7),
+    ("loopLength", 8), ("warpFactor", 11), ("warpFactor2", 12), ("wavetablePosition", 13),
+    ("wavetableInharmonic", 14), ("wavetableModAmount", 15), ("wavetableModFrequency", 16), ("formantShift", 17),
+    ("overlap", 18), ("grainSize", 19), ("grainSpeed", 21), ("intensity", 25),
+    ("frequency", 26), ("pulseWidth", 27), ("filterCutoff", 31), ("filterQ", 32),
+    ("filterFM", 33), ("filterFeedback", 34), ("filterBandwidth", 35), ("formantTalk", 36),
+    ("formantSize", 37), ("formantSharp", 38), ("eqFreq1", 40), ("eqBandWidth1", 41),
+    ("eqGain1", 42), ("eqFreq2", 43), ("eqBandWidth2", 44), ("eqGain2", 45),
+    ("eqFreq3", 46), ("eqBandWidth3", 47), ("eqGain3", 48), ("vfShift", 51),
+    ("vfType", 52), ("vfBypass", 53), ("cutoffLP", 55), ("cutoffHP", 56),
+    ("resoLP", 57), ("resoHP", 58), ("crywahPedal", 61), ("distortionIntensity", 64),
+    ("dyx_morph", 67), ("dyx_dry", 68), ("skr_tone", 71), ("skr_drive", 72),
+    ("sslgeq_lf_gain", 75), ("sslgeq_lf_freq", 76), ("sslgeq_lmf_gain", 77), ("sslgeq_lmf_freq", 78),
+    ("sslgeq_lmf_q", 79), ("sslgeq_hmf_gain", 80), ("sslgeq_hmf_freq", 81), ("sslgeq_hmf_q", 82),
+    ("sslgeq_hf_gain", 83), ("sslgeq_hf_freq", 84), ("sslgeq_hp_freq", 85), ("sslgeq_lp_freq", 86),
+    ("tape_gain", 89), ("tape_warmth", 90), ("tape_hfrolloff", 91), ("stereoSpreadIntensity", 94),
+    ("stereoPan", 95), ("shaper", 98), ("bitdepth", 101), ("downsample", 102),
+    ("noiselevel", 103), ("noisecolor", 104), ("off_distance", 107), ("off_azimuth", 108),
+    ("off_x", 109), ("off_y", 110), ("sendLevel0", 113), ("sendLevel1", 114),
+    ("sendLevel2", 115), ("sendLevel3", 116), ("sendLevel4", 117), ("sendLevel5", 118),
+    ("sendLevel6", 119), ("sendLevel7", 120), ("scLevelB00", 121), ("scLevelB01", 122),
+    ("scLevelB02", 123), ("scLevelB03", 124), ("scLevelB04", 125), ("scLevelB05", 126),
+    ("scLevelB06", 127), ("scLevelB07", 128), ("scLevelB08", 129), ("scLevelB09", 130),
+    ("scLevelB10", 131), ("scLevelB11", 132), ("scLevelB12", 133), ("scLevelB13", 134),
+    ("scLevelB14", 135), ("scLevelB15", 136), ("scLevelPGM", 137), ("arp32step_v1", 141),
+    ("arp32step_v2", 142), ("arp32step_v3", 143), ("arp32step_v4", 144), ("arp32step_v5", 145),
+    ("arp32step_v6", 146), ("arp32step_v7", 147), ("arp32step_v8", 148), ("arp32step_v9", 149),
+    ("arp32step_v10", 150), ("arp32step_v11", 151), ("arp32step_v12", 152), ("arp32step_v13", 153),
+    ("arp32step_v14", 154), ("arp32step_v15", 155), ("arp32step_v16", 156), ("arp32step_v17", 157),
+    ("arp32step_v18", 158), ("arp32step_v19", 159), ("arp32step_v20", 160), ("arp32step_v21", 161),
+    ("arp32step_v22", 162), ("arp32step_v23", 163), ("arp32step_v24", 164), ("arp32step_v25", 165),
+    ("arp32step_v26", 166), ("arp32step_v27", 167), ("arp32step_v28", 168), ("arp32step_v29", 169),
+    ("arp32step_v30", 170), ("arp32step_v31", 171), ("playPos", 176), ("playDirection", 177),
+    ("startPhase", 180), ("ahdsr_attack", 184), ("ahdsr_hold", 185), ("ahdsr_decay", 186),
+    ("ahdsr_release", 187), ("ahdsr_sustain", 189), ("dbd_decay1", 191), ("dbd_decay2", 192),
+    ("dbd_break", 194), ("fm7_level1", 196), ("fm7_level2", 197), ("fm7_level3", 198),
+    ("fm7_level4", 199), ("fm7_level5", 200), ("fm7_level6", 201), ("fm7_level7", 202),
+    ("fm7_level8", 203), ("fm7_time1", 206), ("fm7_time2", 207), ("fm7_time3", 208),
+    ("fm7_time4", 209), ("fm7_time5", 210), ("fm7_time6", 211), ("fm7_time7", 212),
+    ("fm7_time8", 213), ("fm7_slope1", 216), ("fm7_slope2", 217), ("fm7_slope3", 218),
+    ("fm7_slope4", 219), ("fm7_slope5", 220), ("fm7_slope6", 221), ("fm7_slope7", 222),
+    ("fm7_slope8", 223), ("legacyAddIntensity", 244),
+];
+
+/// Native id of a serialized target name (`ModTarget::param`).
+pub fn target_id(name: &str) -> Option<u16> {
+    TARGET_IDS.iter().find(|(n, _)| *n == name).map(|&(_, id)| id)
+}
+
+/// Source-domain argument `q` of an external source type (+0x544, values from
+/// the name parser FUN_1409250d0: pitchBend 1, polyAfterTouch 2, monoAfterTouch
+/// 3, midiCC 4, keyPos 7, velocity 8, releaseVelocity 9, rlsTrigCounter 10,
+/// constVal 11, randomValUni 12, randomValBi 13; q from mask 0x252082 tested at
+/// 0x1409774fd..0x1409775e4). Only sources whose value domain is also proved
+/// are returned; the rest carry the reason they stay on the existing path.
+pub fn external_source_q(source_type: u8) -> Result<bool, &'static str> {
+    match source_type {
+        1 => Ok(true),
+        2 | 3 | 4 | 8 => Ok(false),
+        7 => Err("keyPos: native value scale only inferred ((12s+60)/127 implies octaves from key 60)"),
+        9 | 10 | 11 => Err("source value domain/producer not extracted for this external type"),
+        12 | 13 => Err("random source generator, interval, cadence and seed are open"),
+        _ => Err("source-type identity not proved"),
+    }
+}
+
 /// Open laws, reported rather than approximated. Pairs of (law, reason).
 pub const UNSUPPORTED: &[(&str, &str)] = &[
     ("RandomBipolar", "external type 13 has a classification path only (FUN_140973970 mask 0x252082); no generator, interval, cadence, RNG or seed is linked"),
@@ -378,5 +456,18 @@ mod tests {
     fn open_laws_are_reported_with_reasons() {
         assert!(UNSUPPORTED.iter().any(|(n, r)| *n == "RandomBipolar" && r.contains("seed")));
         assert!(UNSUPPORTED.iter().all(|(_, r)| !r.is_empty()));
+    }
+
+    #[test]
+    fn target_names_and_source_types_resolve() {
+        assert_eq!(target_id("volume"), Some(2));
+        assert_eq!(target_id("eqGain1"), Some(0x2a));
+        assert_eq!(target_id("intensity"), Some(25));
+        assert_eq!(target_id("nope"), None);
+        assert_eq!(TARGET_IDS.len(), 166);
+        assert_eq!(external_source_q(1), Ok(true));
+        assert_eq!(external_source_q(8), Ok(false));
+        assert!(external_source_q(13).is_err() && external_source_q(7).is_err());
+        assert!(is_add(6, 0) && !is_add(2, 0) && !is_add(0x8d, 0) && !is_add(0x19, 4) && is_add(26, 0));
     }
 }
