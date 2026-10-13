@@ -1721,8 +1721,8 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
-    /// Legacy Phaser: normalized Depth, Feedback, Phase; native free/synced Speed.
-    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
+    /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
+    TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {

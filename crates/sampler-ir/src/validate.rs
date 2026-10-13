@@ -256,10 +256,13 @@ impl Check<'_> {
                 }
                 Processor::Formant(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
-                }                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => {
-                    for knob in [depth, feedback, phase] { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
-                    self.within(f64::from(speed), 0.0..=f64::MAX, "phaser speed")?;
-                    if let Some(unit) = period_unit { self.within(f64::from(unit), f64::MIN_POSITIVE..=f64::MAX, "phaser period")?; }
+                }
+                Processor::TimeMod(config) => {
+                    config.check().map_err(|field| ValidationError::OutOfRange {
+                        owner: self.owner.clone(),
+                        field,
+                        value: f64::NAN,
+                    })?;
                 }
                 Processor::Phaser(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
