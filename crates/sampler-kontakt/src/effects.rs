@@ -1199,6 +1199,13 @@ pub(crate) fn chain_with(
                     combined = gain;
                 } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
             }
+            Some(Params::Compressor { mode: 2.0, .. }) => {
+                // Pro mode: native dispatcher target 0x140ab35d0 is a distinct
+                // sliding-peak/log-exp/knee/detector-low-pass kernel (wave3 audit
+                // CORE-EFFECTS-003); the generic Compressor is not that law.
+                notes.push(("Pro compressor (mode 2)".into(), "2".into(), sampler_ir::Reason::NotModeled));
+                modelled = false;
+            }
             Some(Params::Compressor {
                 mode,
                 threshold_db,
@@ -3460,6 +3467,18 @@ mod tests {
         assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
         assert_eq!(c.attack.seconds(), 0.01);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn pro_compressor_is_not_modeled_not_generic() {
+        let mut bytes = Vec::new();
+        for x in [2.0f32, -18.0, 0.25, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        assert!(!built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Compressor(_))));
+        assert!(built.notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
     }
 
     #[test]
