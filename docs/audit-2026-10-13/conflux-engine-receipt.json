@@ -1,0 +1,174 @@
+{
+  "date": "2026-10-13",
+  "branch": "gpt/conflux-engine",
+  "base": "ce0a2e61",
+  "tested_functional_head": "2bfb7133c9cc3908349e3abcf435456839de2055",
+  "restriction": "No build/ci/release/workspace/plugin/corpus/survey runs after latest user rule; only focused -j 4 default-profile crate tests and crate check. Real-library post-fix audition deferred to coordinator.",
+  "checks": [
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --lib wavetable::tests::phase_forms_match_original_kontakt_instructions",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --lib wavetable::tests::phase_forms_match_original_kontakt_instructions",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --test wavetable addressed_phase_form_switch_changes_held_sound_without_restarting_the_clock",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --test wavetable phase_form_controls_reject_unproved_or_fractional_modes_atomically",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --test wavetable phase_form_controls_reject_unproved_or_fractional_modes_atomically",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --test wavetable phase_form_controls_reject_unproved_or_fractional_modes_atomically",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-kontakt --lib wavetable::tests::native_phase_ordinals_decode_from_one_based_saved_forms",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-ksp --test wavetable_constants wavetable_enums_keep_v1_numeric_identity_in_initializer_writes",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p corpus-health --test conflux_outbox kontakt_audition_services_ui_backpressure_before_judging_silence",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p corpus-health --test conflux_outbox kontakt_audition_services_ui_backpressure_before_judging_silence",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "0 passed; 1 failed (assertion reached)"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-ksp --test headless headless_external_jobs_stay_in_the_outbox_until_a_real_host_accepts_them",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "not applicable: retained host contract or existing amount-path regression"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo test -j 4 -p sampler-core --test wavetable live_wave_writes_reach_active_voices_in_single_batch_and_parallel_paths_without_resetting_phase",
+      "green": "1 passed; 0 failed",
+      "profile": "default test",
+      "red": "not applicable: retained host contract or existing amount-path regression"
+    },
+    {
+      "command": "/home/derpcat/.cache/kontakto-heavy cargo check -j 4 -p sampler-native",
+      "result": "passed",
+      "head": "8094e1d2",
+      "note": "Later Mirror/admission changes verified in core and Kontakt focused tests; no new public variant or adapter interface."
+    }
+  ],
+  "native_phase": {
+    "binary_sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+    "entry": "0x140567aa0",
+    "cases": 490,
+    "modes": [
+      0,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      14,
+      15,
+      16,
+      17,
+      31,
+      32,
+      33
+    ],
+    "helper_substitutions": 0,
+    "asserted_absolute_tolerance": 2e-07,
+    "kind": "Original instructions under Unicorn, not Kontakt host audio capture"
+  },
+  "library_metadata_before_fixes": {
+    "nki_slots": 5,
+    "active_scripts": 3,
+    "init_faults": 0,
+    "groups": 92,
+    "source_mode_counts": {
+      "Sampler": 1,
+      "TimeMachine2": 90,
+      "Wavetable": 1
+    },
+    "ir_zones": 1985,
+    "ir_assets": 1962,
+    "ir_buses": 17,
+    "ir_chains": 108,
+    "ir_modulators": 3566,
+    "ir_routes": 2724,
+    "decoded_impulses": 1,
+    "module_parameter_routes_diagnosed": 2190,
+    "RandomBipolar_UnknownLaw": 550,
+    "nonzero_Constant_to_source_intensity": 198,
+    "factory_snapshots_decoded": 201,
+    "snapshot_shape": {
+      "groups": 0,
+      "effects": 0,
+      "persistent_entries": 223
+    },
+    "factory_multis_present": 50,
+    "multis_inspection": "stopped; no complete aggregate result"
+  },
+  "real_library_before_restriction": {
+    "rate": 48000,
+    "block_frames": 64,
+    "load": {
+      "key": 60,
+      "ok": true,
+      "velocity": 64,
+      "warning": null,
+      "zones": 94
+    },
+    "sound": {
+      "note": "started",
+      "sounds": false,
+      "finite": true,
+      "stuck_notes": 1,
+      "stuck_voices": 0,
+      "script_faults": [],
+      "why_silent": "key 60: no selection was recorded"
+    },
+    "peak_voices": 0,
+    "selection_records": 0,
+    "musical_note": "Err(Core(Capacity))",
+    "cpu_claim": "none; zero-voice timings cannot establish playing CPU"
+  },
+  "real_library_after_fixes": "not run: latest user rule; coordinator must verify sound/group selections and failures",
+  "synthetic_outbox_result": {
+    "ui_effects": 1000,
+    "audible_peak_assertion": "> 0.01",
+    "stuck_voices": 0,
+    "stuck_notes": 0,
+    "pending_callbacks": 0,
+    "repeated_selections": "nonempty",
+    "faults": []
+  }
+}
