@@ -363,7 +363,7 @@ fn detail(p: ir::Processor) -> String {
             d.resonance * 100.
         ),
         ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
-        ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
+        ir::Processor::TimeMod(_) => "Delay / modulation".into(),
         ir::Processor::Phaser(_) => "Phaser filter".into(),
         ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
         ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ".into(),

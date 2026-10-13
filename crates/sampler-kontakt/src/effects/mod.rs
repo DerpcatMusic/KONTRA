@@ -238,7 +238,7 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
-    LegacyPhaser { depth: f32, feedback: f32, speed: f32, phase: f32, unit: f32 },
+    TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
         gain: f32,
@@ -358,11 +358,7 @@ impl Slot {
     pub(crate) fn params(&self) -> Option<Params> {
         let mut r = Reader(&self.public);
         let params = match self.module {
-            0x14 => {
-                let [depth, feedback, speed, phase, unit] = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
-                match self.version { 0x50 => {}, 0x51 => { r.f32()?; r.f32()?; r.flag()?; }, _ => return None };
-                Params::LegacyPhaser { depth, feedback, speed, phase, unit }
-            }
+            0x10..=0x12 | 0x14 => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let bits = r.f32()?;
@@ -931,16 +927,16 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             }
-            Some(Params::LegacyPhaser { depth, feedback, speed, phase, unit }) => {
+            Some(Params::TimeMod(unit)) => {
                 flush(&mut combined, &mut filters, &mut out);
-                if [*depth, *feedback, *phase].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && unit.is_finite() {
-                    // NI Legacy Phaser; BParFXPhaser reader FUN_140d01fa0, speed getter FUN_140a736a0.
-                    let period_unit = (*unit > f32::from_bits(0x3089705f)).then_some(*unit);
-                    let speed = if period_unit.is_some() { speed.max(1.) } else { *speed };
-                    out.processors.push(sampler_ir::Processor::LegacyPhaser { depth: *depth, feedback: *feedback, phase: *phase, speed, period_unit });
-                    combined = gain;
-                } else {
-                    notes.push(("Legacy Phaser parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{unit}"), sampler_ir::Reason::InvalidValue)); modelled = false;
+                // The slot's dry level is the core's dry only outside a Mix block (as for convolution).
+                let dry = if mix.is_some() || matches!(unit, timemod::Unit::Phaser { .. }) { 0. } else { f64::from(fx.dry_level) };
+                match timemod::config(unit, dry, &mut notes) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::TimeMod(config));
+                        combined = gain;
+                    }
+                    None => modelled = false,
                 }
             }
             Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
@@ -1354,7 +1350,7 @@ pub(crate) fn chain_with(
                             slot: fx.slot as i32,
                             generic,
                         },
-                        dry: if convolution || fx.module == 0x13 {
+                        dry: if convolution || matches!(fx.module, 0x10..=0x13) {
                             f64::from(fx.dry_level)
                         } else {
                             0.0
