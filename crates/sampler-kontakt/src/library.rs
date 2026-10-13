@@ -1506,6 +1506,20 @@ impl Translation {
                 ir::Reason::Unknown,
             ),
         }
+        // BParGroupDynamics (0x4A): 64 raw floats on the group (BGroup +0x680). No
+        // processing class, detector or gain law is recovered, so any nonzero
+        // value is reported; all-zero (every local preset) changes nothing.
+        if let Some(chunk) = group.0.find_first(0x4A)
+            && let Ok(dynamics) = ni_file::kontakt::objects::GroupDynamics::try_from(chunk)
+            && dynamics.values.iter().any(|&v| v != 0.0)
+        {
+            self.unsupported(
+                &at,
+                "group dynamics (0x4A)",
+                format!("{} of 64 values set", dynamics.values.iter().filter(|&&v| v != 0.0).count()),
+                ir::Reason::UnknownLaw,
+            );
+        }
         let mut envelope = None;
         let mut flex_release = None;
         let mut routes = Vec::new();
@@ -1572,58 +1586,81 @@ impl Translation {
                         None => continue,
                     },
                     Modulator::Flex(flex) => {
-                        // Point times are deltas from the previous point and
-                        // levels linear gain (audits/MODULATION.md, medium).
-                        // Segment curve s (0..1, 0.5 linear), c = s - 0.5:
-                        // measured on Kontakt 8 flex envelopes, k = BOW_K * |c|
-                        // with positive c starting fast and negative slowly
-                        // (docs/architecture-v2/KONTAKT_REFERENCE.md s.10).
                         let sustain = flex.sustain as usize;
                         if volume {
-                            // Held until the release segments end.
+                            // Held until the release segments end (an upper bound: the
+                            // native release scaling only shortens them).
                             let after: f32 = flex
                                 .points
                                 .iter()
                                 .skip(sustain + 1)
-                                .map(|p| p.time_ms.max(0.0))
+                                .map(|p| p.time_ms.max(1.0))
                                 .sum();
                             flex_release = Some(flex_release.unwrap_or(0.0f32).max(after));
                         }
-                        ir::ModulationSource::Breakpoints(ir::Breakpoints {
-                            points: flex
-                                .points
-                                .iter()
-                                .map(|p| ir::Breakpoint {
-                                    time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
-                                    level: f64::from(p.level.clamp(0.0, 1.0)),
-                                    shape: match f64::from(p.curve) - 0.5 {
-                                        c if c.abs() < 1e-4 => ir::Curve::Linear,
-                                        c => ir::Curve::Exponential(-BOW_K * c),
-                                    },
-                                })
-                                .collect(),
-                            sustain: Some(sustain),
-                        })
+                        // v0x12 tail bytes +0x194 (loop jump at the sustain row) and
+                        // +0x195 (release adjustment bypass), runtime +0x321/+0x322.
+                        // Their effect on the held envelope is not proved.
+                        if let Some(word) = flex.unknown_version_word() {
+                            if word & 0xff != 0 {
+                                self.unsupported(
+                                    &at,
+                                    "flex loop jump at the sustain row (+0x194)",
+                                    word & 0xff,
+                                    ir::Reason::UnknownLaw,
+                                );
+                            }
+                            if word >> 8 != 0 {
+                                self.unsupported(
+                                    &at,
+                                    "flex release adjustment bypass (+0x195)",
+                                    word >> 8,
+                                    ir::Reason::UnknownLaw,
+                                );
+                            }
+                        }
+                        ir::ModulationSource::Breakpoints(flex_breakpoints(&flex))
                     }
                     // Decoded, not executable: the five DBD floats, the glide
                     // fields and the follower coefficients have no proven
                     // stored-to-runtime constructor (modulators.md, 0x140ae5990,
                     // 0x140ceb090, 0x140ae3d80), so they stay diagnosed.
+                    // The runtime laws are blocks (`Breakpoints::dbd`, `GlideRamp`,
+                    // `AdaptiveFollower`, `StepTable`); what is not proved is the step
+                    // from the stored fields to their parameters:
+                    //  - DBD: the saved durations pass a resolver (helper slot +0x28,
+                    //    0x1409651b0) whose unit law, and the v0x10/0x11 legacy tail, are open.
+                    //  - Glide: no caller recovered for the note pitch and time to ramp
+                    //    start, step and gain (0x140ceb090 setup).
+                    //  - Follower: the four stored floats have no proved route to the
+                    //    builder's controls (0x140977a95..0x140977b6a).
                     Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
+                        let feature = match params.modulator {
+                            Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
+                            Modulator::Glide(_) => "glide (0x0B): pitch and time to ramp start, step and gain",
+                            _ => "envelope follower (0x0A): saved floats to builder controls",
+                        };
                         self.unsupported(
                             &at,
-                            "internal modulator constructor mapping",
+                            feature,
                             format!("{:?} {:?}", params.name, params.modulator),
                             ir::Reason::UnknownLaw,
                         );
                         continue;
                     }
                     Modulator::Other { chunk_id } => {
+                        // 0x09 is BParArp, the note-blind 32-step table modulator
+                        // (BArp32Step): its stored-to-table/length/rate/mode setup is unproved.
+                        let (feature, reason) = if chunk_id == 0x09 {
+                            ("32-step table modulator (0x09): stored fields to table, length, rate and mode", ir::Reason::UnknownLaw)
+                        } else {
+                            ("internal modulator chunk", ir::Reason::Unknown)
+                        };
                         self.unsupported(
                             &at,
-                            "internal modulator chunk",
+                            feature,
                             format!("{chunk_id:#x} {:?}", params.name),
-                            ir::Reason::Unknown,
+                            reason,
                         );
                         continue;
                     }
@@ -2663,6 +2700,27 @@ impl Translation {
                     && lfo.records[1].values[0] == -1. =>
             {
                 ir::LfoShape::SineScaled(-f64::from(sine))
+            }
+            // BLfoMulti (5) and BLfoMultiDigital (6), 0x140b07290 / 0x140b078d0
+            // (modulators-runtime.md): the stored weights (sine, pulse, triangle,
+            // doubled saw, noise) reach the runtime in order sine, saw, triangle,
+            // pulse, noise (builder copy 0x140977e57..0x140977e9f). The stored
+            // normalization byte is records[0].flag. No fade (the exponential Multi
+            // fade is only wired for the sine-only entry above), the pulse width
+            // inside the builder's 0.05..0.95 clamp, and held noise needs a start
+            // phase below one half.
+            (5 | 6, Some([sine, pulse, triangle, saw, noise]))
+                if fade_ms == 0.
+                    && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
+                    && (0.05..=0.95).contains(&width)
+                    && (noise == 0. || (0. ..0.5).contains(&phase)) =>
+            {
+                ir::LfoShape::Native(ir::NativeWave::Multi {
+                    weights: [sine, saw, triangle, pulse, noise],
+                    width: width as f32,
+                    normalize: lfo.records[0].flag,
+                    digital: lfo.waveform == 6,
+                })
             }
             // Native BLfo* processors (modulators.md): recovered tables, any pulse
             // width in 0..1, and held noise whose half-cycle grid counts from a
@@ -4982,12 +5040,16 @@ mod modulation {
         raw.initial_values[0] = 0.;
         raw.trailing_values = Some([f32::NAN, 0., 0., 0., 0.]);
         assert!(t.lfo("g", &raw, true).is_none());
+        // With the fade off, any weights are the native Digital Multi mixer.
         raw.trailing_values = Some([0.3, 0.2, 0., 0., 0.]);
-        assert!(t.lfo("g", &raw, true).is_none());
+        assert!(matches!(
+            t.lfo("g", &raw, true).unwrap().shape,
+            ir::LfoShape::Native(ir::NativeWave::Multi { digital: true, .. })
+        ));
         raw.trailing_values = Some([0.3, 0., 0., 0., 0.]);
         raw.additional_flag = Some(true);
-        assert!(t.lfo("g", &raw, true).is_none());
-        assert_eq!(t.ir.unsupported.len(), 12);
+        assert!(t.lfo("g", &raw, true).is_some(), "the fade profile byte is moot without a fade");
+        assert_eq!(t.ir.unsupported.len(), 10);
     }
 
     #[test]
@@ -5044,6 +5106,75 @@ mod modulation {
                 .is_none()
         );
         assert_eq!(t.ir.unsupported.len(), 3);
+        // Native Multi: stored (sine, pulse, triangle, doubled saw, noise) land in
+        // runtime order (sine, saw, triangle, pulse, noise); wave 6 is the digital mixer.
+        let mut multi = lfo(5, Some([1.0, 2.0, 3.0, 4.0, 5.0]));
+        multi.initial_values[0] = 0.0;
+        let shape = |digital| {
+            ir::LfoShape::Native(ir::NativeWave::Multi {
+                weights: [1.0, 4.0, 3.0, 2.0, 5.0],
+                width: 0.5,
+                normalize: true,
+                digital,
+            })
+        };
+        assert_eq!(t.lfo("g", &multi, true).unwrap().shape, shape(false));
+        multi.waveform = 6;
+        assert_eq!(t.lfo("g", &multi, true).unwrap().shape, shape(true));
+        // Outside the proved domain: a fade, a pulse width beyond the builder's
+        // clamp, and noise with a start phase at or past one half.
+        let mut faded = multi.clone();
+        faded.initial_values[0] = 5.0;
+        let mut wide = multi.clone();
+        wide.initial_values[2] = 0.99;
+        let mut late = multi.clone();
+        late.initial_values[3] = 0.5;
+        for bad in [faded, wide, late] {
+            assert!(t.lfo("g", &bad, true).is_none());
+        }
+        assert_eq!(t.ir.unsupported.len(), 6);
+    }
+
+    #[test]
+    fn flex_uses_the_native_curve_floor_and_start_level() {
+        use ni_file::kontakt::objects::{EnvelopeFlex, FlexPoint};
+        let point = |time_ms, level, curve| FlexPoint { time_ms, level, curve };
+        let flex = |points: Vec<FlexPoint>, tail: Vec<u8>| EnvelopeFlex {
+            points,
+            sustain: 1,
+            unknown_index: 0,
+            unknown_tail: tail,
+        };
+        // Quick attack ending in a zero level: no leading points, 1 ms floor,
+        // curve 0.5 is linear and 0.25 has ratio 49.
+        let b = flex_breakpoints(&flex(
+            vec![point(0.0, 0.0, 0.5), point(20.0, 1.0, 0.25), point(30.0, 0.0, 0.75)],
+            vec![0; 13],
+        ));
+        assert_eq!(b.sustain, Some(1));
+        assert!(b.flex_release);
+        assert_eq!(b.points[0].time, ir::Time::Milliseconds(1.0));
+        assert_eq!(b.points[0].shape, ir::Curve::Linear);
+        assert_eq!(b.points[1].shape, ir::Curve::Exponential(49f64.ln()));
+        let ir::Curve::Exponential(fast) = b.points[2].shape else { panic!() };
+        assert!(fast < 0.0);
+        // A first row longer than 0.1 s holds the start level 5 ms; a nonzero last
+        // level adds the start point; the sustain index follows.
+        let b = flex_breakpoints(&flex(
+            vec![point(200.0, 1.0, 0.5), point(10.0, 0.5, 0.5), point(10.0, 0.25, 0.5)],
+            vec![0; 13],
+        ));
+        assert_eq!(b.points[0].time, ir::Time::Milliseconds(0.0));
+        assert_eq!(b.points[0].level, 0.25);
+        assert_eq!(b.points[1].time, ir::Time::Milliseconds(5.0));
+        assert_eq!(b.points[1].level, 0.25);
+        assert_eq!(b.points[2].time, ir::Time::Milliseconds(200.0));
+        assert_eq!(b.sustain, Some(3));
+        // The v0x12 bypass byte (+0x195) turns the release scaling off.
+        let mut tail = vec![0, 1];
+        tail.extend([0; 13]);
+        let b = flex_breakpoints(&flex(vec![point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)], tail));
+        assert!(!b.flex_release);
     }
 }
 
@@ -5065,9 +5196,50 @@ mod multi_tests {
     }
 }
 
+/// Kontakt Flex (`BEnvelopeFM7`) as the universal breakpoint envelope.
+/// Point times are deltas in milliseconds with the setter's 1 ms floor
+/// (0x140ae5a10); levels are linear gain; the curve is the setter's ratio in
+/// closed form ([`sampler_core::blocks::envelope::flex_curve`] uses the same
+/// law). Setup (0x14094ce70) starts from the LAST point's level, and when the
+/// first duration exceeds 0.1 s holds that level 5 ms before the first row; both
+/// become leading points here. The release scales the first release segment
+/// (see `Breakpoints::flex_release`) unless the stored bypass byte is set.
+fn flex_breakpoints(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> ir::Breakpoints {
+    type Point = ni_file::kontakt::objects::FlexPoint;
+    let level = |p: &Point| f64::from(p.level.clamp(0.0, 1.0));
+    let last = flex.points.last().map_or(0.0, level);
+    let step = |ms: f64, level: f64| ir::Breakpoint {
+        time: ir::Time::Milliseconds(ms),
+        level,
+        shape: ir::Curve::Linear,
+    };
+    let mut points = Vec::with_capacity(flex.points.len() + 2);
+    if last != 0.0 {
+        points.push(step(0.0, last));
+    }
+    if flex.points.first().is_some_and(|p| p.time_ms.max(1.0) * 0.001f32 > 0.1f32) {
+        points.push(step(5.0, last));
+    }
+    let lead = points.len();
+    points.extend(flex.points.iter().map(|p| ir::Breakpoint {
+        time: ir::Time::Milliseconds(f64::from(p.time_ms.max(1.0))),
+        level: level(p),
+        shape: match f64::from(sampler_core::blocks::envelope::flex_ratio(p.curve)).ln() {
+            k if k == 0.0 => ir::Curve::Linear,
+            k => ir::Curve::Exponential(k),
+        },
+    }));
+    ir::Breakpoints {
+        points,
+        sustain: Some(flex.sustain as usize + lead),
+        flex_release: !flex.unknown_version_word().is_some_and(|word| word >> 8 != 0),
+    }
+}
+
 /// Exponential bow constant for a shaper or flex-envelope segment:
 /// `k = BOW_K * |curvature|`.
-/// Measured, not in the manual: fitted to Kontakt 8 renders of Vista 3 Cellos
+/// Measured, not in the manual (the shaper only now; Flex uses the recovered
+/// native law): fitted to Kontakt 8 renders of Vista 3 Cellos
 /// group 37 swept over CC100 (0..96), 0.08 dB RMS residual with K = 18; the
 /// Una Corda Cotton "Depth" shaper GUI reading (curvature 0.118, mid value
 /// 0.29) implies K about 15. docs/architecture-v2/KONTAKT_REFERENCE.md.
