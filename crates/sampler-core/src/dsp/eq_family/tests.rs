@@ -68,7 +68,8 @@ fn solid_knobs_run_through_the_spline_tables() {
         gain_db: c(1.),
         ..EqBand::rbj(Kind::Peak, 0., 0., 0.)
     };
-    assert!((response_db(stage(band), 2619.29) - 20.).abs() < 0.2);
+    // Native: +20 dB x C_7628(.5) x C_7A58(.5) at 2619.29 Hz x C_7E88(1).
+    assert!((response_db(stage(band), 2619.29) - 20. * 1.0165 * 0.9945).abs() < 0.01);
     // Knob .5 is the 0 dB knot of every gain table.
     let flat = EqBand { gain_db: c(0.5), ..band };
     assert_eq!(response_db(stage(flat), 2619.29), 0.);
