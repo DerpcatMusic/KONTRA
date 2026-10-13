@@ -2033,6 +2033,25 @@ impl Translation {
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
 
+    /// An enabled modulation shaper as an IR transfer curve.
+    fn shape_of(&mut self, shaper: &ni_file::kontakt::objects::ModShaper) -> Option<ir::ShapeRef> {
+        use ni_file::kontakt::objects::ShaperCurve;
+        let points: Vec<(f64, f64)> = match &shaper.curve {
+            ShaperCurve::Table(table) if table.len() > 1 => {
+                let last = (table.len() - 1) as f64;
+                table
+                    .iter()
+                    .enumerate()
+                    .map(|(n, y)| (n as f64 / last, f64::from(*y)))
+                    .collect()
+            }
+            ShaperCurve::Breakpoints(points) if !points.is_empty() => curved_shaper(points),
+            _ => return None,
+        };
+        self.ir.shapes.push(ir::Shape { points });
+        Some(ir::ShapeRef(self.ir.shapes.len() - 1))
+    }
+
     /// One Kontakt modulation target as an IR route, or a report entry.
     /// Laws (decoded from Kontakt's engine, control rate = rate / 32):
     /// volume factor 1 − i(1 − u); pitch 12·i semitones; playPos start + i·u
@@ -2059,15 +2078,29 @@ impl Translation {
         // Modulating another modulator's intensity scales that modulator's own
         // routes (Kontakt ID25 law); it is not a route of its own.
         if target.param == "intensity" {
+            let shaper = target.shaper.as_ref().filter(|s| s.enabled);
             if let Some(slot) = target.slot {
                 // The destination resolves after the group's modulators are indexed.
+                let shape = match shaper {
+                    Some(shaper) => match self.shape_of(shaper) {
+                        Some(shape) => Some(shape),
+                        None => {
+                            report(self, "empty modulation shaper", ir::Reason::UnknownLaw);
+                            return None;
+                        }
+                    },
+                    None => None,
+                };
                 self.intensity_scales.push(IntensityScale {
                     at: at.to_string(),
                     slot: usize::from(slot),
                     source,
                     depth: i,
                     flags: target.unknown_flags,
-                    plain: !target.invert && target.shaper.as_ref().is_none_or(|s| !s.enabled) && target.lag_ms == 0,
+                    // Invert does not act through an enabled shaper (see below).
+                    inverted: target.invert && shaper.is_none(),
+                    lagged: target.lag_ms != 0,
+                    shape,
                 });
                 return None;
             }
@@ -2099,6 +2132,24 @@ impl Translation {
                 ))
             })
             .flatten();
+        // LFO `frequency`: Digital Multi's normalized lane, additive (ID26, law
+        // compiler FUN_140873040 set D; lane 0x140b07bd9). Other LFO kinds'
+        // frequency lanes are not proved and stay reported.
+        let rate_target = (target.param == "frequency")
+            .then(|| {
+                let destination = self.slot_modulator(source, usize::from(target.slot?))?;
+                matches!(
+                    self.ir.modulators[destination.0].source,
+                    ir::ModulationSource::Lfo(ir::Lfo {
+                        shape: ir::LfoShape::DigitalSine { .. },
+                        rate: ir::Frequency::Hertz(_),
+                        ..
+                    })
+                )
+                .then_some((ir::Target::SourceRate(destination), ir::Depth::Normalized(i)))
+            })
+            .flatten();
+        let phase_target = phase_target.or(rate_target);
         // Native Ladder/Daft use normalized knob addition (v1 filter.rs);
         // the generic filter fallback retains its octave law.
         let addressed = phase_target.or_else(|| {
@@ -2275,30 +2326,31 @@ impl Translation {
         let invert = target.invert && shaper.is_none();
         let shape = match shaper {
             None => None,
-            Some(shaper) => {
-                use ni_file::kontakt::objects::ShaperCurve;
-                let points: Vec<(f64, f64)> = match &shaper.curve {
-                    ShaperCurve::Table(table) if table.len() > 1 => {
-                        let last = (table.len() - 1) as f64;
-                        table
-                            .iter()
-                            .enumerate()
-                            .map(|(n, y)| (n as f64 / last, f64::from(*y)))
-                            .collect()
-                    }
-                    ShaperCurve::Breakpoints(points) if !points.is_empty() => curved_shaper(points),
-                    _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
-                };
-                self.ir.shapes.push(ir::Shape { points });
-                Some(ir::ShapeRef(self.ir.shapes.len() - 1))
-            }
+            Some(shaper) => match self.shape_of(shaper) {
+                Some(shape) => Some(shape),
+                None => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
+            },
         };
         let per_unit = match depth {
             ir::Depth::Normalized(d) => d,
             ir::Depth::Pitch(p) => p.semitones(),
             ir::Depth::Gain(g) => 20. * g.linear().log10(),
         };
-        self.route_intensity.insert(self.ir.routes.len(), (i, if i != 0. { per_unit / i } else { f64::NAN }));
+        // Depth units per unit of saved intensity: the law's own factor, so a
+        // route saved at zero (set live by a script) keeps its unit.
+        let unit = if i != 0. {
+            per_unit / i
+        } else {
+            match (depth, route_target) {
+                (ir::Depth::Normalized(_), _) => 1.,
+                (ir::Depth::Pitch(_), ir::Target::Pitch) => 12.,
+                (ir::Depth::Pitch(_), ir::Target::Processor { chain, index, .. }) => {
+                    12. * self.cutoff_octaves.get(&(chain.0, index)).copied().unwrap_or(10.)
+                }
+                _ => f64::NAN,
+            }
+        };
+        self.route_intensity.insert(self.ir.routes.len(), (i, unit));
         self.ir.routes.push(ir::Route {
             source,
             target: route_target,
@@ -3604,7 +3656,9 @@ mod modulation {
             source: ir::ModulatorRef(0),
             depth: 0.5,
             flags,
-            plain: true,
+            inverted: false,
+            lagged: false,
+            shape: None,
         };
         t.intensity_scales.push(assignment(0x10));
         t.apply_intensity_scales();
@@ -3617,7 +3671,7 @@ mod modulation {
             })
         );
         t.ir.routes[0].scale = None;
-        t.intensity_scales.push(assignment(0x12));
+        t.intensity_scales.push(assignment(0x11));
         t.apply_intensity_scales();
         assert_eq!(t.ir.routes[0].scale, None);
         assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
@@ -4857,8 +4911,12 @@ struct IntensityScale {
     source: ir::ModulatorRef,
     depth: f64,
     flags: u8,
-    /// No invert, enabled shaper or lag: the only form the ID25 law is proved for.
-    plain: bool,
+    /// Inversion helpers (`fcinv_flip`/`fcinv_neg`) have no proved meaning yet.
+    inverted: bool,
+    /// Assignment lag smooths the source before ID25; its cadence is unproved.
+    lagged: bool,
+    /// The assignment's shaper, applied to the unipolar source (`ftable`).
+    shape: Option<ir::ShapeRef>,
 }
 
 impl Translation {
@@ -4896,13 +4954,29 @@ impl Translation {
                         | ir::ModulationSource::ScriptBipolar(_)
                 )
             );
+            let bipolar = matches!(
+                self.ir.modulators.get(scale.source.0).map(|m| &m.source),
+                Some(
+                    ir::ModulationSource::Lfo(_)
+                        | ir::ModulationSource::PitchBend
+                        | ir::ModulationSource::ScriptBipolar(_)
+                )
+            );
+            // Flag 0x02 is the stored depth sign (already in `depth`); 0x04 picks
+            // the combination expression; 0x10 is the saved-target marker.
             let mut why = None;
-            if !matches!(scale.flags, 0x10 | 0x14) {
+            if !matches!(scale.flags & !0x02, 0x10 | 0x14) {
                 why = Some(format!("flags 0x{:02x}", scale.flags));
-            } else if !(0. ..=1.).contains(&scale.depth) {
+            } else if !(-1. ..=1.).contains(&scale.depth) {
                 why = Some(format!("depth {}", scale.depth));
-            } else if !scale.plain {
-                why = Some("inverted, shaped or lagged".into());
+            } else if scale.inverted {
+                why = Some("inverted".into());
+            } else if scale.lagged {
+                why = Some("lagged".into());
+            } else if scale.shape.is_some() && bipolar {
+                // The compiler's fifth argument picks ftable($c, frange_uni(s))
+                // or ftable($c, s); they agree only for unipolar sources.
+                why = Some("shaped bipolar source".into());
             } else if live {
                 why = Some("live source".into());
             }
@@ -4917,10 +4991,8 @@ impl Translation {
                         Some("second intensity modulator on one route".into())
                     } else if !unit.is_finite() || unit == 0. || !(0. ..=1.).contains(&saved) {
                         Some(format!("route intensity {saved}"))
-                    } else if route.shape.is_some() || route.smoothing != ir::Time::ZERO
-                        || route.target == ir::Target::SampleStart
-                    {
-                        Some("shaped, lagged or start-offset route".into())
+                    } else if route.target == ir::Target::SampleStart {
+                        Some("start-offset route".into())
                     } else {
                         None
                     }
@@ -4936,7 +5008,7 @@ impl Translation {
                 }
                 self.ir.routes[r].scale = Some(ir::RouteScale {
                     source: scale.source,
-                    shape: None,
+                    shape: scale.shape,
                     law: ir::ScaleLaw::KontaktIntensity { depth: scale.depth, flags: scale.flags, unit },
                 });
             }
