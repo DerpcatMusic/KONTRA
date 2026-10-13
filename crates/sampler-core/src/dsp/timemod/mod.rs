@@ -554,8 +554,10 @@ impl TimeMod {
         let ms = if unit > f32::from_bits(0x3089705f) {
             let tempo = tempo as f32;
             let tempo = if tempo < f32::from_bits(0x3dcccccd) { 120. } else { tempo };
-            // Clamp [0, 5800] ms: the time object's constructor fields ([ref]/ac6).
-            (((unit * 60.) / tempo) * time * 1000.).clamp(0., 5800.)
+            // Getter [ref] via [ref]: a synced count below one
+            // unit reads as one (flag +0x20, set by [ref]), and the
+            // result clamps to [0, 5800] ms (constructor [ref]/ac6).
+            (((unit * 60.) / tempo) * time.max(1.) * 1000.).clamp(0., 5800.)
         } else {
             time
         };
