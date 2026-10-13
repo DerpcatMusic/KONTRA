@@ -374,7 +374,8 @@ pub enum Kind {
         arrows: bool,
     },
     /// `cells`: initial values, one per column (may be shorter than `columns`);
-    /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
+    /// `steps_shown`: number of leading columns displayed across the full widget
+    /// width (KSP `set_table_steps_shown`); absent means all columns.
     Table {
         columns: u32,
         range: Range,

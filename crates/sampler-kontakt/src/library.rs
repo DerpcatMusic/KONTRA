@@ -974,7 +974,9 @@ impl Translation {
                 for (band, [hz, width, db]) in bands.iter().enumerate() {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
-                        ("FREQ", (f64::from(*hz) / 20.).log10() / 3., 0., 1.),
+                        ("FREQ", if bands.len() == 1 {
+                            f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz))
+                        } else { (f64::from(*hz) / 20.).log10() / 3. }, 0., 1.),
                         (
                             "BW",
                             sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)),
@@ -1151,7 +1153,7 @@ impl Translation {
 
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
-        let mut v = group.params()?;
+        let v = group.params()?;
         if let Some(objects) = &mut self.ir.kontakt_objects {
             let source = crate::objects::group(group, &v);
             if let Some(error) = &source.source_error {
@@ -1740,24 +1742,24 @@ impl Translation {
     fn eq_controls(&mut self, group: usize, chain: ir::ChainRef, slots: &[(usize, usize)]) {
         let mut bands = HashMap::<usize, usize>::new();
         for &(slot, index) in slots {
-            let Some(ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak { gain },
-                cutoff: ir::Frequency::Hertz(hz),
-                resonance: ir::Resonance::Q(q),
-            })) = self.ir.chains[chain.0]
+            let processor = self.ir.chains[chain.0]
                 .pre_amplitude
                 .iter()
                 .chain(&self.ir.chains[chain.0].post_amplitude)
-                .nth(index)
-            else {
-                continue;
+                .nth(index);
+            let saved = match processor {
+                Some(ir::Processor::KontaktLegacyEq(eq)) => [f64::from(eq.gain_db),
+                    f64::from(eq.frequency), f64::from(eq.bandwidth)],
+                Some(ir::Processor::Filter(ir::Filter {
+                    kind: ir::FilterKind::Peak { gain },
+                    cutoff: ir::Frequency::Hertz(hz),
+                    resonance: ir::Resonance::Q(q),
+                })) => [20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
+                    (hz / 20.).log10() / 3.,
+                    sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q))],
+                _ => continue,
             };
             let band = bands.entry(slot).or_default();
-            let saved = [
-                20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
-                (hz / 20.).log10() / 3.,
-                sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q)),
-            ];
             for (n, (native, name, label, parameter, min, max, unit)) in [
                 (
                     "GAIN",
@@ -2088,7 +2090,7 @@ impl Translation {
                         ir::Processor::Filter(ir::Filter {
                             kind: ir::FilterKind::Peak { .. },
                             ..
-                        })
+                        }) | ir::Processor::KontaktLegacyEq(_)
                     )
                     .then_some((
                         ir::Target::Processor {
@@ -4131,6 +4133,58 @@ mod modulation {
             ),
             "v1 clamps normalized EQ knobs before conversion; a saved outlier must not invalidate the instrument"
         );
+    }
+
+    #[test]
+    fn native_one_band_eq_saved_and_live_controls_reach_production_audio() {
+        let mut public = 22_i32.to_le_bytes().repeat(2);
+        for value in [1000_f32, 1., 9.] { public.extend(value.to_le_bytes()); }
+        let slot = crate::effects::Slot { slot: 5, module: 0x18, version: 0x92,
+            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        let built = crate::effects::chain_with(std::slice::from_ref(&slot), crate::effects::Scope::Voice,
+            None, Some((7, -1)), (7, -1), &[]);
+        assert_eq!(built.filter_slots, [(5, 1)]);
+        assert!(matches!(built.processors[1], ir::Processor::KontaktLegacyEq(_)));
+        let mut t = translation();
+        t.source_eq_values(7, &[slot]);
+        t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+        t.eq_controls(7, ir::ChainRef(0), &built.filter_slots);
+        assert_eq!(t.ir.processor_controls.len(), 3);
+        assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default, .. }
+            if default == f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.))));
+        t.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored".into()),
+            encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.chain = Some(ir::ChainRef(0));
+        zone.pitch = ir::KeyTracking::Fixed;
+        zone.velocity = ir::VelocityResponse::None;
+        t.ir.zones.push(zone);
+        let pcm = sampler_core::Pcm::new(48000, (0..16384).map(|i| {
+            let x = (std::f64::consts::TAU * 1000. * i as f64 / 48000.).sin() as f32 * 0.1;
+            [x, -x]
+        }).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&t.ir, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        let address = |name| sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id(name).unwrap(), group: 7, slot: 5, generic: -1 };
+        assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress { slot: 4, ..address("ENGINE_PAR_GAIN1") }, 0).is_err());
+        for name in ["ENGINE_PAR_GAIN1", "ENGINE_PAR_FREQ1", "ENGINE_PAR_BW1"] {
+            rt.set_engine_parameter(address(name), 500000).unwrap();
+        }
+        rt.set_engine_parameter(address("ENGINE_PAR_GAIN1"), 750000).unwrap();
+        rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native,
+            port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+        let mut before = [[0.; 2]; 1024];
+        rt.render(&mut before).unwrap();
+        rt.set_engine_parameter(address("ENGINE_PAR_GAIN1"), 0).unwrap();
+        let mut settle = [[0.; 2]; 8192]; rt.render(&mut settle).unwrap();
+        let mut after = [[0.; 2]; 1024]; rt.render(&mut after).unwrap();
+        let energy = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
+        assert!(energy(&before) > 0.01);
+        assert!(energy(&after) < energy(&before) * 0.5,
+            "physical native gain edit must change held-note sound");
+        assert!(after.iter().all(|f| f[0].is_finite() && (f[0] + f[1]).abs() < 1e-6));
     }
 
     #[test]

@@ -16,6 +16,7 @@ fn immediate_host_save_captures_live_uvi_state_before_background_poll() {
         ..Default::default()
     }];
     let source = p.selection.read().unwrap().parts[0].source();
+    p.shared.view.lock().unwrap().parts[0].active_source = Some(source.clone());
     p.shared.view.lock().unwrap().parts[0].attempted = Some((
         "synthetic.uvip".into(),
         0,
@@ -82,6 +83,7 @@ fn host_save_captures_uvi_custom_state_without_ui_revision() {
         ..Default::default()
     }];
     let source = p.selection.read().unwrap().parts[0].source();
+    p.shared.view.lock().unwrap().parts[0].active_source = Some(source.clone());
     p.shared.view.lock().unwrap().parts[0].attempted = Some((
         "synthetic.uvip".into(),
         0,

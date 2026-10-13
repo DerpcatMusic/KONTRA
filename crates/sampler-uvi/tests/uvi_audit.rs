@@ -91,12 +91,80 @@ fn note_held_does_not_follow_another_key() {
 #[test]
 fn spawn_does_not_inherit_release_wait() {
     let mut h = host(
-        "function onNote(e) spawn(function() waitForRelease(); result = true end) end",
+        "function onNote(e) spawn(function() held = isNoteHeld(); waitForRelease(); result = true end) end",
         "",
     );
     h.note_on(1, 60, 100, 0);
+    assert_eq!(h.global_text("held"), "false");
+    assert_eq!(h.global_text("result"), "true");
+    assert!(h.next_due().is_none());
     h.note_off(1, 60, 64, 0);
-    assert_eq!(h.global_text("result"), "nil");
+    assert_eq!(h.global_text("result"), "true");
+    assert!(h.fault_counts().runtime.is_empty());
+}
+
+#[test]
+fn run_has_independent_note_context_and_preserves_immediate_callback_order() {
+    let mut h = host(
+        "trace = ''; function onNote(e)\n\
+           trace = trace .. 'note' .. e.id .. ':'\n\
+           run(function(id) assert(not isNoteHeld()); waitForRelease(); trace = trace .. 'run' .. id .. ':' end, e.id)\n\
+           assert(isNoteHeld()); trace = trace .. 'caller:'; waitForRelease()\n\
+           assert(not isNoteHeld()); trace = trace .. 'released' .. e.id .. ':'\n\
+         end\n\
+         function onRelease(e) trace = trace .. 'off' .. e.id .. ':' end",
+        "",
+    );
+    h.note_on(42, 60, 100, 0);
+    assert_eq!(h.global_text("trace"), "note42:run42:caller:");
+    h.note_off(99, 60, 64, 0);
+    assert_eq!(h.global_text("trace"), "note42:run42:caller:off99:");
+    h.note_off(42, 60, 64, 0);
+    assert_eq!(
+        h.global_text("trace"),
+        "note42:run42:caller:off99:released42:off42:"
+    );
+    assert!(h.fault_counts().runtime.is_empty());
+}
+
+#[test]
+fn release_wait_returns_immediately_in_controller_and_after_its_note_was_released() {
+    let mut h = host(
+        "function onController(e) assert(not isNoteHeld()); waitForRelease(); controllerDone = true end\n\
+         function onNote(e) wait(10); waitForRelease(); releasedId = e.id; playNote(e.note + 12, 100) end",
+        "",
+    );
+    h.controller(64, 127, 0);
+    assert_eq!(h.global_text("controllerDone"), "true");
+    h.note_on(7, 60, 100, 0);
+    h.note_off(7, 60, 64, 0);
+    h.advance(10.);
+    assert_eq!(h.global_text("releasedId"), "7");
+    assert!(h.take_commands().iter().any(
+        |command| matches!(command, Command::Play(play) if play.key == 72 && play.at_ms == 10.)
+    ));
+    assert!(h.next_due().is_none());
+    assert!(h.fault_counts().runtime.is_empty());
+}
+
+#[test]
+fn release_wait_stays_forbidden_in_synchronous_widget_callbacks_but_spawn_is_allowed() {
+    let mut direct = host(
+        "local knob = Knob('Value', 0, 0, 1); function knob:changed() waitForRelease(); after = true end",
+        "",
+    );
+    let id = sampler_uvi::script::control_id(1, 0);
+    assert!(direct.set_control(id, 1.).is_err());
+    direct.advance(10.);
+    assert_eq!(direct.global_text("after"), "nil");
+
+    let mut spawned = host(
+        "local knob = Knob('Value', 0, 0, 1); function knob:changed() spawn(function() waitForRelease(); after = true end) end",
+        "",
+    );
+    assert!(spawned.set_control(id, 1.).is_ok());
+    assert_eq!(spawned.global_text("after"), "true");
+    assert!(spawned.fault_counts().runtime.is_empty());
 }
 
 #[test]

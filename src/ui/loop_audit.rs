@@ -195,6 +195,57 @@ fn loop_drag_target_skips_unavailable_controls_and_uses_runtime_values() {
     assert!(loop_drag_target(&ui, &disabled, &values, &ids).0.is_none());
 }
 
+fn loop_audit_program_classes(
+    views: &[sampler_ksp::ScriptView],
+) -> std::collections::BTreeMap<usize, &'static str> {
+    // sampler-ksp builtins::signal encodes TIMER_MS=1 and TIMER_BEAT=2.
+    // Only these registered signals create a driver after the Listener entry;
+    // an unregistered listener followed by a finite engine start is not a driver.
+    const TIMER_SIGNALS: [i32; 2] = [1, 2];
+    let mut classes = std::collections::BTreeMap::new();
+    let mut base = 0;
+    for view in views {
+        let has_timer = view.model().listeners.keys().any(|s| TIMER_SIGNALS.contains(s));
+        for local in 0..view.program_count() {
+            let class = view.callback(local).unwrap_or_else(|| {
+                if has_timer && local.checked_sub(1)
+                    .and_then(|previous| view.callback(previous)) == Some("on listener")
+                {
+                    "listener_driver"
+                } else {
+                    "activation_or_callback"
+                }
+            });
+            classes.insert(base + local, class);
+        }
+        base += view.program_count();
+    }
+    classes
+}
+
+#[test]
+fn loop_audit_readiness_distinguishes_timer_drivers_from_finite_bootstrap() {
+    let compile = |source| sampler_ksp::compile(source, 48000,
+        sampler_ksp::Limits::LIBRARY, &[]).unwrap().view();
+    let timer = compile("on init
+        set_listener($NI_SIGNAL_TIMER_MS,10000)
+        set_listener($NI_SIGNAL_TIMER_BEAT,4)
+        set_engine_par($ENGINE_PAR_CUTOFF,250000,0,3,-1) end on
+        on listener end on on persistence_changed wait(1000) end on");
+    let no_timer = compile("on init
+        set_engine_par($ENGINE_PAR_CUTOFF,250000,0,3,-1) end on
+        on listener end on");
+    let second_base = timer.program_count();
+    let classes = loop_audit_program_classes(&[timer, no_timer]);
+    assert_eq!(classes.values().filter(|&&c| c == "listener_driver").count(), 2);
+    assert_eq!(classes.values().filter(|&&c| c == "on persistence_changed").count(), 1);
+    assert_eq!(classes.values().filter(|&&c| c == "activation_or_callback").count(), 2,
+        "each finite engine initializer must still participate in readiness");
+    assert_eq!(classes[&second_base], "on listener");
+    assert_eq!(classes[&(second_base + 1)], "activation_or_callback",
+        "an unregistered listener's following engine initializer must not be exempted");
+}
+
 #[test]
 #[ignore = "local Conflux witness; KONTRA_LOOP_PATCH and KONTRA_LOOP_CACHE required"]
 fn loop_audit_conflux() {
@@ -365,7 +416,89 @@ fn loop_audit_conflux() {
         std::fs::write(cache.join("conflux.json"), serde_json::to_vec_pretty(record).unwrap()).unwrap();
     };
     checkpoint(&record);
+    // Preserve the sampled render controls. Settle the already admitted startup
+    // work before measuring them, and service the bounded outbox every block.
+    const MAX_CALLBACK_BLOCKS: usize = 3000; // Four seconds at 48 kHz, like scan settling.
+    let drain = |rt: &mut sampler_core::Runtime,
+                 scripts: &mut crate::sound::ScriptUi,
+                 effects: &mut usize,
+                 applied: &mut usize,
+                 services: &mut std::collections::BTreeMap<String, usize>,
+                 ignored: &mut std::collections::BTreeMap<String, usize>,
+                 label_effect: &mut Option<(usize, sampler_core::Effect)>| {
+        rt.drain_effects(|e| {
+            *effects += 1;
+            if let Some(instance) = e.instance {
+                let instance = usize::from(instance.0);
+                let service = scripts.views[instance]
+                    .service(e.service)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                *services.entry(service.clone()).or_default() += 1;
+                if service == "set_knob_label" {
+                    *label_effect = Some((instance, *e));
+                }
+                if scripts.apply(instance, e) {
+                    *applied += 1;
+                } else {
+                    *ignored.entry(service).or_default() += 1;
+                }
+            }
+            true
+        });
+    };
+    // bind_modules concatenates each view's program table. Timer drivers are
+    // emitted immediately after their Listener entry by compile_initialized_inner;
+    // unlike persistence and engine-start programs they intentionally never finish.
+    let classes = loop_audit_program_classes(&scripts.views);
+    let (mut startup_effects, mut startup_applied, mut startup_blocks) = (0, 0, 0);
+    let (mut startup_services, mut startup_ignored) = (Default::default(), Default::default());
+    let mut startup_label = None;
+    let mut startup_faults = Vec::new();
+    let mut startup_progress = Vec::new();
+    let mut startup_running = true;
+    let startup_stalls = rt.stalled_effects();
+    for _ in 0..MAX_CALLBACK_BLOCKS {
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        startup_blocks += 1;
+        drain(&mut rt, &mut scripts, &mut startup_effects, &mut startup_applied,
+            &mut startup_services, &mut startup_ignored, &mut startup_label);
+        if let Some((program, fault)) = rt.take_fault() {
+            startup_faults.push(format!("program {program}: {fault:?}"));
+        }
+        startup_running = false;
+        startup_progress.clear();
+        rt.visit_behavior_progress(|p| {
+            if matches!(p.owner, sampler_core::BehaviorOwner::Plan(_)) {
+                let class = classes.get(&p.program).copied().unwrap_or("unmapped");
+                let periodic = matches!(class, "on listener" | "listener_driver");
+                startup_running |= p.outcome.is_none() && !periodic;
+                startup_progress.push(serde_json::json!({"program":p.program,"pc":p.pc,
+                    "class":class,"periodic":periodic,"waiting":p.waiting,
+                    "outcome":p.outcome.map(|o|format!("{o:?}"))}));
+            }
+        });
+        if !startup_faults.is_empty() || !startup_running {
+            break;
+        }
+    }
+    let startup_complete = !startup_running && startup_faults.is_empty()
+        && startup_progress.iter().all(|p| p["outcome"] == "Finished"
+            || (p["periodic"] == true && p["outcome"].is_null()));
+    record["startup"] = serde_json::json!({"complete":startup_complete,
+        "truncated":startup_running && startup_blocks == MAX_CALLBACK_BLOCKS,
+        "render_blocks":startup_blocks,"frames":startup_blocks * 64,
+        "effects":startup_effects,"applied":startup_applied,"services":startup_services,
+        "ignored":startup_ignored,"faults":startup_faults,"progress":startup_progress,
+        "outbox_drained":true,"completion_scope":"finite_bootstrap_not_periodic_listeners",
+        "stalled_effects":rt.stalled_effects() - startup_stalls});
+    record["stage"] = serde_json::json!(if startup_complete {
+        "startup_complete_callbacks_pending"
+    } else { "startup_incomplete" });
+    checkpoint(&record);
+    assert!(startup_complete, "Conflux startup must settle before callbacks: {}", record["startup"]);
     let mut callbacks = Vec::new();
+    // A startup label must never satisfy a sampled control's callback assertion.
     let mut label_effect = None;
     for id in sampled {
         use sampler_core::{ControlDomain, ControlValue};
@@ -394,43 +527,60 @@ fn loop_audit_conflux() {
             sampler_core::ControlWrite { id, value },
         );
         let admit_us = t.elapsed().as_secs_f64() * 1e6;
-        for _ in 0..8 {
-            rt.render(&mut [[0.; 2]; 64]).unwrap();
-        }
         let (mut effects, mut applied) = (0, 0);
+        let mut services = std::collections::BTreeMap::<String, usize>::new();
         let mut ignored = std::collections::BTreeMap::<String, usize>::new();
-        rt.drain_effects(|e| {
-            effects += 1;
-            if let Some(instance) = e.instance {
-                let instance = usize::from(instance.0);
-                let service = scripts.views[instance]
-                    .service(e.service)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                if service == "set_knob_label" {
-                    label_effect = Some((instance, *e));
-                }
-                if scripts.apply(instance, e) {
-                    applied += 1;
-                } else {
-                    *ignored.entry(service).or_default() += 1;
+        let mut faults = Vec::new();
+        let mut blocks = 0;
+        let mut outcome = None;
+        let mut outcome_error = None;
+        let callback = admitted.as_ref().ok().and_then(|(_, b)| *b);
+        let stalls = rt.stalled_effects();
+        for _ in 0..MAX_CALLBACK_BLOCKS {
+            rt.render(&mut [[0.; 2]; 64]).unwrap();
+            blocks += 1;
+            drain(&mut rt, &mut scripts, &mut effects, &mut applied,
+                &mut services, &mut ignored, &mut label_effect);
+            if let Some((program, fault)) = rt.take_fault() {
+                faults.push(format!("program {program}: {fault:?}"));
+            }
+            if let Some(callback) = callback {
+                match rt.behavior_outcome(callback) {
+                    Ok(current) => outcome = current,
+                    Err(error) => outcome_error = Some(format!("{error:?}")),
                 }
             }
-            true
-        });
-        let outcome = admitted
-            .as_ref()
-            .ok()
-            .and_then(|(_, b)| *b)
-            .and_then(|b| rt.behavior_outcome(b).ok().flatten())
-            .map(|o| format!("{o:?}"));
-        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),"admitted":admitted.is_ok(),"admit_us":admit_us,"callback":admitted.as_ref().ok().is_some_and(|(_,b)|b.is_some()),"outcome_after_512_frames":outcome,"fault":rt.take_fault().map(|(_,e)|format!("{e:?}")),"effects":effects,"applied":applied,"ignored":ignored,"stalled_effects":rt.stalled_effects()}));
+            if callback.is_none() || outcome.is_some() || outcome_error.is_some() || !faults.is_empty() {
+                break;
+            }
+        }
+        let complete = outcome == Some(sampler_core::Outcome::Finished)
+            && outcome_error.is_none() && faults.is_empty();
+        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),
+            "admitted":admitted.is_ok(),"admission_error":admitted.as_ref().err().map(|e|format!("{e:?}")),
+            "admit_us":admit_us,"callback":callback.is_some(),"complete":complete,
+            "truncated":callback.is_some() && outcome.is_none() && outcome_error.is_none() && blocks == MAX_CALLBACK_BLOCKS,
+            "render_blocks":blocks,"frames":blocks * 64,"outcome":outcome.map(|o|format!("{o:?}")),
+            "outcome_error":outcome_error,"faults":faults,"effects":effects,"applied":applied,
+            "services":services,"ignored":ignored,"stalled_effects":rt.stalled_effects() - stalls}));
+        record["callbacks"] = serde_json::json!(callbacks);
+        record["stage"] = serde_json::json!("callbacks_in_progress");
+        checkpoint(&record);
+        assert!(complete, "Conflux sampled callback must finish: {:?}", callbacks.last());
     }
     record["stage"] = serde_json::json!("callbacks_complete_assertions_pending");
     record["callbacks"] = serde_json::json!(callbacks);
     record["sampled_changed_bound_controls"] = serde_json::json!(callbacks.len());
     checkpoint(&record);
     let (instance, mut effect) = label_effect.expect("Conflux callback emits its knob label");
+    let ui_id = i32::try_from(effect.args[0]).expect("label target UI id");
+    let label = scripts.views[instance].model().interface.widgets.iter()
+        .find(|w| w.ui_id == ui_id).expect("label target belongs to callback view");
+    assert_eq!(label.text("$CONTROL_PAR_LABEL"),
+        Some(effect.text.as_ref().expect("callback label text").as_str()),
+        "the emitted callback label reaches its target's property readback");
+    record["callback_label_readback_verified"] = serde_json::json!(true);
+    checkpoint(&record);
     assert!(
         callbacks
             .iter()

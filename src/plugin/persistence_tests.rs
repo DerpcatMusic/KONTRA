@@ -38,6 +38,8 @@ fn host_save_contains_live_original_text_and_array_values() {
         -1,
         Streaming::Auto,
     ));
+    let source = p.selection.read().unwrap().parts[0].source();
+    p.shared.view.lock().unwrap().parts[0].active_source = Some(source);
     let mut core = V2Core::with_parts(1, 48000.);
     core.install(0, Some(Box::new(part)));
     for (name, value, index) in [

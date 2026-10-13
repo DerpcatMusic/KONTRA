@@ -440,13 +440,31 @@ def eq_control_cadence():
 
 
 def eq_sample_kernel():
-    rows=[];dispatch=0x14a5ed92c;original=bytes(CPU.mem_read(dispatch,1));CPU.mem_write(dispatch,b'\0')
+    # The wrapper-cadence probe intercepts this setter to observe calls. The
+    # sample probe must execute it, otherwise every coefficient and PCM value
+    # remains zero and the supposed audio comparison is vacuous.
+    setter = 0x1409591c0
+    saved = EXTRA.pop(setter, None)
+    dispatch = 0x14a5ed92c
+    original = bytes(CPU.mem_read(dispatch, 1))
+    CPU.mem_write(dispatch, b'\0')
+    try:
+        return _eq_sample_kernel()
+    finally:
+        CPU.mem_write(dispatch, original)
+        if saved is not None:
+            EXTRA[setter] = saved
+
+
+def _eq_sample_kernel():
+    rows=[]
     for gain in [-.5,.5]:
         for channels in [1,2]:
             for frames in [0,1,3,4,5,32,33,129]:
                 clear();put(0x1d0,'f',48000)
                 call(0x1409591c0,[],[(1,.5),(2,.5),(3,gain)],(7,'B'),OBJ+0x1c8)
                 coefficients=[get(o,'f') for o in [0x300,0x2f0,0x2f4,0x2f8,0x2fc]]
+                assert coefficients[0] != 0 and all(map(math.isfinite, coefficients)), 'Native EQ coefficient setter did not execute'
                 b0,b1,b2,a1,a2=coefficients;put(0x1ec,'f',gain);put(0x124,'i',channels)
                 histories=[];outputs=[]
                 for channel in range(channels):
@@ -458,7 +476,9 @@ def eq_sample_kernel():
                     for i,v in enumerate(history):put(0x1f0+channel*16+i*4,'f',v)
                     expected=[];x1,x2,y1,y2=history
                     for v in samples:
-                        y=f32(f32(f32(f32(f32(y1*a1)+f32(y2*a2))+f32(x2*b2))+f32(v*b0))+f32(x1*b1))
+                        feedback=f32(f32(f32(y1*a1)+f32(y2*a2))+f32(x2*b2))
+                        feedforward=f32(f32(v*b0)+f32(x1*b1))
+                        y=f32(feedback+feedforward)
                         expected.append(y);x1,x2,y1,y2=v,x1,y,y1
                     histories.append([x1,x2,y1,y2]);outputs.append(expected)
                 call(0x140aeada0,[CTX,0,frames],fifth=(1,'B'))
@@ -470,7 +490,6 @@ def eq_sample_kernel():
                 call(0x14094a790)
                 assert bytes(CPU.mem_read(OBJ+0x1f0,16*16))==bytes(16*16)
                 rows.append({'gain':gain,'channels':channels,'frames':frames,'coefficients':coefficients,'samples':outputs,'final_histories':histories,'reset_checked':True,'vector_dispatch_disabled':True})
-    CPU.mem_write(dispatch,original)
     return rows
 
 
