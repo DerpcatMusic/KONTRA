@@ -409,6 +409,9 @@ pub(super) struct Cursor {
     lead: u64,
 }
 
+#[cfg(test)]
+std::thread_local! { static DIRECT_TAP_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 struct ReadAddress {
     primary: usize,
     // Partner index and (primary, partner) gains.
@@ -1343,6 +1346,31 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && self.step() == 1.0 && self.fraction == 0.0 {
+            // Port v1 0cb7a8a0:src/engine/voice.rs::taps centre-tap run.
+            // NI Source Module loop/crossfade scope is unchanged: the span above
+            // already proves neither leg is crossfading. Preserve v2 arithmetic
+            // and signed-zero cubic results; this is not a different DSP law.
+            #[cfg(test)]
+            DIRECT_TAP_RUNS.set(DIRECT_TAP_RUNS.get() + 1);
+            let constant = envelope.constant_level();
+            for (i, frame) in output.iter_mut().enumerate() {
+                let centre = span[i + radius as usize];
+                let source = if centre.iter().any(|v| *v == 0.0) {
+                    // Zero's sign can depend on the cubic's neighbouring terms.
+                    kernel.sample_window(0.0, 1.0, &span[i..i + width])
+                } else {
+                    centre
+                };
+                let level = constant.unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+                self.last = if source.iter().all(|v| v.is_finite()) { source } else { [0.; 2] };
+            }
+            self.position += count as u64;
+            return count;
+        }
         if kernel.uses_cubic(self.step()) && output.len() >= 4 {
             sampler_simd::dispatch(
                 #[inline(always)]
@@ -1567,6 +1595,85 @@ fn mix<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn integer_crossfade_runs_skip_cubic_and_preserve_pcm_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let pcm: Vec<Frame> = (0..600)
+            .map(|i| match i % 13 {
+                0 => [-0.0, 0.0],
+                1 => [f32::MIN_POSITIVE, -f32::MIN_POSITIVE],
+                _ => [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()],
+            })
+            .collect();
+        for len in [1, 3, 4, 63, 64, 65] {
+            for shape in [
+                Envelope::default(),
+                Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                    EnvelopeCurve::exponential(2.).unwrap(),
+                    EnvelopeCurve::exponential(-3.).unwrap(),
+                    EnvelopeCurve::default(),
+                ),
+            ] {
+                let mut old = Playback {
+                    loop_range: Some(Loop {
+                        start: 160,
+                        end: 500,
+                        mode: LoopMode::Continuous,
+                        shape: LoopShape::Crossfade { frames: 80 },
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                }
+                .cursor(pcm.len(), 48000, 48000)
+                .unwrap();
+                old.position = 20;
+                let mut new = old;
+                let mut expected = vec![[0.123, -0.567]; len];
+                let mut actual = expected.clone();
+                let mut old_env = EnvelopeState::new(shape);
+                let mut new_env = old_env;
+                old.run(
+                    &pcm[18..],
+                    5,
+                    &mut expected,
+                    &mut old_env,
+                    0.731,
+                    [0.7, -0.2],
+                    |f, w| kernel.sample_window(f, 1., w),
+                );
+                DIRECT_TAP_RUNS.set(0);
+                assert_eq!(
+                    new.render_run(
+                        pcm.as_slice(),
+                        &mut actual,
+                        &mut new_env,
+                        0.731,
+                        [0.7, -0.2],
+                        &kernel
+                    ),
+                    len
+                );
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+                }
+                assert_eq!(
+                    (new.position, new.fraction, new.last.map(f32::to_bits)),
+                    (old.position, old.fraction, old.last.map(f32::to_bits))
+                );
+                assert_eq!(new_env.current().to_bits(), old_env.current().to_bits());
+                assert_eq!(new_env.remaining(), old_env.remaining());
+                assert_eq!(
+                    DIRECT_TAP_RUNS.get(),
+                    1,
+                    "integer clear spans must use the centre-tap run"
+                );
+            }
+        }
+    }
+
+
     #[test]
     #[ignore = "focused CPU/work witness; 64x is deliberately injected past admission for diagnosis"]
     fn pitch_limit_increase_work_witness() {

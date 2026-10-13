@@ -1534,7 +1534,8 @@ impl VoiceModState {
         }
         let native_point = native.map(|native| {
             let state = self.native.as_mut_slice()[voice].as_mut().unwrap();
-            if changed || p.native_controls.iter().any(Option::is_some) { state.invalidate_inputs(); }
+            // The pinned owner observes raw inputs and live intensity/bypass
+            // values. Unrelated residual sources must not invalidate its cache.
             state.plan_controls_read_with_intensity(&native.plan,
                 |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize,
                 |assignment, m| match p.native_controls[assignment] {
