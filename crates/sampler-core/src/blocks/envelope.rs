@@ -78,6 +78,15 @@ impl Curve {
     }
 }
 
+/// Why this stage envelope is NOT retired in favour of [`Breakpoints`]:
+/// `dahdsr_points_match_the_stage_envelope` only measures equality of the generic
+/// f64 path (< 2e-6, not bit-exact: closed-form vs recurrence). The `native`
+/// Primary path (f32 geometric AHDSR, 32-frame interpolation, verified against
+/// the v1 oracle in tests/v1_voice_controls.rs) has no point-list form, and this
+/// type also owns choke, release onset, one-shot retirement, stage-control edits
+/// and constant-level skipping that `Segment` lacks. Retire only after those
+/// move into `Segment` and the Primary law is proved expressible as points.
+///
 /// Validated immutable envelope parameters. Zero-length stages are skipped.
 /// Attack starts at zero, decay at one, release at the next held sample's level.
 /// Each ramp reaches its endpoint at the exclusive end of its duration.
@@ -583,6 +592,10 @@ pub struct Breakpoints {
     pub sustain: Option<usize>,
     /// Inclusive (start, end) point indices; the cycle must span at least one frame.
     pub loop_range: Option<(usize, usize)>,
+    /// Kontakt Flex release law (transition 0x140ae5450): the first release
+    /// segment's length is scaled by how far the current level already is from
+    /// the segment's far bound (+-1.05), see [`flex_release_frames`].
+    pub flex_release: bool,
 }
 
 /// Optional second decay of a decay-break-decay shape: decay to `level`, then
@@ -611,7 +624,110 @@ pub struct Dahdsr {
     pub release_curve: EnvelopeCurve,
 }
 
+/// Kontakt Flex curve setter (`FUN_140ae5a10`, 0x140ae5a10): the stored curve
+/// `c` (0..1, 0.5 linear) becomes the segment ratio `q`, the level after the
+/// whole segment relative to its start in the recurrence
+/// `S[n+1] = M*S[n] + B` with `M = q^(1/N)`. Native f32 branch order: `c == 0`
+/// is the linear `f = 0.5` (not the steepest curve); below 0.001 and above
+/// 0.999 the end constants answer; then `f = 2c^2` up to one half and
+/// `f = (4 - 2c)c - 1` above it. No clamp of `c` is proved.
+pub fn flex_ratio(c: f32) -> f32 {
+    let f = if c == 0.0 {
+        0.5 // F32(0.5 * 1) at 0x140ae5a10
+    } else if f64::from(c) < 0.001 {
+        0.001f32 * 0.002f32
+    } else if f64::from(c) > 0.999 {
+        (4.0 - 1.998f32) * 0.999f32 - 1.0
+    } else if c <= 0.5 {
+        c * (c + c)
+    } else {
+        (4.0 - (c + c)) * c - 1.0
+    };
+    let w = 1.0 / f - 1.0;
+    w * w
+}
+
+/// The recurrence's closed form: after `n` of `N` steps the level has covered
+/// `(q^(n/N) - 1) / (q - 1)` of the way, which is [`EnvelopeCurve`] with
+/// curvature `ln q`. Replaces the earlier fitted Flex bow constant.
+pub fn flex_curve(c: f32) -> Result<EnvelopeCurve, Error> {
+    let k = f64::from(flex_ratio(c)).ln();
+    if k == 0.0 { Ok(EnvelopeCurve::default()) } else { EnvelopeCurve::exponential(k) }
+}
+
+/// Frames the first Flex release segment still needs when the release finds
+/// the level at `s` (transition 0x140ae5450, rows at `sustain + 1`). The
+/// segment is read as running from the far bound (-1.05 below, +1.05 above) to
+/// its target `t`: a ratio of at least one scales the length linearly with the
+/// distance still to travel; below one the remaining share along the curve is
+/// found with logarithms. Outside the bounds the length stays. `s == t` ends
+/// in one frame; the rounding is the native `trunc(x + 0.5)` with a floor of
+/// one (the native sub-frame remainder carry is not modelled).
+fn flex_release_frames(s: f32, point: &Breakpoint) -> u32 {
+    const BOUND: f32 = 1.049_999_952_316_283_2; // 0x144fcddf4
+    let (t, d) = (point.level, point.frames as f32);
+    let k = point.curve.0;
+    let keep = point.frames;
+    if k.is_infinite() {
+        return keep;
+    }
+    let ratio_up = k >= 0.0;
+    let q = k.exp() as f32;
+    let scaled = |d: f32| ((d.max(0.0) + 0.5) as u32).max(1);
+    // `1 - ln(v + 1) / ln q` of the original length.
+    let along = |v: f32| ((1.0 - f64::from(v + 1.0).ln() / k) * f64::from(d)) as f32;
+    let frames = if s == t {
+        0.0
+    } else if s < t {
+        if s <= -BOUND || t <= -BOUND {
+            return keep;
+        }
+        let inv = 1.0 / (t + BOUND);
+        if ratio_up { d * (t - s) * inv } else { along((s + BOUND) * (q - 1.0) * inv) }
+    } else {
+        if s >= BOUND || t >= BOUND {
+            return keep;
+        }
+        if ratio_up { d * ((s - t) / (BOUND - t)) } else { along(((s - BOUND) * (q - 1.0)) / (t - BOUND)) }
+    };
+    if frames.is_finite() { scaled(frames) } else { keep }
+}
+
 impl Breakpoints {
+    /// Kontakt DBD (`BEnvelopeDBD`, 0x41): a counted linear ramp from the
+    /// initial state 1/3 (0x144760108) to `level` over `N0` outputs, then to
+    /// zero over `N1`, then zero (process 0x140ae43d0, setup 0x140ae5990,
+    /// preparation 0x140ae5d70). `N = trunc((ms * 0.001) * rate + 0.5)`, all
+    /// binary32. A first count of zero starts at `level`, both zero is the
+    /// constant zero; `zero` is the stored byte that forces both. The caller
+    /// converts the saved durations to milliseconds (the saved-time resolver is
+    /// not proved) and picks `rate`, the output rate of the native object.
+    /// Not proved, so refused: negative or non-finite inputs, and a nonzero
+    /// first count with a zero second one (transition skip behaviour). The
+    /// native first output is the initial state itself, one output earlier than
+    /// this segment list's first advance.
+    pub fn dbd(level: f32, first_ms: f32, second_ms: f32, zero: bool, rate: f32) -> Option<Self> {
+        let (level, first_ms, second_ms) = if zero { (0.0, 0.0, 0.0) } else { (level, first_ms, second_ms) };
+        if ![level, first_ms, second_ms, rate].iter().all(|v| v.is_finite())
+            || first_ms < 0.0
+            || second_ms < 0.0
+            || rate <= 0.0
+        {
+            return None;
+        }
+        let count = |ms: f32| ((ms * 0.001f32) * rate + 0.5) as u32;
+        let (n0, n1) = (count(first_ms), count(second_ms));
+        let linear = EnvelopeCurve::default();
+        let p = |frames, level| Breakpoint { frames, level, curve: linear };
+        let points = match (n0, n1) {
+            (0, 0) => vec![p(0, 0.0)],
+            (0, n1) => vec![p(0, level), p(n1, 0.0)],
+            (_, 0) => return None,
+            (n0, n1) => vec![p(0, 0.333_333_34), p(n0, level), p(n1, 0.0)],
+        };
+        Some(Self { points, sustain: None, loop_range: None, flex_release: false })
+    }
+
     /// Point list for a [`Dahdsr`]; the sustain index is the last decay point.
     pub fn dahdsr(d: &Dahdsr) -> Self {
         let linear = EnvelopeCurve::default();
@@ -632,7 +748,7 @@ impl Breakpoints {
         }
         let sustain = Some(points.len() - 1);
         points.push(Breakpoint { frames: d.release, level: 0.0, curve: d.release_curve });
-        Self { points, sustain, loop_range: None }
+        Self { points, sustain, loop_range: None, flex_release: false }
     }
 
     /// Whether a prepared program may run this envelope: finite levels, valid
@@ -659,20 +775,23 @@ pub(crate) struct Segment {
     from: f32,
     level: f32,
     released: bool,
+    /// Length override for the current point (the Flex release scaling).
+    span: Option<u32>,
 }
 
 impl Segment {
     pub(crate) fn advance(&mut self, envelope: &Breakpoints, mut frames: u32) -> f32 {
         while let Some(point) = envelope.points.get(self.index as usize) {
-            let left = point.frames - self.age;
+            let len = self.span.unwrap_or(point.frames);
+            let left = len - self.age;
             if frames < left {
                 self.age += frames;
-                let t = f64::from(self.age) / f64::from(point.frames);
+                let t = f64::from(self.age) / f64::from(len);
                 self.level = self.from + (point.level - self.from) * point.curve.value(t) as f32;
                 return self.level;
             }
             frames -= left;
-            self.age = point.frames;
+            self.age = len;
             self.level = point.level;
             if !self.released && envelope.sustain == Some(self.index as usize) {
                 return self.level;
@@ -685,6 +804,7 @@ impl Segment {
             }
             self.age = 0;
             self.from = self.level;
+            self.span = None;
         }
         self.level
     }
@@ -700,6 +820,11 @@ impl Segment {
             self.index = sustain as u32 + 1;
             self.age = 0;
             self.from = self.level;
+            self.span = envelope
+                .points
+                .get(self.index as usize)
+                .filter(|_| envelope.flex_release)
+                .map(|point| flex_release_frames(self.level, point));
         }
     }
 
@@ -707,6 +832,92 @@ impl Segment {
     /// is simply not calling this.
     pub fn retrigger(&mut self) {
         *self = Self { from: self.level, level: self.level, ..Self::default() };
+    }
+}
+
+/// A point of a Kontakt zone level envelope (`BZoneLevelEnv`, 0x2D): position in
+/// sample-position ticks, level and the stored curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZonePoint {
+    pub position: i32,
+    pub level: f32,
+    pub curve: f32,
+}
+
+/// The zone level envelope's point curve (`BZEnvMod`, process 0x140ceb290).
+/// Evaluated at a sample position, not in time: the owner converts. Points are
+/// installed as the native install 0x140959ef0 does, capped at 32000 and each
+/// after the first at least 32 ticks past the one before. The release-point
+/// index (`+0x24`, restored -1) has no proved producer and is not modelled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneEnvelope {
+    points: Vec<ZonePoint>,
+    pub loop_enabled: bool,
+    pub loop_start: i32,
+    pub loop_span: i32,
+}
+
+impl ZoneEnvelope {
+    pub const MAX_POINTS: usize = 32000;
+    pub const MIN_GAP: i32 = 32;
+
+    pub fn new(mut points: Vec<ZonePoint>, loop_enabled: bool, loop_start: i32, loop_span: i32) -> Self {
+        points.truncate(Self::MAX_POINTS);
+        for i in 1..points.len() {
+            let floor = points[i - 1].position.saturating_add(Self::MIN_GAP);
+            points[i].position = points[i].position.max(floor);
+        }
+        Self { points, loop_enabled, loop_start, loop_span }
+    }
+
+    pub fn points(&self) -> &[ZonePoint] {
+        &self.points
+    }
+
+    /// Level at sample position `position`. `None` before the first point
+    /// (the native entry there is not proved); the last level holds after the
+    /// last point. Segment law (instructions 0x140ceb5b7..0x140ceb6b3), all
+    /// binary32: `t = (P - p0) / (p1 - p0)`, `k = +-16c` with the sign of the
+    /// level step, `E` is [`crate::blocks::lfo::native_exp2`] and
+    /// `a = 1.4426950`; `|k| <= 0.01` is linear, `k > 0.01` is
+    /// `(E(k t a) - 1) / (E(|k| a) - 1)` and `k < -0.01` its mirror
+    /// `1 - (E((t - 1) k a) - 1) / (E(|k| a) - 1)`. There is no output clamp.
+    pub fn level_at(&self, position: f64) -> Option<f32> {
+        let first = self.points.first()?;
+        if position < f64::from(first.position) {
+            return None;
+        }
+        let i = self.points.partition_point(|p| f64::from(p.position) <= position) - 1;
+        let a = self.points[i];
+        let Some(b) = self.points.get(i + 1) else {
+            return Some(a.level);
+        };
+        let t = ((position - f64::from(a.position)) / f64::from(b.position - a.position)) as f32;
+        let delta = b.level - a.level;
+        let k = if delta >= 0.0 { 16.0 * a.curve } else { -16.0 * a.curve };
+        let log2e = 1.442_695_02f32;
+        let e = crate::blocks::lfo::native_exp2;
+        let den = e(k.abs() * log2e) - 1.0;
+        let shape = if k > 0.01 {
+            (e(k * t * log2e) - 1.0) / den
+        } else if k < -0.01 {
+            1.0 - (e((t - 1.0) * k * log2e) - 1.0) / den
+        } else {
+            t
+        };
+        Some(a.level + shape * delta)
+    }
+
+    /// Loop wrap (process 0x140ceb290): while looping is enabled with a
+    /// positive span and the key is still held, reaching `start + span`
+    /// subtracts the span once and keeps the fractional remainder.
+    pub fn wrap(&self, position: f64, released: bool) -> f64 {
+        let end = i64::from(self.loop_start) + i64::from(self.loop_span);
+        if self.loop_enabled && self.loop_span > 0 && !released && position >= end as f64 {
+            position - f64::from(self.loop_span)
+        } else {
+            position
+        }
     }
 }
 
@@ -966,6 +1177,7 @@ mod tests {
             points: vec![p(4, 1.0), p(4, 0.0), p(4, 0.0)],
             sustain: None,
             loop_range: Some((0, 1)),
+            flex_release: false,
         };
         let l = bp_levels(&b, Some(17), 24);
         assert_eq!(l[3], 1.0);
@@ -974,8 +1186,121 @@ mod tests {
         assert_eq!(l[15], 0.0);
         // Released at 17: continues past the loop end and stays at the last point's level.
         assert_eq!(l[23], 0.0);
-        let spin = Breakpoints { points: vec![p(0, 1.0)], sustain: None, loop_range: Some((0, 0)) };
+        let spin = Breakpoints { points: vec![p(0, 1.0)], sustain: None, loop_range: Some((0, 0)), flex_release: false };
         assert!(!spin.valid(), "a zero-length loop would spin");
+    }
+
+    #[test]
+    fn flex_curve_is_the_native_ratio_in_closed_form() {
+        assert_eq!(flex_ratio(0.5), 1.0);
+        assert_eq!(flex_ratio(0.0), 1.0, "c == 0 is the linear branch, not the steepest");
+        assert_eq!(flex_ratio(0.25), 49.0);
+        assert!((flex_ratio(0.75) - (1.0f32 / 0.875 - 1.0).powi(2)).abs() < 1e-6);
+        // Below one half the segment starts slowly, above it quickly.
+        assert!(flex_ratio(0.25) > 1.0 && flex_ratio(0.75) < 1.0);
+        for c in [0.1f32, 0.25, 0.4, 0.6, 0.75, 0.9] {
+            let q = f64::from(flex_ratio(c));
+            let curve = flex_curve(c).unwrap();
+            for t in [0.1, 0.3, 0.8] {
+                let closed = (q.powf(t) - 1.0) / (q - 1.0);
+                assert!((curve.value(t) - closed).abs() < 1e-6, "c={c} t={t}");
+            }
+        }
+        // Both end constants stay inside the envelope's curvature range.
+        assert!(flex_curve(0.0005).is_ok() && flex_curve(1.0).is_ok());
+        assert!(flex_curve(f32::NAN).is_err());
+    }
+
+    fn flex_pair(first: Breakpoint, second: Breakpoint, flex: bool) -> Breakpoints {
+        Breakpoints { points: vec![first, second], sustain: Some(0), loop_range: None, flex_release: flex }
+    }
+
+    #[test]
+    fn flex_release_shortens_with_the_distance_left_to_travel() {
+        let lin = EnvelopeCurve::default();
+        let up = Breakpoint { frames: 48, level: 1.0, curve: lin };
+        let down = Breakpoint { frames: 96, level: 0.0, curve: lin };
+        let frames_to_zero = |b: &Breakpoints, hold: f32| {
+            let mut seg = Segment::default();
+            seg.advance(b, 48 + 10);
+            seg.level = hold; // a release found the level at `hold`
+            seg.release(b);
+            (1..).find(|_| seg.advance(b, 1) == 0.0).unwrap()
+        };
+        // A plain Breakpoints release always takes the stored length.
+        assert_eq!(frames_to_zero(&flex_pair(up, down, false), 1.0), 96);
+        // 96 * (1 - 0) / (1.05 - 0) = 91.4 -> trunc(91.4 + 0.5).
+        assert_eq!(frames_to_zero(&flex_pair(up, down, true), 1.0), 91);
+        assert_eq!(frames_to_zero(&flex_pair(up, down, true), 0.5), 46);
+        // Already at the target: one frame.
+        assert_eq!(flex_release_frames(0.0, &down), 1);
+    }
+
+    #[test]
+    fn flex_release_below_one_follows_the_curve() {
+        let curve = EnvelopeCurve::exponential(-2.0).unwrap();
+        let down = Breakpoint { frames: 1000, level: 0.2, curve };
+        let q = (-2.0f64).exp();
+        let x = (0.6 - 1.05) / (0.2 - 1.05);
+        let u = (1.0 + x * (q - 1.0)).ln() / q.ln();
+        let want = (1000.0 * (1.0 - u)).round() as i64;
+        let got = i64::from(flex_release_frames(0.6, &down));
+        assert!((got - want).abs() <= 1, "{got} vs {want}");
+        // Outside the +-1.05 bounds the stored length stays.
+        assert_eq!(flex_release_frames(1.2, &down), 1000);
+    }
+
+    #[test]
+    fn dbd_is_two_counted_linear_ramps_from_one_third() {
+        let b = Breakpoints::dbd(0.9, 10.0, 20.0, false, 1000.0).unwrap();
+        let l = bp_levels(&b, None, 40);
+        assert!((l[0] - (1.0 / 3.0 + (0.9 - 1.0 / 3.0) / 10.0)).abs() < 1e-6);
+        assert!((l[9] - 0.9).abs() < 1e-6);
+        assert!((l[19] - 0.45).abs() < 1e-6);
+        assert_eq!((l[29], l[39]), (0.0, 0.0));
+        // The stored byte forces level and durations to zero.
+        let off = Breakpoints::dbd(0.9, 10.0, 20.0, true, 1000.0).unwrap();
+        assert!(bp_levels(&off, None, 4).iter().all(|&v| v == 0.0));
+        // A zero first count starts at the level.
+        let l = bp_levels(&Breakpoints::dbd(0.9, 0.0, 20.0, false, 1000.0).unwrap(), None, 20);
+        assert!((l[0] - 0.855).abs() < 1e-6 && l[19] == 0.0);
+        // Count rounding is `trunc(x + 0.5)`: 10.4 -> 10, 10.6 -> 11 frames.
+        let ramp = |ms| Breakpoints::dbd(1.0, ms, 5.0, false, 1000.0).unwrap().points[1].frames;
+        assert_eq!((ramp(10.4), ramp(10.6)), (10, 11));
+        // Unproved shapes are refused.
+        assert!(Breakpoints::dbd(0.9, -1.0, 5.0, false, 1000.0).is_none());
+        assert!(Breakpoints::dbd(0.9, 5.0, 0.0, false, 1000.0).is_none());
+        assert!(Breakpoints::dbd(f32::NAN, 5.0, 5.0, false, 1000.0).is_none());
+    }
+
+    #[test]
+    fn zone_points_install_spaced_and_evaluate_with_the_native_exponential() {
+        let z = |position, level, curve| ZonePoint { position, level, curve };
+        let spaced = ZoneEnvelope::new(vec![z(0, 0.0, 0.0), z(10, 0.5, 0.0), z(100, 1.0, 0.0)], false, 0, 0);
+        assert_eq!(spaced.points().iter().map(|p| p.position).collect::<Vec<_>>(), [0, 32, 100]);
+        let linear = ZoneEnvelope::new(vec![z(0, 0.0, 0.0), z(64, 1.0, 0.0)], false, 0, 0);
+        assert_eq!(linear.level_at(32.0), Some(0.5));
+        assert_eq!((linear.level_at(64.0), linear.level_at(500.0)), (Some(1.0), Some(1.0)));
+        assert_eq!(linear.level_at(-1.0), None);
+        // k = 16 * 0.1 = 1.6: (e^0.8 - 1) / (e^1.6 - 1) up to the bit-built exponential.
+        let rise = ZoneEnvelope::new(vec![z(0, 0.0, 0.1), z(64, 1.0, 0.1)], false, 0, 0);
+        assert!((rise.level_at(32.0).unwrap() - 0.310).abs() < 0.01);
+        // A falling segment negates k, so it mirrors: the same bow in the other sense.
+        let fall = ZoneEnvelope::new(vec![z(0, 1.0, 0.1), z(64, 0.0, 0.1)], false, 0, 0);
+        assert!((fall.level_at(32.0).unwrap() - 0.310).abs() < 0.01);
+        // No clamp: levels outside 0..1 pass through.
+        let over = ZoneEnvelope::new(vec![z(0, 2.0, 0.0), z(64, 3.0, 0.0)], false, 0, 0);
+        assert_eq!(over.level_at(32.0), Some(2.5));
+    }
+
+    #[test]
+    fn zone_loop_subtracts_the_span_once_while_held() {
+        let z = ZoneEnvelope::new(vec![], true, 100, 50);
+        assert_eq!(z.wrap(149.5, false), 149.5);
+        assert_eq!(z.wrap(150.25, false), 100.25);
+        assert_eq!(z.wrap(150.25, true), 150.25);
+        assert_eq!(ZoneEnvelope::new(vec![], true, 100, 0).wrap(500.0, false), 500.0);
+        assert_eq!(ZoneEnvelope::new(vec![], false, 100, 50).wrap(500.0, false), 500.0);
     }
 
     #[test]

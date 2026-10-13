@@ -2943,6 +2943,7 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
                     })
                     .collect(),
                 sustain: Some(1),
+                flex_release: false,
             }),
         });
         ir.routes.push(ir::Route::new(
@@ -3369,7 +3370,7 @@ fn controlled_native_flex_fixture() -> ir::Instrument {
         ir::kontakt::FlexPoint{time_ms:3.,level:0.,curve:0.5},
     ];
     ir.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::Breakpoints(ir::Breakpoints{
-        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),
+        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),flex_release:false,
     })});
     ir.routes.push(ir::Route::new(ir::ModulatorRef(1),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
     ir.zones[0].routes.push(ir::RouteRef(0));
