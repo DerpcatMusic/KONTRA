@@ -596,6 +596,13 @@ fn wave_shaper_rectifies_and_comp_exp_compresses() {
 }
 
 #[test]
+fn maximizer_lifts_to_the_ceiling() {
+    let out = through(r#"<Maximizer Threshold="-40" Ceiling="-3" CeilingMode="2"/>"#, "maximizer");
+    let peak = out[2000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    assert!((peak - 10f32.powf(-3. / 20.)).abs() < 0.02, "{peak}");
+}
+
+#[test]
 fn bit_crusher_holds_quantizes_and_mixes_like_the_native_kernel() {
     let plain = through(r#"<Gain Volume="1"/>"#, "crusher-plain");
     let changes = |out: &[[f32; 2]]| out[1000..].windows(2).filter(|w| w[0][0] != w[1][0]).count();
