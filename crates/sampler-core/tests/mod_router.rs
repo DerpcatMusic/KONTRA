@@ -164,3 +164,30 @@ fn lfo_rate_change_keeps_the_phase_continuous() {
         assert!(step < 0.005, "retrigger {retrigger}: step {step}");
     }
 }
+
+/// ID25 acts on `$intensity` only: the target's own lag, a shaped assignment and
+/// the stored depth sign (flag 0x02) all combine through the same expression.
+#[test]
+fn intensity_scale_admits_shaped_signed_assignments_and_lagged_routes() {
+    let program = ModProgram {
+        controls: vec![],
+        breakpoints: vec![],
+        sources: vec![ModSource::Key, ModSource::Constant],
+        routes: vec![ModRoute {
+            lag: 480,
+            scale: Some(ModScale {
+                source: 1,
+                shape: Some(0),
+                law: ModScaleLaw::KontaktIntensity { depth: -0.5, flags: 0x12, unit: 1. },
+            }),
+            ..ModRoute::new(0, ModTarget::Attenuate, 0.8)
+        }],
+        shapes: vec![vec![(0., 0.5), (1., 0.5)]],
+    };
+    let p = plan(8192)
+        .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
+        .unwrap();
+    let g = gains(&mut start(p, 0), 1024, 0);
+    // 0.8 * (1 - (1 - 0.5) * -0.5) = 1.0 of the way to full attenuation.
+    assert!((g[900] - 60. / 127.).abs() < 1e-3, "{}", g[900]);
+}
