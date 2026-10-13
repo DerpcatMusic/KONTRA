@@ -319,3 +319,95 @@ fn button_press_caption_shift_obeys_disable_text_shifting() {
     let shifted = held_origin(0);
     assert_eq!(shifted[1],Point::new(shifted[0].x+1.,shifted[0].y+1.));
 }
+
+#[test]
+fn kontakt_switch_skin_selects_pressed_hover_and_fixed_picture_states() {
+    let paint = |on: bool, held: bool, hover: bool, fixed: Option<u32>| {
+        let mut face = face(Kind::Switch);
+        face.source = ir::Source::Ksp { slot: 0 };
+        face.widgets[0].text.clear();
+        face.widgets[0].initial_value = f64::from(u8::from(on));
+        face.assets.push(ir::Asset {
+            path: "states.png".into(),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                frames: 6,
+                ..Default::default()
+            }),
+        });
+        face.widgets[0].images.push(ir::ImageUse {
+            role: ir::Role::Strip,
+            asset: ir::AssetRef(0),
+            frame: fixed,
+        });
+        let frames = (0..6)
+            .map(|n| {
+                Arc::new(
+                    moose::mui::mui::scene::Image::rgba(
+                        2,
+                        2,
+                        vec![30 + n * 30, 10, 10, 255].repeat(4),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect();
+        let mut assets = Assets::default();
+        let strip = Arc::new(Picture::new(frames));
+        assets.sync(&face, Presentation::Bitmap, |_| Some(strip.clone()));
+        let mut ui = super::super::theme::ui();
+        let mut values = Values::default();
+        let mut state = InputState::default();
+        for _ in 0..4 {
+            let root = view_state(
+                &mut ui,
+                "",
+                &face,
+                PageRef(0),
+                &assets,
+                Presentation::Bitmap,
+                1.,
+                &mut values,
+                &mut state,
+            );
+            ui.frame(
+                root,
+                Some(Size::new(160., 120.)),
+                Input {
+                    pointer: PointerInput {
+                        pos: Some(if hover || held {
+                            Point::new(60., 50.)
+                        } else {
+                            Point::new(140., 110.)
+                        }),
+                        buttons: if held {
+                            Buttons::PRIMARY
+                        } else {
+                            Buttons::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                1. / 60.,
+            )
+            .unwrap();
+        }
+        super::super::tests::pixels(&ui, 160, 120)
+    };
+    for on in [false, true] {
+        for (held, hover) in [(false, false), (true, true), (false, true)] {
+            let frame = ir::kontakt_picture_frame(on, held, hover, 6) as u32;
+            assert_eq!(
+                paint(on, held, hover, None),
+                paint(on, held, hover, Some(frame))
+            );
+            if frame != 0 {
+                assert_ne!(
+                    paint(on, held, hover, None),
+                    paint(on, held, hover, Some(0)),
+                    "an explicit picture frame wins over the responsive state"
+                );
+            }
+        }
+    }
+}

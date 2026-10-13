@@ -9,11 +9,11 @@
 use crate::model::{MenuItem, PerformanceControl, PerformanceView, Value, WidgetKind};
 use serde_json::Value as Json;
 
-/// Canonical source keys currently omitted by the NCKP importer. These warnings
-/// contain no authored control names or values and can be retained in static reports.
+/// Legacy canonical field-loss warning prefix, retained for report readers.
+/// The presentation fields below are now imported into the initialized UI.
 pub const OMITTED_FIELD_PREFIX: &str = "NCKP source field not imported: ";
 
-/// Recognize only importer-owned canonical field warnings. Unknown-control
+/// Recognize only historical importer-owned field warnings. Unknown-control
 /// warnings include authored names and must never be copied into static reports.
 pub fn omitted_field(warning: &str) -> Option<&str> {
     let field = warning.strip_prefix(OMITTED_FIELD_PREFIX)?;

@@ -754,7 +754,10 @@ fn conflux_authored_pages_and_inventory() {
             &super::tests::pixels(&gate.editor.ui, 1500, 1100), 1500, 1100);
     };
     shoot(&gate, "initial");
-    let mut resources = sampler_kontakt::Resources::of(std::path::Path::new(&path));
+    let mut resources =
+        sampler_kontakt::Resources::for_program(std::path::Path::new(&path), program)
+            .expect("the selected program's authored resource owner must resolve");
+    let resource_root = resources.root().to_path_buf();
     let names = resources.names("");
     let mut modules = Vec::new();
     let mut picture_sets = Vec::new();
@@ -781,7 +784,7 @@ fn conflux_authored_pages_and_inventory() {
                 "persistence_declarations":b.source.matches("make_persistent(").count(),
                 "performance_view":sampler_ksp::nckp::view_name(&b.source)})
         }).collect::<Vec<_>>()).unwrap_or_default();
-        json!({"path":path,"program":program,"view":view,"scripts":scripts,
+        json!({"path":path,"program":program,"view":view,"resource_root":resource_root,"scripts":scripts,
             "resources":names,"native_modules":modules,"picture_sets":picture_sets,
             "interfaces":part.interfaces.iter().map(|f|json!({"source":format!("{:?}",f.source),
                 "native_entry":f.native_ui.as_ref().map(|n|&n.entry),
@@ -792,11 +795,44 @@ fn conflux_authored_pages_and_inventory() {
                     "text":w.text,"binding":format!("{:?}",w.binding),"tooltip":w.tooltip})).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),"native_diagnostics":native_ui::gate_diagnostics()})
     };
-    std::fs::write(output.join("inventory.json"), serde_json::to_vec_pretty(&inventory).unwrap()).unwrap();
-    assert!(native_ui::gate_diagnostics().is_empty(), "authored graph failed: {:?}", native_ui::gate_diagnostics());
-    assert!(!native_ui::gate_targets(0).is_empty(), "authored graph did not paint; screenshot retained");
-    let mut page_targets = Vec::new();
-    for label in ["PLAY", "EDIT", "SETTINGS"] {
+    std::fs::write(
+        output.join("inventory.json"),
+        serde_json::to_vec_pretty(&inventory).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        native_ui::gate_diagnostics().is_empty(),
+        "authored graph failed: {:?}",
+        native_ui::gate_diagnostics()
+    );
+    assert!(
+        !native_ui::gate_targets(0).is_empty(),
+        "authored graph did not paint; screenshot retained"
+    );
+    let snapshot = |gate: &Gate, label: &str| {
+        json!({"page":label,"targets":gate.targets().len(),
+        "captions":native_ui::gate_caption_targets(0),
+        "surfaces":gate.editor.ui.scene().unwrap().surfaces().filter(|s|s.key.starts_with("nui-")).map(|s|
+            json!({"id":s.key.to_string(),"frame":[s.frame.x,s.frame.y,s.frame.size.width,s.frame.size.height],"disabled":s.disabled})).collect::<Vec<_>>() })
+    };
+    let mut page_targets = vec![snapshot(&gate, "initial")];
+    // Factory MIDI tools have their own page set. Never certify them by
+    // clicking Conflux-looking tabs from a wrongly resolved `main` module.
+    let is_conflux = inventory["interfaces"].as_array().unwrap().iter().any(|f| {
+        f["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["name"] == "$Header__Page")
+    });
+    let pages = std::env::var("KONTRA_CONFLUX_PAGES").unwrap_or_else(|_| {
+        if is_conflux {
+            "PLAY,EDIT,SETTINGS".into()
+        } else {
+            String::new()
+        }
+    });
+    for label in pages.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let targets = native_ui::gate_caption_targets(0);
         let id = targets.iter().find(|(text,_)| text.eq_ignore_ascii_case(label))
             .unwrap_or_else(|| panic!("authored {label} tab missing; captions={:?}",targets.iter().map(|(t,_)|t).collect::<Vec<_>>())).1.clone();
@@ -808,12 +844,15 @@ fn conflux_authored_pages_and_inventory() {
         for _ in 0..12 { gate.settle(); }
         shoot(&gate, &label.to_ascii_lowercase());
         let targets = gate.targets();
-        assert!(!targets.is_empty(), "authored {label} has no interactive controls");
-        page_targets.push(json!({"page":label,"targets":targets.len(),
-            "captions":native_ui::gate_caption_targets(0),
-            "surfaces":gate.editor.ui.scene().unwrap().surfaces().filter(|s|s.key.starts_with("nui-")).map(|s|
-                json!({"id":s.key.to_string(),"frame":[s.frame.x,s.frame.y,s.frame.size.width,s.frame.size.height],"disabled":s.disabled})).collect::<Vec<_>>() }));
-        assert!(native_ui::gate_diagnostics().is_empty(), "{label} graph must render");
+        assert!(
+            !targets.is_empty(),
+            "authored {label} has no interactive controls"
+        );
+        page_targets.push(snapshot(&gate, label));
+        assert!(
+            native_ui::gate_diagnostics().is_empty(),
+            "{label} graph must render"
+        );
     }
     std::fs::write(output.join("pages.json"),serde_json::to_vec_pretty(&page_targets).unwrap()).unwrap();
     println!("CONFLUX_PAGES program={program} view={view} pages={} controls={}",page_targets.len(),

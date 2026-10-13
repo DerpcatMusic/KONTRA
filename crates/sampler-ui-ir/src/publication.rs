@@ -117,6 +117,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caption_press_behavior_publishes_and_reverts_without_changing_identity() {
+        let base = Interface {
+            widgets: vec![Widget::new(
+                "button",
+                PageRef(0),
+                Rect::new(1, 2, 40, 20),
+                Kind::Button { momentary: false },
+            )],
+            ..Default::default()
+        };
+        let mut current = base.clone();
+        current.widgets[0].text_shift_on_press = true;
+        let changed = InterfacePatch::between(&base, &current);
+        assert_eq!(changed.widgets.len(), 1);
+        let mut published = base.clone();
+        changed.apply(&base, &Default::default(), &mut published);
+        assert_eq!(published, current);
+        assert_eq!(published.widgets[0].name, base.widgets[0].name);
+        InterfacePatch::default().apply(&base, &changed, &mut published);
+        assert_eq!(published, base);
+    }
+
+    #[test]
     fn authored_order_publication_preserves_all_three_states_and_reverts() {
         for base_order in [None, Some(vec![]), Some(vec![WidgetRef(1), WidgetRef(0)])] {
             let base = Interface {

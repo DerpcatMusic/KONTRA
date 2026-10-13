@@ -283,6 +283,14 @@ impl Drop for State {
 }
 impl State {
     pub fn new(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>) -> Self {
+        Self::new_for_program(path, 0, entry, controls)
+    }
+    pub fn new_for_program(
+        path: &Path,
+        program: u32,
+        entry: &str,
+        controls: Vec<(ir::Source, usize, ir::Widget)>,
+    ) -> Self {
         let path = path.to_path_buf();
         let (done, loading) = std::sync::mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
@@ -290,8 +298,10 @@ impl State {
         let _ = std::thread::Builder::new()
             .name("native-resources".into())
             .spawn(move || {
-                let result =
-                    Package::load_cancel(&path, || cancel.load(Ordering::Acquire)).map(Arc::new);
+                let result = Package::load_cancel_for_program(&path, program, || {
+                    cancel.load(Ordering::Acquire)
+                })
+                .map(Arc::new);
                 if !cancel.load(Ordering::Acquire) {
                     let _ = done.send(result);
                     super::picture_worker::completed();
@@ -3817,7 +3827,8 @@ mod tests {
                     .map(move |(n, w)| (f.source, n, w.clone()))
             })
             .collect();
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package =
+            Arc::new(Package::load_cancel_for_program(&path, program as u32, || false).unwrap());
         let session = Session::new(package, &entry, controls).unwrap();
         println!(
             "NATIVE_WORK_INIT program={program} checkpoints={} checkpoint_budget=500000",
@@ -3980,7 +3991,8 @@ mod tests {
                     .map(move |(n, w)| (f.source, n, w.clone()))
             })
             .collect();
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package =
+            Arc::new(Package::load_cancel_for_program(&path, program as u32, || false).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let graph = session.fresh();

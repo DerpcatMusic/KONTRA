@@ -57,6 +57,7 @@ pub struct Face {
     sources: Vec<SourceProjection>,
     updates: Arc<[ir::InterfacePatch]>,
     path: std::path::PathBuf,
+    program: u32,
     generation: u64,
     revision: u64,
     patch: ir::InterfacePatch,
@@ -79,12 +80,24 @@ impl Face {
         shown: usize,
         presentation: Presentation,
     ) -> Self {
+        Self::new_for_program(path, generation, from, shown, presentation, 0)
+    }
+
+    fn new_for_program(
+        path: &std::path::Path,
+        generation: u64,
+        from: Arc<[ir::Interface]>,
+        shown: usize,
+        presentation: Presentation,
+        program: u32,
+    ) -> Self {
         let face = ir_view::resolved(&from[shown]);
         let mut out = Self {
             sources: (0..from.len()).map(|_| SourceProjection::default()).collect(),
             updates: Arc::from([]),
             from,
             path: path.into(),
+            program,
             generation,
             revision: u64::MAX,
             patch: Default::default(),
@@ -232,8 +245,9 @@ impl Face {
         let entry = self.face.native_ui.as_ref().map(|n| n.entry.as_str());
         if self.native.as_ref().map(|n| n.entry()) != entry {
             self.native = entry.map(|entry| {
-                super::native_ui::State::new(
+                super::native_ui::State::new_for_program(
                     &self.path,
+                    self.program,
                     entry,
                     self.from
                         .iter()
@@ -365,16 +379,23 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     } else {
         Presentation::Vector
     };
-    let stale = cx
-        .state
-        .faces
-        .get(&slot)
-        .is_none_or(|f| f.path != path || f.generation != generation);
+    let stale = cx.state.faces.get(&slot).is_none_or(|f| {
+        f.path != path
+            || f.generation != generation
+            || f.program != cx.selection.parts[slot].program
+    });
     if stale {
         activity.add(Count::FaceNew, 1);
         cx.state.faces.insert(
             slot,
-            Face::new(&path, generation, from.clone(), main, presentation),
+            Face::new_for_program(
+                &path,
+                generation,
+                from.clone(),
+                main,
+                presentation,
+                cx.selection.parts[slot].program,
+            ),
         );
     }
     let face = cx.state.faces.get_mut(&slot)?;
