@@ -30,8 +30,8 @@ fn kontakt_volume_db_is_six_db_per_doubling() {
 
 /// probes/start_options.lua: start conditions set through Kontakt's own API.
 /// Kontakt stores the round-robin position exactly as given to
-/// `set_group_start_options`; its getter reports stored + 1. Whether stored 0 is
-/// the first step or never plays needs the native evaluator (open).
+/// `set_group_start_options`; its getter reports stored + 1. Stored positions are
+/// 0-based (native evaluator 0x140876bd0); StartTest positions are 1-based.
 #[test]
 fn group_start_conditions_match_what_kontakt_stored() {
     use sampler_ir::StartTest::*;
@@ -42,12 +42,12 @@ fn group_start_conditions_match_what_kontakt_stored() {
     assert_eq!(
         tests,
         vec![
-            vec![RoundRobin(1)],
             vec![RoundRobin(2)],
             vec![RoundRobin(3)],
-            vec![RoundRobin(5)],
+            vec![RoundRobin(4)],
+            vec![RoundRobin(6)],
             vec![Random],
-            vec![Key { low: 36, high: 40 }, RoundRobin(2)],
+            vec![Key { low: 36, high: 40 }, RoundRobin(3)],
             vec![Controller { controller: 11, low: 10, high: 90 }],
         ]
     );
