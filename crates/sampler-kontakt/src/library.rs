@@ -1273,7 +1273,7 @@ impl Translation {
                         ("ENGINE_PAR_WT_FORM2_MODE", &mut wave.form2_type),
                     ] {
                         if let Some(value) = self.script_par(name, index as i32, -1, -1) {
-                            if matches!(value, 0 | 16) {
+                            if u8::try_from(value).is_ok_and(ir::Wavetable::supports_form) {
                                 *target = value as u8;
                             } else {
                                 self.unsupported(
