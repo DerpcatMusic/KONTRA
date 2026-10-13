@@ -73,8 +73,6 @@ pub struct Network {
     pub low_shelf_db: f64,
     /// Wet stereo width: 0 mono, 1 as generated.
     pub width: f64,
-    /// Hold the tail: the loop is lossless and takes no input.
-    pub freeze: bool,
     /// A gated reverb: the wet signal closes this long after the input falls
     /// silent.
     pub gate_seconds: Option<f64>,
@@ -98,7 +96,6 @@ impl Network {
         early: 0.0,
         low_shelf_db: 0.0,
         width: 1.0,
-        freeze: false,
         gate_seconds: None,
         echo_feedback: 0.0,
     };
