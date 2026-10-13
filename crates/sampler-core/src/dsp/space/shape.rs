@@ -107,14 +107,12 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
         }
     }
     let gain = if s.auto_gain {
-        // Kontakt CConvolver 0x1419b31f0..0x1419b326e: f32 squares summed in f64,
-        // the largest channel energy, f32 sqrt(0.5 / energy), capped at 2.
-        let energy = [&l, &r]
-            .iter()
-            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
-            .fold(0.0, f64::max);
-        if energy > f64::from(0.001f32) {
-            f64::from((0.5 / energy as f32).sqrt().min(2.0))
+        // Kontakt's convolution wrapper, 0x140ab6740..0x140ab67eb: f32 sum of
+        // squares per channel, the largest, sqrt(0.5 / energy) capped at 2,
+        // unity below 0.001.
+        let energy = [&l, &r].iter().map(|ch| ch.iter().fold(0f32, |s, x| s + x * x)).fold(0f32, f32::max);
+        if energy >= 0.001 {
+            f64::from((0.5 / energy).sqrt().min(2.0))
         } else {
             1.0
         }

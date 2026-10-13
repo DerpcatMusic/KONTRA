@@ -1655,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn convolution_auto_gain_keeps_native_double_energy_sum() {
+    fn convolution_auto_gain_sums_energy_in_f32() {
         let recipe = super::Convolution {
             decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
             late: [1., 20., 20_000.], xpoint: 0.5,
@@ -1664,9 +1664,9 @@ mod tests {
         };
         let mut frames = vec![[0.0001, 0.00005]; 10_001];
         frames[0] = [1., 0.5];
-        let impulse = super::restore_impulse(&recipe, (48_000, frames)).unwrap();
-        // f32 products, f64 sum, f32 division/sqrt: CConvolver 0x1419b3200..3267.
-        assert_eq!(impulse.left[0].to_bits(), 0x3f3502a2);
+        let impulse = super::restore_impulse(&recipe, (44_100, frames)).unwrap();
+        // The wrapper's f32 sum (0x140ab6740) of 1 + 10000·1e-8 stays 1.0.
+        assert_eq!(impulse.left[0].to_bits(), 0x3f3504f3);
         assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
     }
 
