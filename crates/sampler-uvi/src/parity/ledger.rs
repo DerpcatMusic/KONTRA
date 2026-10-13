@@ -163,7 +163,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
                 "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb"
                 | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho"
                 | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser"
-                | "Phasor" | "PhasorFilter" | "SampledReverb" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" => ("inserts.rs", "fn inserts", true),
+                | "Phasor" | "PhasorFilter" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" => ("inserts.rs", "fn inserts", true),
                 "ConstantModulation" | "ScriptEventModulation" | "DAHDSR" | "AHD" | "LFO" | "MultiLFO" | "StepEnvelope" => ("modulation.rs", "fn signal", true),
                 _ => ("inserts.rs", "fn inserts", false),
             };
