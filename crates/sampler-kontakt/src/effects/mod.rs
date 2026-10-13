@@ -238,6 +238,11 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
+    /// Limiter: saved input gain (2^(x/6)) and release ms.
+    Limiter {
+        input_gain: f32,
+        release_ms: f32,
+    },
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -415,6 +420,10 @@ impl Slot {
                 attack_ms: r.f32()?,
                 release_ms: r.f32()?,
                 link: r.flag()?,
+            },
+            0x1c => Params::Limiter {
+                input_gain: r.f32()?,
+                release_ms: r.f32()?,
             },
             0x1a => Params::Inverter {
                 invert: r.flag()?,
@@ -1077,6 +1086,19 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Limiter { input_gain, release_ms }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                match dynamics::limiter(*input_gain, *release_ms) {
+                    Ok(processor) => {
+                        out.processors.push(processor);
+                        combined = gain;
+                    }
+                    Err(note) => {
+                        notes.push(note);
+                        modelled = false;
+                    }
+                }
+            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 match dynamics::compressor(*mode, *threshold_db, *ratio, *attack_ms, *release_ms, *link) {
