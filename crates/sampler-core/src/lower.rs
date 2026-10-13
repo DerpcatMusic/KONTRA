@@ -2870,6 +2870,7 @@ fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
 /// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below
 /// the lower Nyquist. Run at load, never on the audio thread.
 pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+    use std::f64::consts::PI;
     if from == to {
         return x.to_vec();
     }
@@ -2878,29 +2879,105 @@ pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     let cutoff = (1.0 / step).min(1.0);
     let reach = HALF / cutoff;
     let frames = ((x.len() as f64 / step).ceil() as usize).max(1);
+    let (from, to) = (u64::from(from), u64::from(to));
+    // Output i sits at base + r/to (base, r = i*from divmod to). The phase r
+    // takes only to/gcd values, so each phase's taps (offsets from base and
+    // weights) are computed once instead of 3 trig calls per tap per output:
+    // a reverb impulse rebuilt 8-14 times per UVI load cost ~170 ms each.
+    let taps = |r: u64| -> (i64, Vec<f64>) {
+        let frac = r as f64 / to as f64;
+        let first = (frac - reach).ceil() as i64;
+        let last = (frac + reach).floor() as i64;
+        let weights = (first..=last)
+            .map(|k| {
+                let d = k as f64 - frac;
+                let t = d * cutoff;
+                let sinc = if t == 0.0 { 1.0 } else { (PI * t).sin() / (PI * t) };
+                let w = d / reach;
+                sinc * (0.42 + 0.5 * (PI * w).cos() + 0.08 * (2.0 * PI * w).cos()) * cutoff
+            })
+            .collect();
+        (first, weights)
+    };
+    let g = gcd(from, to);
+    let phases = (to / g) as usize;
+    // Exotic rate pairs have more phases than outputs; compute those per output.
+    let table: Vec<_> = if phases <= frames.min(1 << 16) {
+        (0..phases as u64).map(|p| taps(p * g)).collect()
+    } else {
+        Vec::new()
+    };
     (0..frames)
         .map(|i| {
-            let at = i as f64 * step;
-            let first = ((at - reach).ceil().max(0.0)) as usize;
-            let last = ((at + reach).floor() as usize).min(x.len().saturating_sub(1));
+            let n = i as u64 * from;
+            let (base, r) = ((n / to) as i64, n % to);
+            let computed;
+            let (first, weights) = match table.get((r / g) as usize) {
+                Some(tap) => tap,
+                None => {
+                    computed = taps(r);
+                    &computed
+                }
+            };
+            let lo = (base + first).max(0);
+            let hi = (base + first + weights.len() as i64 - 1).min(x.len() as i64 - 1);
             let mut sum = 0.0;
-            for (j, v) in x.iter().enumerate().take(last + 1).skip(first) {
-                let d = j as f64 - at;
-                let t = d * cutoff;
-                let sinc = if t == 0.0 {
-                    1.0
-                } else {
-                    (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t)
-                };
-                let w = d / reach;
-                let window = 0.42
-                    + 0.5 * (std::f64::consts::PI * w).cos()
-                    + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
-                sum += f64::from(*v) * sinc * window * cutoff;
+            for j in lo..=hi {
+                sum += f64::from(x[j as usize]) * weights[(j - base - first) as usize];
             }
             sum as f32
         })
         .collect()
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+#[cfg(test)]
+mod resample_tests {
+    /// The per-output windowed sinc the phase tables replace.
+    fn direct(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+        use std::f64::consts::PI;
+        let step = f64::from(from) / f64::from(to);
+        let cutoff = (1.0 / step).min(1.0);
+        let reach = 16.0 / cutoff;
+        let frames = ((x.len() as f64 / step).ceil() as usize).max(1);
+        (0..frames)
+            .map(|i| {
+                let at = i as f64 * step;
+                let first = ((at - reach).ceil().max(0.0)) as usize;
+                let last = ((at + reach).floor() as usize).min(x.len().saturating_sub(1));
+                let mut sum = 0.0;
+                for (j, v) in x.iter().enumerate().take(last + 1).skip(first) {
+                    let d = j as f64 - at;
+                    let t = d * cutoff;
+                    let sinc = if t == 0.0 { 1.0 } else { (PI * t).sin() / (PI * t) };
+                    let w = d / reach;
+                    let window = 0.42 + 0.5 * (PI * w).cos() + 0.08 * (2.0 * PI * w).cos();
+                    sum += f64::from(*v) * sinc * window * cutoff;
+                }
+                sum as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn phase_tables_match_the_direct_sinc() {
+        let x: Vec<f32> = (0..3000).map(|i| ((i * 7919) % 2003) as f32 / 1001.5 - 1.0).collect();
+        for (from, to) in [(44100, 48000), (48000, 44100), (96000, 48000), (22050, 48000), (44100, 47999), (8000, 48000)] {
+            for x in [&x[..], &x[..1], &[][..]] {
+                let (fast, slow) = (super::resample(x, from, to), direct(x, from, to));
+                assert_eq!(fast.len(), slow.len());
+                for (a, b) in fast.iter().zip(&slow) {
+                    assert!((a - b).abs() <= 1e-6, "{from}->{to}: {a} vs {b}");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
