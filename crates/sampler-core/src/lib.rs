@@ -510,9 +510,25 @@ pub struct VoiceTap {
     pub level: f32,
 }
 
+/// A voice that plays through a time-stretch engine of its plan's pool. Its
+/// cursor then runs on the time axis (`speed`); the engine plays the pitch.
+#[derive(Clone, Copy, Debug)]
+struct StretchLink {
+    engine: u8,
+    spec: source::StretchSpec,
+    /// Source frames per output frame at unit speed (asset rate / output rate).
+    rate_ratio: f64,
+    /// Asset length, for the engine's reads.
+    frames: usize,
+    started: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     plan: PlanId,
+    stretch: Option<StretchLink>,
+    /// Pitch step of a stretch voice (its cursor holds the time step).
+    stretch_step: f64,
     allocation: [allocation::Link; 4],
     family: FamilyId,
     siblings: Siblings,
@@ -541,6 +557,21 @@ struct Voice {
     source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
+}
+
+impl Voice {
+    /// Set this block's pitch step. A stretch voice's cursor is the time axis:
+    /// it advances at the speed-scaled rate while the engine plays `pitch`.
+    fn set_step(&mut self, pitch: f64) {
+        self.cursor = match self.stretch {
+            None => self.cursor.with_step(pitch),
+            Some(link) => {
+                self.stretch_step = pitch;
+                let time = f64::from(link.spec.speed) * link.rate_ratio;
+                self.cursor.with_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP))
+            }
+        };
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -813,6 +844,7 @@ pub struct Runtime {
     stream_reserved: usize,
     voice_drops: u64,
     refused_starts: u64,
+    stretch_fallbacks: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
     voice_growths: u64,
     growth_failures: u64,
@@ -1026,6 +1058,7 @@ impl Runtime {
             stream_reserved: 0,
             voice_drops: 0,
             refused_starts: 0,
+            stretch_fallbacks: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,
@@ -1755,6 +1788,8 @@ impl Runtime {
         let plan = self.notes.get(f.note.0).unwrap().plan;
         let id = VoiceId(self.voices.insert(Voice {
             plan,
+            stretch: None,
+            stretch_step: 1.0,
             allocation: [allocation::Link::default(); 4],
             family,
             siblings: Siblings {
