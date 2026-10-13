@@ -649,8 +649,7 @@ mod tests {
                     scale: None,
                     live_gain: 1.,
                     unipolar: false,
-                    more_scales: [None; crate::voice_mod::MORE_SCALES],
-                }],
+                    more_scales: [None; crate::voice_mod::MORE_SCALES], native: None, }],
                 ..Default::default()
             }],
             vec![],

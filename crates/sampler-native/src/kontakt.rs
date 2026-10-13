@@ -182,7 +182,7 @@ fn report(bytes: &[u8], limits: Limits, out: &mut impl Write) -> io::Result<()> 
                         script.text.map(|b| b.data().len()),
                         script.bypass,
                         script.textfile_name.is_some(),
-                        script.persistent.map(|p| p.len()),
+                        script.persistent.len(),
                         script.extension.data().len()
                     )?;
                 }

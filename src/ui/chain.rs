@@ -275,43 +275,55 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ),
     }
 }
+fn color_detail(c: &ir::fx::color::Config) -> String {
+    use ir::fx::color::{Curve, Hold, Quantizer};
+    let db = |g: ir::Gain| format!("{:+.1} dB", 20. * g.linear().max(1e-10).log10());
+    if let Some(g) = c.gainer {
+        return format!("Gainer · {} · dry {:.0}%", db(g.gain), g.dry * 100.);
+    }
+    if let Some(s) = c.stereo {
+        return format!(
+            "Stereo modeller · width {:.0}% · pan {}{}",
+            s.width * 200.,
+            pan_text(s.pan),
+            if s.pseudo { " · pseudo stereo" } else { "" }
+        );
+    }
+    match c.curve {
+        Curve::Rectifier(ir::Rectifier::Full) => return "Rectifier · full wave".into(),
+        Curve::Rectifier(ir::Rectifier::Half) => return "Rectifier · half wave".into(),
+        Curve::Classic { shape } => return format!("Saturation · shape {shape:+.2}"),
+        Curve::Enhanced { shape } => return format!("Saturation enhanced · shape {shape:+.2}"),
+        Curve::Drums { shape } => return format!("Saturation drums · shape {shape:+.2}"),
+        Curve::Tube { drive } | Curve::Transistor { drive } => {
+            return format!(
+                "{} distortion · drive {:.0}% · damping {:.0}%",
+                if matches!(c.curve, Curve::Transistor { .. }) { "Transistor" } else { "Tube" },
+                drive * 100.,
+                c.damping.unwrap_or(0.) * 100.
+            );
+        }
+        _ => {}
+    }
+    match (c.quantizer, c.hold, c.noise) {
+        (None, None, None) => c.label().into(),
+        (q, h, n) => format!(
+            "LoFi · bits {} · rate {} · noise {:.2}",
+            match q { Some(Quantizer::Native { bits }) => format!("{bits:.2}"), _ => "off".into() },
+            match h { Some(Hold::Native { frequency }) => format!("{frequency:.2}"), _ => "off".into() },
+            n.map_or(0., |n| n.level)
+        ),
+    }
+}
 fn detail(p: ir::Processor) -> String {
     let db = |g: ir::Gain| format!("{:+.1} dB", 20. * g.linear().max(1e-10).log10());
     match p {
         ir::Processor::Gain(g) => format!("Gain · {}", db(g)),
-        ir::Processor::Gainer { gain, dry } => {
-            format!("Gainer · {} · dry {:.0}%", db(gain), dry * 100.)
-        }
-        ir::Processor::LoFi {
-            bits,
-            frequency,
-            noise,
-            color,
-        }
-        | ir::Processor::LiveLoFi {
-            bits,
-            frequency,
-            noise,
-            color,
-            ..
-        } => format!(
-            "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
-        ),
+        ir::Processor::Color(c) => color_detail(&c),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], .. } => {
             format!("Formant · talk {talk:.2} · sharp {sharp:.2} · size {size:.2}")
         }
-        ir::Processor::Saturation(shape) | ir::Processor::LiveSaturation { shape, .. } => format!("Saturation · shape {shape:+.2}"),
-        ir::Processor::Distortion { transistor, drive, damping } | ir::Processor::LiveDistortion { transistor, drive, damping, .. } => format!(
-            "{} distortion · drive {:.0}% · damping {:.0}%",
-            if transistor { "Transistor" } else { "Tube" }, drive * 100., damping * 100.
-        ),
-        ir::Processor::StereoModeller { width, pan, pseudo } => format!(
-            "Stereo modeller · width {:.0}% · pan {}{}",
-            width * 200.,
-            pan_text(pan),
-            if pseudo { " · pseudo stereo" } else { "" }
-        ),
         ir::Processor::Filter(f) => format!(
             "{} · {}",
             match f.kind {
@@ -341,21 +353,39 @@ fn detail(p: ir::Processor) -> String {
             feedback * 100.,
             mix * 100.
         ),
-        ir::Processor::Reverb(r) => format!(
-            "Reverb · {:.2} s · size {:.0}% · predelay {:.0} ms",
-            r.decay_seconds,
-            r.size * 100.,
-            r.predelay_seconds * 1000.
-        ),
-        ir::Processor::Compressor(c) => format!(
-            "Compressor · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
-            c.threshold_db,
-            c.ratio,
-            c.attack.seconds() * 1000.,
-            c.release.seconds() * 1000.
-        ),
-        ir::Processor::Rectify(ir::Rectifier::Full) => "Rectifier · full wave".into(),
-        ir::Processor::Rectify(ir::Rectifier::Half) => "Rectifier · half wave".into(),
+        ir::Processor::Space(c) => match c.network {
+            Some(n) => format!(
+                "{} · {:.2} s · size {:.0}% · predelay {:.0} ms",
+                match n.topology {
+                    ir::fx::space::Topology::Fdn => "Reverb",
+                    ir::fx::space::Topology::CombAllpass => "Room reverb",
+                    ir::fx::space::Topology::Plate => "Plate reverb",
+                    ir::fx::space::Topology::Diffuser => "Diffusion",
+                    ir::fx::space::Topology::Freeverb => "Reverb (legacy)",
+                },
+                n.decay_seconds,
+                n.size * 100.,
+                n.predelay_seconds * 1000.
+            ),
+            None => format!(
+                "Convolution · dry {:.0}% · wet {:.0}%",
+                c.dry * 100.,
+                c.wet * 100.
+            ),
+        },
+        ir::Processor::Dynamics(c) => match c.law {
+            ir::fx::dynamics::Law::Generic(g) => format!(
+                "Dynamics (generic) · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
+                g.threshold_db,
+                g.ratio,
+                c.attack.seconds() * 1000.,
+                c.release.seconds() * 1000.
+            ),
+            ir::fx::dynamics::Law::KontaktClassic(_) => "Compressor (Classic)".into(),
+            ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
+            ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
+            ir::fx::dynamics::Law::KontaktLimiter(_) => "Limiter".into(),
+        },
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",
             if d.highpass { "high-pass" } else { "low-pass" },
@@ -363,11 +393,17 @@ fn detail(p: ir::Processor) -> String {
             d.resonance * 100.
         ),
         ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
-        ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
+        ir::Processor::TimeMod(_) => "Delay / modulation".into(),
         ir::Processor::Phaser(_) => "Phaser filter".into(),
-        ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
-        ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ".into(),
+        ir::Processor::Eq(_) => "EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
+        ir::Processor::FilterBank(c) => match c.topology {
+            ir::fx::filter::Topology::FormantII => format!(
+                "Formant II · talk {:.2} · sharp {:.2} · size {:.2}",
+                c.cutoff, c.resonance, c.extra
+            ),
+            _ => "Filter".into(),
+        },
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
             ["2", "4", "2/4"][usize::from(d.mode / 3)],
@@ -378,11 +414,6 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),
-        ir::Processor::Convolution { dry, wet, .. } => format!(
-            "Convolution · dry {:.0}% · wet {:.0}%",
-            dry * 100.,
-            wet * 100.
-        ),
         ir::Processor::Mix {
             dry, wet, bypass, ..
         } => format!(
