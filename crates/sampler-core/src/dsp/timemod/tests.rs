@@ -194,3 +194,87 @@ fn right_channel_scales_the_delay_time() {
     assert_eq!(out[4], [1., 0.]);
     assert_eq!(out[8], [0., 1.]);
 }
+
+fn legacy(time: f32, unit: f32, feedback: f32, damping: f32, pan: f32) -> Config {
+    let mut l = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
+    l.native = sampler_ir::fx::timemod::Native::LegacyDelay { time, unit, feedback, damping, pan };
+    wrap(l, LFO_OFF)
+}
+
+#[test]
+fn legacy_delay_native_vector_echoes_and_ping_pong() {
+    // 48 kHz, 0.1 ms = 4 frames. The wet output is the lagging low-pass state, so
+    // the first echo (input * feedback * 0.98) appears at D + 1 and repeats every D.
+    let g = 0.5f32 * 0.98;
+    let (out, fault) = run(legacy(0.1, 0., 0.5, 0., 0.), 48_000, 120., &impulse(24, [1., 0.]), 7);
+    assert!(!fault);
+    for (i, f) in out.iter().enumerate() {
+        let expect = match i {
+            5 => g,
+            10 => g * g,
+            15 => g * g * g,
+            20 => g * g * g * g,
+            _ => 0.,
+        };
+        assert!((f[0] - f64::from(expect)).abs() < 1e-7 && f[1] == 0., "frame {i}: {f:?}");
+    }
+    // Pan 1: the right input is dropped and every echo crosses to the other side.
+    let (out, _) = run(legacy(0.1, 0., 0.5, 0., 1.), 48_000, 120., &impulse(24, [1., 0.]), 64);
+    assert!((out[5][0] - f64::from(g)).abs() < 1e-7 && out[5][1] == 0.);
+    assert!(out[10][0] == 0. && (out[10][1] - f64::from(g * g)).abs() < 1e-7);
+    assert!((out[15][0] - f64::from(g * g * g)).abs() < 1e-7 && out[15][1] == 0.);
+    // Damping 1 is a 0.3 one-pole in the loop: the first echo is spread, not a spike.
+    let (out, _) = run(legacy(0.1, 0., 0.5, 1., 0.), 48_000, 120., &impulse(24, [1., 0.]), 64);
+    assert!((out[5][0] - f64::from(g * 0.3)).abs() < 1e-7 && out[6][0] > 0.);
+}
+
+#[test]
+fn legacy_delay_synced_time_follows_tempo() {
+    // unit 1, time 1: 60 / 120 s * 1000 = 500 ms = 24000 frames at 48 kHz.
+    let mut x = vec![[0.; 2]; 24_010];
+    x[0] = [1., 0.];
+    let (out, _) = run(legacy(1., 1., 1., 0., 0.), 48_000, 120., &x, 4096);
+    let first = out.iter().position(|f| f[0] != 0.).unwrap();
+    assert_eq!(first, 24_001);
+    // Tempo below 0.1 BPM reads as 120.
+    let (out, _) = run(legacy(1., 1., 1., 0., 0.), 48_000, 0., &x, 4096);
+    assert_eq!(out.iter().position(|f| f[0] != 0.).unwrap(), 24_001);
+}
+
+fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
+    let mut l = Line::single(DelayTime::Ms(f64::from(color)), 6.);
+    l.native = sampler_ir::fx::timemod::Native::LegacyFlanger { color, depth, feedback };
+    wrap(l, Lfo { shape: LfoShape::Sine, rate: Rate::Hz(hz), phase: 0.25 })
+}
+
+#[test]
+fn legacy_flanger_native_vector_delay_and_negative_feedback() {
+    // 1 ms at 48 kHz = 48 frames; the read sits one frame further (position - 1).
+    let mut x = vec![[0.; 2]; 200];
+    x[0] = [1., 0.5];
+    let (out, fault) = run(flanger(1., 0., 1., 0.), 48_000, 120., &x, 64);
+    assert!(!fault);
+    let fb = 1.0f32 * 0.95;
+    for (i, f) in out.iter().enumerate() {
+        let expect = match i {
+            49 => [1., 0.5],
+            98 => [-f64::from(fb), -0.5 * f64::from(fb)],
+            147 => [f64::from(fb * fb), 0.5 * f64::from(fb * fb)],
+            196 => [-f64::from(fb * fb * fb), -0.5 * f64::from(fb * fb * fb)],
+            _ => [0., 0.],
+        };
+        assert!((f[0] - expect[0]).abs() < 1e-6 && (f[1] - expect[1]).abs() < 1e-6, "frame {i}: {f:?}");
+    }
+}
+
+#[test]
+fn legacy_flanger_is_partition_independent_and_stays_bounded() {
+    let x: Vec<[f64; 2]> = (0..2000).map(|i| [(i as f64 * 0.05).sin(), (i as f64 * 0.031).cos()]).collect();
+    let (a, fault) = run(flanger(3., 0.8, 0.9, 1.5), 48_000, 120., &x, 7);
+    let (b, _) = run(flanger(3., 0.8, 0.9, 1.5), 48_000, 120., &x, 64);
+    // The native float position origin is rebased per block, so partitions agree to f32 rounding.
+    assert!(!fault);
+    assert!(a.iter().zip(&b).all(|(p, q)| (p[0] - q[0]).abs() < 2e-3 && (p[1] - q[1]).abs() < 2e-3));
+    assert!(a.iter().flatten().all(|v| v.abs() < 10.));
+    assert!(a.iter().any(|f| f[0] != f[1]), "the second channel's LFO is phase offset");
+}
