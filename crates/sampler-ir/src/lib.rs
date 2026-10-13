@@ -682,14 +682,14 @@ impl Instrument {
                 .chain(&processors.post_amplitude)
                 .enumerate()
             {
-                let Processor::Compressor(c) = *processor else {
+                let Processor::Dynamics(c) = *processor else {
                     continue;
                 };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
                         "Threshold",
-                        c.threshold_db,
+                        c.threshold(),
                         -60_f64,
                         0_f64,
                         ControlUnit::Decibels,
@@ -697,9 +697,9 @@ impl Instrument {
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
-                        c.ratio,
-                        1_f64,
-                        20_f64,
+                        c.ratio(),
+                        if c.is_native() { 0_f64 } else { 1_f64 },
+                        if c.is_native() { 1_f64 } else { 20_f64 },
                         ControlUnit::None,
                     ),
                     (
@@ -1687,10 +1687,8 @@ pub enum Processor {
     StereoMatrix([[f64; 2]; 2]),
     /// Algorithmic stereo reverb over a summed signal: bus and master scope.
     Reverb(Reverb),
-    /// Feed-forward compressor on the stereo pair.
-    Compressor(Compressor),
-    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
+    /// Every compressor, limiter, gate and expander: one configurable superset.
+    Dynamics(fx::dynamics::Config),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
@@ -1808,22 +1806,6 @@ pub enum Rectifier {
     Full,
     /// `max(x, 0)`.
     Half,
-}
-
-/// A feed-forward compressor. The level law is the textbook hard-knee one;
-/// only the linked detector (signed channel mean) is recovered from Kontakt.
-// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Compressor {
-    pub threshold_db: f64,
-    /// At least 1.
-    pub ratio: f64,
-    pub attack: Time,
-    pub release: Time,
-    pub makeup: Gain,
-    /// Detect on the signed mean of both channels and apply one gain to both.
-    pub link: bool,
 }
 
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and

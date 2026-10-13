@@ -3,7 +3,7 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, CompressorSettings, ControlDefinition,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, DynamicsSettings,
     ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
     Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
     LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
@@ -1938,10 +1938,10 @@ impl Lowering<'_> {
             (Processor::KontaktLegacyEq(eq), Gain) => eq.gain_db = parameter,
             (Processor::KontaktLegacyEq(eq), Cutoff) => eq.frequency = parameter,
             (Processor::KontaktLegacyEq(eq), Resonance) => eq.bandwidth = parameter,
-            (Processor::Compressor(c), Threshold) => c.threshold_db = parameter,
-            (Processor::Compressor(c), Ratio) => c.ratio = parameter,
-            (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
-            (Processor::Compressor(c), Release) => c.release_seconds = parameter,
+            (Processor::Dynamics(c), Threshold) => c.threshold = parameter,
+            (Processor::Dynamics(c), Ratio) => c.ratio = parameter,
+            (Processor::Dynamics(c), Attack) => c.attack_seconds = parameter,
+            (Processor::Dynamics(c), Release) => c.release_seconds = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
             (Processor::LiveFilter(f), Frequency) => f.frequency_hz = parameter,
@@ -2235,13 +2235,15 @@ impl Lowering<'_> {
                 low_shelf_db: r.low_shelf_db,
                 width: r.width,
             }),
-            ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
-                threshold_db: Parameter::Constant(c.threshold_db),
-                ratio: Parameter::Constant(c.ratio),
+            ir::Processor::Dynamics(c) => Processor::Dynamics(DynamicsSettings {
+                law: c.law,
+                link: c.link,
+                makeup: c.makeup.linear(),
+                mix: c.mix,
+                threshold: Parameter::Constant(c.threshold()),
+                ratio: Parameter::Constant(c.ratio()),
                 attack_seconds: Parameter::Constant(c.attack.seconds()),
                 release_seconds: Parameter::Constant(c.release.seconds()),
-                makeup: c.makeup.linear(),
-                link: c.link,
             }),
             ir::Processor::Branch {
                 gain, first, last, ..
@@ -2340,9 +2342,6 @@ impl Lowering<'_> {
                 speed,
                 period_unit,
             },
-            ir::Processor::KontaktEnhancedCompressor { knobs, link } => {
-                Processor::KontaktEnhancedCompressor { knobs, link }
-            }
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::Distortion {
@@ -2516,12 +2515,13 @@ impl Lowering<'_> {
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
                     | Processor::ControlMatrix(_)
-                    | Processor::Compressor(_)
                     | Processor::Rectify(_)
                     | Processor::Saturation(_)
                     | Processor::LiveSaturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
+                    // The look-ahead of a dynamics stage is delay the signal rings out of.
+                    Processor::Dynamics(d) => d.latency_frames(self.rate),
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
                         crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32

@@ -81,7 +81,7 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    Biquad, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, DynamicsSettings,
     ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
     LiveFilter, LiveShape, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
     StateVariableFilter, neutral_impulse_shape, shape_impulse,

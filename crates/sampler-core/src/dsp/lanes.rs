@@ -270,11 +270,10 @@ pub(crate) fn process(
                 }
             }
             PreparedProcessor::Delay { .. }
-            | PreparedProcessor::Compressor(_)
+            | PreparedProcessor::Dynamics(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::LoFi(_)
             | PreparedProcessor::LegacyPhaser(_)
-            | PreparedProcessor::KontaktEnhancedCompressor(_)
             | PreparedProcessor::Phaser(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveDistortion(_)
