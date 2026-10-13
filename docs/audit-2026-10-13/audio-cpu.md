@@ -19,10 +19,9 @@ python3 tools/cpu-audit-run.py v2 \
 ```
 
 Add `--profile --only afflatus --block 256 --notes 1 --seconds 20` for the held-note profile.
-`perf record -g --call-graph fp` records code addresses only. The ready/finished markers
-bound profiling to held-note rendering, excluding load, bootstrap and release. Software
-`cpu-clock:u` supports machines that deny hardware events; profile overhead is excluded from
-acceptance timing. Each cell releases the heavy slot.
+`perf record -g --call-graph fp --user-callchains` records user code addresses only. The ready/finished markers
+bound profiling to held-note rendering, excluding load, bootstrap and release. The sampled event is `cycles:u`; excluding kernel callchains permits recording with
+`perf_event_paranoid=2`. Profile overhead is excluded from acceptance timing. Each cell releases the heavy slot.
 
 Conditions: 48 kHz, one render thread, block 64/256, MIDI C4 and C4/D4/E4/F4/G4/A4/B4/C5,
 velocity 100, CC1 110 and CC11 127. One second of bootstrap and one second of attack settling,
@@ -72,4 +71,34 @@ unavailable and v1 is not rebuilt.
 
 ## Measurements and fixes
 
-Pending baseline/profile execution; no CPU acceptance claim yet.
+Baseline Afflatus (10 s profile diagnostic, block 256, one held MIDI key) has
+16 active source voices, wall p50 270.225 us / 5.0667% of a core, p99 584.190 us /
+10.9536%; thread-CPU p50 265.2 us / 4.9725%, p99 534.6 us / 10.0238%. Idle p50
+4.710 us / 0.0883%; settled post-release p50 6.210 us / 0.1164%, zero PCM/voices.
+No audio heap calls, event/callback errors or underruns. These are CONTENDED,
+not quiet-window acceptance measurements. CPU: Ryzen 7 7800X3D (8 cores / 16 threads).
+
+User-only cycles perf capture succeeded: 7,728 process samples, zero lost samples;
+audio-thread filtering leaves about 6k samples. Largest flat frames: NativeEq::process
+8.37%, dispatched source kernel 6.58%, PreparedVoiceChain::render 6.13%, Stereo::process
+6.00%, source window assembly 4.89%, render_filtered 4.81%, VoiceModState::evaluate
+4.63%, Ramp::gains_at 3.86%, Cursor::address 3.18%, Shape::evaluate 3.13%.
+`native_eq.rs` and `stereo.rs` are in-use files and are not edited by this package.
+The first perf attempt failed because default callchains requested kernel data under
+perf_event_paranoid=2; explicit --user-callchains succeeded without changing settings.
+The runner now accepts the intentional SIGINT termination after flushing perf data.
+
+The first fix ports v1's sleeping-bus early exit, adapted to v2 exact declared tails.
+A per-buffer dirty-state bit resets processor cells once at tail expiry instead of
+re-clearing zeros on every dormant chunk. No timing law or PCM computation changes.
+`bus::cpu_tests::sleeping_bus_clears_once_and_wakes_with_identical_pcm` failed first
+(101 clears versus 1), then passed. It checks independent biquad recurrence and
+bit-identical sleep/wake PCM. Crate check passed before the fix; final checks pending.
+
+Coordinator topology handoff read from commit `2a231791`: KONTAKT_TOPOLOGY.md and
+KONTAKT_TOPOLOGY_EVIDENCE.md. T07/T08/T21/T20/T05 are assigned to this package when
+confirmed by profiling. The recovered Ghidra excerpts are now located in
+~/.cache/kontra-recovery/20261012/ignored-evidence/t3code-80fe786b-66815b1c/artifacts/engine-analysis-2026-10-07;
+the complete pseudocode export is absent. Clock ownership and a universal 32-frame
+modulation rate remain open; shrinking CELL by assumption is not an optimization.
+
