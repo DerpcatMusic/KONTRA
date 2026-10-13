@@ -40,48 +40,8 @@ fn reference(
                     block[1][i] = m[1][0] * l + m[1][1] * r;
                 }
             }
-            PreparedProcessor::Gainer { dry, gain, k } => {
-                let mut current = state.z[0][0] as f32;
-                for i in 0..len {
-                    let target = gain.value(parameters, at + i as u64, None) as f32;
-                    if state.aux[0] == 0. {
-                        (current, state.aux[0]) = (target, 1.);
-                    }
-                    let m = dry + f64::from(current);
-                    block[0][i] *= m;
-                    block[1][i] *= m;
-                    current += (target - current) * *k as f32;
-                }
-                state.z[0][0] = f64::from(current);
-            }
-            PreparedProcessor::StereoModeller { stereo, .. } => {
-                let (mut width, mut pan) = (state.aux[0] as f32, state.aux[1] as f32);
-                let mut delta = 0.;
-                for i in 0..len {
-                    let [tw, tp] = stereo.targets(parameters, at + i as u64);
-                    if state.aux[2] == 0. {
-                        (width, pan, state.aux[2]) = (tw, tp, 1.);
-                    }
-                    let (l, r) = (block[0][i] as f32, block[1][i] as f32);
-                    let (l, r) = if width >= 0.5 {
-                        let spread = 2. * width - 1.;
-                        (
-                            (1. + spread) * l - spread * r,
-                            (1. + spread) * r - spread * l,
-                        )
-                    } else {
-                        let a = 0.5 - width;
-                        (l + a * (r - l), r + a * (l - r))
-                    };
-                    block[0][i] = f64::from(l * (1. - pan.max(0.)));
-                    block[1][i] = f64::from(r * (1. + pan.min(0.)));
-                    width += (tw - width) * (1.0f32 / 180.);
-                    if i >= len / 4 * 4 || i % 4 != 3 {
-                        delta = (tp - pan) * f32::from_bits(0x3a11a2b4);
-                    }
-                    pan += delta;
-                }
-                (state.aux[0], state.aux[1]) = (f64::from(width), f64::from(pan));
+            PreparedProcessor::Color { color, .. } => {
+                color.process(&mut state.color, parameters, block, len, at, &mut []);
             }
             PreparedProcessor::Mix { count, lanes } => {
                 let inner = index..index + usize::from(*count);
@@ -147,12 +107,13 @@ fn reference(
     }
 }
 
-fn bits(state: &ProcessorState) -> ([[u64; 2]; 2], [u64; 16], u32, u32) {
+fn bits(state: &ProcessorState) -> ([[u64; 2]; 2], [u64; 16], u32, u32, color::State) {
     (
         state.z.map(|r| r.map(f64::to_bits)),
         state.aux.map(f64::to_bits),
         state.delay_position,
         state.delay_filled,
+        state.color,
     )
 }
 
@@ -292,45 +253,59 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         &[],
     );
     for dry in [0., 0.5, 1.] {
-        check(
-            &[PreparedProcessor::Gainer {
-                dry,
-                gain: PreparedParameter::Control(0),
-                k: f64::from(f32::from_bits(0x3a11a2b4)),
-            }],
-            &[],
-            &parameters,
-        );
+        let gain = Parameter::Control(ControlRange {
+            control: crate::ControlId(0),
+            low: 0.,
+            high: 1.,
+            ramp_frames: 0,
+        });
+        let color = ColorSettings {
+            gainer: Some(GainerSettings { gain, dry }),
+            ..ColorSettings::IDENTITY
+        }
+        .compile(48000, &mut Vec::new());
+        check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
     }
-    let mut bindings = Vec::new();
     // Width then pan map to parameter slots 1 and 2.
-    bindings.push(ControlRange {
+    let mut bindings = vec![ControlRange {
         control: crate::ControlId(0),
         low: 0.,
         high: 1.,
         ramp_frames: 0,
-    });
-    let stereo = StereoSettings {
-        width: Parameter::Control(ControlRange {
-            control: crate::ControlId(1),
-            low: 0.,
-            high: 1.,
-            ramp_frames: 0,
+    }];
+    let color = ColorSettings {
+        stereo: Some(StereoSettings {
+            width: Parameter::Control(ControlRange {
+                control: crate::ControlId(1),
+                low: 0.,
+                high: 1.,
+                ramp_frames: 0,
+            }),
+            pan: Parameter::Control(ControlRange {
+                control: crate::ControlId(2),
+                low: -1.,
+                high: 1.,
+                ramp_frames: 0,
+            }),
+            pseudo: false,
         }),
-        pan: Parameter::Control(ControlRange {
-            control: crate::ControlId(2),
+        ..ColorSettings::IDENTITY
+    }
+    .compile(48000, &mut bindings);
+    check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
+    // Memoryless curves, one control-driven (lane 0) and one fixed, share a stage.
+    for curve in [
+        CurveSettings::Classic(Parameter::Control(ControlRange {
+            control: crate::ControlId(0),
             low: -1.,
             high: 1.,
             ramp_frames: 0,
-        }),
-        pseudo: false,
+        })),
+        CurveSettings::Rectifier(Rectifier::Half),
+    ] {
+        let color = ColorSettings { curve, ..ColorSettings::IDENTITY }.compile(48000, &mut Vec::new());
+        check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
     }
-    .compile(48000, &mut bindings);
-    check(
-        &[PreparedProcessor::StereoModeller { stereo, offset: 0 }],
-        &[],
-        &parameters,
-    );
     // A stateless inner stage avoids the existing shorter-voice bypass state limitation.
     check(
         &[

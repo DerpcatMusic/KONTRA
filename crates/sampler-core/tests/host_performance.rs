@@ -159,7 +159,7 @@ fn input_tone_ir() -> ir::Instrument {
     i.input_bus = Some(ir::BusRef(1));
     i.chains.push(ir::Chain {
         scope: ir::Scope::Bus(ir::BusRef(1)),
-        pre_amplitude: vec![ir::Processor::Rectify(ir::Rectifier::Full)],
+        pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::rectifier(ir::Rectifier::Full))],
         post_amplitude: vec![],
     });
     i.buses = vec![

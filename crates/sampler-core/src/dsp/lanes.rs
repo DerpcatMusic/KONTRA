@@ -113,92 +113,8 @@ pub(crate) fn process(
                     }
                 }
             }
-            PreparedProcessor::Gainer { dry, gain, k } => {
-                let mut current = [0.0f32; VOICES];
-                let mut initialized = [false; VOICES];
-                for v in 0..batch.count {
-                    let state = &cells[v].as_ref().expect("batch voice")[cell];
-                    current[v] = state.z[0][0] as f32;
-                    initialized[v] = state.aux[0] != 0.0;
-                }
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let target = gain.value(parameters, at + i as u64, None) as f32;
-                    for v in 0..batch.count {
-                        if i >= batch.ends[2 * v] {
-                            continue;
-                        }
-                        if !initialized[v] {
-                            (current[v], initialized[v]) = (target, true);
-                        }
-                        let (m, next) = super::kernels::gainer(current[v], target, *dry, *k as f32);
-                        x[2 * v] = super::kernels::gain(x[2 * v], m);
-                        x[2 * v + 1] = super::kernels::gain(x[2 * v + 1], m);
-                        current[v] = next;
-                    }
-                }
-                for v in 0..batch.count {
-                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-                    state.z[0][0] = f64::from(current[v]);
-                    state.aux[0] = if initialized[v] { 1.0 } else { 0.0 };
-                }
-            }
-            PreparedProcessor::StereoModeller { stereo, .. } => {
-                assert!(stereo.batches());
-                let mut width = [0.0f32; VOICES];
-                let mut pan = [0.0f32; VOICES];
-                let mut delta = [0.0f32; VOICES];
-                let mut initialized = [false; VOICES];
-                for v in 0..batch.count {
-                    let state = &cells[v].as_ref().expect("batch voice")[cell];
-                    (width[v], pan[v]) = (state.aux[0] as f32, state.aux[1] as f32);
-                    initialized[v] = state.aux[2] != 0.0;
-                }
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let [target_width, target_pan] = stereo.targets(parameters, at + i as u64);
-                    for v in 0..batch.count {
-                        let end = batch.ends[2 * v];
-                        if i >= end {
-                            continue;
-                        }
-                        if !initialized[v] {
-                            (width[v], pan[v], initialized[v]) = (target_width, target_pan, true);
-                        }
-                        let (l, r) =
-                            super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
-                        [x[2 * v], x[2 * v + 1]] = super::stereo::balance(l, r, pan[v]);
-                        [width[v], pan[v], delta[v]] = super::stereo::advance(
-                            [width[v], pan[v], delta[v]],
-                            [target_width, target_pan],
-                            i,
-                            end,
-                        );
-                    }
-                }
-                for v in 0..batch.count {
-                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-                    (state.aux[0], state.aux[1], state.aux[2]) = (
-                        f64::from(width[v]),
-                        f64::from(pan[v]),
-                        if initialized[v] { 1.0 } else { 0.0 },
-                    );
-                }
-            }
-            PreparedProcessor::Rectify(mode) => {
-                for x in &mut block[..len] {
-                    x.iter_mut().for_each(|v| *v = mode.apply(*v));
-                }
-            }
-            PreparedProcessor::LiveSaturation(shape) => {
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let value = shape.value(parameters, at + i as u64, None) as f32;
-                    x.iter_mut().for_each(|v| *v = super::shaping::saturation(*v, value));
-                }
-            }
-            PreparedProcessor::Saturation(shape) => {
-                for x in &mut block[..len] {
-                    x.iter_mut()
-                        .for_each(|v| *v = super::shaping::saturation(*v, *shape));
-                }
+            PreparedProcessor::Color { color, .. } => {
+                color.process_lanes(cells, cell, batch, block, parameters, at);
             }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
@@ -271,16 +187,11 @@ pub(crate) fn process(
             }
             PreparedProcessor::Delay { .. }
             | PreparedProcessor::Compressor(_)
-            | PreparedProcessor::Decimate(_)
-            | PreparedProcessor::LoFi(_)
             | PreparedProcessor::LegacyPhaser(_)
             | PreparedProcessor::KontaktEnhancedCompressor(_)
             | PreparedProcessor::Phaser(_)
             | PreparedProcessor::Formant(_)
-            | PreparedProcessor::LiveDistortion(_)
             | PreparedProcessor::LiveFormant { .. }
-            | PreparedProcessor::LiveLoFi { .. }
-            | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
             | PreparedProcessor::Ar { .. }
