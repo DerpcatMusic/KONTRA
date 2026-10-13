@@ -347,13 +347,18 @@ fn detail(p: ir::Processor) -> String {
             r.size * 100.,
             r.predelay_seconds * 1000.
         ),
-        ir::Processor::Compressor(c) => format!(
-            "Compressor · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
-            c.threshold_db,
-            c.ratio,
-            c.attack.seconds() * 1000.,
-            c.release.seconds() * 1000.
-        ),
+        ir::Processor::Dynamics(c) => match c.law {
+            ir::fx::dynamics::Law::Generic(g) => format!(
+                "Dynamics (generic) · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
+                g.threshold_db,
+                g.ratio,
+                c.attack.seconds() * 1000.,
+                c.release.seconds() * 1000.
+            ),
+            ir::fx::dynamics::Law::KontaktClassic(_) => "Compressor (Classic)".into(),
+            ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
+            ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
+        },
         ir::Processor::Rectify(ir::Rectifier::Full) => "Rectifier · full wave".into(),
         ir::Processor::Rectify(ir::Rectifier::Half) => "Rectifier · half wave".into(),
         ir::Processor::Daft(d) => format!(
@@ -365,7 +370,6 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
         ir::Processor::LegacyPhaser { .. } => "Legacy Phaser".into(),
         ir::Processor::Phaser(_) => "Phaser filter".into(),
-        ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
         ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
         ir::Processor::Ar(d) => format!(

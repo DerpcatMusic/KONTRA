@@ -1,7 +1,8 @@
-//! Compressor against an independent whole-timeline recurrence, across block
-//! partitions, at voice and bus scope. DSP_SYSTEM_INVENTORY "Subtype selection
-//! and compressor linking" (linked detector); the level law is unverified.
+//! Dynamics stage through the runtime: the output must not depend on the
+//! render block size, at voice and bus scope, with held controls equal to
+//! constants. The level laws themselves are tested in `dsp/dynamics/*`.
 use sampler_core::*;
+use sampler_ir::fx::dynamics::{Direction, Generic, Law, Link};
 mod support;
 
 fn limits() -> Limits {
@@ -38,53 +39,27 @@ fn source() -> Vec<[f32; 2]> {
         .collect()
 }
 
-fn settings(link: bool) -> CompressorSettings {
-    CompressorSettings {
-        threshold_db: Parameter::Constant(-20.),
+fn settings(link: Link) -> DynamicsSettings {
+    DynamicsSettings {
+        law: Law::Generic(Generic {
+            threshold_db: -20.,
+            ratio: 4.,
+            knee_db: 6.,
+            direction: Direction::Downward,
+            detector: sampler_ir::fx::dynamics::Detector::Peak,
+            topology: sampler_ir::fx::dynamics::Topology::FeedForward,
+            lookahead: sampler_ir::Time::Seconds(0.),
+            sidechain_highpass_hz: 0.,
+            range_db: 0.,
+        }),
+        link,
+        makeup: 1.5,
+        mix: 1.,
+        threshold: Parameter::Constant(-20.),
         ratio: Parameter::Constant(4.),
         attack_seconds: Parameter::Constant(0.0005),
         release_seconds: Parameter::Constant(0.002),
-        makeup: 1.5,
-        link,
     }
-}
-
-fn reference(input: &[[f32; 2]], s: CompressorSettings) -> Vec<[f64; 2]> {
-    let [threshold, ratio, attack, release] =
-        [s.threshold_db, s.ratio, s.attack_seconds, s.release_seconds].map(|p| {
-            let Parameter::Constant(v) = p else {
-                panic!("reference constants");
-            };
-            v
-        });
-    let (a, r) = (
-        (-1. / (attack * f64::from(RATE))).exp(),
-        (-1. / (release * f64::from(RATE))).exp(),
-    );
-    let mut gr = [0f64; 2];
-    input
-        .iter()
-        .map(|f| {
-            let x = [f64::from(f[0]), f64::from(f[1])];
-            let det = if s.link {
-                [((x[0] + x[1]) / 2.).abs(); 2]
-            } else {
-                [x[0].abs(), x[1].abs()]
-            };
-            let mut out = [0.; 2];
-            for c in 0..2 {
-                let c_in = if s.link { 0 } else { c };
-                let level = 20. * det[c_in].max(1e-300).log10();
-                let target = ((level - threshold) * (1. - 1. / ratio)).max(0.);
-                let k = if target > gr[c_in] { a } else { r };
-                if c == c_in {
-                    gr[c] = target + k * (gr[c] - target);
-                }
-                out[c] = x[c] * s.makeup * 10f64.powf(-gr[c_in] / 20.);
-            }
-            out
-        })
-        .collect()
 }
 
 fn plan() -> Prepared {
@@ -131,52 +106,63 @@ fn run(prepared: Prepared, block: usize) -> Vec<[f32; 2]> {
     audio
 }
 
-fn close(actual: &[[f32; 2]], expected: &[[f64; 2]]) {
+fn voice(s: DynamicsSettings) -> Prepared {
+    plan()
+        .with_voice_chains(
+            vec![VoiceChain::new(vec![Processor::Dynamics(s)], vec![], 0).unwrap()],
+            vec![Some(0)],
+        )
+        .unwrap()
+}
+
+fn bus(s: DynamicsSettings) -> Prepared {
+    plan()
+        .with_buses(
+            vec![Bus {
+                processors: vec![Processor::Dynamics(s)],
+                sends: vec![BusSend {
+                    bus: None,
+                    gain: 1.,
+                }],
+                tail_frames: 0,
+            }],
+            vec![Some(0)],
+        )
+        .unwrap()
+}
+
+fn close(actual: &[[f32; 2]], expected: &[[f32; 2]]) {
     for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
         for c in 0..2 {
-            assert!(
-                (f64::from(a[c]) - e[c]).abs() < 3e-7,
-                "frame {i}: {a:?} != {e:?}"
-            );
+            assert!((a[c] - e[c]).abs() < 3e-7, "frame {i}: {a:?} != {e:?}");
         }
     }
 }
 
 #[test]
-fn voice_and_bus_compressors_follow_the_recurrence_across_block_sizes() {
-    for link in [true, false] {
-        let expected = reference(&source(), settings(link));
-        let stage = || Processor::Compressor(settings(link));
+fn voice_and_bus_dynamics_are_independent_of_block_size() {
+    for link in [Link::Mean, Link::Max, Link::Off] {
+        let s = settings(link);
+        let expected = run(voice(s), FRAMES);
+        let source = source();
+        // The stage acts: it is not the identity.
+        assert!(
+            expected
+                .iter()
+                .zip(&source)
+                .any(|(a, b)| (a[0] - b[0]).abs() > 1e-3)
+        );
         for block in [1, 7, 64, 129, 300] {
-            let voice = plan()
-                .with_voice_chains(
-                    vec![VoiceChain::new(vec![stage()], vec![], 0).unwrap()],
-                    vec![Some(0)],
-                )
-                .unwrap();
-            close(&run(voice, block), &expected);
-            let bus = plan()
-                .with_buses(
-                    vec![Bus {
-                        processors: vec![stage()],
-                        sends: vec![BusSend {
-                            bus: None,
-                            gain: 1.,
-                        }],
-                        tail_frames: 0,
-                    }],
-                    vec![Some(0)],
-                )
-                .unwrap();
-            close(&run(bus, block), &expected);
+            close(&run(voice(s), block), &expected);
+            close(&run(bus(s), block), &expected);
         }
     }
 }
 
 #[test]
-fn invalid_compressor_control_domains_are_rejected_before_rendering() {
+fn invalid_dynamics_control_domains_are_rejected_before_rendering() {
     for (field, low, high) in [(0, 0., 7000.), (1, 0.5, 4.), (2, -0.01, 1.), (3, 0., -0.01)] {
-        let mut s = settings(true);
+        let mut s = settings(Link::Mean);
         let parameter = Parameter::Control(ControlRange {
             control: ControlId(1),
             low,
@@ -184,24 +170,24 @@ fn invalid_compressor_control_domains_are_rejected_before_rendering() {
             ramp_frames: 0,
         });
         match field {
-            0 => s.threshold_db = parameter,
+            0 => s.threshold = parameter,
             1 => s.ratio = parameter,
             2 => s.attack_seconds = parameter,
             _ => s.release_seconds = parameter,
         }
-        let result = VoiceChain::new(vec![Processor::Compressor(s)], vec![], 0);
+        let result = VoiceChain::new(vec![Processor::Dynamics(s)], vec![], 0);
         assert!(matches!(result, Err(Error::InvalidInput)), "field {field}");
     }
 }
 
 #[test]
-fn held_compressor_controls_preserve_the_existing_recurrence() {
-    for link in [true, false] {
+fn held_dynamics_controls_preserve_the_constant_result() {
+    for link in [Link::Mean, Link::Off] {
         let original = settings(link);
-        let expected = reference(&source(), original);
+        let expected = run(voice(original), FRAMES);
         let mut controlled = original;
         let defaults = [
-            original.threshold_db,
+            original.threshold,
             original.ratio,
             original.attack_seconds,
             original.release_seconds,
@@ -230,7 +216,7 @@ fn held_compressor_controls_preserve_the_existing_recurrence() {
                 ramp_frames: 480,
             })
         });
-        controlled.threshold_db = threshold;
+        controlled.threshold = threshold;
         controlled.ratio = ratio;
         controlled.attack_seconds = attack;
         controlled.release_seconds = release;
@@ -239,10 +225,7 @@ fn held_compressor_controls_preserve_the_existing_recurrence() {
                 .with_controls(definitions.clone())
                 .unwrap()
                 .with_voice_chains(
-                    vec![
-                        VoiceChain::new(vec![Processor::Compressor(controlled)], vec![], 0)
-                            .unwrap(),
-                    ],
+                    vec![VoiceChain::new(vec![Processor::Dynamics(controlled)], vec![], 0).unwrap()],
                     vec![Some(0)],
                 )
                 .unwrap();

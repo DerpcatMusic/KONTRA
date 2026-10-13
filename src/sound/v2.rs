@@ -2972,9 +2972,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Distortion { .. } | ir::Processor::LiveDistortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
-            ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
             ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ",
-            ir::Processor::Compressor(_) => "Compressor",
+            ir::Processor::Dynamics(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
