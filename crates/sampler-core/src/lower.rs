@@ -128,6 +128,8 @@ fn stretch_spec(t: ir::TimeStretch) -> crate::source::StretchSpec {
         },
         hq: t.high_quality,
         speed: t.speed,
+        smooth: t.smooth,
+        grain_ms: t.grain_ms,
     }
 }
 
