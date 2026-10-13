@@ -10,6 +10,7 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+pub mod arpeggiator;
 mod access_error;
 mod audio;
 #[cfg(feature = "library-access")]
