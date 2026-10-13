@@ -1,16 +1,15 @@
 //! Kontakt delay and modulation effects onto `sampler_ir::fx::timemod`.
 //!
 //! Native (Kontakt 8.13.1 binary): Legacy Phaser (0x14), Legacy Delay (0x10,
-//! audio [ref]) and Legacy Flanger (0x12, audio [ref]). Chorus
-//! (0x11, audio [ref]) stays generic: its setter reads a
-//! base delay from saved-struct +8, which neither the reader nor
-//! the constructor writes, so the value is unknown. The modern effects stay
-//! unsupported with the reasons in [`unproved`].
+//! audio [ref]), Legacy Chorus (0x11, audio [ref]) and Legacy
+//! Flanger (0x12, audio [ref]); the last two are one legacy modulated
+//! delay kernel. The modern effects stay unsupported with the reasons in
+//! [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
+        Allpass, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
     },
 };
 
@@ -70,10 +69,6 @@ fn unit_interval(values: &[f32]) -> bool {
     values.iter().all(|v| v.is_finite() && (0. ..=1.).contains(v))
 }
 
-fn generic(notes: &mut Notes, what: &str, value: String) {
-    notes.push((what.into(), value, Reason::UnknownLaw));
-}
-
 /// `dry` is the slot's own dry level when the effect runs outside a Mix block.
 pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config> {
     let lfo = |speed, unit, phase: f32| Lfo { shape: LfoShape::Sine, rate: rate(speed, unit), phase };
@@ -113,13 +108,21 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{speed}/{phase}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "chorus base delay (setter [ref] reads unwritten struct +8; audio [ref] taps at base and base/2, depth * 75 frames)", format!("{depth}/{speed}/{phase}"));
-            if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced modulation speed", "Phaser getter assumed".into());
-            }
-            let mut line = Line::single(DelayTime::Ms(12.), 20.);
-            line.taps[0].depth_ms = f64::from(depth) * 6.;
-            line.interpolation = Interpolation::Hermite;
+            // Setter case @[ref], audio [ref]: the base delay is the param
+            // object's +8, which no reader, writer or constructor writes; the
+            // per-slot param container is memset to zero on allocation ([ref],
+            // [ref]), so base = 0 frames, the excursion clamps to base - 1 = -1 and
+            // Depth has no effect. Two heads (base, base >> 1) on LFOs 0.015 cycles
+            // apart, each one-pole 0.95, summed; Speed through the sync getter
+            // [ref] -> [ref] (sync class vtable [ref] slot 5).
+            let mut line = Line::single(DelayTime::Frames(1), 0.);
+            line.native = Native::LegacyModDelay {
+                base_ms: 0.,
+                excursion: f64::from(depth) * 75.,
+                feedback: 0.,
+                second_head: true,
+                smoothing: f32::from_bits(0x3f733333),
+            };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
         Unit::Flanger { depth, feedback, speed, phase, color, unit } => {
@@ -131,13 +134,17 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("color {color}"), Reason::InvalidValue));
                 return None;
             }
-            // Setter case 0x12 @[ref], audio [ref]: color is the base delay in ms,
-            // depth * 50 frames of excursion, feedback * 0.95 subtracted, phase * 0.25 cycles.
-            if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced modulation speed", "Phaser Hz getter; the speed object's class was not confirmed".into());
-            }
+            // Setter case @[ref], audio [ref]: color is the base delay in ms,
+            // depth * 50 frames of excursion, feedback * 0.95 subtracted, phase * 0.25 cycles
+            // (re-phase [ref]); Speed through the shared sync getter [ref].
             let mut line = Line::single(DelayTime::Ms(f64::from(color)), 6.);
-            line.native = Native::LegacyFlanger { color, depth, feedback };
+            line.native = Native::LegacyModDelay {
+                base_ms: color,
+                excursion: f64::from(depth) * 50.,
+                feedback: feedback * f32::from_bits(0x3f733333),
+                second_head: false,
+                smoothing: 0.,
+            };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
     };
@@ -183,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn native_delay_and_generic_chorus_flanger() {
+    fn native_delay_chorus_flanger() {
         // Time is stored in ms (measured table 5..2900), Speed in Hz.
         let (delay, notes) = config(0x10, &[250., 0.4, 0.5, 0.25, -1.]);
         let line = delay.line.unwrap();
@@ -193,10 +200,20 @@ mod tests {
 
         let (chorus, notes) = config(0x11, &[0.5, 2., 1., -1.]);
         assert_eq!(chorus.lfo.rate, sampler_ir::fx::timemod::Rate::Hz(2.));
-        assert!(!notes.is_empty());
+        assert_eq!((chorus.lfo.phase, chorus.dry), (0.25, 0.5));
+        // Native vector (setter [ref]): base +8 = 0, excursion depth * 75, two smoothed heads.
+        assert_eq!(
+            chorus.line.unwrap().native,
+            sampler_ir::fx::timemod::Native::LegacyModDelay { base_ms: 0., excursion: 37.5, feedback: 0., second_head: true, smoothing: 0.95 }
+        );
+        assert!(notes.is_empty(), "{notes:?}");
 
+        // Native vector (setter [ref]): color 2 ms, depth * 50, feedback * 0.95.
         let (flanger, notes) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
-        assert_eq!(flanger.line.unwrap().native, sampler_ir::fx::timemod::Native::LegacyFlanger { color: 2., depth: 0.5, feedback: 0.5 });
+        assert_eq!(
+            flanger.line.unwrap().native,
+            sampler_ir::fx::timemod::Native::LegacyModDelay { base_ms: 2., excursion: 25., feedback: 0.5 * 0.95, second_head: false, smoothing: 0. }
+        );
         assert!(notes.is_empty());
     }
 
