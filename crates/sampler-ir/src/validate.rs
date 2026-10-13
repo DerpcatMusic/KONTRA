@@ -160,6 +160,48 @@ impl Check<'_> {
         }
     }
 
+    fn color(&self, c: &crate::fx::color::Config) -> Result<(), ValidationError> {
+        use crate::fx::color::{Curve, Hold, Quantizer};
+        let unit = |v: f32, field| self.within(f64::from(v), 0.0..=1.0, field);
+        if let Some(g) = c.gainer {
+            self.gain(g.gain, "gainer gain")?;
+            self.finite(g.dry, "gainer dry")?;
+        }
+        match c.hold {
+            Some(Hold::Native { frequency }) => unit(frequency, "color hold frequency")?,
+            Some(Hold::Rate { hertz }) => self.within(hertz, 1.0..=f64::MAX, "color hold rate")?,
+            None => {}
+        }
+        if let Some(d) = c.decimator {
+            self.within(d.period, 1.0..=f64::MAX, "decimator period")?;
+            self.finite(d.blend, "decimator blend")?;
+        }
+        match c.quantizer {
+            Some(Quantizer::Native { bits }) => unit(bits, "color bits")?,
+            Some(Quantizer::Floor { bits }) => self.within(bits, 1.0..=32.0, "color bits")?,
+            None => {}
+        }
+        match c.curve {
+            Curve::Identity | Curve::Rectifier(_) => {}
+            Curve::Classic { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+            Curve::Tube { drive } | Curve::Transistor { drive } => unit(drive, "distortion drive")?,
+            Curve::Destructor { drive } => self.within(drive, 0.0..=1.0, "bit crusher drive")?,
+        }
+        if let Some(damping) = c.damping {
+            unit(damping, "distortion damping")?;
+        }
+        if let Some(n) = c.noise {
+            unit(n.level, "lofi noise")?;
+            unit(n.color, "lofi color")?;
+        }
+        self.within(c.mix, 0.0..=1.0, "color mix")?;
+        if let Some(s) = c.stereo {
+            self.within(s.width, 0.0..=1.0, "stereo width")?;
+            self.within(s.pan, -1.0..=1.0, "stereo pan")?;
+        }
+        Ok(())
+    }
+
     fn pitch(&self, pitch: Pitch, field: &'static str) -> Result<(), ValidationError> {
         match pitch {
             Pitch::Ratio(ratio) => self.within(ratio, f64::MIN_POSITIVE..=f64::MAX, field),
@@ -204,48 +246,15 @@ impl Check<'_> {
         for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
-                Processor::Gainer { gain, dry } => {
-                    self.gain(gain, "gainer gain")?;
-                    self.finite(dry, "gainer dry")?;
-                }
-                Processor::StereoModeller { width, pan, .. } => {
-                    self.within(width, 0.0..=1.0, "stereo width")?;
-                    self.within(pan, -1.0..=1.0, "stereo pan")?;
-                }
+                Processor::Color(c) => self.color(&c)?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::KontaktLegacyEq(eq) => {
                     self.within(f64::from(eq.frequency), 0.0..=1.0, "legacy EQ frequency")?;
                     self.within(f64::from(eq.bandwidth), 0.0..=1.0, "legacy EQ bandwidth")?;
                     self.within(f64::from(eq.gain_db), -18.0..=18.0, "legacy EQ gain")?;
                 }
-                Processor::LoFi {
-                    bits,
-                    frequency,
-                    noise,
-                    color,
-                } => {
-                    for (v, field) in [
-                        (bits, "lofi bits"),
-                        (frequency, "lofi frequency"),
-                        (noise, "lofi noise"),
-                        (color, "lofi color"),
-                    ] {
-                        self.within(f64::from(v), 0.0..=1.0, field)?;
-                    }
-                }
-                Processor::LiveLoFi { bits, frequency, noise, color, .. } => {
-                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
-                        self.within(f64::from(v), 0.0..=1.0, field)?;
-                    }
-                }
                 Processor::LiveFormant { knobs, .. } => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
-                }
-                Processor::Rectify(_) => {}
-                Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
-                Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
-                    self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
-                    self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
                 }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
