@@ -345,6 +345,7 @@ impl Check<'_> {
                         Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => {
                             self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
                         }
+                        Law::KontaktLimiter(_) => {}
                     }
                 }
                 Processor::Mix { dry, wet, .. } => {

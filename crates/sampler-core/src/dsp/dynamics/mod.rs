@@ -14,6 +14,7 @@
 mod classic;
 mod enhanced;
 pub(super) mod generic;
+mod limiter;
 mod pro;
 
 use super::{
@@ -82,6 +83,12 @@ impl DynamicsSettings {
                 Law::KontaktClassic(_) | Law::KontaktPro(_) => {
                     ratio.iter().all(|v| (0. ..=1.).contains(v))
                 }
+                // The saved gain is 6.02 dB per octave: 2^(x/6) must stay finite.
+                Law::KontaktLimiter(_) => self
+                    .threshold
+                    .bounds()
+                    .iter()
+                    .all(|v| (v / 6.).abs() < 100.),
             }
     }
 
@@ -90,6 +97,7 @@ impl DynamicsSettings {
         match self.law {
             Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) as u32,
             Law::KontaktPro(_) => pro::LATENCY as u32,
+            Law::KontaktLimiter(_) => limiter::LATENCY as u32,
             Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
         }
     }
@@ -145,6 +153,7 @@ impl DynamicsSettings {
         let own = match self.law {
             Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate),
             Law::KontaktPro(_) => pro::CELLS,
+            Law::KontaktLimiter(_) => limiter::CELLS,
             Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
         };
         *cells = offset.checked_add(own).ok_or(crate::Error::Capacity)?;
@@ -193,6 +202,7 @@ impl Dynamics {
             Law::KontaktClassic(_) => 1.,
             Law::KontaktEnhanced(_) => 2.,
             Law::KontaktPro(_) => 3.,
+            Law::KontaktLimiter(_) => 4.,
         };
         [
             ("threshold_db", self.parameters[0]),
@@ -236,6 +246,9 @@ impl Dynamics {
                 enhanced::process(&shared, knobs, self.rate, state, block, len)
             }
             Law::KontaktPro(_) => pro::process(&shared, knobs, self.rate, state, cells, block, len),
+            Law::KontaktLimiter(_) => {
+                limiter::process(&shared, knobs, self.rate, state, cells, block, len)
+            }
         }
     }
 }
