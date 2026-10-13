@@ -1535,10 +1535,14 @@ impl Translation {
                 let live = (matches!(&params.modulator, Modulator::Lfo(_))
                     || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !volume)
                     && params.targets.iter().all(|t| {
-                        t.slot.is_none()
-                            && matches!(t.param.as_str(), "volume" | "pitch" | "pan")
-                            && t.unknown_flags & 2 == 0
-                            && t.lag_ms == 0
+                        // Module targets (filter, effect and formant knobs) carry the
+                        // same live depth lane as volume/pitch/pan; a route whose depth
+                        // cannot be bound is dropped and reported below. Phase, rate,
+                        // intensity and sample-position targets have their own paths.
+                        !matches!(
+                            t.param.as_str(),
+                            "startPhase" | "frequency" | "intensity" | "playPos" | "loopStart" | "loopLength"
+                        ) && t.unknown_flags & 2 == 0
                             && !t.shaper.as_ref().is_some_and(|s| s.enabled)
                             && (0. ..=1.).contains(&t.intensity)
                     });
@@ -1659,21 +1663,36 @@ impl Translation {
                         ));
                         continue;
                     }
-                    let route = self.route(
+                    let before = self.ir.routes.len();
+                    let mut route = self.route(
                         &at,
                         modulator,
                         envelope_source,
                         target,
                         chain.zip(Some(&filter_slots[..])),
                     );
-                    if live && let Some(route) = route {
-                        self.internal_route_controls(
+                    if live && let Some(bound) = route {
+                        let bound = self.internal_route_controls(
                             [index, usize::from(slot), _ordinal],
-                            route,
+                            bound,
                             target,
                             params.unknown_flags[1] != 0,
                             &mut bypass,
                         );
+                        if !bound && params.unknown_flags[1] != 0 {
+                            // Saved bypassed with no live depth lane: the route could
+                            // never be enabled, so it must not run unconditionally.
+                            self.ir.routes.truncate(before);
+                            self.route_intensity.remove(&before);
+                            self.ir.source_indices.unipolar_routes.retain(|r| r.0 < before);
+                            self.unsupported(
+                                &at,
+                                "bypassed modulator route without live depth",
+                                format!("{} ({})", target.param, target.name),
+                                ir::Reason::NotModeled,
+                            );
+                            route = None;
+                        }
                     }
                     #[cfg(feature = "scan")]
                     self.target_outcomes
@@ -2053,18 +2072,25 @@ impl Translation {
         target: &ni_file::kontakt::objects::ModTarget,
         saved_bypass: bool,
         bypass: &mut Option<ir::ControlRef>,
-    ) {
+    ) -> bool {
         let [group, slot, ordinal] = address;
         let unit = match self.ir.routes[route.0].target {
             ir::Target::Amplitude | ir::Target::Pan => 1.,
             ir::Target::Pitch => 12.,
-            _ => return,
+            // Module targets: depth units per unit of intensity, as the route's own law.
+            ir::Target::Processor { .. } | ir::Target::Control(_) => {
+                match self.route_intensity.get(&route.0) {
+                    Some(&(_, unit)) if unit.is_finite() && unit != 0. => unit,
+                    _ => return false,
+                }
+            }
+            _ => return false,
         };
         if target.unknown_flags & 2 != 0
             || !target.intensity.is_finite()
             || !(0. ..=1.).contains(&target.intensity)
         {
-            return;
+            return false;
         }
         let mut lane = |name: &str, generic: i32, max: f64, saved: f64| {
             let default = self
@@ -2115,6 +2141,7 @@ impl Translation {
             .source_indices
             .route_controls
             .push((route, depth, bypass));
+        true
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
@@ -4270,6 +4297,32 @@ mod modulation {
             unknown_i16: -1,
             unknown_flags: 0x10,
         }
+    }
+
+    /// A saved-bypassed LFO with module targets keeps a live depth lane (unit =
+    /// the route's own depth per intensity); a route with no known unit is not bound.
+    #[test]
+    fn internal_module_routes_bind_live_depth_in_route_units() {
+        let mut out = translation();
+        out.ir.routes.push(ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter: ir::ProcessorParameter::Resonance,
+            },
+            depth: ir::Depth::Normalized(0.),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        });
+        let mut bypass = None;
+        let t = target("filterQ", 0.);
+        assert!(!out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        out.route_intensity.insert(0, (0., 1.));
+        assert!(out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        assert_eq!(out.ir.source_indices.route_controls.len(), 1);
     }
 
     /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
