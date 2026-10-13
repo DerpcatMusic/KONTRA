@@ -1,6 +1,7 @@
 //! Preset-level tests: each native effect, as configured on the superset, equals
 //! its frozen single-pass law bit for bit, and block partitioning never matters.
 use super::*;
+use super::Settings as ColorSettings;
 use crate::dsp::BLOCK;
 
 fn signal(seed: f64, len: usize) -> Planar {

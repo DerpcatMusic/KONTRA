@@ -148,7 +148,7 @@ impl Settings {
     }
 
     /// Whether the unit leaves no tail: no stage keeps history.
-    pub(super) fn memoryless(&self) -> bool {
+    pub fn memoryless(&self) -> bool {
         self.gainer.is_none()
             && self.hold.is_none()
             && self.decimator.is_none()
