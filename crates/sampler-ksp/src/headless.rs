@@ -17,7 +17,9 @@ pub fn service_ui_effects(
     runtime.drain_effects(|effect| {
         let reason = match effect.service {
             sampler_core::MIDI_SERVICE => Some("headless renderer needs a MIDI service host"),
-            sampler_core::ARRAY_FILE_SERVICE => Some("headless renderer needs an array-file service host"),
+            sampler_core::ARRAY_FILE_SERVICE => {
+                Some("headless renderer needs an array-file service host")
+            }
             _ => None,
         };
         if let Some(reason) = reason {
