@@ -970,7 +970,7 @@ pub(super) fn render_source<const TRACE: bool>(
     } else if let Some(controls) = context.controls.as_mut() {
         let waiting = voice.cursor.waiting();
         let active = voice.envelope.remaining();
-        let mut unity = crate::envelope::EnvelopeState::new(if waiting {
+        let mut unity = crate::blocks::envelope::EnvelopeState::new(if waiting {
             crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
         } else { crate::Envelope::default() });
         let remaining = unity.remaining();
