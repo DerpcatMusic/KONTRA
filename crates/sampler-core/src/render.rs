@@ -1,5 +1,7 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
+#[cfg(test)]
+std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Runtime health counters as plain data, for load reports and meters.
 /// Counters are cumulative since construction; timings cover `render` calls.
@@ -14,6 +16,8 @@ pub struct RuntimeStats {
     pub voice_drops: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
+    /// Time-stretch voices that found no free engine and played as a sampler.
+    pub stretch_fallbacks: u64,
     /// Voices started silent because their first frames were not resident
     /// (`set_cold_starts`); they fade in when their pages arrive.
     pub cold_starts: u64,
@@ -69,6 +73,7 @@ impl Runtime {
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
             refused_starts: self.refused_starts,
+            stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
@@ -195,6 +200,7 @@ impl Runtime {
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
         self.start_plan_programs();
+        self.service_residency()?;
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
@@ -232,6 +238,15 @@ impl Runtime {
         outs: &mut [&mut [Frame]],
         offset: usize,
     ) {
+        // T21: due callbacks/events are handled by render_inner regardless of
+        // audio activity. No voices or tails means no sum kernels/tiles to run.
+        // Keep tracing and the one pending bus-history reset on their old path.
+        // NI engine activity contract / topology B9-B10; no control-rate change.
+        if !TRACE && self.voices.count() == 0
+            && self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|g| !g.dsp.buses.needs_render())
+        {
+            return;
+        }
         let chunked = TRACE
             || self.script_params
             || self.parallel.is_some()
@@ -252,6 +267,8 @@ impl Runtime {
         let mut at = self.now;
         let mut rest = output;
         while !rest.is_empty() {
+            #[cfg(test)]
+            SUM_CELLS.set(SUM_CELLS.get() + 1);
             let len = (super::voice_mod::CELL - at % super::voice_mod::CELL) as usize;
             let (output, tail) = rest.split_at_mut(len.min(rest.len()));
             rest = tail;
@@ -417,12 +434,14 @@ impl Runtime {
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
             v.last_gains = gains[lane].map(|g| g * v.gain);
-            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan.project_wavetable(&mut v.cursor, v.group);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
             let asset = &plan.prepared.pcm[v.sample];
+            let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
+            let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[lane] = v.cursor.starved();
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
@@ -430,10 +449,10 @@ impl Runtime {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames,
+                    frames: &frames,
                     levels: guard.as_deref().map_or(&[], |l| l),
                 };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
             } else {
                 asset.touch(at + output.len() as u64);
                 let head = asset.try_head();
@@ -446,7 +465,7 @@ impl Runtime {
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
                 };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
             };
             let len = begun[lane].map_or(0, |b: super::dsp::Begun| b.len);
             for (frame, x) in block[..len].iter_mut().enumerate() {
@@ -637,7 +656,7 @@ impl Runtime {
         } else {
             points
         };
-        v.cursor = v.cursor.with_step(match points {
+        let pitch = match points {
             None => v.base_step * expression.rendered.ratio,
             Some(ramp) => {
                 let exponent = (ramp.from.pitch + ramp.to.pitch) / 24.0;
@@ -651,7 +670,8 @@ impl Runtime {
                     step.clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
                 }
             }
-        });
+        };
+        v.set_step(pitch);
         Some(Prelude {
             points,
             modulated,
@@ -825,9 +845,11 @@ impl Runtime {
         };
         let mut native = plan.modulation.native.claim(i);
         let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = super::dsp::RenderContext {
             controls,
             trace,
+            stretch: stretch.as_mut().map(|c| &mut c[0]),
             amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
@@ -846,7 +868,7 @@ impl Runtime {
             asset.want_levels(v.cursor.step(), at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
@@ -864,7 +886,7 @@ impl Runtime {
             };
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
-        drop((claimed, delay, parameter_scratch, native));
+        drop((claimed, delay, parameter_scratch, native, stretch));
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
                 ramp.without_gains()
@@ -956,12 +978,15 @@ pub(super) fn render_source<const TRACE: bool>(
     } else if let Some(controls) = context.controls.as_mut() {
         let waiting = voice.cursor.waiting();
         let active = voice.envelope.remaining();
-        let mut unity = crate::envelope::EnvelopeState::new(if waiting {
+        let mut unity = crate::blocks::envelope::EnvelopeState::new(if waiting {
             crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
         } else { crate::Envelope::default() });
         let remaining = unity.remaining();
         let count = if waiting { output.len() } else { output.len().min(active) };
-        let produced = voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel);
+        let produced = match (context.stretch.as_deref_mut(), waiting) {
+            (Some(engine), false) => super::source::stretch_mix(engine, voice, source, &mut output[..count], 1., [1.; 2], false),
+            _ => voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel),
+        };
         let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
         let levels = controls.levels(voice, produced, held);
         for (i, frame) in output[..produced].iter_mut().enumerate() {
@@ -969,14 +994,25 @@ pub(super) fn render_source<const TRACE: bool>(
         }
         (produced, voice.cursor.done() || voice.envelope.done() || controls.done(), 0)
     } else {
-        let produced = voice.cursor.render(
-            source,
-            output,
-            &mut voice.envelope,
-            voice.gain,
-            context.expression,
-            kernel,
-        );
+        let produced = match (context.stretch.as_deref_mut(), voice.cursor.waiting()) {
+            (Some(engine), false) => super::source::stretch_mix(
+                engine,
+                voice,
+                source,
+                output,
+                voice.gain,
+                context.expression,
+                true,
+            ),
+            _ => voice.cursor.render(
+                source,
+                output,
+                &mut voice.envelope,
+                voice.gain,
+                context.expression,
+                kernel,
+            ),
+        };
         (produced, voice.cursor.done() || voice.envelope.done(), 0)
     };
     (
@@ -994,5 +1030,44 @@ impl Runtime {
             .get(self.active_plan.0)?
             .prepared
             .signal_trace_reader()
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+    use crate::*;
+    #[test]
+    fn dormant_sum_graph_skips_cells_but_keeps_events_clock_and_wake_pcm() {
+        let plan = Prepared::new(48000, vec![Pcm::new(48000, vec![[1., -0.5]].into_boxed_slice()).unwrap()],
+            vec![Region { sample:0, key_low:60, key_high:60, root_key:None, velocity_low:0., velocity_high:1.,
+                gain:1., envelope:Envelope::default(), playback:Playback::default() }], 1).unwrap()
+            .with_buses((0..100).map(|_| Bus { processors:vec![Processor::Gain(1.)],
+                sends:vec![BusSend { bus:None, gain:1. }], tail_frames:0 }).collect(), vec![Some(97)]).unwrap();
+        let mut rt = Runtime::new(plan, Limits { notes:4, channels:0, performances:1, families:4,
+            voices:4, expressions:4, decisions:4, commands:8, behaviors:0, behavior_cells:0, behavior_fuel:0, note_cells:0 }).unwrap();
+        let performance = rt.performance(0).unwrap();
+        rt.schedule_event(512, Event::Controller(performance, 1, 12345)).unwrap();
+        SUM_CELLS.set(0);
+        let mut idle = [[1.;2];2048];
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(rt.now(), 2048);
+        assert_eq!(rt.controller(performance, 1).unwrap(), 12345);
+        assert_eq!(SUM_CELLS.get(), 0, "dormant sums must not traverse every control tile");
+        let input = Input { protocol:Protocol::Native, port:0, group:0, channel:0, key:60, external_id:None };
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut output = [[0.;2];64];
+        rt.render(&mut output).unwrap();
+        assert_eq!(output[0], [1., -0.5]);
+        assert_eq!(output[1..], [[0.;2];63]);
+        SUM_CELLS.set(0);
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(SUM_CELLS.get(), 0);
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut woke = [[0.;2];64];
+        rt.render(&mut woke).unwrap();
+        assert_eq!(woke, output, "wake after silent clock advancement is exact");
     }
 }

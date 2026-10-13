@@ -10,6 +10,9 @@ use sampler_core::{
     ScriptInstanceId, ScriptResources,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod headless;
+pub use headless::service_ui_effects;
+
 mod array_file;
 mod ast;
 mod builtins;

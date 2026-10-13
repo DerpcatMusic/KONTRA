@@ -233,6 +233,14 @@ impl Check<'_> {
                         self.within(f64::from(v), 0.0..=1.0, field)?;
                     }
                 }
+                Processor::LiveLoFi { bits, frequency, noise, color, .. } => {
+                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
+                        self.within(f64::from(v), 0.0..=1.0, field)?;
+                    }
+                }
+                Processor::LiveFormant { knobs, .. } => {
+                    for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
+                }
                 Processor::Rectify(_) => {}
                 Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
                 Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
@@ -375,6 +383,12 @@ impl Instrument {
             for send in &group.sends {
                 check.output(Output::Bus(send.to))?;
                 check.gain(send.gain, "send")?;
+            }
+            if let Some(stretch) = group.time_stretch {
+                check.within(f64::from(stretch.speed), 0.0..=64.0, "time stretch speed")?;
+            }
+            if let Some(limit) = group.source_voice_limit {
+                check.exists(Reference::VoiceLimit(limit))?;
             }
             if let Some(limit) = group.voice_limit {
                 check.exists(Reference::VoiceLimit(limit))?;
@@ -527,10 +541,10 @@ impl Instrument {
                     })?;
                 }
                 Target::Control(control) => check.exists(Reference::Control(control.0))?,
-                Target::SourcePhase(source) => {
+                Target::SourcePhase(source) | Target::SourceRate(source) => {
                     check.exists(Reference::Modulator(source.0))?;
                     if !matches!(self.modulators[source.0].source, ModulationSource::Lfo(_)) {
-                        check.within(f64::NAN, 0.0..=0.0, "phase destination must be an LFO")?;
+                        check.within(f64::NAN, 0.0..=0.0, "phase or rate destination must be an LFO")?;
                     }
                 }
                 Target::Amplitude

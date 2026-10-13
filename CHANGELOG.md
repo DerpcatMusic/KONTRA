@@ -6,6 +6,29 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.476
+
+Nineteen reviewed corrections follow 0.3.457. Kontakt support now checks itself against Kontakt: a native oracle compares KONTRA's load with real Kontakt 8.13.1 (0 mismatches over ~5.3M group/zone/loop values across 11 libraries) and Kontakt objects decode with Kontakt's own reader programs.
+
+- Instruments saved by Kontakt 8.13 load again (external modulation 0x105).
+- Hall reverbs no longer play as Room; SSL G-EQ v0x11 decodes completely.
+- Script-set bus faders use Kontakt's 6 dB-per-doubling volume law (measured in Kontakt).
+- Cycle round robin plays in Kontakt's order; first-position groups are no longer dropped.
+- Releases and voice limits stay inside their own instrument; Kontakt exclusive voice groups work.
+- `purge_group` frees and reloads sample memory; purged groups cost no CPU; muted groups can be unmuted live.
+- Samples in moved or differently spelled archives are found; default voice groups get their limits.
+- Silent effect buses and idle instruments stop costing CPU.
+- Conflux: controller programs use their own skin, Vector no longer overlaps, custom fonts and press states import.
+- Modulation of LFO rate/amount and effect knobs plays (Conflux 2,207 dropped routes -> 0 excluding 550 random sources; ANALOG STRINGS 6,065 -> 1,902).
+- Kontakt LFO saw, random and pulse-width shapes use Kontakt's own waveform tables.
+- Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).
+
+New engine pieces (not counted as fixes): shared envelope/LFO/glide/follower/arp blocks, Time Machine source engine (TM1 native; TM2/Pro approximations), voice-allocation domains.
+
+Validation: ni-file 51, sampler-core 191 lib plus all integration suites, sampler-kontakt 162, native oracle 3, sampler-uvi 85, sampler-ksp 10 passed; all 11 installed Kontakt libraries complete the production load path.
+
+Known limits: 550 Conflux random-source routes, DBD/Flex/glide/follower/arp/group-dynamics Kontakt mappings, Multi-weight LFOs and several effects remain reported (unproved native laws). Time Machine 2/Pro are approximations. Two new skinned-caption/picture-state render tests are ignored pending investigation. Playing-CPU after these changes is not yet measured.
+
 ## 0.3.457
 
 Six reviewed corrections follow 0.3.451:

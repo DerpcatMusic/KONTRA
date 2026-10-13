@@ -1,7 +1,7 @@
 use std::fmt::Debug;
-use std::io::Cursor;
+use std::io::{Cursor, SeekFrom};
 
-use crate::{read_bytes::ReadBytesExt, Error, NIFileError};
+use crate::{Error, NIFileError, read_bytes::ReadBytesExt};
 
 use super::chunk::Chunk;
 
@@ -38,14 +38,37 @@ impl StructuredObject {
             .map_err(|e| Error::context(format!("StructuredObject public data, declared length {public_data_length}/version 0x{version:04x}"), e))?;
 
         let children_data_length = reader.read_u32_le()?;
-        let children_data = reader
-            .read_bytes(children_data_length as usize)
-            .map_err(|e| Error::context(format!("StructuredObject children data, declared length {children_data_length}/version 0x{version:04x}"), e))?;
-        let mut children_reader = std::io::Cursor::new(children_data);
-
+        // Three independently counted areas; child chunks cannot extend into
+        // the next enclosing record. See DSP_FORMAT_SPECIFICATION.md, Kontakt
+        // chunks and structured objects. v1 0cb7a8a0 used a second whole-child
+        // buffer here; read final owned payloads directly instead.
+        let children_start = reader.stream_position()?;
+        let outer_end = reader.seek(SeekFrom::End(0))?;
+        reader.seek(SeekFrom::Start(children_start))?;
+        if u64::from(children_data_length) > outer_end.saturating_sub(children_start) {
+            return Err(Error::Generic(format!(
+                "StructuredObject children data, declared length {children_data_length}/version 0x{version:04x}: truncated section"
+            )));
+        }
+        let mut remaining = children_data_length;
         let mut children = Vec::new();
-        while children_reader.position() < children_reader.get_ref().len() as u64 {
-            children.push(Chunk::read(&mut children_reader)?);
+        while remaining != 0 {
+            if remaining < 6 {
+                return Err(Error::Static("Truncated StructuredObject child header"));
+            }
+            let id = reader.read_u16_le()?;
+            let length = reader.read_u32_le()?;
+            remaining -= 6;
+            if length > remaining {
+                return Err(Error::Generic(format!(
+                    "StructuredObject child 0x{id:04x}, declared {length} bytes, available {remaining} within children section"
+                )));
+            }
+            children.push(Chunk {
+                id,
+                data: reader.read_bytes(length as usize)?,
+            });
+            remaining -= length;
         }
 
         Ok(Self {

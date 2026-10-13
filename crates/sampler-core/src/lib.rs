@@ -32,6 +32,9 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod allocation;
+pub use allocation::{AllocationCounts, AllocationDomainId};
+
 mod automation;
 pub use automation::{AutomationBinding, AutomationSource};
 mod widget;
@@ -85,10 +88,10 @@ pub use dsp::{
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod whole_voice;
-mod envelope;
+pub mod blocks;
 pub mod v1_voice_controls;
-use envelope::EnvelopeState;
-pub use envelope::{Envelope, EnvelopeCurve};
+use blocks::envelope::EnvelopeState;
+pub use blocks::envelope::{Envelope, EnvelopeCurve};
 mod engine_parameter_names;
 mod engine_parameters;
 mod gate;
@@ -115,7 +118,7 @@ pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
     Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
-    ModTarget,
+    ModTarget, MORE_SCALES,
 };
 mod ownership;
 use modulation::RenderedExpression;
@@ -123,6 +126,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod residency;
 mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
@@ -144,6 +148,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
+    ResidencyRanges, ResidentFrames,
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
     Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
@@ -505,8 +510,26 @@ pub struct VoiceTap {
     pub level: f32,
 }
 
+/// A voice that plays through a time-stretch engine of its plan's pool. Its
+/// cursor then runs on the time axis (`speed`); the engine plays the pitch.
+#[derive(Clone, Copy, Debug)]
+struct StretchLink {
+    engine: u8,
+    spec: source::StretchSpec,
+    /// Source frames per output frame at unit speed (asset rate / output rate).
+    rate_ratio: f64,
+    /// Asset length, for the engine's reads.
+    frames: usize,
+    started: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
+    plan: PlanId,
+    stretch: Option<StretchLink>,
+    /// Pitch step of a stretch voice (its cursor holds the time step).
+    stretch_step: f64,
+    allocation: [allocation::Link; 4],
     family: FamilyId,
     siblings: Siblings,
     sample: usize,
@@ -534,6 +557,21 @@ struct Voice {
     source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
+}
+
+impl Voice {
+    /// Set this block's pitch step. A stretch voice's cursor is the time axis:
+    /// it advances at the speed-scaled rate while the engine plays `pitch`.
+    fn set_step(&mut self, pitch: f64) {
+        self.cursor = match self.stretch {
+            None => self.cursor.with_step(pitch),
+            Some(link) => {
+                self.stretch_step = pitch;
+                let time = f64::from(link.spec.speed) * link.rate_ratio;
+                self.cursor.with_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP))
+            }
+        };
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -806,6 +844,7 @@ pub struct Runtime {
     stream_reserved: usize,
     voice_drops: u64,
     refused_starts: u64,
+    stretch_fallbacks: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
     voice_growths: u64,
     growth_failures: u64,
@@ -959,6 +998,7 @@ impl Runtime {
                 native_cycle: 0,
                 native_seed: 0,
                 request: 0,
+                allocation: allocation::AllocationState::new(&plan),
                 sequences: variation::SequenceState::new(&plan),
                 controls: control::ControlState::new(&plan),
                 scripts: plan
@@ -1018,6 +1058,7 @@ impl Runtime {
             stream_reserved: 0,
             voice_drops: 0,
             refused_starts: 0,
+            stretch_fallbacks: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,
@@ -1693,6 +1734,9 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        if !asset.residency_permitted() {
+            return Err(Error::NotReady);
+        }
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
@@ -1741,7 +1785,12 @@ impl Runtime {
         let f = self.families.get(family.0).unwrap();
         let count = f.voices + 1;
         let next_sibling = f.first_voice;
+        let plan = self.notes.get(f.note.0).unwrap().plan;
         let id = VoiceId(self.voices.insert(Voice {
+            plan,
+            stretch: None,
+            stretch_step: 1.0,
+            allocation: [allocation::Link::default(); 4],
             family,
             siblings: Siblings {
                 previous: None,
@@ -1771,6 +1820,7 @@ impl Runtime {
             source_zone: 0,
             quiet: 0,
         })?);
+        self.link_allocation(id, 0, 0);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {

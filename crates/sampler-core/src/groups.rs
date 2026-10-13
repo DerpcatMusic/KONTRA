@@ -11,7 +11,11 @@ impl Prepared {
             return Err(Error::InvalidInput);
         }
         self.group_count = count;
+        self.group_mutes = (0..count)
+            .map(|_| std::sync::atomic::AtomicBool::new(false))
+            .collect();
         self.region_groups = regions.into_boxed_slice();
+        self.residency = Some(crate::residency::Residency::new(&self)?);
         Ok(self)
     }
 
@@ -266,5 +270,43 @@ impl Runtime {
         }
         let mask = generation.groups.view_at(note.0.index, stage);
         Ok(mask[group as usize / 64] & (1 << (group % 64)) != 0)
+    }
+}
+
+impl Prepared {
+    pub fn with_group_mutes(mut self, muted: Vec<bool>) -> Result<Self, Error> {
+        if muted.len() != self.group_count as usize {
+            return Err(Error::InvalidInput);
+        }
+        self.group_mutes = muted
+            .into_iter()
+            .map(std::sync::atomic::AtomicBool::new)
+            .collect();
+        Ok(self)
+    }
+}
+impl Runtime {
+    /// Live mute edits eligibility while retaining zones, loops, effects and source IDs.
+    pub fn set_group_muted(
+        &mut self,
+        plan: crate::PlanId,
+        group: u32,
+        muted: bool,
+    ) -> Result<(), Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let state = generation
+            .prepared
+            .group_mutes
+            .get(group as usize)
+            .ok_or(Error::InvalidInput)?;
+        state.store(muted, std::sync::atomic::Ordering::Release);
+        self.write_param(
+            plan,
+            crate::ParamScope::Group,
+            i64::from(group),
+            crate::ModTarget::Attenuate,
+            if muted { 0 } else { 1000 },
+            false,
+        )
     }
 }

@@ -1,0 +1,3290 @@
+{
+  "format": "kontra-kontakt-load-handoff",
+  "schema": 1,
+  "source_base": "ce0a2e61",
+  "limits": {
+    "static_catalog_files": 835,
+    "libraries": 11,
+    "fresh_translation_files": 40,
+    "fresh_translation_programs": 40,
+    "fresh_by_library": {
+      "ANALOG STRINGS": 1,
+      "Afflatus Chapter II Brass": 39
+    },
+    "historical_nonconflux_initialized_selections": 10,
+    "full_after_corpus": "not_run_user_never_build",
+    "cold_warm_11_libraries": "not_completed_user_never_build",
+    "native_equivalence": "unknown",
+    "v1_binary_directory": "absent"
+  },
+  "before_binaries": [
+    {
+      "binary": "/home/derpcat/.cache/kontakto-gpt-kontakt-load/corpus-health-before",
+      "sha256": "4a6826a9c994b1c9f320a1de3b5987fd23994b498b8a39ccc33a3535f971ccd1",
+      "product_base": "ce0a2e6105addcef341170d5a796daac7cbb3085",
+      "product_changes": false,
+      "audit_instrumentation": "tools/corpus-health/src/load_audit.rs"
+    },
+    {
+      "binary": "/home/derpcat/.cache/kontakto-gpt-kontakt-load/corpus-health-before",
+      "sha256": "db72a436942e248cb124fd405f740652fd1717b5366698e8691fa1a8568ddfa9",
+      "base": "ce0a2e61",
+      "features": [
+        "library-access",
+        "scan",
+        "native-ui"
+      ],
+      "product_changes": false
+    }
+  ],
+  "totals": {
+    "groups": 4087,
+    "zones": 260352,
+    "assets": 169696,
+    "unmapped_groups": 0,
+    "unmapped_zones": 0
+  },
+  "feature_counts": {
+    "NotModeled: Convolution: IR early/late filtering": {
+      "files": 1,
+      "instances": 2
+    },
+    "NotModeled: Convolution: IR size": {
+      "files": 1,
+      "instances": 2
+    },
+    "NotModeled: effect": {
+      "files": 1,
+      "instances": 18
+    },
+    "NotModeled: modulation of a module parameter": {
+      "files": 1,
+      "instances": 6065
+    },
+    "UnknownLaw: Filter: native multiband EQ": {
+      "files": 22,
+      "instances": 933
+    },
+    "UnknownLaw: LFO waveform (id, multi weights, pulse width)": {
+      "files": 1,
+      "instances": 167
+    },
+    "UnknownLaw: Filter: native legacy EQ lifecycle": {
+      "files": 39,
+      "instances": 2196
+    },
+    "InvalidValue: undefined voice group": {
+      "files": 38,
+      "instances": 304
+    },
+    "NotModeled: keyswitch script": {
+      "files": 6,
+      "instances": 6
+    }
+  },
+  "slot_outcomes_20_files": {
+    "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 320,
+    "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 20,
+    "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 20,
+    "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 728,
+    "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 728,
+    "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 1084,
+    "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 728,
+    "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 728,
+    "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 816,
+    "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 344,
+    "Mod/Flex enabled=true Approximated(NativeLawUnverified)": 64
+  },
+  "target_outcomes_20_files": {
+    "eqGain1 enabled=true Approximated(NativeLawUnverified)": 304,
+    "eqGain2 enabled=true Approximated(NativeLawUnverified)": 140,
+    "pitch enabled=true Approximated(NativeLawUnverified)": 728,
+    "volume enabled=true Approximated(NativeLawUnverified)": 2976
+  },
+  "fresh_translation_items": [
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 23595,
+        "buses": 19,
+        "chains": 502,
+        "dsp_slots": null,
+        "features": {
+          "NotModeled: Convolution: IR early/late filtering": 2,
+          "NotModeled: Convolution: IR size": 2,
+          "NotModeled: effect": 18,
+          "NotModeled: modulation of a module parameter": 6065,
+          "UnknownLaw: Filter: native multiband EQ": 5,
+          "UnknownLaw: LFO waveform (id, multi weights, pulse width)": 167
+        },
+        "groups": 483,
+        "modulators": 10347,
+        "routes": 4771,
+        "scripts": 3,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 25444,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 483,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 4473,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 11640,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            0,
+            3
+          ],
+          "zones": 95624
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 95624
+      },
+      "read_ms": 1411.766828,
+      "rss_after_read_kib": 275628,
+      "peak_rss_kib": 353036,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200251\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 15000,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 156,
+          "UnknownLaw: Filter: native multiband EQ": 40
+        },
+        "groups": 220,
+        "modulators": 1340,
+        "routes": 1120,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 1500,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 4112,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5320,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 17084
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 17084
+      },
+      "read_ms": 276.84065200000003,
+      "rss_after_read_kib": 79140,
+      "peak_rss_kib": 79116,
+      "loadavg": "12.27 20.23 24.01 8/5784 2200255\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Tubas KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 12496,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 24,
+          "UnknownLaw: Filter: native multiband EQ": 144
+        },
+        "groups": 220,
+        "modulators": 1396,
+        "routes": 1176,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 728,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 484,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5320,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 13716
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 13716
+      },
+      "read_ms": 355.60706,
+      "rss_after_read_kib": 68668,
+      "peak_rss_kib": 69328,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200258\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/3 Trombones KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 12789,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 148,
+          "UnknownLaw: Filter: native multiband EQ": 72
+        },
+        "groups": 220,
+        "modulators": 1424,
+        "routes": 1204,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 768,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 1452,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5328,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 14100
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 14100
+      },
+      "read_ms": 170.046409,
+      "rss_after_read_kib": 69856,
+      "peak_rss_kib": 69800,
+      "loadavg": "12.27 20.23 24.01 3/5785 2200260\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/3 Trumpets KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 11868,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 136,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 220,
+        "modulators": 1280,
+        "routes": 1060,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 1228,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 480,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5326,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 13572
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 13572
+      },
+      "read_ms": 192.51004,
+      "rss_after_read_kib": 69736,
+      "peak_rss_kib": 68792,
+      "loadavg": "12.27 20.23 24.01 3/5785 2200262\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/4 Horns KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 15008,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 164
+        },
+        "groups": 220,
+        "modulators": 1268,
+        "routes": 1048,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 1516,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 500,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5320,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 17104
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 17104
+      },
+      "read_ms": 321.151533,
+      "rss_after_read_kib": 80176,
+      "peak_rss_kib": 80448,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200273\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Bass Trombone Cimbasso Tuba KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 12780,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 164
+        },
+        "groups": 220,
+        "modulators": 1188,
+        "routes": 968,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 758,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 1216,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5360,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 14148
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 14148
+      },
+      "read_ms": 213.493854,
+      "rss_after_read_kib": 66964,
+      "peak_rss_kib": 67328,
+      "loadavg": "12.27 20.23 24.01 10/5785 2200275\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/2 Horns Mutes KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 4668,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 128,
+          "UnknownLaw: Filter: native multiband EQ": 68
+        },
+        "groups": 220,
+        "modulators": 1292,
+        "routes": 1072,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 600,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 1220,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5332,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 5444
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 5444
+      },
+      "read_ms": 116.020296,
+      "rss_after_read_kib": 45676,
+      "peak_rss_kib": 44564,
+      "loadavg": "12.27 20.23 24.01 3/5785 2200277\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/2 Horns Stopped KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 4668,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 128,
+          "UnknownLaw: Filter: native multiband EQ": 68
+        },
+        "groups": 220,
+        "modulators": 1292,
+        "routes": 1072,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 600,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 576,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5336,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 5444
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 5444
+      },
+      "read_ms": 81.174262,
+      "rss_after_read_kib": 46028,
+      "peak_rss_kib": 45052,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200279\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/3 Trombones Mutes KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 4736,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 100,
+          "UnknownLaw: Filter: native multiband EQ": 96
+        },
+        "groups": 220,
+        "modulators": 1320,
+        "routes": 1100,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 416,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 926,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5340,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 5692
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 5692
+      },
+      "read_ms": 72.797006,
+      "rss_after_read_kib": 47032,
+      "peak_rss_kib": 47800,
+      "loadavg": "12.27 20.23 24.01 6/5785 2200281\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/3 Trumpets Mutes KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 5324,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 100,
+          "UnknownLaw: Filter: native multiband EQ": 96
+        },
+        "groups": 220,
+        "modulators": 1320,
+        "routes": 1100,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 648,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 274,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5338,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 6172
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 6172
+      },
+      "read_ms": 127.73495500000001,
+      "rss_after_read_kib": 46680,
+      "peak_rss_kib": 46636,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200283\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/4 Horns Mutes KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 6788,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 100,
+          "UnknownLaw: Filter: native multiband EQ": 96
+        },
+        "groups": 220,
+        "modulators": 1320,
+        "routes": 1100,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 848,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 96,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5332,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 7884
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 7884
+      },
+      "read_ms": 171.14355,
+      "rss_after_read_kib": 53192,
+      "peak_rss_kib": 52032,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200285\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Mutes/4 Horns Stopped KS.nki",
+      "program": 0,
+      "counts": {
+        "assets": 4652,
+        "buses": 17,
+        "chains": 237,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 128,
+          "UnknownLaw: Filter: native multiband EQ": 68
+        },
+        "groups": 220,
+        "modulators": 1292,
+        "routes": 1072,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 584,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 220,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 8,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 5336,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 5412
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 5412
+      },
+      "read_ms": 87.162325,
+      "rss_after_read_kib": 46976,
+      "peak_rss_kib": 45988,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200287\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns AccSusCresc.nki",
+      "program": 0,
+      "counts": {
+        "assets": 320,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 24
+        },
+        "groups": 24,
+        "modulators": 132,
+        "routes": 108,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 176,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 72,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 634,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 324
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 324
+      },
+      "read_ms": 31.330428,
+      "rss_after_read_kib": 22340,
+      "peak_rss_kib": 22340,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200289\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Flutter.nki",
+      "program": 0,
+      "counts": {
+        "assets": 404,
+        "buses": 17,
+        "chains": 61,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 44
+        },
+        "groups": 44,
+        "modulators": 252,
+        "routes": 208,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 344,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 44,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 168,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1106,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 744
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 744
+      },
+      "read_ms": 23.097072999999998,
+      "rss_after_read_kib": 23748,
+      "peak_rss_kib": 23812,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200291\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Legato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 7456,
+        "buses": 17,
+        "chains": 77,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 60
+        },
+        "groups": 60,
+        "modulators": 364,
+        "routes": 304,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 340,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 60,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 3528,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1488,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 7792
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 7792
+      },
+      "read_ms": 76.909462,
+      "rss_after_read_kib": 44276,
+      "peak_rss_kib": 42988,
+      "loadavg": "12.27 20.23 24.01 5/5785 2200293\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Marcato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 740,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 24,
+        "modulators": 120,
+        "routes": 96,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 160,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 626,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1080
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1080
+      },
+      "read_ms": 26.422915000000003,
+      "rss_after_read_kib": 24588,
+      "peak_rss_kib": 24588,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200295\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Repetitions.nki",
+      "program": 0,
+      "counts": {
+        "assets": 1748,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 32
+        },
+        "groups": 32,
+        "modulators": 180,
+        "routes": 148,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 826,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1752
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1752
+      },
+      "read_ms": 29.630386,
+      "rss_after_read_kib": 26360,
+      "peak_rss_kib": 26360,
+      "loadavg": "12.27 20.23 24.01 3/5785 2200297\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Rips.nki",
+      "program": 0,
+      "counts": {
+        "assets": 308,
+        "buses": 17,
+        "chains": 37,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 20,
+        "modulators": 100,
+        "routes": 80,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 20,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 152,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 524,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 312
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 312
+      },
+      "read_ms": 25.756393,
+      "rss_after_read_kib": 22228,
+      "peak_rss_kib": 22228,
+      "loadavg": "12.27 20.23 24.01 4/5785 2200299\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccatissimo.nki",
+      "program": 0,
+      "counts": {
+        "assets": 1748,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": null,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 32,
+        "modulators": 200,
+        "routes": 168,
+        "scripts": 1,
+        "slot_outcomes": {},
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 830,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1752
+        },
+        "target_outcomes": {},
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1752
+      },
+      "read_ms": 44.571156,
+      "rss_after_read_kib": 26720,
+      "peak_rss_kib": 26720,
+      "loadavg": "12.27 20.23 24.01 3/5785 2200301\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 1748,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": 266,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 32,
+        "modulators": 200,
+        "routes": 168,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 4,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 820,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1752
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 20,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 20,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 32,
+          "volume enabled=true Approximated(NativeLawUnverified)": 128
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1752
+      },
+      "read_ms": 61.389742,
+      "rss_after_read_kib": 26884,
+      "peak_rss_kib": 26884,
+      "loadavg": "16.15 20.16 23.11 4/5794 2256554\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns SusToFlutter.nki",
+      "program": 0,
+      "counts": {
+        "assets": 7460,
+        "buses": 17,
+        "chains": 77,
+        "dsp_slots": 486,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 60
+        },
+        "groups": 60,
+        "modulators": 364,
+        "routes": 304,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 48,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Flex enabled=true Approximated(NativeLawUnverified)": 16,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 152,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 344,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 60,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 3512,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1500,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 7800
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 48,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 60,
+          "volume enabled=true Approximated(NativeLawUnverified)": 256
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 7800
+      },
+      "read_ms": 73.882536,
+      "rss_after_read_kib": 44468,
+      "peak_rss_kib": 43692,
+      "loadavg": "16.15 20.16 23.11 6/5794 2256556\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Tenuto.nki",
+      "program": 0,
+      "counts": {
+        "assets": 740,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 158,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 24,
+        "modulators": 120,
+        "routes": 96,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 136,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 624,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1080
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1080
+      },
+      "read_ms": 39.890828000000006,
+      "rss_after_read_kib": 24616,
+      "peak_rss_kib": 24616,
+      "loadavg": "16.15 20.16 23.11 7/5794 2256558\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Trills.nki",
+      "program": 0,
+      "counts": {
+        "assets": 724,
+        "buses": 17,
+        "chains": 61,
+        "dsp_slots": 342,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 44
+        },
+        "groups": 44,
+        "modulators": 252,
+        "routes": 208,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 104,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 664,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 44,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 44,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1104,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 1384
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 32,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 44,
+          "volume enabled=true Approximated(NativeLawUnverified)": 176
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 1384
+      },
+      "read_ms": 25.976817,
+      "rss_after_read_kib": 25752,
+      "peak_rss_kib": 25752,
+      "loadavg": "16.15 20.16 23.11 4/5794 2256560\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes AccSusCresc.nki",
+      "program": 0,
+      "counts": {
+        "assets": 248,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 182,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 24
+        },
+        "groups": 24,
+        "modulators": 132,
+        "routes": 108,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 48,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 646,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 252
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 12,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 252
+      },
+      "read_ms": 30.837078,
+      "rss_after_read_kib": 23888,
+      "peak_rss_kib": 23888,
+      "loadavg": "16.15 20.16 23.11 5/5794 2256562\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Flutter.nki",
+      "program": 0,
+      "counts": {
+        "assets": 188,
+        "buses": 17,
+        "chains": 61,
+        "dsp_slots": 334,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 36,
+          "UnknownLaw: Filter: native multiband EQ": 8
+        },
+        "groups": 44,
+        "modulators": 244,
+        "routes": 200,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 96,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 44,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 8,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1118,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 312
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 16,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 8,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 44,
+          "volume enabled=true Approximated(NativeLawUnverified)": 176
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 312
+      },
+      "read_ms": 32.416398,
+      "rss_after_read_kib": 24800,
+      "peak_rss_kib": 24800,
+      "loadavg": "16.15 20.16 23.11 4/5794 2256564\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Legato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 2516,
+        "buses": 17,
+        "chains": 77,
+        "dsp_slots": 474,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 48,
+          "UnknownLaw: Filter: native multiband EQ": 12
+        },
+        "groups": 60,
+        "modulators": 352,
+        "routes": 292,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 48,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Flex enabled=true Approximated(NativeLawUnverified)": 16,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 140,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 60,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 1160,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1500,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 2640
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 24,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 12,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 60,
+          "volume enabled=true Approximated(NativeLawUnverified)": 256
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 2640
+      },
+      "read_ms": 46.514253,
+      "rss_after_read_kib": 32228,
+      "peak_rss_kib": 32436,
+      "loadavg": "16.15 20.16 23.11 6/5795 2256567\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Marcato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 308,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 158,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 24,
+        "modulators": 120,
+        "routes": 96,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 638,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 432
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 432
+      },
+      "read_ms": 25.031119,
+      "rss_after_read_kib": 24244,
+      "peak_rss_kib": 24244,
+      "loadavg": "16.15 20.16 23.11 3/5801 2256575\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Rips.nki",
+      "program": 0,
+      "counts": {
+        "assets": 140,
+        "buses": 17,
+        "chains": 37,
+        "dsp_slots": 134,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 20,
+        "modulators": 100,
+        "routes": 80,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 32
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 20,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 40,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 536,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 144
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 20,
+          "volume enabled=true Approximated(NativeLawUnverified)": 80
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 144
+      },
+      "read_ms": 23.363798000000003,
+      "rss_after_read_kib": 23792,
+      "peak_rss_kib": 23792,
+      "loadavg": "16.15 20.16 23.11 3/5801 2256586\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Staccatissimo.nki",
+      "program": 0,
+      "counts": {
+        "assets": 668,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": 266,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 32,
+        "modulators": 200,
+        "routes": 168,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 4,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 842,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 672
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 20,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 20,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 32,
+          "volume enabled=true Approximated(NativeLawUnverified)": 128
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 672
+      },
+      "read_ms": 30.271297,
+      "rss_after_read_kib": 25736,
+      "peak_rss_kib": 25736,
+      "loadavg": "16.15 20.16 23.11 5/5801 2256588\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Staccato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 668,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": 266,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 32,
+        "modulators": 200,
+        "routes": 168,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 832,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 672
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 20,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 20,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 32,
+          "volume enabled=true Approximated(NativeLawUnverified)": 128
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 672
+      },
+      "read_ms": 27.407214,
+      "rss_after_read_kib": 25612,
+      "peak_rss_kib": 25612,
+      "loadavg": "16.15 20.16 23.11 12/5801 2256590\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes SusToFlutter.nki",
+      "program": 0,
+      "counts": {
+        "assets": 2516,
+        "buses": 17,
+        "chains": 77,
+        "dsp_slots": 474,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 48,
+          "UnknownLaw: Filter: native multiband EQ": 12
+        },
+        "groups": 60,
+        "modulators": 352,
+        "routes": 292,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 48,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Flex enabled=true Approximated(NativeLawUnverified)": 16,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 140,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 60,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 1152,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1512,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 2640
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 24,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 12,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 60,
+          "volume enabled=true Approximated(NativeLawUnverified)": 256
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 2640
+      },
+      "read_ms": 43.866373,
+      "rss_after_read_kib": 32312,
+      "peak_rss_kib": 32456,
+      "loadavg": "16.15 20.16 23.11 12/5805 2256596\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Tenuto.nki",
+      "program": 0,
+      "counts": {
+        "assets": 308,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 158,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 24,
+        "modulators": 120,
+        "routes": 96,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 636,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 432
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 432
+      },
+      "read_ms": 23.122833,
+      "rss_after_read_kib": 24460,
+      "peak_rss_kib": 24460,
+      "loadavg": "16.15 20.16 23.11 4/5805 2256598\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Mutes/2 Horns Mutes Trills.nki",
+      "program": 0,
+      "counts": {
+        "assets": 300,
+        "buses": 17,
+        "chains": 61,
+        "dsp_slots": 334,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 36,
+          "UnknownLaw: Filter: native multiband EQ": 8
+        },
+        "groups": 44,
+        "modulators": 244,
+        "routes": 200,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 96,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 240,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 44,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1116,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 536
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 16,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 8,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 44,
+          "volume enabled=true Approximated(NativeLawUnverified)": 176
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 536
+      },
+      "read_ms": 26.266992,
+      "rss_after_read_kib": 25672,
+      "peak_rss_kib": 25672,
+      "loadavg": "16.15 20.16 23.11 5/5805 2256600\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped AccSusCresc.nki",
+      "program": 0,
+      "counts": {
+        "assets": 248,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 182,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 24
+        },
+        "groups": 24,
+        "modulators": 132,
+        "routes": 108,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 36,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 650,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 252
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 12,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 252
+      },
+      "read_ms": 28.070297,
+      "rss_after_read_kib": 24272,
+      "peak_rss_kib": 24272,
+      "loadavg": "16.15 20.16 23.11 8/5806 2256603\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped Flutter.nki",
+      "program": 0,
+      "counts": {
+        "assets": 188,
+        "buses": 17,
+        "chains": 61,
+        "dsp_slots": 334,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 36,
+          "UnknownLaw: Filter: native multiband EQ": 8
+        },
+        "groups": 44,
+        "modulators": 244,
+        "routes": 200,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 96,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 44,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 44,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1122,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 312
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 16,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 8,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 44,
+          "volume enabled=true Approximated(NativeLawUnverified)": 176
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 312
+      },
+      "read_ms": 25.59165,
+      "rss_after_read_kib": 24720,
+      "peak_rss_kib": 24720,
+      "loadavg": "16.15 20.16 23.11 4/5805 2256614\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped Legato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 2516,
+        "buses": 17,
+        "chains": 77,
+        "dsp_slots": 474,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 48,
+          "UnknownLaw: Filter: native multiband EQ": 12
+        },
+        "groups": 60,
+        "modulators": 352,
+        "routes": 292,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 48,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Flex enabled=true Approximated(NativeLawUnverified)": 16,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 140,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 60,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 16
+        },
+        "source": {
+          "active_loops": 128,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 60,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 460,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 1504,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 2640
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 24,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 12,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 60,
+          "volume enabled=true Approximated(NativeLawUnverified)": 256
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 2640
+      },
+      "read_ms": 46.744586999999996,
+      "rss_after_read_kib": 32320,
+      "peak_rss_kib": 32448,
+      "loadavg": "16.15 20.16 23.11 3/5812 2256623\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped Marcato.nki",
+      "program": 0,
+      "counts": {
+        "assets": 308,
+        "buses": 17,
+        "chains": 41,
+        "dsp_slots": 158,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 24,
+        "modulators": 120,
+        "routes": 96,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 24,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 40
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 24,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 24,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 642,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 432
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 24,
+          "volume enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 432
+      },
+      "read_ms": 36.81836,
+      "rss_after_read_kib": 24340,
+      "peak_rss_kib": 24340,
+      "loadavg": "16.15 20.16 23.11 3/5812 2256625\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped Rips.nki",
+      "program": 0,
+      "counts": {
+        "assets": 140,
+        "buses": 17,
+        "chains": 37,
+        "dsp_slots": 134,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12
+        },
+        "groups": 20,
+        "modulators": 100,
+        "routes": 80,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 12,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 20,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 32
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 20,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 4,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 536,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 144
+        },
+        "target_outcomes": {
+          "pitch enabled=true Approximated(NativeLawUnverified)": 20,
+          "volume enabled=true Approximated(NativeLawUnverified)": 80
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 144
+      },
+      "read_ms": 27.613378,
+      "rss_after_read_kib": 23836,
+      "peak_rss_kib": 23836,
+      "loadavg": "16.15 20.16 23.11 3/5812 2256627\n"
+    },
+    {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/Stopped/2 Horns Stopped Staccatissimo.nki",
+      "program": 0,
+      "counts": {
+        "assets": 668,
+        "buses": 17,
+        "chains": 49,
+        "dsp_slots": 266,
+        "features": {
+          "InvalidValue: undefined voice group": 8,
+          "NotModeled: keyswitch script": 1,
+          "UnknownLaw: Filter: native legacy EQ lifecycle": 12,
+          "UnknownLaw: Filter: native multiband EQ": 20
+        },
+        "groups": 32,
+        "modulators": 200,
+        "routes": 168,
+        "scripts": 1,
+        "slot_outcomes": {
+          "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 32,
+          "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+          "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/MidiCc(1) enabled=true Approximated(NativeLawUnverified)": 8,
+          "Mod/MidiCc(11) enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 32,
+          "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 96
+        },
+        "source": {
+          "active_loops": 8,
+          "counted_loops": 0,
+          "group_midi_channels": 0,
+          "groups": 32,
+          "muted_groups": 0,
+          "nondefault_loop_tune": 0,
+          "nondefault_zone_tune": 0,
+          "program_key_range": [
+            0,
+            127
+          ],
+          "program_velocity_range": [
+            1,
+            127
+          ],
+          "retained_unclassified_tail_bytes": 846,
+          "sampleless_zones": 0,
+          "soloed_groups": 0,
+          "source_modes": [
+            3
+          ],
+          "zones": 672
+        },
+        "target_outcomes": {
+          "eqGain1 enabled=true Approximated(NativeLawUnverified)": 20,
+          "eqGain2 enabled=true Approximated(NativeLawUnverified)": 20,
+          "pitch enabled=true Approximated(NativeLawUnverified)": 32,
+          "volume enabled=true Approximated(NativeLawUnverified)": 128
+        },
+        "unmapped_groups": 0,
+        "unmapped_zones": 0,
+        "zones": 672
+      },
+      "read_ms": 45.829010000000004,
+      "rss_after_read_kib": 25808,
+      "peak_rss_kib": 25808,
+      "loadavg": "16.15 20.16 23.11 8/5812 2256629\n"
+    }
+  ],
+  "existing_initialized_selections": [
+    {
+      "file": "initialized-00.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "ANALOG STRINGS",
+          "groups": 483,
+          "zones": 95624
+        }
+      ],
+      "converted": {
+        "assets": 23595,
+        "buses": 19,
+        "chains": 502,
+        "controls": 2398,
+        "groups": 483,
+        "impulses": 2,
+        "modulators": 10347,
+        "routes": 4771,
+        "scripts": 3,
+        "zones": 95624
+      },
+      "features": {
+        "modulation of a module parameter": 6065,
+        "LFO waveform (id, multi weights, pulse width)": 167,
+        "Filter: native multiband EQ": 5,
+        "effect": 18,
+        "Convolution: IR size": 2,
+        "Convolution: IR early/late filtering": 2,
+        "script Warning: later ui_control callback replaces an earlier one": 27
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-01.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "2 Horns KS",
+          "groups": 220,
+          "zones": 17084
+        }
+      ],
+      "converted": {
+        "assets": 15000,
+        "buses": 17,
+        "chains": 237,
+        "controls": 708,
+        "groups": 220,
+        "impulses": 1,
+        "modulators": 1340,
+        "routes": 1120,
+        "scripts": 1,
+        "zones": 17084
+      },
+      "features": {
+        "Filter: native legacy EQ lifecycle": 156,
+        "Filter: native multiband EQ": 40,
+        "script Unsupported: output_channel_name": 1,
+        "script Warning: polyphonic variables start at N; initializer ignored": 1
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-02.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "01 Areia - 16 Violins - Core Techniques",
+          "groups": 1122,
+          "zones": 49152
+        }
+      ],
+      "converted": {
+        "assets": 24576,
+        "buses": 18,
+        "chains": 17,
+        "controls": 0,
+        "groups": 1122,
+        "impulses": 0,
+        "modulators": 7968,
+        "routes": 6846,
+        "scripts": 1,
+        "zones": 49152
+      },
+      "features": {
+        "Reverb: reverb algorithm": 1,
+        "keyswitch script": 1,
+        "script Warning: find_group: group not found; -N": 2,
+        "script Warning: polyphonic variable read outside a note callback is N": 6
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-03.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "01 Chorus - Women - Traditional Articulations",
+          "groups": 413,
+          "zones": 25249
+        }
+      ],
+      "converted": {
+        "assets": 25249,
+        "buses": 18,
+        "chains": 17,
+        "controls": 0,
+        "groups": 413,
+        "impulses": 0,
+        "modulators": 2478,
+        "routes": 2065,
+        "scripts": 1,
+        "zones": 25249
+      },
+      "features": {
+        "Reverb: reverb algorithm": 1,
+        "script Warning: polyphonic variable read outside a note callback is N": 5
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-04.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Dolce - 01 7 1st Violins - Legato",
+          "groups": 240,
+          "zones": 30768
+        }
+      ],
+      "converted": {
+        "assets": 14784,
+        "buses": 18,
+        "chains": 66,
+        "controls": 432,
+        "groups": 240,
+        "impulses": 0,
+        "modulators": 1992,
+        "routes": 1800,
+        "scripts": 1,
+        "zones": 30768
+      },
+      "features": {
+        "Filter: native multiband EQ": 48,
+        "Reverb: reverb algorithm": 1,
+        "script Warning: array index N out of bounds": 36,
+        "script Warning: find_group: group not found; -N": 2,
+        "script Warning: polyphonic variable read outside a note callback is N": 6
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-07.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Morphology Evolved",
+          "groups": 933,
+          "zones": 3495
+        }
+      ],
+      "converted": {
+        "assets": 458,
+        "buses": 16,
+        "chains": 919,
+        "controls": 9018,
+        "groups": 933,
+        "impulses": 0,
+        "modulators": 7722,
+        "routes": 6789,
+        "scripts": 1,
+        "zones": 3495
+      },
+      "features": {
+        "LFO waveform (id, multi weights, pulse width)": 6,
+        "effect": 3,
+        "wavetable source": 30,
+        "script Warning: $name clamped to its declared range": 2,
+        "script Warning: play_note duration -N needs a note callback; faults at runtime": 3,
+        "script interface: $CONTROL_PAR_AUTOMATION_ID[]": 1,
+        "script interface: $CONTROL_PAR_CURSOR_PICTURE[]": 1
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-08.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Pacific - Ens Strings - 10 Cellos - Legato Sustains",
+          "groups": 64,
+          "zones": 6136
+        }
+      ],
+      "converted": {
+        "assets": 4470,
+        "buses": 17,
+        "chains": 61,
+        "controls": 72,
+        "groups": 64,
+        "impulses": 0,
+        "modulators": 540,
+        "routes": 484,
+        "scripts": 1,
+        "zones": 6136
+      },
+      "features": {
+        "Filter: native multiband EQ": 8
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-09.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Vista - 3 Basses.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Vista - 3 Basses",
+          "groups": 64,
+          "zones": 9360
+        }
+      ],
+      "converted": {
+        "assets": 3736,
+        "buses": 17,
+        "chains": 61,
+        "controls": 72,
+        "groups": 64,
+        "impulses": 0,
+        "modulators": 544,
+        "routes": 480,
+        "scripts": 1,
+        "zones": 9360
+      },
+      "features": {
+        "Filter: native multiband EQ": 8,
+        "modulation of a module parameter": 8,
+        "script Warning: write to %CC lowered as set_controller": 1
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-10.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/01 Multi Patches/Solo - 01 Solo Violin.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Solo - 01 Solo Violin",
+          "groups": 357,
+          "zones": 23982
+        }
+      ],
+      "converted": {
+        "assets": 11858,
+        "buses": 18,
+        "chains": 17,
+        "controls": 0,
+        "groups": 357,
+        "impulses": 0,
+        "modulators": 2142,
+        "routes": 1785,
+        "scripts": 1,
+        "zones": 23982
+      },
+      "features": {
+        "Reverb: reverb algorithm": 1,
+        "keyswitch script": 1
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    },
+    {
+      "file": "initialized-11.jsonl",
+      "item": {
+        "kind": "kontakt",
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki",
+        "program": 0
+      },
+      "source_programs": [
+        {
+          "program": 0,
+          "name": "Una Corda Cotton",
+          "groups": 113,
+          "zones": 4402
+        }
+      ],
+      "converted": {
+        "assets": 3946,
+        "buses": 18,
+        "chains": 130,
+        "controls": 37,
+        "groups": 113,
+        "impulses": 3,
+        "modulators": 136,
+        "routes": 26,
+        "scripts": 4,
+        "zones": 4402
+      },
+      "features": {
+        "modulation of a module parameter": 8,
+        "effect": 41,
+        "Filter: filter type": 15,
+        "Filter: native multiband EQ": 3,
+        "Compressor: compressor mode": 1,
+        "Convolution: IR early/late filtering": 2,
+        "script Warning: $name clamped to its declared range": 15,
+        "script Warning: menu item N out of range": 5,
+        "script Warning: array index -N out of bounds": 1,
+        "script Warning: play_note duration -N needs a note callback; faults at runtime": 6
+      },
+      "groups_missing": 0,
+      "zones_missing": 0
+    }
+  ],
+  "analog_cold_stream_probe": {
+    "programs": [
+      {
+        "bound_scripts": 3,
+        "counts": {
+          "assets": 23595,
+          "buses": 19,
+          "chains": 502,
+          "dsp_slots": 15021,
+          "features": {
+            "NotModeled: Convolution: IR early/late filtering": 2,
+            "NotModeled: Convolution: IR size": 2,
+            "NotModeled: effect": 18,
+            "NotModeled: modulation of a module parameter": 6065,
+            "UnknownLaw: Filter: native multiband EQ": 5,
+            "UnknownLaw: LFO waveform (id, multi weights, pulse width)": 167
+          },
+          "groups": 483,
+          "modulators": 10347,
+          "routes": 4771,
+          "scripts": 3,
+          "slot_outcomes": {
+            "Filter/EQ:v92 enabled=false Approximated(NativeLawUnverified)": 3,
+            "Filter/EQ:v92 enabled=true Approximated(NativeLawUnverified)": 2,
+            "Filter/Filter:100 enabled=false Approximated(NativeLawUnverified)": 167,
+            "Filter/Filter:100 enabled=true Approximated(NativeLawUnverified)": 10,
+            "Filter/Filter:102 enabled=false Approximated(NativeLawUnverified)": 1,
+            "Filter/Filter:102 enabled=true Approximated(NativeLawUnverified)": 2,
+            "Filter/Filter:103 enabled=false Approximated(NativeLawUnverified)": 1,
+            "Filter/Filter:103 enabled=true Approximated(NativeLawUnverified)": 1,
+            "Filter/Filter:106 enabled=false Approximated(NativeLawUnverified)": 16,
+            "Filter/Filter:106 enabled=true Approximated(NativeLawUnverified)": 267,
+            "Filter/Filter:13 enabled=false Approximated(NativeLawUnverified)": 10,
+            "Filter/Filter:39 enabled=true Approximated(NativeLawUnverified)": 1,
+            "Filter/Filter:70 enabled=true Approximated(NativeLawUnverified)": 3,
+            "Filter/Filter:71 enabled=false Approximated(NativeLawUnverified)": 1,
+            "Filter/Filter:71 enabled=true Approximated(NativeLawUnverified)": 5,
+            "Filter/Filter:90 enabled=false Approximated(NativeLawUnverified)": 192,
+            "Filter/Filter:90 enabled=true Approximated(NativeLawUnverified)": 291,
+            "Fx/FX:10 enabled=false Dropped(NotModeled)": 3,
+            "Fx/FX:10 enabled=true Dropped(NotModeled)": 5,
+            "Fx/FX:11 enabled=true Dropped(NotModeled)": 1,
+            "Fx/FX:14 enabled=false Approximated(NativeLawUnverified)": 1,
+            "Fx/FX:15 enabled=false Dropped(NotModeled)": 4,
+            "Fx/FX:16 enabled=false Approximated(NativeLawUnverified)": 1,
+            "Fx/FX:16 enabled=true Approximated(NativeLawUnverified)": 1,
+            "Fx/FX:17 enabled=true Approximated(NativeLawUnverified)": 1,
+            "Fx/FX:19 enabled=false Approximated(NativeLawUnverified)": 4,
+            "Fx/FX:19 enabled=true Approximated(NativeLawUnverified)": 1,
+            "Fx/FX:1a enabled=false Approximated(NativeLawUnverified)": 240,
+            "Fx/FX:1c enabled=true Dropped(NotModeled)": 1,
+            "Fx/FX:1d enabled=false Approximated(NativeLawUnverified)": 465,
+            "Fx/FX:1d enabled=true Approximated(NativeLawUnverified)": 18,
+            "Fx/FX:1e enabled=false Approximated(NativeLawUnverified)": 475,
+            "Fx/FX:1e enabled=true Approximated(NativeLawUnverified)": 8,
+            "Fx/FX:1f enabled=true Approximated(NativeLawUnverified)": 4,
+            "Fx/FX:20 enabled=false Approximated(NativeLawUnverified)": 206,
+            "Fx/FX:20 enabled=true Approximated(NativeLawUnverified)": 277,
+            "Fx/FX:4d enabled=false Dropped(NotModeled)": 4,
+            "Mod/AHDSR enabled=false Dropped(SavedBypassNotInstantiated)": 505,
+            "Mod/AHDSR enabled=true Approximated(NativeLawUnverified)": 482,
+            "Mod/AHDSR enabled=true Dropped(TargetsDropped)": 456,
+            "Mod/Constant enabled=true Approximated(NativeLawUnverified)": 1797,
+            "Mod/Constant enabled=true Dropped(TargetsDropped)": 4767,
+            "Mod/LFO:5 enabled=false Dropped(SavedBypassNotInstantiated)": 2180,
+            "Mod/LFO:5 enabled=true Approximated(NativeLawUnverified)": 5,
+            "Mod/LFO:5 enabled=true Dropped(SourceNotExecuted)": 158,
+            "Mod/LFO:5 enabled=true Dropped(TargetsDropped)": 57,
+            "Mod/PitchBend enabled=true Approximated(NativeLawUnverified)": 480,
+            "Mod/Velocity enabled=true Approximated(NativeLawUnverified)": 951,
+            "Mod/Velocity enabled=true Dropped(TargetsDropped)": 490
+          },
+          "source": {
+            "active_loops": 25444,
+            "counted_loops": 0,
+            "group_midi_channels": 0,
+            "groups": 483,
+            "muted_groups": 0,
+            "nondefault_loop_tune": 0,
+            "nondefault_zone_tune": 4473,
+            "program_key_range": [
+              0,
+              127
+            ],
+            "program_velocity_range": [
+              1,
+              127
+            ],
+            "retained_unclassified_tail_bytes": 11640,
+            "sampleless_zones": 0,
+            "soloed_groups": 0,
+            "source_modes": [
+              0,
+              3
+            ],
+            "zones": 95624
+          },
+          "target_outcomes": {
+            "bitdepth enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "bitdepth enabled=true Dropped(SourceNotExecuted)": 158,
+            "bitdepth enabled=true Dropped(TargetsDropped)": 538,
+            "distortionIntensity enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "distortionIntensity enabled=true Dropped(SourceNotExecuted)": 158,
+            "distortionIntensity enabled=true Dropped(TargetsDropped)": 537,
+            "downsample enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "downsample enabled=true Dropped(SourceNotExecuted)": 158,
+            "downsample enabled=true Dropped(TargetsDropped)": 538,
+            "filterCutoff enabled=false Dropped(SavedBypassNotInstantiated)": 1729,
+            "filterCutoff enabled=true Approximated(NativeLawUnverified)": 1444,
+            "filterCutoff enabled=true Dropped(SourceNotExecuted)": 158,
+            "filterCutoff enabled=true Dropped(TargetsDropped)": 29,
+            "filterQ enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "filterQ enabled=true Approximated(NativeLawUnverified)": 527,
+            "filterQ enabled=true Dropped(SourceNotExecuted)": 158,
+            "filterQ enabled=true Dropped(TargetsDropped)": 10,
+            "formantSize enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "formantSize enabled=true Dropped(SourceNotExecuted)": 158,
+            "formantSize enabled=true Dropped(TargetsDropped)": 538,
+            "formantTalk enabled=false Dropped(SavedBypassNotInstantiated)": 1729,
+            "formantTalk enabled=true Dropped(SourceNotExecuted)": 158,
+            "formantTalk enabled=true Dropped(TargetsDropped)": 1475,
+            "loopLength enabled=true Approximated(NativeLawUnverified)": 160,
+            "loopStart enabled=true Approximated(NativeLawUnverified)": 160,
+            "pan enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "pan enabled=true Approximated(NativeLawUnverified)": 57,
+            "pan enabled=true Dropped(SourceNotExecuted)": 158,
+            "pitch enabled=false Dropped(SavedBypassNotInstantiated)": 956,
+            "pitch enabled=true Approximated(NativeLawUnverified)": 487,
+            "playPos enabled=true Approximated(NativeLawUnverified)": 480,
+            "shaper enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "shaper enabled=true Dropped(SourceNotExecuted)": 158,
+            "shaper enabled=true Dropped(TargetsDropped)": 537,
+            "startPhase enabled=true Approximated(NativeLawUnverified)": 57,
+            "startPhase enabled=true Dropped(TargetsDropped)": 1863,
+            "volume enabled=false Dropped(SavedBypassNotInstantiated)": 1705,
+            "volume enabled=true Approximated(NativeLawUnverified)": 1017,
+            "volume enabled=true Dropped(SourceNotExecuted)": 158
+          },
+          "unmapped_groups": 0,
+          "unmapped_zones": 0,
+          "zones": 95624
+        },
+        "format": "kontra-load-audit",
+        "head_bytes": 0,
+        "loadavg": "13.34 18.51 22.31 2/5766 2262647\n",
+        "native_equivalence": "unknown",
+        "ok": true,
+        "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+        "peak_rss_kib": 443940,
+        "peak_thread_heap_bytes": 365297062,
+        "pool_bytes": 25165824,
+        "program": 0,
+        "read_ms": 727.612367,
+        "ready_ms": 4755.37104,
+        "rss_after_read_kib": 277160,
+        "rss_ready_kib": 372848,
+        "sample_full_bytes": 50156846256,
+        "schema": 1,
+        "script_init_faults": 0,
+        "streamed": true
+      }
+    ],
+    "returncode": 0,
+    "library": "00",
+    "mode": "loader-stream",
+    "repeat": "cold",
+    "stages": [
+      {
+        "stage": "file_read_ni_container",
+        "ms": 6.702125,
+        "rss_kb": 13416,
+        "hwm_kb": 16872
+      },
+      {
+        "stage": "decrypt_expand",
+        "ms": 26.033129,
+        "rss_kb": 76120,
+        "hwm_kb": 192160
+      },
+      {
+        "stage": "ni_chunk_parse",
+        "ms": 7.238326,
+        "rss_kb": 76248,
+        "hwm_kb": 192160
+      },
+      {
+        "stage": "ni_objects_parse",
+        "ms": 88.27595600000001,
+        "rss_kb": 116300,
+        "hwm_kb": 192160
+      },
+      {
+        "stage": "ksp_frontend",
+        "ms": 19.055507
+      },
+      {
+        "stage": "ksp_on_init",
+        "ms": 5.9786220000000005
+      },
+      {
+        "stage": "ksp_frontend",
+        "ms": 0.7710049999999999
+      },
+      {
+        "stage": "ksp_on_init",
+        "ms": 1.4011259999999999
+      },
+      {
+        "stage": "ksp_frontend",
+        "ms": 0.755295
+      },
+      {
+        "stage": "ksp_on_init",
+        "ms": 1.7769030000000001
+      },
+      {
+        "stage": "translate_ksp_init",
+        "ms": 39.172965,
+        "rss_kb": 165616,
+        "hwm_kb": 192160
+      },
+      {
+        "stage": "translate_resource_ir_dsp",
+        "ms": 5.518473999999999,
+        "rss_kb": 202492,
+        "hwm_kb": 202492
+      },
+      {
+        "stage": "translate_zones_sample_resolve",
+        "ms": 261.844131,
+        "rss_kb": 356144,
+        "hwm_kb": 356144
+      },
+      {
+        "stage": "translate_keys_validate",
+        "ms": 53.240299,
+        "rss_kb": 355908,
+        "hwm_kb": 355908
+      },
+      {
+        "stage": "translate_resolve_ir",
+        "ms": 598.8152319999999,
+        "rss_kb": 335040,
+        "hwm_kb": 355476
+      },
+      {
+        "stage": "sample_header_cache",
+        "hit": false
+      },
+      {
+        "stage": "sample_source_resolve",
+        "ms": 792.378812,
+        "rss_kb": 285204,
+        "hwm_kb": 355476
+      },
+      {
+        "stage": "sample_headers_latency_probe",
+        "ms": 448.984181,
+        "rss_kb": 290936,
+        "hwm_kb": 355476
+      },
+      {
+        "stage": "ksp_callback_lower",
+        "ms": 55.391869
+      },
+      {
+        "stage": "ksp_state_mirror",
+        "ms": 0.805155
+      },
+      {
+        "stage": "ksp_diagnostics",
+        "ms": 0.396607,
+        "warnings": 27
+      },
+      {
+        "stage": "ksp_model_assemble",
+        "ms": 1.716083,
+        "widgets": 934,
+        "instructions": 200393
+      },
+      {
+        "stage": "ksp_callback_lower",
+        "ms": 0.21762499999999999
+      },
+      {
+        "stage": "ksp_state_mirror",
+        "ms": 0.14205199999999998
+      },
+      {
+        "stage": "ksp_diagnostics",
+        "ms": 0.027441,
+        "warnings": 0
+      },
+      {
+        "stage": "ksp_model_assemble",
+        "ms": 0.28142500000000004,
+        "widgets": 38,
+        "instructions": 5638
+      },
+      {
+        "stage": "ksp_callback_lower",
+        "ms": 0.19869399999999998
+      },
+      {
+        "stage": "ksp_state_mirror",
+        "ms": 0.130083
+      },
+      {
+        "stage": "ksp_diagnostics",
+        "ms": 0.02334,
+        "warnings": 0
+      },
+      {
+        "stage": "ksp_model_assemble",
+        "ms": 0.26949500000000004,
+        "widgets": 38,
+        "instructions": 5638
+      },
+      {
+        "stage": "script_ui_prepare",
+        "ms": 190.50962299999998,
+        "rss_kb": 291056,
+        "hwm_kb": 355476
+      },
+      {
+        "stage": "region_playback_templates",
+        "regions": 95624,
+        "region_bytes": 504,
+        "cursor_bytes": 744,
+        "template_bytes": 128,
+        "multi_loop_regions": 0,
+        "multi_loop_bytes": 536
+      },
+      {
+        "stage": "core_lower_bindings",
+        "ms": 2358.267031,
+        "rss_kb": 372812,
+        "hwm_kb": 443940
+      },
+      {
+        "stage": "stream_page_pool",
+        "ms": 0.12297299999999999,
+        "rss_kb": 372844,
+        "hwm_kb": 443940
+      },
+      {
+        "stage": "sample_preload",
+        "ms": 2.64667,
+        "rss_kb": 372844,
+        "hwm_kb": 443940
+      }
+    ],
+    "process_wall_s": 4.817692780008656
+  },
+  "tests": {
+    "structured_children": {
+      "before_requested_bytes": 4194448,
+      "after_requested_bytes": 2097284,
+      "child_section_bytes": 2097164,
+      "failing_first": true,
+      "passed": true
+    },
+    "archive_identity": {
+      "before_alias_mismatches": 2,
+      "after_alias_mismatches": 0,
+      "failing_first": true,
+      "passed": true
+    },
+    "moved_archive": {
+      "before_missing_fixture": 1,
+      "after_missing_fixture": 0,
+      "failing_first": true,
+      "passed": true
+    },
+    "default_voice_group": {
+      "before_missing_shared_limit": true,
+      "after_missing_shared_limit": false,
+      "failing_first": true,
+      "passed": true,
+      "source_holes_preserved": true
+    }
+  },
+  "numeric_receipt_sha256": {
+    "loader-0000-1.json": "6dd7a4f073dd427ef15c9f0ebd2f9d3ba2caf16955c1def039d1c4d3db77f775",
+    "loader-0001-1.json": "579cd4c36860cae1b8917cffccf54b160a3da1139c608b1bc1e87339c21d3b40",
+    "loader-0002-1.json": "e886ab481cbe012c68fa4388cfc415a379ee15c3a8b232ce174d803c30dda73a",
+    "loader-0003-1.json": "3e853f37098f6d65e0d9687fbed59e6bf1627339da504d202528a9aa11de6c14",
+    "loader-0004-1.json": "560750d2e33b73959d75be53580e865a78ff66697a85fbaef4a210faabb60032",
+    "loader-0005-1.json": "f976e160d99ac160f2191a97b562e5829c4fb2717dbd099b49dbe8d4e43963e3",
+    "loader-0006-1.json": "45990f74fdcd17f659997dd00d1d99e087d4336a6daf9e8565e654de79d1cf8d",
+    "loader-0007-1.json": "5e486eea6067f034acc0ad26c16d2c8f93552e31dfbca500096907eb2ea2fa17",
+    "loader-0008-1.json": "8632acc079c845d2c62d9e6d5c5f82439544220e1344d4b6fdea0ef69217fef8",
+    "loader-0009-1.json": "0f20c39a0c17dcb4ebc551fd0187b38eb999787103999fa029a24bc21be28a14",
+    "loader-0010-1.json": "553328d0587974bf35f7b355dd97cc943de62e403d7b2c8ae2502639b7a87551",
+    "loader-0011-1.json": "16ff01c7f9b43ac6606a23fb4721d0e1d004b0acd063eee7a627efd6ab909d87",
+    "loader-0012-1.json": "8151656f1fa5f8bdae1f0306a7f4c0fae587b7f406c03811f17b0c6c3b2cb351",
+    "loader-0013-1.json": "a1ba41d08a155de8902f75d139d869ab153c6f982dbe413c8b1ce59f200e6789",
+    "loader-0014-1.json": "97117d78e2b4b1da92897709013df550c9073737f11f927ec6d2f374596c6b63",
+    "loader-0015-1.json": "9557ddf136756352133b34e1efaceee7318890cf7c010f1421c1a89c39311d4a",
+    "loader-0016-1.json": "00ce6673bcbc79b99c5ebbd9762c448765f2175712dc0a9afdc875dc0d8d7086",
+    "loader-0017-1.json": "1978bf3810f6654bcf9e93cba946a3da92b3fc55dc03c5faab896453c00deb91",
+    "loader-0018-1.json": "ea7fa752c9f06fd568d882aad12dd954ccfc487da1154c0d198bb29946ac897b",
+    "loader-0019-1.json": "3ed64b99b45d9af523dbf44a07272620d76c41e24587dd01c42c056f463061ca",
+    "loader-0020-1.json": "117ac9c73d6efabf35148dcd85bf58962bccfb562d37d846e8f84fdabb622a08",
+    "loader-0021-1.json": "40124288e0282ab2dea192241496c001b10318dcd937019033260fd5ca221860",
+    "loader-0022-1.json": "6fb3444777a5c99c9fc7c5dacfcfa958b715fdfc8570a6b813904c7bc11075e2",
+    "loader-0023-1.json": "51a84cc7c1fea567c20a8e78bac205b6608c063c70852b6e78ffbcfeaa4a8382",
+    "loader-0024-1.json": "7996f8cdbd2bc98cfe931bb7b1cf6d051650d190eeb6ed2c6aa6fb922200631f",
+    "loader-0025-1.json": "6941e0d25f5d238c363d246159f4d088ef6da0aabd4f81c54b1bed2833e74657",
+    "loader-0026-1.json": "ec8a8ea830f5ea4441a54273c8f3003e07f67861b9e6c4b47a311b487ddfa051",
+    "loader-0027-1.json": "d061a8e43ec5a4b4edb5f3c564bbd25691a3c5845da34f68417b94da8e4f7c28",
+    "loader-0028-1.json": "343269e2342cddb7e1d62299addddefc76e814a0ac006723bd7579f8f4503be5",
+    "loader-0029-1.json": "be0695145fd8f31234bfd719029c876e659ee07665748103d794921a2022b4a3",
+    "loader-0030-1.json": "2790fbe0e48acc78c7856e0731762d3f3a14219695718e25045ce2595732bc0a",
+    "loader-0031-1.json": "d8f0362a89967c85e76be6ab6067ae9a3649d9b5418362e43214f35e6b72afb7",
+    "loader-0032-1.json": "f3e4a5cc5784f391b46e86f42a7c763f2c72f4eaabc50bb9526ef4609a3f9646",
+    "loader-0033-1.json": "94a056e7ae7883f4f4c3b766f8bcbe7ba02f5cf6b585efa84f8ea6fa0fd1fed6",
+    "loader-0034-1.json": "0a68a0a3ca6830e2d916aad7e54e325ac6166759db6f6712a4cdb07a7e758e6d",
+    "loader-0035-1.json": "e5c3dde228c88f9b93e8786541411c0c429a292b8659caa51ed38de5e45073c4",
+    "loader-0036-1.json": "4ffd94a378a6ae38b4aa60b0d4679978e27858818c1535ca8515e92855f1f52c",
+    "loader-0037-1.json": "bb638ee0436ac3dbdce6dd15a82d5f53db1776f7f0862131007cd777c4bd4b05",
+    "loader-0038-1.json": "99ea9c7fd0ee119bf74fb5ad542a7d33210c0ac02d078b425154e9b5f4754a53",
+    "loader-0039-1.json": "67abecf86c46c02cfb410b0e123a0dc5efe178706da0eb3658ee4eb9fc2e026c"
+  },
+  "focused_validation": {
+    "green-1.log": {
+      "sha256": "ad8c4f83cc7f1be118a8c9565e2adc580044729b60bc9b6c4cb61787fc5f3b00",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+    },
+    "green-2.log": {
+      "sha256": "b86e6062fc55c370f11d8f63c70376b6d69f357b1b5180881d5e119ad938928d",
+      "result": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s"
+    },
+    "green-voice-focused.log": {
+      "sha256": "8cf9c7fb44d1e353de268b34dfcb7a813b724bfa181397341d9bf4bcdc68de44",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 157 filtered out; finished in 0.00s"
+    },
+    "impulse-focused.log": {
+      "sha256": "49c8638e8f0082a8f4d30303f30d694e0dd66e67d3ca730d7901ff7d28985002",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 157 filtered out; finished in 0.00s"
+    },
+    "check-tool-final.log": {
+      "sha256": "4185aadeec7b8b43c0fe99fd747c9d06afd29907a0bb14c5ada5ec00cc082cdd",
+      "result": null
+    }
+  },
+  "measurement_status": "Stopped by user; NEVER BUILD supersedes final workspace/no-run and survey requirements",
+  "cleanup": "Owned target and scratch removed after evidence preservation; frozen baseline hashes are historical provenance"
+}

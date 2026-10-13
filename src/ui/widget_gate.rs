@@ -728,6 +728,152 @@ fn original_widget_gestures() {
     );
 }
 
+/// Reuses the product editor, library reader, CPU painter and real pointer
+/// dispatch. Inventory contains UI metadata only, never library source/state.
+#[test]
+#[ignore = "installed Conflux page capture; set KONTRA_WIDGET_GATE_PATH and KONTRA_CONFLUX_SHOTS"]
+fn conflux_authored_pages_and_inventory() {
+    use serde_json::json;
+    let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
+    let output = std::path::PathBuf::from(std::env::var_os("KONTRA_CONFLUX_SHOTS").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let program = std::env::var("KONTRA_WIDGET_GATE_PROGRAM").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(0);
+    let view = std::env::var("KONTRA_CONFLUX_VIEW").ok()
+        .and_then(|s| s.parse().ok()).unwrap_or(1);
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path: path.clone(), program, view, ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while native_ui::gate_targets(0).is_empty() && Instant::now() < deadline {
+        gate.settle();
+    }
+    // A screenshot of a placeholder is retained as evidence, but fails parity.
+    let shoot = |gate: &Gate, name: &str| {
+        moose::core::screenshot::save_png(&output.join(format!("{name}.png")),
+            &super::tests::pixels(&gate.editor.ui, 1500, 1100), 1500, 1100);
+    };
+    shoot(&gate, "initial");
+    let mut resources =
+        sampler_kontakt::Resources::for_program(std::path::Path::new(&path), program)
+            .expect("the selected program's authored resource owner must resolve");
+    let resource_root = resources.root().to_path_buf();
+    let names = resources.names("");
+    let mut modules = Vec::new();
+    let mut picture_sets = Vec::new();
+    for name in &names {
+        if name.ends_with(".nui") {
+            let bytes = resources.read(name).expect("authored NativeUI module must resolve");
+            let source = std::str::from_utf8(&bytes).unwrap();
+            modules.push(json!({"path":name,"bytes":bytes.len(),"lines":source.lines().count(),
+                "parameter_references":source.matches("parameters.").count(),
+                "tap_handlers":source.matches("on_tap_gesture").count(),
+                "drag_handlers":source.matches("on_drag_gesture").count()}));
+        } else if name.ends_with(".txt") && name.contains("pictures/") {
+            let bytes = resources.read(name).expect("picture metadata must resolve");
+            let text = String::from_utf8_lossy(&bytes);
+            picture_sets.push(json!({"path":name,"meta":format!("{:?}",sampler_ksp::ui::picture_meta(&text))}));
+        }
+    }
+    let inventory = {
+        let published = gate.params.shared.view.lock().unwrap();
+        let part = &published.parts[0];
+        let scripts = part.instrument.as_ref().map(|i| i.behaviors.iter().map(|b| {
+            json!({"slot":b.slot,"bytes":b.source.len(),"lines":b.source.lines().count(),
+                "ui_declarations":b.source.lines().filter(|l|l.trim_start().starts_with("declare ui_")).count(),
+                "persistence_declarations":b.source.matches("make_persistent(").count(),
+                "performance_view":sampler_ksp::nckp::view_name(&b.source)})
+        }).collect::<Vec<_>>()).unwrap_or_default();
+        json!({"path":path,"program":program,"view":view,"resource_root":resource_root,"scripts":scripts,
+            "resources":names,"native_modules":modules,"picture_sets":picture_sets,
+            "interfaces":part.interfaces.iter().map(|f|json!({"source":format!("{:?}",f.source),
+                "native_entry":f.native_ui.as_ref().map(|n|&n.entry),
+                "pages":f.pages.iter().map(|p|json!({"name":p.name,"size":[p.size.width,p.size.height]})).collect::<Vec<_>>(),
+                "controls":f.widgets.iter().enumerate().map(|(n,w)|json!({"index":n,"name":w.name,"source_id":w.source_id,
+                    "kind":format!("{:?}",w.kind),"parent":w.parent.map(|p|p.0),"hidden":w.hidden,"enabled":w.enabled,
+                    "rect":[w.rect.x,w.rect.y,w.rect.width,w.rect.height],"default_axes":w.default_axes,
+                    "text":w.text,"binding":format!("{:?}",w.binding),"tooltip":w.tooltip})).collect::<Vec<_>>()
+            })).collect::<Vec<_>>(),"native_diagnostics":native_ui::gate_diagnostics()})
+    };
+    std::fs::write(
+        output.join("inventory.json"),
+        serde_json::to_vec_pretty(&inventory).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        native_ui::gate_diagnostics().is_empty(),
+        "authored graph failed: {:?}",
+        native_ui::gate_diagnostics()
+    );
+    assert!(
+        !native_ui::gate_targets(0).is_empty(),
+        "authored graph did not paint; screenshot retained"
+    );
+    let snapshot = |gate: &Gate, label: &str| {
+        json!({"page":label,"targets":gate.targets().len(),
+        "captions":native_ui::gate_caption_targets(0),
+        "surfaces":gate.editor.ui.scene().unwrap().surfaces().filter(|s|s.key.starts_with("nui-")).map(|s|
+            json!({"id":s.key.to_string(),"frame":[s.frame.x,s.frame.y,s.frame.size.width,s.frame.size.height],"disabled":s.disabled})).collect::<Vec<_>>() })
+    };
+    let mut page_targets = vec![snapshot(&gate, "initial")];
+    // Factory MIDI tools have their own page set. Never certify them by
+    // clicking Conflux-looking tabs from a wrongly resolved `main` module.
+    let is_conflux = inventory["interfaces"].as_array().unwrap().iter().any(|f| {
+        f["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["name"] == "$Header__Page")
+    });
+    let pages = std::env::var("KONTRA_CONFLUX_PAGES").unwrap_or_else(|_| {
+        if is_conflux {
+            "PLAY,EDIT,SETTINGS".into()
+        } else {
+            String::new()
+        }
+    });
+    for label in pages.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let targets = native_ui::gate_caption_targets(0);
+        let id = targets.iter().find(|(text,_)| text.eq_ignore_ascii_case(label))
+            .unwrap_or_else(|| panic!("authored {label} tab missing; captions={:?}",targets.iter().map(|(t,_)|t).collect::<Vec<_>>())).1.clone();
+        let p = gate.hit(&id).expect("authored page tab must be clickable");
+        gate.pointer(p, false);
+        gate.pointer(p, true);
+        gate.pointer(p, false);
+        gate.settle();
+        for _ in 0..12 { gate.settle(); }
+        shoot(&gate, &label.to_ascii_lowercase());
+        let targets = gate.targets();
+        assert!(
+            !targets.is_empty(),
+            "authored {label} has no interactive controls"
+        );
+        page_targets.push(snapshot(&gate, label));
+        assert!(
+            native_ui::gate_diagnostics().is_empty(),
+            "{label} graph must render"
+        );
+    }
+    std::fs::write(output.join("pages.json"),serde_json::to_vec_pretty(&page_targets).unwrap()).unwrap();
+    println!("CONFLUX_PAGES program={program} view={view} pages={} controls={}",page_targets.len(),
+        inventory["interfaces"].as_array().unwrap().iter().map(|f|f["controls"].as_array().unwrap().len()).sum::<usize>());
+}
+
+#[test]
+#[ignore = "installed multi resource ownership; filenames only, no source extraction"]
+fn conflux_multi_authored_resource_references() {
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_WIDGET_GATE_PATH").unwrap());
+    let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+    let tables = chunks.filename_tables().unwrap().unwrap();
+    println!("CONFLUX_RESOURCE_NAMES special={:?} other={:?}",tables.special_filetable,tables.other_filetable);
+    for (n,(_,p)) in sampler_kontakt::read_multi(&path).unwrap().programs.into_iter().enumerate() {
+        let record = p.public_record().unwrap();
+        let reference = record.resource_container_filename_ref;
+        println!("CONFLUX_RESOURCE_OWNER program={n} version={} container_ref={reference:?} container={:?}",p.version(),
+            reference.and_then(|r| tables.special_filetable.get(&(r as u32))));
+    }
+}
+
 #[test]
 #[ignore = "owner attribution: two engine seconds without gestures; library state stays in RAM"]
 fn original_idle_script_attribution() {
