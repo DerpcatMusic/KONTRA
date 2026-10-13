@@ -54,6 +54,67 @@ pub struct ScriptStateBuffer {
     pub callbacks: Vec<ScriptStateCallback>,
 }
 
+impl ScriptStateBuffer {
+    /// Address order keeping each address's first entry (a stable sort, then
+    /// dedup). Loads emit rows mostly in order and entries are ~336 bytes, so
+    /// the sort runs only when an entry is out of order.
+    pub fn sort_dedup(&mut self) {
+        if !self.values.is_sorted_by_key(|entry| entry.address) {
+            self.values.sort_by_key(|entry| entry.address);
+        }
+        self.values.dedup_by_key(|entry| entry.address);
+    }
+
+    /// As pushing `rows` then [`Self::sort_dedup`] (existing entries win on
+    /// an equal address), without re-sorting the ordered values or copying
+    /// them: only rows at new addresses are added, merged in place from the end.
+    pub fn merge(&mut self, mut rows: Vec<ScriptStateEntry>) {
+        self.sort_dedup();
+        rows.sort_by_key(|entry| entry.address);
+        rows.dedup_by_key(|entry| entry.address);
+        rows.retain(|row| {
+            self.values
+                .binary_search_by_key(&row.address, |entry| entry.address)
+                .is_err()
+        });
+        let (mut old, mut new) = (self.values.len(), rows.len());
+        self.values.extend_from_slice(&rows);
+        // Addresses are distinct now: fill from the back, largest first.
+        while new > 0 {
+            let write = old + new - 1;
+            if old > 0 && self.values[old - 1].address > rows[new - 1].address {
+                self.values[write] = self.values[old - 1];
+                old -= 1;
+            } else {
+                self.values[write] = rows[new - 1];
+                new -= 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merge_matches_push_then_stable_sort_dedup() {
+        let cell = |index, value| ScriptStateEntry {
+            address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index },
+            value: ScriptStateValue::Cell(value),
+        };
+        let base = vec![cell(1, 10), cell(3, 30), cell(5, 50)];
+        let rows = vec![cell(4, 41), cell(3, 31), cell(0, 1), cell(4, 42), cell(9, 91)];
+        let mut pushed = ScriptStateBuffer { values: base.clone(), ..Default::default() };
+        pushed.values.extend(rows.iter().copied());
+        pushed.values.sort_by_key(|entry| entry.address);
+        pushed.values.dedup_by_key(|entry| entry.address);
+        let mut merged = ScriptStateBuffer { values: base, ..Default::default() };
+        merged.merge(rows);
+        assert_eq!(merged.values, pushed.values);
+    }
+}
+
 impl Runtime {
     fn script_state_context(&self, instance: ScriptInstanceId) -> crate::behavior::PlanContext {
         if self.performance_state.current.is_empty() {

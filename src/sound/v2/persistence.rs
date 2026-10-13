@@ -259,8 +259,22 @@ fn schema(
         flush(&mut buffer, &mut hash, false);
     }
     for entry in &state.values {
-        write!(buffer, "{:?}:{}", entry.address, Atom::new(entry.value, 0).kind)
-            .expect("string write");
+        let kind = Atom::new(entry.value, 0).kind;
+        // The derived Debug text, written directly for the (million-row) cells.
+        match entry.address {
+            Address::Cell { instance, index } => write!(
+                buffer,
+                "Cell {{ instance: ScriptInstanceId({}), index: {index} }}:{kind}",
+                instance.0
+            ),
+            Address::Text { instance, index } => write!(
+                buffer,
+                "Text {{ instance: ScriptInstanceId({}), index: {index} }}:{kind}",
+                instance.0
+            ),
+            address => write!(buffer, "{address:?}:{kind}"),
+        }
+        .expect("string write");
         flush(&mut buffer, &mut hash, false);
     }
     for widget in runtime
@@ -308,12 +322,27 @@ impl Persistence {
     ) -> Result<Self, CoreError> {
         let core = |error| CoreError::Invalid(format!("Script persistence: {error:?}"));
         let plan = runtime.active_plan();
+        let span = sampler_kontakt::audit::Span::new("persistence_state_buffer");
         let mut state = sampler_ksp::persistent_state_buffer(views).map_err(core)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_widget_rows");
         // Widget values also survive recall when the author omitted make_persistent.
+        // Most widget cells are already persistent rows (which win): skip them
+        // before they cost an entry (~336 bytes each, a million on Areia).
+        let mut rows = Vec::new();
+        let mut add = |entry: ScriptStateEntry| {
+            if state
+                .values
+                .binary_search_by_key(&entry.address, |known| known.address)
+                .is_err()
+            {
+                rows.push(entry);
+            }
+        };
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
                 sampler_core::WidgetStorage::Control(id) => {
-                    state.values.push(ScriptStateEntry {
+                    add(ScriptStateEntry {
                         address: Address::Control(id),
                         value: Value::Control(ControlValue::Integer(0)),
                     });
@@ -328,7 +357,7 @@ impl Persistence {
                     .checked_add(len)
                     .ok_or_else(|| core(sampler_core::Error::Capacity))?
             {
-                state.values.push(ScriptStateEntry {
+                add(ScriptStateEntry {
                     address: if text {
                         Address::Text {
                             instance: widget.instance,
@@ -348,20 +377,26 @@ impl Persistence {
                 });
             }
         }
-        state.values.sort_by_key(|entry| entry.address);
-        state.values.dedup_by_key(|entry| entry.address);
+        state.merge(rows);
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_capture");
         runtime
             .capture_script_state(plan, &mut state)
             .map_err(core)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_schema");
         // Admit the exact old roster so adding DSP owners cannot lose existing project state.
         let previous_schema = schema(runtime, views, &state)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_registry_rows");
         let previous_addresses: Vec<_> = state.values.iter().map(|entry| entry.address).collect();
+        let mut rows = Vec::new();
         for descriptor in runtime
             .parameter_registry(plan)
             .map_err(core)?
             .descriptors()
         {
-            state.values.push(ScriptStateEntry {
+            rows.push(ScriptStateEntry {
                 address: Address::Control(descriptor.control),
                 value: Value::Control(
                     runtime
@@ -370,8 +405,9 @@ impl Persistence {
                 ),
             });
         }
-        state.values.sort_by_key(|entry| entry.address);
-        state.values.dedup_by_key(|entry| entry.address);
+        state.merge(rows);
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_schema");
         let schema = if state.values.len() == previous_addresses.len() {
             previous_schema.clone()
         } else {
@@ -451,9 +487,13 @@ impl Persistence {
                 .capture_script_state(plan, &mut state)
                 .map_err(core)?;
         }
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_watch");
         runtime
             .watch_script_state_values(plan, &state.values)
             .map_err(core)?;
+        drop(span);
+        let _span = sampler_kontakt::audit::Span::new("persistence_snapshot");
         let snapshot = Snapshot::new(schema, &state);
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
