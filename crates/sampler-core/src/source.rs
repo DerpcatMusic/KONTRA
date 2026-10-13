@@ -994,6 +994,21 @@ impl Cursor {
             })
     }
 
+    /// Analysis clock of the time-stretch source (see
+    /// [`StretchEngine::render_with`]): the source position under the cursor,
+    /// loops, start/end and release exits already resolved, then the cursor
+    /// moves `frames` output frames on at its step (the time axis; pitch lives
+    /// in the engine). `None` once the traversal has ended. A forward read:
+    /// reverse playback is not a stretch mode yet.
+    #[allow(dead_code)] // wired by the voice source; exercised by tests meanwhile
+    pub(super) fn analysis(&mut self, frames: usize) -> Option<f64> {
+        let at = self.index(i128::from(self.position))? as f64 + self.fraction;
+        for _ in 0..frames {
+            self.advance();
+        }
+        Some(at)
+    }
+
     fn advance(&mut self) {
         if self.wavetable.is_some() {
             let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.))
@@ -2387,6 +2402,45 @@ impl ReadFrames for PagedFrames<'_> {
             at = end;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod stretch_clock_tests {
+    use super::*;
+
+    #[test]
+    fn a_looped_cursor_clocks_the_stretch_engine_past_the_end_of_the_sample() {
+        let src: Vec<Frame> = (0..8000)
+            .map(|n| {
+                let v = (std::f32::consts::TAU * 441. * n as f32 / 48000.).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let mut cursor = Playback {
+            loop_range: Some(Loop {
+                start: 2000,
+                end: 6000,
+                mode: LoopMode::Continuous,
+                shape: LoopShape::Wrap,
+                passes: None,
+            }),
+            ..Default::default()
+        }
+        .cursor(8000, 48000, 48000)
+        .unwrap();
+        let params = StretchParams::default();
+        let mut engine = StretchEngine::new(StretchMode::TimeMachine2, false, 48000);
+        engine.start_clocked(&src[..], src.len(), 0., params);
+        let mut block = [[0.; 2]; 480];
+        let mut loudest = 0f32;
+        for _ in 0..200 {
+            // 96,000 output frames: far past the 8,000-frame sample.
+            let n = engine.render_with(&src[..], params, &mut block, |hop| cursor.analysis(hop));
+            assert_eq!(n, block.len());
+            loudest = block.iter().flatten().fold(loudest, |m, v| m.max(v.abs()));
+        }
+        assert!(loudest > 0.2 && !cursor.done());
     }
 }
 
