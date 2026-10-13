@@ -215,9 +215,8 @@ pub enum Processor {
     StateVariable(StateVariableFilter),
     /// Live gain owner for the v1 TPT peaking-band fallback.
     PeakingEq(PeakingEq),
-    KontaktLegacyEq(KontaktLegacyEqSettings),
-    /// A biquad or flat level driven by controls (scripted UVI inserts).
-    LiveFilter(live::LiveFilter),
+    /// One band of the universal EQ superset (Kontakt legacy, Solid, generic RBJ, scripted UVI).
+    Eq(eq_family::EqBand),
     /// Rows are output L/R, columns input L/R; each cell follows a control.
     ControlMatrix([Parameter; 4]),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
@@ -256,8 +255,7 @@ impl Processor {
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
             Processor::PeakingEq(settings) => settings.valid(),
-            Processor::KontaktLegacyEq(settings) => settings.valid(),
-            Processor::LiveFilter(settings) => settings.valid(),
+            Processor::Eq(band) => band.valid(),
             Processor::ControlMatrix(cells) => cells
                 .iter()
                 .all(|c| c.valid() && !matches!(c, Parameter::Expression { .. })),
@@ -311,15 +309,11 @@ mod distortion;
 mod formant;
 mod phaser;
 pub use ar::ArSettings;
-mod eq;
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;
-pub use eq::PeakingEq;
-mod native_eq;
-pub use native_eq::KontaktLegacyEqSettings;
+pub use eq_family::{EqBand, KontaktLegacyEqSettings, PeakingEq};
 mod live;
-pub use live::{LiveFilter, LiveShape};
 mod ladder_kernel;
 mod lofi;
 pub use lofi::LoFiSettings;
@@ -353,9 +347,8 @@ pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
-    PeakingEq(eq::Eq),
-    KontaktLegacyEq(native_eq::NativeEq),
-    LiveFilter(live::Live),
+    PeakingEq(eq_family::peaking::Peaking),
+    Eq(eq_family::Stage),
     ControlMatrix([control::PreparedParameter; 4]),
     ControlGain(usize),
     Delay {
@@ -639,12 +632,7 @@ pub(super) fn compile_processors(
                 Processor::PeakingEq(settings) => {
                     PreparedProcessor::PeakingEq(settings.compile(rate, bindings)?)
                 }
-                Processor::KontaktLegacyEq(settings) => {
-                    PreparedProcessor::KontaktLegacyEq(settings.compile(rate, bindings)?)
-                }
-                Processor::LiveFilter(settings) => {
-                    PreparedProcessor::LiveFilter(settings.compile(rate, bindings)?)
-                }
+                Processor::Eq(band) => PreparedProcessor::Eq(band.compile(rate, bindings)?),
                 Processor::ControlMatrix(cells) => {
                     PreparedProcessor::ControlMatrix(cells.map(|c| c.compile(bindings)))
                 }
@@ -977,8 +965,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Ar { .. }
                         | PreparedProcessor::Branch { .. }
-                        | PreparedProcessor::LiveFilter(_)
-                        | PreparedProcessor::KontaktLegacyEq(_)
+                        | PreparedProcessor::Eq(_)
                         | PreparedProcessor::ControlMatrix(_)
                 ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
@@ -1375,8 +1362,7 @@ pub(super) fn process<const TRACE: bool>(
                 }
             }
             PreparedProcessor::PeakingEq(eq) => eq.process(state, parameters, block, len, at),
-            PreparedProcessor::KontaktLegacyEq(eq) => eq.process(state, parameters, block, len, at),
-            PreparedProcessor::LiveFilter(live) => live.process(state, parameters, block, len, at),
+            PreparedProcessor::Eq(eq) => eq.process(state, parameters, block, len, at),
             PreparedProcessor::ControlMatrix(cells) => {
                 live::matrix(cells, parameters, block, len, at)
             }

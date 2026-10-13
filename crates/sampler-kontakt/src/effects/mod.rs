@@ -885,6 +885,20 @@ pub(crate) fn chain_with(
         let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
+            // Solid G-EQ (0x44): `params()` only yields its raw fields; eq.rs owns the mapping.
+            _ if fx.module == 0x44 => {
+                flush(&mut combined, &mut filters, &mut out);
+                if dynamic.is_some() {
+                    notes.push(("live control".into(), "scripts cannot address Solid G-EQ knobs".into(), sampler_ir::Reason::NotModeled));
+                }
+                match eq::solid_geq(fx.version, &fx.public, &mut notes) {
+                    Some(p) => {
+                        out.processors.push(p);
+                        combined = gain;
+                    }
+                    None => modelled = false,
+                }
+            }
             Some(Params::Distortion { mode, drive, damping }) => {
                 if matches!(*mode, 0.0 | 1.0)
                     && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
@@ -1025,7 +1039,7 @@ pub(crate) fn chain_with(
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
                 if bands.len() == 1 {
                     flush(&mut combined, &mut filters, &mut out);
-                    if let Some(p) = native_eq_band(bands[0], live, &mut notes) {
+                    if let Some(p) = eq::legacy_band(bands[0], live, &mut notes) {
                         if live { out.filter_slots.push((fx.slot, out.processors.len())); }
                         out.processors.push(p);
                     } else if bands[0][2] != 0. || live {
@@ -1049,10 +1063,12 @@ pub(crate) fn chain_with(
                         modelled = false;
                     }
                 } else {
+                    let generic: Vec<_> = bands.iter().filter_map(|band| eq::generic_band(*band, &mut notes)).collect();
                     filters.extend(
-                        bands
-                            .iter()
-                            .filter_map(|band| eq_band(*band, false, &mut notes)),
+                        generic
+                            .chunks(sampler_ir::fx::eq::MAX_BANDS)
+                            .filter_map(sampler_ir::fx::eq::Config::new)
+                            .map(sampler_ir::Processor::Eq),
                     );
                 }
                 if bands.len() > 1 {
@@ -1859,24 +1875,6 @@ pub(crate) fn instrument_buses_with_recipes(
     (report, send_buses)
 }
 
-/// One EQ band (Hz, octaves, dB); live owners retain flat bands.
-fn native_eq_band(
-    [hz, octaves, db]: [f32; 3],
-    keep_flat: bool,
-    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
-) -> Option<sampler_ir::Processor> {
-    if db == 0. && !keep_flat { return None; }
-    if ![hz, octaves, db].iter().all(|v| v.is_finite()) || hz <= 0. || octaves <= 0. {
-        notes.push(("EQ band".into(), format!("{hz} Hz {octaves} oct {db} dB"), sampler_ir::Reason::InvalidValue));
-        return None;
-    }
-    Some(sampler_ir::Processor::KontaktLegacyEq(sampler_ir::KontaktLegacyEq {
-        frequency: sampler_core::KontaktLegacyEqSettings::frequency_knob(hz),
-        bandwidth: sampler_core::KontaktLegacyEqSettings::bandwidth_knob(octaves),
-        gain_db: db.clamp(-18., 18.),
-    }))
-}
-
 fn eq_band(
     [hz, octaves, db]: [f32; 3],
     keep_flat: bool,
@@ -2031,33 +2029,26 @@ mod tests {
             }
             let built = chain(std::slice::from_ref(&fx), Scope::Voice);
             if kind == 22 {
-                let sampler_ir::Processor::KontaktLegacyEq(eq) = built.processors[0] else { panic!("native one-band EQ owner"); };
-                assert_eq!(eq.gain_db, bands[0][2]);
-                assert_eq!(eq.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(bands[0][0]));
+                let sampler_ir::Processor::Eq(eq) = built.processors[0] else { panic!("native one-band EQ owner"); };
+                assert_eq!(eq.bands()[0].gain_db, bands[0][2]);
+                assert_eq!(eq.bands()[0].frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(bands[0][0]));
                 continue;
             }
-            let filters: Vec<_> = built
+            let eq_bands: Vec<_> = built
                 .processors
                 .iter()
                 .filter_map(|p| match p {
-                    sampler_ir::Processor::Filter(f) => Some(f),
+                    sampler_ir::Processor::Eq(c) => Some(c.bands()),
                     _ => None,
                 })
+                .flatten()
                 .collect();
-            assert_eq!(filters.len(), bands.len());
-            for (filter, values) in filters.iter().zip(&bands) {
-                assert_eq!(
-                    filter.cutoff,
-                    sampler_ir::Frequency::Hertz(f64::from(values[0]))
-                );
-                assert_eq!(
-                    filter.kind,
-                    sampler_ir::FilterKind::Peak {
-                        gain: sampler_ir::Gain::Decibels(
-                            f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE
-                        ),
-                    }
-                );
+            assert_eq!(eq_bands.len(), bands.len());
+            for (band, values) in eq_bands.iter().zip(&bands) {
+                assert_eq!(band.law, sampler_ir::fx::eq::Law::Rbj);
+                assert_eq!(band.kind, sampler_ir::fx::eq::Kind::Peak);
+                assert_eq!(band.frequency, values[0]);
+                assert_eq!(band.gain_db, (f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE) as f32);
             }
             assert!(
                 built
