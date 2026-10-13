@@ -236,6 +236,10 @@ pub struct SourceIndices {
     pub control_aliases: Vec<SourceControlAlias>,
     /// Admitted outgoing route -> live depth and internal-source bypass controls.
     pub route_controls: Vec<(RouteRef, ControlRef, ControlRef)>,
+    /// Intensity assignments beyond a route's first (`Route::scale`), in
+    /// application order; each combination's input is the previous result.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub chained_scales: Vec<(RouteRef, RouteScale)>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -1391,6 +1395,9 @@ pub struct RouteScale {
     /// How `source` combines with the route's saved depth.
     #[cfg_attr(feature = "cache", serde(default))]
     pub law: ScaleLaw,
+    /// Lag of the assignment's processed source, milliseconds to 99% of a step.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub lag_ms: f64,
 }
 
 /// Combination law of a [`RouteScale`].

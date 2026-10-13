@@ -556,6 +556,7 @@ impl Translation {
             source,
             shape: (!points.iter().all(|&(w, y)| (y - w).abs() < 1e-9)).then(|| self.shape(points)),
             law: ir::ScaleLaw::Multiply,
+            lag_ms: 0.,
         });
         let key = format!("{route:?}");
         *self.route_index.entry(key).or_insert_with(|| {

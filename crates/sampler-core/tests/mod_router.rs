@@ -176,6 +176,7 @@ fn intensity_scale_admits_shaped_signed_assignments_and_lagged_routes() {
         routes: vec![ModRoute {
             lag: 480,
             scale: Some(ModScale {
+                lag: 0,
                 source: 1,
                 shape: Some(0),
                 law: ModScaleLaw::KontaktIntensity { depth: -0.5, flags: 0x12, unit: 1. },
@@ -190,4 +191,67 @@ fn intensity_scale_admits_shaped_signed_assignments_and_lagged_routes() {
     let g = gains(&mut start(p, 0), 1024, 0);
     // 0.8 * (1 - (1 - 0.5) * -0.5) = 1.0 of the way to full attenuation.
     assert!((g[900] - 60. / 127.).abs() < 1e-3, "{}", g[900]);
+}
+
+/// The lane's rate law is the native parameter-713 codec: the retained landmarks
+/// (docs: specs/modulators-lfo-part.md) hold for `LfoFrequency::hertz`.
+#[test]
+fn frequency_lane_matches_the_native_codec_landmarks() {
+    for (slider, hz) in [(0., 0.0104154348), (0.25, 0.124558449), (0.5, 1.49068451), (0.75, 17.7412109), (1., 213.142578)] {
+        let got = LfoFrequency::hertz(slider);
+        assert!((got - hz).abs() < hz * 1e-6, "{slider}: {got} vs {hz}");
+    }
+}
+
+fn intensity(depth: f64) -> ModScaleLaw {
+    ModScaleLaw::KontaktIntensity { depth, flags: 0x10, unit: 1. }
+}
+
+/// Two assignments to one lane chain: each template's `$in` is the previous result.
+#[test]
+fn intensity_assignments_chain_on_the_lane() {
+    let scale = |shape, depth| ModScale { lag: 0, source: 1, shape: Some(shape), law: intensity(depth) };
+    let program = ModProgram {
+        controls: vec![],
+        breakpoints: vec![],
+        sources: vec![ModSource::Key, ModSource::Constant],
+        routes: vec![ModRoute {
+            scale: Some(scale(0, 0.5)),
+            more_scales: [Some(scale(1, 0.5)), None],
+            ..ModRoute::new(0, ModTarget::Attenuate, 0.8)
+        }],
+        shapes: vec![vec![(0., 0.5), (1., 0.5)], vec![(0., 0.2), (1., 0.2)]],
+    };
+    let p = plan(8192)
+        .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
+        .unwrap();
+    let g = gains(&mut start(p, 0), 1024, 0);
+    // 0.8 * (1 - 0.5 * 0.5) * (1 - 0.8 * 0.5) = 0.36 of the way to attenuation.
+    let key = 60. / 127.;
+    assert!((g[900] - (1. - 0.36 * (1. - key))).abs() < 1e-3, "{}", g[900]);
+}
+
+/// An assignment's lag smooths its processed source before the law.
+#[test]
+fn intensity_assignment_lag_smooths_its_source() {
+    let range = |lag| {
+        let program = ModProgram {
+            controls: vec![],
+            breakpoints: vec![],
+            sources: vec![ModSource::Key, lfo(5., true)],
+            routes: vec![ModRoute {
+                scale: Some(ModScale { lag, source: 1, shape: None, law: intensity(1.) }),
+                ..ModRoute::new(0, ModTarget::Attenuate, 1.)
+            }],
+            shapes: vec![],
+        };
+        let p = plan(8192)
+            .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
+            .unwrap();
+        let g = gains(&mut start(p, 0), 4800, 0);
+        let tail = &g[2400..];
+        tail.iter().cloned().fold(f64::MIN, f64::max) - tail.iter().cloned().fold(f64::MAX, f64::min)
+    };
+    let (plain, lagged) = (range(0), range(4800));
+    assert!(plain > 0.1 && lagged < plain * 0.6, "{plain} {lagged}");
 }

@@ -196,7 +196,14 @@ pub struct ModRoute {
     pub lag: u32,
     /// Depth modifier from a second source, using its selected combination law.
     pub scale: Option<ModScale>,
+    /// Further intensity assignments to the same route, applied in order after
+    /// `scale`: each template's `$in` is the previous result.
+    pub more_scales: [Option<ModScale>; MORE_SCALES],
 }
+
+/// Intensity assignments a route takes beyond its first.
+pub const MORE_SCALES: usize = 2;
+const SCALE_LAGS: usize = MORE_SCALES + 1;
 
 /// Changes an outgoing route's depth using another source. The default law
 /// multiplies by its unipolar view (or shaped value). Evaluated with the route.
@@ -208,6 +215,9 @@ pub struct ModScale {
     pub shape: Option<usize>,
     /// Generic product or checked native per-target intensity combination.
     pub law: ModScaleLaw,
+    /// One-pole lag frames on the processed source (99% of a step; FUN_140873040
+    /// smooths the complete expression E, template 0x144f1d950). 0: none.
+    pub lag: u32,
 }
 
 /// How a second source changes one outgoing target's saved depth.
@@ -251,7 +261,13 @@ impl ModRoute {
             shape: None,
             lag: 0,
             scale: None,
+            more_scales: [None; MORE_SCALES],
         }
+    }
+
+    /// Every intensity assignment of the route, in application order.
+    pub fn scales(&self) -> impl Iterator<Item = ModScale> + '_ {
+        self.scale.into_iter().chain(self.more_scales.into_iter().flatten())
     }
 }
 
@@ -530,7 +546,7 @@ impl VoiceModulation {
                         || route.scale.is_some()
                         || route.lag != 0))
                     || route.shape.is_some_and(|s| s >= shapes.len())
-                    || route.scale.is_some_and(|s| {
+                    || route.scales().any(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
                             // Native lag/init/inversion/live paths have no numeric proof.
                             // The target's own shape and lag act on its source
@@ -770,8 +786,8 @@ impl VoiceModulation {
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let depth = route.scale.map_or(route.depth,
-                |s| program.depth(route.depth, s, at_start(s.source)));
+            let depth = route.scales().fold(route.depth,
+                |d, s| program.depth(d, s, at_start(s.source), &mut 0., 0, true));
             fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
@@ -803,14 +819,29 @@ impl Prepared {
 const FULL_SCALE: f64 = 1.0 / u32::MAX as f64;
 
 impl Program {
-    fn depth(&self, base: f64, scale: ModScale, raw: f64) -> f64 {
-        let (source, bipolar) = match scale.shape {
+    fn depth(
+        &self,
+        base: f64,
+        scale: ModScale,
+        raw: f64,
+        lagged: &mut f64,
+        frames: u32,
+        onset: bool,
+    ) -> f64 {
+        let (mut source, bipolar) = match scale.shape {
             Some(shape) => {
                 let x = unipolar(raw, self.bipolar[scale.source]);
                 (f64::from(self.shapes[shape].evaluate(x as f32)), false)
             }
             None => (raw, self.bipolar[scale.source]),
         };
+        if scale.lag != 0 && !onset {
+            // Same one-pole law as a target's lag, on the complete expression.
+            let alpha = 1.0
+                - (-2.0 * std::f64::consts::LN_10 * f64::from(frames) / f64::from(scale.lag)).exp();
+            source = *lagged + (source - *lagged) * alpha;
+        }
+        *lagged = source;
         match scale.law {
             ModScaleLaw::Multiply => base * unipolar(source, bipolar),
             ModScaleLaw::KontaktIntensity { unit, .. } =>
@@ -839,6 +870,7 @@ impl Program {
         route: &ModRoute,
         values: &[f64],
         lagged: &mut f64,
+        scale_lagged: &mut [f64],
         base: f64,
         frames: u32,
         onset: bool,
@@ -852,8 +884,9 @@ impl Program {
         }
         *lagged = v;
         let d = route
-            .scale
-            .map_or(base, |s| self.depth(base, s, values[s.source]));
+            .scales()
+            .zip(scale_lagged)
+            .fold(base, |d, (s, lag)| self.depth(d, s, values[s.source], lag, frames, onset));
         (v, d)
     }
 
@@ -1004,6 +1037,8 @@ pub(crate) struct VoiceModState {
     phase: Box<[f64]>,
     values: Box<[f64]>,
     lagged: Box<[f64]>,
+    /// Lag state of each route's intensity assignments, `SCALE_LAGS` per route.
+    scale_lagged: Box<[f64]>,
     processor_values: Box<[f64]>,
     previous_processor_values: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
@@ -1041,6 +1076,7 @@ impl VoiceModState {
             phase: crate::dsp::allocate(slots(modulation.sources)?)?,
             values: crate::dsp::allocate(slots(modulation.sources)?)?,
             lagged: crate::dsp::allocate(slots(modulation.routes)?)?,
+            scale_lagged: crate::dsp::allocate(slots(modulation.routes * SCALE_LAGS)?)?,
             processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             previous_processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             envelope: std::iter::repeat_n(
@@ -1076,6 +1112,7 @@ impl VoiceModState {
         take(&mut self.phase, &mut larger.phase);
         take(&mut self.values, &mut larger.values);
         take(&mut self.lagged, &mut larger.lagged);
+        take(&mut self.scale_lagged, &mut larger.scale_lagged);
         take(&mut self.processor_values, &mut larger.processor_values);
         take(
             &mut self.previous_processor_values,
@@ -1103,6 +1140,7 @@ impl VoiceModState {
             phase: Box::new([]),
             values: Box::new([]),
             lagged: Box::new([]),
+            scale_lagged: Box::new([]),
             processor_values: Box::new([]),
             previous_processor_values: Box::new([]),
             envelope: Box::new([]),
@@ -1398,6 +1436,7 @@ impl VoiceModState {
         let previous_processor_values =
             &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
+        let scale_lagged = &mut self.scale_lagged[voice * self.routes * SCALE_LAGS..][..p.routes.len() * SCALE_LAGS];
         previous_processor_values.copy_from_slice(processor_values);
         let mut changed = onset;
         for &i in &p.source_order {
@@ -1424,7 +1463,7 @@ impl VoiceModState {
                         let mut lane = p.rate_lane[i];
                         for &r in &p.rate_routes[i] {
                             let base = p.base_depth(r, inputs);
-                            let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], base, frames, onset);
+                            let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], &mut scale_lagged[r * SCALE_LAGS..][..SCALE_LAGS], base, frames, onset);
                             processor_values[r] = d * v;
                             if onset {
                                 previous_processor_values[r] = processor_values[r];
@@ -1502,6 +1541,7 @@ impl VoiceModState {
         let mut cutoff = 0.0;
         let mut controls = p.controls.iter().peekable();
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
+            let scale_lagged = &mut scale_lagged[i * SCALE_LAGS..][..SCALE_LAGS];
             // Bypass masks the route, not the source clock/lag; resume never restarts it.
             let base = match controls.peek().copied() {
                 Some(&(index, [depth, bypass])) if index == i => {
@@ -1536,7 +1576,7 @@ impl VoiceModState {
                 continue;
             }
             let bipolar = p.bipolar[route.source];
-            let (v, d) = p.route_point(route, values, lagged, base, frames, onset);
+            let (v, d) = p.route_point(route, values, lagged, scale_lagged, base, frames, onset);
             processor_values[i] = d * v;
             if onset {
                 previous_processor_values[i] = processor_values[i];
