@@ -283,14 +283,17 @@ impl Ufs {
                 self.header.physical_size - offset >= 8,
                 "Truncated UFS record length at {offset}"
             );
-            let length = u64_le(&read_at(&mut file, offset, 8)?);
+            // Length and tag in one read: the walk visits every record of
+            // multi-gigabyte banks.
+            let head = read_at(
+                &mut file,
+                offset,
+                (self.header.physical_size - offset).min(12) as usize,
+            )?;
+            let length = u64_le(&head);
             let payload_offset = offset + 8;
             let available = length.min(self.header.physical_size - payload_offset);
-            let tag = if available >= 4 {
-                Some(u32_le(&read_at(&mut file, payload_offset, 4)?))
-            } else {
-                None
-            };
+            let tag = (available >= 4 && head.len() == 12).then(|| u32_le(&head[8..12]));
             records.push(Record {
                 offset,
                 payload_offset,
