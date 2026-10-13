@@ -11,7 +11,7 @@ use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Order, Rate, SweepLaw, Tap,
+        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap,
     },
 };
 
@@ -86,15 +86,14 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{time}/{feedback}/{pan}/{damping}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "delay feedback, damping and pan laws", format!("{feedback}/{damping}/{pan}"));
+            // Setter case 0x43 @0x1409645ae, audio 0x140aa1130: feedback * 0.98, damping * 0.7,
+            // pan crossing, ring 2^18. The sync getter's min/max arguments (xmm3, [rsp+0x28])
+            // are stale registers at the call, so the synced time is unclamped except by the ring.
             if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced delay time", format!("unit {unit}; free time used"));
+                notes.push(("tempo-synced delay time clamp".into(), format!("unit {unit}"), Reason::UnknownLaw));
             }
             let mut line = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
-            line.taps[0].pan = f64::from(pan) * 2. - 1.;
-            let fb = f64::from(feedback).min(0.99);
-            line.feedback.matrix = [[fb, 0.], [0., fb]];
-            line.feedback.lowpass = (1. - f64::from(damping)).max(0.05);
+            line.native = Native::LegacyDelay { time, unit, feedback, damping, pan };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Chorus { depth, speed, phase, unit } => {
@@ -170,14 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn delay_chorus_flanger_map_stored_values_and_say_generic() {
+    fn native_delay_and_generic_chorus_flanger() {
         // Time is stored in ms (measured table 5..2900), Speed in Hz.
         let (delay, notes) = config(0x10, &[250., 0.4, 0.5, 0.25, -1.]);
         let line = delay.line.unwrap();
-        assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(250.));
-        assert!((line.feedback.matrix[0][0] - f64::from(0.4f32)).abs() < 1e-12);
+        assert_eq!(line.native, sampler_ir::fx::timemod::Native::LegacyDelay { time: 250., unit: -1., feedback: 0.4, damping: 0.25, pan: 0.5 });
         assert_eq!(delay.dry, 0.5, "the slot's dry level mixes outside a Mix block");
-        assert!(notes.iter().all(|n| n.3 == sampler_ir::Reason::UnknownLaw) && !notes.is_empty());
+        assert!(notes.is_empty(), "free-time Legacy Delay is fully native");
 
         let (chorus, notes) = config(0x11, &[0.5, 2., 1., -1.]);
         assert_eq!(chorus.lfo.rate, sampler_ir::fx::timemod::Rate::Hz(2.));

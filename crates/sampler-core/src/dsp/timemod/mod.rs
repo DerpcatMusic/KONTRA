@@ -12,7 +12,7 @@
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
-    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Order, Rate,
+    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Native, Order, Rate,
     SweepLaw,
 };
 use std::f64::consts::{PI, TAU};
@@ -23,6 +23,8 @@ mod tests;
 /// Frames between generic allpass coefficient refreshes (Replika's native
 /// control quantum, 0x1408f98d0).
 const CHUNK: usize = 32;
+/// Legacy Delay ring frames (setter clamp 0x40000, mask 0x27c).
+const LEGACY_RING: usize = 0x40000;
 /// Samples the ring keeps beyond the longest read for neighbour taps.
 const GUARD: usize = 4;
 
@@ -185,6 +187,9 @@ impl TimeMod {
                 *slot = ((cycles * TAU).cos(), (cycles * TAU).sin(), cycles);
             }
             cap = longest.ceil() as usize + GUARD;
+            if line.native != Native::None {
+                cap = LEGACY_RING;
+            }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
         let (ap_at, fb_at) = (cap, cap + 2 * stages);
@@ -274,7 +279,8 @@ impl TimeMod {
         // Reset validity, not the potentially long ring: a reused voice or a
         // faulted chain never reads samples from its previous lifetime.
         if state.aux[15] == 0. {
-            slab[cap..].fill([0.; 2]);
+            slab[if cfg.line.is_some_and(|l| l.native != Native::None) { 0 } else { cap }..].fill([0.; 2]);
+            (state.aux[6], state.aux[7]) = (0., 0.);
             let phase = cfg.lfo.phase;
             if sine {
                 state.z[0] = [0., 1.];
@@ -285,6 +291,9 @@ impl TimeMod {
                 state.z[1] = [f64::from(1. - phase), 0.];
             }
             state.aux[15] = 1.;
+        }
+        if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
+            return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
         }
         let hz = self.hz(tempo);
         let step = (2. * (f64::from(hz) * PI / self.rate).sin()) as f32;
@@ -475,6 +484,52 @@ impl TimeMod {
         for frame in &mut slab[self.ap_at..self.tap_at] {
             *frame = frame.map(flush);
         }
+        !finite
+    }
+}
+
+impl TimeMod {
+    /// Kontakt Legacy Delay audio (0x140aa1130, stereo branch), f32 operation
+    /// order. The low-pass states lag one sample and are both the wet output
+    /// and the recirculated signal; `pan` crosses the channels.
+    fn legacy_delay(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, [time, unit, feedback, damping, pan]: [f32; 5]) -> bool {
+        const MASK: usize = LEGACY_RING - 1;
+        let ms = if unit > f32::from_bits(0x3089705f) {
+            let tempo = tempo as f32;
+            let tempo = if tempo < f32::from_bits(0x3dcccccd) { 120. } else { tempo };
+            ((unit * 60.) / tempo) * time * 1000.
+        } else {
+            time
+        };
+        let frames = (ms * self.rate as f32 * f32::from_bits(0x3a83126f)) as i32;
+        let delay = frames.clamp(0, LEGACY_RING as i32) as usize;
+        let g = feedback * f32::from_bits(0x3f7ae148);
+        let c = 1. - damping * f32::from_bits(0x3f333333);
+        let (straight, cross) = ((1. - pan) * g, g * pan);
+        let mut w = state.delay_position as usize & MASK;
+        let mut lp = [state.aux[6] as f32, state.aux[7] as f32];
+        let mut finite = true;
+        let [left, right] = block;
+        for i in 0..len {
+            let (a, b) = (left[i] as f32, right[i] as f32);
+            let mut ring = [a * g, straight * b];
+            let out = lp;
+            ring[0] = straight * lp[0] + ring[0];
+            ring[1] = straight * lp[1] + ring[1];
+            ring[0] = cross * lp[1] + ring[0];
+            ring[1] = cross * lp[0] + ring[1];
+            slab[w] = ring.map(|v| flush(f64::from(v)));
+            let read = slab[(w + LEGACY_RING - delay) & MASK];
+            for k in 0..2 {
+                lp[k] = (read[k] as f32 - lp[k]) * c + lp[k];
+                lp[k] = if lp[k].is_subnormal() { 0. } else { lp[k] };
+                finite &= lp[k].is_finite();
+            }
+            (left[i], right[i]) = (self.cfg.dry * f64::from(a) + self.cfg.wet * f64::from(out[0]), self.cfg.dry * f64::from(b) + self.cfg.wet * f64::from(out[1]));
+            w = (w + 1) & MASK;
+        }
+        state.delay_position = w as u32;
+        (state.aux[6], state.aux[7]) = (f64::from(lp[0]), f64::from(lp[1]));
         !finite
     }
 }
