@@ -2436,7 +2436,12 @@ fn load_part_with(
             }
         },
     };
-    let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
+    // Persistence and the commit follow the loader's DONE: the bar holds at
+    // 99% until the part is published.
+    let mut progress = |p: Progress| {
+        let held = u32::from(p.0).min(u32::from(Progress::DONE.0) - 10);
+        atoms.load_progress.store(held, Ordering::Relaxed)
+    };
     let result = state
         .and_then(|_| match prepared {
             Some(loaded) if !canceled() => Ok(loaded),
@@ -2444,6 +2449,7 @@ fn load_part_with(
             None => prepare(&request, &mut progress, &canceled),
         })
         .and_then(|mut loaded| {
+            let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
                 let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() {
                     part.script_state.as_str()
@@ -2457,6 +2463,8 @@ fn load_part_with(
                     }
                 }
             }
+            drop(persistence);
+            let _span = sampler_kontakt::audit::Span::new("mapping_index");
             let mapping_index = loaded.instrument.as_ref()
                 .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
             if canceled() {
@@ -2469,6 +2477,7 @@ fn load_part_with(
     } else {
         result
     };
+    let _commit = sampler_kontakt::audit::Span::new("commit_view_locked");
     let mut view = shared.view.lock_unpoisoned();
     // A newer committed owner must never have its model changed by this job.
     if atoms.generation.load(Ordering::Acquire) != active_generation {

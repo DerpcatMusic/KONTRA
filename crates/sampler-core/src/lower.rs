@@ -864,16 +864,29 @@ pub fn lower_with(
     }
     engine_bindings.extend(native.into_values());
     engine_bindings.extend(wave_bindings);
+    // One pass over route controls: per-alias scans of routes x zones were
+    // quadratic (ANALOG STRINGS spent ~90 s here at 95% load progress).
+    let mut zone_routes = vec![false; instrument.routes.len()];
+    for zone in &instrument.zones {
+        for route in &zone.routes {
+            zone_routes[route.0] = true;
+        }
+    }
+    let mut route_bound = vec![false; instrument.controls.len()];
+    let mut zone_bound = vec![false; instrument.controls.len()];
+    let mut loop_bound = vec![false; instrument.controls.len()];
+    for &(route, depth, bypass) in &instrument.source_indices.route_controls {
+        for control in [depth, bypass] {
+            route_bound[control.0] = true;
+            zone_bound[control.0] |= zone_routes[route.0];
+        }
+        loop_bound[depth.0] |= matches!(
+            instrument.routes[route.0].target,
+            ir::Target::LoopStart | ir::Target::LoopLength
+        );
+    }
     for alias in &instrument.source_indices.control_aliases {
-        let routes = &instrument.source_indices.route_controls;
-        if routes
-            .iter()
-            .any(|b| b.1 == alias.control || b.2 == alias.control)
-            && !routes.iter().any(|b| {
-                (b.1 == alias.control || b.2 == alias.control)
-                    && instrument.zones.iter().any(|z| z.routes.contains(&b.0))
-            })
-        {
+        if route_bound[alias.control.0] && !zone_bound[alias.control.0] {
             continue;
         }
         let control = &instrument.controls[alias.control.0];
@@ -890,13 +903,7 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if routes.iter().any(|b| {
-                b.1 == alias.control
-                    && matches!(
-                        instrument.routes[b.0.0].target,
-                        ir::Target::LoopStart | ir::Target::LoopLength
-                    )
-            }) {
+            law: if loop_bound[alias.control.0] {
                 crate::EngineParameterLaw::SignedCubic
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
