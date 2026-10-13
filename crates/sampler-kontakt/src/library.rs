@@ -731,6 +731,8 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
         ("eqGain", ir::ProcessorParameter::Gain),
         ("eqFreq", ir::ProcessorParameter::Cutoff),
         ("eqBandwidth", ir::ProcessorParameter::Resonance),
+        // The registry name (FUN_140981410 id 41/44/47) spells it `eqBandWidth`.
+        ("eqBandWidth", ir::ProcessorParameter::Resonance),
     ] {
         if let Some(rest) = name.strip_prefix(prefix) {
             let band = rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b))?;
@@ -1901,6 +1903,34 @@ impl Translation {
                     self.target_outcomes
                         .insert((index, usize::from(slot), true, _ordinal), route.is_some());
                     if let Some(route) = route {
+                        // Native identity (name parser FUN_1409250d0 type values).
+                        let source_type = match params.source {
+                            ModSource::PitchBend => Some(1),
+                            ModSource::PolyAftertouch => Some(2),
+                            ModSource::MonoAftertouch => Some(3),
+                            ModSource::MidiCc(_) => Some(4),
+                            ModSource::KeyPosition => Some(7),
+                            ModSource::Velocity => Some(8),
+                            ModSource::ReleaseVelocity => Some(9),
+                            ModSource::ReleaseTriggerCounter => Some(10),
+                            ModSource::Constant => Some(11),
+                            ModSource::RandomUnipolar => Some(12),
+                            ModSource::RandomBipolar => Some(13),
+                            _ => None,
+                        };
+                        if let (Some(source_type), Some(target_id)) = (
+                            source_type,
+                            sampler_core::native_mod_laws::target_id(&target.param),
+                        ) {
+                            self.ir.source_indices.native_routes.push((
+                                route,
+                                ir::NativeRoute {
+                                    target: target_id,
+                                    flags: target.unknown_flags,
+                                    source_type,
+                                },
+                            ));
+                        }
                         let live = self.script_depth_target(route);
                         if live {
                             self.loop_route_controls(index, usize::from(slot), _ordinal, route);

@@ -1682,6 +1682,17 @@ impl Lowering<'_> {
                 more_scales: std::array::from_fn(|n| scales.get(n + 1).copied()),
                 live_gain: 1.,
                 unipolar: self.ir.source_indices.unipolar_routes.contains(&route_ref),
+                native: self
+                    .ir
+                    .source_indices
+                    .native_routes
+                    .iter()
+                    .find(|n| n.0 == route_ref)
+                    .map(|n| crate::ModNative {
+                        target: n.1.target,
+                        flags: n.1.flags,
+                        source_type: n.1.source_type,
+                    }),
             };
             if let Some(binding) = self
                 .ir
