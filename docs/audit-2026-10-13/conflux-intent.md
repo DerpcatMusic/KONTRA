@@ -1,7 +1,9 @@
 # Conflux engine intent (2026-10-13)
 
 Scope: installed Conflux 1.1.0, `Instruments/Conflux.nki`, 50 factory multis,
-and 201 factory snapshots. Engine behavior is separate from the NativeUI/Vector
+and 201 factory snapshots. All NKI slots and snapshot records were inspected.
+The all-multi inspection was stopped by the coordinator under the later no-survey
+rule; exhaustive multi coverage is not claimed. Engine behavior is separate from the NativeUI/Vector
 layout work owned by `gpt/conflux-ui`. Library files remain read-only; script
 inspection uses `tools/library-inspector.py` in RAM. No decrypted script or sample
 payload belongs in this document. Runtime coverage and the ranked gap table will
