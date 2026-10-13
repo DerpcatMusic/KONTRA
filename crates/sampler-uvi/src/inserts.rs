@@ -279,6 +279,13 @@ impl Translation {
                         });
                     }
                 }
+                "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay"
+                | "DualDelayX" | "TapeEcho" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
+                | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter" => {
+                    if let Some(config) = self.timemod(node, &at)? {
+                        out.push(ir::Processor::TimeMod(config));
+                    }
+                }
                 "EffectRack" => {
                     // Chains are parallel branches summed at their own gains
                     // (one is just a serial section at that gain). A scripted

@@ -1064,6 +1064,9 @@ impl Lowering<'_> {
                         feedback: 0.0,
                         ..
                     } => self.frames(*time),
+                    ir::Processor::TimeMod(config) => {
+                        self.frames(ir::Time::Milliseconds(config.tail_ms()))
+                    }
                     ir::Processor::Color(c) if c.stereo.is_some_and(|s| s.pseudo) => {
                         (self.rate / 100).min(1023)
                     }
@@ -2309,19 +2312,7 @@ impl Lowering<'_> {
                 let lanes = native_lanes(processor);
                 Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
             }
-            ir::Processor::LegacyPhaser {
-                depth,
-                feedback,
-                phase,
-                speed,
-                period_unit,
-            } => Processor::LegacyPhaser {
-                depth,
-                feedback,
-                phase,
-                speed,
-                period_unit,
-            },
+            ir::Processor::TimeMod(config) => Processor::TimeMod(config),
             ir::Processor::KontaktEnhancedCompressor { knobs, link } => {
                 Processor::KontaktEnhancedCompressor { knobs, link }
             }
