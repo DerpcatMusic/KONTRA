@@ -8,6 +8,7 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod fx;
 pub mod kontakt;
 pub mod units;
 mod validate;

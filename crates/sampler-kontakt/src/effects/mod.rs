@@ -3826,3 +3826,12 @@ pub(crate) fn restore_impulse(
     )?;
     store.pop().ok_or_else(|| "missing shaped impulse".into())
 }
+
+
+// Universal effect families (wave 4): each maps native effects onto sampler_ir::fx.
+pub(crate) mod dynamics;
+pub(crate) mod filter;
+pub(crate) mod eq;
+pub(crate) mod timemod;
+pub(crate) mod space;
+pub(crate) mod color;
