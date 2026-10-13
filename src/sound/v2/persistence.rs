@@ -327,57 +327,36 @@ impl Persistence {
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_widget_rows");
         // Widget values also survive recall when the author omitted make_persistent.
-        // Most widget cells are already persistent rows (which win): skip them
-        // before they cost an entry (~336 bytes each, a million on Areia).
+        // Rows wait as 16-byte addresses (a widget row's value follows from its
+        // kind); entries are ~336 bytes and Areia adds a million of them.
         let mut rows = Vec::new();
-        let mut add = |entry: ScriptStateEntry| {
-            if state
-                .values
-                .binary_search_by_key(&entry.address, |known| known.address)
-                .is_err()
-            {
-                rows.push(entry);
-            }
-        };
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
                 sampler_core::WidgetStorage::Control(id) => {
-                    add(ScriptStateEntry {
-                        address: Address::Control(id),
-                        value: Value::Control(ControlValue::Integer(0)),
-                    });
+                    rows.push(Address::Control(id));
                     continue;
                 }
                 sampler_core::WidgetStorage::Cells { offset, len, .. } => (offset, len, false),
                 sampler_core::WidgetStorage::Texts { offset, len } => (offset, len, true),
                 sampler_core::WidgetStorage::FileSelection { offset } => (offset, 1, true),
             };
-            for index in offset
-                ..offset
-                    .checked_add(len)
-                    .ok_or_else(|| core(sampler_core::Error::Capacity))?
-            {
-                add(ScriptStateEntry {
-                    address: if text {
-                        Address::Text {
-                            instance: widget.instance,
-                            index,
-                        }
-                    } else {
-                        Address::Cell {
-                            instance: widget.instance,
-                            index,
-                        }
-                    },
-                    value: if text {
-                        Value::Text(Default::default())
-                    } else {
-                        Value::Cell(0)
-                    },
-                });
-            }
+            let instance = widget.instance;
+            let end = offset
+                .checked_add(len)
+                .ok_or_else(|| core(sampler_core::Error::Capacity))?;
+            rows.extend((offset..end).map(|index| {
+                if text {
+                    Address::Text { instance, index }
+                } else {
+                    Address::Cell { instance, index }
+                }
+            }));
         }
-        state.merge(rows);
+        state.merge_addresses(&mut rows, |address| match address {
+            Address::Control(_) => Value::Control(ControlValue::Integer(0)),
+            Address::Cell { .. } => Value::Cell(0),
+            Address::Text { .. } => Value::Text(Default::default()),
+        });
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_capture");
         runtime

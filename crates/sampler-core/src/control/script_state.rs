@@ -69,24 +69,50 @@ impl ScriptStateBuffer {
     /// an equal address), without re-sorting the ordered values or copying
     /// them: only rows at new addresses are added, merged in place from the end.
     pub fn merge(&mut self, mut rows: Vec<ScriptStateEntry>) {
-        self.sort_dedup();
         rows.sort_by_key(|entry| entry.address);
         rows.dedup_by_key(|entry| entry.address);
-        rows.retain(|row| {
+        let mut addresses = rows.iter().map(|row| row.address).collect();
+        self.merge_addresses(&mut addresses, |address| {
+            rows[rows
+                .binary_search_by_key(&address, |row| row.address)
+                .expect("row address")]
+            .value
+        });
+    }
+
+    /// As [`Self::merge`] for rows whose value follows from their address:
+    /// only 16-byte addresses wait, and entries are written in place.
+    pub fn merge_addresses(
+        &mut self,
+        addresses: &mut Vec<ScriptStateAddress>,
+        value: impl Fn(ScriptStateAddress) -> ScriptStateValue,
+    ) {
+        self.sort_dedup();
+        addresses.sort_unstable();
+        addresses.dedup();
+        addresses.retain(|address| {
             self.values
-                .binary_search_by_key(&row.address, |entry| entry.address)
+                .binary_search_by_key(address, |entry| entry.address)
                 .is_err()
         });
-        let (mut old, mut new) = (self.values.len(), rows.len());
-        self.values.extend_from_slice(&rows);
+        let (mut old, mut new) = (self.values.len(), addresses.len());
+        self.values.reserve_exact(new);
+        self.values.extend(addresses.iter().map(|&address| ScriptStateEntry {
+            address,
+            value: value(address),
+        }));
         // Addresses are distinct now: fill from the back, largest first.
         while new > 0 {
             let write = old + new - 1;
-            if old > 0 && self.values[old - 1].address > rows[new - 1].address {
+            if old > 0 && self.values[old - 1].address > addresses[new - 1] {
                 self.values[write] = self.values[old - 1];
                 old -= 1;
             } else {
-                self.values[write] = rows[new - 1];
+                let address = addresses[new - 1];
+                self.values[write] = ScriptStateEntry {
+                    address,
+                    value: value(address),
+                };
                 new -= 1;
             }
         }
