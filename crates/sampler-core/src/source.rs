@@ -525,8 +525,10 @@ impl Cursor {
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
         self.wavetable
     }
-    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2]: [f32; 3]) {
+    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2, form1_type, form2_type]: [f32; 5]) {
         if let Some(source) = &mut self.wavetable {
+            source.form1_type = form1_type as u8;
+            source.form2_type = form2_type as u8;
             source.position = position;
             source.form1 = form1;
             source.form2 = form2;
