@@ -4,6 +4,7 @@ use crate::{read_bytes::ReadBytesExt, Error};
 
 /// Type:           Chunk
 /// SerType:        0x05
+/// Versions:       0x60
 /// Kontakt 7:      BLoop
 /// KontaktIO:      K4PL_Loop
 #[derive(Debug, Clone, PartialEq)]
