@@ -61,6 +61,9 @@ pub(crate) fn internal(version: u16, p: &ni::InternalModParams) -> ir::Modulatio
             trailing_values: l.trailing_values,
             additional_flag: l.additional_flag,
         }),
+        ni::Modulator::Dbd(_) => ir::InternalSource::Other { chunk_id: 0x41 },
+        ni::Modulator::Glide(_) => ir::InternalSource::Other { chunk_id: 0x0B },
+        ni::Modulator::Follower(_) => ir::InternalSource::Other { chunk_id: 0x0A },
         ni::Modulator::Other { chunk_id } => ir::InternalSource::Other {
             chunk_id: *chunk_id,
         },
