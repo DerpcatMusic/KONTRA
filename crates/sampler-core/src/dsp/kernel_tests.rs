@@ -1,6 +1,5 @@
 //! Frozen 608a20a1 equations, independent of the extracted sample helpers.
 use super::*;
-use control::PreparedParameter;
 use lanes::{Batch, Cells, LaneBlock, VOICES};
 use svf::{FilterBank, FilterContext, PreparedFilter};
 
