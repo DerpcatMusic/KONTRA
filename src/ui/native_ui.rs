@@ -106,6 +106,57 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
         out
     })
 }
+
+/// Captions and pointer identities from the evaluated composition, for the
+/// installed-library page capture gate. No callback is invoked by the probe.
+#[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_caption_targets(slot: usize) -> Vec<(String, String)> {
+    fn captions(node: &Table, out: &mut Vec<String>) {
+        if string(node, "kind") == "Text"
+            && let Ok(props) = node.get::<Table>("props")
+        {
+            out.push(string(&props, "text"));
+        }
+        for child in tables(node, "children").unwrap_or_default() {
+            captions(&child, out);
+        }
+    }
+    fn visit(node: &Table, session: u64, out: &mut Vec<(String, String)>) {
+        let modifiers = tables(node, "modifiers").unwrap_or_default();
+        if modifiers.iter().any(|m| string(m, "name") == "on_tap_gesture") {
+            let mut text = Vec::new();
+            captions(node, &mut text);
+            if !text.is_empty() {
+                out.push((text.join(" "), format!("nui-{session}-{}", string(node, "path"))));
+            }
+        }
+        for child in tables(node, "children").unwrap_or_default() {
+            visit(&child, session, out);
+        }
+        for modifier in modifiers {
+            if let Ok(child) = modifier.get::<Table>("value") {
+                match string(&modifier, "name").as_str() {
+                    "background" | "overlay" => visit(&child, session, out),
+                    "popover" => {
+                        if let Ok(content) = child.get::<Table>("content") {
+                            visit(&content, session, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    LOCAL.with(|local| {
+        let mut out = Vec::new();
+        if let Some(session) = GATE_PAINTED.with(|p| p.borrow().get(&slot).copied())
+            && let Some(graph) = local.borrow().get(&session).and_then(|l| l.graph.clone())
+        {
+            visit(&graph, session, &mut out);
+        }
+        out
+    })
+}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[cfg(test)]
 pub(super) fn audit_memory(collect: bool) -> usize {

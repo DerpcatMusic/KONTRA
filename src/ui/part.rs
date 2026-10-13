@@ -269,10 +269,11 @@ fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> b
         || patch.and_then(|p| p.widget_count).unwrap_or(face.widgets.len()) > 0
 }
 
-/// Authored performance and native requests win, in source declaration order.
+/// A NativeUI request owns the composition; its controls may live in another
+/// script's classic performance view. Declaration order breaks ties.
 fn main_face(faces: &[ir::Interface], updates: &[ir::InterfacePatch]) -> Option<usize> {
-    (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.performance).unwrap_or(faces[n].performance))
-        .or_else(|| (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.native_ui.as_ref()).unwrap_or(&faces[n].native_ui).is_some()))
+    (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.native_ui.as_ref()).unwrap_or(&faces[n].native_ui).is_some())
+        .or_else(|| (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.performance).unwrap_or(faces[n].performance)))
         .or_else(|| (0..faces.len()).find(|&n| view_available(&faces[n], updates.get(n))))
 }
 
@@ -582,7 +583,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             .collect();
     }
     drop(readback);
-    if face.native.is_none() || face.presentation != Presentation::Bitmap {
+    if face.native.is_none() || mode == crate::library::ViewMode::Kontra {
         face.assets.prepare(
             &face.path,
             &face.face,
@@ -593,7 +594,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         );
     }
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
-    let view = if mode == crate::library::ViewMode::Original
+    // Both authored presentations lower the evaluated graph to live MUI
+    // primitives. Raw KSP rectangles are parameter handles, not this layout.
+    let view = if mode != crate::library::ViewMode::Kontra
         && let Some(native) = &mut face.native
     {
         native.set_activity(&activity);
@@ -1287,7 +1290,7 @@ mod tests {
         assert!(native.widgets.is_empty() && !native.performance);
         assert!(performance.widgets.is_empty() && performance.pages[0].background.color.is_some());
         let mut faces = vec![auxiliary, native, performance];
-        assert_eq!(main_face(&faces, &[]), Some(2));
+        assert_eq!(main_face(&faces, &[]), Some(1));
         faces[2].performance = false;
         assert_eq!(main_face(&faces, &[]), Some(1));
         faces[1].native_ui = None;
@@ -1304,6 +1307,46 @@ mod tests {
         patches[2].performance = Some(false);
         patches[1].native_ui = Some(Some(ir::NativeUi { entry: "updated".into() }));
         assert_eq!(main_face(&faces, &patches), Some(1));
+    }
+
+    #[test]
+    fn native_composition_wins_over_an_earlier_classic_performance_source() {
+        let classic = projection_fixture(1);
+        let mut native = projection_fixture(4);
+        native.native_ui = Some(ir::NativeUi { entry: "main".into() });
+        assert_eq!(main_face(&[classic, native], &[]), Some(1),
+            "the NativeUI request owns the composition even when its controls live in another script");
+    }
+
+    #[test]
+    fn original_and_vector_keep_the_same_native_composition_and_pointer_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.path().join("Resources/native_ui/main.nui"),
+            "local ui=require('native_ui')\nreturn function() return @ui.Rectangle {color=ui.Color(20,40,60)}.frame(width=96,height=48).on_tap_gesture({complete=function() end}) end").unwrap();
+        let p = Arc::new(crate::plugin::SamplerParams::new());
+        p.selection.write().unwrap().parts = vec![crate::plugin::Part {
+            path:dir.path().join("fixture.nki").to_string_lossy().into_owned(), view:1, ..Default::default()
+        }];
+        let mut raw = projection_fixture(0);
+        raw.native_ui = Some(ir::NativeUi {entry:"main".into()});
+        p.shared.view.lock().unwrap().parts[0].interfaces = vec![raw].into();
+        let mut h = super::super::tests::Harness::new(&p,1180.,780.);
+        let native = |h: &super::super::tests::Harness| h.ui.scene().unwrap().surfaces()
+            .filter(|s|s.key.as_str().starts_with("nui-") && s.key.as_str().ends_with("-root/component"))
+            .map(|s|(s.key.to_string(),s.frame)).collect::<Vec<_>>();
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(5);
+        while native(&h).is_empty() {
+            assert!(std::time::Instant::now()<deadline,"NativeUI fixture did not paint");
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        let authored = native(&h);
+        h.press("face-vector-0");
+        h.idle(4);
+        assert_eq!(native(&h),authored,"Vector must project the evaluated graph, keeping geometry and live targets");
+        assert!(!h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().contains("-ir-0")),
+            "classic placeholder geometry must not accompany the native composition");
     }
 
     #[test]
