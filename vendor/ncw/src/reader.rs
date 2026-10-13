@@ -19,7 +19,8 @@ pub struct NcwReader<R> {
     pub header: NcwHeader,
     /// Byte offset of each block, relative to `header.data_offset`.
     pub block_offsets: Vec<u32>,
-    /// Sample format declared by the first block of the file.
+    /// Sample format declared by the first block of the file, checked against
+    /// the header's sample-format word where the format defines one.
     pub sample_format: SampleFormat,
     /// Reader position after the last decoded block, if nothing moved it since.
     position: Option<u64>,
@@ -66,6 +67,17 @@ impl<R: Read + Seek> NcwReader<R> {
             }
             None => SampleFormat::Pcm,
         };
+
+        // Header word and block flags are separate roles; where the header
+        // defines the output type, a block that disagrees has no proved
+        // meaning, so refuse it instead of picking one.
+        if let Some(float) = header.declared_float() {
+            if float != (sample_format == SampleFormat::Float) {
+                return Err(Error::InvalidHeader(
+                    "header sample-format word contradicts the block flags",
+                ));
+            }
+        }
 
         Ok(Self {
             reader,
