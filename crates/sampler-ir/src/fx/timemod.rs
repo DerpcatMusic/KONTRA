@@ -83,6 +83,9 @@ impl Feedback {
 /// recursion. Everything else in [`Line`] is ignored while one is set.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
+// ponytail: the voice bank keeps ~1 KB inline so the IR stays `Copy`; the
+// engine reads natives by reference. Box it if IR size starts to matter.
+#[allow(clippy::large_enum_variant)]
 pub enum Native {
     None,
     /// Kontakt Legacy Delay (0x10): stereo ping-pong ring of 2^18 frames,
@@ -111,27 +114,62 @@ pub enum Native {
         /// One-pole `y += (head - y) * k` on each head (Chorus 0.95; 0 = off).
         smoothing: f32,
     },
-    /// Kontakt Choral (0x5d, core audio 0x14193be50): seven modulated voices
-    /// on this line, each a filtered ring read with Catmull-Rom, fed back
-    /// through a 7x7 circulant, rotated into the stereo field and shelved.
-    /// Fields are the saved values (all in [0, 1]); `mode` 0..=3 picks the
-    /// voice table (0x14193cd70). The kernel owns its dry/wet (`mix`).
-    Choral {
-        amount: f32,
-        rate: f32,
-        delay: f32,
-        voices: f32,
-        width: f32,
-        feedback: f32,
-        mix: f32,
-        invert: bool,
-        scatter: bool,
-        mode: u8,
-    },
+    /// A bank of [`BANK_VOICES`] modulated lines run in place of the single
+    /// ring: the voice-bank form of this line (Kontakt Choral is one
+    /// configuration of it). The bank owns its dry/wet.
+    VoiceBank(VoiceBank),
     /// UVI DualDelay / DualDelayX core (Workstation 4.0.9 kernel
     /// `0x14165c960`); the line's `interpolation` is its read mode and the
     /// unit's dry/wet its equal-power mix.
     UviDualDelay(DualDelay),
+}
+
+pub const BANK_VOICES: usize = 7;
+
+/// Voices of a [`Native::VoiceBank`], all in physical units (seconds, Hz) so
+/// the engine resolves them at its own rate. Per sample (Kontakt core audio
+/// 0x14193be50): voice `j` takes `invert * feedback_j * M_j + input * x`,
+/// where `M_j = sum_k y_k * scatter[(k - j) mod 7]` over last outputs `y`;
+/// filters it (TPT SVF, k = sqrt 2, `(1 - highpass) lp + highpass hp`) into
+/// its ring and reads it back with Catmull-Rom at
+/// `rate * (delay_s + (rate / lfo_hz) * excursion * m)` frames; `m` is the
+/// smoothed `(2 - (1 - l1) shape)(l1 + 1) / 4 + l2` of a triangle `l1`
+/// (phase + `offset`) and a rounded-sine `l2` at `lfo_hz * lfo2_ratio`
+/// scaled by `lfo2` (0 = off). The output sums `gain_j * rotation_j *
+/// (invert * y_j + in_j)`, low-shelves it and mixes `wet * W + dry * x`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceBank {
+    pub voices: [BankVoice; BANK_VOICES],
+    pub scatter: [f64; BANK_VOICES],
+    /// 1 or -1.
+    pub invert: f64,
+    pub input: f64,
+    pub wet: f64,
+    pub dry: f64,
+    /// Low shelf on the sum: pre-warp corner (Hz) and gain.
+    pub shelf_hz: f64,
+    pub shelf_gain: f64,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BankVoice {
+    pub gain: f64,
+    pub feedback: f64,
+    /// `[a, b, c, d]`: L gets `a sL + b sR`, R gets `c sL + d sR`.
+    pub rotation: [f64; 4],
+    pub delay_s: f64,
+    /// Half the pitch-ratio excursion, `(ratio - 1) / 2`.
+    pub excursion: f64,
+    pub lfo_hz: f64,
+    pub lfo2_ratio: f64,
+    pub lfo2: f64,
+    pub offset: f64,
+    pub shape: f64,
+    pub smoothing: f64,
+    pub filter_hz: f64,
+    pub highpass: f64,
 }
 
 /// UVI DualDelay controls in native units.
@@ -399,10 +437,17 @@ impl Config {
                     return Err("legacy modulated delay");
                 }
             }
-            if let Native::Choral { amount, rate, delay, voices, width, feedback, mix, mode, .. } = l.native
-                && !([amount, rate, delay, voices, width, feedback, mix].iter().all(|v| v.is_finite() && (0. ..=1.).contains(v)) && mode <= 3)
-            {
-                return Err("choral");
+            if let Native::VoiceBank(bank) = &l.native {
+                let v = &bank.voices;
+                let finite = v.iter().flat_map(|v| [v.gain, v.feedback, v.delay_s, v.excursion, v.lfo2, v.offset, v.shape, v.smoothing, v.highpass].into_iter().chain(v.rotation))
+                    .chain(bank.scatter)
+                    .chain([bank.invert, bank.input, bank.wet, bank.dry])
+                    .all(f64::is_finite);
+                let positive = v.iter().flat_map(|v| [v.lfo_hz, v.lfo2_ratio, v.filter_hz]).chain([bank.shelf_hz, bank.shelf_gain]).all(|x| x.is_finite() && x > 0.);
+                let sane = v.iter().all(|v| v.delay_s >= 0. && (0. ..=1.).contains(&v.smoothing) && v.feedback.abs() < 1.);
+                if !(finite && positive && sane) {
+                    return Err("voice bank");
+                }
             }
             if !(l.voice_delay_ms.is_finite() && l.voice_delay_ms >= 0.) {
                 return Err("voice delay");

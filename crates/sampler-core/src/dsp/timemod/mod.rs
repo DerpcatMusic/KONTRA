@@ -17,7 +17,7 @@ use sampler_ir::fx::timemod::{
 };
 use std::f64::consts::{PI, TAU};
 
-mod choral;
+mod voices;
 mod dual;
 #[cfg(test)]
 mod tests;
@@ -116,8 +116,8 @@ pub(crate) struct TimeMod {
     voice_delay: f64,
     /// UVI table LFO: the table and whether the increment is the direct form.
     uvi: Option<(&'static [f32; 257], bool)>,
-    /// Kontakt Choral's seven-voice law (`Native::Choral`).
-    choral: Option<Box<choral::Choral>>,
+    /// The voice bank (`Native::VoiceBank`).
+    bank: Option<Box<voices::Bank>>,
 }
 
 /// UVI LFO tables (built at 0x14163c3c0..0x14163cbbb): 257 points, the last
@@ -250,7 +250,7 @@ impl TimeMod {
         let mut voice_gain = 1.;
         let mut min_delay = 1.;
         let mut voice_delay = 0.;
-        let mut choral = None;
+        let mut bank = None;
         if let Some(line) = &cfg.line {
             voice_delay = line.voice_delay_ms * 0.001 * rate;
             taps = usize::from(line.tap_count);
@@ -291,10 +291,10 @@ impl TimeMod {
                 Native::None => {}
                 Native::LegacyDelay { .. } => cap = LEGACY_RING,
                 Native::LegacyModDelay { .. } => cap = FLANGER_RING,
-                Native::Choral { amount, rate: speed, delay, voices, width, feedback, mix, invert, scatter, mode } => {
-                    let law = choral::Choral::new([amount, speed, delay, voices, width, feedback, mix], invert, scatter, mode, rate);
+                Native::VoiceBank(ref config) => {
+                    let law = voices::Bank::new(config, rate);
                     cap = law.frames();
-                    choral = Some(Box::new(law));
+                    bank = Some(Box::new(law));
                 }
                 Native::UviDualDelay(_) => cap = dual::ring(rate) + GUARD,
             }
@@ -311,7 +311,7 @@ impl TimeMod {
             ap_at,
             fb_at,
             tap_at,
-            frames: if choral.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } },
+            frames: if bank.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } },
             heads,
             taps,
             voices,
@@ -324,7 +324,7 @@ impl TimeMod {
                 LfoShape::Uvi { wave, direct } => Some((uvi_table(wave), direct)),
                 _ => None,
             },
-            choral,
+            bank,
         })
     }
 
@@ -398,7 +398,7 @@ impl TimeMod {
         // Reset validity, not the potentially long ring: a reused voice or a
         // faulted chain never reads samples from its previous lifetime.
         if state.aux[15] == 0. {
-            slab[if cfg.line.is_some_and(|l| l.native != Native::None) { 0 } else { cap }..].fill([0.; 2]);
+            slab[if cfg.line.as_ref().is_some_and(|l| l.native != Native::None) { 0 } else { cap }..].fill([0.; 2]);
             (state.aux[6], state.aux[7]) = (0., 0.);
             let phase = cfg.lfo.phase;
             if sine {
@@ -413,7 +413,7 @@ impl TimeMod {
                 state.z[0] = [0., 0.];
                 state.z[1] = [f64::from(1. - phase), 0.];
             }
-            if let Some(Native::LegacyModDelay { second_head, .. }) = cfg.line.map(|l| l.native) {
+            if let Some(&Native::LegacyModDelay { second_head, .. }) = cfg.line.as_ref().map(|l| &l.native) {
                 // Re-phase 0x140960040 / 0x14095fee0: the left LFO's phase reads 1 at
                 // reset (0x140884620), every other LFO sits a wrapped f32 offset ahead.
                 state.z[1] = legacy_phase(1. + phase);
@@ -426,16 +426,16 @@ impl TimeMod {
             }
             state.aux[15] = 1.;
         }
-        if let Some(law) = &self.choral {
+        if let Some(law) = &self.bank {
             return law.process(slab, block, len, [cfg.dry, cfg.wet]);
         }
-        if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
+        if let Some(&Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.as_ref().map(|l| &l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
         }
-        if let Some(Native::UviDualDelay(d)) = cfg.line.map(|l| l.native) {
+        if let Some(&Native::UviDualDelay(d)) = cfg.line.as_ref().map(|l| &l.native) {
             return self.dual_delay(state, slab, block, len, tempo, d);
         }
-        if let Some(Native::LegacyModDelay { base_ms, excursion, feedback, second_head, smoothing }) = cfg.line.map(|l| l.native) {
+        if let Some(&Native::LegacyModDelay { base_ms, excursion, feedback, second_head, smoothing }) = cfg.line.as_ref().map(|l| &l.native) {
             return self.legacy_mod_delay(state, slab, block, len, tempo, (base_ms, excursion, feedback, second_head, smoothing));
         }
         let hz = self.hz(tempo);
