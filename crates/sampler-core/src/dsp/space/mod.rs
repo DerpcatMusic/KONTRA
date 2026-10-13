@@ -15,6 +15,7 @@ mod freeverb;
 mod galois;
 mod plate;
 mod shape;
+mod sparkverb;
 
 pub use convolver::{Impulse, MAX_IMPULSE_FRAMES};
 pub use convolver::ConvolutionUpload;
@@ -58,6 +59,25 @@ fn network_valid(n: &Network) -> bool {
                 within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
             }))
         && (n.topology != Topology::Galois || n.galois.is_some_and(|g| g.controls.iter().all(|v| (0.0..=1.0).contains(v))))
+        && (n.topology != Topology::SparkVerb
+            || n.spark.is_some_and(|s| {
+                let w = |v: f32, lo: f64, hi: f64| within(f64::from(v), lo, hi);
+                (1..=5).contains(&s.quality)
+                    && s.mode <= 2
+                    && w(s.room_m, 1.0, 100.0)
+                    && w(s.shape, 0.0, 1.0)
+                    && w(s.decay, 0.01, 100.0)
+                    && w(s.decay_low, 0.01, 100.0)
+                    && w(s.decay_high, 0.01, 100.0)
+                    && w(s.freq_low, 1.0, 192_000.0)
+                    && w(s.freq_high, 1.0, 192_000.0)
+                    && w(s.mod_cents, 0.0, 100.0)
+                    && w(s.mod_hz, 0.01, 20.0)
+                    && w(s.width, 0.0, 1.0)
+                    && w(s.rolloff_hz, 1.0, 192_000.0)
+                    && w(s.predelay_seconds, 0.0, 0.1)
+                    && s.diffuser.is_none_or(|(g, ms)| w(g, 0.0, 1.0) && w(ms, 0.1, 50.0))
+            }))
 }
 
 /// Whether `c` can be built: finite, in range, and not empty.
@@ -92,6 +112,7 @@ enum Core {
     Diffuser(comb::Diffuser),
     Freeverb(freeverb::Freeverb),
     Galois(Box<galois::GaloisCore>),
+    Spark(sparkverb::Spark),
 }
 
 /// Closes the wet signal a set time after the input falls silent.
@@ -137,10 +158,11 @@ impl Net {
             Topology::Diffuser => Core::Diffuser(comb::Diffuser::new(n, rate)?),
             Topology::Freeverb => Core::Freeverb(freeverb::Freeverb::new(n, rate)?),
             Topology::Galois => Core::Galois(Box::new(galois::GaloisCore::new(n, rate)?)),
+            Topology::SparkVerb => Core::Spark(sparkverb::Spark::new(n, rate)?),
         };
         let rate = rate as f32;
-        // The Galois core does its own predelay, width, shelf and mix.
-        let native = n.topology == Topology::Galois;
+        // The Galois and SparkVerb cores do their own predelay, width and tone.
+        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb);
         Ok(Self {
             core,
             tone: if native { Tone::new(1.0, 0.0, rate) } else { Tone::new(n.width, n.low_shelf_db, rate) },
@@ -158,6 +180,7 @@ impl Net {
             Core::Diffuser(c) => c.clear(),
             Core::Freeverb(c) => c.clear(),
             Core::Galois(c) => c.clear(),
+            Core::Spark(c) => c.clear(),
         }
         self.tone.clear();
         if let Some(e) = &mut self.early {
@@ -182,6 +205,7 @@ impl Net {
             Core::Diffuser(c) => c.process(l, r),
             Core::Freeverb(c) => c.process(l, r),
             Core::Galois(c) => c.process(l, r),
+            Core::Spark(c) => c.process(l, r),
         }
         for i in 0..n {
             let pos = self.pos;

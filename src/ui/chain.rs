@@ -363,6 +363,7 @@ fn detail(p: ir::Processor) -> String {
                     ir::fx::space::Topology::Diffuser => "Diffusion",
                     ir::fx::space::Topology::Freeverb => "Reverb (legacy)",
                     ir::fx::space::Topology::Galois => "Reverb",
+                    ir::fx::space::Topology::SparkVerb => "SparkVerb",
                 },
                 n.decay_seconds,
                 n.size * 100.,
