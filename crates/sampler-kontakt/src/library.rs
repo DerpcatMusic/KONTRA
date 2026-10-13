@@ -1288,7 +1288,16 @@ impl Translation {
         let saved = self.snapshot_groups.get(index).cloned();
         let overlaid;
         let group = if let Some(state) = &saved {
-            overlaid = crate::snapshot::overlay_modulation(group, &state.modulation);
+            overlaid = crate::snapshot::overlay_group(group, state)?;
+            self.ir.unsupported.push(ir::Unsupported {
+                location: format!("snapshot group {index}"),
+                feature: "saved release/MIDI/voice state and v4 selection words".into(),
+                value: format!(
+                    "compact bytes 14..24 {:02x?}, selection {}, v4 words {:02x?}",
+                    state.compact_state, state.selection, state.v4_words
+                ),
+                reason: ir::Reason::NotModeled,
+            });
             &overlaid
         } else {
             group
@@ -1587,6 +1596,18 @@ impl Translation {
                     },
                     Modulator::Flex(flex) => {
                         let sustain = flex.sustain as usize;
+                        // Levels reach the universal envelope as 0..1; the setter's
+                        // behaviour outside that range (0x140ae5a10 clamps only a
+                        // tiny neighbourhood) is not carried, so report, never clamp.
+                        if let Some(p) = flex.points.iter().find(|p| !(0.0..=1.0).contains(&p.level)) {
+                            self.unsupported(
+                                &at,
+                                "flex level outside 0..1",
+                                p.level,
+                                ir::Reason::NotModeled,
+                            );
+                            continue;
+                        }
                         if volume {
                             // Held until the release segments end (an upper bound: the
                             // native release scaling only shortens them).
@@ -2334,6 +2355,11 @@ impl Translation {
             );
             None
         };
+        // The native lag is signed (FUN_140873040 route field +0xe); only the
+        // non-negative law is proved, so a negative lag is reported, not smoothed.
+        if target.lag_ms < 0 {
+            return report(self, "negative modulation lag", ir::Reason::NotModeled);
+        }
         // Modulating another modulator's intensity scales that modulator's own
         // routes (Kontakt ID25 law); it is not a route of its own.
         if target.param == "intensity" {
@@ -5385,7 +5411,7 @@ struct IntensityScale {
     /// The assignment's shaper, applied to the unipolar source (`ftable`).
     shape: Option<ir::ShapeRef>,
     /// Saved lag milliseconds (0: none).
-    lag_ms: u16,
+    lag_ms: i16,
 }
 
 impl Translation {
