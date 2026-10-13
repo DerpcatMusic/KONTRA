@@ -293,6 +293,13 @@ impl Processor {
     }
 }
 
+// Universal effect families (wave 4).
+pub(crate) mod color;
+pub(crate) mod dynamics;
+pub(crate) mod eq_family;
+pub(crate) mod filter;
+pub(crate) mod space;
+pub(crate) mod timemod;
 mod ar;
 mod ar_kernel;
 mod compressor;
