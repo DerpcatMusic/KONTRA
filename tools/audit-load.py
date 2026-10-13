@@ -2,7 +2,8 @@
 """Run one short plugin load shard; persist numeric metadata only.
 
 Usage: audit-load.py MANIFEST OUT_DIR BIN MODE START END [REPEAT]
-MODE: v2, v1user (read existing cache), v1fresh (no preset/header cache).
+MODE: v2, v1user (read existing cache), v1fresh (no preset/header cache),
+loader/loader-stream (corpus-health production translation/stream binding).
 Run through kontakto-heavy. Requires Linux /proc and bwrap.
 """
 import json
@@ -37,7 +38,7 @@ def sanitized(probe):
 
 def main():
     manifest, out, binary, mode, start, end, *repeat = sys.argv[1:]
-    assert mode in ("v2", "v1user", "v1fresh")
+    assert mode in ("v2", "v1user", "v1fresh", "loader", "loader-stream")
     repeat = repeat[0] if repeat else "1"
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -56,7 +57,7 @@ def main():
         env["XDG_CACHE_HOME"] = "/proc/self/no-audit-cache" if mode == "v1fresh" else str(Path.home() / ".cache")
         env["KONTRA_AUDIT_LOAD"] = "1"
         # Only the v2-owned numeric metadata namespace may be writable.
-        cache_home = env.get("PROBE_CACHE_HOME") if mode == "v2" else None
+        cache_home = env.get("PROBE_CACHE_HOME") if mode in ("v2", "loader-stream") else None
         if cache_home:
             cache_home = Path(cache_home).resolve()
             numeric = cache_home / "kontra" / "v2-headers"
@@ -75,11 +76,18 @@ def main():
         # Capture output in memory and persist only the sanitized probe metadata.
         cmd = ["bwrap", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
                "--tmpfs", "/tmp", str(Path(binary).resolve()), "--ignored", "--exact", env.get("PROBE_TEST", "plugin::tests::probe_load"), "--nocapture"]
+        if mode.startswith("loader"):
+            cmd = cmd[:-5] + [str(Path(binary).resolve()), "load-audit", path]
+            if program != "all":
+                cmd.extend(["--program", program])
+            if mode == "loader-stream":
+                cmd.append("--stream")
+            env["KONTRA_SCAN_ACTIVE"] = "1"
         if product_cache:
             cmd[5:5] = ['--bind', str(product_cache), str(product_cache)]
         if cache_home:
             cmd[5:5] = ["--bind", str(numeric), str(numeric)]
-        stages, result = [], {}
+        stages, result, programs = [], {}, []
         activity = None
         if env.get('KONTRA_GATE_ACTIVITY') == '1':
             sys.path.insert(0, str(Path(__file__).resolve().parent / 'kontra-gate'))
@@ -95,6 +103,12 @@ def main():
                     stages.append(json.loads(line[6:]))
                 if line.startswith("PROBE "):
                     result = sanitized(json.loads(line[6:]))
+                if mode.startswith("loader") and line.startswith("{"):
+                    row = json.loads(line)
+                    if row.get("format") == "kontra-load-audit":
+                        programs.append(row)
+            if mode.startswith("loader"):
+                result["programs"] = programs
             result["returncode"] = run.returncode
         except subprocess.TimeoutExpired:
             result = {"timeout_s": 130}
