@@ -620,7 +620,7 @@ fn filter(
     let mapped = filter::map(kind, cutoff, resonance, extra)?;
     // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
     // check the record version, the leading Gain value and the knob ranges.
-    if !matches!(mapped.config.topology, Topology::Svf | Topology::FormantII) {
+    if !matches!(mapped.config.topology, Topology::Svf | Topology::FormantII | Topology::Cascade) {
         return Err(Gap {
             name: filter::name(kind).unwrap_or("filter"),
             reason: "the stored record does not meet the native kernel's admission",
@@ -2165,86 +2165,38 @@ mod tests {
     }
 
     #[test]
-    fn v1_legacy_lowpass_keeps_the_authored_slot_and_knob_laws() {
-        let mut payload = 2i32.to_le_bytes().repeat(2);
-        for value in [0.5996094f32, 0.] {
-            payload.extend(value.to_le_bytes());
+    fn legacy_filters_keep_the_authored_slot_and_their_stored_knobs() {
+        // Saved types 2 (LP1) and 3 (HP1): the cascade core takes the stored knobs.
+        for (kind, cutoff, poles, response) in [
+            (2i32, 0.5996094f32, 1, sampler_ir::fx::filter::Response::LowPass),
+            (3, 0., 1, sampler_ir::fx::filter::Response::HighPass),
+        ] {
+            let mut payload = kind.to_le_bytes().repeat(2);
+            for value in [cutoff, 0.] {
+                payload.extend(value.to_le_bytes());
+            }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let mut saved = slot(0x18, payload.clone(), 1.);
+                saved.slot = 5;
+                let out = chain(&[saved], scope);
+                assert!(
+                    !out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
+                    "{kind}: {:?}",
+                    out.notes
+                );
+                assert_eq!(out.filter_slots, [(5, 0)]);
+                let sampler_ir::Processor::FilterBank(c) = out.processors[0] else {
+                    panic!("missing filter")
+                };
+                assert_eq!(c.topology, sampler_ir::fx::filter::Topology::Cascade);
+                assert_eq!((c.response, c.poles), (response, poles));
+                assert_eq!(c.cutoff, f64::from(cutoff));
+            }
         }
-        for scope in [Scope::Voice, Scope::Bus] {
-            let mut saved = slot(0x18, payload.clone(), 1.);
-            saved.slot = 5;
-            let out = chain(&[saved], scope);
-            assert!(
-                !out.notes
-                    .iter()
-                    .any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
-                "v1 executes legacy type 2: {:?}",
-                out.notes
-            );
-            assert_eq!(out.filter_slots, [(5, 0)]);
-            let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
-                panic!("missing filter")
-            };
-            // Saved type 2 is Legacy LP1 (KSP $FILTER_TYPE_LP1POLE order; one pole measured, no resonance).
-            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 1 });
-            assert_eq!(
-                filter.cutoff,
-                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0.5996094, sampler_ir::fx::filter::Warp::LowPass))
-            );
-            assert_eq!(
-                filter.resonance,
-                sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
-            );
-        }
-        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
             panic!("missing filter")
         };
-        assert_eq!(
-            filter.resonance,
-            sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7)))
-        );
-    }
-
-    #[test]
-    fn v1_legacy_highpass_keeps_the_authored_slot_and_knob_laws() {
-        let mut payload = 3i32.to_le_bytes().repeat(2);
-        for value in [0f32, 0.] {
-            payload.extend(value.to_le_bytes());
-        }
-        for scope in [Scope::Voice, Scope::Bus] {
-            let mut saved = slot(0x18, payload.clone(), 1.);
-            saved.slot = 5;
-            let out = chain(&[saved], scope);
-            assert_eq!(
-                out.filter_slots,
-                [(5, 0)],
-                "v1's legacy HP slot was dropped: {:?}",
-                out.notes
-            );
-            let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
-                panic!("missing filter")
-            };
-            assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 1 });
-            assert_eq!(
-                filter.cutoff,
-                sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0., sampler_ir::fx::filter::Warp::HighPass))
-            );
-            assert_eq!(
-                filter.resonance,
-                sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
-            );
-        }
-        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7, None).unwrap().0[0] else {
-            panic!("missing filter")
-        };
-        assert_eq!(
-            filter.cutoff,
-            sampler_ir::Frequency::Hertz(sampler_ir::fx::filter::legacy_warp_hertz(0.4, sampler_ir::fx::filter::Warp::HighPass))
-        );
-        assert_eq!(
-            filter.resonance,
-            sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(0.7)))
-        );
+        assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
     }
 
     #[test]
@@ -2263,8 +2215,8 @@ mod tests {
             (q - 1.0 / 2.0).abs() < 1e-9,
             "r = 0 is k = 1.987 + 0.013 = 2"
         );
-        // Legacy LP4 needs a Butterworth cascade the IR cannot express; it is a precise gap, not a guess.
-        assert!(filter(8, 0.5, 0.5, None).is_err());
+        // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
+        assert!(filter(8, 0.5, 0.5, None).is_ok());
         assert!(filter(1, 0.5, 0.5, None).is_err());
     }
 

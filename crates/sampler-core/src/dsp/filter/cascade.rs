@@ -433,7 +433,6 @@ impl CascadeSettings {
             class: self.class,
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
             rate: rate as f32,
-            modulation_index: usize::MAX,
         }
     }
 }
@@ -442,7 +441,6 @@ pub(crate) struct Cascade {
     class: Legacy,
     parameters: [PreparedParameter; 2],
     rate: f32,
-    pub(crate) modulation_index: usize,
 }
 
 impl Cascade {
