@@ -242,21 +242,50 @@ fn schema(
     views: &[sampler_ksp::ScriptView],
     state: &ScriptStateBuffer,
 ) -> Result<String, CoreError> {
+    use std::fmt::Write;
+    // Hashes the same bytes as one `format!` per entry, through one reused
+    // buffer: persistent arrays reach hundreds of thousands of entries, and
+    // Debug's many tiny writes are slow straight into the hasher.
     let mut hash = blake3::Hasher::new();
+    let mut buffer = String::with_capacity(1 << 16);
+    let mut flush = |buffer: &mut String, hash: &mut blake3::Hasher, last: bool| {
+        if last || buffer.len() >= 1 << 16 {
+            hash.update(buffer.as_bytes());
+            buffer.clear();
+        }
+    };
     for view in views {
-        hash.update(format!("{:?}", view.model().persistent).as_bytes());
+        write!(buffer, "{:?}", view.model().persistent).expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
     for entry in &state.values {
-        hash.update(format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes());
+        let kind = Atom::new(entry.value, 0).kind;
+        // The derived Debug text, written directly for the (million-row) cells.
+        match entry.address {
+            Address::Cell { instance, index } => write!(
+                buffer,
+                "Cell {{ instance: ScriptInstanceId({}), index: {index} }}:{kind}",
+                instance.0
+            ),
+            Address::Text { instance, index } => write!(
+                buffer,
+                "Text {{ instance: ScriptInstanceId({}), index: {index} }}:{kind}",
+                instance.0
+            ),
+            address => write!(buffer, "{address:?}:{kind}"),
+        }
+        .expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
     for widget in runtime
         .widget_definitions(runtime.active_plan())
         .map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?
     {
-        hash.update(
-            format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
-        );
+        write!(buffer, "{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage)
+            .expect("string write");
+        flush(&mut buffer, &mut hash, false);
     }
+    flush(&mut buffer, &mut hash, true);
     Ok(hash.finalize().to_hex().to_string())
 }
 
@@ -293,60 +322,60 @@ impl Persistence {
     ) -> Result<Self, CoreError> {
         let core = |error| CoreError::Invalid(format!("Script persistence: {error:?}"));
         let plan = runtime.active_plan();
+        let span = sampler_kontakt::audit::Span::new("persistence_state_buffer");
         let mut state = sampler_ksp::persistent_state_buffer(views).map_err(core)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_widget_rows");
         // Widget values also survive recall when the author omitted make_persistent.
+        // Rows wait as 16-byte addresses (a widget row's value follows from its
+        // kind); entries are ~336 bytes and Areia adds a million of them.
+        let mut rows = Vec::new();
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
                 sampler_core::WidgetStorage::Control(id) => {
-                    state.values.push(ScriptStateEntry {
-                        address: Address::Control(id),
-                        value: Value::Control(ControlValue::Integer(0)),
-                    });
+                    rows.push(Address::Control(id));
                     continue;
                 }
                 sampler_core::WidgetStorage::Cells { offset, len, .. } => (offset, len, false),
                 sampler_core::WidgetStorage::Texts { offset, len } => (offset, len, true),
                 sampler_core::WidgetStorage::FileSelection { offset } => (offset, 1, true),
             };
-            for index in offset
-                ..offset
-                    .checked_add(len)
-                    .ok_or_else(|| core(sampler_core::Error::Capacity))?
-            {
-                state.values.push(ScriptStateEntry {
-                    address: if text {
-                        Address::Text {
-                            instance: widget.instance,
-                            index,
-                        }
-                    } else {
-                        Address::Cell {
-                            instance: widget.instance,
-                            index,
-                        }
-                    },
-                    value: if text {
-                        Value::Text(Default::default())
-                    } else {
-                        Value::Cell(0)
-                    },
-                });
-            }
+            let instance = widget.instance;
+            let end = offset
+                .checked_add(len)
+                .ok_or_else(|| core(sampler_core::Error::Capacity))?;
+            rows.extend((offset..end).map(|index| {
+                if text {
+                    Address::Text { instance, index }
+                } else {
+                    Address::Cell { instance, index }
+                }
+            }));
         }
-        state.values.sort_by_key(|entry| entry.address);
-        state.values.dedup_by_key(|entry| entry.address);
+        state.merge_addresses(&mut rows, |address| match address {
+            Address::Control(_) => Value::Control(ControlValue::Integer(0)),
+            Address::Cell { .. } => Value::Cell(0),
+            Address::Text { .. } => Value::Text(Default::default()),
+        });
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_capture");
         runtime
             .capture_script_state(plan, &mut state)
             .map_err(core)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_schema");
         // Admit the exact old roster so adding DSP owners cannot lose existing project state.
         let previous_schema = schema(runtime, views, &state)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_registry_rows");
         let previous_addresses: Vec<_> = state.values.iter().map(|entry| entry.address).collect();
+        let mut rows = Vec::new();
         for descriptor in runtime
             .parameter_registry(plan)
             .map_err(core)?
             .descriptors()
         {
-            state.values.push(ScriptStateEntry {
+            rows.push(ScriptStateEntry {
                 address: Address::Control(descriptor.control),
                 value: Value::Control(
                     runtime
@@ -355,8 +384,9 @@ impl Persistence {
                 ),
             });
         }
-        state.values.sort_by_key(|entry| entry.address);
-        state.values.dedup_by_key(|entry| entry.address);
+        state.merge(rows);
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_schema");
         let schema = if state.values.len() == previous_addresses.len() {
             previous_schema.clone()
         } else {
@@ -436,9 +466,13 @@ impl Persistence {
                 .capture_script_state(plan, &mut state)
                 .map_err(core)?;
         }
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("persistence_watch");
         runtime
             .watch_script_state_values(plan, &state.values)
             .map_err(core)?;
+        drop(span);
+        let _span = sampler_kontakt::audit::Span::new("persistence_snapshot");
         let snapshot = Snapshot::new(schema, &state);
         let revision = (plan, runtime.script_state_revision(plan).map_err(core)?);
         Ok(Self {
@@ -538,6 +572,48 @@ impl Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Saved projects carry this hash: buffered hashing must keep the bytes
+    /// of the original one-`format!`-per-entry schema.
+    #[test]
+    fn schema_hash_is_unchanged_by_buffered_hashing() {
+        let script = sampler_ksp::compile(
+            "on init\n declare %big[20000]\n declare @name\n make_persistent(%big)\n make_persistent(@name)\n end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let views = [script.view()];
+        let plan = script
+            .bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 8, 0);
+        let mut runtime = Runtime::new(plan, limits).unwrap();
+        let mut state = sampler_ksp::persistent_state_buffer(&views).unwrap();
+        runtime
+            .capture_script_state(runtime.active_plan(), &mut state)
+            .unwrap();
+        let mut legacy = blake3::Hasher::new();
+        for view in &views {
+            legacy.update(format!("{:?}", view.model().persistent).as_bytes());
+        }
+        for entry in &state.values {
+            legacy.update(
+                format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes(),
+            );
+        }
+        for widget in runtime.widget_definitions(runtime.active_plan()).unwrap() {
+            legacy.update(
+                format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
+            );
+        }
+        assert!(state.values.len() > 20000, "crosses the 64 KiB flush");
+        assert_eq!(
+            schema(&runtime, &views, &state).unwrap(),
+            legacy.finalize().to_hex().to_string()
+        );
+    }
 
     #[test]
     fn adding_dsp_owners_recalls_only_the_exact_previous_script_schema() {
