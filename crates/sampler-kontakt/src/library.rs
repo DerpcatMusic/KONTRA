@@ -2478,13 +2478,19 @@ impl Translation {
             let chain_data = self.ir.chains.get(chain.0)?;
             let processor = chain_data.pre_amplitude.iter().chain(&chain_data.post_amplitude).nth(index)?;
             let parameter = match (processor, target.param.as_str()) {
-                (ir::Processor::LiveSaturation { .. }, "shaper") => P::Shape,
-                (ir::Processor::LiveDistortion { .. }, "distortionIntensity") => P::Drive,
                 (ir::Processor::LiveFormant { .. }, "formantTalk") => P::FormantTalk,
                 (ir::Processor::LiveFormant { .. }, "formantSharp") => P::FormantSharp,
                 (ir::Processor::LiveFormant { .. }, "formantSize") => P::FormantSize,
-                (ir::Processor::LiveLoFi { .. }, "bitdepth") => P::LoFiBits,
-                (ir::Processor::LiveLoFi { .. }, "downsample") => P::LoFiFrequency,
+                (ir::Processor::Color(config), name) => {
+                    let role = match name {
+                        "shaper" => P::Shape,
+                        "distortionIntensity" => P::Drive,
+                        "bitdepth" => P::LoFiBits,
+                        "downsample" => P::LoFiFrequency,
+                        _ => return None,
+                    };
+                    config.lanes().iter().any(|lane| lane.role == role).then_some(role)?
+                }
                 _ => return None,
             };
             Some((ir::Target::Processor { chain, index, parameter }, ir::Depth::Normalized(i)))
