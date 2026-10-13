@@ -10,12 +10,22 @@ pub enum FilterKind {
     BandPass,
     Notch,
     AllPass,
-    Peak { gain_db: f64 },
-    LowShelf { gain_db: f64 },
-    HighShelf { gain_db: f64 },
+    Peak {
+        gain_db: f64,
+    },
+    LowShelf {
+        gain_db: f64,
+    },
+    HighShelf {
+        gain_db: f64,
+    },
     /// First-order (6 dB/octave) shelves; the Q is ignored.
-    FirstOrderLowShelf { gain_db: f64 },
-    FirstOrderHighShelf { gain_db: f64 },
+    FirstOrderLowShelf {
+        gain_db: f64,
+    },
+    FirstOrderHighShelf {
+        gain_db: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +119,8 @@ impl Biquad {
                     ]
                 }
             }
-            FilterKind::FirstOrderLowShelf { gain_db } | FilterKind::FirstOrderHighShelf { gain_db } => {
+            FilterKind::FirstOrderLowShelf { gain_db }
+            | FilterKind::FirstOrderHighShelf { gain_db } => {
                 if !gain_db.is_finite() {
                     return Err(Error::InvalidInput);
                 }
@@ -120,11 +131,7 @@ impl Biquad {
                     [1. + amplitude * g, amplitude * g - 1., 0.]
                 } else {
                     denominator = [1. + amplitude * g, amplitude * g - 1., 0.];
-                    [
-                        amplitude * (amplitude + g),
-                        amplitude * (g - amplitude),
-                        0.,
-                    ]
+                    [amplitude * (amplitude + g), amplitude * (g - amplitude), 0.]
                 }
             }
             FilterKind::Peak { gain_db } => {
@@ -164,7 +171,10 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
+    KontaktEnhancedCompressor {
+        knobs: [f32; 4],
+        link: bool,
+    },
     LoFi(LoFiSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
@@ -196,16 +206,30 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
-    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
+    LegacyPhaser {
+        depth: f32,
+        feedback: f32,
+        phase: f32,
+        speed: f32,
+        period_unit: Option<f32>,
+    },
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Kontakt Classic Saturation, signed saved Shape (-1..1).
     Saturation(f32),
     /// NI Saturator Shape / KSP ENGINE_PAR_SHAPE; direct template copy 0x1408378f0.
     LiveSaturation(Parameter),
-    LiveDistortion { transistor: bool, drive: Parameter, damping: Parameter },
+    LiveDistortion {
+        transistor: bool,
+        drive: Parameter,
+        damping: Parameter,
+    },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
-    Distortion { transistor: bool, drive: f32, damping: f32 },
+    Distortion {
+        transistor: bool,
+        drive: f32,
+        damping: f32,
+    },
     /// Formant Crusher decimation; per-voice scalar path.
     Decimate(Decimator),
     StateVariable(StateVariableFilter),
@@ -254,23 +278,64 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
-            Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
+            Processor::KontaktEnhancedCompressor {
+                knobs: [threshold, ratio, attack, release],
+                ..
+            } => {
+                [threshold, ratio, attack, release]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    && (0.0..=1.0).contains(ratio)
+                    && *attack > 0.
+                    && *release >= 0.
+            }
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::LoFi(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
             Processor::Ar(settings) => settings.valid(),
-            Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => [depth, feedback, phase].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) && speed.is_finite() && *speed >= 0. && period_unit.is_none_or(|u| u.is_finite() && u > 0.),
-            Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            Processor::Formant(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::LegacyPhaser {
+                depth,
+                feedback,
+                phase,
+                speed,
+                period_unit,
+            } => {
+                [depth, feedback, phase]
+                    .into_iter()
+                    .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                    && speed.is_finite()
+                    && *speed >= 0.
+                    && period_unit.is_none_or(|u| u.is_finite() && u > 0.)
+            }
+            Processor::Phaser(knobs) => knobs
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::Formant(knobs) => knobs
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
-            Processor::LiveSaturation(shape) => shape.valid() && !matches!(shape, Parameter::Expression { .. }) && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v)),
-            Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| p.valid() && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. })) && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))),
+            Processor::LiveSaturation(shape) => {
+                shape.valid()
+                    && !matches!(shape, Parameter::Expression { .. })
+                    && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v))
+            }
+            Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| {
+                p.valid()
+                    && matches!(
+                        p,
+                        Parameter::Constant(_)
+                            | Parameter::Control(ControlRange { ramp_frames: 0, .. })
+                    )
+                    && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
+            }),
             Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
-            Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::Distortion { drive, damping, .. } => [drive, damping]
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Gainer { dry, gain } => {
                 dry.is_finite() && gain.valid() && !matches!(gain, Parameter::Expression { .. })
             }
@@ -282,11 +347,11 @@ impl Processor {
 mod ar;
 mod ar_kernel;
 mod compressor;
-mod enhanced_compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
 mod distortion;
+mod enhanced_compressor;
 mod formant;
 mod phaser;
 pub use ar::ArSettings;
@@ -515,7 +580,11 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
                 }
-                Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
+                Processor::KontaktEnhancedCompressor { knobs, link } => {
+                    PreparedProcessor::KontaktEnhancedCompressor(
+                        enhanced_compressor::Enhanced::compile(knobs, link, rate),
+                    )
+                }
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate, bindings))
                 }
@@ -555,12 +624,46 @@ pub(super) fn compile_processors(
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
-                Processor::LiveSaturation(shape) => PreparedProcessor::LiveSaturation(shape.compile(bindings)),
-                Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
-                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
-                Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
-            Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
-                Processor::Distortion { transistor, drive, damping } => PreparedProcessor::Distortion(distortion::Distortion::compile(transistor, drive, damping, rate)),
+                Processor::LiveSaturation(shape) => {
+                    PreparedProcessor::LiveSaturation(shape.compile(bindings))
+                }
+                Processor::LiveDistortion {
+                    transistor,
+                    drive,
+                    damping,
+                } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(
+                    transistor,
+                    drive.compile(bindings),
+                    damping.compile(bindings),
+                    rate,
+                )),
+                Processor::LegacyPhaser {
+                    depth,
+                    feedback,
+                    phase,
+                    speed,
+                    period_unit,
+                } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(
+                    depth,
+                    feedback,
+                    phase,
+                    speed,
+                    period_unit,
+                    rate,
+                )),
+                Processor::Phaser(knobs) => {
+                    PreparedProcessor::Phaser(phaser::Phaser::compile(knobs))
+                }
+                Processor::Formant(knobs) => {
+                    PreparedProcessor::Formant(formant::Formant::compile(knobs, rate))
+                }
+                Processor::Distortion {
+                    transistor,
+                    drive,
+                    damping,
+                } => PreparedProcessor::Distortion(distortion::Distortion::compile(
+                    transistor, drive, damping, rate,
+                )),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
                     dry,
                     gain: gain.compile(bindings),
@@ -706,7 +809,9 @@ impl PreparedVoiceChain {
             );
             let levels = if let Some(controls) = context.controls.as_mut() {
                 controls.levels(voice, len, begun.held)
-            } else { levels(voice, len, begun.held) };
+            } else {
+                levels(voice, len, begun.held)
+            };
 
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
             let [left, right] = &mut block;
@@ -1211,11 +1316,15 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::LoFi(lofi) => lofi.process(state, block, len),
-            PreparedProcessor::LegacyPhaser(phaser) => phaser.process(state, block, len, filters.tempo),
+            PreparedProcessor::LegacyPhaser(phaser) => {
+                phaser.process(state, block, len, filters.tempo)
+            }
             PreparedProcessor::Phaser(phaser) => phaser.process(state, block, len),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
-            PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
+            PreparedProcessor::LiveDistortion(distortion) => {
+                distortion.process(state, block, len, parameters, at)
+            }
             PreparedProcessor::LiveSaturation(shape) => {
                 for i in 0..len {
                     let value = shape.value(parameters, at + i as u64, None) as f32;
@@ -1611,12 +1720,32 @@ mod tests {
     #[test]
     fn first_order_shelves_reach_their_gain_one_band_away() {
         let gain = 10_f64.powf(0.6);
-        let low = Biquad::new(48000, FilterKind::FirstOrderLowShelf { gain_db: 12. }, 1000., 0.7).unwrap();
-        let high = Biquad::new(48000, FilterKind::FirstOrderHighShelf { gain_db: 12. }, 1000., 0.7).unwrap();
-        assert!((low.magnitude(1.) - gain).abs() < 1e-3, "{}", low.magnitude(1.));
+        let low = Biquad::new(
+            48000,
+            FilterKind::FirstOrderLowShelf { gain_db: 12. },
+            1000.,
+            0.7,
+        )
+        .unwrap();
+        let high = Biquad::new(
+            48000,
+            FilterKind::FirstOrderHighShelf { gain_db: 12. },
+            1000.,
+            0.7,
+        )
+        .unwrap();
+        assert!(
+            (low.magnitude(1.) - gain).abs() < 1e-3,
+            "{}",
+            low.magnitude(1.)
+        );
         assert!((low.magnitude(23999.) - 1.).abs() < 1e-2);
         assert!((high.magnitude(1.) - 1.).abs() < 1e-3);
-        assert!((high.magnitude(23999.) - gain).abs() < 1e-2, "{}", high.magnitude(23999.));
+        assert!(
+            (high.magnitude(23999.) - gain).abs() < 1e-2,
+            "{}",
+            high.magnitude(23999.)
+        );
         // Six dB per octave: a decade above the corner is within 1 dB of its asymptote.
         assert!((low.magnitude(10000.) - 1.).abs() < 0.2);
     }

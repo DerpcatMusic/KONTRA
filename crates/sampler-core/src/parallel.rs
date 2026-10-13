@@ -427,7 +427,14 @@ impl View<'_> {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let controls = native.get_mut(0).and_then(|state| {
+            plan.modulation.native_render(
+                &plan.prepared.voice_modulation,
+                i,
+                state,
+                &plan.controls.base,
+            )
+        });
         let context = RenderContext {
             controls,
             trace: None,
@@ -459,7 +466,7 @@ impl View<'_> {
             asset.want_levels(v.cursor.step(), self.at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
@@ -522,7 +529,7 @@ impl View<'_> {
                 asset.want_levels(v.cursor.step(), self.at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames: resident,
+                    frames: &resident,
                     levels: guard.as_deref().map_or(&[], |l| l),
                 };
                 chain.begin(v, &pcm, frames, self.kernel, &mut planar)
@@ -738,12 +745,18 @@ mod tests {
             let expected = play(&mut one, curve);
             assert!(expected.iter().flatten().all(|sample| sample.is_finite()));
             assert!(
-                expected[..64].iter().zip(&linear[..64]).any(|(faded, control)| {
-                    faded.iter().any(|sample| *sample != 0.) && faded != control
-                }),
+                expected[..64]
+                    .iter()
+                    .zip(&linear[..64])
+                    .any(|(faded, control)| {
+                        faded.iter().any(|sample| *sample != 0.) && faded != control
+                    }),
                 "{curve:?}: no nonzero changed audio during the active fade"
             );
-            assert_ne!(expected, linear, "{curve:?}: no nonlinear fade reached audio");
+            assert_ne!(
+                expected, linear,
+                "{curve:?}: no nonlinear fade reached audio"
+            );
             for threads in [2, 4] {
                 let mut rt = runtime(threads);
                 let actual = play(&mut rt, curve);

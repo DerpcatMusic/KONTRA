@@ -297,7 +297,11 @@ impl Cursor {
             return *self;
         };
         let (mut local, offset) = self.segment(i128::from(self.position));
-        let tuning = loops.slots.iter().flatten().fold(1.0f64, |max, s| max.max(s.tuning));
+        let tuning = loops
+            .slots
+            .iter()
+            .flatten()
+            .fold(1.0f64, |max, s| max.max(s.tuning));
         local.position = offset as u64;
         local.step = self.step * tuning;
         local
