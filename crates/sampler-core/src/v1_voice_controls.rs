@@ -133,7 +133,11 @@ impl LfoFrequency {
     /// One normalized lane point; original 0x140b07bd9..0x140b07c69.
     pub fn increment(&self, input: f32) -> f64 {
         // COMISS treats NaN as below zero; preserve this before MINSS.
-        let input = if input.is_nan() || input < 0. { 0. } else { input.min(1.) };
+        let input = if input.is_nan() || input < 0. {
+            0.
+        } else {
+            input.min(1.)
+        };
         let exponent = input * f32::from_bits(0x41650ef6) - f32::from_bits(0x40d2b2b7);
         let fraction = exponent - exponent.floor();
         let correction = (fraction - fraction * fraction) * f32::from_bits(0x3eadee78);
@@ -1115,8 +1119,8 @@ mod lfo_volume {
     }
 }
 mod lfo {
-    use super::{FIXED_ONE, MAX_STEP, PitchLfo, VolumeLfo};
     use super::digital_fade::KontaktLfoFade as Fade;
+    use super::{FIXED_ONE, MAX_STEP, PitchLfo, VolumeLfo};
     /// One note's native source phases and retained pitch/volume interpolators.
     /// The native source clock pauses when bypassed; its audio interpolation
     /// offset advances separately, including short event fragments.
@@ -1438,15 +1442,30 @@ impl ModTable {
         rate: f32,
         bend_pitch: Option<f32>,
     ) -> (f32, f32, bool) {
-        self.modulate_read(values, |s, t| input.read_mod(s, t, bend_pitch), frames, rate)
+        self.modulate_read(
+            values,
+            |s, t| input.read_mod(s, t, bend_pitch),
+            frames,
+            rate,
+        )
     }
-    pub(crate) fn modulate_read(&self, values: &mut [f32; VOICE_MODS],
-        read: impl Fn(Source, Target) -> f32, frames: usize, rate: f32) -> (f32, f32, bool) {
+    pub(crate) fn modulate_read(
+        &self,
+        values: &mut [f32; VOICE_MODS],
+        read: impl Fn(Source, Target) -> f32,
+        frames: usize,
+        rate: f32,
+    ) -> (f32, f32, bool) {
         self.modulate_read_with_intensity(values, read, frames, rate, |_, m| m.intensity)
     }
-    pub(crate) fn modulate_read_with_intensity(&self, values: &mut [f32; VOICE_MODS],
-        read: impl Fn(Source, Target) -> f32, frames: usize, rate: f32,
-        intensity: impl Fn(usize, &Mod) -> f32) -> (f32, f32, bool) {
+    pub(crate) fn modulate_read_with_intensity(
+        &self,
+        values: &mut [f32; VOICE_MODS],
+        read: impl Fn(Source, Target) -> f32,
+        frames: usize,
+        rate: f32,
+        intensity: impl Fn(usize, &Mod) -> f32,
+    ) -> (f32, f32, bool) {
         let (mut gain, mut semitones, mut settled) = (1.0, 0.0, true);
         for (value, &i) in values.iter_mut().zip(&self.voiced) {
             let m = &self.mods[i as usize];
@@ -1761,23 +1780,47 @@ impl ControlState {
         input: &Inputs<'_>,
         frames: usize,
     ) -> (f32, f32, bool) {
-        self.plan_controls_read(plan, |s, t| input.read_mod(s, t, input.bend_pitch), input.stamp, frames)
+        self.plan_controls_read(
+            plan,
+            |s, t| input.read_mod(s, t, input.bend_pitch),
+            input.stamp,
+            frames,
+        )
     }
-    pub(crate) fn reset_read(&mut self, plan: &ControlPlan, read: impl Fn(Source, Target) -> f32, start: u64) {
+    pub(crate) fn reset_read(
+        &mut self,
+        plan: &ControlPlan,
+        read: impl Fn(Source, Target) -> f32,
+        start: u64,
+    ) {
         *self = Self::new(plan);
         self.start_frame = start;
         self.mods = plan.description.mods.start_read(read);
     }
-    pub(crate) fn plan_controls_read(&mut self, plan: &ControlPlan,
-        read: impl Fn(Source, Target) -> f32, stamp: u32, frames: usize) -> (f32, f32, bool) {
+    pub(crate) fn plan_controls_read(
+        &mut self,
+        plan: &ControlPlan,
+        read: impl Fn(Source, Target) -> f32,
+        stamp: u32,
+        frames: usize,
+    ) -> (f32, f32, bool) {
         self.plan_controls_read_with_intensity(plan, read, stamp, frames, |_, m| m.intensity)
     }
-    pub(crate) fn plan_controls_read_with_intensity(&mut self, plan: &ControlPlan,
-        read: impl Fn(Source, Target) -> f32, stamp: u32, frames: usize,
-        intensity: impl Fn(usize, &Mod) -> f32) -> (f32, f32, bool) {
+    pub(crate) fn plan_controls_read_with_intensity(
+        &mut self,
+        plan: &ControlPlan,
+        read: impl Fn(Source, Target) -> f32,
+        stamp: u32,
+        frames: usize,
+        intensity: impl Fn(usize, &Mod) -> f32,
+    ) -> (f32, f32, bool) {
         if self.settled != Some(stamp) {
             let (gain, pitch, settled) = plan.description.mods.modulate_read_with_intensity(
-                &mut self.mods, read, frames, self.rate, intensity,
+                &mut self.mods,
+                read,
+                frames,
+                self.rate,
+                intensity,
             );
             self.modulated = (gain, pitch);
             self.settled = settled.then_some(stamp);
@@ -1805,9 +1848,14 @@ impl ControlState {
             .position(|p| p.index == index)
             .map(|i| self.pitch[i].level())
     }
-    pub(crate) fn invalidate_inputs(&mut self) { self.settled = None; }
+    pub(crate) fn invalidate_inputs(&mut self) {
+        self.settled = None;
+    }
     pub(crate) fn amplitude(&self) -> Primary {
-        Primary { value: self.amplitude, rate: self.rate }
+        Primary {
+            value: self.amplitude,
+            rate: self.rate,
+        }
     }
     pub fn amplitude_level(&self) -> f32 {
         self.amplitude.level()
@@ -1892,7 +1940,12 @@ impl ControlState {
         ))
     }
     /// Audio adapter when the cursor owns positions and no LFO is admitted.
-    pub(crate) fn render_levels(&mut self, plan: &ControlPlan, amplitude: &mut [f32], flex: Option<&mut [f32]>) {
+    pub(crate) fn render_levels(
+        &mut self,
+        plan: &ControlPlan,
+        amplitude: &mut [f32],
+        flex: Option<&mut [f32]>,
+    ) {
         debug_assert!(amplitude.len() <= MAX_BLOCK);
         debug_assert!(flex.as_ref().is_none_or(|f| f.len() == amplitude.len()));
         self.amplitude.render(amplitude, None, self.rate);
@@ -1939,20 +1992,41 @@ pub(crate) struct Primary {
 }
 impl Primary {
     pub(crate) fn new(params: &Ahdsr, rate: f32, native: bool) -> Self {
-        Self { value: Amplitude::new(params, rate, native), rate }
+        Self {
+            value: Amplitude::new(params, rate, native),
+            rate,
+        }
     }
-    pub(crate) fn release(&mut self) { self.value.release(None); }
-    pub(crate) fn done(&self) -> bool { self.value.done() }
-    pub(crate) fn level(&self) -> f32 { self.value.level() }
-    pub(crate) fn phase(&self) -> Phase { self.value.phase() }
+    pub(crate) fn release(&mut self) {
+        self.value.release(None);
+    }
+    pub(crate) fn done(&self) -> bool {
+        self.value.done()
+    }
+    pub(crate) fn level(&self) -> f32 {
+        self.value.level()
+    }
+    pub(crate) fn phase(&self) -> Phase {
+        self.value.phase()
+    }
     pub(crate) fn remaining(&self) -> usize {
         match &self.value {
             Amplitude::Native(n) => n.remaining(),
-            Amplitude::Ordinary(e) => if e.done() { 0 } else { usize::MAX },
+            Amplitude::Ordinary(e) => {
+                if e.done() {
+                    0
+                } else {
+                    usize::MAX
+                }
+            }
         }
     }
-    pub(crate) fn skip(&mut self, n: usize) { self.value.skip(n, None, self.rate); }
-    pub(crate) fn render(&mut self, out: &mut [f32]) { self.value.render(out, None, self.rate); }
+    pub(crate) fn skip(&mut self, n: usize) {
+        self.value.skip(n, None, self.rate);
+    }
+    pub(crate) fn render(&mut self, out: &mut [f32]) {
+        self.value.render(out, None, self.rate);
+    }
 }
 
 #[cfg(test)]
@@ -1960,8 +2034,20 @@ mod adapter_tests {
     use super::*;
     #[test]
     fn native_module_follow_retains_static_onset_and_follows_live_sources() {
-        for source in [Source::Constant, Source::Key, Source::Velocity, Source::Cc(11), Source::Pressure, Source::Bend] {
-            let target = Mod { route: Some((source, Target::Module)), intensity: 1., lag: 0., curve: None };
+        for source in [
+            Source::Constant,
+            Source::Key,
+            Source::Velocity,
+            Source::Cc(11),
+            Source::Pressure,
+            Source::Bend,
+        ] {
+            let target = Mod {
+                route: Some((source, Target::Module)),
+                intensity: 1.,
+                lag: 0.,
+                curve: None,
+            };
             let mut value = 0.25;
             target.follow_value(&mut value, 1., 64, 48000.);
             assert_eq!(value, if source.live() { 1. } else { 0.25 });

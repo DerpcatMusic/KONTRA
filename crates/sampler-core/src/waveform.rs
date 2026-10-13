@@ -53,7 +53,11 @@ impl Property {
             Self::Highlight => (-1..TABLE_INDEX_LIMIT).contains(&index),
             _ => index == 0,
         };
-        if valid { Ok(()) } else { Err(Error::InvalidInput) }
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::InvalidInput)
+        }
     }
     pub fn value(self, index: i32, value: i32) -> i32 {
         match self {
@@ -63,13 +67,24 @@ impl Property {
         }
     }
     pub fn key(self, ui: i32, index: i32) -> [i32; 4] {
-        [ui, self as i32, if self == Self::Table { index } else { 0 }, STATE_TAG]
+        [
+            ui,
+            self as i32,
+            if self == Self::Table { index } else { 0 },
+            STATE_TAG,
+        ]
     }
 }
 
-pub fn attachment_key(ui: i32) -> [i32; 4] { [ui, 0, 0, STATE_TAG] }
-pub fn source_key(zone: i32) -> [i32; 4] { [zone, 0, 0, SOURCE_TAG] }
-pub fn symbol_key(symbol: i32) -> [i32; 4] { [symbol, 0, 0, SYMBOL_TAG] }
+pub fn attachment_key(ui: i32) -> [i32; 4] {
+    [ui, 0, 0, STATE_TAG]
+}
+pub fn source_key(zone: i32) -> [i32; 4] {
+    [zone, 0, 0, SOURCE_TAG]
+}
+pub fn symbol_key(symbol: i32) -> [i32; 4] {
+    [symbol, 0, 0, SYMBOL_TAG]
+}
 
 /// Five existing keys make attachment/reset all-or-none, even at full capacity.
 /// Unattached widgets cannot use property getters/setters.
@@ -94,7 +109,9 @@ pub(crate) fn admit(store: &Store, action: Action, mut args: [i32; 4]) -> Result
     let ui = args[0];
     let zone = store.get(attachment_key(ui)).ok_or(Error::InvalidInput)?;
     for (key, _) in initial(ui) {
-        if store.get(key).is_none() { return Err(Error::InvalidInput); }
+        if store.get(key).is_none() {
+            return Err(Error::InvalidInput);
+        }
     }
     let property = if action == Action::Attach {
         if args[1] <= 0 || store.get(source_key(args[1])) != Some(1) {
@@ -103,17 +120,27 @@ pub(crate) fn admit(store: &Store, action: Action, mut args: [i32; 4]) -> Result
         None
     } else {
         let zone = i32::try_from(zone).map_err(|_| Error::InvalidInput)?;
-        if zone <= 0 || store.get(source_key(zone)) != Some(1) { return Err(Error::InvalidInput); }
-        let p = store.get(symbol_key(args[1])).and_then(Property::from_address)
+        if zone <= 0 || store.get(source_key(zone)) != Some(1) {
+            return Err(Error::InvalidInput);
+        }
+        let p = store
+            .get(symbol_key(args[1]))
+            .and_then(Property::from_address)
             .ok_or(Error::InvalidInput)?;
         p.validate_index(args[2])?;
         if action == Action::Set {
             args[3] = p.value(args[2], args[3]);
-            if !store.can_set(p.key(ui, args[2])) { return Err(Error::Capacity); }
+            if !store.can_set(p.key(ui, args[2])) {
+                return Err(Error::Capacity);
+            }
         }
         Some(p)
     };
-    Ok(Admitted { args, property, action })
+    Ok(Admitted {
+        args,
+        property,
+        action,
+    })
 }
 
 /// Called only after outbox admission. No allocation; no fallible step remains.
@@ -123,18 +150,27 @@ pub(crate) fn commit(store: &mut Store, admitted: &Admitted) -> i64 {
         Action::Attach => {
             store.clear_waveform_table(ui);
             for (key, default) in initial(ui) {
-                let value = if key == attachment_key(ui) { i64::from(zone_or_symbol) }
-                    else if key == Property::Flags.key(ui, 0) { i64::from(index) }
-                    else { default };
+                let value = if key == attachment_key(ui) {
+                    i64::from(zone_or_symbol)
+                } else if key == Property::Flags.key(ui, 0) {
+                    i64::from(index)
+                } else {
+                    default
+                };
                 // Admission proved all five keys already exist.
                 store.set(key, value);
             }
             0
         }
         Action::Set => {
-            if let Some(p) = admitted.property { store.set(p.key(ui, index), i64::from(value)); }
+            if let Some(p) = admitted.property {
+                store.set(p.key(ui, index), i64::from(value));
+            }
             0
         }
-        Action::Get => admitted.property.and_then(|p| store.get(p.key(ui, index))).unwrap_or(0),
+        Action::Get => admitted
+            .property
+            .and_then(|p| store.get(p.key(ui, index)))
+            .unwrap_or(0),
     }
 }

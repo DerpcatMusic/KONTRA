@@ -765,7 +765,9 @@ impl Runtime {
         {
             for slot in self.event_targets(plan, event)? {
                 if self.event_selected(plan, event, slot) {
-                    self.note_params[slot].layer.write(target, value, relative)?;
+                    self.note_params[slot]
+                        .layer
+                        .write(target, value, relative)?;
                 }
             }
             return Ok(());
@@ -997,12 +999,40 @@ mod tests {
             (Exponential, 0.0625, 0.5625),
             (Logarithmic, 0.4375, 0.9375),
         ] {
-            let incoming = Fade { from: 0., to: 1., start: 10, frames: 4, curve, stop: false };
-            let outgoing = Fade { from: 1., to: 0., stop: true, ..incoming };
+            let incoming = Fade {
+                from: 0.,
+                to: 1.,
+                start: 10,
+                frames: 4,
+                curve,
+                stop: false,
+            };
+            let outgoing = Fade {
+                from: 1.,
+                to: 0.,
+                stop: true,
+                ..incoming
+            };
             assert!((incoming.at(11) - fade_in).abs() < 1e-15, "{curve:?}");
             assert!((outgoing.at(11) - fade_out).abs() < 1e-15, "{curve:?}");
-            assert_eq!([incoming.at(9), incoming.at(10), incoming.at(14), incoming.at(15)], [0., 0., 1., 1.]);
-            assert_eq!([outgoing.at(9), outgoing.at(10), outgoing.at(14), outgoing.at(15)], [1., 1., 0., 0.]);
+            assert_eq!(
+                [
+                    incoming.at(9),
+                    incoming.at(10),
+                    incoming.at(14),
+                    incoming.at(15)
+                ],
+                [0., 0., 1., 1.]
+            );
+            assert_eq!(
+                [
+                    outgoing.at(9),
+                    outgoing.at(10),
+                    outgoing.at(14),
+                    outgoing.at(15)
+                ],
+                [1., 1., 0., 0.]
+            );
             assert!(!outgoing.done(13) && outgoing.done(14));
         }
     }
@@ -1012,12 +1042,27 @@ mod tests {
         use crate::FadeCurve::*;
         for curve in [Linear, EqualPower, SCurve, Exponential, Logarithmic] {
             for frames in [0, 1, 4, 97] {
-                let incoming = Fade { from: 0.2, to: 0.9, start: 11, frames, curve, stop: false };
-                let outgoing = Fade { from: 0.9, to: 0.2, stop: true, ..incoming };
+                let incoming = Fade {
+                    from: 0.2,
+                    to: 0.9,
+                    start: 11,
+                    frames,
+                    curve,
+                    stop: false,
+                };
+                let outgoing = Fade {
+                    from: 0.9,
+                    to: 0.2,
+                    stop: true,
+                    ..incoming
+                };
                 let mut previous = [incoming.at(11), outgoing.at(11)];
                 for now in 11..=12 + frames {
                     let gain = [incoming.at(now), outgoing.at(now)];
-                    assert!(gain.iter().all(|v| v.is_finite() && (0.2..=0.9).contains(v)));
+                    assert!(
+                        gain.iter()
+                            .all(|v| v.is_finite() && (0.2..=0.9).contains(v))
+                    );
                     assert!(gain[0] >= previous[0] && gain[1] <= previous[1]);
                     previous = gain;
                 }
@@ -1030,38 +1075,106 @@ mod tests {
 
     #[test]
     fn kontakt_812_equal_power_crossfade_preserves_power_and_interrupted_level() {
-        let incoming = Fade { from: 0., to: 1., start: 0, frames: 128,
-            curve: crate::FadeCurve::EqualPower, stop: false };
-        let outgoing = Fade { from: 1., to: 0., stop: true, ..incoming };
+        let incoming = Fade {
+            from: 0.,
+            to: 1.,
+            start: 0,
+            frames: 128,
+            curve: crate::FadeCurve::EqualPower,
+            stop: false,
+        };
+        let outgoing = Fade {
+            from: 1.,
+            to: 0.,
+            stop: true,
+            ..incoming
+        };
         for at in 0..=128 {
-            assert!((incoming.at(at).powi(2) + outgoing.at(at).powi(2) - 1.).abs() <= 8. * f64::EPSILON);
+            assert!(
+                (incoming.at(at).powi(2) + outgoing.at(at).powi(2) - 1.).abs() <= 8. * f64::EPSILON
+            );
         }
         let interrupted = outgoing.at(37);
-        let replacement = Fade { from: interrupted, to: 0., start: 37, frames: 11,
-            curve: crate::FadeCurve::Exponential, stop: true };
+        let replacement = Fade {
+            from: interrupted,
+            to: 0.,
+            start: 37,
+            frames: 11,
+            curve: crate::FadeCurve::Exponential,
+            stop: true,
+        };
         assert_eq!(replacement.at(37), interrupted);
         assert_eq!(replacement.at(48), 0.);
         assert!(!replacement.done(47) && replacement.done(48));
     }
 
-    fn curved_audio(curve: crate::FadeCurve, out: bool, chain: bool, block: usize) -> Vec<crate::Frame> {
-        let mut p = Prepared::new(48000, vec![crate::Pcm::new(48000, vec![[0.5; 2]; 512].into_boxed_slice()).unwrap()],
-            vec![crate::Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
-                velocity_low: 0., velocity_high: 1., gain: 1.,
-                envelope: crate::Envelope::new(0, 0, 0, 1., 64).unwrap(), playback: Default::default() }], 1).unwrap()
-            .with_velocity_curves(vec![crate::VelocityCurve::Constant]).unwrap();
+    fn curved_audio(
+        curve: crate::FadeCurve,
+        out: bool,
+        chain: bool,
+        block: usize,
+    ) -> Vec<crate::Frame> {
+        let mut p = Prepared::new(
+            48000,
+            vec![crate::Pcm::new(48000, vec![[0.5; 2]; 512].into_boxed_slice()).unwrap()],
+            vec![crate::Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: crate::Envelope::new(0, 0, 0, 1., 64).unwrap(),
+                playback: Default::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![crate::VelocityCurve::Constant])
+        .unwrap();
         if chain {
-            p = p.with_voice_chains(vec![crate::VoiceChain::new(
-                vec![crate::Processor::Gain(1.)], vec![crate::Processor::Gain(1.)], 0).unwrap()], vec![Some(0)]).unwrap();
+            p = p
+                .with_voice_chains(
+                    vec![
+                        crate::VoiceChain::new(
+                            vec![crate::Processor::Gain(1.)],
+                            vec![crate::Processor::Gain(1.)],
+                            0,
+                        )
+                        .unwrap(),
+                    ],
+                    vec![Some(0)],
+                )
+                .unwrap();
         }
         let limits = crate::Limits::for_plan(&p, 4, 1);
         let mut rt = Runtime::new(p, limits).unwrap();
         let mut audio = vec![[0.; 2]; 160];
         {
-            let note = rt.trigger(crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0,
-                channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+            let note = rt
+                .trigger(
+                    crate::Input {
+                        protocol: crate::Protocol::Native,
+                        port: 0,
+                        group: 0,
+                        channel: 0,
+                        key: 60,
+                        external_id: None,
+                    },
+                    60,
+                    1.,
+                )
+                .unwrap();
             assert_eq!(rt.voice_count(), 1);
-            rt.fade_note(note, Some(if out { 1. } else { 0. }), if out { 0. } else { 1. }, 128, false).unwrap();
+            rt.fade_note(
+                note,
+                Some(if out { 1. } else { 0. }),
+                if out { 0. } else { 1. },
+                128,
+                false,
+            )
+            .unwrap();
             rt.note_params[note.0.index].fade.as_mut().unwrap().curve = curve;
             for segment in audio.chunks_mut(block) {
                 rt.render(segment).unwrap();
@@ -1083,14 +1196,20 @@ mod tests {
             for out in [false, true] {
                 let plain = curved_audio(curve, out, false, 128);
                 let gain = if out { fade_out } else { fade_in };
-                assert!((plain[15][0] - (0.5 * gain) as f32).abs() < 2e-7,
-                    "{curve:?} out={out} frame16/128: {:?}", plain[15]);
+                assert!(
+                    (plain[15][0] - (0.5 * gain) as f32).abs() < 2e-7,
+                    "{curve:?} out={out} frame16/128: {:?}",
+                    plain[15]
+                );
                 assert_eq!(plain[127], [if out { 0. } else { 0.5 }; 2]);
                 assert!(plain[128..].iter().all(|f| *f == plain[127]));
                 for chain in [false, true] {
                     for block in [1, 17, 128] {
-                        assert_eq!(curved_audio(curve, out, chain, block), plain,
-                            "{curve:?} out={out} chain={chain} block={block}");
+                        assert_eq!(
+                            curved_audio(curve, out, chain, block),
+                            plain,
+                            "{curve:?} out={out} chain={chain} block={block}"
+                        );
                     }
                 }
             }
@@ -1100,7 +1219,14 @@ mod tests {
     #[test]
     fn legacy_linear_fade_keeps_bit_order_and_state_size() {
         for (from, to, frames) in [(1.7, 0.13, 97), (0.3, 4.2, 7), (0., 1., 1)] {
-            let fade = Fade { from, to, start: 10, frames, curve: crate::FadeCurve::Linear, stop: true };
+            let fade = Fade {
+                from,
+                to,
+                start: 10,
+                frames,
+                curve: crate::FadeCurve::Linear,
+                stop: true,
+            };
             for elapsed in 0..frames {
                 let previous = from + (to - from) * elapsed as f64 / frames as f64;
                 assert_eq!(fade.at(10 + elapsed).to_bits(), previous.to_bits());

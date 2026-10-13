@@ -23,7 +23,12 @@ type StoreEntry = ([i32; super::STORE_KEY], i64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Option<Box<[Frame]>>,
+    frames: Snapshot<Option<Box<[Frame]>>>,
+    full: bool,
+    residency_owners: std::sync::atomic::AtomicUsize,
+    residency_managed: AtomicBool,
+    residency_loader: std::sync::OnceLock<ResidencyLoader>,
+    residency_mutation: std::sync::Mutex<()>,
     // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
     // or `service_mipmaps`. Audio borrows an immutable published generation.
     levels: Levels,
@@ -38,6 +43,38 @@ struct PcmData {
     cold: AtomicBool,
     length: usize,
 }
+/// A control-installed decoder for this asset's authored resident ranges.
+pub type ResidencyRanges = Vec<(usize, Box<[Frame]>)>;
+struct ResidencyLoader(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>);
+impl std::fmt::Debug for ResidencyLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResidencyLoader")
+    }
+}
+/// Borrowed full-resident PCM; retiring storage is reclaimed only on control.
+pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<Box<[Frame]>>>);
+impl std::ops::Deref for ResidentFrames<'_> {
+    type Target = [Frame];
+    fn deref(&self) -> &[Frame] {
+        self.0.as_deref().expect("resident generation")
+    }
+}
+impl std::fmt::Debug for ResidentFrames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (&**self).fmt(f)
+    }
+}
+impl<T: AsRef<[Frame]>> PartialEq<T> for ResidentFrames<'_> {
+    fn eq(&self, other: &T) -> bool {
+        &**self == other.as_ref()
+    }
+}
+impl AsRef<[Frame]> for ResidentFrames<'_> {
+    fn as_ref(&self) -> &[Frame] {
+        self
+    }
+}
+
 type LevelData = Box<[Box<[Frame]>]>;
 /// Resident ranges of a streamed asset: (first frame, frames), ascending and
 /// disjoint.
@@ -88,7 +125,7 @@ impl Pcm {
         let pcm = Self::new(rate, frames)?;
         let depth = crate::resample::OCTAVES;
         pcm.0.levels.replace(
-            crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth),
+            crate::resample::octaves(&pcm.resident_frames().unwrap(), depth),
             |_| (),
         );
         pcm.0.wanted.store(depth as u8, Relaxed);
@@ -119,7 +156,21 @@ impl Pcm {
         &self,
         ranges: Vec<(usize, Box<[Frame]>)>,
     ) -> Result<SnapshotRead<'_, Ranges>, Error> {
-        let valid = self.0.frames.is_none()
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.set_ranges_unlocked(ranges)
+    }
+    fn set_ranges_unlocked(
+        &self,
+        ranges: Vec<(usize, Box<[Frame]>)>,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        if !ranges.is_empty() && !self.residency_permitted() {
+            return Err(Error::NotReady);
+        }
+        let valid = !self.0.full
             && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
             && ranges.iter().all(|(start, frames)| {
                 !frames.is_empty()
@@ -177,7 +228,12 @@ impl Pcm {
         Ok(Self(std::sync::Arc::new(PcmData {
             id: AssetId(id),
             rate,
-            frames,
+            full: frames.is_some(),
+            frames: Snapshot::new(frames),
+            residency_owners: std::sync::atomic::AtomicUsize::new(0),
+            residency_managed: AtomicBool::new(false),
+            residency_loader: std::sync::OnceLock::new(),
+            residency_mutation: std::sync::Mutex::new(()),
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
@@ -195,8 +251,103 @@ impl Pcm {
     pub fn frame_count(&self) -> usize {
         self.0.length
     }
-    pub fn resident_frames(&self) -> Option<&[Frame]> {
-        self.0.frames.as_deref()
+    pub fn resident_frames(&self) -> Option<ResidentFrames<'_>> {
+        let frames = self.0.frames.read();
+        frames.is_some().then(|| ResidentFrames(frames))
+    }
+    /// Install off audio. The decoder returns staging buffers; only the residency
+    /// worker publishes them after checking current asset ownership.
+    pub fn set_residency_loader(
+        &self,
+        loader: impl Fn() -> Result<ResidencyRanges, Error> + Send + Sync + 'static,
+    ) -> Result<(), Error> {
+        self.0
+            .residency_loader
+            .set(ResidencyLoader(std::sync::Arc::new(loader)))
+            .map_err(|_| Error::InvalidInput)
+    }
+    pub(crate) fn residency_acquire(&self) {
+        self.0
+            .residency_managed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.0
+            .residency_owners
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    pub(crate) fn residency_release(&self) {
+        self.0
+            .residency_owners
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    pub fn residency_owners(&self) -> usize {
+        self.0
+            .residency_owners
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// A deliberately purged asset must not be restored by the cold-start worker.
+    pub fn residency_permitted(&self) -> bool {
+        !self
+            .0
+            .residency_managed
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self.residency_owners() > 0
+    }
+    pub(crate) fn residency_collect(&self) -> bool {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !self.residency_permitted() {
+            if self.0.frames.read().is_some() {
+                self.0.frames.replace(None, |_| ());
+            }
+            if !self.0.head.read().is_empty() {
+                self.0.head.replace(Box::new([]), |_| ());
+            }
+            if !self.0.levels.read().is_empty() {
+                self.0.levels.replace(Box::new([]), |_| ());
+            }
+            self.0.wanted.store(0, Relaxed);
+            self.0.cold.store(false, Relaxed);
+        }
+        self.0.frames.collect();
+        self.0.head.collect();
+        self.0.levels.collect();
+        !self.0.frames.has_retired() && !self.0.head.has_retired() && !self.0.levels.has_retired()
+    }
+    pub(crate) fn residency_reload(&self) -> Result<(), Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !self.residency_permitted() {
+            return Err(Error::NotReady);
+        }
+        if (self.0.full && self.resident_frames().is_some())
+            || (!self.0.full && self.head_frames() > 0)
+        {
+            return Ok(());
+        }
+        let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
+        let mut ranges = (loader.0)()?;
+        if !self.residency_permitted() {
+            return Err(Error::NotReady);
+        }
+        if self.0.full {
+            if ranges.len() != 1
+                || ranges[0].0 != 0
+                || ranges[0].1.len() != self.frame_count()
+                || ranges[0].1.iter().flatten().any(|f| !f.is_finite())
+            {
+                return Err(Error::InvalidInput);
+            }
+            self.0.frames.replace(Some(ranges.pop().unwrap().1), |_| ());
+        } else {
+            self.set_ranges_unlocked(ranges)?;
+        }
+        Ok(())
     }
     /// Audio side: an immutable octave generation, even during publication.
     pub(crate) fn try_levels(&self) -> Option<SnapshotRead<'_, LevelData>> {
@@ -204,7 +355,7 @@ impl Pcm {
     }
     /// Audio side: record that a voice reads this asset at `step` at `now`.
     pub(crate) fn want_levels(&self, step: f64, now: u64) {
-        if step >= 2.0 && self.0.frames.is_some() {
+        if step >= 2.0 && self.0.full {
             let depth = (step.log2() as usize).min(crate::resample::OCTAVES);
             self.0.wanted.fetch_max(depth as u8, Relaxed);
             self.0.used.store(now, Relaxed);
@@ -217,7 +368,10 @@ impl Pcm {
     }
     /// Control side: bytes of resident frames, octave levels and any streamed head.
     pub fn resident_bytes(&self) -> usize {
-        (self.0.frames.as_ref().map_or(0, |f| f.len()) + self.head_frames()) * size_of::<Frame>()
+        self.0.frames.collect();
+        self.resident_frames()
+            .map_or(0, |f| f.len() * size_of::<Frame>())
+            + self.head_bytes()
             + self.level_bytes()
     }
 }
@@ -247,7 +401,15 @@ pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
         .collect();
     wanting.sort_by_key(|p| std::cmp::Reverse(p.0.used.load(Relaxed)));
     for pcm in wanting {
-        let (frames, depth) = (pcm.0.frames.as_deref().unwrap(), pcm.0.wanted.load(Relaxed));
+        let _mutation = pcm
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(frames) = pcm.resident_frames() else {
+            continue;
+        };
+        let depth = pcm.0.wanted.load(Relaxed);
         let need = levels_size(frames.len(), depth.into()).saturating_sub(pcm.level_bytes());
         let used = pcm.0.used.load(Relaxed);
         while held + need > budget {
@@ -261,7 +423,7 @@ pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
             victim.0.levels.replace(Box::new([]), |_| ());
         }
         if held + need <= budget {
-            let built = crate::resample::octaves(frames, depth.into());
+            let built = crate::resample::octaves(&frames, depth.into());
             pcm.0.levels.replace(built, |_| ());
             held += need;
         }
@@ -409,6 +571,8 @@ struct Candidate {
 }
 
 pub struct Prepared {
+    pub(super) group_mutes: Box<[AtomicBool]>,
+    pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
@@ -643,6 +807,8 @@ impl Prepared {
             );
         }
         Ok(Self {
+            group_mutes: Box::new([]),
+            residency: None,
             parameter_registry: Default::default(),
             rate,
             pcm: pcm.into_boxed_slice(),
@@ -785,13 +951,21 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        let native = std::iter::repeat_with(|| None).take(programs.len()).collect();
+        let native = std::iter::repeat_with(|| None)
+            .take(programs.len())
+            .collect();
         self.with_voice_modulation_and_v1(programs, regions, start_ranges, native)
     }
-    pub(crate) fn with_voice_modulation_and_v1(mut self,
-        programs: Vec<super::ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
-        mut native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
-        if native.len() != programs.len() { return Err(Error::InvalidInput); }
+    pub(crate) fn with_voice_modulation_and_v1(
+        mut self,
+        programs: Vec<super::ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
+        mut native: Vec<Option<crate::whole_voice::Program>>,
+    ) -> Result<Self, Error> {
+        if native.len() != programs.len() {
+            return Err(Error::InvalidInput);
+        }
         if regions.len() != self.regions.len()
             || programs.iter().any(|p| {
                 p.controls.iter().any(|&(index, _)| {
@@ -871,7 +1045,9 @@ impl Prepared {
             let mut controls = Vec::new();
             let mut native_routes = Vec::new();
             for (ordinal, route) in program.routes.iter().enumerate() {
-                let control = native[index].as_ref().map_or(crate::whole_voice::Route::Residual, |n| n.routes[ordinal]);
+                let control = native[index]
+                    .as_ref()
+                    .map_or(crate::whole_voice::Route::Residual, |n| n.routes[ordinal]);
                 if route.target.compiled().is_some() {
                     for &(_, ids) in program.controls.iter().filter(|b| b.0 == ordinal) {
                         controls.push((routes.len(), ids));
@@ -913,7 +1089,9 @@ impl Prepared {
             }
             program.routes = routes;
             program.controls = controls;
-            if let Some(native) = &mut native[index] { native.routes = native_routes; }
+            if let Some(native) = &mut native[index] {
+                native.routes = native_routes;
+            }
         }
         self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
             programs,

@@ -244,6 +244,9 @@ mod tests {
                 }
             }
         }
-        println!("FilterDJ original-instruction checkpoint null: {:.2} dB", 10. * (error / signal).log10());
+        println!(
+            "FilterDJ original-instruction checkpoint null: {:.2} dB",
+            10. * (error / signal).log10()
+        );
     }
 }

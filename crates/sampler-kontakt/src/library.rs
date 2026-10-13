@@ -1151,7 +1151,7 @@ impl Translation {
         });
     }
 
-    /// A group's settings, or `None` for a muted group.
+    /// A group's complete settings, including dormant saved-mute content.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
         if let Some(objects) = &mut self.ir.kontakt_objects {
@@ -1209,17 +1209,6 @@ impl Translation {
                     array,
                 )?),
             Err(error) => self.unsupported(&at, "group insert rack", error, ir::Reason::Unknown),
-        }
-        if v.muted {
-            self.ir
-                .source_parameters
-                .extend(crate::source_parameters::muted_group(group, index)?);
-            // Empty source groups retain their numeric address for KSP and DSP writes.
-            self.ir.groups.push(ir::Group {
-                name: v.name,
-                ..Default::default()
-            });
-            return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
         // 1-based (0 = none): Una Corda's groups use 1 and 2 with voice
@@ -1699,6 +1688,7 @@ impl Translation {
             )));
         }
         self.ir.groups.push(ir::Group {
+            muted: v.muted,
             wavetable,
             name: v.name,
             gain: ir::Gain::Linear(f64::from(v.volume)),
@@ -3679,15 +3669,16 @@ mod modulation {
                     && n.value.contains("ffff"))
         );
         assert_eq!(group.0.private_data, raw);
-        group.0.public_data[34] = 1; // Muted groups do not enter FX translation.
+        group.0.public_data[34] = 1; // Muted definitions retain FX decoding and diagnostics.
         let mut muted = translation();
-        assert!(muted.group(0, &group).unwrap().is_none());
+        assert!(muted.group(0, &group).unwrap().is_some());
+        assert!(muted.ir.groups[0].muted);
         assert!(
             muted
                 .ir
                 .unsupported
                 .iter()
-                .all(|n| n.feature != "effect decoding")
+                .any(|n| n.feature == "effect decoding")
         );
     }
 

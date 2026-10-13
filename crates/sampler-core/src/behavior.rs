@@ -1446,7 +1446,10 @@ impl Runtime {
             };
             if time_check_steps >= 64 {
                 time_check_steps = 0;
-                if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
+                if started
+                    .zip(time)
+                    .is_some_and(|(start, left)| start.elapsed() >= left)
+                {
                     self.block_fuel_left = 0;
                 }
             }
