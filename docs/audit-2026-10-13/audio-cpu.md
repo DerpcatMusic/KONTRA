@@ -102,3 +102,33 @@ confirmed by profiling. The recovered Ghidra excerpts are now located in
 the complete pseudocode export is absent. Clock ownership and a universal 32-frame
 modulation rate remain open; shrinking CELL by assumption is not an optimization.
 
+
+### Source and native-control fixes
+
+- Port `0cb7a8a0:src/engine/voice.rs::taps` into the existing span-verified
+  realtime source run. At step 1 / fractional position 0, samples away from a
+  crossfade use the center tap. Neighbour-dependent signed-zero results still
+  use the original polynomial. High quality, fractional pitch, crossfade seams,
+  multi-loop fallback, starvation and source mapping are unchanged.
+  `source::tests::integer_crossfade_runs_skip_cubic_and_preserve_pcm_cursor_and_envelope`
+  failed first because the direct-run counter stayed zero, then passed exact PCM,
+  cursor and envelope checks for block lengths 1/3/4/63/64/65, curved envelopes,
+  signed zero and tiny samples.
+- Restore the v1 `voice.rs::plan` settled-input policy in the pinned control owner.
+  Live IR depth/bypass bindings formerly invalidated native controls on every cell;
+  residual sources could also invalidate unrelated native controls. The owner now
+  observes each voiced assignment's actual raw input/depth and invalidates only
+  changes. Shaping/lag arithmetic and independent envelope/LFO clocks are unchanged.
+  `v1_voice_controls::adapter_tests::live_native_intensity_writes_invalidate_only_changed_cached_controls`
+  failed first at a same-stamp depth write (0.25 versus expected 0.625), then passed
+  depth, bypass, negative intensity and forced-recomputation equivalence checks.
+
+## Coordinator-only measurement gate
+
+The user rule added 2026-10-13 prohibits this worker from builds, workspace checks,
+`--no-run`, corpus/perf runs and further CPU measurements. The coordinator stopped
+`kontakto-gpt-cpu-before-1`; only the Afflatus 64/one-key cell and two Afflatus
+256/one-key diagnostics completed. No after numbers or sub-1% acceptance is claimed.
+Crate-scoped focused tests use `kontakto-heavy cargo test -j 4`; the old workspace
+compile requirement is superseded. Commands in Reproduction are for the coordinator
+alone after integration, not permission for another worker to build or measure.
