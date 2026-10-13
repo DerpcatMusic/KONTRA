@@ -253,7 +253,8 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             // leaves +8 alone (kemu: the ctor 0x140701a80 run on a 0xAA-filled object
             // writes none of +8..+0x17); the container is memset to zero on allocation (0x1408b01c9,
             // 0x1406e9458), so base = 0 frames, the excursion clamps to base - 1 = -1 and
-            // Depth has no effect. Two heads (base, base >> 1) on LFOs 0.015 cycles
+            // Depth has no effect (the native setter + audio under kemu agree:
+            // `legacy_chorus_and_flanger_render_native_kemu_vectors`). Two heads (base, base >> 1) on LFOs 0.015 cycles
             // apart, each one-pole 0.95, summed; Speed through the sync getter
             // 0x14072b330 -> 0x140a736a0 (sync class vtable 0x144e74208 slot 5).
             let mut line = Line::single(DelayTime::Frames(1), 0.);
@@ -408,18 +409,71 @@ mod tests {
         assert_eq!(m1.voices[2].offset, f64::from(f32::from_bits(0x3eaaaa3b)));
     }
 
+    /// Render `input` (48 kHz) through `processors` on a voice chain.
+    fn render(processors: Vec<sampler_ir::Processor>, input: &[[f32; 2]]) -> Vec<[f32; 2]> {
+        let mut instrument = sampler_ir::Instrument::default();
+        instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+        zone.chain = Some(sampler_ir::ChainRef(0));
+        zone.velocity = sampler_ir::VelocityResponse::None;
+        instrument.zones.push(zone);
+        let pcm = sampler_core::Pcm::new(48000, input.to_vec().into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        let key = sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        rt.trigger(key, 60, 1.0).unwrap();
+        let mut y = vec![[0f32; 2]; input.len()];
+        rt.render(&mut y).unwrap();
+        y
+    }
+
+    /// The kemu stimulus: `0.5 sin(0.05 n) + impulse` / `0.5 sin(0.031 n)` (f32).
+    fn stimulus(n: u32) -> Vec<[f32; 2]> {
+        (0..n)
+            .map(|i| {
+                let t = f64::from(i);
+                [((t * 0.05).sin() * 0.5 + if i == 0 { 1. } else { 0. }) as f32, ((t * 0.031).sin() * 0.5) as f32]
+            })
+            .collect()
+    }
+
+    fn assert_ulps(y: &[[f32; 2]], want: &[(usize, u32, u32)], what: &str) {
+        for &(i, l, r) in want {
+            let ulps = |g: f32, w: u32| (i64::from(g.to_bits()) - i64::from(w)).abs();
+            assert!(ulps(y[i][0], l) <= 1 && ulps(y[i][1], r) <= 1, "{what} frame {i}: {:?} vs {:?}", y[i], [f32::from_bits(l), f32::from_bits(r)]);
+        }
+    }
+
+    /// Kontakt 8.13.1 under tools/re/kemu.py: object as built by 0x1407c7010
+    /// (Chorus) / 0x1407c75a0 (Flanger), prepare 0x140960f00 at 48 kHz, the
+    /// setter cases 0x140963981 / 0x140963801 on the saved fields, reset
+    /// (vtable slot 5), audio 0x140aa0510 / 0x140aa2350 in 32-frame blocks
+    /// (send helpers 0x140ac28f0 / 0x140ac21f0 stubbed). The harness sets the
+    /// LFO objects' rate field (+0xc) to the sample rate, whose writer is not
+    /// located. Wet output, f32 bits.
+    #[test]
+    fn legacy_chorus_and_flanger_render_native_kemu_vectors() {
+        let input = stimulus(2000);
+        let mut notes = Vec::new();
+        let chorus = super::config(&super::Unit::Chorus { depth: 0.6, speed: 1.5, phase: 0.3, unit: -1. }, 0., &mut notes).unwrap();
+        let y = render(vec![sampler_ir::Processor::TimeMod(chorus)], &input);
+        assert_ulps(&y, &[(0, 0x3dbf2cd5, 0), (1, 0x3fed4542, 0x3c864249), (150, 0x3f6e9348, 0xbf87a26f), (777, 0x3f6c99aa, 0xbf6cf386), (1500, 0xbedffe9a, 0x3f1fce4e), (1999, 0xbf1aa44c, 0xbf4d2a8e)], "chorus");
+        let flanger = super::config(&super::Unit::Flanger { depth: 0.7, feedback: 0.6, speed: 0.8, phase: 0.4, color: 2.5, unit: -1. }, 0., &mut notes).unwrap();
+        let y = render(vec![sampler_ir::Processor::TimeMod(flanger)], &input);
+        assert_ulps(&y, &[(1, 0, 0), (150, 0x3efd2f1d, 0x3dfad0db), (777, 0x3e93b433, 0x3dc530ac), (1500, 0xbe081447, 0xbe84e6f9), (1999, 0xbe4acd84, 0x3e0fa710)], "flanger");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
     /// Kontakt 8.13.1 under tools/re/kemu.py: native ctor 0x141939b10,
     /// prepare 0x14193b840 at 48 kHz, setters, process 0x14193be50 in 32-frame
     /// blocks on `0.5 sin(0.05 n) + impulse` / `0.5 sin(0.031 n)` (f32); output
     /// f32 bits. Rendered here from the saved bytes through the engine.
     #[test]
     fn choral_renders_native_kemu_vectors() {
-        let input: Vec<[f32; 2]> = (0..3000)
-            .map(|i| {
-                let n = f64::from(i);
-                [((n * 0.05).sin() * 0.5 + if i == 0 { 1. } else { 0. }) as f32, ((n * 0.031).sin() * 0.5) as f32]
-            })
-            .collect();
+        let input = stimulus(3000);
         let cases: [([f32; 7], bool, bool, i32, [(usize, u32, u32); 6]); 2] = [
             ([0.6, 0.5, 0.18, 0.7, 0.4, 0.5, 0.8], true, true, 1, [(0, 0x3f32c0a0, 0), (1, 0x3c7145ad, 0x3c314b45), (150, 0x3ea49034, 0xbebce4dd), (777, 0x3e88e9e0, 0xbe871bd9), (1500, 0xbe883379, 0x3e1418bb), (2999, 0xbdc85a44, 0xbea4ea2d)]),
             ([0.3, 0.8, 0.5, 1.0, 1.0, 0.9, 1.0], false, true, 2, [(0, 0x3e820df2, 0), (1, 0x3bc4ddf0, 0x3b80fe4e), (150, 0x3defac3e, 0xbe071ad4), (777, 0x3ded953d, 0xbddf899f), (1500, 0xbd45a8a0, 0xbdf18584), (2999, 0xbe25b166, 0x3d3db892)]),
@@ -432,26 +486,8 @@ mod tests {
             s.public = public;
             let built = chain(&[s], Scope::Voice);
             assert!(built.notes.is_empty(), "{:?}", built.notes);
-            let mut instrument = sampler_ir::Instrument::default();
-            instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
-            instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
-            let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
-            zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
-            zone.chain = Some(sampler_ir::ChainRef(0));
-            zone.velocity = sampler_ir::VelocityResponse::None;
-            instrument.zones.push(zone);
-            let pcm = sampler_core::Pcm::new(48000, input.clone().into_boxed_slice()).unwrap();
-            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
-            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
-            let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
-            let key = sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
-            rt.trigger(key, 60, 1.0).unwrap();
-            let mut y = vec![[0f32; 2]; 3000];
-            rt.render(&mut y).unwrap();
-            for (i, l, r) in want {
-                let ulps = |g: f32, w: u32| (i64::from(g.to_bits()) - i64::from(w)).abs();
-                assert!(ulps(y[i][0], l) <= 1 && ulps(y[i][1], r) <= 1, "mode {mode} frame {i}: {:?} vs {:?}", y[i], [f32::from_bits(l), f32::from_bits(r)]);
-            }
+            let y = render(built.processors, &input);
+            assert_ulps(&y, &want, &format!("choral mode {mode}"));
         }
     }
 
