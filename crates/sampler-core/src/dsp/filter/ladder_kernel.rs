@@ -1,14 +1,16 @@
 // Ported directly from v1 0cb7a8a0:src/engine/filter/ladder.rs; storage adapter below.
-//! Pinned-v1 Ladder single-rate kernel and its 32/4-frame control clock.
+//! Ladder single-rate kernel and its 32/4-frame control clock.
 //!
-//! Proved against the Kontakt 8 binary: the saved-row/tap selector, the per-row output
-//! weights and the selector-specific compensation curves (audit CORE-FILTERS-044, 050, 051,
-//! 081..084). Not proved, so a stand-in and reported as an unknown law by the Kontakt
-//! mapping: the normalized cutoff law and its exponential table (045, 075), the pole
-//! polynomial (076), the gain and resonance setters (046, 054), the control clock and ramp
-//! (047), the record-version instant cutoff (048), the enabled-route semantics (049) and the
-//! nonlinear four-stage state kernel itself (052). HQ, modulation source sampling and nonzero
-//! secondary cutoff clocks remain gaps.
+//! Checked against the Kontakt 8.13.1 Ladder core FUN_140b00be2 (wave 4): the cutoff law
+//! (index 575 x + 1481.8816 into the 2401-entry table 2^(i/60 - 20) with stored f32 slopes,
+//! FUN_1404d14e4), the pole polynomial and its clamp at 8, the 4.16 feedback scale, the
+//! zero-delay feedback estimate, the +-24 clamp and 1/48 soft clip, the four trapezoidal stages,
+//! the tap weights and the compensation curves of all twelve selectors, and the 4-frame
+//! control advance, and the prepare FUN_140b06180 (feedback correction, 2 ms ramp in 32-frame
+//! ticks), in the core's f32 operation order. Not checked: the gain lane law, the HQ mode
+//! (core flag 0x30 doubles the internal rate through the FUN_140ae2190 resampler; this kernel
+//! is the HQ-off path), and the alternative cutoff path (flag 0x49). The Kontakt mapping
+//! reports those as an unknown law.
 
 use std::sync::OnceLock;
 
@@ -107,69 +109,38 @@ pub(crate) fn cutoff(value: f32) -> f32 {
     exponential(1481.8816 + 575.0 * value.clamp(0.0, 1.0))
 }
 
+/// Resonance-to-feedback scale of the core (0x144fcfdd0).
+const FEEDBACK: f32 = 4.16;
+
 fn pole(w: f32) -> f32 {
     let w2 = w * w;
     ((40.802_63 * w2 + 10.335_426) * w2 + std::f32::consts::PI) * w
 }
 
-/// Output level of the LP1..LP3 taps against the shared loop, measured from
-/// Kontakt 8 recordings (noise through each type over the resonance range,
-/// level taken from the shape fit to this kernel). Points are (q, gain).
-#[rustfmt::skip]
-const TAP_COMPENSATION: [&[(f32, f32)]; 3] = [
-    &[
-        (0.000, 0.968), (0.047, 0.979), (0.122, 1.013), (0.194, 1.090), (0.263, 1.205),
-        (0.329, 1.352), (0.355, 1.413), (0.392, 1.500), (0.452, 1.606), (0.509, 1.643),
-        (0.563, 1.642), (0.642, 1.644), (0.754, 1.640), (0.839, 1.640), (0.857, 1.639),
-        (0.885, 1.454), (0.910, 1.228), (0.932, 1.052), (0.944, 0.975), (0.951, 0.935),
-        (0.961, 0.889), (0.967, 0.858), (0.975, 0.831), (0.980, 0.813), (0.986, 0.798),
-        (0.990, 0.792), (0.995, 0.786), (0.999, 0.784),
-    ],
-    &[
-        (0.047, 0.996), (0.122, 1.045), (0.194, 1.150), (0.263, 1.300), (0.329, 1.493),
-        (0.355, 1.581), (0.392, 1.694), (0.452, 1.857), (0.509, 1.919), (0.642, 1.923),
-        (0.754, 1.924), (0.839, 1.925), (0.857, 1.904), (0.885, 1.602), (0.910, 1.374),
-        (0.932, 1.217), (0.944, 1.149), (0.951, 1.112), (0.961, 1.077), (0.967, 1.052),
-        (0.975, 1.027), (0.980, 1.009), (0.986, 0.999), (0.990, 0.995), (0.995, 0.985),
-        (0.999, 0.982),
-    ],
-    &[
-        (0.047, 0.998), (0.122, 1.039), (0.194, 1.122), (0.263, 1.236), (0.329, 1.400),
-        (0.355, 1.490), (0.392, 1.577), (0.452, 1.753), (0.509, 1.908), (0.563, 1.977),
-        (0.642, 2.000), (0.754, 2.000), (0.839, 2.002), (0.857, 1.975), (0.885, 1.982),
-        (0.910, 1.669), (0.932, 1.399), (0.944, 1.285), (0.961, 1.164), (0.967, 1.132),
-        (0.975, 1.090), (0.980, 1.072), (0.986, 1.047), (0.990, 1.038), (0.995, 1.029),
-        (0.999, 1.022),
-    ],
-];
-
+/// Output compensation of every selector, read per 4-frame control tick from the current
+/// resonance (FUN_140b00be2: row = selector - 1 of the knot/value/width tables).
 fn compensation(q: f32, taps: u8) -> f32 {
-    if taps > 4 {
-        return morphology_compensation(q, usize::from(taps - 5));
-    }
-    let Some(table) = TAP_COMPENSATION.get(usize::from(taps).wrapping_sub(1)) else {
-        return lp4_compensation(q);
-    };
-    let at = table.partition_point(|&(x, _)| x <= q);
-    match (at.checked_sub(1).map(|i| table[i]), table.get(at)) {
-        (None, _) => table[0].1,
-        (Some((_, y)), None) => y,
-        (Some((x0, y0)), Some(&(x1, y1))) => y0 + (y1 - y0) * (q - x0) / (x1 - x0),
-    }
+    morphology_compensation(q, usize::from(taps.clamp(1, 12) - 1))
 }
 
-// NI Kontakt 8 Filter Reference: Ladder HP/BP/Peak/Notch. Ghidra
-// FUN_140b00b80; radare2 confirms weights 0x144fcebc0 and compensation
-// knots/values/reciprocal widths 0x144fcecb0/0x144fced70/0x144fceec0.
+// NI Kontakt 8 Ladder core FUN_140b00be2: tap weights 0x144fcebc0 and compensation
+// knots/values/reciprocal widths 0x144fcecb0/0x144fced70/0x144fceec0, twelve rows each
+// (LP1..LP4, HP1..HP4, BP2, BP4, Peak, Notch).
 #[rustfmt::skip]
-const MORPHOLOGY_WEIGHTS: [[f32; 5]; 8] = [
+const MORPHOLOGY_WEIGHTS: [[f32; 5]; 12] = [
+    [0., 1., 0., 0., 0.], [0., 0., 1., 0., 0.],
+    [0., 0., 0., 1., 0.], [0., 0., 0., 0., 1.],
     [1., -1., 0., 0., 0.], [1., -2., 1., 0., 0.],
     [1., -3., 3., -1., 0.], [1., -4., 6., -4., 1.],
     [0., -2., 2., 0., 0.], [0., 0., 6., -12., 6.],
     [1., 0., 0., 0., 0.], [1., -4., 12., -16., 8.],
 ];
 #[rustfmt::skip]
-const MORPHOLOGY_COMPENSATION: [([f32; 4], [f32; 4], [f32; 3]); 8] = [
+const MORPHOLOGY_COMPENSATION: [([f32; 4], [f32; 4], [f32; 3]); 12] = [
+    ([0., 0.25, 0.75, 1.], [0.49, 0.83, 0.83, 0.4], [4., 2., 4.]),
+    ([0., 0.26, 0.73, 1.], [0.5, 0.97, 0.97, 0.5], [3.846_154, 2.127_66, 3.703_704_1]),
+    ([0., 0.34, 0.79, 1.], [0.5, 1., 1., 0.52], [2.941_176, 2.222_222, 4.761_905]),
+    ([0., 0.34, 0.83, 1.], [0.51, 1., 1., 0.57], [2.941_176, 2.040_816, 5.882_353]),
     ([0., 0.46, 0.79, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.030303, 4.761905]),
     ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.448276, 4.]),
     ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.25], [2.173913, 3.448276, 4.]),
@@ -198,21 +169,6 @@ fn morphology_compensation(q: f32, row: usize) -> f32 {
     blend * (delta + delta) + y + y
 }
 
-fn lp4_compensation(q: f32) -> f32 {
-    // Algebraic form of the three native LP4 interpolation intervals.
-    // An independent float-order comparison bounds its difference to 2 ULP.
-    let p = f64::from(q * q);
-    if p < 0.34 {
-        let u = p / 0.34;
-        let t = (2.0 - u) * u;
-        (1.02 + 0.98 * (0.49 * t * t + 0.51 * t)) as f32
-    } else if p < 0.83 {
-        2.0
-    } else {
-        let u = (p - 0.83) / 0.17;
-        (2.0 - 0.86 * (2.0 - u) * u) as f32
-    }
-}
 
 /// These readers enable the separate cutoff path whose native constructor
 /// and rate preparation leave its clock inverse zero. Other versions remain
@@ -268,7 +224,7 @@ impl Ladder {
         let h4 = mul(h2, h2);
         let correction = transfer(filter.correction).map(|v| v * f64::from(filter.correction_gain));
         let c4 = f64::from((filter.g * filter.reciprocal).powi(4));
-        let feedback = f64::from(filter.feedback);
+        let feedback = f64::from(filter.feedback * FEEDBACK);
         let d = [
             1.0 - feedback * c4 * correction[0],
             -feedback * c4 * correction[1],
@@ -307,10 +263,15 @@ impl Ladder {
             self.controls.pending = true;
         }
         // R is a dimensionless fixed feedback gain; 80/R is in Hz.
+        // Core prepare FUN_140b06180, in its order (internal rate factor 1: HQ off).
         let r = exponential(1196.0 + 0.681_396_5);
-        let w = (80.0 / r) / rate;
-        let w2 = w * w;
-        self.correction = std::f32::consts::PI * w * (1.0 + w2 * (3.289_868_4 + 12.987_881 * w2));
+        let w = (80.0 / r).max(0.0);
+        let inv = 1.0 / rate;
+        let w8 = inv * inv * 12.987_881;
+        self.correction = ((w8 * w * w + 3.289_868_4) * w * inv * w * inv + 1.0)
+            * w
+            * std::f32::consts::PI
+            * inv;
         self.correction_reciprocal = 1.0 / (1.0 + self.correction);
         self.correction_previous = self.correction - 1.0;
         self.correction_gain = r * r - 1.0;
@@ -319,7 +280,7 @@ impl Ladder {
     fn coefficients(&mut self, [gain, frequency, q]: [f32; 3], rate: f32) {
         self.g = pole(cutoff(frequency) / rate).min(8.0);
         self.reciprocal = 1.0 / (1.0 + self.g);
-        self.feedback = 4.16 * q;
+        self.feedback = q;
         self.compensation = compensation(q, self.taps());
         self.gain = gain;
     }
@@ -386,19 +347,20 @@ impl Ladder {
             let state = &mut self.state[channel];
             for sample in samples {
                 let input = self.gain * *sample;
-                let mut histories = 2.0 * state[0] * c + 2.0 * state[1];
-                histories = histories * c + 2.0 * state[2];
-                histories = histories * c + 2.0 * state[3];
-                let predicted =
-                    (c4 * input + histories * self.reciprocal) / (1.0 + self.feedback * c4);
-                let feedback = self.feedback * predicted;
+                // Native order (FUN_140b00be2): ((s0+s0)*G*g + s1) + s1, ...
+                let step = |h: f32, s: f32| h * self.reciprocal * self.g + s + s;
+                let histories = step(step(step(state[0] + state[0], state[1]), state[2]), state[3]);
+                // `feedback` holds the shaped resonance; 4.16 is applied as the core does.
+                let predicted = (c4 * input + histories * self.reciprocal)
+                    / (c4 * self.feedback * FEEDBACK + 1.0);
+                let feedback = predicted * self.feedback * FEEDBACK;
                 let correction =
                     (feedback - state[4] * self.correction_previous) * self.correction_reciprocal;
                 let feedback =
                     feedback + (state[4] + correction) * self.correction * self.correction_gain;
                 state[4] = correction;
                 let mut value = (input - feedback).clamp(-24.0, 24.0);
-                value *= 1.0 - value.abs() / 48.0;
+                value *= 1.0 - value.abs() * f32::from_bits(0x3caa_aaab); // 1/48 as stored
                 let mut outputs = [value; 5];
                 for (stage, history) in state[..4].iter_mut().enumerate() {
                     let previous = *history;
@@ -410,10 +372,11 @@ impl Ladder {
                 let tap = if taps <= 4 {
                     outputs[taps]
                 } else {
-                    let weights = MORPHOLOGY_WEIGHTS[taps - 5];
-                    // Native sum order: stages 4,3,2, then (stage 1 + input).
-                    ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
-                        + (outputs[1] * weights[1] + outputs[0] * weights[0])
+                    let weights = MORPHOLOGY_WEIGHTS[taps - 1];
+                    // Native sum order: stage 4, 3, 2, 1, then the clipped input.
+                    (((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
+                        + outputs[1] * weights[1])
+                        + outputs[0] * weights[0]
                 };
                 *sample = tap * self.compensation;
             }
@@ -424,6 +387,15 @@ impl Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lp_taps_use_the_native_compensation_rows() {
+        // Rows 0..3 of 0x144fced70: twice the first and last value at q = 0 and q = 1.
+        for (taps, start, end) in [(1, 0.98, 0.8), (2, 1.0, 1.0), (3, 1.0, 1.04), (4, 1.02, 1.14)] {
+            assert!((compensation(0.0, taps) - start).abs() < 1e-6, "{taps}");
+            assert!((compensation(1.0, taps) - end).abs() < 1e-6, "{taps}");
+        }
+    }
 
     #[test]
     fn morphology_hp2_bp4_notch_use_native_weights_and_compensation() {
@@ -628,7 +600,7 @@ mod tests {
                             .abs()
                             < 0.00003
                     );
-                    assert!((f64::from(clock.feedback) - 4.16 * 0.75 * fraction).abs() < 0.000004);
+                    assert!((f64::from(clock.feedback) - 0.75 * fraction).abs() < 0.000004);
                 }
                 // Retarget downward: the zero-inverse secondary clock snaps;
                 // no positive-increment cap artifact is introduced or claimed.
@@ -727,7 +699,7 @@ mod tests {
                 let (mut l, mut r) = ([0.0; 1], [0.0; 1]);
                 resonance.process(&mut l, &mut r);
                 let fraction = ((frame / 4 + 1) * 4) as f32 / duration as f32;
-                assert!((resonance.feedback - 4.16 * 0.75 * fraction).abs() < 0.000003);
+                assert!((resonance.feedback - 0.75 * fraction).abs() < 0.000003);
             }
             // A target change partway through a ramp waits for the next
             // 32-frame boundary and starts from the value reached there.

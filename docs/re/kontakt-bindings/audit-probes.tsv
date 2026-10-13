@@ -1,0 +1,474 @@
+id	status	measured_law	probe_file	native_thing
+CORE-EFFECTS-023	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Delay recurrence/mix
+CORE-FILTERS-019	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		AR complete native-kernel equivalence
+CORE-FILTERS-029	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Daft saturation law
+CORE-FILTERS-030	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Daft complete audio-kernel equivalence
+CORE-FILTERS-031	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Daft resampling/interpolation mapping
+CORE-FILTERS-035	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		PeakingEq scalar/SIMD kernel equivalence
+CORE-FILTERS-047	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Ladder control clock and ramp
+CORE-FILTERS-066	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		SVF TPT coefficient law
+CORE-FILTERS-070	NOT-PROBED	no state-only probe designed yet		OutputLowPass cutoff/default/bypass mapping
+CORE-FILTERS-073	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		AR LP2/4 host recording acceptance
+CORE-FILTERS-085	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		AR initial state/defaults
+CORE-FILTERS-089	NOT-PROBED	no state-only probe designed yet		PeakingEq gain/control domain
+CORE-KSP-002	STATIC-QUERY	binary query rather than oracle probe		$MS_TO_TICKS`/`$TICKS_TO_MS` conversion
+CORE-KSP-003	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		listener driver topology, beat conversion and zero-period behavior
+CORE-KSP-004	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		listener driver address/topology
+CORE-KSP-006	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		get_scale scale-index table
+CORE-KSP-007	STATIC-QUERY	binary query rather than oracle probe		$ENGINE_PAR_VOLUME/PAN/TUNE` neutral reads and target detection
+CORE-KSP-008	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		$ENGINE_PAR_*` unit conversion formulas
+CORE-KSP-009	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		AHDSR sustain/time engine-unit conversions
+CORE-KSP-010	STATIC-QUERY	binary query rather than oracle probe		get_engine_par_disp/get_engine_par_disp_ext
+CORE-KSP-011	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Unbound performance controls (`PerformanceControl::assumed`)
+CORE-KSP-012	STATIC-QUERY	binary query rather than oracle probe		Default instrument width/height
+CORE-KSP-013	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Scalar UI range/default/display mapping
+CORE-KSP-014	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Table declaration/range and cells
+CORE-KSP-015	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		XY cursor/sensitivity mapping
+CORE-KSP-016	STATIC-QUERY	binary query rather than oracle probe		Level-meter orientation/range and file-selector enum mapping
+CORE-KSP-017	STATIC-QUERY	binary query rather than oracle probe		KSP color integer to RGBA
+CORE-KSP-018	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Font/style numeric mapping
+CORE-KSP-019	STATIC-QUERY	binary query rather than oracle probe		Position/grid placement and hide semantics
+CORE-KSP-020	STATIC-QUERY	binary query rather than oracle probe		Implicit captions from variable names
+CORE-KSP-021	STATIC-QUERY	binary query rather than oracle probe		Automation defaults/style state
+CORE-KSP-022	STATIC-QUERY	binary query rather than oracle probe		Control property storage/getter fallback
+CORE-KSP-023	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		set/get_engine_par address tuple and write result
+CORE-KSP-024	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Valued constant ordinals (`$NI_*`, widget/file units, callbacks/signals)
+CORE-KSP-026	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		System array lengths/defaults and DND arrays
+CORE-KSP-027	STATIC-QUERY	binary query rather than oracle probe		MIDI range/clamp and play_note sentinels
+CORE-KSP-028	STATIC-QUERY	binary query rather than oracle probe		Menu selected index/value and invalid-index returns
+CORE-KSP-031	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Beat listener period conversion
+CORE-KSP-032	STATIC-QUERY	binary query rather than oracle probe		Grid coordinate semantics
+CORE-KSP-033	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Table bipolar sign conversion
+CORE-KSP-034	STATIC-QUERY	binary query rather than oracle probe		KSP color packing across control and global UI setters
+CORE-KSP-035	STATIC-QUERY	binary query rather than oracle probe		File selector unknown file type
+CORE-KSP-036	STATIC-QUERY	binary query rather than oracle probe		Orientation sign/boolean mapping
+CORE-KSP-037	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Valued vendor enums and callback/signal ordinals
+CORE-KSP-038	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Vendor catalog acceptance and host-reindexed opaque symbols
+CORE-KSP-039	STATIC-QUERY	binary query rather than oracle probe		UI control-type and control-parameter numeric mapping
+CORE-KSP-040	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		MIDI command/event parameter ordinals
+CORE-LOWER-PREPARE-002	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Variation random seed and bus-tail fallback
+CORE-LOWER-PREPARE-003	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		MPE default pressure/timbre and activation
+CORE-LOWER-PREPARE-004	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Zone/group gain-pan merge and clamping
+CORE-LOWER-PREPARE-005	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Implicit fallback envelope admission
+CORE-LOWER-PREPARE-006	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Group tap gain converted to dB for script GroupParams
+CORE-LOWER-PREPARE-007	NOT-PROBED	no state-only probe designed yet		VelocityResponse enum → Constant/Linear/Power amplitude curve
+CORE-LOWER-PREPARE-008	NOT-PROBED	no state-only probe designed yet		Articulation default index remap to native key table
+CORE-LOWER-PREPARE-009	STATIC-QUERY	binary query rather than oracle probe		Pitch-bend route depth → plan bend range
+CORE-LOWER-PREPARE-010	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Time→frames conversion
+CORE-LOWER-PREPARE-011	STATIC-QUERY	binary query rather than oracle probe		Native AHDSR stage law vs generic live-write binding
+CORE-LOWER-PREPARE-012	STATIC-QUERY	binary query rather than oracle probe		AHDSR native curve decode and sustain display
+CORE-LOWER-PREPARE-013	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable form ordinal and form-mode range
+CORE-LOWER-PREPARE-014	STATIC-QUERY	binary query rather than oracle probe		Wavetable physical group identity and 5-lane address mapping
+CORE-LOWER-PREPARE-015	STATIC-QUERY	binary query rather than oracle probe		Live effect lane defaults, domains, roles and native address identity
+CORE-LOWER-PREPARE-016	STATIC-QUERY	binary query rather than oracle probe		Effect parameter role table and native lane lookup
+CORE-LOWER-PREPARE-018	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Loop range mode/shape and slot semantics
+CORE-LOWER-PREPARE-019	NOT-PROBED	no state-only probe designed yet		Root-key and tuning composition
+CORE-LOWER-PREPARE-020	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Equal-power pan curve
+CORE-LOWER-PREPARE-021	STATIC-QUERY	binary query rather than oracle probe		Processor control binding role→runtime field
+CORE-LOWER-PREPARE-022	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Four-pole filter → two cascaded two-pole processors
+CORE-LOWER-PREPARE-023	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Filter resonance and kind mappings
+CORE-LOWER-PREPARE-024	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Bus gain and send gain linearization
+CORE-LOWER-PREPARE-025	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Bus tail fallback by processor category
+CORE-LOWER-PREPARE-026	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Probability intervals→uniform random take sequence
+CORE-LOWER-PREPARE-027	NOT-PROBED	no state-only probe designed yet		CounterScope→sequence capacity
+CORE-LOWER-PREPARE-028	NOT-PROBED	no state-only probe designed yet		Articulation IDs and switching drivers
+CORE-LOWER-PREPARE-029	STATIC-QUERY	binary query rather than oracle probe		7-bit controller interval expansion to 32-bit
+CORE-LOWER-PREPARE-030	NOT-PROBED	no state-only probe designed yet		Trigger First/Legato/Transition→PREVIOUS_KEY intervals
+CORE-LOWER-PREPARE-031	STATIC-QUERY	binary query rather than oracle probe		Engine parameter name→numeric ID mapping
+CORE-LOWER-PREPARE-032	STATIC-QUERY	binary query rather than oracle probe		EngineParameterLaw normalized decode/encode families
+CORE-LOWER-PREPARE-033	NOT-PROBED	no state-only probe designed yet		Envelope stage service domains versus native values
+CORE-LOWER-PREPARE-034	NOT-PROBED	no state-only probe designed yet		Engine parameter display numeric mappings
+CORE-LOWER-PREPARE-035	STATIC-QUERY	binary query rather than oracle probe		Envelope binding physical address and generic slot
+CORE-LOWER-PREPARE-036	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable-form offsets rejected and ordinal clamped
+CORE-LOWER-PREPARE-037	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Layer volume/pan/pitch integer scales
+CORE-LOWER-PREPARE-038	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Parameter registry address/law/default validation and native alias clocks
+CORE-LOWER-PREPARE-039	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		ParameterUnit and ParameterLaw metadata
+CORE-PARENT-004	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Falcon direct note modulation clamps and smoothing
+CORE-RUNTIME-010	NOT-PROBED	no state-only probe designed yet		Default voice-stealing fade/headroom
+CORE-RUNTIME-019	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Initial controller/reset state
+CORE-RUNTIME-020	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Effect output-gain control law
+CORE-RUNTIME-023	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Widget table/edit capacity and atomic writes
+CORE-SOUND-002	NOT-PROBED	no state-only probe designed yet		Fader dB-to-linear conversion and bounds
+CORE-SOUND-003	NOT-PROBED	no state-only probe designed yet		Mixer defaults
+CORE-SOUND-004	NOT-PROBED	no state-only probe designed yet		Bus count and block/rack constants
+CORE-SOUND-005	NOT-PROBED	no state-only probe designed yet		Part tuning and bend-range defaults
+CORE-SOUND-006	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Expression normalization and per-note ±48 semitone bend
+CORE-SOUND-008	NOT-PROBED	no state-only probe designed yet		Channel-mode/program fallback
+CORE-SOUND-009	STATIC-QUERY	binary query rather than oracle probe		KSP transport units and slots
+CORE-SOUND-011	NOT-PROBED	no state-only probe designed yet		Host packet wire remapping
+CORE-SOUND-013	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Audio velocity mapping
+CORE-SOUND-014	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Output tone low-pass
+CORE-SOUND-015	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Aux send law and placement
+CORE-SOUND-016	NOT-PROBED	no state-only probe designed yet		Bus port count/order and solo/mute lifecycle
+CORE-SOUND-017	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Fallback envelope/tone ranges
+CORE-SOUND-018	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		WAV defaults
+CORE-SOUND-019	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Multichannel WAV handling
+CORE-SOUND-020	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Streaming RAM/preload policy
+CORE-SOUND-022	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Voice stealing order
+CORE-SOUND-025	STATIC-QUERY	binary query rather than oracle probe		Per-group bus rewrite and inferred mic topology
+CORE-SOUND-028	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Default articulation numbering and behavior tap
+CORE-SOUND-029	STATIC-QUERY	binary query rather than oracle probe		Engine parameter address mapping
+CORE-SOUND-030	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Universal editor normalization
+CORE-SOUND-031	NOT-PROBED	no state-only probe designed yet		Effect scope conversion
+CORE-SOUND-032	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Effect control range/domain admission
+CORE-SOUND-033	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		MPE default expression preparation
+CORE-SOUND-034	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		HostPattern wildcard and exact-note identity
+CORE-SOUND-035	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		NodeOutput and node fader units
+CORE-SOUND-036	NOT-PROBED	no state-only probe designed yet		Solo audible-path law
+CORE-SOUND-037	NOT-PROBED	no state-only probe designed yet		Source bus parent mapping
+CORE-SOUND-038	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		UVI layers/scripts to Kontakt-style group tree and script thread
+CORE-SOURCE-MOD-001	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Kontakt AHDSR/DBD/FM7 stage curve
+CORE-SOURCE-MOD-002	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native AHDSR engine-parameter write
+CORE-SOURCE-MOD-003	STATIC-QUERY	binary query rather than oracle probe		Native AHDSR stage/sustain writes
+CORE-SOURCE-MOD-005	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native AHDSR decay/release output
+CORE-SOURCE-MOD-006	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Native note-off/release ownership
+CORE-SOURCE-MOD-007	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native choke/finite fade
+CORE-SOURCE-MOD-008	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native 32-frame control cadence
+CORE-SOURCE-MOD-009	STATIC-QUERY	binary query rather than oracle probe		Native DBD/Flex point construction
+CORE-SOURCE-MOD-010	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native AHDSR duration and rate
+CORE-SOURCE-MOD-012	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native sustain knob decode
+CORE-SOURCE-MOD-013	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Saved AHDSR millisecond-to-seconds conversion
+CORE-SOURCE-MOD-014	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Kontakt Flex point admission/curve
+CORE-SOURCE-MOD-015	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native Flex segment time
+CORE-SOURCE-MOD-016	STATIC-QUERY	binary query rather than oracle probe		Native/ Kontakt attack curve
+CORE-SOURCE-MOD-017	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Native rectangle kernel
+CORE-SOURCE-MOD-020	STATIC-QUERY	binary query rather than oracle probe		LFO reciprocal-rate physical unit
+CORE-SOURCE-MOD-022	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native LFO delay/fade
+CORE-SOURCE-MOD-023	STATIC-QUERY	binary query rather than oracle probe		Tempo-beat LFO rate
+CORE-SOURCE-MOD-025	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		TM2/Pro grain/search constants
+CORE-SOURCE-MOD-027	NOT-PROBED	no state-only probe designed yet		Sample pitch/rate step
+CORE-SOURCE-MOD-028	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Resampler step admission
+CORE-SOURCE-MOD-029	NOT-PROBED	no state-only probe designed yet		Native loop crossfade/ping-pong topology
+CORE-SOURCE-MOD-030	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Until-release exit policy
+CORE-SOURCE-MOD-031	NOT-PROBED	no state-only probe designed yet		Missing-page fade
+CORE-SOURCE-MOD-032	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native resampler step/radius
+CORE-SOURCE-MOD-033	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native high-quality sinc
+CORE-SOURCE-MOD-037	NOT-PROBED	no state-only probe designed yet		Wavetable amount clamp
+CORE-SOURCE-MOD-038	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native wavetable readout
+CORE-SOURCE-MOD-039	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Kontakt envelope follower 0x0A
+CORE-SOURCE-MOD-040	STATIC-QUERY	binary query rather than oracle probe		Kontakt stored Arp
+CORE-SOURCE-MOD-041	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native BArp32Step phase/one-shot
+CORE-SOURCE-MOD-042	STATIC-QUERY	binary query rather than oracle probe		Kontakt Glide stored-to-ramp mapping
+CORE-SOURCE-MOD-043	STATIC-QUERY	binary query rather than oracle probe		Native shaping/table interpolation
+CORE-SOURCE-MOD-044	STATIC-QUERY	binary query rather than oracle probe		Native inversion
+CORE-SOURCE-MOD-046	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Native intensity lag/evaluator
+CORE-SOURCE-MOD-047	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native lag units
+CORE-SOURCE-MOD-048	STATIC-QUERY	binary query rather than oracle probe		Native target units/gain/pan/pitch
+CORE-SOURCE-MOD-049	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native LFO phase/fade scheduling
+CORE-SOURCE-MOD-050	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Native parameter-index→destination mapping
+CORE-SOURCE-MOD-051	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native pitch semitone ratio
+CORE-SOURCE-MOD-052	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native demand/read-radius prediction
+CORE-SOURCE-MOD-053	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		SourceAhdsr→native Primary admission
+CORE-SOURCE-MOD-054	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native setter admission after v1 control
+CORE-SOURCE-MOD-062	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable Hermite readout arithmetic
+CORE-SOURCE-MOD-063	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		TM2/Pro periodic-Hann overlap-add
+CORE-SOURCE-MOD-064	NOT-PROBED	no state-only probe designed yet		Loop crossfade gain law
+CORE-SOURCE-MOD-065	STATIC-QUERY	binary query rather than oracle probe		Loop-control crossfade saved field
+CORE-SOURCE-MOD-066	NOT-PROBED	no state-only probe designed yet		Wavetable fundamental/rate mapping
+CORE-SOURCE-MOD-067	NOT-PROBED	no state-only probe designed yet		Native DFD reservation bound
+CORE-SOURCE-MOD-068	NOT-PROBED	no state-only probe designed yet		Modulation cadence
+CORE-SOURCE-MOD-069	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native SourceRate integration
+CORE-SOURCE-MOD-070	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Native filter/tone target formulas
+CORE-SOURCE-MOD-073	NOT-PROBED	no state-only probe designed yet		Native volume/pitch modulation outputs
+KO001	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		compact group snapshot gain
+KO015	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		muted multi groups sample discovery
+KO018	STATIC-QUERY	binary query rather than oracle probe		resource name identity
+KO022	STATIC-QUERY	binary query rather than oracle probe		implicit library root
+KO026	NOT-PROBED	no state-only probe designed yet		resource failure/absence fallback
+KO027	STATIC-QUERY	binary query rather than oracle probe		picture companion mapping
+KO028	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		linked source encoding
+KO040	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		saved menu value
+KO041	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		saved numeric array tail rule
+KO042	NOT-PROBED	no state-only probe designed yet		saved string-array separators
+KO043	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		saved scalar numeric units
+KO046	NOT-PROBED	no state-only probe designed yet		boolean wire interpretation
+KO047	STATIC-QUERY	binary query rather than oracle probe		group and zone list meanings
+KE012	PROVED	wrapper output_gain/dry_level are linear gains: stored = 16*n^3, so 1.0 = value 396851 (see KE154)	tools/kontakt-oracle/probe_fx.py -> docs/re/kontakt-bindings/fx_other.tsv	FX output_gain/dry_level stored f32
+KE154	PROVED	stored = 16*n^3 for INSERT_EFFECT_OUTPUT_GAIN and SEND_EFFECT_DRY_LEVEL (n=value/1e6); unity (stored 1.0) at value 396851; clamped to [0,1e6]; stored is a linear gain	tools/kontakt-oracle/probe_fx.py -> docs/re/kontakt-bindings/filters_eq.tsv, fx_*.tsv	ENGINE_PAR_*_EFFECT_OUTPUT_GAIN and SEND_EFFECT_DRY_LEVEL integer
+KE068	PROVED	legacy EQ band gain stored dB = -18 + 36*n, clamped to n in [0,1] (value<0 -> -18, >1e6 -> +18)	tools/kontakt-oracle/probe_fx.py -> docs/re/kontakt-bindings/filters_eq.tsv (Filters/EQ GAIN1)	ENGINE_PAR_GAIN1..3 init writes
+KE070	NOT-PROBED	no state-only probe designed yet		Gainer dry/wet output
+KE075	STATIC-QUERY	binary query rather than oracle probe		SendLevels second 17-value list
+KE077	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Legacy filter types 2/3
+KE078	PARTIAL	ids 52,54,55,57 are valid Kontakt filter types (accepted by the setter); DSP laws unmeasured (needs audio)	docs/re/kontakt-bindings/filter_subtypes.tsv	SV filter types 52/54/55/57
+KE079	PARTIAL	EFFECT_SUBTYPE accepted filter type ids: 0,2,3,4,6-17,19,22,23,24,30-41,50-65,70,71,90,91,100-108,120,130,140; all others are coerced to 0 by Kontakt's own setter	docs/re/kontakt-bindings/filter_subtypes.tsv	Unknown filter types
+KE080	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Fallback filter DSP
+KE081	PARTIAL	filter type 13 is valid (cutoff identity, resonance identity bindings); DSP unmeasured	docs/re/kontakt-bindings/filter_subtypes.tsv, filters_eq.tsv	Filter kind 13 Phaser
+KE082	PARTIAL	ids 90 and 91 (Formant I/II) are valid; DSP unmeasured	docs/re/kontakt-bindings/filter_subtypes.tsv	Filter kind 90 Formant I
+KE083	PARTIAL	ladder ids 30..41 are all valid filter types; DSP unmeasured	docs/re/kontakt-bindings/filter_subtypes.tsv	Ladder kinds 30..41
+KE085	PARTIAL	Daft ids 70,71 are valid; DSP unmeasured	docs/re/kontakt-bindings/filter_subtypes.tsv	Daft kinds 70/71
+KE088	PROVED	Compressor v0x70 field 2 (RATIO) stored = 0.04^n, i.e. inverse ratio from 1 (1:1) to 0.04 (25:1); THRESHOLD field1 = -68 + 65*n dB; clamped to n in [0,1]	docs/re/kontakt-bindings/fx_dynamics_dist_tape.tsv, engine_par_clamp.tsv	Classic compressor ratio
+KE090	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Modern Reverb 0x59
+KE091	PARTIAL	stored Galois reverb controls are normalized identity (stored = n); the physical decay/size laws need audio and are not measured	docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv	Reverb normalized physical laws
+KE092	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Convolution public fields and flags
+KE094	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Convolution predelay
+KE095	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Convolution reverse flag
+KE098	STATIC-QUERY	binary query rather than oracle probe		InsertBus volume/pan/output
+KE101	NOT-PROBED	no state-only probe designed yet		Instrument-bus Send Levels
+KE103	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Bus volume
+KE104	NOT-PROBED	no state-only probe designed yet		Output gain/dry handling
+KE105	STATIC-QUERY	binary query rather than oracle probe		Dynamic Mix ownership
+KE107	PROVED	EQ gain clamp [-18,+18] dB holds for out-of-range engine values; Solid G-EQ gains are stored normalized 0..1 (identity), not dB	docs/re/kontakt-bindings/engine_par_clamp.tsv	EQ gain clamp
+KE108	NOT-PROBED	no state-only probe designed yet		Normalized parameter clamping
+KE112	STATIC-QUERY	binary query rather than oracle probe		Ladder unknown flag
+KE117	STATIC-QUERY	binary query rather than oracle probe		Convolution flags array ordering
+KE118	PARTIAL	same as KE091: stored = n; display/physical laws unmeasured	docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv	Modern Reverb display-derived laws
+KE120	STATIC-QUERY	binary query rather than oracle probe		Generic byte-to-bool conversion
+KE124	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Legacy Phaser v0x51 trailing fields
+KE125	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Lo-Fi four-value DSP mapping
+KE127	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Shaper mode 0 curve
+KE128	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Multiband EQ fallback processors
+KE129	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		EQ band ordering/commutation
+KE130	NOT-PROBED	no state-only probe designed yet		Send Levels position
+KE131	STATIC-QUERY	binary query rather than oracle probe		Send return bypass
+KE132	NOT-PROBED	no state-only probe designed yet		Static bypass admission
+KE133	STATIC-QUERY	binary query rather than oracle probe		Dynamic unsupported module handling
+KE134	NOT-PROBED	no state-only probe designed yet		Scope restrictions
+KE135	STATIC-QUERY	binary query rather than oracle probe		Fallback diagnostics
+KE136	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Reverb room enum physical branch
+KE137	NOT-PROBED	no state-only probe designed yet		Convolution early/late filter fallback
+KE138	NOT-PROBED	no state-only probe designed yet		Convolution decimation
+KE140	NOT-PROBED	no state-only probe designed yet		Convolution envelope interpolation
+KE141	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Convolution predelay splice
+KE142	NOT-PROBED	no state-only probe designed yet		Convolution recipes/cache
+KE143	STATIC-QUERY	binary query rather than oracle probe		BusPlan output field
+KE144	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Dynamic bus volume
+KE145	STATIC-QUERY	binary query rather than oracle probe		Nonfinite bus pan fallback
+KE148	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Generic EQ multiband conversion
+KE150	PROVED	Compressor v0x70 fields: 1 THRESHOLD dB(-68+65n), 2 RATIO(0.04^n), 3 ATTACK ms (1..1000, curve), 4 DECAY ms (50..2500, curve); FBComp v0x10: 0 input,1 makeup,2 attack,3 release,4 ratio,5 mix (identity), 7 HQ bool; SSL bus comp v0x12: 0 threshold,1 makeup(identity),2 attack,3 release,4 ratio (6-step enums 0..5/6),5 mix	docs/re/kontakt-bindings/fx_dynamics_dist_tape.tsv, curves_dense.tsv	Compressor semantic names/units
+KE151	PROVED	GaloisReverb v0x10 fields (all normalized identity): 1 TIME,2 SIZE,3 DAMPING,4 MOD,5 DIFF,6 PREDELAY,7 HIGHCUT,8 LOWSHELF,9 STEREO	docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv (generic=1)	Galois semantic names/order
+KL011	PROVED	default key switch domain 0..127; Kontakt rejects -1 and 128	tools/kontakt-oracle/probes/audit_levels.lua	Program default key switch
+KL012	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Host volume controller
+KL013	PROVED	instrument/program volume is dB with 6 dB per doubling (same law), API range -inf..12	tools/kontakt-oracle/probes/audit_levels.lua	Program volume units
+KL015	NOT-PROBED	no state-only probe designed yet		Automation mode 2
+KL022	PARTIAL	playback modes sampler/dfd/time_machine_1/2/pro/beat_machine/mpc60_machine/s1200_machine all round-trip and KONTRA reads them; DFD-vs-sampler audio unmeasured	tools/kontakt-oracle/probes/audit_levels.lua	Stored source mode 3
+KL026	NOT-PROBED	no state-only probe designed yet		Time speed invalid fallback
+KL030	STATIC-QUERY	binary query rather than oracle probe		Time-machine script writes
+KL033	PARTIAL	Kontakt voice-group exclusive_group domain via API: 0..16 (0 = none, reads back nil; 1..16 valid); 127 rejected	tools/kontakt-oracle/probes/audit_levels.lua	Voice exclusion domain
+KL034	PROVED	voice fade_time domain 0..1000 ms; negative values are rejected by Kontakt (not stored); voices domain 1..128	tools/kontakt-oracle/probes/audit_levels.lua	Voice fade clamp
+KL037	NOT-PROBED	no state-only probe designed yet		AHDSR attack curve clamp
+KL038	NOT-PROBED	no state-only probe designed yet		Send tap gain/ramp
+KL040	PROVED	EQ frequency stored Hz = 20*1000^n = 20*10^(3n) (n=log10(hz/20)/3); NOT clamped outside [0,1] (-500000 -> 0.632 Hz, 2e6 -> 2e7 Hz)	docs/re/kontakt-bindings/engine_par_clamp.tsv, filters_eq.tsv (FREQ1)	Multi-band EQ frequency
+KL043	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Internal primary-volume admission
+KL044	NOT-PROBED	no state-only probe designed yet		AHDSR times/sustain clamp
+KL045	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		AHDSR one-shot
+KL046	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Flex curve BOW_K
+KL047	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Flex sustain index
+KL048	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Synthetic Flex release
+KL050	STATIC-QUERY	binary query rather than oracle probe		External source enums
+KL051	STATIC-QUERY	binary query rather than oracle probe		Release counter units
+KL053	NOT-PROBED	no state-only probe designed yet		Pitch bend shaper polarity
+KL055	DEBUNKED	ENGINE_PAR values are clamped to [0,1e6] per parameter, not universally: EQ gain, EQ BW, compressor, output gain clamp; EQ FREQ1 and ACBox AC_BASS extrapolate (AC_BASS -500000 -> -0.5, 2e6 -> 2.0)	docs/re/kontakt-bindings/engine_par_clamp.tsv	Live ENGINE_PAR normalization
+KL056	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Instrument bus volume law
+KL057	NOT-PROBED	no state-only probe designed yet		Loop/module depth codec
+KL058	NOT-PROBED	no state-only probe designed yet		External intensity codec
+KL060	NOT-PROBED	no state-only probe designed yet		LFO frequency route
+KL062	NOT-PROBED	no state-only probe designed yet		Generic filter fallback
+KL063	STATIC-QUERY	binary query rather than oracle probe		Script processor aliases
+KL064	NOT-PROBED	no state-only probe designed yet		Volume target
+KL068	NOT-PROBED	no state-only probe designed yet		Group pan target
+KL069	STATIC-QUERY	binary query rather than oracle probe		Invert with shaper
+KL070	NOT-PROBED	no state-only probe designed yet		Zero-intensity unit defaults
+KL072	NOT-PROBED	no state-only probe designed yet		Held-noise phase gate
+KL076	NOT-PROBED	no state-only probe designed yet		LFO note/rate conversion
+KL077	NOT-PROBED	no state-only probe designed yet		LFO fade/phase
+KL080	PROVED	loop modes off/until_end/until_end_alt/until_release/until_release_alt round-trip; KONTRA loop count/start/end/alternating/until_release match for all five	tools/kontakt-oracle/probes/audit_levels.lua	Loop validity/modes
+KL081	PROVED	until_release and until_release_alt map to release-terminated loops (diff zone.loop_until_release: 0 mismatches)	tools/kontakt-oracle/probes/audit_levels.lua	Loop mode 2
+KL082	PROVED	zone tune stored/getter in semitones, range [-36,36], KONTRA IR agrees on 14 values incl. 0.01, 0.5, 7.5, 12, 36 (group tune likewise); instrument tune + midi_transpose are folded into KONTRA zone tune	tools/kontakt-oracle/probes/audit_levels.lua + tools/kontakt-oracle/audit_levels.sh (2001 compared, 0 mismatches)	Zone tune
+KL085	PARTIAL	stored zone/group/instrument pan equals the API percent (-100..100) for 9 values, KONTRA agrees; API range is [-100,100] for each; the summed-pan clamp needs audio	tools/kontakt-oracle/probes/audit_levels.lua	Zone/program pan
+KL086	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Release trigger
+KL087	NOT-PROBED	no state-only probe designed yet		Key tracking
+KL088	NOT-PROBED	no state-only probe designed yet		playPos range
+KL089	NOT-PROBED	no state-only probe designed yet		Loop crossfade shortcut
+KL093	NOT-PROBED	no state-only probe designed yet		Flex/shaper bow constant
+KL094	NOT-PROBED	no state-only probe designed yet		Curve discretization
+KL095	PROVED	gain = 2^(dB/6) at group (range -inf..12), zone (API range [-36,36]) and instrument (-inf..12) level; group volume -200 dB reads back -inf (stored 0 below a floor)	tools/kontakt-oracle/probes/audit_levels.lua (0 mismatches except the -inf floor)	dB gain codec
+KL096	NOT-PROBED	no state-only probe designed yet		Intensity-scale flags
+KL097	NOT-PROBED	no state-only probe designed yet		Intensity-scale restrictions
+KL103	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Mixed join precedence
+KL105	NOT-PROBED	no state-only probe designed yet		Sequencer-only criterion
+KL106	NOT-PROBED	no state-only probe designed yet		Key-range articulation partition
+KL107	NOT-PROBED	no state-only probe designed yet		Default articulation
+KL108	NOT-PROBED	no state-only probe designed yet		CC32 fallback
+KL111	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Indexed range heuristic
+KL112	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Equality/select heuristic
+KL113	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Primary pattern selection
+KL114	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Single-key rejection
+KL115	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Default indexed value
+KL116	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Saved-value precedence
+KL117	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Declared scalar default
+KL122	NOT-PROBED	no state-only probe designed yet		Run gap threshold
+KL125	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Key association
+KL126	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Control identity
+KL127	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Colored-key fallback
+KL128	NOT-PROBED	no state-only probe designed yet		UI alternatives
+KL129	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Articulation enrichment
+KL131	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Default velocity identity
+KL132	STATIC-QUERY	binary query rather than oracle probe		Group MIDI-channel filter
+KL134	STATIC-QUERY	binary query rather than oracle probe		Wavetable live position/phase/form writes
+KL141	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Monophonic release flag
+KL143	STATIC-QUERY	binary query rather than oracle probe		EQ physical-to-control conversion
+KL146	STATIC-QUERY	binary query rather than oracle probe		Start-phase target admission
+KL148	STATIC-QUERY	binary query rather than oracle probe		Zone velocity lower bound
+KL151	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Release trigger collapse
+KL152	STATIC-QUERY	binary query rather than oracle probe		Loop-control crossfade selection
+KL155	NOT-PROBED	no state-only probe designed yet		Controller criterion bounds
+KL157	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		UI key table size
+KL158	STATIC-QUERY	binary query rather than oracle probe		Internal live-lane admission exclusions
+KL159	STATIC-QUERY	binary query rather than oracle probe		DBD/Glide/Follower constructor support
+KL160	STATIC-QUERY	binary query rather than oracle probe		Script intensity overwrite/exemption
+KL161	STATIC-QUERY	binary query rather than oracle probe		Live effect target matrix
+KL162	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Script formantSharp alias
+KL163	STATIC-QUERY	binary query rather than oracle probe		Multi-LFO all-zero weight admission
+KL166	STATIC-QUERY	binary query rather than oracle probe		LFO rate/fade/phase validation
+KL168	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Cross-script key metadata merge
+KL171	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable form control target identity
+KL175	STATIC-QUERY	binary query rather than oracle probe		Wavetable write codec
+KL178	STATIC-QUERY	binary query rather than oracle probe		LFO invalid-value policy
+KL181	STATIC-QUERY	binary query rather than oracle probe		Stored DFD runtime substitution
+KM020	STATIC-QUERY	binary query rather than oracle probe		target intensity range and signed depth flag
+KM021	STATIC-QUERY	binary query rather than oracle probe		signed_intensity()
+KM023	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		lag unit/runtime smoothing
+KM024	STATIC-QUERY	binary query rather than oracle probe		table shaper evaluate
+KM025	NOT-PROBED	no state-only probe designed yet		shaper input clamp to 0..=1
+KM026	STATIC-QUERY	binary query rather than oracle probe		breakpoint shaper segment interpolation
+KM027	NOT-PROBED	no state-only probe designed yet		breakpoint ordering and duplicate-x fallback
+KM028	STATIC-QUERY	binary query rather than oracle probe		external source code 1 -> PitchBend
+KM029	STATIC-QUERY	binary query rather than oracle probe		external source code 2 -> PolyAftertouch
+KM030	STATIC-QUERY	binary query rather than oracle probe		external source code 3 -> MonoAftertouch
+KM031	STATIC-QUERY	binary query rather than oracle probe		external source code 4 -> MidiCc
+KM032	STATIC-QUERY	binary query rather than oracle probe		external source code 5 -> KeyPosition
+KM033	STATIC-QUERY	binary query rather than oracle probe		external source code 6 -> Velocity
+KM034	STATIC-QUERY	binary query rather than oracle probe		external source code 7 -> ReleaseVelocity
+KM035	STATIC-QUERY	binary query rather than oracle probe		external source code 8 -> ReleaseTriggerCounter
+KM036	STATIC-QUERY	binary query rather than oracle probe		external source code 9 -> Constant
+KM037	STATIC-QUERY	binary query rather than oracle probe		external source code 10 -> RandomUnipolar
+KM038	STATIC-QUERY	binary query rather than oracle probe		external source code 11 -> RandomBipolar
+KM039	STATIC-QUERY	binary query rather than oracle probe		external source code 12 -> Script
+KM043	NOT-PROBED	no state-only probe designed yet		UTF-8 lossy name decoding
+KM044	STATIC-QUERY	binary query rather than oracle probe		MAX_TARGETS=16
+KM045	STATIC-QUERY	binary query rather than oracle probe		MAX_NAME_BYTES=4096
+KM066	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		AHDSR unknown_flag / ahd_only
+KM072	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Flex sustain and unknown_index semantics
+KM076	NOT-PROBED	no state-only probe designed yet		Flex delta_ms
+KM081	NOT-PROBED	no state-only probe designed yet		LFO waveform enum 4
+KM087	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		LFO initial values and sync records
+KM089	NOT-PROBED	no state-only probe designed yet		LFO packed flags are booleans
+KM092	STATIC-QUERY	binary query rather than oracle probe		legacy inner.min(outer) count fallback
+KM094	STATIC-QUERY	binary query rather than oracle probe		automation mode numeric meaning 0,1,2
+KM096	STATIC-QUERY	binary query rather than oracle probe		Group gain/pan/tune and flags
+KM099	NOT-PROBED	no state-only probe designed yet		Loop mode/count/tune/crossfade units
+KM105	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		LFO sync flag/value labels
+KM110	NOT-PROBED	no state-only probe designed yet		target intensity/lag/invert/shaper copied as runtime route fields
+KM111	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		synthetic target names/flags/shaper table
+KM113	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		synthetic Flex sustain/curve values
+KM118	STATIC-QUERY	binary query rather than oracle probe		mode 9 wavetable field mapping
+KM119	NOT-PROBED	no state-only probe designed yet		FX rack numeric fields and EffectParameters names
+KM123	STATIC-QUERY	binary query rather than oracle probe		VoiceLimit direct mapping
+KM125	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		default-velocity identity fold
+KM126	NOT-PROBED	no state-only probe designed yet		default-velocity identity fold (mirrored translator)
+KM127	STATIC-QUERY	binary query rather than oracle probe		volume modulation formula
+KM128	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		pitch modulation scale
+KM129	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		playPos modulation range
+KM130	NOT-PROBED	no state-only probe designed yet		loopStart/loopLength constant routes
+KM132	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		LFO note value -1/free vs beat sync
+KM133	NOT-PROBED	no state-only probe designed yet		LFO fade and phase normalization
+KM134	NOT-PROBED	no state-only probe designed yet		zone/program tune -> semitones
+KM135	NOT-PROBED	no state-only probe designed yet		zone velocity low/high clamp
+KM136	NOT-PROBED	no state-only probe designed yet		zone fade bounds
+KM137	NOT-PROBED	no state-only probe designed yet		group+zone pan clamp and Balance law
+KM138	NOT-PROBED	no state-only probe designed yet		zone/program gain multiplication
+KM139	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		filter subtype IDs -> IR filter kind/law
+KV004	STATIC-QUERY	binary query rather than oracle probe		BGroup public f32 volume/pan/tune and booleans
+KV014	STATIC-QUERY	binary query rather than oracle probe		BLoop v60 seven primitive fields
+KV016	STATIC-QUERY	binary query rather than oracle probe		BParStartCriteria v70 fields and mode ID
+KS001	NOT-PROBED	no state-only probe designed yet		Output sample rate default
+KS002	NOT-PROBED	no state-only probe designed yet		Key selection default
+KS003	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Script compilation default
+KS004	NOT-PROBED	no state-only probe designed yet		MPE defaults
+KS005	NOT-PROBED	no state-only probe designed yet		Dynamics power-on values
+KS006	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Plan output-rate behavior
+KS007	NOT-PROBED	no state-only probe designed yet		Zone key overlap filtering
+KS008	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Pitch range ratio
+KS009	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Key tracking pitch conversion
+KS010	NOT-PROBED	no state-only probe designed yet		Fixed-pitch admission
+KS011	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Scaled-pitch admission
+KS012	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Sample-end fallback/clamp
+KS013	NOT-PROBED	no state-only probe designed yet		Empty playback range
+KS014	NOT-PROBED	no state-only probe designed yet		Loop before start fallback
+KS015	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Loop crossfade room/clamp
+KS016	STATIC-QUERY	binary query rather than oracle probe		Wavetable cycle geometry
+KS017	NOT-PROBED	no state-only probe designed yet		Host-volume saved normalization
+KS018	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Host-volume shape discretization
+KS019	NOT-PROBED	no state-only probe designed yet		CC11/other controller initialization
+KS020	STATIC-QUERY	binary query rather than oracle probe		Library root boundary
+KS021	NOT-PROBED	no state-only probe designed yet		Path separator normalization
+KS022	NOT-PROBED	no state-only probe designed yet		Embedded monolith exact/suffix/basename fallback
+KS023	NOT-PROBED	no state-only probe designed yet		Relative ancestor search
+KS024	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Content/ install fallback
+KS025	NOT-PROBED	no state-only probe designed yet		Moved archive suffix fallback
+KS026	NOT-PROBED	no state-only probe designed yet		Moved loose-file fallback
+KS027	STATIC-QUERY	binary query rather than oracle probe		Archive key-index mapping
+KS030	NOT-PROBED	no state-only probe designed yet		WAV frame count
+KS031	NOT-PROBED	no state-only probe designed yet		AIFF frame count
+KS032	NOT-PROBED	no state-only probe designed yet		NCW channel projection
+KS033	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		NCW numeric normalization
+KS035	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Nonfinite NCW float fallback
+KS036	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		WAV 8-bit unsigned normalization
+KS037	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		WAV/AIFF integer normalization
+KS038	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		WAV extensible subtype mapping
+KS039	NOT-PROBED	no state-only probe designed yet		AIFF 80-bit sample-rate conversion
+KS040	NOT-PROBED	no state-only probe designed yet		AIFC codec enum mapping
+KS042	NOT-PROBED	no state-only probe designed yet		Streamed PCM frame count
+KS044	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Streamed NCW conversion law
+KS045	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Streaming headroom default
+KS046	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Streaming step ceiling
+KS047	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Head frame budget law
+KS048	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Zone source-step law
+KS049	NOT-PROBED	no state-only probe designed yet		Wavetable residency span
+KS050	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Resampling guard radius
+KS051	NOT-PROBED	no state-only probe designed yet		Forward/reverse start range sizing
+KS053	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Header bit depth handling
+KS055	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Seek-ahead threshold
+KS056	NOT-PROBED	no state-only probe designed yet		AIFF authoritative frame count
+KS057	NOT-PROBED	no state-only probe designed yet		Decoded sample-rate source
+KS058	NOT-PROBED	no state-only probe designed yet		Mono/stereo channel admission
+KS059	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Symphonia PCM-to-f32/channel projection
+KS060	STATIC-QUERY	binary query rather than oracle probe		Wavetable admission flags
+KS061	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Serialized form ordinal
+KS062	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable scalar forwarding
+KS063	NOT-PROBED	no state-only probe designed yet		Wavetable IR validity fallback
+KS065	NOT-PROBED	no state-only probe designed yet		Cached Gain enum tags
+KS066	NOT-PROBED	no state-only probe designed yet		Cached pan-law enum
+KS067	NOT-PROBED	no state-only probe designed yet		Cached key-tracking enum
+KS068	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Cached velocity-response enum
+KS072	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Impulse cache restoration
+KS074	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Eager residency loader source recipe
+KS075	NOT-PROBED	no state-only probe designed yet		Asset deduplication on zone retention
+KS076	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		PCM filtering after dropped zones
+KS077	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Initial controller level application
+KS078	BLOCKED-RUNTIME	needs MIDI/script runtime events; the oracle only runs `on init`		Script group lookup fallback
+KS080	NOT-PROBED	no state-only probe designed yet		WAV frame count ignores declared sample count
+KS081	NOT-PROBED	no state-only probe designed yet		WAV chunk traversal boundary
+KS083	NOT-PROBED	no state-only probe designed yet		AIFF SSND offset mapping
+KS084	NOT-PROBED	no state-only probe designed yet		AIFF sample-rate rounding
+KS088	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Latency probe sample size
+KS090	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Head latency percentile choice
+KS091	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Pool pages per voice
+KS092	NOT-PROBED	no state-only probe designed yet		Wavetable mandatory budget rejection
+KS093	NOT-PROBED	no state-only probe designed yet		Lazy residency fallback
+KS094	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Reload admission budget
+KS096	NOT-PROBED	no state-only probe designed yet		AIFF declared frame count
+KS098	NOT-PROBED	no state-only probe designed yet		AIFF channel output projection
+KS103	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Product-cache impulse decode
+KS110	NOT-PROBED	no state-only probe designed yet		Stream WAV frame alignment
+KS111	NOT-PROBED	no state-only probe designed yet		Random-access bounds check
+KS112	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		StreamPolicy default block horizon
+KS113	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		StreamPolicy default slack
+KS116	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Latency quantile index
+KS117	NOT-PROBED	no state-only probe designed yet		Pool size fallback
+KS118	NOT-PROBED	no state-only probe designed yet		Wavetable asset pinning
+KS127	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable phase/form index origin
+KS128	BLOCKED-AUDIO	needs an audio render of Kontakt; the oracle is state-only (Lua API + save + decode)		Wavetable modulation fallback
+KS104	NOT-PROBED	no state-only probe designed yet		WAV/AIFF float conversion
+KS105	NOT-PROBED	no state-only probe designed yet		WAV/AIFF channel projection
+KS107	NOT-PROBED	no state-only probe designed yet		AIFF 80-bit sample-rate conversion
