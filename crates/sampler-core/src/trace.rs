@@ -780,8 +780,8 @@ impl TraceGraph {
                 ],
                 0,
             ),
-            PreparedProcessor::Compressor(c) => (
-                "compressor",
+            PreparedProcessor::Dynamics(c) => (
+                "dynamics",
                 c.trace_parameters()
                     .into_iter()
                     .map(|(n, v)| parameter(n, v))
@@ -797,14 +797,6 @@ impl TraceGraph {
                     .map(|(n, v)| constant(n, v))
                     .collect(),
                 timemod.trace_frames(),
-            ),
-            PreparedProcessor::PeakingEq(eq) => (
-                "v1_peaking_eq",
-                eq.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
             ),
             PreparedProcessor::Eq(eq) => (
                 "eq",
@@ -870,22 +862,12 @@ impl TraceGraph {
                 let (name, parameters) = color.trace();
                 (name, parameters.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
             }
-            PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
-            PreparedProcessor::Reverb(i) => (
-                "reverb",
+            PreparedProcessor::Space(i) => (
+                "space",
                 plan.buses
-                    .trace_reverb(*i)
-                    .into_iter()
-                    .map(|(n, v)| constant(n, v))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Convolution(i) => (
-                "convolution",
-                plan.buses
-                    .trace_convolution(*i)
+                    .trace_space(*i)
                     .into_iter()
                     .map(|(n, v)| constant(n, v))
                     .collect(),

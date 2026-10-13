@@ -6,8 +6,8 @@
 // filter at twice the rate, with linear-interpolation up- and two-tap
 // down-sampling, not the original's resampler or feedback nonlinearity. The
 // cadence follows the absolute sample clock, not a per-instance countdown.
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{Planar, ProcessorState};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{Planar, ProcessorState};
 use std::sync::OnceLock;
 
 const TABLE: usize = 2401;
@@ -50,13 +50,13 @@ impl DaftSettings {
         [self.gain, self.cutoff, self.resonance, self.response]
     }
 
-    pub(super) fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.parameters()
             .iter()
             .all(|p| p.valid() && !matches!(p, Parameter::Expression { .. }))
     }
 
-    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Daft {
+    pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Daft {
         table();
         Daft {
             rate: f64::from(rate) * 2.,
@@ -180,7 +180,7 @@ impl Daft {
     }
 
     /// Filter `len` planar frames in place from absolute frame `at`.
-    pub(super) fn process(
+    pub(crate) fn process(
         &self,
         state: &mut ProcessorState,
         parameters: &[ControlRamp],
@@ -220,12 +220,13 @@ impl Daft {
             i += run;
         }
         for v in &mut state.z.iter_mut().flatten() {
-            *v = super::flush(*v);
+            *v = super::super::flush(*v);
         }
     }
 }
 
-/// Unity-slope soft limit to +-1 (a rational tanh).
+/// Unity-slope soft limit to +-1 (a rational tanh). A stand-in: the native saturation transfer
+/// is not recovered (CORE-FILTERS-029), and the interpolation around it is likewise a proxy.
 fn soft(x: f64) -> f64 {
     if x.abs() >= 3. {
         x.signum()

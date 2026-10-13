@@ -85,16 +85,6 @@ pub(crate) enum PreparedParameter {
     },
 }
 impl PreparedParameter {
-    pub(super) fn held(self, parameters: &[ControlRamp], at: u64, len: usize) -> Option<f64> {
-        #[cfg(test)]
-        PARAMETER_READS.with(|n| n.set(n.get() + 1));
-        match self {
-            Self::Constant(value) => Some(value),
-            Self::Control(lane) => parameters[lane].held(at, len),
-            Self::Expression { .. } => None,
-        }
-    }
-
     pub(super) fn projected(self, parameters: &[ControlRamp]) -> bool {
         matches!(self, Self::Control(lane) if parameters[lane].modulation.is_some())
     }

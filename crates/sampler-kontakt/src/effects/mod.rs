@@ -238,6 +238,11 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
+    /// Limiter: saved input gain (2^(x/6)) and release ms.
+    Limiter {
+        input_gain: f32,
+        release_ms: f32,
+    },
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -301,29 +306,17 @@ pub(crate) enum Params {
     /// size, damping, modulation, diffusion, predelay, high cut, low shelf,
     /// stereo (`$ENGINE_PAR_RV2_*` order).
     Reverb([f32; 10]),
+    /// `BParFXReverb`, the legacy Reverb: predelay, size, stereo, colour, damping.
+    LegacyReverb([f32; 5]),
+    /// `BParFXPlateReverb`: decay, low shelf, high damp, predelay, stereo.
+    Plate([f32; 5]),
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
     /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
     Fields(Vec<ni_file::kontakt::objects::EffectField>),
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
-pub(crate) struct Convolution {
-    /// Sample-rate decimation factor (1 or negative: none).
-    pub decimation: f32,
-    pub predelay_ms: f32,
-    /// Early and late parts: length ratio, low cut Hz, high cut Hz.
-    pub early: [f32; 3],
-    pub late: [f32; 3],
-    /// Early/late crossover as a fraction of the response.
-    pub xpoint: f32,
-    /// Reverse, auto gain, preserve length, bypass latency compensation,
-    /// volume envelope.
-    pub flags: [bool; 5],
-    pub curve_x: Vec<f32>,
-    pub curve_db: Vec<f32>,
-    pub ir_index: i32,
-}
+pub(crate) use space::Convolution;
 
 impl Slot {
     fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
@@ -388,6 +381,13 @@ impl Slot {
                 }
                 Params::Reverb(v)
             }
+            0x15 | 0x57 => {
+                if self.version != if self.module == 0x15 { 0x50 } else { 0x10 } {
+                    return None;
+                }
+                let v = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+                if self.module == 0x15 { Params::LegacyReverb(v) } else { Params::Plate(v) }
+            }
             0x16 => {
                 let decimation = r.f32()?;
                 // The block size, stored as an integer.
@@ -420,6 +420,10 @@ impl Slot {
                 attack_ms: r.f32()?,
                 release_ms: r.f32()?,
                 link: r.flag()?,
+            },
+            0x1c => Params::Limiter {
+                input_gain: r.f32()?,
+                release_ms: r.f32()?,
             },
             0x1a => Params::Inverter {
                 invert: r.flag()?,
@@ -591,113 +595,39 @@ pub(crate) enum Scope {
     Bus,
 }
 
-/// How one Kontakt filter type (the `kind` stored in a Filter slot) maps to
-/// an IR filter: the response, and the laws taking its normalized cutoff and
-/// resonance (0..=1) to Hz and Q.
-struct FilterType {
-    kind: sampler_ir::FilterKind,
-    hertz: fn(f32) -> f64,
-    q: fn(f32) -> f64,
+/// The Kontakt filter type table (names, laws, coverage) lives in `filter.rs`.
+pub(crate) use filter::cutoff_octaves;
+use sampler_ir::fx::filter::{Gap, Topology};
+
+/// Report a filter that is configured but not fully proved, so a stand-in never passes silently.
+fn note_fidelity(notes: &mut Notes, kind: i32, mapped: &filter::Mapped) {
+    if mapped.fidelity != sampler_ir::fx::filter::Fidelity::Exact {
+        notes.push((
+            "filter law".into(),
+            format!("{} ({:?}): {}", filter::name(kind).unwrap_or("?"), mapped.fidelity, mapped.caveat),
+            sampler_ir::Reason::UnknownLaw,
+        ));
+    }
 }
 
-/// Kontakt's SV filters: the knob is 25 Hz * 800^x, and resonance r gives
-/// k = 1/Q = (2 - 0.013) * (1 - r)^3.1 + 0.013 (measured on SV LP2 against
-/// Kontakt 8). The IR has no passband-gain field, so the measured loss at
-/// high resonance (-6 dB at r = 1) is not reproduced.
-fn sv_hertz(x: f32) -> f64 {
-    25.0 * 800f64.powf(f64::from(x))
-}
-
-fn sv_q(r: f32) -> f64 {
-    1.0 / ((2.0 - 0.013) * (1.0 - f64::from(r)).powf(3.1) + 0.013)
-}
-
-pub(crate) const LEGACY_CUTOFF_OCTAVES: f64 = 8.96;
-
-// Port from v1 0cb7a8a0:src/engine/filter.rs::filter_settings and Unit::key.
-fn legacy_hertz(x: f32) -> f64 {
-    f64::from(43.6f32 * (LEGACY_CUTOFF_OCTAVES as f32 * x.clamp(0., 1.)).exp2())
-}
-
-fn legacy_q(r: f32) -> f64 {
-    f64::from(std::f32::consts::FRAC_1_SQRT_2 * 28f32.powf(r.clamp(0., 1.)))
-}
-
-/// The types with a map to a Kontakt 8 filter name (read from its GUI):
-/// 52 SV LP2, 54 SV HP2, 55 SV LP4, 57 SV HP4. Only SV LP2's laws were
-/// measured; the other three are taken to share them (same family, same
-/// knobs). Other types are reported by number, not guessed: 90 is
-/// Formant I (not a low pass), and 106 "AR LP2/4" has a cutoff law that
-/// differs from SV (stored 0.5135 reads 603 Hz, SV would give 774 Hz).
-/// Legacy types 2/3 retain the pinned v1 low/highpass proxies and knob laws.
-const FILTER_TYPES: &[(i32, FilterType)] = &[
-    (
-        2,
-        FilterType {
-            // ponytail: v1's two-pole proxy; upgrade after native Legacy LP1 topology is measured.
-            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
-            hertz: legacy_hertz,
-            q: legacy_q,
-        },
-    ),
-    (
-        3,
-        FilterType {
-            // ponytail: v1's two-pole proxy; upgrade after native Legacy HP1 topology is measured.
-            kind: sampler_ir::FilterKind::HighPass { poles: 2 },
-            hertz: legacy_hertz,
-            q: legacy_q,
-        },
-    ),
-    (
-        52,
-        FilterType {
-            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        54,
-        FilterType {
-            kind: sampler_ir::FilterKind::HighPass { poles: 2 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        55,
-        FilterType {
-            kind: sampler_ir::FilterKind::LowPass { poles: 4 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-    (
-        57,
-        FilterType {
-            kind: sampler_ir::FilterKind::HighPass { poles: 4 },
-            hertz: sv_hertz,
-            q: sv_q,
-        },
-    ),
-];
-
-fn filter_type(kind: i32) -> Option<&'static FilterType> {
-    FILTER_TYPES
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, t)| t)
-}
-
-/// A Filter slot as an IR filter, or `None` for a type without a table entry.
-fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<sampler_ir::Processor> {
-    let t = filter_type(kind)?;
-    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
-        kind: t.kind,
-        cutoff: sampler_ir::Frequency::Hertz((t.hertz)(cutoff)),
-        resonance: sampler_ir::Resonance::Q((t.q)(resonance)),
-    }))
+/// A Filter slot as IR processors, or why its type cannot be configured.
+fn filter(
+    kind: i32,
+    cutoff: f32,
+    resonance: f32,
+    extra: Option<f32>,
+) -> Result<(Vec<sampler_ir::Processor>, filter::Mapped), Gap> {
+    let mapped = filter::map(kind, cutoff, resonance, extra)?;
+    // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
+    // check the record version, the leading Gain value and the knob ranges.
+    if !matches!(mapped.config.topology, Topology::Svf | Topology::FormantII) {
+        return Err(Gap {
+            name: filter::name(kind).unwrap_or("filter"),
+            reason: "the stored record does not meet the native kernel's admission",
+        });
+    }
+    let processors = mapped.config.processors(None)?;
+    Ok((processors, mapped))
 }
 
 /// A rack as serial processors plus the levels its Send Levels slots feed
@@ -933,7 +863,7 @@ pub(crate) fn chain_with(
                 }
             }
             Some(Params::Filter {
-                kind: 90,
+                kind: kind @ (90 | 91),
                 cutoff,
                 resonance,
                 extra,
@@ -941,20 +871,37 @@ pub(crate) fn chain_with(
                 flush(&mut combined, &mut filters, &mut out);
                 // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
                 // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
+                // Formant II is the same core on its second table (filter.rs).
                 let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
                 if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    if let Some((group, generic)) = dynamic {
+                    if *kind == 91 {
+                        if dynamic.is_some() {
+                            notes.push(("Formant II live controls".into(), "script/modulation lanes exist for Formant I only".into(), sampler_ir::Reason::NotModeled));
+                        }
+                        match filter(91, knobs[0], knobs[1], Some(knobs[2])) {
+                            Ok((processors, mapped)) => {
+                                out.processors.extend(processors);
+                                note_fidelity(&mut notes, 91, &mapped);
+                                combined = gain;
+                            }
+                            Err(gap) => {
+                                notes.push((gap.name.into(), gap.reason.into(), sampler_ir::Reason::NotModeled));
+                                modelled = false;
+                            }
+                        }
+                    } else if let Some((group, generic)) = dynamic {
                         out.lane_slots.push((fx.slot, out.processors.len()));
                         out.processors.push(sampler_ir::Processor::LiveFormant {
                             knobs,
                             address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
                         });
+                        combined = gain;
                     } else {
                         out.processors.push(sampler_ir::Processor::Formant(knobs));
+                        combined = gain;
                     }
-                    combined = gain;
                 } else {
-                    notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
+                    notes.push(("Formant parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
                     modelled = false;
                 }
             }
@@ -982,42 +929,23 @@ pub(crate) fn chain_with(
             Some(Params::Eq { bands }) => {
                 let live =
                     scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
-                if bands.len() == 1 {
-                    flush(&mut combined, &mut filters, &mut out);
-                    if let Some(p) = eq::legacy_band(bands[0], live, &mut notes) {
+                flush(&mut combined, &mut filters, &mut out);
+                // Kinds 22..24 are one band, two or three; every band runs the native one-band law.
+                for band in bands.iter() {
+                    if let Some(p) = eq::legacy_band(*band, live, &mut notes) {
                         if live { out.filter_slots.push((fx.slot, out.processors.len())); }
                         out.processors.push(p);
-                    } else if bands[0][2] != 0. || live {
+                    } else if band[2] != 0. || live {
                         modelled = false;
                     }
-                    notes.push(("native legacy EQ lifecycle".into(),
-                        "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
-                        sampler_ir::Reason::UnknownLaw));
-                } else if live {
-                    flush(&mut combined, &mut filters, &mut out);
-                    let live_bands: Option<Vec<_>> = bands
-                        .iter()
-                        .map(|band| eq_band(*band, true, &mut notes))
-                        .collect();
-                    if let Some(live_bands) = live_bands {
-                        for p in live_bands {
-                            out.filter_slots.push((fx.slot, out.processors.len()));
-                            out.processors.push(p);
-                        }
-                    } else {
-                        modelled = false;
-                    }
-                } else {
-                    let generic: Vec<_> = bands.iter().filter_map(|band| eq::generic_band(*band, &mut notes)).collect();
-                    filters.extend(
-                        generic
-                            .chunks(sampler_ir::fx::eq::MAX_BANDS)
-                            .filter_map(sampler_ir::fx::eq::Config::new)
-                            .map(sampler_ir::Processor::Eq),
-                    );
                 }
+                notes.push(("native legacy EQ lifecycle".into(),
+                    "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
+                    sampler_ir::Reason::UnknownLaw));
                 if bands.len() > 1 {
-                    notes.push(("native multiband EQ".into(), "v1/generic fallback; native multiband processing and clocks unverified".into(), sampler_ir::Reason::UnknownLaw));
+                    notes.push(("multiband EQ (kinds 23/24)".into(),
+                        "bands use the proved one-band law; FilterEQ2/3 serial/parallel topology and stereo clocks unverified".into(),
+                        sampler_ir::Reason::UnknownLaw));
                 }
                 combined = product(eq_gain, combined);
             }
@@ -1066,18 +994,21 @@ pub(crate) fn chain_with(
                 {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
-                    filters.push(sampler_ir::Processor::LadderLP4(sampler_ir::LadderLP4 {
-                        address: Some(sampler_ir::SlotAddress {
+                    let mapped = filter::template(*kind).expect("ladder rows are in the table");
+                    let mut config = mapped.config;
+                    config.drive = f64::from(values[0]);
+                    config.cutoff = f64::from(values[1]);
+                    config.resonance = f64::from(values[2]);
+                    config.binding = Some(sampler_ir::fx::filter::Binding {
+                        address: sampler_ir::SlotAddress {
                             group: physical.0,
                             slot: fx.slot as i32,
                             generic: physical.1,
-                        }),
-                        gain: f64::from(values[0]),
-                        cutoff: f64::from(values[1]),
-                        resonance: f64::from(values[2]),
+                        },
                         record_version: fx.version,
-                        taps: (kind - 29) as u8,
-                    }));
+                    });
+                    filters.extend(config.processors(None).expect("ladder rows configure"));
+                    note_fidelity(&mut notes, *kind, &mapped);
                     combined = product(gain, combined);
                 } else {
                     notes.push((
@@ -1104,11 +1035,12 @@ pub(crate) fn chain_with(
                 // host recording acceptance still requires calibrated paired captures.
                 out.filter_slots
                     .push((fx.slot, out.processors.len() + filters.len()));
-                filters.push(sampler_ir::Processor::Ar(sampler_ir::Ar {
-                    mode: (kind - 100) as u8,
-                    cutoff: f64::from(*cutoff),
-                    resonance: f64::from(*resonance),
-                }));
+                let mapped = filter::template(*kind).expect("AR rows are in the table");
+                let mut config = mapped.config;
+                config.cutoff = f64::from(*cutoff);
+                config.resonance = f64::from(*resonance);
+                filters.extend(config.processors(None).expect("AR rows configure"));
+                note_fidelity(&mut notes, *kind, &mapped);
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1123,12 +1055,13 @@ pub(crate) fn chain_with(
                 // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
                 out.filter_slots
                     .push((fx.slot, out.processors.len() + filters.len()));
-                filters.push(sampler_ir::Processor::Daft(sampler_ir::Daft {
-                    gain: f64::from(extra[0]).clamp(0.0, 1.0),
-                    cutoff: f64::from(*cutoff).clamp(0.0, 1.0),
-                    resonance: f64::from(*resonance).clamp(0.0, 1.0),
-                    highpass: *kind == 71,
-                }));
+                let mapped = filter::template(*kind).expect("Daft rows are in the table");
+                let mut config = mapped.config;
+                config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+                config.cutoff = f64::from(*cutoff).clamp(0.0, 1.0);
+                config.resonance = f64::from(*resonance).clamp(0.0, 1.0);
+                filters.extend(config.processors(None).expect("Daft rows configure"));
+                note_fidelity(&mut notes, *kind, &mapped);
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1136,96 +1069,71 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 ..
-            }) => match filter(*kind, *cutoff, *resonance) {
-                Some(f) => {
+            }) => match filter(*kind, *cutoff, *resonance, None) {
+                Ok((processors, mapped)) => {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
-                    filters.push(f);
+                    filters.extend(processors);
+                    note_fidelity(&mut notes, *kind, &mapped);
                     combined = product(gain, combined);
                 }
-                None => {
+                Err(gap) => {
                     notes.push((
-                        "filter type".into(),
+                        format!("filter type ({}: {})", gap.name, gap.reason),
                         format!("{kind} cutoff {cutoff} resonance {resonance}"),
                         sampler_ir::Reason::NotModeled,
                     ));
                     modelled = false;
                 }
             },
-            Some(Params::Compressor { mode: 1.0, threshold_db, ratio, attack_ms, release_ms, link }) => {
+            Some(Params::Limiter { input_gain, release_ms }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                let knobs = [*threshold_db, *ratio, *attack_ms, *release_ms];
-                if knobs.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack_ms > 0. && *release_ms >= 0. {
-                    out.processors.push(sampler_ir::Processor::KontaktEnhancedCompressor { knobs, link: *link });
-                    combined = gain;
-                } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
+                match dynamics::limiter(*input_gain, *release_ms) {
+                    Ok(processor) => {
+                        out.processors.push(processor);
+                        combined = gain;
+                    }
+                    Err(note) => {
+                        notes.push(note);
+                        modelled = false;
+                    }
+                }
             }
-            Some(Params::Compressor { mode, .. }) if *mode != 0.0 => {
-                // The dispatcher 0x1409047a0 runs a separate core per mode (Classic
-                // 0x140ab2250, Enhanced 0x140ab2c80, Pro 0x140ab35d0). Mode 1 is
-                // admitted above; Pro's coefficients are unrecovered and unknown
-                // modes have no core, so neither takes the textbook compressor.
-                notes.push((
-                    "compressor mode".into(),
-                    format!("{mode}"),
-                    sampler_ir::Reason::NotModeled,
-                ));
-                modelled = false;
-            }
-            Some(Params::Compressor {
-                mode: _,
-                threshold_db,
-                ratio,
-                attack_ms,
-                release_ms,
-                link,
-            }) => {
-                // Group inserts are per voice; instrument/bus inserts see their
-                // corresponding sum. The chain's scope preserves that distinction.
-                // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
-                // the linked detector is the signed channel mean. The level law
-                // is the textbook one (ir::Compressor); the stored units are the
-                // importer's labels.
-                // KONTAKT_REFERENCE (ANALOG STRINGS C4/E4/G4, compressor on vs
-                // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
-                // output gain with about 0.3-0.7 dB of reduction. Only mode 0
-                // (Classic) is taken to share the kernel; its native core is not
-                // extracted, so this stays a measured approximation.
+            Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors
-                    .push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
-                        threshold_db: f64::from(*threshold_db),
-                        // Stored as the inverse ratio (Analog Strings: 0.501 beside a
-                        // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
-                        // slope 1 - 1/ratio would read the same here.
-                        ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
-                        attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
-                        release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
-                        makeup: sampler_ir::Gain::UNITY,
-                        link: *link,
-                    }));
-                combined = gain;
+                match dynamics::compressor(*mode, *threshold_db, *ratio, *attack_ms, *release_ms, *link) {
+                    Ok(processor) => {
+                        out.processors.push(processor);
+                        combined = gain;
+                    }
+                    Err(note) => {
+                        notes.push(note);
+                        modelled = false;
+                    }
+                }
             }
-            Some(Params::Reverb(values)) if scope == Scope::Bus => {
+            Some(p @ (Params::Reverb(_) | Params::LegacyReverb(_) | Params::Plate(_))) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors
-                    .push(sampler_ir::Processor::Reverb(reverb(values, &mut notes)));
+                out.processors.push(sampler_ir::Processor::Space(match p {
+                    Params::Reverb(v) => space::galois(v, &mut notes),
+                    Params::LegacyReverb(v) => space::legacy(v, &mut notes),
+                    Params::Plate(v) => space::plate(v, &mut notes),
+                    _ => unreachable!(),
+                }));
                 combined = gain;
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
                 let source = impulses.as_deref_mut().expect("checked above");
-                match convolution(c, source, &mut notes) {
+                match space::convolution(c, source, &mut notes) {
                     Ok(impulse) => {
                         flush(&mut combined, &mut filters, &mut out);
-                        out.processors.push(sampler_ir::Processor::Convolution {
-                            impulse,
-                            dry: if mix.is_some() {
-                                0.0
-                            } else {
-                                f64::from(fx.dry_level)
-                            },
-                            wet: if mix.is_some() { 1.0 } else { wet },
-                        });
+                        out.processors.push(sampler_ir::Processor::Space(
+                            sampler_ir::fx::space::Config::convolution(
+                                impulse,
+                                if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                                if mix.is_some() { 1.0 } else { wet },
+                            ),
+                        ));
                     }
                     Err(why) => {
                         notes.push((
@@ -1327,8 +1235,8 @@ pub(crate) fn chain_with(
                 fx.slot,
                 "effect".into(),
                 match color::unproved(fx.module) {
-                    Some(why) => format!("{name} v{:#x} len {}: {why}", fx.version, fx.public.len()),
-                    None => format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
+                    Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
+                    None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
                 sampler_ir::Reason::NotModeled,
             ));
@@ -1341,144 +1249,6 @@ pub(crate) fn chain_with(
     }
     flush(&mut combined, &mut filters, &mut out);
     out
-}
-
-/// The slot's impulse response, shaped as Kontakt's controls ask, in `impulses`.
-/// What it cannot shape is reported in `notes`.
-fn convolution(
-    c: &Convolution,
-    impulses: &mut Impulses,
-    notes: &mut Notes,
-) -> Result<sampler_ir::ImpulseRef, String> {
-    use sampler_ir::Reason::NotModeled;
-    let (rate, frames) = (impulses.load)(c.ir_index)?;
-    if frames.is_empty() || rate == 0 {
-        return Err("the impulse response is empty".into());
-    }
-    let mut channels: [Vec<f32>; 2] = std::array::from_fn(|ch| {
-        let mut x: Vec<f32> = frames.iter().map(|f| f[ch]).collect();
-        if c.flags[0] {
-            x.reverse();
-        }
-        x
-    });
-    if c.early[0] != 1.0 || c.late[0] != 1.0 {
-        notes.push((
-            "IR size".into(),
-            format!("early {} late {}", c.early[0], c.late[0]),
-            NotModeled,
-        ));
-    }
-    if c.early[1..] != c.late[1..] || c.late[1] > 20.0 || c.late[2] < 20_000.0 {
-        notes.push((
-            "IR early/late filtering".into(),
-            format!("early {:?} late {:?} Hz", &c.early[1..], &c.late[1..]),
-            NotModeled,
-        ));
-    }
-    if c.decimation > 1.0 {
-        notes.push((
-            "IR sample-rate decimation".into(),
-            c.decimation.to_string(),
-            NotModeled,
-        ));
-    }
-    if c.flags[4] {
-        let ok = c.curve_x.len() == 8 && c.curve_db.len() == 8;
-        if ok {
-            // Eight knots, sorted in time, interpolated in amplitude.
-            let mut knots: Vec<(f32, f32)> = c
-                .curve_x
-                .iter()
-                .zip(&c.curve_db)
-                .map(|(x, db)| (*x, (db * 0.05 * std::f32::consts::LN_10).exp()))
-                .collect();
-            knots.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let len = channels[0].len();
-            for pair in knots.windows(2) {
-                let at = |x: f32| (len as f32 * x.clamp(0.0, 1.0) + 0.5) as usize;
-                let (start, end) = (at(pair[0].0), at(pair[1].0));
-                for n in start..end.min(len) {
-                    let g = pair[0].1
-                        + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
-                    channels.iter_mut().for_each(|ch| ch[n] *= g);
-                }
-            }
-        } else {
-            notes.push((
-                "IR volume envelope".into(),
-                "not eight knots".into(),
-                NotModeled,
-            ));
-        }
-    }
-    let pre = (c.predelay_ms.max(0.0) * 0.001 * rate as f32) as usize;
-    for ch in &mut channels {
-        ch.splice(0..0, std::iter::repeat_n(0.0, pre));
-    }
-    if c.flags[1] {
-        // NI Effect Reference / Convolution Auto Gain: CConvolver 0x1419b31f0..3267
-        // accumulates f32 squares in f64, then divides/square-roots in f32.
-        let energy = channels
-            .iter()
-            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
-            .fold(0.0, f64::max);
-        let gain = if energy > f64::from(0.001f32) {
-            (0.5 / energy as f32).sqrt().min(2.0)
-        } else {
-            1.0
-        };
-        channels.iter_mut().flatten().for_each(|x| *x *= gain);
-    }
-    let [left, right] = channels;
-    impulses.store.push(sampler_ir::Impulse {
-        rate,
-        left,
-        right,
-        asset: None,
-    });
-    if let Some(recipes) = impulses.recipes.as_deref_mut() {
-        recipes.push(c.clone());
-    }
-    Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
-}
-
-/// Kontakt's normalized Reverb values as physical settings. Time, predelay,
-/// high cut and low shelf follow the reference display; size, damping and
-/// diffusion are still v1's fits.
-fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
-    let [
-        room,
-        time,
-        size,
-        damping,
-        modulation,
-        diffusion,
-        predelay,
-        high_cut,
-        low_shelf,
-        stereo,
-    ] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
-    notes.push((
-        "reverb algorithm".into(),
-        format!("normalized {v:?}"),
-        sampler_ir::Reason::UnknownLaw,
-    ));
-    sampler_ir::Reverb {
-        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
-        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
-        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
-        size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: modulation * 0.0015,
-        diffusion: 0.75 * diffusion,
-        predelay_seconds: predelay * 0.25,
-        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
-        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
-        // Low Shelf shows 0 to -12 dB, linear.
-        low_shelf_db: -12.0 * low_shelf,
-        width: stereo,
-    }
 }
 
 /// An instrument bus (`$NI_BUS_OFFSET` + `index`) with the groups routed to it.
@@ -1814,39 +1584,11 @@ pub(crate) fn instrument_buses_with_recipes(
     (report, send_buses)
 }
 
-fn eq_band(
-    [hz, octaves, db]: [f32; 3],
-    keep_flat: bool,
-    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
-) -> Option<sampler_ir::Processor> {
-    if db == 0.0 && !keep_flat {
-        return None;
-    }
-    if !(hz.is_finite() && octaves.is_finite() && db.is_finite() && hz > 0.0 && octaves > 0.0) {
-        notes.push((
-            "EQ band".into(),
-            format!("{hz} Hz {octaves} oct {db} dB"),
-            sampler_ir::Reason::InvalidValue,
-        ));
-        return None;
-    }
-    // Measured against Kontakt 8: centre gain is GAIN_SCALE x the displayed dB and
-    // alpha = sin(w0) * sinh(ln2 * octaves).
-    let q = sampler_core::PeakingEq::q_of_octaves(f64::from(octaves));
-    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
-        kind: sampler_ir::FilterKind::Peak {
-            gain: sampler_ir::Gain::Decibels(f64::from(db) * sampler_core::PeakingEq::GAIN_SCALE),
-        },
-        cutoff: sampler_ir::Frequency::Hertz(f64::from(hz)),
-        resonance: sampler_ir::Resonance::Q(q),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
-    fn compressor_modes_without_a_proved_core_are_not_modeled() {
-        for mode in [2i32, 3, -1] {
+    fn compressor_modes_without_a_core_are_not_modeled() {
+        for mode in [3i32, -1] {
             let mut bytes = mode.to_le_bytes().to_vec();
             for v in [-12f32, 0.5, 10., 100.] {
                 bytes.extend(v.to_le_bytes());
@@ -1857,7 +1599,7 @@ mod tests {
             let built = super::chain(&[fx], super::Scope::Voice);
             assert!(
                 built.processors.is_empty(),
-                "mode {mode} must not use the textbook compressor"
+                "mode {mode} has no core"
             );
             assert!(built.notes.iter().any(|(_, feature, _, reason)| {
                 feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
@@ -1967,12 +1709,6 @@ mod tests {
                 assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
             }
             let built = chain(std::slice::from_ref(&fx), Scope::Voice);
-            if kind == 22 {
-                let sampler_ir::Processor::Eq(eq) = built.processors[0] else { panic!("native one-band EQ owner"); };
-                assert_eq!(eq.bands()[0].gain_db, bands[0][2]);
-                assert_eq!(eq.bands()[0].frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(bands[0][0]));
-                continue;
-            }
             let eq_bands: Vec<_> = built
                 .processors
                 .iter()
@@ -1984,10 +1720,9 @@ mod tests {
                 .collect();
             assert_eq!(eq_bands.len(), bands.len());
             for (band, values) in eq_bands.iter().zip(&bands) {
-                assert_eq!(band.law, sampler_ir::fx::eq::Law::Rbj);
-                assert_eq!(band.kind, sampler_ir::fx::eq::Kind::Peak);
-                assert_eq!(band.frequency, values[0]);
-                assert_eq!(band.gain_db, (f64::from(values[2]) * sampler_core::PeakingEq::GAIN_SCALE) as f32);
+                assert_eq!(band.law, sampler_ir::fx::eq::Law::KontaktLegacy);
+                assert_eq!(band.gain_db, values[2]);
+                assert_eq!(band.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(values[0]));
             }
             assert!(
                 built
@@ -2144,10 +1879,7 @@ mod tests {
             assert!(
                 matches!(
                     live.processors[index],
-                    sampler_ir::Processor::Filter(sampler_ir::Filter {
-                        kind: sampler_ir::FilterKind::Peak { .. },
-                        ..
-                    })
+                    sampler_ir::Processor::Eq(c) if c.count == 1
                 ),
                 "band {band} must address its actual EQ processor"
             );
@@ -2198,6 +1930,11 @@ mod tests {
         }
     }
 
+    /// A configured-but-unproved filter is reported as an unknown law and nothing else.
+    fn only_law_notes(notes: &[(usize, String, String, sampler_ir::Reason)]) -> bool {
+        notes.iter().all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
+    }
+
     #[test]
     fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
         let mut public = 33i32.to_le_bytes().to_vec();
@@ -2224,7 +1961,7 @@ mod tests {
             (7, -1),
             &[],
         );
-        assert!(chain.notes.is_empty());
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
                 && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
@@ -2251,7 +1988,7 @@ mod tests {
             public,
         };
         let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1), &[]);
-        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert!(only_law_notes(&chain.notes), "{:?}", chain.notes);
         assert!(chain.processors.iter().any(|p| matches!(p,
             sampler_ir::Processor::LadderLP4(d) if d.taps == 1 && d.cutoff == 1.0
                 && d.resonance == 0.0 && d.record_version == 0x95)));
@@ -2448,7 +2185,8 @@ mod tests {
             let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
                 panic!("missing filter")
             };
-            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 2 });
+            // Saved type 2 is Legacy LP1 (KSP $FILTER_TYPE_LP1POLE order; one pole measured, no resonance).
+            assert_eq!(filter.kind, sampler_ir::FilterKind::LowPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
                 sampler_ir::Frequency::Hertz(f64::from(43.6f32 * (8.96 * 0.5996094f32).exp2()))
@@ -2458,7 +2196,7 @@ mod tests {
                 sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
             );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7).unwrap() else {
+        let sampler_ir::Processor::Filter(filter) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!(
@@ -2486,7 +2224,7 @@ mod tests {
             let sampler_ir::Processor::Filter(filter) = out.processors[0] else {
                 panic!("missing filter")
             };
-            assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 2 });
+            assert_eq!(filter.kind, sampler_ir::FilterKind::HighPass { poles: 1 });
             assert_eq!(
                 filter.cutoff,
                 sampler_ir::Frequency::Hertz(f64::from(43.6f32))
@@ -2496,7 +2234,7 @@ mod tests {
                 sampler_ir::Resonance::Q(f64::from(std::f32::consts::FRAC_1_SQRT_2))
             );
         }
-        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7).unwrap() else {
+        let sampler_ir::Processor::Filter(filter) = filter(3, 0.4, 0.7, None).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!(
@@ -2511,7 +2249,7 @@ mod tests {
 
     #[test]
     fn sv_filters_follow_the_measured_laws() {
-        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else {
+        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
             panic!()
         };
         let sampler_ir::Frequency::Hertz(hz) = f.cutoff else {
@@ -2525,7 +2263,9 @@ mod tests {
             (q - 1.0 / 2.0).abs() < 1e-9,
             "r = 0 is k = 1.987 + 0.013 = 2"
         );
-        assert!(filter(106, 0.5, 0.5).is_none());
+        // Legacy LP4 needs a Butterworth cascade the IR cannot express; it is a precise gap, not a guess.
+        assert!(filter(8, 0.5, 0.5, None).is_err());
+        assert!(filter(1, 0.5, 0.5, None).is_err());
     }
 
     use super::*;
@@ -3216,10 +2956,12 @@ mod tests {
     #[test]
     fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
         let r = |time: f32, cut: f32, shelf: f32| {
-            reverb(
+            space::galois(
                 &[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0],
                 &mut Vec::new(),
             )
+            .network
+            .unwrap()
         };
         // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
         assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
@@ -3255,7 +2997,7 @@ mod tests {
         assert!(
             c.processors
                 .iter()
-                .any(|p| matches!(p, sampler_ir::Processor::Compressor(_))),
+                .any(|p| matches!(p, sampler_ir::Processor::Dynamics(_))),
             "{:?}",
             c.notes
         );
@@ -3377,31 +3119,39 @@ mod tests {
     }
 
     #[test]
-    fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
+    fn classic_compressor_slot_is_the_native_classic_law_with_its_link_flag() {
         let mut bytes = Vec::new();
         for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
-        assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
+        use sampler_ir::fx::dynamics::{Law, Link, Native};
+        assert_eq!(c.law, Law::KontaktClassic(Native { threshold_db: -18.0, ratio: 0.25 }));
+        assert_eq!(c.link, Link::Mean);
         assert_eq!(c.attack.seconds(), 0.01);
+        assert_eq!(c.release.seconds(), 0.12);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]
-    fn pro_compressor_is_not_modeled_not_generic() {
+    fn pro_compressor_is_the_native_pro_law_and_always_max_linked() {
         let mut bytes = 2i32.to_le_bytes().to_vec();
         for x in [-18.0f32, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        assert!(!built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Compressor(_))));
-        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        use sampler_ir::fx::dynamics::{Law, Link};
+        assert!(matches!(c.law, Law::KontaktPro(_)));
+        assert_eq!(c.link, Link::Max);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]
@@ -3494,8 +3244,9 @@ mod tests {
                     sampler_ir::Processor::Eq(c),
                     sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
                 ] if c.count == 1
-                    && c.bands()[0].frequency == 1000.0
-                    && (f64::from(c.bands()[0].q) - 2. / 3.).abs() < 1e-6
+                    && c.bands()[0].law == sampler_ir::fx::eq::Law::KontaktLegacy
+                    && c.bands()[0].frequency == sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.0)
+                    && c.bands()[0].q == sampler_core::KontaktLegacyEqSettings::bandwidth_knob(1.0)
             ),
             "{processors:?}"
         );
@@ -3523,7 +3274,7 @@ mod tests {
         assert_eq!(v[0], 1.0);
         assert_eq!(v[1], 0.25);
         let mut notes = Vec::new();
-        let size = reverb(&v, &mut notes).size;
+        let size = space::galois(&v, &mut notes).network.unwrap().size;
         assert_eq!(size, 1.0, "hall keeps the full size factor");
         hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
         assert!(hall.params().is_none(), "Kontakt throws on room type 2");
@@ -3577,7 +3328,7 @@ mod tests {
         let chain = &instrument.chains[instrument.buses[1].chain.unwrap().0];
         assert!(matches!(
             chain.pre_amplitude[..],
-            [ir::Processor::Reverb(_)]
+            [ir::Processor::Space(_)]
         ));
         instrument.validate().unwrap();
         // A physical return at slot 3 remains addressable even when the
@@ -3709,7 +3460,7 @@ pub(crate) fn restore_impulse(
             .take()
             .ok_or_else(|| "impulse already consumed".to_owned())
     };
-    convolution(
+    space::convolution(
         c,
         &mut Impulses {
             store: &mut store,

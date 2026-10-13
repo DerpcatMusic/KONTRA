@@ -201,8 +201,7 @@ fn check(stages: &[PreparedProcessor], filters: &[PreparedFilter], parameters: &
                                 tempo: 120.0,
                                 bank: &mut scalar_bank,
                                 expression: None,
-                                reverbs: &mut [],
-                                convolutions: &mut []
+                                spaces: &mut [],
                             },
                             None
                         ));
@@ -386,8 +385,7 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         tempo: 120.0,
         bank: &mut bank,
         expression: None,
-        reverbs: &mut [],
-        convolutions: &mut [],
+        spaces: &mut [],
     };
     RAMP_READS.with(|n| n.set(0));
     assert!(!super::process::<false>(
