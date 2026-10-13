@@ -73,21 +73,11 @@ impl Driver {
     }
 }
 
-/// Shared Sound chrome; each tab owns its contents.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum SoundTab {
-    #[default]
-    Controls,
-    Mapping,
-    Effects,
-}
-
 /// A part's views across frames.
 #[derive(Default)]
 pub struct State {
     /// `None` until picked: the interface when there is one, else Info.
     pub view: Option<View>,
-    pub sound_tab: SoundTab,
     pub(super) mapping: super::mapping::State,
     pub(super) scripts: super::script_view::State,
     /// The articulation playing, following switch keys as they are played.
@@ -167,7 +157,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
     let el = match (view, inst) {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
         (View::Mapping, Some(i)) => super::mapping::view(ui, cx, slot, &i),
-        (View::Sound, Some(i)) => sound(ui, cx, slot, &i),
+        (View::Sound, Some(_)) => sound(ui, cx, slot),
         (View::Scripts, Some(i)) => super::script_view::view(ui, cx, slot, &i),
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
@@ -944,63 +934,25 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
 
 // Sound -----------------------------------------------------------------
 
-/// Stable shared widget contract: sound-tabs-{slot}, sound-tab-{slot}-{label}.
-fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrument>) -> El {
-    let mut picked = cx.state.inside.entry(slot).or_default().sound_tab;
-    let tabs = [SoundTab::Controls, SoundTab::Mapping, SoundTab::Effects]
-        .into_iter()
-        .map(|tab| {
-            let label = match tab {
-                SoundTab::Controls => "Controls",
-                SoundTab::Mapping => "Mapping",
-                SoundTab::Effects => "Effects",
-            };
-            let (hit, el) = latch(
-                ui,
-                format!("sound-tab-{slot}-{label}"),
-                label,
-                label,
-                tab == picked,
-            );
-            if hit {
-                picked = tab;
-            }
-            el
-        })
-        .collect();
-    cx.state.inside.get_mut(&slot).unwrap().sound_tab = picked;
-    let strip = segmented(tabs).id(format!("sound-tabs-{slot}"));
-    let body = match picked {
-        SoundTab::Mapping => super::mapping::view(ui, cx, slot, inst),
-        SoundTab::Effects => sound_effects(ui, cx, slot),
-        SoundTab::Controls
-            if cx.state.selected == slot
-                && cx.p.shared.editor_watch.load(Ordering::Relaxed) == usize::MAX =>
-        {
-            super::editor::view(ui, cx, slot)
+/// The selected part's sound editor; other parts offer to select it.
+fn sound(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+    let body = if cx.state.selected == slot
+        && cx.p.shared.editor_watch.load(Ordering::Relaxed) == usize::MAX
+    {
+        super::editor::view(ui, cx, slot)
+    } else {
+        let (hit, button) =
+            super::theme::action(ui, format!("edit-open-{slot}"), "Edit sound", false);
+        if hit {
+            cx.state.select(slot);
         }
-        SoundTab::Controls => {
-            let (hit, button) =
-                super::theme::action(ui, format!("edit-open-{slot}"), "Edit sound", false);
-            if hit {
-                cx.state.select(slot);
-            }
-            col![
-                caption("Select this part to edit its sound.").fill(secondary()),
-                button
-            ]
-            .gap(SPACE)
-        }
-    };
-    col![row![strip, spacer()], body]
+        col![
+            caption("Select this part to edit its sound.").fill(secondary()),
+            button
+        ]
         .gap(SPACE)
-        .w(Len::Pct(100.))
-        .min_w(0)
-}
-
-/// W14 owns this tab's editor contents and its effect selection.
-fn sound_effects(_ui: &mut Ui, _cx: &mut Cx, _slot: usize) -> El {
-    caption("Select an effect in the rack or Sound effect list.").fill(secondary())
+    };
+    body.w(Len::Pct(100.)).min_w(0)
 }
 
 fn hz(f: ir::Frequency) -> String {
