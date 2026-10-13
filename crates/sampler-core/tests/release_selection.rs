@@ -1198,21 +1198,26 @@ fn deferred_release_owns_layer_reserves_and_replaces_full_timeline_deadlines() {
 }
 
 fn mono_release_plan(layers: usize) -> Prepared {
+    let mut regions = vec![region(0); layers];
+    for r in regions.iter_mut().take(layers.saturating_sub(1)) {
+        r.velocity_low = 0.75;
+    }
     prepared(
-        vec![region(0); layers],
+        regions,
         vec![Trigger::GateRelease; layers],
         ReleaseOptions::default(),
         4096,
     )
-    .with_groups(1, vec![Some(0); layers]).unwrap()
-    .with_monophonic_release(vec![true]).unwrap()
+    .with_groups(1, vec![Some(0); layers])
+    .unwrap()
+    .with_monophonic_release(vec![true])
+    .unwrap()
 }
 
 #[test]
-fn monophonic_release_is_isolated_between_instrument_plan_generations() {
-    let (mut rt, mut control) = Runtime::with_plan_updates(
-        mono_release_plan(1), limits(), 2, 1,
-    ).unwrap();
+fn m1_monophonic_release_is_isolated_between_instrument_plan_generations() {
+    let (mut rt, mut control) =
+        Runtime::with_plan_updates(mono_release_plan(1), limits(), 2, 1).unwrap();
     control.submit(Box::new(mono_release_plan(1))).unwrap();
     support::without_heap(|| {
         let a = rt.trigger(input(1), 60, 1.).unwrap();
@@ -1221,7 +1226,11 @@ fn monophonic_release_is_isolated_between_instrument_plan_generations() {
         let b = rt.trigger(input(2), 60, 1.).unwrap();
         rt.key_up(b, None).unwrap();
         rt.render(&mut [[0.; 2]; 481]).unwrap();
-        assert_eq!(rt.voice_count(), 2, "one instrument must not cut another's release");
+        assert_eq!(
+            rt.voice_count(),
+            2,
+            "one instrument must not cut another's release"
+        );
         let mut out = [[0.; 2]; 1];
         rt.render(&mut out).unwrap();
         assert_eq!(out, [[2.; 2]]);
@@ -1229,15 +1238,19 @@ fn monophonic_release_is_isolated_between_instrument_plan_generations() {
 }
 
 #[test]
-fn monophonic_release_cuts_every_previous_layer_beyond_eight() {
+fn m1_monophonic_release_cuts_every_previous_layer_beyond_eight() {
     let mut rt = Runtime::new(mono_release_plan(12), limits()).unwrap();
     support::without_heap(|| {
         let a = rt.trigger(input(1), 60, 1.).unwrap();
         rt.key_up(a, None).unwrap();
         assert_eq!(rt.voice_count(), 12);
-        let b = rt.trigger(input(2), 60, 1.).unwrap();
+        let b = rt.trigger(input(2), 60, 0.5).unwrap();
         rt.key_up(b, None).unwrap();
         rt.render(&mut [[0.; 2]; 481]).unwrap();
-        assert_eq!(rt.voice_count(), 12, "all twelve previous layers must finish fading");
+        assert_eq!(
+            rt.voice_count(),
+            1,
+            "all twelve previous layers must finish fading"
+        );
     });
 }

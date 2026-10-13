@@ -376,6 +376,9 @@ impl Instrument {
                 check.output(Output::Bus(send.to))?;
                 check.gain(send.gain, "send")?;
             }
+            if let Some(limit) = group.source_voice_limit {
+                check.exists(Reference::VoiceLimit(limit))?;
+            }
             if let Some(limit) = group.voice_limit {
                 check.exists(Reference::VoiceLimit(limit))?;
             }
