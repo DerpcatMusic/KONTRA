@@ -297,6 +297,9 @@ pub(crate) fn slots(
                     Modulator::Ahdsr(_) => "AHDSR".into(),
                     Modulator::Flex(_) => "Flex".into(),
                     Modulator::Lfo(l) => format!("LFO:{}", l.waveform),
+                    Modulator::Dbd(_) => "DBD".into(),
+                    Modulator::Glide(_) => "Glide".into(),
+                    Modulator::Follower(_) => "Follower".into(),
                     Modulator::Other { chunk_id } => format!("Mod:{chunk_id:x}"),
                 };
                 out.push(modulation(

@@ -1312,9 +1312,27 @@ pub struct Lfo {
     pub retrigger: bool,
 }
 
+/// Kontakt's native LFO waveforms (BLfo* processors, `modulators.md`): the
+/// recovered 4096-entry tables with four-point interpolation, the width-driven
+/// rectangle, and the seeded held-noise grid. Outputs are raw (they ring past
+/// +-1); nothing here is an ideal waveform.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeWave {
+    Sine,
+    Saw,
+    Triangle,
+    /// Pulse width in 0..1.
+    Rectangle(f32),
+    /// Held noise updated twice per cycle; start phase must be below 0.5.
+    Held,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// A native Kontakt waveform.
+    Native(NativeWave),
     /// Saved retriggered Digital Multi sine, with an unsynchronized false-mode fade.
     /// `fade_ms` retains the original serialized milliseconds, not a linear ramp.
     DigitalSine { level: f64, fade_ms: f32 },
