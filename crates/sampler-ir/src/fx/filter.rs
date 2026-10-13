@@ -54,9 +54,10 @@ pub enum CutoffLaw {
     Sv,
     /// Kontakt legacy filters (pinned v1): `43.6 * 2^(8.96 x)` Hz.
     Legacy,
-    /// Kontakt Legacy LP1/HP1 (BFilter1PoleLP/HP): the native warped one-pole, as the hertz of
-    /// the equivalent bilinear one-pole (see [`legacy_one_pole_hertz`]). `Response` picks LP/HP.
-    LegacyOnePole,
+    /// Kontakt legacy BFilter1Pole/2Pole/4Pole/6Pole: a fixed Butterworth prototype moved by
+    /// an allpass warp, as the hertz of its -3 dB point (see [`legacy_warp_hertz`]).
+    /// `Response` and `poles` pick the class's warp constant.
+    LegacyWarp,
     /// The native kernel owns the law and takes the 0..=1 knob as stored.
     Native,
 }
@@ -147,9 +148,14 @@ impl Config {
             CutoffLaw::Hertz => self.cutoff,
             CutoffLaw::Sv => sv_hertz(self.cutoff as f32),
             CutoffLaw::Legacy => legacy_hertz(self.cutoff as f32),
-            CutoffLaw::LegacyOnePole => {
-                legacy_one_pole_hertz(self.cutoff as f32, self.response == Response::HighPass)
-            }
+            CutoffLaw::LegacyWarp => legacy_warp_hertz(
+                self.cutoff as f32,
+                match (self.response, self.poles) {
+                    (Response::HighPass, 2) => Warp::HighPass2,
+                    (Response::HighPass, _) => Warp::HighPass,
+                    _ => Warp::LowPass,
+                },
+            ),
             CutoffLaw::Native => return None,
         };
         let tracked = key.map_or(0.0, |k| (f64::from(k) - 60.0) / 12.0) * self.key_tracking;
@@ -274,9 +280,24 @@ pub fn legacy_hertz(x: f32) -> f64 {
     f64::from(43.6f32 * (LEGACY_CUTOFF_OCTAVES as f32 * x.clamp(0., 1.)).exp2())
 }
 
-/// Kontakt Legacy LP1/HP1 cutoff law, extracted from BFilter1PoleLP/HP setCutoff
-/// (FUN_14095a5a0 / FUN_14095a200, Kontakt 8.13.1) and evaluated in the binary's own
-/// truncated series and f32 operation order.
+/// The allpass warp of a legacy filter class: its angle scale (the first f64 after pi/2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Warp {
+    /// LP1/LP2/LP4/LP6 (0.99, then 0.9987809049669; FUN_14095a5a0, 14095b2d0, 14095c9c0, 14095cf60).
+    LowPass,
+    /// HP1/HP4 (0.82, then 0.99713317384107; FUN_14095a200, 14095c410).
+    HighPass,
+    /// HP2 (0.92, then 0.99713317384107; FUN_14095ae80).
+    HighPass2,
+}
+
+/// Kontakt legacy cutoff law, extracted from the BFilter1Pole/2Pole/4Pole/6Pole setCutoff
+/// functions (Kontakt 8.13.1) and evaluated in the binary's own truncated series and f32
+/// operation order.
+///
+/// Every class designs a Butterworth prototype at a fixed `tan(w/2) = 0.5463`
+/// (FUN_14082a0b0, sections at `(2k+1) pi / 2N`) and moves it with one allpass warp, so at
+/// zero resonance the -3 dB point is the same for every order of one class.
 ///
 /// The native filter is a fixed prototype (`b0 = b1 = 0.26276`, pole `0.29341`, constants at
 /// `FUN_1408de6e0`) warped by an allpass whose pole is `sin(.5-x)/sin(.5+x)` (LP) or
@@ -285,7 +306,8 @@ pub fn legacy_hertz(x: f32) -> f64 {
 /// `g = (1-a)/(1+a)`. That is returned as hertz, so the shared one-pole runs it without a
 /// kernel of its own. The `44011.976 / rate` factor of the native law cancels in hertz, so
 /// the result does not depend on the sample rate (checked at 44.1, 48 and 96 kHz).
-pub fn legacy_one_pole_hertz(x: f32, high: bool) -> f64 {
+pub fn legacy_warp_hertz(x: f32, warp: Warp) -> f64 {
+    let high = warp != Warp::LowPass;
     const RATE: f64 = 48_000.0;
     let a1 = f32::from_bits(0x3e96_3993);
     let clamp = |v: f32| if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
@@ -303,7 +325,7 @@ pub fn legacy_one_pole_hertz(x: f32, high: bool) -> f64 {
     let v = clamp((v + 2.000_000_1e-3) * (44_011.976_047_904_19 / RATE) as f32);
     let half_pi = |v: f32| (f64::from(v) * std::f64::consts::FRAC_PI_2) as f32;
     let (pole, sign) = if high {
-        let w = (f64::from(half_pi(v)) * 0.82) as f32;
+        let w = (f64::from(half_pi(v)) * if warp == Warp::HighPass2 { 0.92 } else { 0.82 }) as f32;
         let w = (f64::from(w) * 0.997_133_173_841_07) as f32;
         let cos = |y: f32| {
             if y >= 1e-4 || y <= -1e-4 {
@@ -374,14 +396,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_one_pole_hertz_matches_the_native_coefficients() {
+    fn legacy_warp_hertz_matches_the_native_coefficients() {
         // -3 dB points of the native recurrence evaluated from the extracted coefficient law
         // (truncated series, prototype 0.26276/0.29341), found by bisection outside this code.
         for (x, high, hz) in [
             (0.0, false, 43.5), (0.5, false, 1194.2), (1.0, false, 21802.9),
             (0.0, true, 36.0), (0.5, true, 987.5), (1.0, true, 18029.1),
         ] {
-            let got = legacy_one_pole_hertz(x, high);
+            let got = legacy_warp_hertz(x, if high { Warp::HighPass } else { Warp::LowPass });
             assert!((got / hz - 1.0).abs() < 2e-3, "{x} {high}: {got} vs {hz}");
         }
     }
