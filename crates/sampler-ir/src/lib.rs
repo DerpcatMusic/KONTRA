@@ -1661,17 +1661,8 @@ pub struct Chain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
-    /// Native smoothed gain with a dry input contribution.
-    Gainer {
-        gain: Gain,
-        dry: f64,
-    },
-    /// Native width 0..1 (.5 identity), balance -1..1 and optional pseudo stereo.
-    StereoModeller {
-        width: f64,
-        pan: f64,
-        pseudo: bool,
-    },
+    /// Drive, character and utility: one superset configured per native unit.
+    Color(fx::color::Config),
     Pan(Pan),
     Filter(Filter),
     /// Kontakt legacy one-band EQ: native normalized frequency/width and displayed dB.
@@ -1691,26 +1682,8 @@ pub enum Processor {
     Compressor(Compressor),
     /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
     KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
-    /// Memoryless rectification of both channels.
-    Rectify(Rectifier),
-    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
-    Saturation(f32),
-    /// Script-addressed Classic Saturation; the saved static form remains above.
-    LiveSaturation { shape: f32, address: SlotAddress },
-    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
     /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
     LiveFormant { knobs: [f32; 3], address: SlotAddress },
-    /// Script- and modulation-addressed Lo-Fi: saved Bits, Frequency, Noise level, color.
-    LiveLoFi { bits: f32, frequency: f32, noise: f32, color: f32, address: SlotAddress },
-    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
-    Distortion { transistor: bool, drive: f32, damping: f32 },
-    /// Pinned v1 Lo-Fi approximation; saved normalized controls.
-    LoFi {
-        bits: f32,
-        frequency: f32,
-        noise: f32,
-        color: f32,
-    },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
