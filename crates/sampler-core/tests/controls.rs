@@ -1071,6 +1071,8 @@ fn modulation_plan() -> Prepared {
                 shape: None,
                 lag: 0,
                 scale: None,
+                live_gain: 1.,
+                unipolar: false,
                 more_scales: [None; MORE_SCALES],
             }],
             ..Default::default()

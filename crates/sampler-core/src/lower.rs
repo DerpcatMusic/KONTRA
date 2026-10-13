@@ -68,6 +68,23 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ("ENGINE_PAR_DAMPING", f64::from(damping), unit),
             ],
         ),
+        ir::Processor::LiveFormant { knobs: [talk, sharp, size], address } => (
+            address,
+            vec![
+                ("ENGINE_PAR_FORMANT_TALK", f64::from(talk), unit),
+                ("ENGINE_PAR_FORMANT_SHARP", f64::from(sharp), unit),
+                ("ENGINE_PAR_FORMANT_SIZE", f64::from(size), unit),
+            ],
+        ),
+        ir::Processor::LiveLoFi { bits, frequency, noise, color, address } => (
+            address,
+            vec![
+                ("ENGINE_PAR_BITS", f64::from(bits), unit),
+                ("ENGINE_PAR_FREQUENCY", f64::from(frequency), unit),
+                ("ENGINE_PAR_NOISELEVEL", f64::from(noise), unit),
+                ("ENGINE_PAR_NOISECOLOR", f64::from(color), unit),
+            ],
+        ),
         _ => return Vec::new(),
     };
     lanes
@@ -99,6 +116,18 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
             )
         })
         .collect()
+}
+
+/// What each lane of [`native_lanes`] is, in the same order.
+fn lane_roles(p: ir::Processor) -> &'static [ir::ProcessorParameter] {
+    use ir::ProcessorParameter as P;
+    match p {
+        ir::Processor::LiveSaturation { .. } => &[P::Shape],
+        ir::Processor::LiveDistortion { .. } => &[P::Drive, P::Damping],
+        ir::Processor::LiveFormant { .. } => &[P::FormantTalk, P::FormantSharp, P::FormantSize],
+        ir::Processor::LiveLoFi { .. } => &[P::LoFiBits, P::LoFiFrequency, P::LoFiNoise, P::LoFiColor],
+        _ => &[],
+    }
 }
 
 fn native_parameter(
@@ -1213,6 +1242,13 @@ impl Lowering<'_> {
             .iter()
             .chain(&chain_data.post_amplitude)
             .nth(index)?;
+        // Script-addressed effect modules: the native lane is the parameter.
+        if let Some(k) = lane_roles(*processor).iter().position(|r| *r == parameter) {
+            let lane = plan
+                .parameter_registry
+                .resolve_native(native_lanes(*processor)[k].1.address)?;
+            return Some(plan.parameter_registry.descriptor(lane)?.address);
+        }
         if matches!(
             processor,
             ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
@@ -1303,6 +1339,45 @@ impl Lowering<'_> {
                 registry
                     .alias_native(alias.address, address)
                     .map_err(core(Stage::Controls, &control.key))?;
+            }
+        }
+        // Effect modules whose knobs are native engine-parameter lanes: one node
+        // per lane, aliased by its engine address so scripts and routes agree.
+        let mut next = 0x8000_0000u32;
+        for (chain_index, chain) in self.ir.chains.iter().enumerate() {
+            let scope = match chain.scope {
+                ir::Scope::Voice => ParameterScope::Voice,
+                ir::Scope::Group(group) => ParameterScope::Group(group.0 as u32),
+                ir::Scope::Bus(bus) => ParameterScope::Bus(bus.0 as u32),
+                ir::Scope::Master => ParameterScope::Plan,
+            };
+            for (at, p) in chain.pre_amplitude.iter().chain(&chain.post_amplitude).enumerate() {
+                let roles = lane_roles(*p);
+                for ((control, binding), role) in native_lanes(*p).into_iter().zip(roles) {
+                    let ControlDomain::Real { min, max } = control.domain else { continue };
+                    let ControlValue::Real(default) = control.default else { continue };
+                    let address = ParameterAddress { scope, node: next, parameter: 0 };
+                    next += 1;
+                    registry
+                        .register(ParameterDescriptor {
+                            role: *role,
+                            address,
+                            control: control.id,
+                            name: format!("{role:?}"),
+                            range: [min, max],
+                            default,
+                            unit: ParameterUnit::Normalized,
+                            law: ParameterLaw::Native(binding.law),
+                            display: ParameterDisplay {
+                                group: format!("chain {chain_index} processor {at}"),
+                                order: next,
+                            },
+                        })
+                        .map_err(core(Stage::Controls, "effect lane"))?;
+                    registry
+                        .alias_native(binding.address, address)
+                        .map_err(core(Stage::Controls, "effect lane"))?;
+                }
             }
         }
         plan.with_parameter_registry(registry)
@@ -1583,6 +1658,8 @@ impl Lowering<'_> {
                 lag: self.frames(route.smoothing),
                 scale: scales.first().copied(),
                 more_scales: std::array::from_fn(|n| scales.get(n + 1).copied()),
+                live_gain: 1.,
+                unipolar: self.ir.source_indices.unipolar_routes.contains(&route_ref),
             };
             if let Some(binding) = self
                 .ir
@@ -2193,6 +2270,19 @@ impl Lowering<'_> {
             ir::Processor::Saturation(shape) => Processor::Saturation(shape),
             ir::Processor::LiveSaturation { .. } => {
                 Processor::LiveSaturation(native_parameter(&native_lanes(processor), 0))
+            }
+            ir::Processor::LiveFormant { .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
+            }
+            ir::Processor::LiveLoFi { .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveLoFi {
+                    bits: native_parameter(&lanes, 0),
+                    frequency: native_parameter(&lanes, 1),
+                    noise: native_parameter(&lanes, 2),
+                    color: native_parameter(&lanes, 3),
+                }
             }
             ir::Processor::LiveDistortion { transistor, .. } => {
                 let lanes = native_lanes(processor);
