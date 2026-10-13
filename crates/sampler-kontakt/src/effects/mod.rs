@@ -2173,8 +2173,8 @@ mod tests {
             fixed
                 .processors
                 .iter()
-                .filter(|p| matches!(p, sampler_ir::Processor::Filter(_)))
-                .count(),
+                .map(|p| match p { sampler_ir::Processor::Eq(c) => c.bands().len(), _ => 0 })
+                .sum::<usize>(),
             1,
             "the static unmodulated path keeps its existing arithmetic"
         );
@@ -3586,10 +3586,11 @@ mod tests {
             matches!(
                 processors.as_slice(),
                 [
-                    sampler_ir::Processor::Filter(f),
+                    sampler_ir::Processor::Eq(c),
                     sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
-                ] if f.cutoff == sampler_ir::Frequency::Hertz(1000.0)
-                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - 2. / 3.).abs() < 1e-9)
+                ] if c.count == 1
+                    && c.bands()[0].frequency == 1000.0
+                    && (f64::from(c.bands()[0].q) - 2. / 3.).abs() < 1e-6
             ),
             "{processors:?}"
         );

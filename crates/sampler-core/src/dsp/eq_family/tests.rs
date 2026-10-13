@@ -1,6 +1,6 @@
 use super::super::BLOCK;
 use super::*;
-use sampler_ir::fx::eq::{Band, Config};
+use sampler_ir::fx::eq::{Band, Config, SolidSection};
 
 const RATE: u32 = 48_000;
 
