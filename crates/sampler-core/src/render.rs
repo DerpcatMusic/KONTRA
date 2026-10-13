@@ -1,5 +1,7 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
+#[cfg(test)]
+std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Runtime health counters as plain data, for load reports and meters.
 /// Counters are cumulative since construction; timings cover `render` calls.
@@ -233,6 +235,15 @@ impl Runtime {
         outs: &mut [&mut [Frame]],
         offset: usize,
     ) {
+        // T21: due callbacks/events are handled by render_inner regardless of
+        // audio activity. No voices or tails means no sum kernels/tiles to run.
+        // Keep tracing and the one pending bus-history reset on their old path.
+        // NI engine activity contract / topology B9-B10; no control-rate change.
+        if !TRACE && self.voices.count() == 0
+            && self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|g| !g.dsp.buses.needs_render())
+        {
+            return;
+        }
         let chunked = TRACE
             || self.script_params
             || self.parallel.is_some()
@@ -253,6 +264,8 @@ impl Runtime {
         let mut at = self.now;
         let mut rest = output;
         while !rest.is_empty() {
+            #[cfg(test)]
+            SUM_CELLS.set(SUM_CELLS.get() + 1);
             let len = (super::voice_mod::CELL - at % super::voice_mod::CELL) as usize;
             let (output, tail) = rest.split_at_mut(len.min(rest.len()));
             rest = tail;
@@ -995,5 +1008,44 @@ impl Runtime {
             .get(self.active_plan.0)?
             .prepared
             .signal_trace_reader()
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+    use crate::*;
+    #[test]
+    fn dormant_sum_graph_skips_cells_but_keeps_events_clock_and_wake_pcm() {
+        let plan = Prepared::new(48000, vec![Pcm::new(48000, vec![[1., -0.5]].into_boxed_slice()).unwrap()],
+            vec![Region { sample:0, key_low:60, key_high:60, root_key:None, velocity_low:0., velocity_high:1.,
+                gain:1., envelope:Envelope::default(), playback:Playback::default() }], 1).unwrap()
+            .with_buses((0..100).map(|_| Bus { processors:vec![Processor::Gain(1.)],
+                sends:vec![BusSend { bus:None, gain:1. }], tail_frames:0 }).collect(), vec![Some(97)]).unwrap();
+        let mut rt = Runtime::new(plan, Limits { notes:4, channels:0, performances:1, families:4,
+            voices:4, expressions:4, decisions:4, commands:8, behaviors:0, behavior_cells:0, behavior_fuel:0, note_cells:0 }).unwrap();
+        let performance = rt.performance(0).unwrap();
+        rt.schedule_event(512, Event::Controller(performance, 1, 12345)).unwrap();
+        SUM_CELLS.set(0);
+        let mut idle = [[1.;2];2048];
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(rt.now(), 2048);
+        assert_eq!(rt.controller(performance, 1).unwrap(), 12345);
+        assert_eq!(SUM_CELLS.get(), 0, "dormant sums must not traverse every control tile");
+        let input = Input { protocol:Protocol::Native, port:0, group:0, channel:0, key:60, external_id:None };
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut output = [[0.;2];64];
+        rt.render(&mut output).unwrap();
+        assert_eq!(output[0], [1., -0.5]);
+        assert_eq!(output[1..], [[0.;2];63]);
+        SUM_CELLS.set(0);
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(SUM_CELLS.get(), 0);
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut woke = [[0.;2];64];
+        rt.render(&mut woke).unwrap();
+        assert_eq!(woke, output, "wake after silent clock advancement is exact");
     }
 }
