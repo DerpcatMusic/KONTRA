@@ -55,11 +55,21 @@ pub struct EngineMeterAddress {
     pub channel: u8,
     pub bus: Option<i32>,
 }
+/// Lowering asks per zone and processor lane; a scan of every name was a
+/// third of lowering on large instruments. The first listed index wins.
 pub fn engine_parameter_id(name: &str) -> Option<u16> {
-    crate::ENGINE_PARAMETER_NAMES
-        .iter()
-        .position(|n| n.trim_start_matches('$') == name.trim_start_matches('$'))
-        .and_then(|i| u16::try_from(i).ok())
+    static IDS: std::sync::OnceLock<std::collections::HashMap<&'static str, u16>> =
+        std::sync::OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        let mut ids = std::collections::HashMap::new();
+        for (i, n) in crate::ENGINE_PARAMETER_NAMES.iter().enumerate() {
+            if let Ok(i) = u16::try_from(i) {
+                ids.entry(n.trim_start_matches('$')).or_insert(i);
+            }
+        }
+        ids
+    });
+    ids.get(name.trim_start_matches('$')).copied()
 }
 pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
     crate::ENGINE_PARAMETER_NAMES.get(usize::from(id)).copied()
@@ -939,4 +949,20 @@ pub fn engine_parameter_display(parameter: u16, value: i32) -> String {
     let mut text = Text::default();
     display(parameter, value, &mut text);
     text.as_str().to_owned()
+}
+
+#[cfg(test)]
+mod id_tests {
+    #[test]
+    fn indexed_ids_match_the_first_listed_name() {
+        for name in crate::ENGINE_PARAMETER_NAMES {
+            let first = crate::ENGINE_PARAMETER_NAMES
+                .iter()
+                .position(|n| n.trim_start_matches('$') == name.trim_start_matches('$'))
+                .map(|i| i as u16);
+            assert_eq!(super::engine_parameter_id(name), first);
+            assert_eq!(super::engine_parameter_id(&format!("${name}")), first);
+        }
+        assert_eq!(super::engine_parameter_id("NOT_AN_ENGINE_PARAMETER"), None);
+    }
 }
