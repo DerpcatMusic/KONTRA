@@ -549,8 +549,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sidecar["locations"].as_array().unwrap().len(), 2);
+        // Events reach the history through a worker queue; the history is a bounded
+        // process-wide ring that parallel tests can evict from or overflow.
+        super::super::flush(std::time::Duration::from_secs(10)).unwrap();
         let snapshot = super::super::snapshot();
-        // The history is a bounded process-wide ring that parallel tests can evict from.
         let logged = snapshot
             .events
             .iter()
@@ -558,7 +560,9 @@ mod tests {
                 && e.load_id.as_deref() == Some(id.as_str()))
             .count();
         assert!(
-            logged == 1 || (logged == 0 && snapshot.status.history_evicted > 0),
+            logged == 1
+                || (logged == 0
+                    && snapshot.status.history_evicted + snapshot.status.dropped_events > 0),
             "one journal summary per load, not per refresh: {logged}"
         );
     }

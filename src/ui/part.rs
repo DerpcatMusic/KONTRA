@@ -329,7 +329,7 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     if room.height > 0. && authored.height > 0. {
         fit = fit.min(room.height / authored.height);
     }
-    if fit >= 1. { fit.floor() } else { fit }
+    fit
 }
 
 pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
@@ -772,8 +772,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 .pad((TIGHT, INSET))
                 .w(Len::Pct(100.))
                 .shrink(0),
+            // Fills the part's room; the fitted view sits centred on both axes.
             row![spacer(), view, spacer()]
+                .align(Align::Center)
                 .w(Len::Pct(100.))
+                .when(room > 0., |e| e.min_h(room))
                 .shrink(0)
                 .id(format!("face-{slot}"))
         ]
@@ -1471,6 +1474,9 @@ mod tests {
         assert_eq!(scale_to_fit(Size::new(1200., 400.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(300., 1600.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(1200., 2000.), page, 0.), 2.);
+        // Fit is uniform and fractional: the page fills the tighter axis exactly.
+        assert_eq!(scale_to_fit(Size::new(900., 1600.), page, 0.), 1.5);
+        assert_eq!(scale_to_fit(Size::new(1500., 1000.), page, 0.), 1.25);
         for zoom in [1., 1.5, 2.] {
             assert_eq!(
                 scale_to_fit(Size::new(300., 400.), page, zoom),
