@@ -191,7 +191,9 @@ impl StreamCache {
         // Reserve on the control thread; only touch sample pages when decoding.
         for _ in 0..pages {
             let mut frames = Vec::new();
-            frames.try_reserve_exact(PAGE_FRAMES).map_err(|_| Error::Capacity)?;
+            frames
+                .try_reserve_exact(PAGE_FRAMES)
+                .map_err(|_| Error::Capacity)?;
             free.push(frames);
         }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
@@ -514,6 +516,18 @@ impl StreamCache {
             }
         }
         self.request(asset, page, deadline)
+    }
+
+    /// Cancel every cached/in-flight page of a deliberately unowned asset.
+    pub(crate) fn invalidate_asset(&mut self, asset: AssetId) {
+        for slot in 0..self.entries.len() {
+            if let Some(entry) = &self.entries[slot] {
+                if entry.request.key.asset == asset {
+                    let key = entry.request.key;
+                    let _ = self.invalidate(key);
+                }
+            }
+        }
     }
 
     /// Explicitly invalidate one page, including a failed request before retry.

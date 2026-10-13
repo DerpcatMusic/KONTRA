@@ -142,7 +142,9 @@ impl Playback {
         for slot in &mut shifted.loop_slots {
             let mut range = slot.map(|slot| slot.range);
             reach(&mut range);
-            *slot = slot.zip(range).map(|(slot, range)| LoopSlot { range, ..slot });
+            *slot = slot
+                .zip(range)
+                .map(|(slot, range)| LoopSlot { range, ..slot });
         }
         if origin == self.start && !dropped {
             return None;
@@ -1832,14 +1834,20 @@ mod tests {
             loop_range: Some(lp(4, 12, LoopShape::Wrap)),
             ..Playback::default()
         };
-        assert_eq!(physical(inside), [8, 9, 10, 11, 4, 5, 6, 7, 8, 9, 10, 11, 4, 5]);
+        assert_eq!(
+            physical(inside),
+            [8, 9, 10, 11, 4, 5, 6, 7, 8, 9, 10, 11, 4, 5]
+        );
         // Starts past the loop: plays straight through, the loop is never entered.
         let past = Playback {
             start: 12,
             loop_range: Some(lp(4, 12, LoopShape::Wrap)),
             ..Playback::default()
         };
-        assert_eq!(physical(past), [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]);
+        assert_eq!(
+            physical(past),
+            [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+        );
         // A crossfade longer than the room after the sample start still fits in the file.
         let fade = Playback {
             start: 4,

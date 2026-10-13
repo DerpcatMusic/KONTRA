@@ -496,6 +496,9 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
         reader.read(range.start, &mut frames)?;
         resident.push((range.start, frames.into_boxed_slice()));
     }
+    if !pcm.residency_permitted() {
+        return Ok(0);
+    }
     pcm.set_ranges(resident)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(pcm.head_bytes())
@@ -680,6 +683,25 @@ impl Streamer {
                 bytes += load_ranges(pcm, &mut sources[&id].open()?, ranges)?;
             }
         }
+        // Each asset keeps source metadata, never a backup of sample buffers.
+        // Explicit KSP reload returns staging ranges to the core's residency worker.
+        for pcm in assets {
+            let source = sources[&pcm.asset_id()].clone();
+            let ranges = table[&pcm.asset_id()].clone();
+            pcm.set_residency_loader(move || {
+                let mut reader = source.open().map_err(|_| sampler_core::Error::NotReady)?;
+                let mut resident = Vec::with_capacity(ranges.len());
+                for range in &ranges {
+                    let mut frames = vec![[0.; 2]; range.len()];
+                    reader
+                        .read(range.start, &mut frames)
+                        .map_err(|_| sampler_core::Error::NotReady)?;
+                    resident.push((range.start, frames.into_boxed_slice()));
+                }
+                Ok(resident)
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        }
         drop(span);
         let sources = Arc::new(sources);
         let stop = Arc::new(AtomicBool::new(false));
@@ -799,7 +821,7 @@ fn reload(
     let mut count = 0;
     let mut held = None;
     for pcm in assets {
-        if pcm.resident_frames().is_some() || !pcm.take_cold() {
+        if !pcm.residency_permitted() || pcm.resident_frames().is_some() || !pcm.take_cold() {
             continue;
         }
         let id = pcm.asset_id();

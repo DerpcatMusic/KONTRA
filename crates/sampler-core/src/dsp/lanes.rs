@@ -191,7 +191,8 @@ pub(crate) fn process(
             PreparedProcessor::LiveSaturation(shape) => {
                 for (i, x) in block[..len].iter_mut().enumerate() {
                     let value = shape.value(parameters, at + i as u64, None) as f32;
-                    x.iter_mut().for_each(|v| *v = super::shaping::saturation(*v, value));
+                    x.iter_mut()
+                        .for_each(|v| *v = super::shaping::saturation(*v, value));
                 }
             }
             PreparedProcessor::Saturation(shape) => {

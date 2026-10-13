@@ -66,6 +66,10 @@ impl<T: Send + Sync> Snapshot<T> {
         self.collect();
         result
     }
+    /// Control-side reclamation status; never queried by render readers.
+    pub fn has_retired(&self) -> bool {
+        !self.retired.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
     /// Control-side ticks may reclaim a generation after its last reader left.
     pub fn collect(&self) {
         let mut retired = self.retired.lock().unwrap_or_else(|e| e.into_inner());

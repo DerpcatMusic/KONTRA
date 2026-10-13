@@ -22,7 +22,11 @@ pub(crate) fn ahdsr_agrees(raw: &ir::SourceAhdsr, envelope: &ir::Envelope) -> bo
     let ms = |time: ir::Time| (time.seconds() * 1000.) as f32;
     let c = f64::from(raw.attack_curve.clamp(-1., 1.));
     let b = f64::from(((1. - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
-    let curve = if c > 0. { (b / (1. + b)).ln() } else { ((1. + b) / b).ln() };
+    let curve = if c > 0. {
+        (b / (1. + b)).ln()
+    } else {
+        ((1. + b) / b).ln()
+    };
     let fall = ir::Curve::Exponential((3.0f64 / 43.).ln());
     envelope.delay == ir::Time::ZERO
         && ms(envelope.attack) == raw.attack_ms
@@ -50,10 +54,16 @@ pub(crate) fn prepare(
     let original = if instrument.source_indices.groups.is_empty() {
         group.0
     } else {
-        let mut owners = instrument.source_indices.groups.iter().enumerate()
+        let mut owners = instrument
+            .source_indices
+            .groups
+            .iter()
+            .enumerate()
             .filter(|(_, owner)| **owner == Some(group));
         let (original, _) = owners.next()?;
-        if owners.next().is_some() { return None; }
+        if owners.next().is_some() {
+            return None;
+        }
         original
     };
     let mut records: Vec<_> = instrument
@@ -90,8 +100,14 @@ pub(crate) fn prepare(
         if raw.next().is_some() {
             return None;
         }
-        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[zone.amplitude?.0].source else { return None; };
-        if !ahdsr_agrees(ahdsr, envelope) { return None; }
+        let ir::ModulationSource::Envelope(envelope) =
+            &instrument.modulators[zone.amplitude?.0].source
+        else {
+            return None;
+        };
+        if !ahdsr_agrees(ahdsr, envelope) {
+            return None;
+        }
         description.amplitude = v1::Ahdsr::from(ahdsr);
         description.native_amplitude = ahdsr.native_amplitude;
     }
@@ -329,7 +345,12 @@ pub(crate) fn prepare(
     // A Flex-only instrument uses the current synthetic gate. A mutable target
     // needs that independent gate owner, which the native unity-primary view
     // cannot replace. Keep this combination on the current shared consumer.
-    if amplitude.is_none() && program.controls.iter().any(|(route,_)| matches!(routed[*route],Route::Flex)) {
+    if amplitude.is_none()
+        && program
+            .controls
+            .iter()
+            .any(|(route, _)| matches!(routed[*route], Route::Flex))
+    {
         return None;
     }
     description.mods = v1::ModTable::new(assignments.into_boxed_slice()).ok()?;
@@ -414,7 +435,11 @@ impl Render<'_> {
     pub fn done(&self) -> bool {
         // A masked/partial Flex ending at zero leaves the primary audible.
         // Its immutable source clock must not retire the held primary owner.
-        if self.flex_depth == 1. { self.state.done() } else { self.state.amplitude().done() }
+        if self.flex_depth == 1. {
+            self.state.done()
+        } else {
+            self.state.amplitude().done()
+        }
     }
     pub fn levels(
         &mut self,

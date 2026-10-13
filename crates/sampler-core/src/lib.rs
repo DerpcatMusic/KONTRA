@@ -78,15 +78,15 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
-    LiveFilter, LiveShape, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter,
-    StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
+    ArSettings, Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings,
+    Decimator, Delay, FilterKind, Impulse, KontaktLegacyEqSettings, LadderSettings, LiveFilter,
+    LiveShape, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, PeakingEq, Processor,
+    Rectifier, ReverbSettings, StateVariableFilter, StereoSettings, SvfMode, VoiceChain,
+    VoiceSendPosition, VoiceSendTap,
 };
-mod whole_voice;
 mod envelope;
 pub mod v1_voice_controls;
+mod whole_voice;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod engine_parameter_names;
@@ -114,8 +114,8 @@ pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProg
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
-    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
-    ModTarget,
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw,
+    ModSource, ModTarget,
 };
 mod ownership;
 use modulation::RenderedExpression;
@@ -125,6 +125,7 @@ pub use pitch::NotePitch;
 mod groups;
 mod native_start;
 mod note_event;
+mod residency;
 pub use note_event::NoteProperties;
 mod packed;
 mod plans;
@@ -145,15 +146,14 @@ use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
-    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
+    ResidencyRanges, ResidentFrames, Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod array_file;
 pub use array_file::{
-    ARRAY_FILE_JOBS, ARRAY_FILE_SERVICE,
-    ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
+    ARRAY_FILE_JOBS, ARRAY_FILE_SERVICE, ArrayFileArray, ArrayFileCompletion, ArrayFileKind,
 };
 mod midi_object;
 mod ops;
@@ -1693,6 +1693,9 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        if !asset.residency_permitted() {
+            return Err(Error::NotReady);
+        }
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
