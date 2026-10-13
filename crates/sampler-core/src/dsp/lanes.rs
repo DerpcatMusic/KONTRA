@@ -185,11 +185,9 @@ pub(crate) fn process(
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }
-            PreparedProcessor::Delay { .. }
+            PreparedProcessor::TimeMod { .. }
             | PreparedProcessor::Compressor(_)
-            | PreparedProcessor::LegacyPhaser(_)
             | PreparedProcessor::KontaktEnhancedCompressor(_)
-            | PreparedProcessor::Phaser(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveFormant { .. }
             | PreparedProcessor::Daft(_)
