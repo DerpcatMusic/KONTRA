@@ -133,6 +133,19 @@ fn dims(cfg: ModeConfig, rate: u32) -> (usize, usize, usize) {
     (grain, (grain as f64 * MAX_STEP) as usize + 2 * search + 8, hop)
 }
 
+/// Engines a plan owns: the time-stretch voices that can sound at once. A
+/// further stretch voice plays as a plain sampler (counted, not silent).
+pub const VOICES: usize = 32;
+
+/// A group's stretch source as lowered: engine configuration and speed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spec {
+    pub mode: Mode,
+    pub hq: bool,
+    /// Ratio of original speed; 0 freezes.
+    pub speed: f32,
+}
+
 /// Largest `step` the buffers are sized for (two octaves up).
 pub const MAX_STEP: f64 = 4.;
 
