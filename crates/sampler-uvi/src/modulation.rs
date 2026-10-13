@@ -1540,7 +1540,7 @@ mod tests {
         assert_eq!(
             source,
             &ir::ModulationSource::Lfo(ir::Lfo {
-                shape: ir::LfoShape::Triangle,
+                shape: ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Triangle)),
                 rate: ir::Frequency::Beats(0.5),
                 delay: ir::Time::Seconds(0.0),
                 fade_in: ir::Time::Seconds(0.0),
