@@ -46,6 +46,9 @@ impl LfoShape {
     pub fn valid(&self) -> bool {
         match *self {
             Self::Native(NativeWave::Rectangle(w)) => w > 0.0 && w < 1.0,
+            Self::Native(NativeWave::Multi { weights, width, .. }) => {
+                width > 0.0 && width < 1.0 && weights.iter().all(|w| w.is_finite())
+            }
             Self::Rectangle(w) => (0.0..=1.0).contains(&w),
             Self::Multi { weights, width, .. } => {
                 (0.0..=1.0).contains(&width) && weights.iter().all(|w| w.is_finite())
@@ -222,8 +225,43 @@ fn held_native(phase: f64, seed: u64) -> f64 {
     f64::from(f32::from_bits((bits & 0x7f_ffff) | 0x4000_0000) - 3.0)
 }
 
+/// Kontakt Multi LFO mixers, `BLfoMulti` 0x140b07290 and `BLfoMultiDigital`
+/// 0x140b078d0 (modulators-runtime.md "Multi signed five-component mix").
+/// `w` is the runtime weight order sine, doubled saw, triangle, pulse, noise
+/// (`+0x128/+0x12c/+0x130/+0x134/+0x138`). Every step rounds to binary32 in
+/// the native sequence; no output clamp exists (the tables ring past +-1).
+/// The analog mixer subtracts the doubled saw, the digital one adds it.
+fn multi_native(w: [f32; 5], width: f32, normalize: bool, digital: bool, p: f64, seed: u64, phase: f64) -> f64 {
+    let sine = table(SINE, p * 4096.0);
+    let noise = held_native(phase, seed) as f32;
+    let mut y = -(w[0] * sine);
+    if digital {
+        let d = if p + p > 1.0 { p + p - 1.0 } else { p + p };
+        let saw = (d + d - 1.0) as f32;
+        let tri = (if p < 0.5 { 4.0 * (p - 0.25) } else { 4.0 * (0.75 - p) }) as f32;
+        let pulse = if p < f64::from(width) { 1.0 } else { -1.0 };
+        y += w[1] * saw;
+        y += w[2] * tri;
+        y -= w[3] * pulse;
+    } else {
+        y -= w[1] * table(SAW, 2.0 * p * 4096.0);
+        y += w[2] * table(TRIANGLE, (p + 0.75) * 4096.0);
+        y -= w[3] * rectangle_native(p, width) as f32;
+    }
+    y += w[4] * noise;
+    if normalize {
+        // Denominator accumulates w4, w3, w2, w1, w0 in that order.
+        let sum = w[4].abs() + w[3].abs() + w[2].abs() + w[1].abs() + w[0].abs();
+        y *= 1.0 / sum.max(1.0);
+    }
+    f64::from(y)
+}
+
 fn native(w: NativeWave, p: f64, seed: u64, phase: f64) -> f64 {
     match w {
+        NativeWave::Multi { weights, width, normalize, digital } => {
+            multi_native(weights, width, normalize, digital, p, seed, phase)
+        }
         NativeWave::Sine => f64::from(table(SINE, p * 4096.0)),
         NativeWave::Saw => f64::from(table(SAW, p * 4096.0)),
         NativeWave::Triangle => f64::from(table(TRIANGLE, p * 4096.0)),
@@ -240,9 +278,18 @@ fn native(w: NativeWave, p: f64, seed: u64, phase: f64) -> f64 {
 pub fn native_phase_step(u: f32, reciprocal_rate: f32) -> f64 {
     let u = if u.is_nan() { 0.0 } else { u.clamp(0.0, 1.0) };
     let z = u * 14.316_152 - 6.584_316;
+    f64::from(native_exp2(z) * reciprocal_rate)
+}
+
+/// Kontakt's approximate base-two exponential: the float bit pattern is built
+/// from `(z + 127 - (r - r^2) * 0.33971) * 2^23` with `r` the fractional part
+/// of `z`, then reinterpreted (not converted) as binary32. Shared by the LFO and
+/// step-table rate lanes and the zone envelope segments
+/// (0x140b088e7..0x140b088eb, 0x140a76a94..0x140a76a98, 0x140ceb5b7..0x140ceb6b3).
+pub fn native_exp2(z: f32) -> f32 {
     let r = z - z.floor();
     let bits = ((z + 127.0) - (r - r * r) * 0.339_71) * 8_388_608.0;
-    f64::from(f32::from_bits(bits as i32 as u32) * reciprocal_rate)
+    f32::from_bits(bits as i32 as u32)
 }
 
 /// Waveform value at cycle position `phase` (any real; the integer part counts
@@ -440,6 +487,66 @@ mod tests {
         assert_eq!(native_phase_step(0.5, 0.25) * 4.0, native_phase_step(0.5, 1.0));
     }
 
+    fn multi(weights: [f32; 5], digital: bool, normalize: bool) -> NativeWave {
+        NativeWave::Multi { weights, width: 0.5, normalize, digital }
+    }
+
+    /// Stored (sine, pulse, triangle, doubled saw, noise) -> runtime order.
+    #[test]
+    fn multi_is_a_signed_table_mix_in_runtime_weight_order() {
+        let at = |w, p| wave(LfoShape::Native(w), p, 0);
+        let single = |k: usize| {
+            let mut w = [0.; 5];
+            w[k] = 1.;
+            w
+        };
+        for i in 0..32 {
+            let p = f64::from(i) / 32.0 + 0.003;
+            let sine = at(NativeWave::Sine, p);
+            // Weight 0 alone is the falling sine, the first term's XOR sign.
+            assert_eq!(at(multi(single(0), false, false), p), -sine);
+            // Weight 1 subtracts the doubled-phase saw (analog), adds it (digital).
+            assert_eq!(
+                at(multi(single(1), false, false), p),
+                -at(NativeWave::Saw, (2.0 * p).fract()),
+            );
+            assert_eq!(at(multi(single(2), false, false), p), at(NativeWave::Triangle, (p + 0.75).fract()));
+            assert_eq!(
+                at(multi(single(3), false, false), p),
+                -at(NativeWave::Rectangle(0.5), p)
+            );
+        }
+        // Digital terms are exact arithmetic, not tables.
+        let d = |k, p| at(multi(single(k), true, false), p);
+        assert_eq!(d(1, 0.25), 0.0, "doubled saw at a quarter cycle");
+        assert_eq!(d(1, 0.5), 1.0, "preserves d == 1 at p == 0.5");
+        assert_eq!(d(2, 0.25), 0.0);
+        assert_eq!(d(2, 0.5), 1.0);
+        assert_eq!(d(2, 0.75), 0.0);
+        assert_eq!((d(3, 0.25), d(3, 0.5), d(3, 0.75)), (-1.0, 1.0, 1.0), "low at exactly the width");
+    }
+
+    #[test]
+    fn multi_normalizes_by_total_weight_after_mixing() {
+        let at = |normalize, w| wave(LfoShape::Native(multi(w, false, normalize)), 0.25, 0);
+        let raw = at(false, [1., 0., 1., 0., 0.]);
+        assert_eq!(at(true, [1., 0., 1., 0., 0.]), f64::from((raw as f32) * 0.5));
+        // Sub-unit weights are not scaled up.
+        assert_eq!(at(true, [0.5, 0., 0., 0., 0.]), at(false, [0.5, 0., 0., 0., 0.]));
+        assert_eq!(at(true, [0.; 5]), 0.0);
+    }
+
+    #[test]
+    fn native_exp2_is_a_bit_built_base_two_exponential() {
+        assert_eq!(native_exp2(0.0), 1.0);
+        assert_eq!(native_exp2(1.0), 2.0);
+        assert_eq!(native_exp2(-3.0), 0.125);
+        for k in 0..40 {
+            let z = -4.0 + k as f32 * 0.2;
+            assert!((f64::from(native_exp2(z)) / 2f64.powf(f64::from(z)) - 1.0).abs() < 0.01, "{z}");
+        }
+    }
+
     #[test]
     fn invalid_shapes_are_rejected() {
         let held = Lfo { phase: 0.5, ..lfo(LfoShape::Native(NativeWave::Held)) };
@@ -447,6 +554,9 @@ mod tests {
         assert!(!LfoShape::Native(NativeWave::Rectangle(0.0)).valid());
         assert!(LfoShape::Rectangle(0.0).valid() && LfoShape::Rectangle(1.0).valid());
         assert!(!LfoShape::Rectangle(1.5).valid() && !LfoShape::Rectangle(f64::NAN).valid());
+        let native = |weights, width| LfoShape::Native(NativeWave::Multi { weights, width, normalize: true, digital: false });
+        assert!(native([0.; 5], 0.5).valid() && !native([0.; 5], 1.0).valid());
+        assert!(!native([f32::NAN, 0., 0., 0., 0.], 0.5).valid());
         let multi = |weights, width| LfoShape::Multi { weights, width, normalize: true };
         assert!(multi([0.; 5], 0.5).valid());
         assert!(!multi([f64::INFINITY, 0., 0., 0., 0.], 0.5).valid());
