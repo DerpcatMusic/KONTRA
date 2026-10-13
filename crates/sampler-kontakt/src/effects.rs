@@ -3471,14 +3471,14 @@ mod tests {
 
     #[test]
     fn pro_compressor_is_not_modeled_not_generic() {
-        let mut bytes = Vec::new();
-        for x in [2.0f32, -18.0, 0.25, 10.0, 120.0] {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        for x in [-18.0f32, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
         assert!(!built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Compressor(_))));
-        assert!(built.notes.iter().any(|n| n.2 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
+        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{:?}", built.notes);
     }
 
     #[test]
