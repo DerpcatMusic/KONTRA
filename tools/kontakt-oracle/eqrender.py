@@ -141,12 +141,11 @@ def metrics(freqs, db):
     return freqs[k], pk, lo, freqs[i]
 
 
-def main() -> int:
-    spec = json.load(open(sys.argv[1]))
-    prefix = Path(sys.argv[2])
+CHUNK = 60   # steps per Kontakt session
+
+
+def run(spec, prefix, first_no=1):
     steps = spec["steps"]
-    if len(steps) > 126:
-        sys.exit("at most 126 steps per render (CC value range); split the spec")
     work = Path("/tmp/w3/audit")
     work.mkdir(parents=True, exist_ok=True)
     lua, mid, wav = work / "eqrender_gen.lua", work / "eqrender.mid", prefix.with_suffix(".wav")
@@ -154,25 +153,30 @@ def main() -> int:
     make_midi(len(steps) + 1, mid)
     if not os.environ.get("EQ_REUSE"):
         subprocess.run([sys.executable, str(HERE / "render.py"), str(lua), str(wav),
-                        str(0.5 + (len(steps) + 1) * PERIOD + 3), str(mid)], check=True)
+                        str((0.5 + (len(steps) + 1) * PERIOD) * 1.12 + 6), str(mid)], check=True)
     ch, rate, (L, R) = wavutil.read(wav)
     L, R = np.array(L), np.array(R)
     mag = np.maximum(np.abs(L), np.abs(R))
     # MIDI order is exact but wall-clock spacing jitters by ~100 ms: step n is the loudest sample within
     # [prev + 0.75 s, prev + 2.45 s] (each step plays two identical notes); the analysis window starts 256 samples earlier (magnitude only, so
     # the exact alignment does not matter as long as the whole response fits in the window).
-    i0 = int(np.nonzero(mag > 0.05)[0][0])      # the reference impulse (bypassed, 0.5 peak)
-    ev = [i0 + int(np.argmax(mag[i0:i0 + int(0.05 * rate)]))]
-    for n in range(len(steps)):
-        lo = ev[-1] + int(0.75 * rate)
-        w = mag[lo:lo + int(1.7 * rate)]
-        if not len(w) or w.max() < 1e-6:
-            sys.exit(f"no impulse for step {n + 1} near t={lo / rate:.2f}s")
-        first = int(np.nonzero(w > 0.3 * w.max())[0][0])      # earliest strong sample: ringing tails stay weaker
-        ev.append(lo + first + int(np.argmax(w[first:first + int(0.05 * rate)])))
-    ev = [e - 240 for e in ev]
-    d = np.diff(ev) / rate
-    print(f"{len(ev)} impulses, spacing {d.min():.4f}..{d.max():.4f} s (scheduled {PERIOD}, jittery)")
+    # ALSA playback is accurate to a few ms (but starts ~1.3 s late and occasionally drops a note): anchor on the
+    # reference impulse, then step n is the loudest sample in [T0 + n*PERIOD - 0.25, + 0.8] (its first or
+    # second, identical, note).
+    i0 = int(np.nonzero(mag > 0.05)[0][0])
+    T0 = i0 + int(np.argmax(mag[i0:i0 + int(0.05 * rate)]))
+    ev = [T0]
+    drift = 0
+    for n in range(1, len(steps) + 1):
+        lo = T0 + int((n * PERIOD - 0.25) * rate) + drift
+        w = mag[lo:lo + int(1.05 * rate)]
+        if not len(w) or w.max() < 0.002:
+            ev.append(None)       # Kontakt dropped both notes of this step: caller retries
+            continue
+        ev.append(lo + int(np.argmax(w)))
+    missing = [n for n, e in enumerate(ev) if e is None]
+    ev = [e - 240 if e is not None else None for e in ev]
+    print(f"{len(ev) - len(missing)} impulses, missing steps {missing}")
     N = 16384
 
     def spectrum(x, start):
@@ -184,9 +188,11 @@ def main() -> int:
     ref = spectrum(L, ev[0])
     freqs = np.fft.rfftfreq(N, 1 / rate)
     sel = (freqs >= 20) & (freqs <= 20000)
-    rows = ["step\tname\tpair\tpeak_hz\tpeak_db\thalf_lo_hz\thalf_hi_hz\tq_half\toctaves_half\t" + "\t".join(f"db@{p}" for p in PROBES)]
+    rows = [""]
     allh = []
     for n, st in enumerate(steps, start=1):
+        if ev[n] is None:
+            continue
         for pair, x in (("LL", L), ("LR", R)):
             h = spectrum(x, ev[n]) / np.where(np.abs(ref) < 1e-9, 1e-9, ref)
             db = 20 * np.log10(np.maximum(np.abs(h), 1e-9))
@@ -194,10 +200,37 @@ def main() -> int:
                 allh.append(db)
             f0, pk, lo, hi = metrics(freqs[sel], db[sel])
             at = [np.interp(p, freqs, db) for p in PROBES]
-            rows.append("\t".join([str(n), st["name"], pair, f"{f0:.1f}", f"{pk:.2f}", f"{lo:.1f}", f"{hi:.1f}",
+            rows.append("\t".join([str(first_no + n - 1), st["name"], pair, f"{f0:.1f}", f"{pk:.2f}", f"{lo:.1f}", f"{hi:.1f}",
                                    f"{f0 / max(hi - lo, 1e-9):.3f}", f"{np.log2(hi / lo) if lo > 0 else float('nan'):.3f}"]
                                   + [f"{v:.2f}" for v in at]))
-    prefix.with_suffix(".tsv").write_text("\n".join(rows) + "\n")
+    return rows[1:], allh, missing
+
+
+def main() -> int:
+    spec = json.load(open(sys.argv[1]))
+    prefix = Path(sys.argv[2])
+    rows, allh = [], []
+    for c0 in range(0, len(spec["steps"]), CHUNK):
+        part = dict(spec, steps=spec["steps"][c0:c0 + CHUNK])
+        todo = part
+        for attempt in range(3):          # re-render steps whose notes Kontakt dropped
+            r, h, miss = run(todo, prefix.with_name(prefix.name + f"_c{c0 // CHUNK}_{attempt}"), 1)
+            nums = []
+            for row in r:
+                f = row.split("\t")
+                f[0] = str(c0 + todo["orig"][int(f[0]) - 1] + 1) if "orig" in todo else str(c0 + int(f[0]))
+                rows.append("\t".join(f))
+                if f[2] == "LL":
+                    nums.append(int(f[0]))
+            allh += list(zip(nums, h))
+            if not miss:
+                break
+            keep = [(todo["orig"][m - 1] if "orig" in todo else m - 1) for m in miss if m > 0]
+            todo = dict(part, steps=[part["steps"][k] for k in keep], orig=keep)
+    rows.sort(key=lambda r: (int(r.split("\t")[0]), r.split("\t")[2]))
+    allh = [h for _, h in sorted(allh, key=lambda x: x[0])]
+    head = "step\tname\tpair\tpeak_hz\tpeak_db\thalf_lo_hz\thalf_hi_hz\tq_half\toctaves_half\t" + "\t".join(f"db@{p}" for p in PROBES)
+    prefix.with_suffix(".tsv").write_text("\n".join([head] + rows) + "\n")
     np.save(prefix.with_suffix(".h.npy"), np.array(allh))
     print(prefix.with_suffix(".tsv"))
     return 0
