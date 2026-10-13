@@ -442,6 +442,9 @@ impl VoiceModulation {
                             {
                                 return Err(Error::InvalidInput);
                             }
+                            if !lfo.shape.valid() {
+                                return Err(Error::InvalidInput);
+                            }
                             if matches!(lfo.shape, LfoShape::DigitalSine { .. })
                                 && (lfo.delay != 0
                                     || lfo.fade != 0
