@@ -113,6 +113,7 @@ pub use parameter_registry::{
 mod digital_fade;
 pub use digital_fade::KontaktLfoFade;
 mod voice_mod;
+pub use voice_mod::laws as native_mod_laws;
 pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};

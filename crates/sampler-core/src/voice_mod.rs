@@ -11,6 +11,8 @@
 //! Layout: every prepared program is flat arrays (sources, routes, shapes);
 //! runtime state is structure-of-arrays sized at runtime construction for the
 //! largest program, so rendering never allocates.
+pub mod laws;
+
 use crate::{Envelope, Error, blocks::envelope::EnvelopeState};
 pub use crate::blocks::envelope::{Breakpoint, Breakpoints};
 use crate::blocks::envelope::Segment;
