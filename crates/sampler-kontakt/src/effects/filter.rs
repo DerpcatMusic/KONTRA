@@ -59,7 +59,7 @@ const SV_ONE: &str = "one-pole section with the SV LP2 cutoff law, unmeasured; Q
 const LEGACY: &str = "pinned v1 stand-in: BFilter2PoleBP (setCutoff FUN_14095a900, its own warp and numerator) not transcribed, cutoff and Q laws unmeasured";
 const LEGACY_ONE: &str = "BFilter1PoleLP/HP setCutoff extracted (bilinear one-pole at the native warped pole, rate independent); native cutoff modulation is a 32-frame slewed update here run on the shared clock, and the dry/accumulate output mode is not modelled";
 const LEGACY_TWO: &str = "cutoff extracted (BFilter2PoleLP/HP: Butterworth prototype FUN_14082a0b0 moved by the class warp, exact at zero resonance); resonance scales the prototype's z^-2 term by 1 + 2.687 (1-(1-r)^2) and the gain by a resonance law, which the pinned v1 Q stand-in does not reproduce";
-const LADDER: &str = "saved row/morphology and compensation tables extracted; cutoff, gain, resonance setters, control clock and nonlinear kernel unproved (audit CORE-FILTERS-045..054)";
+const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; binding of type 91 to that offset is inferred";
