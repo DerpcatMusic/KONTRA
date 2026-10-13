@@ -2,10 +2,10 @@
 //! DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels" and "Formant Crusher
 //! fractional decimation". Only these sub-kernels are specified; the effects'
 //! gains, filters and mixing around them are separate work.
-use super::{Planar, ProcessorState};
+use super::super::Planar;
 
 /// Port from v1 0cb7a8a0:src/fx/blocks.rs, Classic Saturation only.
-pub(super) fn saturation(x: f64, shape: f32) -> f64 {
+pub(crate) fn saturation(x: f64, shape: f32) -> f64 {
     let x = x as f32;
     let y = if shape.abs() <= 0.0001 {
         x
@@ -35,7 +35,7 @@ pub enum Rectifier {
 }
 
 impl Rectifier {
-    pub(super) fn apply(self, x: f64) -> f64 {
+    pub(crate) fn apply(self, x: f64) -> f64 {
         match self {
             Self::Full => x.abs(),
             Self::Half => {
@@ -63,20 +63,20 @@ impl Decimator {
         self.period.is_finite() && self.period >= 1. && self.blend.is_finite()
     }
 
-    /// Per channel `z[c] = [current, held]`, `aux = [delta left, delta right,
-    /// phase]`. Both channels share one phase: it only depends on the period.
-    pub(super) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
-        let mut phase = state.aux[2];
+    /// Per channel `z[c] = [current, held]`, `delta` per channel and one shared
+    /// phase: it only depends on the period.
+    pub(super) fn process(&self, state: &mut DecimatorState, block: &mut Planar, len: usize) {
+        let mut phase = state.phase;
         for i in 0..len {
             let reload = phase <= 0.;
             for c in 0..2 {
                 let [mut current, mut held] = state.z[c];
                 if reload {
                     held = block[c][i];
-                    state.aux[c] = (held - current) / self.period;
+                    state.delta[c] = (held - current) / self.period;
                 }
                 let old = current;
-                current += state.aux[c];
+                current += state.delta[c];
                 block[c][i] = (held - old) * self.blend + old;
                 state.z[c] = [current, held];
             }
@@ -85,8 +85,16 @@ impl Decimator {
             }
             phase -= 1.;
         }
-        state.aux[2] = phase;
+        state.phase = phase;
     }
+}
+
+/// [`Decimator`] history.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct DecimatorState {
+    pub(super) z: [[f64; 2]; 2],
+    pub(super) delta: [f64; 2],
+    pub(super) phase: f64,
 }
 
 #[cfg(test)]

@@ -48,41 +48,23 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ],
             )
         }
-        ir::Processor::LiveSaturation { shape, address } => (
-            address,
-            vec![(
-                "ENGINE_PAR_SHAPE",
-                f64::from(shape),
-                Linear { low: -1., high: 1. },
-            )],
-        ),
-        ir::Processor::LiveDistortion {
-            drive,
-            damping,
-            address,
-            ..
-        } => (
-            address,
-            vec![
-                ("ENGINE_PAR_DRIVE", f64::from(drive), unit),
-                ("ENGINE_PAR_DAMPING", f64::from(damping), unit),
-            ],
-        ),
+        ir::Processor::Color(c) => {
+            let Some(slot) = c.address else {
+                return Vec::new();
+            };
+            let law = |l| match l {
+                ir::fx::color::LaneLaw::Unit => unit,
+                ir::fx::color::LaneLaw::Signed => Linear { low: -1., high: 1. },
+                ir::fx::color::LaneLaw::Cubic => crate::EngineParameterLaw::CubicGain { unity: 1e6 },
+            };
+            (slot, c.lanes().into_iter().map(|l| (l.name, l.value, law(l.law))).collect())
+        }
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], address } => (
             address,
             vec![
                 ("ENGINE_PAR_FORMANT_TALK", f64::from(talk), unit),
                 ("ENGINE_PAR_FORMANT_SHARP", f64::from(sharp), unit),
                 ("ENGINE_PAR_FORMANT_SIZE", f64::from(size), unit),
-            ],
-        ),
-        ir::Processor::LiveLoFi { bits, frequency, noise, color, address } => (
-            address,
-            vec![
-                ("ENGINE_PAR_BITS", f64::from(bits), unit),
-                ("ENGINE_PAR_FREQUENCY", f64::from(frequency), unit),
-                ("ENGINE_PAR_NOISELEVEL", f64::from(noise), unit),
-                ("ENGINE_PAR_NOISECOLOR", f64::from(color), unit),
             ],
         ),
         _ => return Vec::new(),
@@ -119,14 +101,12 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
 }
 
 /// What each lane of [`native_lanes`] is, in the same order.
-fn lane_roles(p: ir::Processor) -> &'static [ir::ProcessorParameter] {
+fn lane_roles(p: ir::Processor) -> Vec<ir::ProcessorParameter> {
     use ir::ProcessorParameter as P;
     match p {
-        ir::Processor::LiveSaturation { .. } => &[P::Shape],
-        ir::Processor::LiveDistortion { .. } => &[P::Drive, P::Damping],
-        ir::Processor::LiveFormant { .. } => &[P::FormantTalk, P::FormantSharp, P::FormantSize],
-        ir::Processor::LiveLoFi { .. } => &[P::LoFiBits, P::LoFiFrequency, P::LoFiNoise, P::LoFiColor],
-        _ => &[],
+        ir::Processor::Color(c) => c.lanes().into_iter().map(|l| l.role).collect(),
+        ir::Processor::LiveFormant { .. } => vec![P::FormantTalk, P::FormantSharp, P::FormantSize],
+        _ => Vec::new(),
     }
 }
 
@@ -144,6 +124,59 @@ fn native_parameter(
         high: max,
         ramp_frames: 0,
     })
+}
+
+/// The runtime color unit for an IR config: script-addressed knobs become the
+/// engine-parameter lanes of [`native_lanes`], everything else a constant.
+fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
+    use crate::{CurveSettings as Curve, HoldSettings, NoiseSettings, QuantizerSettings};
+    use ir::ProcessorParameter as P;
+    use ir::fx::color as fx;
+    let lanes = native_lanes(ir::Processor::Color(c));
+    let roles = lane_roles(ir::Processor::Color(c));
+    let knob = |role, value: f32| {
+        roles
+            .iter()
+            .position(|r| *r == role)
+            .map_or(Parameter::Constant(f64::from(value)), |k| native_parameter(&lanes, k))
+    };
+    crate::ColorSettings {
+        gainer: c.gainer.map(|g| crate::GainerSettings {
+            gain: Parameter::Constant(g.gain.linear()),
+            dry: g.dry,
+        }),
+        hold: c.hold.map(|h| match h {
+            fx::Hold::Native { frequency } => HoldSettings::Native(knob(P::LoFiFrequency, frequency)),
+            fx::Hold::Rate { hertz } => HoldSettings::Rate(hertz),
+        }),
+        decimator: c.decimator.map(|d| crate::Decimator { period: d.period, blend: d.blend }),
+        quantizer: c.quantizer.map(|q| match q {
+            fx::Quantizer::Native { bits } => QuantizerSettings::Native(knob(P::LoFiBits, bits)),
+            fx::Quantizer::Floor { bits } => QuantizerSettings::Floor(bits),
+        }),
+        curve: match c.curve {
+            fx::Curve::Identity => Curve::Identity,
+            fx::Curve::Classic { shape } => Curve::Classic(knob(P::Shape, shape)),
+            fx::Curve::Tube { drive } => Curve::Tube(knob(P::Drive, drive)),
+            fx::Curve::Transistor { drive } => Curve::Transistor(knob(P::Drive, drive)),
+            fx::Curve::Rectifier(mode) => Curve::Rectifier(match mode {
+                ir::Rectifier::Full => Rectifier::Full,
+                ir::Rectifier::Half => Rectifier::Half,
+            }),
+            fx::Curve::Destructor { drive } => Curve::Destructor(drive),
+        },
+        damping: c.damping.map(|d| knob(P::Damping, d)),
+        noise: c.noise.map(|n| NoiseSettings {
+            level: knob(P::LoFiNoise, n.level),
+            color: knob(P::LoFiColor, n.color),
+        }),
+        mix: c.mix,
+        stereo: c.stereo.map(|s| crate::StereoSettings {
+            width: Parameter::Constant(s.width),
+            pan: Parameter::Constant(s.pan),
+            pseudo: s.pseudo,
+        }),
+    }
 }
 
 /// Port v1 group settings: physical source lanes feed the oscillator every block.
@@ -1031,7 +1064,7 @@ impl Lowering<'_> {
                         feedback: 0.0,
                         ..
                     } => self.frames(*time),
-                    ir::Processor::StereoModeller { pseudo: true, .. } => {
+                    ir::Processor::Color(c) if c.stereo.is_some_and(|s| s.pseudo) => {
                         (self.rate / 100).min(1023)
                     }
                     _ => 0,
@@ -1382,7 +1415,7 @@ impl Lowering<'_> {
                     next += 1;
                     registry
                         .register(ParameterDescriptor {
-                            role: *role,
+                            role,
                             address,
                             control: control.id,
                             name: format!("{role:?}"),
@@ -1931,7 +1964,7 @@ impl Lowering<'_> {
             (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
             (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
-            (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
+            (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
             (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
             (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
             (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
@@ -1944,8 +1977,8 @@ impl Lowering<'_> {
             (Processor::Compressor(c), Ratio) => c.ratio = parameter,
             (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
             (Processor::Compressor(c), Release) => c.release_seconds = parameter,
-            (Processor::StereoModeller(settings), Width) => settings.width = parameter,
-            (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
+            (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Width) => s.width = parameter,
+            (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Pan) => s.pan = parameter,
             (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
             (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
             (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
@@ -2206,17 +2239,7 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
-            ir::Processor::Gainer { gain, dry } => Processor::Gainer {
-                gain: Parameter::Constant(gain.linear()),
-                dry,
-            },
-            ir::Processor::StereoModeller { width, pan, pseudo } => {
-                Processor::StereoModeller(crate::StereoSettings {
-                    width: Parameter::Constant(width),
-                    pan: Parameter::Constant(pan),
-                    pseudo,
-                })
-            }
+            ir::Processor::Color(c) => Processor::Color(color_settings(c)),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
             ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
@@ -2282,45 +2305,9 @@ impl Lowering<'_> {
                     taps: d.taps,
                 })
             }
-            ir::Processor::LoFi {
-                bits,
-                frequency,
-                noise,
-                color,
-            } => Processor::LoFi(crate::LoFiSettings {
-                bits,
-                frequency,
-                noise,
-                color,
-            }),
-            ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
-                ir::Rectifier::Full => Rectifier::Full,
-                ir::Rectifier::Half => Rectifier::Half,
-            }),
-            ir::Processor::Saturation(shape) => Processor::Saturation(shape),
-            ir::Processor::LiveSaturation { .. } => {
-                Processor::LiveSaturation(native_parameter(&native_lanes(processor), 0))
-            }
             ir::Processor::LiveFormant { .. } => {
                 let lanes = native_lanes(processor);
                 Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
-            }
-            ir::Processor::LiveLoFi { .. } => {
-                let lanes = native_lanes(processor);
-                Processor::LiveLoFi {
-                    bits: native_parameter(&lanes, 0),
-                    frequency: native_parameter(&lanes, 1),
-                    noise: native_parameter(&lanes, 2),
-                    color: native_parameter(&lanes, 3),
-                }
-            }
-            ir::Processor::LiveDistortion { transistor, .. } => {
-                let lanes = native_lanes(processor);
-                Processor::LiveDistortion {
-                    transistor,
-                    drive: native_parameter(&lanes, 0),
-                    damping: native_parameter(&lanes, 1),
-                }
             }
             ir::Processor::LegacyPhaser {
                 depth,
@@ -2340,15 +2327,6 @@ impl Lowering<'_> {
             }
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
-            ir::Processor::Distortion {
-                transistor,
-                drive,
-                damping,
-            } => Processor::Distortion {
-                transistor,
-                drive,
-                damping,
-            },
             ir::Processor::Mix { address, .. } => Processor::Mix {
                 // Filled in by `lower_list`, which knows the lowered span.
                 count: 0,
@@ -2510,13 +2488,11 @@ impl Lowering<'_> {
             let tail_frames = processors
                 .iter()
                 .map(|p| match p {
+                    Processor::Color(settings) if settings.memoryless() => 0,
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
                     | Processor::ControlMatrix(_)
                     | Processor::Compressor(_)
-                    | Processor::Rectify(_)
-                    | Processor::Saturation(_)
-                    | Processor::LiveSaturation(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),

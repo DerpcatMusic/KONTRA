@@ -74,11 +74,12 @@ fn close(actual: [f32; 2], expected: f32) {
 
 #[test]
 fn lofi_voice_state_processes_and_recycles_without_audio_heap_calls() {
-    let processor = Processor::LoFi(sampler_core::LoFiSettings {
-        bits: 0.1,
-        frequency: 0.2,
-        noise: 0.6,
-        color: 0.7,
+    let knob = |v: f64| sampler_core::Parameter::Constant(v);
+    let processor = Processor::Color(sampler_core::ColorSettings {
+        hold: Some(sampler_core::HoldSettings::Native(knob(0.2))),
+        quantizer: Some(sampler_core::QuantizerSettings::Native(knob(0.1))),
+        noise: Some(sampler_core::NoiseSettings { level: knob(0.6), color: knob(0.7) }),
+        ..sampler_core::ColorSettings::IDENTITY
     });
     let mut rt = Runtime::new(
         plan(vec![processor], vec![], 0, Envelope::default(), 128),
