@@ -23,6 +23,10 @@ pub enum Interpolation {
     Hermite,
     /// 4-point third-order Lagrange.
     Lagrange,
+    /// The frame at or before the delay (UVI ring read mode 0, [ref]).
+    Floor,
+    /// The frame at or after the delay (UVI TrackDelay's `ceil(seconds·rate)`).
+    Ceil,
 }
 
 /// A tap's base delay.
