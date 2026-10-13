@@ -65,7 +65,8 @@ const MODES: [[u32; 63]; 4] = [
     ],
 ];
 
-/// SVF damping halves (0x147697b60, 0x147697b70) and the tan series
+/// SVF damping halves (0x147697b60, 0x147697b70; the shelf copy at core +0x1c00
+/// is stored from 0x147697b60 by the ctor at 0x141939c46) and the tan series
 /// (0x147697b50 = 1/3, 0x147697b40 = 2/15) shared by the voice and shelf filters.
 const HALF_K: f64 = 0.707_106_781_186_548_02;
 const K: f64 = 1.414_213_562_373_096;
@@ -413,6 +414,37 @@ mod tests {
             let x: Vec<[f64; 2]> = (0..44_100).map(|i| [((i as f64) * 0.05).sin(), ((i as f64) * 0.031).sin()]).collect();
             let peak = render(&c, &x).iter().flatten().fold(0f64, |m, v| m.max(v.abs()));
             assert!(peak.is_finite() && peak < 8., "mode {mode}: {peak}");
+        }
+    }
+
+    /// Kontakt 8.13.1 under tools/re/kemu.py: native ctor 0x141939b10,
+    /// prepare 0x14193b840, setters, process 0x14193be50 in 32-frame blocks on
+    /// `0.5 sin(0.05 n) + impulse` / `0.5 sin(0.031 n)` (f32). Output f32 bits.
+    #[test]
+    fn output_matches_native_kemu_vectors() {
+        let x: Vec<[f64; 2]> = (0..3000)
+            .map(|i| {
+                let n = i as f64;
+                [f64::from(((n * 0.05).sin() * 0.5 + if i == 0 { 1. } else { 0. }) as f32), f64::from(((n * 0.031).sin() * 0.5) as f32)]
+            })
+            .collect();
+        let cases: [(([f32; 7], bool, bool, u8, f64), [(usize, u32, u32); 6]); 2] = [
+            (
+                ([0.6, 0.5, 0.18, 0.7, 0.4, 0.5, 0.8], true, true, 1, 48_000.),
+                [(0, 0x3f32c0a0, 0), (1, 0x3c7145ad, 0x3c314b45), (150, 0x3ea49034, 0xbebce4dd), (777, 0x3e88e9e0, 0xbe871bd9), (1500, 0xbe883379, 0x3e1418bb), (2999, 0xbdc85a44, 0xbea4ea2d)],
+            ),
+            (
+                ([0.3, 0.8, 0.5, 1.0, 1.0, 0.9, 1.0], false, true, 2, 44_100.),
+                [(0, 0x3e820bfa, 0), (1, 0x3bc3deeb, 0x3b80fc5a), (150, 0x3def5bf1, 0xbe077d0a), (777, 0x3dedf5b4, 0xbddeca1a), (1500, 0xbe2cb4be, 0x3e870217), (2999, 0xbefab222, 0xbe207c4d)],
+            ),
+        ];
+        for ((fields, invert, scatter, mode, fs), want) in cases {
+            let y = render(&Choral::new(fields, invert, scatter, mode, fs), &x);
+            for (i, l, r) in want {
+                let got = [y[i][0] as f32, y[i][1] as f32];
+                let ulps = |g: f32, w: u32| (g.to_bits() as i64 - i64::from(w)).abs();
+                assert!(ulps(got[0], l) <= 1 && ulps(got[1], r) <= 1, "mode {mode} frame {i}: {got:?} vs {:?}", [f32::from_bits(l), f32::from_bits(r)]);
+            }
         }
     }
 }
