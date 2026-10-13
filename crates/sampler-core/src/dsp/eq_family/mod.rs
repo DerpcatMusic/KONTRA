@@ -20,7 +20,7 @@ mod solid;
 
 pub use legacy::KontaktLegacyEqSettings;
 pub use peaking::PeakingEq;
-pub use sampler_ir::fx::eq::{Kind, Law, SolidSection};
+pub use sampler_ir::fx::eq::{Kind, Law};
 
 use super::{
     Biquad, ControlRamp, ControlRange, FilterKind, Parameter, Planar, Processor, ProcessorState, StateVariableFilter, SvfMode,
