@@ -3185,6 +3185,27 @@ fn controlled_native_external_fixture() -> ir::Instrument {
     ir
 }
 
+/// Lowering precomputes which route controls a zone uses (it was a per-alias
+/// routes x zones scan, ~90 s on ANALOG STRINGS); the binding rule is unchanged.
+#[test]
+fn source_alias_binds_only_controls_of_routes_a_zone_uses() {
+    let mut used = controlled_native_external_fixture();
+    used.source_indices.control_aliases.push(ir::SourceControlAlias {
+        control: ir::ControlRef(0),
+        parameter: "ENGINE_PAR_GAIN2".into(),
+        address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
+    });
+    let mut unused = used.clone();
+    unused.zones[0].routes.clear();
+    let depth = sampler_core::lower::ir_control_id("external-depth");
+    let bindings = |ir: &ir::Instrument| {
+        lower(ir, 48000, vec![constant(1.)], no_behaviors).unwrap()
+            .engine_parameter_bindings().iter().filter(|b| b.control == depth).count()
+    };
+    assert_eq!(bindings(&used), 1);
+    assert_eq!(bindings(&unused), 0);
+}
+
 #[test]
 fn native_external_reads_live_depth_and_bypass_without_resetting_held_source() {
     use sampler_core::{ControlValue,ControlWrite};

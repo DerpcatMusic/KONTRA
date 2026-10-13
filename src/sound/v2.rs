@@ -3216,13 +3216,15 @@ fn kontakt(
         control_values,
         ..Default::default()
     };
+    // Every stage reports: headers open (cold: seconds) through 700, script
+    // UI and lowering at 750, the runtime at 900 (`prepare_on_worker`).
     let progress = |p: sampler_kontakt::Progress<'_>| {
         progress(Progress(match p {
             sampler_kontakt::Progress::Translated { .. } => 50,
             sampler_kontakt::Progress::Decoding { done, total, .. } => {
-                (100 + 800 * done / total.max(1)) as u16
+                (100 + 600 * done.min(total) / total.max(1)) as u16
             }
-            sampler_kontakt::Progress::Lowering => 950,
+            sampler_kontakt::Progress::Lowering => 750,
         }))
     };
     if canceled() {
@@ -3279,11 +3281,15 @@ fn kontakt(
 
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
 /// stream from the bank or file; its Lua scripts run on their own thread.
-fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
+fn uvi(
+    request: &LoadRequest,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     drop(span);
+    progress(Progress(300));
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let config = sampler_uvi::script::Config::realtime();
@@ -3296,6 +3302,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
         .attach_script_with_ui_state(rate, config, request.uvi_state.clone())
         .map_err(|e| load(&e))?;
     drop(span);
+    progress(Progress(600));
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     if let Some(a) = &attached {
         report.uvi_faults = a.driver.ui().fault_counts();
@@ -3451,7 +3458,7 @@ impl V2Loader {
         } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_uvi(&request.path) {
-            uvi(request)?
+            uvi(request, progress)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -3460,6 +3467,7 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        progress(Progress(900));
         let _span = sampler_kontakt::audit::Span::new("runtime_alloc_init");
         let mut timbre = None;
         if request.mpe {
