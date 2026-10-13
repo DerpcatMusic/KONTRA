@@ -1,0 +1,36 @@
+Audio-thread only; cycles:u; relative flat overhead; no lost samples.
+8.37%  before-bin  before-bin        [.] <sampler_core::dsp::native_eq::NativeEq>::process
+6.58%  before-bin  before-bin        [.] sampler_simd::dispatch::v3::<(), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}>
+6.13%  before-bin  before-bin        [.] <sampler_core::dsp::PreparedVoiceChain>::render::<false, sampler_core::source::PagedFrames>
+6.00%  before-bin  before-bin        [.] <sampler_core::dsp::stereo::Stereo>::process
+4.89%  before-bin  before-bin        [.] core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<&[[f32; 2]]>, 4, <core::ops::try_trait::NeverShortCircuit<&[[f32; 2]]>>::wrap_mut_1<usize, <sampler_core::source::Cursor>::run_cubic::{closure#0}>::{closure#0}>
+4.81%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::render_filtered::<sampler_core::source::PagedFrames>
+4.63%  before-bin  before-bin        [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+3.86%  before-bin  before-bin        [.] <sampler_core::voice_mod::Ramp>::gains_at
+3.18%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::address
+3.13%  before-bin  before-bin        [.] <sampler_core::voice_mod::Shape>::evaluate
+3.03%  before-bin  before-bin        [.] sampler_simd::dispatch::v3::<(), sampler_core::dsp::process<false>::{closure#3}>
+2.75%  before-bin  before-bin        [.] <sampler_core::Runtime>::render_voice::<false>
+2.54%  before-bin  before-bin        [.] sampler_core::dsp::process::<false>
+2.48%  before-bin  before-bin        [.] <sampler_core::dsp::native_eq::NativeEq>::tune
+2.32%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::read::<sampler_core::source::PagedFrames>
+2.11%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::index
+1.96%  before-bin  before-bin        [.] <sampler_core::stream::StreamCache>::protect
+1.80%  before-bin  before-bin        [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+1.73%  before-bin  before-bin        [.] <sampler_core::dsp::stereo::Stereo>::targets
+1.65%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::step
+1.58%  before-bin  before-bin        [.] <sampler_core::Runtime>::prepare_voice
+1.53%  before-bin  libc.so.6         [.] 0x00000000001b7ad3
+1.29%  before-bin  before-bin        [.] <sampler_core::Runtime>::service_streaming
+1.12%  before-bin  before-bin        [.] <sampler_core::dsp::ProcessorState>::finite
+1.07%  before-bin  before-bin        [.] <sampler_core::voice_mod::VoiceModState>::mix
+1.04%  before-bin  before-bin        [.] <sampler_core::stream::PageReader>::span
+0.89%  before-bin  [unknown]         [k] 0000000000000000
+0.87%  before-bin  before-bin        [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+0.87%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::sample::<sampler_core::source::PagedFrames>
+0.87%  before-bin  before-bin        [.] core::array::try_from_fn::<core::ops::try_trait::NeverShortCircuit<[f64; 8]>, 4, <core::ops::try_trait::NeverShortCircuit<[f64; 8]>>::wrap_mut_1<usize, sampler_core::resample::cubic_block::cubic_four::{closure#0}>::{closure#0}>
+0.61%  before-bin  libm.so.6         [.] sincosf32x
+0.58%  before-bin  before-bin        [.] <sampler_core::stream::StreamCache>::unlink_use
+0.55%  before-bin  before-bin        [.] <sampler_core::source::Cursor>::loop_reach
+0.53%  before-bin  before-bin        [.] sampler_perf::sustain::phase
+0.52%  before-bin  before-bin        [.] <sampler_core::voice_mod::Prepared>::input

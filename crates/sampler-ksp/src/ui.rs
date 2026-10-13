@@ -35,6 +35,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_RANGE_MAX",
     "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_TEXTPOS_Y",
+    "$CONTROL_PAR_DISABLE_TEXT_SHIFTING",
     "$CONTROL_PAR_VALUEPOS_Y",
     "$CONTROL_PAR_ALLOW_AUTOMATION",
     "$CONTROL_PAR_AUTOMATION_ID",
@@ -525,6 +526,7 @@ pub fn interface(
             }
         }
         out.text_y = int("$CONTROL_PAR_TEXTPOS_Y");
+        out.text_shift_on_press = int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING") != Some(1);
         out.value_y = int("$CONTROL_PAR_VALUEPOS_Y");
         out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
         out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {

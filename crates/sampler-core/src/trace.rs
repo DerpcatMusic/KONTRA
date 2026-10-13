@@ -909,6 +909,8 @@ impl TraceGraph {
             PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::Phaser(p) => ("kontakt_phaser_filter", vec![constant("coefficient", f64::from(p.coefficient)), constant("feedback", f64::from(p.feedback))], 0),
             PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
+            PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
+            PreparedProcessor::LiveLoFi { knobs, .. } => ("lofi", ["bits", "frequency", "noise", "color"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
             PreparedProcessor::Distortion(d) => ("kontakt_distortion", vec![constant("damping_pole", d.damping_pole())], 0),
             PreparedProcessor::Reverb(i) => (
                 "reverb",

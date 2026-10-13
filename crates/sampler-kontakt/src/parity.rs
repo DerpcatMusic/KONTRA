@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn performance_view_field_losses_retain_each_canonical_key_and_source_span() {
+    fn imported_performance_view_fields_are_not_reported_as_losses() {
         let root = std::env::temp_dir().join(format!("parity-view-fields-{}", std::process::id()));
         let views = root.join("Resources/performance_view");
         std::fs::create_dir_all(&views).unwrap();
@@ -325,24 +325,10 @@ mod tests {
             .iter()
             .filter(|c| c.name.starts_with("@performance-view-field:"))
             .collect();
-        assert_eq!(
-            fields.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-            [
-                "@performance-view-field:steps.visible",
-                "@performance-view-field:text.font.custom",
-                "@performance-view-field:text.fonts.on",
-                "@performance-view-field:text.shiftOnPress"
-            ]
+        assert!(
+            fields.is_empty(),
+            "implemented resource fields cannot remain losses"
         );
-        for field in fields {
-            assert_eq!(field.status, sampler_parity::Status::Unsupported);
-            assert_eq!(field.span.line, 2);
-            assert_eq!(
-                field.span.start as usize,
-                source.find("load_performance_view").unwrap()
-            );
-            assert!(!field.detail.contains("PRIVATE_"));
-        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

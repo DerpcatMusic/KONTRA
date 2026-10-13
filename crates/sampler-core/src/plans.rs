@@ -32,6 +32,7 @@ impl std::fmt::Debug for RejectedPlan {
 pub struct PlanTransfer {
     pub request: u64,
     pub prepared: Box<Prepared>,
+    allocation: super::allocation::AllocationState,
     sequences: super::variation::SequenceState,
     controls: super::control::ControlState,
     scripts: Box<[super::ops::ScriptBank]>,
@@ -50,6 +51,7 @@ pub(super) struct Generation {
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
+    pub allocation: super::allocation::AllocationState,
     pub sequences: super::variation::SequenceState,
     pub native_cycle: u64,
     pub native_seed: u64,
@@ -260,6 +262,7 @@ impl PlanControl {
             };
         let request = self.sequence + 1;
         let script = super::script_params::EngineLayers::new(&prepared);
+        let allocation = super::allocation::AllocationState::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared
@@ -272,6 +275,7 @@ impl PlanControl {
         match self.pending.push(PlanTransfer {
             request,
             prepared,
+            allocation,
             sequences,
             controls,
             scripts,
@@ -425,6 +429,7 @@ impl Runtime {
             match queues.retired.push(PlanTransfer {
                 request: generation.request,
                 prepared: generation.prepared,
+                allocation: generation.allocation,
                 sequences: generation.sequences,
                 controls: generation.controls,
                 scripts: generation.scripts,
@@ -446,6 +451,7 @@ impl Runtime {
                             native_seed: 0,
                             request: plan.request,
                             prepared: plan.prepared,
+                            allocation: plan.allocation,
                             sequences: plan.sequences,
                             controls: plan.controls,
                             scripts: plan.scripts,
@@ -504,6 +510,7 @@ impl Runtime {
                     native_seed: 0,
                     request,
                     prepared: plan.prepared,
+                    allocation: plan.allocation,
                     sequences: plan.sequences,
                     controls: plan.controls,
                     scripts: plan.scripts,

@@ -68,6 +68,23 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ("ENGINE_PAR_DAMPING", f64::from(damping), unit),
             ],
         ),
+        ir::Processor::LiveFormant { knobs: [talk, sharp, size], address } => (
+            address,
+            vec![
+                ("ENGINE_PAR_FORMANT_TALK", f64::from(talk), unit),
+                ("ENGINE_PAR_FORMANT_SHARP", f64::from(sharp), unit),
+                ("ENGINE_PAR_FORMANT_SIZE", f64::from(size), unit),
+            ],
+        ),
+        ir::Processor::LiveLoFi { bits, frequency, noise, color, address } => (
+            address,
+            vec![
+                ("ENGINE_PAR_BITS", f64::from(bits), unit),
+                ("ENGINE_PAR_FREQUENCY", f64::from(frequency), unit),
+                ("ENGINE_PAR_NOISELEVEL", f64::from(noise), unit),
+                ("ENGINE_PAR_NOISECOLOR", f64::from(color), unit),
+            ],
+        ),
         _ => return Vec::new(),
     };
     lanes
@@ -101,6 +118,18 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
         .collect()
 }
 
+/// What each lane of [`native_lanes`] is, in the same order.
+fn lane_roles(p: ir::Processor) -> &'static [ir::ProcessorParameter] {
+    use ir::ProcessorParameter as P;
+    match p {
+        ir::Processor::LiveSaturation { .. } => &[P::Shape],
+        ir::Processor::LiveDistortion { .. } => &[P::Drive, P::Damping],
+        ir::Processor::LiveFormant { .. } => &[P::FormantTalk, P::FormantSharp, P::FormantSize],
+        ir::Processor::LiveLoFi { .. } => &[P::LoFiBits, P::LoFiFrequency, P::LoFiNoise, P::LoFiColor],
+        _ => &[],
+    }
+}
+
 fn native_parameter(
     lanes: &[(ControlDefinition, crate::EngineParameterBinding)],
     index: usize,
@@ -118,11 +147,26 @@ fn native_parameter(
 }
 
 /// Port v1 group settings: physical source lanes feed the oscillator every block.
+fn stretch_spec(t: ir::TimeStretch) -> crate::source::StretchSpec {
+    use crate::source::StretchMode;
+    crate::source::StretchSpec {
+        mode: match t.kind {
+            ir::StretchKind::TimeMachine1 => StretchMode::TimeMachine,
+            ir::StretchKind::TimeMachine2 => StretchMode::TimeMachine2,
+            ir::StretchKind::TimeMachinePro => StretchMode::TimeMachinePro,
+        },
+        hq: t.high_quality,
+        speed: t.speed,
+        smooth: t.smooth,
+        grain_ms: t.grain_ms,
+    }
+}
+
 fn wavetable_lanes(
     instrument: &ir::Instrument,
     group: usize,
     wave: ir::Wavetable,
-) -> Result<[(ControlDefinition, crate::EngineParameterBinding); 3], LowerError> {
+) -> Result<[(ControlDefinition, crate::EngineParameterBinding); 5], LowerError> {
     let physical = if instrument.source_indices.groups.is_empty() {
         group
     } else {
@@ -141,8 +185,11 @@ fn wavetable_lanes(
         ("ENGINE_PAR_WT_POSITION", wave.position),
         ("ENGINE_PAR_WT_FORM", wave.form1),
         ("ENGINE_PAR_WT_FORM2", wave.form2),
+        ("ENGINE_PAR_WT_FORM_MODE", f32::from(wave.form1_type)),
+        ("ENGINE_PAR_WT_FORM2_MODE", f32::from(wave.form2_type)),
     ]
     .map(|(name, value)| {
+        let form = matches!(name, "ENGINE_PAR_WT_FORM_MODE" | "ENGINE_PAR_WT_FORM2_MODE");
         let address = crate::EngineParameterAddress {
             parameter: crate::engine_parameter_id(name).unwrap(),
             group: physical,
@@ -153,13 +200,20 @@ fn wavetable_lanes(
         (
             ControlDefinition {
                 id,
-                domain: ControlDomain::Real { min: 0., max: 1. },
+                domain: ControlDomain::Real {
+                    min: 0.,
+                    max: if form { 33. } else { 1. },
+                },
                 default: ControlValue::Real(f64::from(value)),
             },
             crate::EngineParameterBinding {
                 address,
                 control: id,
-                law: crate::EngineParameterLaw::Linear { low: 0., high: 1. },
+                law: if form {
+                    crate::EngineParameterLaw::WavetableForm
+                } else {
+                    crate::EngineParameterLaw::Linear { low: 0., high: 1. }
+                },
             },
         )
     }))
@@ -546,6 +600,13 @@ pub fn lower_with(
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
     plan.wavetable_controls = wave_controls.into_boxed_slice();
+    if instrument.groups.iter().any(|g| g.time_stretch.is_some()) {
+        plan.stretch_groups = instrument
+            .groups
+            .iter()
+            .map(|g| g.time_stretch.map(stretch_spec))
+            .collect();
+    }
     if !instrument.groups.is_empty() {
         // Group membership and authored values for script group edits
         // (`purge_group`, `set_engine_par`); selection is unaffected.
@@ -587,6 +648,7 @@ pub fn lower_with(
                 )
             })
             .and_then(|p| p.with_group_params(params))
+            .and_then(|p| p.with_group_mutes(instrument.groups.iter().map(|g| g.muted).collect()))
             .map_err(core(Stage::Regions, "groups"))?;
     }
     // Only source modulators that actually own an amplitude envelope get lanes.
@@ -645,7 +707,11 @@ pub fn lower_with(
                 instrument.voice_limits.iter().map(limit).collect(),
                 instrument.groups.iter().map(|g| g.voice_limit).collect(),
             )
-            .map_err(core(Stage::Regions, "voice limits"))?;
+            .map_err(core(Stage::Regions, "voice limits"))?
+            .with_source_voice_limits(instrument.groups.iter().map(|g| g.source_voice_limit).collect())
+            .map_err(core(Stage::Regions, "source voice limits"))?
+            .with_exclusive_sets(instrument.voice_limits.iter().map(|l| l.exclusive_set).collect())
+            .map_err(core(Stage::Regions, "exclusive voice sets"))?;
     }
     if instrument.groups.iter().any(|g| g.monophonic_release) {
         plan = plan
@@ -1198,6 +1264,13 @@ impl Lowering<'_> {
             .iter()
             .chain(&chain_data.post_amplitude)
             .nth(index)?;
+        // Script-addressed effect modules: the native lane is the parameter.
+        if let Some(k) = lane_roles(*processor).iter().position(|r| *r == parameter) {
+            let lane = plan
+                .parameter_registry
+                .resolve_native(native_lanes(*processor)[k].1.address)?;
+            return Some(plan.parameter_registry.descriptor(lane)?.address);
+        }
         if matches!(
             processor,
             ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
@@ -1288,6 +1361,45 @@ impl Lowering<'_> {
                 registry
                     .alias_native(alias.address, address)
                     .map_err(core(Stage::Controls, &control.key))?;
+            }
+        }
+        // Effect modules whose knobs are native engine-parameter lanes: one node
+        // per lane, aliased by its engine address so scripts and routes agree.
+        let mut next = 0x8000_0000u32;
+        for (chain_index, chain) in self.ir.chains.iter().enumerate() {
+            let scope = match chain.scope {
+                ir::Scope::Voice => ParameterScope::Voice,
+                ir::Scope::Group(group) => ParameterScope::Group(group.0 as u32),
+                ir::Scope::Bus(bus) => ParameterScope::Bus(bus.0 as u32),
+                ir::Scope::Master => ParameterScope::Plan,
+            };
+            for (at, p) in chain.pre_amplitude.iter().chain(&chain.post_amplitude).enumerate() {
+                let roles = lane_roles(*p);
+                for ((control, binding), role) in native_lanes(*p).into_iter().zip(roles) {
+                    let ControlDomain::Real { min, max } = control.domain else { continue };
+                    let ControlValue::Real(default) = control.default else { continue };
+                    let address = ParameterAddress { scope, node: next, parameter: 0 };
+                    next += 1;
+                    registry
+                        .register(ParameterDescriptor {
+                            role: *role,
+                            address,
+                            control: control.id,
+                            name: format!("{role:?}"),
+                            range: [min, max],
+                            default,
+                            unit: ParameterUnit::Normalized,
+                            law: ParameterLaw::Native(binding.law),
+                            display: ParameterDisplay {
+                                group: format!("chain {chain_index} processor {at}"),
+                                order: next,
+                            },
+                        })
+                        .map_err(core(Stage::Controls, "effect lane"))?;
+                    registry
+                        .alias_native(binding.address, address)
+                        .map_err(core(Stage::Controls, "effect lane"))?;
+                }
             }
         }
         plan.with_parameter_registry(registry)
@@ -1387,6 +1499,10 @@ impl Lowering<'_> {
                 (ir::Target::LoopLength, ir::Depth::Normalized(d)) => (ModTarget::LoopLength, d),
                 (ir::Target::SourcePhase(target), ir::Depth::Normalized(d)) => (
                     ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
+                    d,
+                ),
+                (ir::Target::SourceRate(target), ir::Depth::Normalized(d)) => (
+                    ModTarget::SourceRate(source_of(target, &mut program)? as u32),
                     d,
                 ),
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
@@ -1518,14 +1634,22 @@ impl Lowering<'_> {
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
             };
             let source = source_of(route.source, &mut program)?;
-            let scale = match route.scale {
-                None => None,
-                Some(scale) => Some(ModScale {
-                    source: source_of(scale.source, &mut program)?,
-                    shape: None,
-                    law: Default::default(),
-                }),
-            };
+            // The first assignment, then those chained after it (ID25 lane `$in`).
+            let assignments: Vec<ir::RouteScale> = route
+                .scale
+                .into_iter()
+                .chain(
+                    self.ir
+                        .source_indices
+                        .chained_scales
+                        .iter()
+                        .filter(|c| c.0 == route_ref)
+                        .map(|c| c.1),
+                )
+                .collect();
+            if assignments.len() > crate::MORE_SCALES + 1 {
+                return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+            }
             let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
                 *shapes.entry(shape).or_insert_with(|| {
                     program.shapes.push(self.ir.shapes[shape.0].points.clone());
@@ -1533,13 +1657,20 @@ impl Lowering<'_> {
                 })
             };
             let shape = route.shape.map(|shape| shape_of(shape, &mut program));
-            let scale = scale.map(|s| ModScale {
-                shape: route
-                    .scale
-                    .and_then(|r| r.shape)
-                    .map(|shape| shape_of(shape, &mut program)),
-                ..s
-            });
+            let mut scales = Vec::with_capacity(assignments.len());
+            for scale in &assignments {
+                scales.push(ModScale {
+                    source: source_of(scale.source, &mut program)?,
+                    shape: scale.shape.map(|shape| shape_of(shape, &mut program)),
+                    law: match scale.law {
+                        ir::ScaleLaw::Multiply => crate::ModScaleLaw::Multiply,
+                        ir::ScaleLaw::KontaktIntensity { depth, flags, unit } => {
+                            crate::ModScaleLaw::KontaktIntensity { depth, flags, unit }
+                        }
+                    },
+                    lag: self.frames(ir::Time::Milliseconds(scale.lag_ms)),
+                });
+            }
             let native = ModRoute {
                 source,
                 target: target.0,
@@ -1547,7 +1678,10 @@ impl Lowering<'_> {
                 invert: route.invert,
                 shape,
                 lag: self.frames(route.smoothing),
-                scale,
+                scale: scales.first().copied(),
+                more_scales: std::array::from_fn(|n| scales.get(n + 1).copied()),
+                live_gain: 1.,
+                unipolar: self.ir.source_indices.unipolar_routes.contains(&route_ref),
             };
             if let Some(binding) = self
                 .ir
@@ -1648,6 +1782,7 @@ impl Lowering<'_> {
                 program.breakpoints.push(Breakpoints {
                     points,
                     sustain: b.sustain,
+                    loop_range: None,
                 });
                 ModSource::Breakpoints(program.breakpoints.len() - 1)
             }
@@ -1666,6 +1801,11 @@ impl Lowering<'_> {
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
+                    ir::LfoShape::Native(wave) => LfoShape::Native(wave),
+                    ir::LfoShape::Rectangle(width) => LfoShape::Rectangle(width),
+                    ir::LfoShape::Multi { weights, width, normalize } => {
+                        LfoShape::Multi { weights, width, normalize }
+                    }
                     ir::LfoShape::SawUp => LfoShape::SawUp,
                     ir::LfoShape::SawDown => LfoShape::SawDown,
                     ir::LfoShape::SampleAndHold => LfoShape::SampleAndHold,
@@ -2153,6 +2293,19 @@ impl Lowering<'_> {
             ir::Processor::Saturation(shape) => Processor::Saturation(shape),
             ir::Processor::LiveSaturation { .. } => {
                 Processor::LiveSaturation(native_parameter(&native_lanes(processor), 0))
+            }
+            ir::Processor::LiveFormant { .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
+            }
+            ir::Processor::LiveLoFi { .. } => {
+                let lanes = native_lanes(processor);
+                Processor::LiveLoFi {
+                    bits: native_parameter(&lanes, 0),
+                    frequency: native_parameter(&lanes, 1),
+                    noise: native_parameter(&lanes, 2),
+                    color: native_parameter(&lanes, 3),
+                }
             }
             ir::Processor::LiveDistortion { transistor, .. } => {
                 let lanes = native_lanes(processor);

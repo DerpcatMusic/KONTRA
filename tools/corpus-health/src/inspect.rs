@@ -1846,7 +1846,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert_eq!(original["slot"], 0);
         assert_eq!(original["path"], "Resources/performance_view/Piano.nckp");
         assert_eq!(original["parse_status"], "ok");
-        assert_eq!(original["skipped"], json!({"total":2,"omitted_source_fields":1,"unsupported_control_types":1}));
+        assert_eq!(original["skipped"], json!({"total":1,"omitted_source_fields":0,"unsupported_control_types":1}));
         assert_eq!(original["source"], view);
 
         let opts = Options {

@@ -81,6 +81,13 @@ pub struct Scan {
 }
 
 impl Source {
+    pub(super) fn for_program(instrument: &Path, program: u32) -> Result<Self, ResourceError> {
+        let mut source = Self::of(instrument);
+        source.kontakt =
+            sampler_kontakt::Resources::for_program(instrument, program).map_err(kontakt_error)?;
+        Ok(source)
+    }
+
     pub fn of(instrument: &Path) -> Self {
         let uvi = instrument
             .ancestors()
