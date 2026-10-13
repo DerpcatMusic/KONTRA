@@ -20,6 +20,7 @@ mod limiter;
 mod pro;
 mod transient;
 mod bus;
+mod maximizer;
 
 use super::{
     Parameter, Planar, ProcessorState,
@@ -76,7 +77,7 @@ impl DynamicsSettings {
                         && g.sidechain_highpass_hz.is_finite()
                         && g.sidechain_highpass_hz >= 0.
                         && match g.detector {
-                            Detector::Peak => true,
+                            Detector::Peak | Detector::TruePeak => true,
                             Detector::Rms { window } => window.seconds() >= 0.,
                         }
                 }
@@ -100,6 +101,20 @@ impl DynamicsSettings {
                         && ratio.iter().all(|v| (1. ..=20.).contains(v))
                         && attack.iter().chain(&release).all(|v| *v > 0.)
                 }
+                Law::UviMaximizer(m) => [
+                    m.threshold_db,
+                    m.attack_ms,
+                    m.lookahead_ms,
+                    m.release_ms,
+                    m.ceiling_db,
+                    m.knee_db,
+                    m.release_blend,
+                    m.slew_ms,
+                ]
+                .iter()
+                .all(|v| v.is_finite())
+                    && m.lookahead_ms > 0.
+                    && m.mode <= 2,
                 Law::KontaktBusComp { threshold, makeup, attack, release, ratio, .. } => {
                     [threshold, makeup, attack, release, ratio].iter().all(|v| (0. ..=1.).contains(v))
                 }
@@ -122,6 +137,7 @@ impl DynamicsSettings {
             Law::KontaktPro(_) => pro::LATENCY as u32,
             Law::KontaktLimiter(_) => limiter::LATENCY as u32,
             Law::KontaktHilbert(_) => hilbert::latency(rate) as u32,
+            Law::UviMaximizer(m) => maximizer::latency(&maximizer_controls(&m), rate) as u32,
             Law::KontaktFeedback { .. }
             | Law::KontaktTransient { .. }
             | Law::KontaktBusComp { .. }
@@ -179,11 +195,18 @@ impl DynamicsSettings {
             .then(|| parameters.map(|p| p.bounds()[0]));
         let offset = *cells;
         let own = match self.law {
-            Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate),
+            Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) + generic::extra_cells(&g),
             Law::KontaktPro(_) => pro::CELLS,
             Law::KontaktLimiter(_) => limiter::CELLS,
             Law::KontaktHilbert(_) => hilbert::cells(rate),
             Law::KontaktFeedback { .. } => feedback::CELLS,
+            Law::UviMaximizer(m) => {
+                let c = maximizer_controls(&m);
+                if maximizer::window(c.lookahead, rate) < 2 {
+                    return Err(crate::Error::InvalidInput);
+                }
+                maximizer::cells(&c, rate)
+            }
             Law::KontaktClassic(_)
             | Law::KontaktEnhanced(_)
             | Law::KontaktTransient { .. }
@@ -201,6 +224,21 @@ impl DynamicsSettings {
             offset,
             cells: own,
         })
+    }
+}
+
+fn maximizer_controls(m: &sampler_ir::fx::dynamics::Maximizer) -> maximizer::Controls {
+    maximizer::Controls {
+        threshold: m.threshold_db as f32,
+        attack: m.attack_ms as f32,
+        lookahead: m.lookahead_ms as f32,
+        release: m.release_ms as f32,
+        ceiling: m.ceiling_db as f32,
+        knee: m.knee_db as f32,
+        blend: m.release_blend as f32,
+        slew: m.slew_ms as f32,
+        mode: m.mode,
+        true_peak: m.true_peak,
     }
 }
 
@@ -240,6 +278,7 @@ impl Dynamics {
             Law::KontaktFeedback { .. } => 6.,
             Law::KontaktTransient { .. } => 7.,
             Law::KontaktBusComp { .. } => 8.,
+            Law::UviMaximizer(_) => 9.,
         };
         [
             ("threshold_db", self.parameters[0]),
@@ -288,6 +327,9 @@ impl Dynamics {
             }
             Law::KontaktHilbert(_) => {
                 hilbert::process(&shared, knobs, self.rate, state, cells, block, len)
+            }
+            Law::UviMaximizer(m) => {
+                maximizer::process(&maximizer_controls(&m), self.rate, state, cells, block, len)
             }
             Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link } => bus::process(
                 &bus::Controls { threshold, makeup, attack, release, ratio, link },

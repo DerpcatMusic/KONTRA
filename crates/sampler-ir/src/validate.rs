@@ -360,6 +360,17 @@ impl Check<'_> {
                                 self.within(v, 0.0..=1.0, "bus comp control")?;
                             }
                         }
+                        Law::UviMaximizer(m) => {
+                            self.within(m.threshold_db, -40.0..=0.0, "maximizer threshold")?;
+                            self.within(m.attack_ms, 0.0..=20.0, "maximizer attack")?;
+                            self.within(m.lookahead_ms, 1.0..=20.0, "maximizer lookahead")?;
+                            self.within(m.release_ms, 0.1..=1000.0, "maximizer release")?;
+                            self.within(m.ceiling_db, -20.0..=0.0, "maximizer ceiling")?;
+                            self.within(m.knee_db, 0.0..=10.0, "maximizer knee")?;
+                            self.within(m.release_blend, 0.0..=1.0, "maximizer release blend")?;
+                            self.within(m.slew_ms, 0.0..=200.0, "maximizer slew")?;
+                            self.within(f64::from(m.mode), 0.0..=2.0, "maximizer mode")?;
+                        }
                         Law::KontaktHilbert(n) => {
                             self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
                             self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;

@@ -35,6 +35,8 @@ pub enum Detector {
     Peak,
     /// Square root of the one-pole mean of `x^2`, over this window.
     Rms { window: Time },
+    /// 4x-oversampled true peak (ITU-R BS.1770-4 Annex 2 interpolator).
+    TruePeak,
 }
 
 /// What the gain computer does around the threshold.
@@ -138,6 +140,26 @@ pub enum Law {
     /// normalized core controls 0..=4 and the link switch; mix is `Config::mix`.
     /// The four knobs are unused.
     KontaktBusComp { threshold: f64, makeup: f64, attack: f64, release: f64, ratio: f64, link: bool },
+    /// UVI Maximizer (Workstation process `0x141665620`), XML units. The four
+    /// knobs are unused.
+    UviMaximizer(Maximizer),
+}
+
+/// UVI Maximizer parameters as saved (dB, ms, 0..=1).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Maximizer {
+    pub threshold_db: f64,
+    pub attack_ms: f64,
+    pub lookahead_ms: f64,
+    pub release_ms: f64,
+    pub ceiling_db: f64,
+    pub knee_db: f64,
+    pub release_blend: f64,
+    pub slew_ms: f64,
+    /// 0 brickwall, 1 soft, 2 hard.
+    pub mode: u8,
+    pub true_peak: bool,
 }
 
 /// A dynamics processor.
@@ -182,6 +204,7 @@ impl Config {
     pub fn threshold(&self) -> f64 {
         match self.law {
             Law::KontaktTransient { .. } | Law::KontaktBusComp { .. } => 0.,
+            Law::UviMaximizer(m) => m.threshold_db,
             Law::Generic(g) => g.threshold_db,
             Law::KontaktClassic(n)
             | Law::KontaktEnhanced(n)
@@ -195,7 +218,7 @@ impl Config {
     /// Ratio in the law's own unit (ratio:1; Kontakt saved 0..=1).
     pub fn ratio(&self) -> f64 {
         match self.law {
-            Law::KontaktTransient { .. } | Law::KontaktBusComp { .. } => 1.,
+            Law::KontaktTransient { .. } | Law::KontaktBusComp { .. } | Law::UviMaximizer(_) => 1.,
             Law::Generic(g) => g.ratio,
             Law::KontaktClassic(n)
             | Law::KontaktEnhanced(n)
