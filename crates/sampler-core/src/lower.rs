@@ -645,7 +645,11 @@ pub fn lower_with(
                 instrument.voice_limits.iter().map(limit).collect(),
                 instrument.groups.iter().map(|g| g.voice_limit).collect(),
             )
-            .map_err(core(Stage::Regions, "voice limits"))?;
+            .map_err(core(Stage::Regions, "voice limits"))?
+            .with_source_voice_limits(instrument.groups.iter().map(|g| g.source_voice_limit).collect())
+            .map_err(core(Stage::Regions, "source voice limits"))?
+            .with_exclusive_sets(instrument.voice_limits.iter().map(|l| l.exclusive_set).collect())
+            .map_err(core(Stage::Regions, "exclusive voice sets"))?;
     }
     if instrument.groups.iter().any(|g| g.monophonic_release) {
         plan = plan
