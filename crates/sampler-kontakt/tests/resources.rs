@@ -2,6 +2,29 @@ use sampler_kontakt::ResourceContainer;
 
 #[cfg(feature = "library-access")]
 #[test]
+#[ignore = "installed Conflux NCKP; set KONTRA_WIDGET_GATE_PATH to Conflux.nki"]
+fn installed_conflux_nckp_imports_every_control_and_presentation_field() {
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_WIDGET_GATE_PATH").unwrap());
+    let mut owned = sampler_kontakt::Resources::for_program(&path, 0).unwrap();
+    let bytes = owned.read_result("Resources/performance_view/conflux.nckp").unwrap().unwrap();
+    let (view, warnings) = sampler_ksp::nckp::parse(&bytes).unwrap();
+    let root: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    fn count(nodes: &serde_json::Value) -> usize {
+        nodes.as_array().into_iter().flatten().map(|node|
+            1 + count(&node["value"]["controls"])).sum()
+    }
+    let raw = count(&root["value"]["performanceView"]["controls"]);
+    println!("CONFLUX_NCKP raw={raw} imported={} diagnostics={}",view.controls.len(),warnings.len());
+    assert!(warnings.is_empty(), "every authored Conflux control type must be imported");
+    assert_eq!(view.controls.len(), raw);
+    let fields = |key: &str| view.controls.iter().filter(|c|c.properties.iter().any(|(k,_)|k==key)).count();
+    assert_eq!(fields("$CONTROL_PAR_FONT_TYPE_ON"),68);
+    assert_eq!(fields("$CONTROL_PAR_DISABLE_TEXT_SHIFTING"),68);
+    assert_eq!(fields("table_steps_shown"),6);
+}
+
+#[cfg(feature = "library-access")]
+#[test]
 #[ignore = "installed Conflux multi; set KONTRA_WIDGET_GATE_PATH and KONTRA_KONTAKT_CONTENT"]
 fn installed_conflux_multi_resolves_each_authored_resource_owner() {
     let path = std::path::PathBuf::from(
