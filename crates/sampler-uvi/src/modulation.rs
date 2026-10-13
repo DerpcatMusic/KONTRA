@@ -935,6 +935,25 @@ impl Translation {
         });
     }
 
+    /// AHD stages. The registry (0x14113af30) builds three `(duration, level,
+    /// curve)` stages `(0,1,0)`, `(1,1,0)`, `(.1,0,0)`: attack to 1, hold 1 s at
+    /// 1, decay to 0 in 0.1 s. Only AttackTime/AttackCurve/HoldTime/DecayTime/
+    /// DecayCurve are registered (IDs 0x142670ff0..0x142671000), so an AHD has
+    /// no sustain level and no release stage: the unset hold and decay take the
+    /// registry defaults and the level falls to 0. The velocity and retrigger
+    /// root fields exist (0x1410eef9b) but their attribute names are not bound,
+    /// and note-off handling of a running AHD is untraced.
+    pub(crate) fn ahd_stages(&mut self, node: Node, envelope: &mut ir::Envelope, at: &str) -> Result<(), String> {
+        let seconds = |name, default, max: f64| {
+            number(node, name, default).map(|t| ir::Time::Seconds(t.clamp(0.0, max)))
+        };
+        envelope.hold = seconds("HoldTime", 1.0, 10.0)?;
+        envelope.decay = seconds("DecayTime", 0.1, 30.0)?;
+        envelope.sustain = 0.0;
+        self.unsupported(at, "AHD note-off release (default release used)", "");
+        Ok(())
+    }
+
     fn lfo(
         &mut self,
         node: Node,
@@ -943,28 +962,43 @@ impl Translation {
         hertz: f64,
     ) -> Result<Result<Signal, Gap>, String> {
         use ir::Reason::{NotModeled, UnknownLaw};
+        // Retrigger enum names 0 No Retrigger, 1 Retrigger, 2 Legato, 3 Song:
+        // registry 0x1410f5d00, setter 0x1410f8360. Only the setter's engine
+        // trigger-mode store and voice-reset request are traced; the event and
+        // transport behavior of Legato and Song is open.
         let retrigger = match number(node, "Retrigger", 1.0)? {
             1.0 => true,
             0.0 => false,
+            2.0 => return Ok(Err(gap("LFO Retrigger", "2 (Legato): event law open", UnknownLaw))),
+            3.0 => return Ok(Err(gap("LFO Retrigger", "3 (Song): transport reset law open", UnknownLaw))),
             mode => return Ok(Err(gap("LFO Retrigger", mode.to_string(), UnknownLaw))),
         };
-        let shape = match number(node, "WaveFormType", 0.0)? {
-            0.0 => ir::LfoShape::Sine,
-            2.0 => ir::LfoShape::Triangle,
-            // v1 measured the square only per voice.
-            1.0 if retrigger => ir::LfoShape::Square,
-            // The manual's waveform menu runs Sine, Square, Triangle, Ramp Up,
-            // Ramp Down, Analog Square, Random S&H, Chaos Lorenz, Chaos Rossler,
-            // User; indices 0, 1, 2 and 6 are measured to sit at those places.
-            3.0 => ir::LfoShape::SawUp,
-            4.0 => ir::LfoShape::SawDown,
-            6.0 => ir::LfoShape::SampleAndHold,
-            wave @ 9.0 => {
-                let what = format!("WaveFormType {wave} (user table)");
+        // WaveFormType ids 0..=9 (registry 0x1410f5d00; factory selector
+        // 0x14283abf8+8*id). Ids 0..=5 are the 256-entry tables with linear
+        // interpolation, id 6 the congruential hold (see core `blocks::lfo`).
+        let id = number(node, "WaveFormType", 0.0)?;
+        let wave = |w| ir::LfoShape::Native(ir::NativeWave::Uvi(w));
+        let shape = match id {
+            0.0 => wave(ir::UviWave::Sinus),
+            1.0 => wave(ir::UviWave::Square),
+            2.0 => wave(ir::UviWave::Triangle),
+            3.0 => wave(ir::UviWave::RampUp),
+            4.0 => wave(ir::UviWave::RampDown),
+            5.0 => wave(ir::UviWave::AnalogSquare),
+            6.0 => wave(ir::UviWave::RandomHold),
+            // 0x1410f8ca0: Euler maps over per-voice (x, y, z) state; the
+            // public sigma/rho/beta/Q (Lorenz) and a/b/c/Q (Rossler) defaults
+            // are not recovered, and the LFO block evaluates a pure phase function.
+            7.0 | 8.0 => {
+                let what = format!("WaveFormType {id} (chaos map: stateful, coefficient defaults open)");
                 return Ok(Err(gap("LFO waveform", what, NotModeled)));
             }
-            wave => {
-                let what = format!("WaveFormType {wave}, Retrigger {retrigger}");
+            9.0 => {
+                let what = format!("WaveFormType {id} (user table: stored decode open)");
+                return Ok(Err(gap("LFO waveform", what, NotModeled)));
+            }
+            other => {
+                let what = format!("WaveFormType {other}, Retrigger {retrigger}");
                 return Ok(Err(gap("LFO waveform", what, UnknownLaw)));
             }
         };
@@ -972,7 +1006,7 @@ impl Translation {
         // Measured (v1): a one-pole keeping (1/3)^(1/(Smooth·rate)) per
         // sample, so τ = Smooth/ln 3 and 99% of a step after Smooth·ln 100/ln 3.
         let smooth = number(node, "Smooth", 0.0)?;
-        let starts_at_zero = shape != ir::LfoShape::Square && (phase == 0.0 || phase == 0.5);
+        let starts_at_zero = id != 1.0 && (phase == 0.0 || phase == 0.5);
         let smoothing = if smooth < NEGLIGIBLE_SMOOTH {
             0.0
         } else if let Err(why) = smoothable(retrigger, starts_at_zero) {
@@ -987,8 +1021,11 @@ impl Translation {
         let polar = number(node, "Bipolar", 1.0)? != 0.0;
         let delay = number(node, "DelayTime", 0.0)?.max(0.0);
         let rise = number(node, "RiseTime", 0.0)?.max(0.0);
-        // The IR delays and fades an LFO per voice towards its centre; UVI
-        // fades a unipolar LFO from 0 and times a free one from program start.
+        // 0x1410f8ca0: native fade multiplies the internal bipolar signal before
+        // the unipolar mapping, so a unipolar LFO fades up from 0 while the IR
+        // fades toward the centre; delay and rise clocks are quantized up to 32
+        // frames and their seconds conversion (DelayTime 0x1410f82d0, RiseTime
+        // 0x1410f82e0) and free-running start are open.
         if (delay > 0.0 || rise > 0.0) && (!polar || !retrigger) {
             let what = format!("Bipolar {polar}, Retrigger {retrigger}");
             return Ok(Err(gap("LFO delay or rise", what, NotModeled)));
@@ -1431,21 +1468,53 @@ mod tests {
         }
     }
 
+    /// WaveFormType ids 0..=6 select the traced tables and the congruential hold
+    /// (registry 0x1410f5d00); a square no longer needs a retriggered source
+    /// because the table, not a per-voice measurement, defines it.
     #[test]
-    fn lfo_ramps_and_sample_and_hold_follow_the_waveform_menu() {
-        for (wave, expected) in [
-            (3, ir::LfoShape::SawUp),
-            (4, ir::LfoShape::SawDown),
-            (6, ir::LfoShape::SampleAndHold),
+    fn lfo_waveform_ids_select_the_traced_tables() {
+        use ir::UviWave::*;
+        for (wave, expected, retrigger) in [
+            (0, Sinus, 1),
+            (1, Square, 1),
+            (1, Square, 0),
+            (2, Triangle, 1),
+            (3, RampUp, 1),
+            (4, RampDown, 1),
+            (5, AnalogSquare, 1),
+            (6, RandomHold, 1),
         ] {
             let ir = translate(
-                &format!(r#"<LFO Name="V" WaveFormType="{wave}"/>"#),
+                &format!(r#"<LFO Name="V" WaveFormType="{wave}" Retrigger="{retrigger}"/>"#),
                 "",
                 r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>"#,
             );
             let (_, source) = only_route(&ir);
-            assert!(matches!(source, ir::ModulationSource::Lfo(l) if l.shape == expected), "{wave}");
+            let want = ir::LfoShape::Native(ir::NativeWave::Uvi(expected));
+            assert!(matches!(source, ir::ModulationSource::Lfo(l) if l.shape == want), "{wave}");
             assert!(ir.unsupported.iter().all(|u| u.feature != "LFO waveform"), "{:?}", ir.unsupported);
+        }
+    }
+
+    /// Ids 7 and 8 are stateful Euler maps with open coefficient defaults, id 9 a
+    /// stored user table, and Retrigger 2 and 3 have untraced event laws: each is
+    /// reported, never approximated by another waveform or mode.
+    #[test]
+    fn lfo_chaos_user_and_untraced_retrigger_are_reported() {
+        for (attrs, feature) in [
+            (r#"WaveFormType="7""#, "LFO waveform"),
+            (r#"WaveFormType="8""#, "LFO waveform"),
+            (r#"WaveFormType="9""#, "LFO waveform"),
+            (r#"Retrigger="2""#, "LFO Retrigger"),
+            (r#"Retrigger="3""#, "LFO Retrigger"),
+        ] {
+            let ir = translate(
+                &format!(r#"<LFO Name="V" {attrs}/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>"#,
+            );
+            assert!(ir.zones[0].routes.is_empty(), "{attrs}");
+            assert!(ir.unsupported.iter().any(|u| u.feature == feature), "{attrs}: {:?}", ir.unsupported);
         }
     }
 
@@ -1583,6 +1652,47 @@ mod tests {
         assert_eq!(e.decay, ir::Time::Seconds(0.03));
     }
 
+    /// 0x14113af30: an AHD with no stage attributes keeps the registry's stage
+    /// tuples, attack 0, hold 1 s, decay 0.1 s, falling to level 0.
+    #[test]
+    fn ahd_unset_stages_take_the_registry_defaults() {
+        let ir = translate(
+            r#"<AHD Name="E"/>"#,
+            "",
+            r#"<SignalConnection Source="$Program/E" Destination="Pitch" Ratio="12"/>"#,
+        );
+        let (_, source) = only_route(&ir);
+        let ir::ModulationSource::Envelope(e) = source else {
+            panic!("not an envelope: {source:?}")
+        };
+        assert_eq!(
+            (e.attack, e.hold, e.decay, e.sustain),
+            (ir::Time::ZERO, ir::Time::Seconds(1.0), ir::Time::Seconds(0.1), 0.0)
+        );
+    }
+
+    /// 0x141350b70/0x141351050: the stage recurrence with m = (1 - C)/2 clamped to
+    /// [0.0001, 0.9999] is expm1(k t)/expm1(k) at k = 2 ln((1 + C)/(1 - C)); an
+    /// AHD attack curve of +-1 therefore clamps at +-0.9998.
+    #[test]
+    fn ahd_curves_are_the_clamped_stage_recurrence() {
+        for (c, k) in [(0.5, 2.0 * 3f64.ln()), (-0.5, -2.0 * 3f64.ln()), (1.0, 2.0 * (1.9998f64 / 0.0002).ln())] {
+            let ir = translate(
+                &format!(r#"<AHD Name="E" AttackCurve="{c}" DecayCurve="{c}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/E" Destination="Pitch" Ratio="12"/>"#,
+            );
+            let (_, source) = only_route(&ir);
+            let ir::ModulationSource::Envelope(e) = source else {
+                panic!("not an envelope: {source:?}")
+            };
+            for shape in [e.attack_shape, e.decay_shape] {
+                let ir::Curve::Exponential(got) = shape else { panic!("{shape:?}") };
+                assert!((got - k).abs() < 1e-12, "{c}: {got} vs {k}");
+            }
+        }
+    }
+
     #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
@@ -1603,7 +1713,7 @@ mod tests {
             reasons,
             [
                 ("modulation source", ir::Reason::NotModeled),
-                ("LFO waveform", ir::Reason::UnknownLaw),
+                ("LFO waveform", ir::Reason::NotModeled),
                 (
                     "pitch bend outside pitch (bend is native note expression)",
                     ir::Reason::NotModeled
