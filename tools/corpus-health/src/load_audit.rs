@@ -46,7 +46,12 @@ fn counts(instrument: &ir::Instrument) -> Value {
         let modes: BTreeSet<_> = objects.groups.iter().filter_map(|g| g.source.as_ref().map(|s| s.mode)).collect();
         json!({"groups":objects.groups.len(),"muted_groups":muted,"zones":objects.zones.len(),
             "sampleless_zones":sampleless,"active_loops":loops,"source_modes":modes,
-            "retained_unclassified_tail_bytes":tails,
+            "retained_tail_bytes":tails,
+            "assigned_omitted_voice_group_overrides":objects.groups.iter().filter(|g| {
+                !g.muted && (1..=128).contains(&g.voice_group_index)
+                    && objects.voice_groups.as_ref().is_some_and(|v|v.groups[(g.voice_group_index-1) as usize].is_none())
+            }).count(),
+            "invalid_voice_group_assignments":objects.groups.iter().filter(|g|g.voice_group_index > 128).count(),
             "program_key_range":[objects.program.low_key, objects.program.high_key],
             "program_velocity_range":[objects.program.low_velocity, objects.program.high_velocity],
             "nondefault_zone_tune":objects.zones.iter().filter(|z|z.zone_tune != 1.).count(),
@@ -86,6 +91,9 @@ pub(super) fn run(args: &[String]) -> i32 {
     let multi = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("nkm"));
+    if !multi && program.is_some_and(|p| p != 0) {
+        return 2;
+    }
     let programs = match (multi, program) {
         (_, Some(p)) => vec![p],
         (true, None) => match sampler_kontakt::read_multi(path) {
@@ -115,6 +123,12 @@ pub(super) fn run(args: &[String]) -> i32 {
             Ok(k) => {
                 let read_ms = start.elapsed().as_secs_f64() * 1000.;
                 record["counts"] = counts(&k.instrument);
+                let folded: BTreeSet<_> = k
+                    .locations
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_lowercase())
+                    .collect();
+                record["asset_case_aliases"] = json!(k.locations.len() - folded.len());
                 record["script_init_faults"] = json!(k.script_init_faults().len());
                 record["read_ms"] = json!(read_ms);
                 record["rss_after_read_kib"] =
