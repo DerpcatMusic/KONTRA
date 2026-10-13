@@ -118,10 +118,10 @@ impl Census {
             "script private bytes {}",
             script.object.private.data().len()
         ));
-        self.count(match script.persistent {
-            None => "script table absent",
-            Some(t) if t.is_empty() => "script table empty",
-            _ => "script table populated",
+        self.count(if script.persistent.is_empty() {
+            "script table empty"
+        } else {
+            "script table populated"
         });
         let mut declarations = BTreeMap::new();
         let mut instrument_only = BTreeSet::new();
@@ -224,7 +224,8 @@ impl Census {
             }
         }
         self.family = format!("0x06/0x{:x}", script.object.version);
-        if let Some(table) = script.persistent {
+        {
+            let table = script.persistent;
             for entry in table.iter() {
                 let name = entry.data().split(|b| *b == b' ').next().unwrap_or(&[]);
                 let name = String::from_utf8_lossy(name).to_lowercase();
