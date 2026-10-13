@@ -2973,7 +2973,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
-            ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ",
+            ir::Processor::Eq(_) => "EQ",
             ir::Processor::Compressor(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Daft(_) => "Daft",

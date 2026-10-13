@@ -1,10 +1,12 @@
-//! GENERIC / v1 FALLBACK live TPT bell (v1 0cb7a8a0:src/engine/filter.rs). This is NOT the
-//! native Kontakt EQ: native legacy EQ kind22 is `native_eq::NativeEq` (coefficient
+//! GENERIC / v1 FALLBACK live TPT bell (v1 0cb7a8a0:src/engine/filter.rs). NOT native and NOT part
+//! of the universal `Eq` superset: it survives only for the v1-parity bands of legacy EQ kinds
+//! 23/24 (native multiband law unproved) and v1 `Peak` filters with live knobs.
+//! The native Kontakt EQ: legacy EQ kind22 is `legacy::NativeEq` (coefficient
 //! generator 0x1409591c0: its own frequency law, 903.27 Hz at x=0.5 against this
 //! module's 632.46 Hz, and a five-value biquad state, not this six-value TPT layout;
 //! wave3 audit CORE-FILTERS-032/034). The gain scale below is only the algebraic
 //! observation A = 2^(dB/6); nothing else here is claimed native.
-use super::{
+use super::super::{
     Parameter, Planar, ProcessorState,
     control::{ControlRamp, ControlRange, PreparedParameter},
 };
@@ -54,7 +56,7 @@ impl PeakingEq {
         Self::q_of_octaves(f64::from(Self::bandwidth_octaves(normalized))) as f32
     }
 
-    pub(super) fn valid(self) -> bool {
+    pub(in crate::dsp) fn valid(self) -> bool {
         [self.frequency, self.bandwidth].iter().all(|p| {
             p.valid()
                 && !matches!(p, Parameter::Expression { .. })
@@ -62,7 +64,7 @@ impl PeakingEq {
         }) && self.gain_db.valid()
             && !matches!(self.gain_db, Parameter::Expression { .. })
     }
-    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Result<Eq, Error> {
+    pub(in crate::dsp) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Result<Peaking, Error> {
         if rate == 0 || !self.valid() {
             return Err(Error::InvalidInput);
         }
@@ -78,7 +80,7 @@ impl PeakingEq {
                 }
             }
         }
-        Ok(Eq {
+        Ok(Peaking {
             rate,
             frequency: self.frequency.compile(bindings),
             bandwidth: self.bandwidth.compile(bindings),
@@ -88,7 +90,7 @@ impl PeakingEq {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Eq {
+pub(crate) struct Peaking {
     rate: u32,
     frequency: PreparedParameter,
     bandwidth: PreparedParameter,
@@ -106,7 +108,7 @@ fn coefficients(rate: u32, frequency: f32, bandwidth: f32, gain_db: f32) -> [f32
     let a2 = g * a1;
     [a1, a2, g * a2, 1., k * (a * a - 1.), 0.]
 }
-impl Eq {
+impl Peaking {
     pub(crate) fn trace_parameters(self) -> [(&'static str, PreparedParameter); 3] {
         [
             ("frequency_knob", self.frequency),
@@ -114,7 +116,7 @@ impl Eq {
             ("gain_db", self.gain),
         ]
     }
-    pub(super) fn is_flat(self, parameters: &[ControlRamp], at: u64, len: usize) -> bool {
+    pub(in crate::dsp) fn is_flat(self, parameters: &[ControlRamp], at: u64, len: usize) -> bool {
         len == 0
             || ((self.gain.value(parameters, at, None) as f32).abs() < 0.01
                 && (self.gain.value(parameters, at + len as u64 - 1, None) as f32).abs() < 0.01)
@@ -145,7 +147,7 @@ impl Eq {
         }
     }
 
-    pub(super) fn process(
+    pub(in crate::dsp) fn process(
         self,
         state: &mut ProcessorState,
         parameters: &[ControlRamp],
@@ -210,7 +212,7 @@ mod tests {
     #[test]
     fn generic_peaking_frequency_is_not_the_native_legacy_eq_law() {
         let generic = PeakingEq::frequency_hz(0.5, 48_000);
-        let native = super::super::native_eq::KontaktLegacyEqSettings::frequency_hz(0.5, 48_000);
+        let native = super::super::legacy::KontaktLegacyEqSettings::frequency_hz(0.5, 48_000);
         assert!((generic - 632.4555).abs() < 0.01);
         assert_eq!(native, 903.2728881835938_f32);
     }
@@ -265,8 +267,8 @@ mod tests {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn held_eq_nulls_against_literal_v1_two_frame_section() {
-        use super::super::control::PreparedParameter;
-        let eq = Eq {
+        use super::super::super::control::PreparedParameter;
+        let eq = Peaking {
             rate: 48000,
             frequency: PreparedParameter::Constant(0.6),
             bandwidth: PreparedParameter::Constant(0.4),
@@ -307,8 +309,8 @@ mod tests {
 
     #[test]
     fn held_eq_reads_controls_once_and_reuses_coefficients() {
-        use super::super::control::{PARAMETER_READS, PreparedParameter};
-        let eq = Eq {
+        use super::super::super::control::{PARAMETER_READS, PreparedParameter};
+        let eq = Peaking {
             rate: 48000,
             frequency: PreparedParameter::Control(0),
             bandwidth: PreparedParameter::Control(1),
@@ -321,7 +323,7 @@ mod tests {
         ];
         let mut state = ProcessorState::default();
         for at in [0, 32, 64] {
-            let mut block = [[0.125; super::super::BLOCK]; 2];
+            let mut block = [[0.125; super::super::super::BLOCK]; 2];
             PARAMETER_READS.with(|n| n.set(0));
             eq.process(&mut state, &parameters, &mut block, 32, at);
             let reads = PARAMETER_READS.with(|n| n.get());
@@ -350,11 +352,11 @@ mod tests {
     /// shown): response vs bypass in dB. The centre gain is 2x the displayed dB.
     #[test]
     fn bell_matches_the_measured_kontakt_response() {
-        let eq = Eq {
+        let eq = Peaking {
             rate: 48000,
-            frequency: super::super::control::PreparedParameter::Constant(0.499712),
-            bandwidth: super::super::control::PreparedParameter::Constant(0.503936),
-            gain: super::super::control::PreparedParameter::Constant(9.),
+            frequency: super::super::super::control::PreparedParameter::Constant(0.499712),
+            bandwidth: super::super::super::control::PreparedParameter::Constant(0.503936),
+            gain: super::super::super::control::PreparedParameter::Constant(9.),
         };
         for (hz, measured) in [
             (100., 4.3),
@@ -368,13 +370,13 @@ mod tests {
             for block in 0..64 {
                 let mut b: Planar = std::array::from_fn(|_| {
                     std::array::from_fn(|i| {
-                        ((block * super::super::BLOCK + i) as f64 * std::f64::consts::TAU * hz
+                        ((block * super::super::super::BLOCK + i) as f64 * std::f64::consts::TAU * hz
                             / 48000.)
                             .sin()
                     })
                 });
                 let input = b[0];
-                eq.process(&mut state, &[], &mut b, super::super::BLOCK, 0);
+                eq.process(&mut state, &[], &mut b, super::super::super::BLOCK, 0);
                 if block >= 32 {
                     num += b[0].iter().map(|v| v * v).sum::<f64>();
                     den += input.iter().map(|v| v * v).sum::<f64>();

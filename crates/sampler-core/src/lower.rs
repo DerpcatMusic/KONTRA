@@ -1935,20 +1935,17 @@ impl Lowering<'_> {
             (Processor::PeakingEq(eq), Gain) => eq.gain_db = parameter,
             (Processor::PeakingEq(eq), Cutoff) => eq.frequency = parameter,
             (Processor::PeakingEq(eq), Resonance) => eq.bandwidth = parameter,
-            (Processor::KontaktLegacyEq(eq), Gain) => eq.gain_db = parameter,
-            (Processor::KontaktLegacyEq(eq), Cutoff) => eq.frequency = parameter,
-            (Processor::KontaktLegacyEq(eq), Resonance) => eq.bandwidth = parameter,
+            (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
+            (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
+            (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
+            (Processor::Eq(eq), ReferenceDecibels) => eq.reference_db = parameter,
+            (Processor::Eq(eq), Enabled) => eq.enabled = parameter,
             (Processor::Compressor(c), Threshold) => c.threshold_db = parameter,
             (Processor::Compressor(c), Ratio) => c.ratio = parameter,
             (Processor::Compressor(c), Attack) => c.attack_seconds = parameter,
             (Processor::Compressor(c), Release) => c.release_seconds = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
-            (Processor::LiveFilter(f), Frequency) => f.frequency_hz = parameter,
-            (Processor::LiveFilter(f), Quality) => f.q = parameter,
-            (Processor::LiveFilter(f), GainDecibels) => f.gain_db = parameter,
-            (Processor::LiveFilter(f), ReferenceDecibels) => f.reference_db = parameter,
-            (Processor::LiveFilter(f), Enabled) => f.enabled = parameter,
             (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
             (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
             (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
@@ -1997,19 +1994,15 @@ impl Lowering<'_> {
         }
         let constant = |v| Parameter::Constant(v);
         let db = |g: ir::Gain| 20. * g.linear().log10();
-        let seed = |shape, frequency, q, gain| {
-            Processor::LiveFilter(crate::LiveFilter {
-                shape,
-                frequency_hz: constant(frequency),
-                q: constant(q),
-                gain_db: constant(gain),
-                reference_db: constant(0.),
-                enabled: constant(1.),
-            })
+        let seed = |kind, frequency, q, gain| {
+            Processor::Eq(crate::EqBand::rbj(kind, frequency, q, gain))
         };
-        use crate::LiveShape as S;
+        use ir::fx::eq::Kind as S;
         match *p {
             ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
+            ir::Processor::Eq(c) if c.count == 1 => {
+                Some(Processor::Eq(crate::dsp::eq_family::live_band(&c.bands[0])))
+            }
             ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([
                 constant(m[0][0]),
                 constant(m[0][1]),
@@ -2149,6 +2142,10 @@ impl Lowering<'_> {
                 .iter()
                 .filter(|b| b.chain == chain && b.index == start + index)
             {
+                // A live lane addresses one band; a multi-band EQ has no band index to name.
+                if matches!(**p, ir::Processor::Eq(c) if c.count > 1) {
+                    return Err(unsupported(owner, Feature::Controls));
+                }
                 let mut found = false;
                 for stage in &mut stages {
                     found |= self.bind_processor(owner, stage, binding)?;
@@ -2186,6 +2183,9 @@ impl Lowering<'_> {
                 _ => unreachable!(),
             })
         };
+        if let ir::Processor::Eq(config) = &processor {
+            return crate::dsp::eq_family::lower(config, self.rate).map_err(core(Stage::Filter, owner));
+        }
         let kind = match processor {
             ir::Processor::Filter(f) => f.kind,
             _ => return Ok(vec![self.processor(owner, processor)?]),
@@ -2206,11 +2206,6 @@ impl Lowering<'_> {
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
-            ir::Processor::KontaktLegacyEq(eq) => Processor::KontaktLegacyEq(crate::KontaktLegacyEqSettings {
-                frequency: Parameter::Constant(f64::from(eq.frequency)),
-                bandwidth: Parameter::Constant(f64::from(eq.bandwidth)),
-                gain_db: Parameter::Constant(f64::from(eq.gain_db)),
-            }),
             ir::Processor::Gainer { gain, dry } => Processor::Gainer {
                 gain: Parameter::Constant(gain.linear()),
                 dry,
@@ -2372,6 +2367,8 @@ impl Lowering<'_> {
                 wet,
             },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
+            // An EQ lowers to several stages: `processors` handles it before this point.
+            ir::Processor::Eq(_) => return Err(unsupported(owner, Feature::Controls)),
             ir::Processor::Delay { time, .. } if self.frames(time) == 0 => Processor::Gain(1.),
             ir::Processor::Delay {
                 time,

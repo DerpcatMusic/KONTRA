@@ -2052,8 +2052,10 @@ impl Translation {
                 .chain(&self.ir.chains[chain.0].post_amplitude)
                 .nth(index);
             let saved = match processor {
-                Some(ir::Processor::KontaktLegacyEq(eq)) => [f64::from(eq.gain_db),
-                    f64::from(eq.frequency), f64::from(eq.bandwidth)],
+                Some(ir::Processor::Eq(eq)) if eq.count == 1 && eq.bands[0].law == ir::fx::eq::Law::KontaktLegacy => {
+                    let b = eq.bands[0];
+                    [f64::from(b.gain_db), f64::from(b.frequency), f64::from(b.q)]
+                }
                 Some(ir::Processor::Filter(ir::Filter {
                     kind: ir::FilterKind::Peak { gain },
                     cutoff: ir::Frequency::Hertz(hz),
@@ -2517,7 +2519,7 @@ impl Translation {
                         ir::Processor::Filter(ir::Filter {
                             kind: ir::FilterKind::Peak { .. },
                             ..
-                        }) | ir::Processor::KontaktLegacyEq(_)
+                        }) | ir::Processor::Eq(_)
                     )
                     .then_some((
                         ir::Target::Processor {
@@ -4698,7 +4700,7 @@ mod modulation {
         let built = crate::effects::chain_with(std::slice::from_ref(&slot), crate::effects::Scope::Voice,
             None, Some((7, -1)), (7, -1), &[]);
         assert_eq!(built.filter_slots, [(5, 1)]);
-        assert!(matches!(built.processors[1], ir::Processor::KontaktLegacyEq(_)));
+        assert!(matches!(built.processors[1], ir::Processor::Eq(_)));
         let mut t = translation();
         t.source_eq_values(7, &[slot]);
         t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
