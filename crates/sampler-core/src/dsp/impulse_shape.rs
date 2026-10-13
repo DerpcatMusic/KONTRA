@@ -1,4 +1,4 @@
-//! Shaping of a sampled reverb's impulse response by its source controls.
+//! Universal convolution-impulse shaping (moved from sampler-uvi): shaping of a sampled reverb's impulse response by its source controls.
 //! The laws follow authored-impulse probes of the official processor (the
 //! frozen v1 engine's measurements): Time keeps `floor(len * Time)` frames under
 //! a half-cosine window, damping splits the response into a zero-phase one-pole
@@ -12,7 +12,7 @@ use sampler_ir::ImpulseShape;
 const LOW_POLE: f64 = 0.4;
 
 /// The control state of a preset: every control at its neutral value.
-pub(crate) fn neutral() -> ImpulseShape {
+pub fn neutral_impulse_shape() -> ImpulseShape {
     ImpulseShape {
         time: 1.0,
         damping_low: 0.0,
@@ -45,7 +45,7 @@ fn low_band(x: &[f32]) -> Vec<f32> {
 }
 
 /// `left`/`right` (equal length, at `rate`) as `shape` leaves them.
-pub(crate) fn shape(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -> (Vec<f32>, Vec<f32>) {
+pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -> (Vec<f32>, Vec<f32>) {
     let (mut l, mut r) = (left.to_vec(), right.to_vec());
     let time = s.time.clamp(0.0, 1.0);
     if time < 1.0 {
@@ -115,13 +115,13 @@ mod tests {
     #[test]
     fn neutral_shape_keeps_the_response() {
         let (l, r) = decaying(1000);
-        assert_eq!(shape(48000, &l, &r, &neutral()), (l, r));
+        assert_eq!(shape_impulse(48000, &l, &r, &neutral_impulse_shape()), (l, r));
     }
 
     #[test]
     fn time_keeps_a_windowed_fraction() {
         let (l, r) = decaying(1000);
-        let (a, _) = shape(48000, &l, &r, &ImpulseShape { time: 0.25, ..neutral() });
+        let (a, _) = shape_impulse(48000, &l, &r, &ImpulseShape { time: 0.25, ..neutral_impulse_shape() });
         assert_eq!(a.len(), 250);
         assert_eq!(a[0], l[0]);
         assert!(a[249].abs() < l[249] * 0.01);
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn pre_delay_prepends_silence() {
         let (l, r) = decaying(100);
-        let (a, _) = shape(48000, &l, &r, &ImpulseShape { pre_delay_ms: 10.0, ..neutral() });
+        let (a, _) = shape_impulse(48000, &l, &r, &ImpulseShape { pre_delay_ms: 10.0, ..neutral_impulse_shape() });
         assert_eq!(a.len(), 580);
         assert!(a[..480].iter().all(|v| *v == 0.0));
         assert_eq!(a[480], l[0]);
@@ -140,30 +140,30 @@ mod tests {
     fn normalize_sets_mean_channel_energy() {
         let (l, r) = decaying(4000);
         let energy = |s| {
-            let (a, b) = shape(48000, &l, &r, &ImpulseShape { normalize: true, ..s });
+            let (a, b) = shape_impulse(48000, &l, &r, &ImpulseShape { normalize: true, ..s });
             a.iter().chain(&b).map(|v| f64::from(*v).powi(2)).sum::<f64>() / 2.0
         };
-        assert!((energy(neutral()) - 1.0).abs() < 1e-4);
-        let reverb = energy(ImpulseShape { sampled_reverb: true, ..neutral() });
+        assert!((energy(neutral_impulse_shape()) - 1.0).abs() < 1e-4);
+        let reverb = energy(ImpulseShape { sampled_reverb: true, ..neutral_impulse_shape() });
         assert!((reverb - 1.5625).abs() < 1e-3, "{reverb}");
     }
 
     #[test]
     fn unnormalized_reverb_is_an_eighth() {
-        let (a, _) = shape(48000, &[1.0], &[1.0], &ImpulseShape { sampled_reverb: true, ..neutral() });
+        let (a, _) = shape_impulse(48000, &[1.0], &[1.0], &ImpulseShape { sampled_reverb: true, ..neutral_impulse_shape() });
         assert_eq!(a, [0.125]);
     }
 
     #[test]
     fn width_mixes_the_pair() {
-        let (a, b) = shape(48000, &[1.0], &[0.0], &ImpulseShape { width: 1.0, ..neutral() });
+        let (a, b) = shape_impulse(48000, &[1.0], &[0.0], &ImpulseShape { width: 1.0, ..neutral_impulse_shape() });
         assert!(a[0] > 0.0 && b[0] < 0.0, "{a:?} {b:?}");
     }
 
     #[test]
     fn negative_damping_cuts_late_energy() {
         let (l, r) = decaying(2000);
-        let (a, _) = shape(48000, &l, &r, &ImpulseShape { damping_high: -1.0, ..neutral() });
+        let (a, _) = shape_impulse(48000, &l, &r, &ImpulseShape { damping_high: -1.0, ..neutral_impulse_shape() });
         let sum = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>();
         assert!(sum(&a) < sum(&l) || a != l);
         assert!(a.iter().all(|v| v.is_finite()));
