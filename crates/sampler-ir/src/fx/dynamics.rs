@@ -80,6 +80,9 @@ pub struct Generic {
     pub lookahead: Time,
     /// High-pass of the detector's side-chain; 0 is off.
     pub sidechain_highpass_hz: f64,
+    /// Largest gain change in dB (UVI Feedback Compressor "DynamicRange"); 0 is
+    /// unlimited (the kernel still caps at its own ceilings).
+    pub range_db: f64,
 }
 
 /// The saved knobs of a Kontakt compressor core.
@@ -135,6 +138,7 @@ impl Config {
                 topology: Topology::FeedForward,
                 lookahead: Time::Seconds(0.),
                 sidechain_highpass_hz: 0.,
+                range_db: 0.,
             }),
             attack,
             release,
