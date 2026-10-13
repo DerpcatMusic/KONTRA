@@ -40,9 +40,9 @@ const fn legacy(response: Response, poles: u8) -> Config {
     c
 }
 
-const fn legacy_one(response: Response) -> Config {
-    let mut c = legacy(response, 1);
-    c.cutoff_law = CutoffLaw::LegacyOnePole;
+const fn warped(response: Response, poles: u8) -> Config {
+    let mut c = legacy(response, poles);
+    c.cutoff_law = CutoffLaw::LegacyWarp;
     c
 }
 
@@ -56,22 +56,23 @@ use Response::{BandPass as Bp, HighPass as Hp, LowPass as Lp, Notch as Nt, Peak 
 const SV_LP2: &str = "response measured against Kontakt 8 (cutoff, Q, -3 dB points); native recurrence, control clock and the -6 dB passband loss at full resonance are not reproduced (CORE-FILTERS-065..072)";
 const SV: &str = "cutoff 25*800^x and Q law measured on SV LP2 only; this member shares them unmeasured, cascaded sections share one Q, and the passband loss at high resonance is not reproduced";
 const SV_ONE: &str = "one-pole section with the SV LP2 cutoff law, unmeasured; Q is unused";
-const LEGACY: &str = "pinned v1 stand-in: legacy cutoff/Q laws unmeasured, native BFilter1Pole/2Pole kernel not extracted";
+const LEGACY: &str = "pinned v1 stand-in: BFilter2PoleBP (setCutoff FUN_14095a900, its own warp and numerator) not transcribed, cutoff and Q laws unmeasured";
 const LEGACY_ONE: &str = "BFilter1PoleLP/HP setCutoff extracted (bilinear one-pole at the native warped pole, rate independent); native cutoff modulation is a 32-frame slewed update here run on the shared clock, and the dry/accumulate output mode is not modelled";
+const LEGACY_TWO: &str = "cutoff extracted (BFilter2PoleLP/HP: Butterworth prototype FUN_14082a0b0 moved by the class warp, exact at zero resonance); resonance scales the prototype's z^-2 term by 1 + 2.687 (1-(1-r)^2) and the gain by a resonance law, which the pinned v1 Q stand-in does not reproduce";
 const LADDER: &str = "saved row/morphology and compensation tables extracted; cutoff, gain, resonance setters, control clock and nonlinear kernel unproved (audit CORE-FILTERS-045..054)";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; binding of type 91 to that offset is inferred";
-const BUTTERWORTH: &str = "legacy 4- and 6-pole filters measure as Butterworth, which needs a different Q per cascaded section; the IR cascades identical sections only";
+const BUTTERWORTH: &str = "BFilter4Pole/6Pole are Butterworth sections (Q = 1/(2 cos((2k+1) pi / 2N)), FUN_14082a0b0) moved by the class warp, with per-section resonance factors (FUN_14095c9c0, 14095cf60); the IR cascades identical sections only";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
     use Build::{Config as C, Elsewhere, Gap};
     Some(match id {
-        2 => ("Legacy LP1", C(legacy_one(Lp), Partial, LEGACY_ONE)),
-        3 => ("Legacy HP1", C(legacy_one(Hp), Partial, LEGACY_ONE)),
+        2 => ("Legacy LP1", C(warped(Lp, 1), Partial, LEGACY_ONE)),
+        3 => ("Legacy HP1", C(warped(Hp, 1), Partial, LEGACY_ONE)),
         4 => ("Legacy BP2", C(legacy(Bp, 2), Generic, LEGACY)),
-        6 => ("Legacy LP2", C(legacy(Lp, 2), Generic, LEGACY)),
-        7 => ("Legacy HP2", C(legacy(Hp, 2), Generic, LEGACY)),
+        6 => ("Legacy LP2", C(warped(Lp, 2), Partial, LEGACY_TWO)),
+        7 => ("Legacy HP2", C(warped(Hp, 2), Partial, LEGACY_TWO)),
         8 => ("Legacy LP4", Gap(BUTTERWORTH)),
         9 => ("Legacy HP4", Gap(BUTTERWORTH)),
         10 => ("Legacy BP4", Gap(BUTTERWORTH)),
@@ -173,7 +174,7 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> R
 pub(crate) fn cutoff_octaves(id: i32) -> Option<f64> {
     match build(id)? {
         (_, Build::Config(c, ..)) => match c.cutoff_law {
-            CutoffLaw::Legacy | CutoffLaw::LegacyOnePole => Some(LEGACY_CUTOFF_OCTAVES),
+            CutoffLaw::Legacy | CutoffLaw::LegacyWarp => Some(LEGACY_CUTOFF_OCTAVES),
             CutoffLaw::Sv => Some(800f64.log2()),
             _ => None,
         },
@@ -225,6 +226,17 @@ mod tests {
                 if high { FilterKind::HighPass { poles: 1 } } else { FilterKind::LowPass { poles: 1 } }
             );
         }
+    }
+
+    #[test]
+    fn legacy_two_pole_shares_its_class_warp() {
+        use sampler_ir::fx::filter::{Warp, legacy_warp_hertz};
+        let lp = map(6, 0.5, 0.0, None).unwrap().config;
+        assert_eq!(lp.hertz(None), Some(legacy_warp_hertz(0.5, Warp::LowPass)));
+        assert_eq!(lp.q(), Some(std::f64::consts::FRAC_1_SQRT_2 as f32 as f64));
+        let hp = map(7, 0.5, 0.0, None).unwrap().config;
+        assert_eq!(hp.hertz(None), Some(legacy_warp_hertz(0.5, Warp::HighPass2)));
+        assert_ne!(hp.hertz(None), map(3, 0.5, 0.0, None).unwrap().config.hertz(None));
     }
 
     #[test]
