@@ -1344,6 +1344,10 @@ impl Lowering<'_> {
         if matches!(
             processor,
             ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
+                | ir::Processor::FilterBank(ir::fx::filter::Config {
+                    topology: ir::fx::filter::Topology::Cascade,
+                    ..
+                })
         ) {
             return None;
         }
@@ -1666,6 +1670,10 @@ impl Lowering<'_> {
                                 ir::Processor::LadderLP4(_)
                                     | ir::Processor::Daft(_)
                                     | ir::Processor::Ar(_)
+                                    | ir::Processor::FilterBank(ir::fx::filter::Config {
+                                        topology: ir::fx::filter::Topology::Cascade,
+                                        ..
+                                    })
                             ) =>
                         {
                             (
@@ -1992,15 +2000,15 @@ impl Lowering<'_> {
             (p @ Processor::Gain(_), Gain) => *p = Processor::ControlGain(range),
             (Processor::StateVariable(filter), Cutoff) => filter.cutoff_hz = parameter,
             (Processor::StateVariable(filter), Resonance) => filter.q = parameter,
-            (Processor::Daft(filter), Gain) => filter.gain = parameter,
-            (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
-            (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
-            (Processor::Daft(filter), Response) => filter.response = parameter,
-            (Processor::Ar(filter), Cutoff) => filter.cutoff = parameter,
-            (Processor::Ar(filter), Resonance) => filter.resonance = parameter,
-            (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
-            (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
-            (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
+            (Processor::Filter(filter), Gain | Cutoff | Resonance | Response) => {
+                let knob = match binding.parameter {
+                    Gain => crate::dsp::FilterKnob::Gain,
+                    Cutoff => crate::dsp::FilterKnob::Cutoff,
+                    Resonance => crate::dsp::FilterKnob::Resonance,
+                    _ => crate::dsp::FilterKnob::Response,
+                };
+                return Ok(filter.bind(knob, parameter));
+            }
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
@@ -2271,17 +2279,17 @@ impl Lowering<'_> {
                 first,
                 last,
             },
-            ir::Processor::Daft(d) => Processor::Daft(DaftSettings {
+            ir::Processor::Daft(d) => Processor::Filter(crate::FilterSettings::Daft(DaftSettings {
                 gain: Parameter::Constant(d.gain),
                 cutoff: Parameter::Constant(d.cutoff),
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
-            }),
-            ir::Processor::Ar(d) => Processor::Ar(crate::ArSettings {
+            })),
+            ir::Processor::Ar(d) => Processor::Filter(crate::FilterSettings::Ar(crate::ArSettings {
                 mode: d.mode,
                 cutoff: Parameter::Constant(d.cutoff),
                 resonance: Parameter::Constant(d.resonance),
-            }),
+            })),
             ir::Processor::LadderLP4(d) => {
                 let lanes = native_lanes(ir::Processor::LadderLP4(d));
                 let parameter = |index: usize, value: f64| {
@@ -2299,13 +2307,13 @@ impl Lowering<'_> {
                             })
                         })
                 };
-                Processor::LadderLP4(crate::LadderSettings {
+                Processor::Filter(crate::FilterSettings::Ladder(crate::LadderSettings {
                     cutoff: parameter(0, d.cutoff),
                     resonance: parameter(1, d.resonance),
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
                     taps: d.taps,
-                })
+                }))
             }
             ir::Processor::LiveFormant { .. } => {
                 let lanes = native_lanes(processor);
@@ -2317,6 +2325,15 @@ impl Lowering<'_> {
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => {
                     Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
+                }
+                ir::fx::filter::Topology::Cascade => {
+                    let class = cascade_class(c.response, c.poles)
+                        .ok_or_else(|| unsupported(owner, Feature::Controls))?;
+                    Processor::Filter(crate::FilterSettings::Cascade(crate::CascadeSettings {
+                        class,
+                        cutoff: Parameter::Constant(c.cutoff),
+                        resonance: Parameter::Constant(c.resonance),
+                    }))
                 }
                 _ => return Err(unsupported(owner, Feature::Controls)),
             },
@@ -2942,4 +2959,23 @@ mod chain_sharing_tests {
             ]
         );
     }
+}
+
+/// The legacy BFilter class a cascade configuration names.
+fn cascade_class(response: ir::fx::filter::Response, poles: u8) -> Option<crate::LegacyFilter> {
+    use crate::LegacyFilter as L;
+    use ir::fx::filter::Response as R;
+    Some(match (response, poles) {
+        (R::LowPass, 1) => L::Lp1,
+        (R::HighPass, 1) => L::Hp1,
+        (R::BandPass, 2) => L::Bp2,
+        (R::LowPass, 2) => L::Lp2,
+        (R::HighPass, 2) => L::Hp2,
+        (R::LowPass, 4) => L::Lp4,
+        (R::HighPass, 4) => L::Hp4,
+        (R::BandPass, 4) => L::Bp4,
+        (R::Notch, 4) => L::Br4,
+        (R::LowPass, 6) => L::Lp6,
+        _ => return None,
+    })
 }

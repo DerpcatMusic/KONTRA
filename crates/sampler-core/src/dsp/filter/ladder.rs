@@ -47,7 +47,6 @@ impl LadderSettings {
             parameters: [self.cutoff, self.resonance, self.gain].map(|p| p.compile(bindings)),
             record_version: self.record_version,
             taps: self.taps,
-            modulation_index: usize::MAX,
         }
     }
 }
@@ -59,7 +58,6 @@ pub(crate) struct Ladder {
     parameters: [PreparedParameter; 3],
     record_version: u16,
     taps: u8,
-    pub(crate) modulation_index: usize,
 }
 
 impl Ladder {
