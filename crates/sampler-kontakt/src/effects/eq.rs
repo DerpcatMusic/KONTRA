@@ -1,8 +1,13 @@
 //! Kontakt `eq` effects onto `sampler_ir::fx::eq`.
 //!
 //! - Filter 0x18 kind 22 (legacy one-band EQ): exact native law (`Law::KontaktLegacy`).
-//! - Filter 0x18 kinds 23/24 (multiband): every band runs the same native law; the multiband
-//!   topology and stereo clocks are unproved and noted by `mod.rs`.
+//! - Filter 0x18 kinds 23/24 (`BEQ2Band` / `BEQ3Band`, vtables 0x144f137e8 / 0x144f13a48): PROVED
+//!   serial. Scalar process 0x140aeb240 / 0x140aeb8e0 (cascades 0x140ae87a0 / 0x140ae9c00) feed
+//!   band n's DF1 output into band n+1, per channel, coefficients shared by all channels; a band
+//!   whose gain is within ±9.54e-7 dB and unmodulated is skipped. Wrappers 0x140904780 /
+//!   0x140904790 (cadence 0x140a6f2f0) run each band's own one-band smoothers and coefficient
+//!   generator 0x1409591c0 on one shared 32-frame counter. So one `legacy_band` processor per
+//!   band, in band order, is the native topology; flat bands are dropped as natively.
 //! - Solid G-EQ 0x44 (`BParFXSSLGEQ`, reader 0x140d029f0, v0x10 12 fields, v0x11 four more):
 //!   saved knobs through the proved spline tables (`Law::Solid`); band topology generic.
 use super::{Notes, Reader};
