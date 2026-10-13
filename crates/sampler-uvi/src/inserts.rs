@@ -171,6 +171,34 @@ impl Translation {
                     out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
+                "BitCrusher" => {
+                    // Kernel 0x1412d1770; the public fields are the kernel's
+                    // members unchanged (ctor defaults 22050, 16, 0, 1; setters
+                    // 0x141041710.., Cutoff 0x1412d1730 -> tilt filter).
+                    let hertz = number(node, "EffectiveSampleRate", 22050.0)?;
+                    let bits = number(node, "BitSize", 16.0)?;
+                    let drive = number(node, "Drive", 0.0)?;
+                    let cutoff = number(node, "Cutoff", 0.0)?;
+                    let mix = number(node, "Mix", 1.0)?;
+                    if !(hertz >= 1.0
+                        && (1.0..=32.0).contains(&bits)
+                        && (0.0..=1.0).contains(&drive)
+                        && (-1.0..=1.0).contains(&cutoff)
+                        && (0.0..=1.0).contains(&mix))
+                    {
+                        self.unsupported(&at, "BitCrusher value outside its public range", "");
+                        out.truncate(slot);
+                        placed.push((id, slot, 0));
+                        continue;
+                    }
+                    out.push(ir::Processor::Color(ir::fx::color::Config::bit_crusher(
+                        hertz,
+                        bits,
+                        drive,
+                        cutoff as f32,
+                        mix,
+                    )));
+                }
                 k if crate::fx::dynamics::handles(k) => {
                     crate::fx::dynamics::translate(self, node, &at, &mut out)?;
                 }
