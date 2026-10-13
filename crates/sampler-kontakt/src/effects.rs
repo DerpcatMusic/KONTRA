@@ -2623,7 +2623,8 @@ mod tests {
     // Authored independently of the decoder schema: native Raum reader
     // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
     fn raum_payload() -> Vec<u8> {
-        let mut bytes = (-17i32).to_le_bytes().to_vec();
+        // Kontakt 8.13.1 FUN_140ac5cc0 validates the leading u32 as an enum 0..=2.
+        let mut bytes = 2i32.to_le_bytes().to_vec();
         bytes.extend(
             [
                 0.125f32, 0.25, 0.5, 1., 2., 4., 8., 16., 32., 64., 128., 256.,
@@ -2668,8 +2669,9 @@ mod tests {
             (
                 0x65,
                 0x10,
+                // Kontakt validates Raum's leading enum before any other read.
                 vec![0xde, 0xad, 0xbe, 0xef],
-                "Static error: Truncated FX parameter",
+                "Generic error: BParFXRaum 0x10: Rejected",
             ),
             (
                 0x65,
@@ -2762,7 +2764,7 @@ mod tests {
                 );
                 assert_eq!(saved.fields.len(), 19);
                 for (name, value) in [
-                    ("param_0", SourceParameterValue::Integer(-17)),
+                    ("param_0", SourceParameterValue::Integer(2)),
                     ("param_1", SourceParameterValue::Number(0.125)),
                     ("param_12", SourceParameterValue::Number(256.)),
                     ("param_13", SourceParameterValue::Integer(0xa5)),

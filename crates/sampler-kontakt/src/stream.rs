@@ -686,8 +686,12 @@ impl Streamer {
         // Each asset keeps source metadata, never a backup of sample buffers.
         // Explicit KSP reload returns staging ranges to the core's residency worker.
         for pcm in assets {
-            let source = sources[&pcm.asset_id()].clone();
-            let ranges = table[&pcm.asset_id()].clone();
+            // Assets without a stream source (fully resident) have nothing to reload.
+            let (Some(source), Some(ranges)) =
+                (sources.get(&pcm.asset_id()).cloned(), table.get(&pcm.asset_id()).cloned())
+            else {
+                continue;
+            };
             pcm.set_residency_loader(move || {
                 let mut reader = source.open().map_err(|_| sampler_core::Error::NotReady)?;
                 let mut resident = Vec::with_capacity(ranges.len());
