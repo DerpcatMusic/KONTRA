@@ -870,7 +870,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }),
         _ => Value::Null,
     };
-    let views: Vec<sampler_ksp::ScriptView> = match &subject {
+    let mut views: Vec<sampler_ksp::ScriptView> = match &subject {
         Subject::Plan(l) => l.scripts.clone(),
         Subject::Streamed(s) => s.loaded.scripts.clone(),
         _ => Vec::new(),
@@ -1023,6 +1023,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     // release block, and every other block.
     let (mut allocs_on, mut allocs_off, mut allocs_steady) = (0usize, 0usize, 0usize);
     let mut peak_voices = 0usize;
+    // Host servicing stays outside audio timing/allocation counters. Record
+    // numeric outcomes so a silent note can be distinguished from a stalled
+    // callback or an unsupported physical engine destination.
+    let mut ksp_ui_effects = 0usize;
+    let mut engine_successes = 0usize;
+    let mut engine_failures = std::collections::BTreeMap::new();
     // Lua on the audio thread's clock: the host runs it on a script thread.
     let (mut script_allocs, mut script_seconds) = (0usize, 0.0f64);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
@@ -1205,6 +1211,26 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             let Rig::Midi { rt, .. } = &mut rig else {
                 unreachable!()
             };
+            // Off the measured audio interval, exactly like the existing native
+            // headless host. A callback can emit more than the bounded outbox.
+            // Draining lets its next render retry the suspended instruction.
+            ksp_ui_effects += sampler_ksp::service_ui_effects(rt, &mut views)
+                .map_err(|e| format!("KSP host service: {e}"))?;
+            while let Some(outcome) = rt.take_engine_parameter_outcome() {
+                match outcome.result {
+                    Ok(()) => engine_successes += 1,
+                    Err(error) => {
+                        *engine_failures
+                            .entry((
+                                outcome.program,
+                                outcome.address,
+                                outcome.write,
+                                format!("{error:?}"),
+                            ))
+                            .or_insert(0usize) += 1;
+                    }
+                }
+            }
             rt.flush_behaviors_at(|_, _, outcome, program| {
                 if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
                     let callback = sampler_ksp::callback_of(&views, program);
@@ -1250,6 +1276,28 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt,
     };
     let st = rt.stats();
+    let mut pending_callbacks = Vec::new();
+    rt.visit_behavior_progress(|progress| {
+        if progress.outcome.is_none() {
+            pending_callbacks.push(json!({
+                "program": progress.program,
+                "callback": sampler_ksp::callback_of(&views, progress.program),
+                "pc": progress.pc,
+                "waiting": progress.waiting,
+                "note_owned": matches!(progress.owner, sampler_core::BehaviorOwner::Note(_)),
+            }));
+        }
+    });
+    let engine_failures: Vec<Value> = engine_failures
+        .into_iter()
+        .map(|((program, address, write, error), count)| {
+            json!({
+                "program": program, "address": address,
+                "parameter": address.and_then(|a| sampler_core::engine_parameter_name(a.parameter)),
+                "write": write, "error": error, "count": count,
+            })
+        })
+        .collect();
     let perf = json!({
         "block_frames": buffer.len(),
         "release_drain_seconds": (rendered_frames - release_at) as f64 / f64::from(rate),
@@ -1261,6 +1309,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "deadline_misses": block_times.iter().filter(|t| **t > deadline).count(),
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
+        "ksp_ui_effects": ksp_ui_effects,
+        "ksp_pending_callbacks": pending_callbacks,
+        "ksp_engine_successes": engine_successes,
+        "ksp_engine_failures": engine_failures,
+        "ksp_engine_outcomes_dropped": rt.dropped_engine_parameter_outcomes(),
         "audio_allocs_note_on": allocs_on,
         "audio_allocs_release": allocs_off,
         "audio_allocs_steady": allocs_steady,
@@ -1296,7 +1349,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     if let Some(h) = horizon {
                         let _ = rt.service_streaming(*h);
                     }
-                    let _ = ingress.render(rt, &mut block, batch, batch.len(), |_, _| {});
+                    ingress
+                        .render(rt, &mut block, batch, batch.len(), |_, _| {})
+                        .map_err(|e| format!("selection render: {e:?}"))?;
+                    sampler_ksp::service_ui_effects(rt, &mut views)
+                        .map_err(|e| format!("selection KSP host service: {e}"))?;
                 }
             }
         }
@@ -2991,6 +3048,78 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kontakt_audition_services_ui_backpressure_before_judging_silence() {
+        let mut instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("authored.wav".into()),
+                encoding: sampler_ir::Encoding::Wav,
+                root_key: None,
+                loops: vec![],
+            }],
+            zones: vec![sampler_ir::Zone {
+                keys: sampler_ir::KeyRange { low: 60, high: 60 },
+                velocity: sampler_ir::VelocityResponse::None,
+                ..sampler_ir::Zone::new(sampler_ir::AssetRef(0))
+            }],
+            ..Default::default()
+        };
+        instrument.behaviors.push(sampler_ir::Behavior {
+            name: "authored outbox regression".into(),
+            language: sampler_ir::Language::Ksp,
+            source: "on init declare ui_label $label(1,1) declare $i end on
+                on note ignore_event($EVENT_ID) $i:=0
+                while ($i < 1000) inc($i) set_text($label,\"refresh\") end while
+                play_note($EVENT_NOTE,$EVENT_VELOCITY,0,100000) end on"
+                .into(),
+            slot: None,
+            state: vec![],
+            requires: vec![],
+        });
+        let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::finish(
+            instrument,
+            vec![pcm],
+            vec!["authored.wav".into()],
+            &sampler_kontakt::Options {
+                mpe: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sound = play(
+            Subject::Plan(Box::new(loaded)),
+            Pick {
+                key: 60,
+                velocity: 64,
+                switch: None,
+            },
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            sound.peak > 0.01,
+            "a suspended label refresh must not be classified as library silence"
+        );
+        assert_eq!(sound.stuck_voices, 0);
+        assert_eq!(sound.stuck_notes, 0);
+        assert_eq!(sound.perf["ksp_ui_effects"], 1000);
+        assert!(
+            sound.perf["ksp_pending_callbacks"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            sound.selection["played"]
+                .as_array()
+                .is_some_and(|takes| !takes.is_empty()),
+            "the repeated selection pass must service the same callback backpressure"
+        );
+        assert!(sound.faults.is_empty());
+    }
 
     #[test]
     fn authored_release_sample_drains_beyond_the_old_half_second_window() {
