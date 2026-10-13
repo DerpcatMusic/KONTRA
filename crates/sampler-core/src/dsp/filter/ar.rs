@@ -31,7 +31,6 @@ impl ArSettings {
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
             rate,
             quanta: ((rate * 0.001 / QUANTUM as f32 + 0.5) as u32).max(1),
-            modulation_index: usize::MAX,
         }
     }
 }
@@ -41,7 +40,6 @@ pub(crate) struct Ar {
     parameters: [PreparedParameter; 2],
     rate: f32,
     quanta: u32,
-    pub(crate) modulation_index: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

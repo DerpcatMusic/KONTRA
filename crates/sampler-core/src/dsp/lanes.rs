@@ -167,9 +167,7 @@ pub(crate) fn process(
             | PreparedProcessor::Dynamics(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveFormant { .. }
-            | PreparedProcessor::Daft(_)
-            | PreparedProcessor::LadderLP4 { .. }
-            | PreparedProcessor::Ar { .. }
+            | PreparedProcessor::Filter { .. }
             | PreparedProcessor::Eq(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {

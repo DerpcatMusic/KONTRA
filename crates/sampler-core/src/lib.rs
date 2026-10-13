@@ -82,7 +82,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, DynamicsSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    ArSettings, ColorSettings, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
+    ArSettings, CascadeSettings, ColorSettings, FilterSettings, LegacyFilter, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
     MAX_IMPULSE_FRAMES, NoiseSettings, OutputLowPass, QuantizerSettings,
     EqBand, Parameter, KontaktLegacyEqSettings, Processor, Rectifier,
     StateVariableFilter, neutral_impulse_shape, shape_impulse,

@@ -2538,6 +2538,10 @@ impl Translation {
                 let native = matches!(
                     processor,
                     ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
+                        | ir::Processor::FilterBank(sampler_ir::fx::filter::Config {
+                            topology: sampler_ir::fx::filter::Topology::Cascade,
+                            ..
+                        })
                 );
                 let parameter = match target.param.as_str() {
                     "filterCutoff"
@@ -4581,7 +4585,7 @@ mod modulation {
             post_amplitude: vec![filter],
         });
         t.cutoff_octaves
-            .insert((0, 1), sampler_ir::fx::filter::LEGACY_CUTOFF_OCTAVES);
+            .insert((0, 1), 8.96);
         for (slot, expected) in [(0, -30.), (5, -26.88)] {
             let route = t
                 .route(

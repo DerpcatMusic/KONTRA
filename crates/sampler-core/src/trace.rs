@@ -833,31 +833,10 @@ impl TraceGraph {
                 .collect(),
                 0,
             ),
-            PreparedProcessor::Daft(d) => (
-                "daft",
-                d.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::LadderLP4 { ladder, .. } => (
-                "ladder_lp4",
-                ladder
-                    .trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Ar { ar, .. } => (
-                "ar",
-                ar.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
+            PreparedProcessor::Filter { engine, .. } => {
+                let (name, lanes) = engine.trace();
+                (name, lanes.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
+            }
             PreparedProcessor::Color { color, .. } => {
                 let (name, parameters) = color.trace();
                 (name, parameters.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
