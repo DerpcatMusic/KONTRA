@@ -12,7 +12,7 @@
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
-    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Native, Order, Rate,
+    Allpass, Config, DelayTime, Interpolation, LfoShape, MAX_TAPS, MAX_VOICES, Native, Order, Rate, UviWave,
     SweepLaw,
 };
 use std::f64::consts::{PI, TAU};
@@ -110,6 +110,57 @@ pub(crate) struct TimeMod {
     voice: [(f64, f64, f64); MAX_VOICES],
     lfo_used: bool,
     min_delay: f64,
+    /// Frames voice `v` reads later than its tap, times `v`.
+    voice_delay: f64,
+    /// UVI table LFO: the table and whether the increment is the direct form.
+    uvi: Option<(&'static [f32; 257], bool)>,
+}
+
+/// UVI LFO tables (built at 0x14163c3c0..0x14163cbbb): 257 points, the last
+/// repeating the first.
+fn uvi_table(wave: UviWave) -> &'static [f32; 257] {
+    use std::sync::OnceLock;
+    static TABLES: OnceLock<[[f32; 257]; 5]> = OnceLock::new();
+    let tables = TABLES.get_or_init(|| {
+        let mut t = [[0f32; 257]; 5];
+        for i in 0..257 {
+            let j = i % 256;
+            t[0][i] = (i as f32 * f32::from_bits(0x3cc90fdb)).sin();
+            t[1][i] = if j < 128 { 1. } else { -1. };
+            let q = (j % 64) as f32 / 64.;
+            t[2][i] = match j / 64 {
+                0 => q,
+                1 => 1. - q,
+                2 => -q,
+                _ => q - 1.,
+            };
+            // ponytail: ramp tables follow the reported formula to i = 256; unused by mapped effects.
+            t[3][i] = 2. * i as f32 / 255. - 1.;
+            t[4][i] = 1. - 2. * i as f32 / 255.;
+        }
+        t
+    });
+    &tables[wave as usize]
+}
+
+/// UVI table read: `(1 - f) * T[i] + f * T[i + 1]`, `i = phase >> 24`.
+#[inline(always)]
+fn uvi_read(table: &[f32; 257], phase: u32) -> f32 {
+    let i = (phase >> 24) as usize;
+    let frac = (phase & 0xff_ffff) as f32 * f32::from_bits(0x3380_0000);
+    (1. - frac) * table[i] + frac * table[i + 1]
+}
+
+/// A phase in cycles as UVI's 32-bit phase (`(int64)(p * 2^32)`, 0x141e4e3f0).
+fn uvi_phase(cycles: f64) -> u32 {
+    (cycles * 4_294_967_296.) as i64 as u32
+}
+
+/// UVI phase increment per sample for `hz` (Chorus / Phasor form, or the
+/// Flanger / Phaser direct form), truncated to 32 bits.
+fn uvi_increment(hz: f64, rate: f64, direct: bool) -> u32 {
+    let inc = if direct { 4_294_967_296. / rate * hz } else { hz * 256. / rate * 16_777_216. };
+    inc as i64 as u32
 }
 
 #[inline(always)]
@@ -173,7 +224,7 @@ fn soft(x: f64) -> f64 {
 fn shape(kind: LfoShape, phase: f64) -> f64 {
     let x = phase - phase.floor();
     match kind {
-        LfoShape::Sine => unreachable!("sine runs the leapfrog"),
+        LfoShape::Sine | LfoShape::Uvi { .. } => unreachable!("sine and UVI tables have their own oscillators"),
         LfoShape::Triangle => {
             if x < 0.25 { 4. * x } else if x < 0.75 { 2. - 4. * x } else { 4. * x - 4. }
         }
@@ -194,7 +245,9 @@ impl TimeMod {
         let mut voice = [(1., 0., 0.); MAX_VOICES];
         let mut voice_gain = 1.;
         let mut min_delay = 1.;
+        let mut voice_delay = 0.;
         if let Some(line) = &cfg.line {
+            voice_delay = line.voice_delay_ms * 0.001 * rate;
             taps = usize::from(line.tap_count);
             voices = usize::from(line.voices);
             voice_gain = 1. / voices as f64;
@@ -208,7 +261,7 @@ impl TimeMod {
                 head.depth = tap.depth_ms * 0.001 * rate;
                 longest = longest.max(scale * match tap.time {
                     DelayTime::Frames(n) => f64::from(n),
-                    DelayTime::Ms(ms) => (ms + tap.depth_ms) * 0.001 * rate,
+                    DelayTime::Ms(ms) => (ms + tap.depth_ms) * 0.001 * rate + voice_delay * (voices - 1) as f64,
                     DelayTime::Beats(_) => 0.,
                 });
                 for v in 0..voices {
@@ -255,6 +308,11 @@ impl TimeMod {
             voice,
             lfo_used,
             min_delay,
+            voice_delay,
+            uvi: match cfg.lfo.shape {
+                LfoShape::Uvi { wave, direct } => Some((uvi_table(wave), direct)),
+                _ => None,
+            },
         })
     }
 
@@ -304,6 +362,11 @@ impl TimeMod {
                 let tempo = if tempo < f32::from_bits(0x3dcccccd) { 120. } else { tempo };
                 (1. / (((unit * 60.) / tempo) * speed.max(1.))).clamp(0., 8.)
             }
+            Rate::Beats { beats, max_hz } => {
+                // UVI sync (0x1412e02a0, 0x1412f0ec0): (1/60 / beats) * tempo, f32.
+                let tempo = if tempo < 0.1 { 120. } else { tempo as f32 };
+                ((f32::from_bits(0x3c888889) / beats) * tempo).min(max_hz)
+            }
         }
     }
 
@@ -330,6 +393,10 @@ impl TimeMod {
                 state.z[0] = [0., 1.];
                 let angle = f64::from(1. - phase) * TAU;
                 state.z[1] = [f64::from(angle.sin() as f32), f64::from(angle.cos() as f32)];
+            } else if self.uvi.is_some() {
+                // UVI: the right channel's 32-bit phase starts `phase` cycles ahead.
+                state.z[0] = [0., 0.];
+                state.z[1] = [f64::from(uvi_phase(f64::from(phase))), 0.];
             } else {
                 state.z[0] = [0., 0.];
                 state.z[1] = [f64::from(1. - phase), 0.];
@@ -356,6 +423,7 @@ impl TimeMod {
         let hz = self.hz(tempo);
         let step = (2. * (f64::from(hz) * PI / self.rate).sin()) as f32;
         let inc = f64::from(hz) / self.rate;
+        let uvi_inc = self.uvi.map_or(0, |(_, direct)| uvi_increment(f64::from(hz), self.rate, direct));
 
         // Tempo-synced heads glide to their target (block rate).
         let mut base = [0.; MAX_TAPS];
@@ -416,6 +484,9 @@ impl TimeMod {
                         co += s * step;
                         state.z[c] = [f64::from(s), f64::from(co)];
                         (lfo[c], lfo_cos[c]) = (f64::from(s), f64::from(co));
+                    } else if let Some((table, _)) = self.uvi {
+                        // Read before the advance at the end of the frame.
+                        lfo[c] = f64::from(uvi_read(table, state.z[c][0] as u32));
                     } else {
                         state.z[c][0] += inc;
                         state.z[c][0] -= state.z[c][0].floor();
@@ -433,6 +504,27 @@ impl TimeMod {
                         }
                     }
                     SweepLaw::Filter { .. } => {}
+                    SweepLaw::Linear { min_hz, max_hz } => {
+                        // 0x1412f0ec0: f32, w = 2 f / rate swept linearly by the LFO.
+                        let two = 2. / self.rate as f32;
+                        let (lo, hi) = (two * min_hz, two * max_hz);
+                        for c in 0..2 {
+                            let w = (lfo[c] as f32 + 1.) * (hi - lo) * 0.5 + lo;
+                            coefficient[c] = (1. - w) / (w + 1.);
+                        }
+                    }
+                    SweepLaw::DelayDomain { min_hz, max_hz, order } => {
+                        // 0x14166c120 / 0x14164c7e0: exponential stage-delay sweep; the
+                        // shared stage is UVI's `y = a u + s` stage with `-a`.
+                        let n = f32::from(order);
+                        let rate = self.rate as f32;
+                        let (hi, lo) = ((rate / max_hz) * (1. / n), (rate / min_hz) * (1. / n));
+                        for c in 0..2 {
+                            let m = (lfo[c] as f32 + 1.) * 0.5;
+                            let d = hi * (lo / hi).powf(m);
+                            coefficient[c] = -((1. - d) / (d + 1.));
+                        }
+                    }
                     SweepLaw::Sweep { min_hz, max_hz, depth } => {
                         if *chunk == 0 {
                             for c in 0..2 {
@@ -488,10 +580,15 @@ impl TimeMod {
                                 0.
                             } else if sine {
                                 lfo[c] * vc + lfo_cos[c] * vs
+                            } else if let Some((table, _)) = self.uvi {
+                                f64::from(uvi_read(table, (state.z[c][0] as u32).wrapping_add(uvi_phase(vp))))
                             } else {
                                 shape(cfg.lfo.shape, state.z[c][0] + vp)
                             };
-                            let d = (base[k] * if c == 1 { line.right_scale } else { 1. } + head.depth * mod_value).clamp(self.min_delay, max_d.max(self.min_delay));
+                            let d = (base[k] * if c == 1 { line.right_scale } else { 1. }
+                                + v as f64 * self.voice_delay
+                                + head.depth * mod_value)
+                                .clamp(self.min_delay, max_d.max(self.min_delay));
                             let sample = read(slab, cap, position, filled, d, line.interpolation, c);
                             out[c] += sample * head.gain[v][c];
                             if k == source {
@@ -533,6 +630,11 @@ impl TimeMod {
             }
             left[i] = cfg.dry * x[0] + cfg.wet * sig[0];
             right[i] = cfg.dry * x[1] + cfg.wet * sig[1];
+            if self.lfo_used && self.uvi.is_some() {
+                for z in &mut state.z {
+                    z[0] = f64::from((z[0] as u32).wrapping_add(uvi_inc));
+                }
+            }
         }
         state.delay_position = position as u32;
         state.delay_filled = filled as u32;
