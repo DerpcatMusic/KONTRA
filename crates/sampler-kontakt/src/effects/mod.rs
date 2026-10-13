@@ -238,11 +238,9 @@ pub(crate) fn apply_writes(
 /// every local instance in v1's survey).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Params {
-    /// Limiter: saved input gain (2^(x/6)) and release ms.
-    Limiter {
-        input_gain: f32,
-        release_ms: f32,
-    },
+    /// A native dynamics law (Limiter 0x1c, Transparent Limiter 0x5f), mapped
+    /// at parse time.
+    Dynamics(Result<sampler_ir::Processor, dynamics::Note>),
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -421,10 +419,8 @@ impl Slot {
                 release_ms: r.f32()?,
                 link: r.flag()?,
             },
-            0x1c => Params::Limiter {
-                input_gain: r.f32()?,
-                release_ms: r.f32()?,
-            },
+            0x1c => Params::Dynamics(dynamics::limiter(r.f32()?, r.f32()?)),
+            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -1086,9 +1082,9 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
-            Some(Params::Limiter { input_gain, release_ms }) => {
+            Some(Params::Dynamics(result)) => {
                 flush(&mut combined, &mut filters, &mut out);
-                match dynamics::limiter(*input_gain, *release_ms) {
+                match result.clone() {
                     Ok(processor) => {
                         out.processors.push(processor);
                         combined = gain;

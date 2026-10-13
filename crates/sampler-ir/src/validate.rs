@@ -346,6 +346,10 @@ impl Check<'_> {
                             self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
                         }
                         Law::KontaktLimiter(_) => {}
+                        Law::KontaktHilbert(n) => {
+                            self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
+                            self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;
+                        }
                     }
                 }
                 Processor::Mix { dry, wet, .. } => {

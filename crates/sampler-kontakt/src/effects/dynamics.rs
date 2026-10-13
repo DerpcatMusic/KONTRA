@@ -77,6 +77,34 @@ pub(super) fn limiter(input_gain: f32, release_ms: f32) -> Result<Processor, Not
     }))
 }
 
+/// `BParFXHilbertLimiter` (0x5f, "Transparent Limiter"): normalized drive,
+/// release (s) and ceiling, then the side-chain byte; they feed controls 0..3
+/// of `BEffectHilbertLimiter` (`0x1409aa9e0` clamps each to 0..=1 before the
+/// core setter `0x141aea680`). The saved-order to control-id map follows the
+/// four-control layout (three floats, then the side-chain bool as id 3); it
+/// is inferred, not traced.
+pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -> Result<Processor, Note> {
+    if ![drive, release, ceiling].iter().all(|v| v.is_finite()) {
+        return Err((
+            "transparent limiter parameters".into(),
+            format!("{drive} {release} {ceiling}"),
+            Reason::InvalidValue,
+        ));
+    }
+    if sidechain {
+        return Err(("transparent limiter external side-chain".into(), String::new(), Reason::NotModeled));
+    }
+    let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
+    Ok(Processor::Dynamics(Config {
+        law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }),
+        attack: Time::Milliseconds(0.0),
+        release: Time::Seconds(unit(release)),
+        link: Link::Max,
+        makeup: Gain::UNITY,
+        mix: 1.0,
+    }))
+}
+
 #[cfg(test)]
 mod limiter_tests {
     use super::*;
@@ -87,5 +115,8 @@ mod limiter_tests {
         assert!(matches!(c.law, Law::KontaktLimiter(_)));
         assert!(limiter(f32::NAN, 100.0).is_err());
         assert!(limiter(0.0, -1.0).is_err());
+        let Ok(Processor::Dynamics(h)) = hilbert(2.0, 0.5, 0.9, false) else { panic!() };
+        assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. })));
+        assert!(hilbert(0.5, 0.5, 0.5, true).is_err());
     }
 }
