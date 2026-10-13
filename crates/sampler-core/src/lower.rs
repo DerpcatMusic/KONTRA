@@ -1672,6 +1672,7 @@ impl Lowering<'_> {
                 program.breakpoints.push(Breakpoints {
                     points,
                     sustain: b.sustain,
+                    loop_range: None,
                 });
                 ModSource::Breakpoints(program.breakpoints.len() - 1)
             }
@@ -1690,6 +1691,10 @@ impl Lowering<'_> {
                     ir::LfoShape::Sine => LfoShape::Sine,
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
+                    ir::LfoShape::Rectangle(width) => LfoShape::Rectangle(width),
+                    ir::LfoShape::Multi { weights, width, normalize } => {
+                        LfoShape::Multi { weights, width, normalize }
+                    }
                     ir::LfoShape::SawUp => LfoShape::SawUp,
                     ir::LfoShape::SawDown => LfoShape::SawDown,
                     ir::LfoShape::SampleAndHold => LfoShape::SampleAndHold,

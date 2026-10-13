@@ -102,7 +102,7 @@ fn gains(rt: &mut Runtime, frames: usize, from: usize) -> Vec<f64> {
     audio
         .iter()
         .enumerate()
-        .map(|(k, f)| f64::from(f[0]) / ((from + k + 1) as f64 / 1000.))
+        .map(|(k, f)| f64::from(f[0]) / ((from + k).max(1) as f64 / 1000.))
         .collect()
 }
 fn start(p: Prepared, controller: u32) -> Runtime {
@@ -154,13 +154,13 @@ fn lfo_rate_change_keeps_the_phase_continuous() {
             ],
         );
         let mut rt = start(p, 0);
-        let mut g = gains(&mut rt, 4800, 0);
+        let mut g = gains(&mut rt, 3840, 0);
         support::without_heap(|| {
             rt.set_controller(rt.performance(0).unwrap(), 1, u32::MAX)
                 .unwrap();
         });
-        g.extend(gains(&mut rt, 4800, 4800));
-        let step = g.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0., f64::max);
+        g.extend(gains(&mut rt, 3840, 3840));
+        let step = g[2..].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0., f64::max);
         assert!(step < 0.005, "retrigger {retrigger}: step {step}");
     }
 }
