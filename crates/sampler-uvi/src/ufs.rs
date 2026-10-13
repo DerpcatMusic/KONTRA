@@ -80,7 +80,7 @@ pub struct Member {
     pub footer: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Folder {
     pub record_offset: u64,
     pub name: String,
@@ -95,6 +95,7 @@ pub struct Folder {
     pub footer: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct Directory {
     pub files: Vec<Member>,
     pub directories: Vec<Folder>,
@@ -239,6 +240,13 @@ impl Ufs {
             header_bytes: bytes,
             _snapshot_file: file,
         })
+    }
+
+    /// Both snapshots pin the same unchanged bank file.
+    pub(crate) fn same_bank(&self, other: &Ufs) -> bool {
+        self.path == other.path
+            && same_file(&self.snapshot, &other.snapshot)
+            && self.header_bytes == other.header_bytes
     }
 
     pub(crate) fn check_snapshot(&self, file: &File) -> Result<()> {
