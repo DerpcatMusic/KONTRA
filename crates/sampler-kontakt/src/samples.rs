@@ -1307,7 +1307,7 @@ mod tests {
         // Declare 32-bit with the header's float bit while the block says PCM.
         bytes[10..12].copy_from_slice(&32u16.to_le_bytes());
         bytes[32..36].copy_from_slice(&1u32.to_le_bytes());
-        assert!(decode(&bytes).unwrap_err().contains("contradicts"));
+        assert!(decode(&bytes).err().unwrap().contains("contradicts"));
         // Version 0x130 ignores the word.
         bytes[4] = 0x30;
         let reader = ncw::NcwReader::read(Cursor::new(&bytes)).unwrap();
