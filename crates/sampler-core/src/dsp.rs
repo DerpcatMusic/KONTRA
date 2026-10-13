@@ -164,9 +164,8 @@ pub enum Processor {
     Delay(Delay),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
     TimeMod(sampler_ir::fx::timemod::Config),
-    /// Stereo compressor; the smoothed reduction lives in the stage's state.
-    Compressor(CompressorSettings),
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
+    /// Every compressor, limiter, gate and expander (`dsp/dynamics/`).
+    Dynamics(DynamicsSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
     /// on the signal that entered the first branch, and `gain` times their
     /// output joins the sum. The last branch leaves the sum as the signal.
@@ -237,8 +236,7 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
-            Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => [threshold, ratio, attack, release].iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(ratio) && *attack > 0. && *release >= 0.,
-            Processor::Compressor(settings) => settings.valid(),
+            Processor::Dynamics(settings) => settings.valid(),
             Processor::Color(settings) => settings.valid(),
             Processor::Daft(settings) => settings.valid(),
             Processor::LadderLP4(settings) => settings.valid(),
@@ -262,8 +260,6 @@ pub(crate) mod space;
 pub(crate) mod timemod;
 mod ar;
 mod ar_kernel;
-mod compressor;
-mod enhanced_compressor;
 pub(super) mod control;
 mod daft;
 mod formant;
@@ -280,7 +276,7 @@ mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 pub(super) mod svf;
-pub use compressor::CompressorSettings;
+pub use dynamics::DynamicsSettings;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub(super) use space::Space;
@@ -305,8 +301,7 @@ pub(super) enum PreparedProcessor {
         timemod: timemod::TimeMod,
         offset: usize,
     },
-    Compressor(compressor::Compressor),
-    KontaktEnhancedCompressor(enhanced_compressor::Enhanced),
+    Dynamics(dynamics::Dynamics),
     LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
     Formant(formant::Formant),
     Color {
@@ -471,9 +466,8 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::TimeMod { timemod, offset }
                 }
-                Processor::KontaktEnhancedCompressor { knobs, link } => PreparedProcessor::KontaktEnhancedCompressor(enhanced_compressor::Enhanced::compile(knobs, link, rate)),
-                Processor::Compressor(settings) => {
-                    PreparedProcessor::Compressor(settings.prepare(rate, bindings))
+                Processor::Dynamics(settings) => {
+                    PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
                 }
                 Processor::Branch {
                     count,
@@ -864,8 +858,7 @@ impl PreparedVoiceChain {
                 matches!(
                     stage,
                     PreparedProcessor::TimeMod { .. }
-                        | PreparedProcessor::Compressor(_)
-                        | PreparedProcessor::KontaktEnhancedCompressor(_)
+                        | PreparedProcessor::Dynamics(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::LiveFormant { .. }
                         | PreparedProcessor::Daft(_)
@@ -1126,10 +1119,14 @@ pub(super) fn process<const TRACE: bool>(
                     filters.tempo,
                 );
             }
-            PreparedProcessor::KontaktEnhancedCompressor(c) => c.process(state, block, len),
-            PreparedProcessor::Compressor(compressor) => {
-                compressor.process(state, parameters, block, len, at)
-            }
+            PreparedProcessor::Dynamics(dynamics) => dynamics.process(
+                state,
+                &mut delay_samples[dynamics.cells()],
+                parameters,
+                block,
+                len,
+                at,
+            ),
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
