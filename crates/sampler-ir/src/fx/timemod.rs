@@ -74,6 +74,24 @@ impl Feedback {
     pub const OFF: Self = Self { matrix: [[0.; 2]; 2], source: 0, lowpass: 0., highpass: 0., drive: 0. };
 }
 
+/// A native Kontakt delay-line kernel that replaces the generic line
+/// recursion. Everything else in [`Line`] is ignored while one is set.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Native {
+    None,
+    /// Kontakt Legacy Delay (0x10): stereo ping-pong ring of 2^18 frames,
+    /// audio 0x140aa1130, setter 0x1409645ae. `time` is the stored value (ms);
+    /// when `unit` > 1e-9 the delay is `unit * 60 / tempo * time * 1000` ms
+    /// (getter 0x140a74bf0).
+    LegacyDelay { time: f32, unit: f32, feedback: f32, damping: f32, pan: f32 },
+    /// Kontakt Legacy Flanger (0x12): 4096-frame ring, 4-point Lagrange read,
+    /// negative feedback, LFO excursion `depth * 50` frames around `color` ms
+    /// (audio 0x140aa2350, setter 0x1409637f0). Rate and phase come from
+    /// [`Config::lfo`] (phase already scaled by 0.25).
+    LegacyFlanger { color: f32, depth: f32, feedback: f32 },
+}
+
 /// Modulated multi-tap delay line.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +112,7 @@ pub struct Line {
     pub max_ms: f64,
     /// Right-channel delay times are the left ones times this (1 = equal).
     pub right_scale: f64,
+    pub native: Native,
 }
 
 impl Line {
@@ -112,6 +131,7 @@ impl Line {
             feedback: Feedback::OFF,
             max_ms,
             right_scale: 1.,
+            native: Native::None,
         }
     }
 }
@@ -202,6 +222,7 @@ impl Config {
     /// nothing recirculates (0 when it does).
     pub fn tail_ms(&self) -> f64 {
         match self.line {
+            Some(l) if l.native != Native::None => 0.,
             Some(l) if l.feedback.matrix == [[0.; 2]; 2] => l.max_ms * l.right_scale.max(1.),
             _ => 0.,
         }
@@ -240,6 +261,18 @@ impl Config {
             }
             if !(0.1..=10.).contains(&l.right_scale) {
                 return Err("right_scale");
+            }
+            if let Native::LegacyDelay { time, unit, feedback, damping, pan } = l.native {
+                let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !(time.is_finite() && time >= 0. && unit.is_finite() && unit_interval(feedback) && unit_interval(damping) && unit_interval(pan)) {
+                    return Err("legacy delay");
+                }
+            }
+            if let Native::LegacyFlanger { color, depth, feedback } = l.native {
+                let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !(color.is_finite() && (0. ..=5.).contains(&color) && unit_interval(depth) && unit_interval(feedback)) {
+                    return Err("legacy flanger");
+                }
             }
             for v in [l.voice_phase, l.voice_spread, l.feedback.drive] {
                 fin(v, "line")?;
