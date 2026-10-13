@@ -496,7 +496,9 @@ fn addressed_phase_form_switch_changes_held_sound_without_restarting_the_clock()
 
 #[test]
 fn phase_form_controls_reject_unproved_or_fractional_modes_atomically() {
-    use sampler_core::{ControlValue, ControlWrite, EngineParameterLaw, Error};
+    use sampler_core::{
+        ControlValue, ControlWrite, EngineParameterLaw, EngineParameterOffset, Error,
+    };
     let data = vec![[0.; 2]; CYCLE];
     let plan = addressed_wave_plan(&data, Wavetable::default(), false);
     let address = wave_address("ENGINE_PAR_WT_FORM_MODE", 7);
@@ -508,7 +510,29 @@ fn phase_form_controls_reject_unproved_or_fractional_modes_atomically() {
         .control;
     let limits = Limits::for_plan(&plan, 1, 4);
     let mut rt = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        assert_eq!(
+            rt.set_engine_offsets(&[EngineParameterOffset {
+                address,
+                offset: 0.001
+            }]),
+            Err(Error::InvalidInput),
+            "discrete selectors have no normalized offset law"
+        );
+        assert_eq!(rt.engine_parameter(address).unwrap(), 0);
+    });
     for value in [1., 18., 8.5] {
+        let plan = addressed_wave_plan(&data, Wavetable::default(), false);
+        let mut controls = plan.controls().to_vec();
+        controls
+            .iter_mut()
+            .find(|definition| definition.id == control)
+            .unwrap()
+            .default = ControlValue::Real(value);
+        assert!(
+            plan.with_controls(controls).is_err(),
+            "invalid defaults must not enter a voice"
+        );
         support::without_heap(|| {
             assert_eq!(
                 EngineParameterLaw::WavetableForm.normalized_value(value),

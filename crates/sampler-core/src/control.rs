@@ -211,6 +211,12 @@ impl Prepared {
                 {
                     return Err(Error::InvalidInput);
                 }
+                if lane >= 3 {
+                    let ControlValue::Real(value) = self.controls[index].default else {
+                        return Err(Error::InvalidInput);
+                    };
+                    crate::EngineParameterLaw::WavetableForm.normalized_value(value)?;
+                }
             }
         }
         for control in self
