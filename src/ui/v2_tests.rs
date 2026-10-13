@@ -1825,8 +1825,7 @@ fn v1_menu_rack_edit_sound_selects_the_requested_part() {
 fn v1_menu_mixer_edit_sound_selects_the_requested_part() {
     let (p, mut h) = v1_menu_fixture();
     h.press("collapse-1");
-    h.press("view-1-Sound");
-    h.press("sound-tab-1-Effects");
+    h.press("view-1-Info");
     h.press("collapse-1");
     v1_strip_menu(&mut h, 131072);
     h.press("menu-item-5");
@@ -5108,9 +5107,9 @@ fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
     );
 }
 
-/// Sound's Mapping is the same read-only IR view as the chrome shortcut.
+/// The Mapping view is a read-only IR view: zones keep their identity.
 #[test]
-fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
+fn mapping_view_preserves_zone_identity_and_ir() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument {
         name: "Layered strings (synthetic RR fixture)".into(),
@@ -5165,12 +5164,7 @@ fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
     }
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        assert!(
-            ui.ui.scene().unwrap().surface("sound-tabs-0").is_some(),
-            "Sound exposes its shared tab strip"
-        );
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
         ui.press("map-group-0-0");
         ui.press("map-zone-0-1");
@@ -5311,8 +5305,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     );
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         ui.press("map-group-0-0");
         ui.press("map-zone-0-0");
         for _ in 0..15 {
@@ -5576,8 +5569,7 @@ fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
     assert!(envelope.frames > 0 && envelope.peaks.iter().any(|(lo, hi)| hi - lo > 0.0001));
     let before = (*inst).clone();
     let mut ui = Harness::new(&p, 1180., 780.);
-    ui.press("view-0-Sound");
-    ui.press("sound-tab-0-Mapping");
+    ui.press("view-0-Mapping");
     assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
     assert_eq!(*inst, before);
 }
@@ -6136,8 +6128,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     );
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         for _ in 0..100 {
             ui.idle(1);
             if ui
@@ -6267,8 +6258,7 @@ fn mapping_group_search_keeps_selection_and_offers_empty_recovery() {
     let before = (*source).clone();
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         assert!(
             ui.ui.scene().unwrap().surface("map-search-0").is_some(),
             "Mapping needs its own group/articulation search"
@@ -7302,7 +7292,6 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         );
         ui.press("map-zone-0-1");
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Controls");
         assert!(
             ui.ui
                 .scene()
@@ -7357,7 +7346,6 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         assert!(scene.surface("map-inspector-0-188").is_some());
         assert!(scene.surfaces().filter(|s| s.key.starts_with("map-group-0-")).count() < 48);
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Controls");
         ui.press("view-0-Mapping");
         assert!(ui.ui.scene().unwrap().surface("map-inspector-0-188").is_some());
     }
