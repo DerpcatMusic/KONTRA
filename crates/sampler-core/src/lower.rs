@@ -157,6 +157,8 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
         curve: match c.curve {
             fx::Curve::Identity => Curve::Identity,
             fx::Curve::Classic { shape } => Curve::Classic(knob(P::Shape, shape)),
+            fx::Curve::Enhanced { shape } => Curve::Enhanced(knob(P::Shape, shape)),
+            fx::Curve::Drums { shape } => Curve::Drums(knob(P::Shape, shape)),
             fx::Curve::Tube { drive } => Curve::Tube(knob(P::Drive, drive)),
             fx::Curve::Transistor { drive } => Curve::Transistor(knob(P::Drive, drive)),
             fx::Curve::Rectifier(mode) => Curve::Rectifier(match mode {
