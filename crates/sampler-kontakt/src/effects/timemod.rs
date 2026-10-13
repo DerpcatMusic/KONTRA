@@ -1,17 +1,16 @@
 //! Kontakt delay and modulation effects onto `sampler_ir::fx::timemod`.
 //!
-//! Exact: Legacy Phaser (0x14). Value-exact but audio-generic: Legacy Delay
-//! (0x10), Chorus (0x11), Flanger (0x12): the stored fields are measured
-//! (docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv: time in ms, speed
-//! in Hz, the rest 0..1) but their audio laws were never extracted, so those
-//! three report `UnknownLaw` and use clearly generic topologies. Replika,
-//! Phasis, Flair, Choral, Rotator, Psyche Delay and Vibrato Chorus have no
-//! proved field binding and stay unsupported.
+//! Native (Kontakt 8.13.1 binary): Legacy Phaser (0x14), Legacy Delay (0x10,
+//! audio 0x140aa1130) and Legacy Flanger (0x12, audio 0x140aa2350). Chorus
+//! (0x11, audio 0x140aa0510) stays generic: its setter (0x140963970) reads a
+//! base delay from saved-struct +8, which neither the reader (0x140d00760) nor
+//! the constructor writes, so the value is unknown. The modern effects stay
+//! unsupported with the reasons in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Order, Rate, SweepLaw, Tap,
+        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
     },
 };
 
@@ -43,6 +42,19 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
         _ => return None,
     }
     Some(unit)
+}
+
+/// Why a delay or modulation module without a mapping stays unsupported.
+pub(super) fn unproved(module: u16) -> Option<&'static str> {
+    Some(match module {
+        0x5a => "Replika: modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38); the core class, its style kernels and the saved-field binding are not extracted",
+        0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
+        0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
+        0x5d => "Choral: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
+        0x63 => "Psyche Delay: modern wrapper core not located; no saved-field binding measured",
+        0x69 => "Vibrato Chorus: modern wrapper core not located; no saved-field binding measured",
+        _ => return None,
+    })
 }
 
 fn unit_set(unit: f32) -> Option<f32> {
@@ -86,15 +98,14 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{time}/{feedback}/{pan}/{damping}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "delay feedback, damping and pan laws", format!("{feedback}/{damping}/{pan}"));
+            // Setter case 0x43 @0x1409645ae, audio 0x140aa1130: feedback * 0.98, damping * 0.7,
+            // pan crossing, ring 2^18. The sync getter's min/max arguments (xmm3, [rsp+0x28])
+            // are stale registers at the call, so the synced time is unclamped except by the ring.
             if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced delay time", format!("unit {unit}; free time used"));
+                notes.push(("tempo-synced delay time clamp".into(), format!("unit {unit}"), Reason::UnknownLaw));
             }
             let mut line = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
-            line.taps[0].pan = f64::from(pan) * 2. - 1.;
-            let fb = f64::from(feedback).min(0.99);
-            line.feedback.matrix = [[fb, 0.], [0., fb]];
-            line.feedback.lowpass = (1. - f64::from(damping)).max(0.05);
+            line.native = Native::LegacyDelay { time, unit, feedback, damping, pan };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Chorus { depth, speed, phase, unit } => {
@@ -102,7 +113,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{speed}/{phase}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "chorus delay, depth, voices and mix laws", format!("{depth}/{speed}/{phase}"));
+            generic(notes, "chorus base delay (setter 0x140963970 reads unwritten struct +8; audio 0x140aa0510 taps at base and base/2, depth * 75 frames)", format!("{depth}/{speed}/{phase}"));
             if unit_set(unit).is_some() {
                 generic(notes, "tempo-synced modulation speed", "Phaser getter assumed".into());
             }
@@ -116,15 +127,17 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{color}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "flanger delay, depth, feedback sign and color laws", format!("{depth}/{feedback}/{color}"));
-            if unit_set(unit).is_some() {
-                generic(notes, "tempo-synced modulation speed", "Phaser getter assumed".into());
+            if !(0. ..=5.).contains(&color) {
+                notes.push(("parameters".into(), format!("color {color}"), Reason::InvalidValue));
+                return None;
             }
-            let mut line = Line::single(DelayTime::Ms(2.5), 6.);
-            line.taps[0] = Tap { time: DelayTime::Ms(2.5), level: 1., pan: 0., depth_ms: f64::from(depth) * 2.4 };
-            line.interpolation = Interpolation::Hermite;
-            let fb = f64::from(feedback).min(0.99);
-            line.feedback.matrix = [[fb, 0.], [0., fb]];
+            // Setter case 0x12 @0x1409637f0, audio 0x140aa2350: color is the base delay in ms,
+            // depth * 50 frames of excursion, feedback * 0.95 subtracted, phase * 0.25 cycles.
+            if unit_set(unit).is_some() {
+                generic(notes, "tempo-synced modulation speed", "Phaser Hz getter; the speed object's class was not confirmed".into());
+            }
+            let mut line = Line::single(DelayTime::Ms(f64::from(color)), 6.);
+            line.native = Native::LegacyFlanger { color, depth, feedback };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
     };
@@ -170,21 +183,21 @@ mod tests {
     }
 
     #[test]
-    fn delay_chorus_flanger_map_stored_values_and_say_generic() {
+    fn native_delay_and_generic_chorus_flanger() {
         // Time is stored in ms (measured table 5..2900), Speed in Hz.
         let (delay, notes) = config(0x10, &[250., 0.4, 0.5, 0.25, -1.]);
         let line = delay.line.unwrap();
-        assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(250.));
-        assert!((line.feedback.matrix[0][0] - f64::from(0.4f32)).abs() < 1e-12);
+        assert_eq!(line.native, sampler_ir::fx::timemod::Native::LegacyDelay { time: 250., unit: -1., feedback: 0.4, damping: 0.25, pan: 0.5 });
         assert_eq!(delay.dry, 0.5, "the slot's dry level mixes outside a Mix block");
-        assert!(notes.iter().all(|n| n.3 == sampler_ir::Reason::UnknownLaw) && !notes.is_empty());
+        assert!(notes.is_empty(), "free-time Legacy Delay is fully native");
 
         let (chorus, notes) = config(0x11, &[0.5, 2., 1., -1.]);
         assert_eq!(chorus.lfo.rate, sampler_ir::fx::timemod::Rate::Hz(2.));
         assert!(!notes.is_empty());
 
-        let (flanger, _) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
-        assert!(flanger.line.unwrap().feedback.matrix[0][0] > 0.4);
+        let (flanger, notes) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
+        assert_eq!(flanger.line.unwrap().native, sampler_ir::fx::timemod::Native::LegacyFlanger { color: 2., depth: 0.5, feedback: 0.5 });
+        assert!(notes.is_empty());
     }
 
     #[test]
