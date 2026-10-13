@@ -1,17 +1,16 @@
 //! Kontakt delay and modulation effects onto `sampler_ir::fx::timemod`.
 //!
-//! Exact: Legacy Phaser (0x14). Value-exact but audio-generic: Legacy Delay
-//! (0x10), Chorus (0x11), Flanger (0x12): the stored fields are measured
-//! (docs/re/kontakt-bindings/fx_legacy_delay_reverb_mod.tsv: time in ms, speed
-//! in Hz, the rest 0..1) but their audio laws were never extracted, so those
-//! three report `UnknownLaw` and use clearly generic topologies. Replika,
-//! Phasis, Flair, Choral, Rotator, Psyche Delay and Vibrato Chorus have no
-//! proved field binding and stay unsupported.
+//! Native (Kontakt 8.13.1 binary): Legacy Phaser (0x14), Legacy Delay (0x10,
+//! audio [ref]) and Legacy Flanger (0x12, audio [ref]). Chorus
+//! (0x11, audio [ref]) stays generic: its setter reads a
+//! base delay from saved-struct +8, which neither the reader nor
+//! the constructor writes, so the value is unknown. The modern effects stay
+//! unsupported with the reasons in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap,
+        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
     },
 };
 
@@ -43,6 +42,19 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
         _ => return None,
     }
     Some(unit)
+}
+
+/// Why a delay or modulation module without a mapping stays unsupported.
+pub(super) fn unproved(module: u16) -> Option<&'static str> {
+    Some(match module {
+        0x5a => "Replika: modern core behind wrapper [ref] (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38); the core class, its style kernels and the saved-field binding are not extracted",
+        0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
+        0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
+        0x5d => "Choral: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
+        0x63 => "Psyche Delay: modern wrapper core not located; no saved-field binding measured",
+        0x69 => "Vibrato Chorus: modern wrapper core not located; no saved-field binding measured",
+        _ => return None,
+    })
 }
 
 fn unit_set(unit: f32) -> Option<f32> {
@@ -101,7 +113,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 notes.push(("parameters".into(), format!("{depth}/{speed}/{phase}/{unit}"), Reason::InvalidValue));
                 return None;
             }
-            generic(notes, "chorus delay, depth, voices and mix laws", format!("{depth}/{speed}/{phase}"));
+            generic(notes, "chorus base delay (setter [ref] reads unwritten struct +8; audio [ref] taps at base and base/2, depth * 75 frames)", format!("{depth}/{speed}/{phase}"));
             if unit_set(unit).is_some() {
                 generic(notes, "tempo-synced modulation speed", "Phaser getter assumed".into());
             }
