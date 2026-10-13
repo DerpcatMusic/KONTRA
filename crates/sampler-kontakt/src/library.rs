@@ -1601,6 +1601,19 @@ impl Translation {
                             sustain: Some(sustain),
                         })
                     }
+                    // Decoded, not executable: the five DBD floats, the glide
+                    // fields and the follower coefficients have no proven
+                    // stored-to-runtime constructor (modulators.md, 0x140ae5990,
+                    // 0x140ceb090, 0x140ae3d80), so they stay diagnosed.
+                    Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
+                        self.unsupported(
+                            &at,
+                            "internal modulator constructor mapping",
+                            format!("{:?} {:?}", params.name, params.modulator),
+                            ir::Reason::UnknownLaw,
+                        );
+                        continue;
+                    }
                     Modulator::Other { chunk_id } => {
                         self.unsupported(
                             &at,
@@ -2624,9 +2637,14 @@ impl Translation {
             {
                 ir::LfoShape::SineScaled(-f64::from(sine))
             }
-            (0, _) => ir::LfoShape::Sine,
-            (1, _) if width == 0.5 => ir::LfoShape::Square,
-            (2, _) => ir::LfoShape::Triangle,
+            // Native BLfo* processors (modulators.md): recovered tables, any pulse
+            // width in 0..1, and held noise whose half-cycle grid counts from a
+            // start phase below one half.
+            (0, _) => ir::LfoShape::Native(ir::NativeWave::Sine),
+            (1, _) if width > 0. && width < 1. => ir::LfoShape::Native(ir::NativeWave::Rectangle(width as f32)),
+            (2, _) => ir::LfoShape::Native(ir::NativeWave::Triangle),
+            (3, _) => ir::LfoShape::Native(ir::NativeWave::Saw),
+            (4, _) if (0. ..0.5).contains(&phase) => ir::LfoShape::Native(ir::NativeWave::Held),
             (waveform, weights) => {
                 self.unsupported(
                     at,
@@ -3086,6 +3104,9 @@ mod survey {
                                 e.unknown_flag
                             ),
                             Modulator::Flex(e) => format!("FLEX {:?} sus={}", e.points, e.sustain),
+                            Modulator::Dbd(e) => format!("DBD {e:?}"),
+                            Modulator::Glide(e) => format!("GLIDE {e:?}"),
+                            Modulator::Follower(e) => format!("FOLLOWER {e:?}"),
                             Modulator::Other { chunk_id } => format!("OTHER {chunk_id:#x}"),
                         };
                         let key =
@@ -4939,7 +4960,7 @@ mod modulation {
         };
         let mut t = translation();
         let sine = t.lfo("g", &lfo(0, None), true).unwrap();
-        assert_eq!(sine.shape, ir::LfoShape::Sine);
+        assert_eq!(sine.shape, ir::LfoShape::Native(ir::NativeWave::Sine));
         assert_eq!(sine.rate, ir::Frequency::Hertz(4.0));
         assert_eq!(sine.fade_in, ir::Time::Milliseconds(10.0));
         assert_eq!(sine.phase, 0.25);
@@ -4954,7 +4975,17 @@ mod modulation {
             t.lfo("g", &synced, true).unwrap().rate,
             ir::Frequency::Beats(1.0)
         );
-        assert!(t.lfo("g", &lfo(3, None), true).is_none());
+        // Native waveform ids (modulators.md BLfo* table): saw 3, held noise 4,
+        // rectangle with any pulse width; the held grid counts from phase < 0.5.
+        assert_eq!(t.lfo("g", &lfo(3, None), true).unwrap().shape, ir::LfoShape::Native(ir::NativeWave::Saw));
+        assert_eq!(t.lfo("g", &lfo(2, None), true).unwrap().shape, ir::LfoShape::Native(ir::NativeWave::Triangle));
+        let mut narrow = lfo(1, None);
+        narrow.initial_values[2] = 0.25;
+        assert_eq!(t.lfo("g", &narrow, true).unwrap().shape, ir::LfoShape::Native(ir::NativeWave::Rectangle(0.25)));
+        assert_eq!(t.lfo("g", &lfo(4, None), true).unwrap().shape, ir::LfoShape::Native(ir::NativeWave::Held));
+        let mut late = lfo(4, None);
+        late.initial_values[3] = 0.5;
+        assert!(t.lfo("g", &late, true).is_none());
         assert!(
             t.lfo("g", &lfo(5, Some([0.5, 0.0, 0.5, 0.0, 0.0])), true)
                 .is_none()
