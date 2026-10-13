@@ -1,6 +1,7 @@
 //! Shared parameter lanes and worker-reserved state for the pinned v1 LP4.
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{BLOCK, Planar, ProcessorState, ladder_kernel};
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{BLOCK, Planar, ProcessorState};
+use super::ladder_kernel;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LadderSettings {
