@@ -6,6 +6,25 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.457
+
+Six reviewed corrections follow 0.3.451:
+
+- Kontakt legacy one-band EQ and live controls use the verified native float conversions and scalar recurrence.
+- KSP tables display and edit the requested leading columns while preserving hidden cells.
+- Failed or canceled instrument replacement keeps active audio, UI and script ownership. Same-source host recall preserves recalled state before loading, after cancellation, and across superseded jobs.
+- UVI `run` and `spawn` remain independent of the calling note; release waits follow the documented coroutine ownership.
+- UI library sweeps reject missing tests, zero-test successes and incomplete measurements.
+- Conflux callback audits service effect backpressure and distinguish finite startup from recurring timer drivers. The original controls, exact-three-effects assertion and label readback remain required.
+
+Validation: 2,325 distinct Cargo-target tests passed after the final affected-target rerun; 153 explicit gates remain ignored in the default suite. Eighteen Python admission tests and the explicit Conflux callback gate passed. Plugin and standalone release builds passed. Fresh source inspection reconciled all 1,495 items across 15 libraries with zero integrity faults; 17 selected initializations reached IR, with nine complete structural UI models and eight incomplete. Conflux, Bartok and A Clarinet editor paint gates passed.
+
+Original-instruction checks passed 1,222 Kontakt records and 3,937 Workstation cases. The corrected EQ probe includes 32 scalar PCM/history cases, with nonzero output in all 28 positive-frame cases. These are scoped kernel checks, not full native library or host acceptance.
+
+Known limits: Conflux Vector still lacks authored NativeUI layout projection. NCKP omissions, UVI OnePole production conversion, async `loadSample`, native multiband/SIMD EQ, full host lifecycle and calibrated audio comparisons remain open. Successful instrument UI/audio acknowledgment remains non-atomic, and live UVI worker timing remains Approximate. No Falcon executable was available; Workstation covers only the demonstrated shared DSP paths.
+
+Implementation checkpoint: `b44473c9e14ae4fcf42af562ee8684331ca1473f`. [Detailed validation](https://github.com/DerpcatMusic/KONTRA/blob/b44473c9e14ae4fcf42af562ee8684331ca1473f/docs/audit-2026-10-13/validation.md). Six accepted defect IDs advance the patch from 451 to 457; follow-up commits and extra fixtures are not counted again.
+
 ## 0.3.451
 
 This snapshot retains the consolidation and compatibility changes recorded under 0.3.450 below.
