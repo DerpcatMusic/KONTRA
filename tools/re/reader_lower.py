@@ -35,7 +35,21 @@ PRIMS = {
 PRIM_STREAM_ARG = {"FUN_140743010": 1}
 
 # Functions whose decompilation is wrong or allocator noise; semantics from their bodies.
+# Functions reached only through vtables (found by dumping the vtable a constructor installs,
+# tools/re/ghidra/DumpVtable.java) that the overrides below call; fetch_helpers.py seeds them.
+EXTRA_SEEDS = {
+    "FUN_140cfbc90": "curve class A (vtable 0x144e93130 slot 4): u8, then 128 f32",
+    "FUN_140cfbc00": "curve class B (vtable 0x144e930f8 slot 4): u8, u8 count, count x 3 f32",
+}
+
 OVERRIDES = {
+    # Per-target curve slot (FUN_140cfc5c0): a tag byte, then the curve object it selects
+    # through virtual dispatch (1 -> class A, 2 -> class B, anything else reads nothing).
+    # Kontakt's branch for an already-present member (stream flag set) updates it through
+    # slot 5 instead; a freshly deserialized element has no member, so that path is not taken.
+    "FUN_140cfc5c0": ["(set tag (rd B))", "(br (== tag 1) L1)", "(br (== tag 2) L2)", "(ret)",
+                      "(label L1)", "(call FUN_140cfbc90 t1 ((+ param_1 65536) param_2))", "(ret)",
+                      "(label L2)", "(call FUN_140cfbc00 t2 ((+ param_1 65536) param_2))", "(ret)"],
     # u16 tag that must equal param_3, then a raw u32 (decompiler lost the register).
     "FUN_140d17430": ["(set tag (rd H))", "(br (== tag param_3) Lok)", "(throw tag-mismatch)",
                       "(label Lok)", "(set v (rd I))", "(ret v)"],
