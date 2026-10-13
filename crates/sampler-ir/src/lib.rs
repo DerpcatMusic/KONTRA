@@ -436,7 +436,7 @@ pub struct Group {
     pub tap: Option<GroupTap>,
 }
 
-/// Saved controls for v1's admitted 2048-frame Kontakt wavetable subset.
+/// Saved controls for the measured 2048-frame Kontakt wavetable subset.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Wavetable {
@@ -444,17 +444,22 @@ pub struct Wavetable {
     pub phase: f32,
     pub form1: f32,
     pub form2: f32,
-    /// Native phase-form IDs: 0 (identity) or 16 (ASYM2MP).
+    /// Native phase-form IDs, independent of UI menu order.
     pub form1_type: u8,
     pub form2_type: u8,
 }
 impl Wavetable {
+    /// Phase-only forms verified against Kontakt's 0x140567aa0 instructions.
+    /// Amplitude forms and the unmeasured phase forms remain outside admission.
+    pub const fn supports_form(kind: u8) -> bool {
+        matches!(kind, 0 | 7..=11 | 14..=17 | 31..=33)
+    }
     pub fn valid(self) -> bool {
         [self.position, self.phase, self.form1, self.form2]
             .iter()
             .all(|v| v.is_finite() && (0. ..=1.).contains(v))
-            && matches!(self.form1_type, 0 | 16)
-            && matches!(self.form2_type, 0 | 16)
+            && Self::supports_form(self.form1_type)
+            && Self::supports_form(self.form2_type)
     }
 }
 

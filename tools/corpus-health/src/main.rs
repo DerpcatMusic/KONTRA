@@ -2991,6 +2991,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kontakt_audition_services_ui_backpressure_before_judging_silence() {
+        let mut instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("authored.wav".into()),
+                encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![],
+            }],
+            zones: vec![sampler_ir::Zone {
+                keys: sampler_ir::KeyRange { low: 60, high: 60 },
+                velocity: sampler_ir::VelocityResponse::None,
+                ..sampler_ir::Zone::new(sampler_ir::AssetRef(0))
+            }],
+            ..Default::default()
+        };
+        instrument.behaviors.push(sampler_ir::Behavior {
+            name: "authored outbox regression".into(), language: sampler_ir::Language::Ksp,
+            source: "on init declare ui_label $label(1,1) declare $i end on
+                on note ignore_event($EVENT_ID) $i:=0
+                while ($i < 1000) inc($i) set_text($label,\"refresh\") end while
+                play_note($EVENT_NOTE,$EVENT_VELOCITY,0,100000) end on".into(),
+            slot: None, state: vec![], requires: vec![],
+        });
+        let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::finish(instrument, vec![pcm], vec!["authored.wav".into()],
+            &sampler_kontakt::Options { mpe: None, ..Default::default() }).unwrap();
+        let sound = play(Subject::Plan(Box::new(loaded)),
+            Pick { key: 60, velocity: 64, switch: None }, false, &[]).unwrap();
+        assert!(sound.peak > 0.01, "a suspended label refresh must not be classified as library silence");
+        assert_eq!(sound.stuck_voices, 0);
+        assert!(sound.faults.is_empty());
+    }
+
+    #[test]
     fn authored_release_sample_drains_beyond_the_old_half_second_window() {
         let rate = 48000;
         let frames = (f64::from(rate) * 0.748) as usize;

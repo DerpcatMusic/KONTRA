@@ -200,10 +200,12 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             }
         }
-        for control in self.wavetable_controls.iter().flatten().flatten() {
-            let index = self.control_index(*control)?;
-            if self.controls[index].domain != (ControlDomain::Real { min: 0., max: 1. }) {
-                return Err(Error::InvalidInput);
+        for lanes in self.wavetable_controls.iter().flatten() {
+            for (lane, control) in lanes.iter().enumerate() {
+                let index = self.control_index(*control)?;
+                if self.controls[index].domain != (ControlDomain::Real { min: 0., max: if lane < 3 { 1. } else { 33. } }) {
+                    return Err(Error::InvalidInput);
+                }
             }
         }
         for control in self
