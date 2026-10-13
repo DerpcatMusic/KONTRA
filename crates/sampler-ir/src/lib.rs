@@ -236,6 +236,14 @@ pub struct SourceIndices {
     pub control_aliases: Vec<SourceControlAlias>,
     /// Admitted outgoing route -> live depth and internal-source bypass controls.
     pub route_controls: Vec<(RouteRef, ControlRef, ControlRef)>,
+    /// Intensity assignments beyond a route's first (`Route::scale`), in
+    /// application order; each combination's input is the previous result.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub chained_scales: Vec<(RouteRef, RouteScale)>,
+    /// Routes whose target law reads the source's unipolar view ((v + 1) / 2 of a
+    /// bipolar source): FUN_140873040's `need_uni` targets outside its signed sets.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub unipolar_routes: Vec<RouteRef>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -412,9 +420,16 @@ pub enum Encoding {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
+    /// Saved mute preserves the complete definition for live unmute.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub muted: bool,
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
+    /// Independent time/pitch source (Kontakt Time Machine family). Absent for
+    /// plain sampler playback, where transposition also changes tempo.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub time_stretch: Option<TimeStretch>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -425,6 +440,10 @@ pub struct Group {
     pub output: Output,
     /// Index into [`Instrument::voice_limits`] shared by this group's voices.
     pub voice_limit: Option<usize>,
+    /// Additional source resource domain (e.g. standard/HQ Time Machine Pro).
+    /// Indexes Instrument::voice_limits independently of the voice group.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_voice_limit: Option<usize>,
     /// A release-trigger group where playing a note again cuts that note's
     /// release samples still sounding (Kontakt manual, Release Trigger
     /// "Monophonic").
@@ -436,7 +455,66 @@ pub struct Group {
     pub tap: Option<GroupTap>,
 }
 
-/// Saved controls for v1's admitted 2048-frame Kontakt wavetable subset.
+/// Which time-stretch engine configuration a group's source uses. The engine
+/// is shared (`sampler-core` `StretchEngine`); the kind only picks its
+/// configuration, so formats add kinds without new DSP code paths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StretchKind {
+    TimeMachine1,
+    TimeMachine2,
+    TimeMachinePro,
+}
+
+/// Saved controls of a time-stretch source. Pitch is the group/zone tuning
+/// plus key tracking, exactly as for sampler playback; these controls only
+/// decouple tempo from it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeStretch {
+    pub kind: StretchKind,
+    /// Playback speed as a ratio of the original; 0 freezes the position.
+    pub speed: f32,
+    /// Time Machine 1: Smooth as stored (0..=1) and Grain in milliseconds.
+    pub smooth: f32,
+    pub grain_ms: f32,
+    /// Time Machine 1 HQ analysis / Time Machine Pro resource class.
+    pub high_quality: bool,
+    /// Time Machine 2 controls as stored: Transient Copy, Transient Size (in
+    /// source positions) and the analysis Grain profile index (0..=4).
+    /// Carried for the TM2 engine; the stand-in engine does not use them.
+    pub transient_copy: bool,
+    pub transient_size: u32,
+    pub grain_profile: u32,
+    /// Time Machine Pro controls as stored (Keep Formants, Frm Shift, Env
+    /// Order); carried, unused until a Pro backend exists.
+    pub keep_formants: bool,
+    pub formant_shift: f32,
+    pub env_order: f32,
+}
+impl TimeStretch {
+    /// Neutral controls (authored defaults are not established).
+    pub fn new(kind: StretchKind, speed: f32) -> Self {
+        Self {
+            kind,
+            speed,
+            smooth: 0.5,
+            grain_ms: 20.,
+            high_quality: false,
+            transient_copy: false,
+            transient_size: 0,
+            grain_profile: 0,
+            keep_formants: false,
+            formant_shift: 0.,
+            env_order: 0.25,
+        }
+    }
+    pub fn valid(self) -> bool {
+        self.speed.is_finite() && (0. ..=64.).contains(&self.speed)
+    }
+}
+
+/// Saved controls for the measured 2048-frame Kontakt wavetable subset.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Wavetable {
@@ -444,17 +522,22 @@ pub struct Wavetable {
     pub phase: f32,
     pub form1: f32,
     pub form2: f32,
-    /// Native phase-form IDs: 0 (identity) or 16 (ASYM2MP).
+    /// Native phase-form IDs, independent of UI menu order.
     pub form1_type: u8,
     pub form2_type: u8,
 }
 impl Wavetable {
+    /// Phase-only forms verified against Kontakt's 0x140567aa0 instructions.
+    /// Amplitude forms and the unmeasured phase forms remain outside admission.
+    pub const fn supports_form(kind: u8) -> bool {
+        matches!(kind, 0 | 7..=12 | 14..=17 | 31..=33)
+    }
     pub fn valid(self) -> bool {
         [self.position, self.phase, self.form1, self.form2]
             .iter()
             .all(|v| v.is_finite() && (0. ..=1.).contains(v))
-            && matches!(self.form1_type, 0 | 16)
-            && matches!(self.form2_type, 0 | 16)
+            && Self::supports_form(self.form1_type)
+            && Self::supports_form(self.form2_type)
     }
 }
 
@@ -519,6 +602,9 @@ pub struct VoiceLimit {
     pub kill: Kill,
     pub prefer_released: bool,
     pub fade: Time,
+    /// Voice domains in the same set cut other domains in that set.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub exclusive_set: Option<u32>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1297,9 +1383,27 @@ pub struct Lfo {
     pub retrigger: bool,
 }
 
+/// Kontakt's native LFO waveforms (BLfo* processors, `modulators.md`): the
+/// recovered 4096-entry tables with four-point interpolation, the width-driven
+/// rectangle, and the seeded held-noise grid. Outputs are raw (they ring past
+/// +-1); nothing here is an ideal waveform.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeWave {
+    Sine,
+    Saw,
+    Triangle,
+    /// Pulse width in 0..1.
+    Rectangle(f32),
+    /// Held noise updated twice per cycle; start phase must be below 0.5.
+    Held,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// A native Kontakt waveform.
+    Native(NativeWave),
     /// Saved retriggered Digital Multi sine, with an unsynchronized false-mode fade.
     /// `fade_ms` retains the original serialized milliseconds, not a linear ramp.
     DigitalSine { level: f64, fade_ms: f32 },
@@ -1313,6 +1417,11 @@ pub enum LfoShape {
     Triangle,
     /// +1 for the first half cycle.
     Square,
+    /// +1 for the first `width` (0..=1) of the cycle, then -1.
+    Rectangle(f64),
+    /// Weighted mix of sine, rectangle(`width`), triangle, saw-up and
+    /// sample-and-hold, divided by max(1, sum(abs(weights))) when `normalize`.
+    Multi { weights: [f64; 5], width: f64, normalize: bool },
     /// -1 to +1.
     SawUp,
     /// +1 to -1.
@@ -1368,6 +1477,26 @@ pub struct Route {
 pub struct RouteScale {
     pub source: ModulatorRef,
     pub shape: Option<ShapeRef>,
+    /// How `source` combines with the route's saved depth.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law: ScaleLaw,
+    /// Lag of the assignment's processed source, milliseconds to 99% of a step.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub lag_ms: f64,
+}
+
+/// Combination law of a [`RouteScale`].
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ScaleLaw {
+    /// depth × shape(x).
+    #[default]
+    Multiply,
+    /// Kontakt modulation of a modulator's intensity (native law ID25, see
+    /// sampler-core `ModScaleLaw::KontaktIntensity`): `depth` is the scaling
+    /// assignment's intensity, `flags` its stored target flags, `unit` the
+    /// route's depth per unit of its saved normalized intensity.
+    KontaktIntensity { depth: f64, flags: u8, unit: f64 },
 }
 
 impl Route {
@@ -1401,6 +1530,10 @@ pub enum Target {
     Control(ControlRef),
     /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
     SourcePhase(ModulatorRef),
+    /// Rate of a program-local LFO, added to its saved rate as `depth × source`
+    /// on Kontakt's normalized frequency lane (law ID26, see sampler-core
+    /// `CompiledTarget::SourceRate`). Depth is `Normalized`.
+    SourceRate(ModulatorRef),
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,
@@ -1433,6 +1566,19 @@ pub enum ProcessorParameter {
     CellLR,
     CellRL,
     CellRR,
+    /// Normalized knobs of a script-addressed Kontakt effect module (native
+    /// engine-parameter lanes): Classic Saturation shape, Distortion drive and
+    /// damping, Formant I talk/sharp/size, Lo-Fi bits/frequency/noise/color.
+    Shape,
+    Drive,
+    Damping,
+    FormantTalk,
+    FormantSharp,
+    FormantSize,
+    LoFiBits,
+    LoFiFrequency,
+    LoFiNoise,
+    LoFiColor,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1497,6 +1643,10 @@ pub enum Processor {
     /// Script-addressed Classic Saturation; the saved static form remains above.
     LiveSaturation { shape: f32, address: SlotAddress },
     LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
+    /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
+    LiveFormant { knobs: [f32; 3], address: SlotAddress },
+    /// Script- and modulation-addressed Lo-Fi: saved Bits, Frequency, Noise level, color.
+    LiveLoFi { bits: f32, frequency: f32, noise: f32, color: f32, address: SlotAddress },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Pinned v1 Lo-Fi approximation; saved normalized controls.

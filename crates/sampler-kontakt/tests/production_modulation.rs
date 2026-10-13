@@ -69,8 +69,11 @@ fn internal(
         Lfo {
             structured: false,
             version: 0x72,
-            waveform: 1,
-            initial_values: [0., rate, 0.5, 0.],
+            // Native sine (modulators.md BLfoSine table, exactly 1.0 at a quarter
+            // cycle): a held +1 for these slow-rate ownership checks. The rectangle
+            // these fixtures used rises through the pulse table from phase 0.
+            waveform: 0,
+            initial_values: [0., rate, 0.5, 0.25],
             records: [
                 LfoRecord {
                     flag: false,

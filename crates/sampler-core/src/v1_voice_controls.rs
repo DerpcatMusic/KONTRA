@@ -130,6 +130,27 @@ impl LfoFrequency {
         }
         Ok(Self { inverse_rate })
     }
+    /// Cycles per second at a normalized lane point (`increment` times the control rate).
+    pub fn hertz(input: f32) -> f64 {
+        Self { inverse_rate: 1. }.increment(input)
+    }
+    /// The lane point whose rate is `hz` (the law is monotone), or `None` outside
+    /// the lane's 0..=1 range.
+    pub fn lane(hz: f64) -> Option<f64> {
+        if !(Self::hertz(0.)..=Self::hertz(1.)).contains(&hz) {
+            return None;
+        }
+        let (mut low, mut high) = (0f64, 1f64);
+        for _ in 0..48 {
+            let mid = (low + high) * 0.5;
+            if Self::hertz(mid as f32) < hz {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        Some(low)
+    }
     /// One normalized lane point; original 0x140b07bd9..0x140b07c69.
     pub fn increment(&self, input: f32) -> f64 {
         // COMISS treats NaN as below zero; preserve this before MINSS.
@@ -1699,6 +1720,10 @@ pub struct ControlState {
     mods: [f32; VOICE_MODS],
     modulated: (f32, f32),
     settled: Option<u32>,
+    // V1 input-stamp cache adapted to live IR depth/bypass bindings. Observe
+    // raw inputs, not shaped values, so settled curves are not recomputed.
+    observed_inputs: [u32; VOICE_MODS],
+    observed_intensities: [u32; VOICE_MODS],
     rate: f32,
     start_frame: u64,
     released: bool,
@@ -1713,6 +1738,8 @@ impl ControlState {
             mods: [0.; VOICE_MODS],
             modulated: (1., 0.),
             settled: None,
+            observed_inputs: [u32::MAX; VOICE_MODS],
+            observed_intensities: [u32::MAX; VOICE_MODS],
             rate: plan.rate,
             start_frame: 0,
             released: false,
@@ -1775,9 +1802,34 @@ impl ControlState {
     pub(crate) fn plan_controls_read_with_intensity(&mut self, plan: &ControlPlan,
         read: impl Fn(Source, Target) -> f32, stamp: u32, frames: usize,
         intensity: impl Fn(usize, &Mod) -> f32) -> (f32, f32, bool) {
+        // Port v1 0cb7a8a0:src/engine/voice.rs::plan settled-input policy.
+        // NI modulation Assignment controls and the pinned v1 shape/lag law
+        // stay unchanged; only actual raw-input or depth writes invalidate it.
+        let table = &plan.description.mods;
+        let mut values = [0.0f32; VOICE_MODS];
+        let mut depths = [0.0f32; VOICE_MODS];
+        for (slot, &index) in table.voiced.iter().enumerate() {
+            let m = &table.mods[index as usize];
+            let (source, target) = m.route.unwrap();
+            values[slot] = read(source, target);
+            depths[slot] = intensity(index as usize, m);
+            if self.observed_inputs[slot] != values[slot].to_bits()
+                || self.observed_intensities[slot] != depths[slot].to_bits()
+            {
+                self.settled = None;
+            }
+            self.observed_inputs[slot] = values[slot].to_bits();
+            self.observed_intensities[slot] = depths[slot].to_bits();
+        }
         if self.settled != Some(stamp) {
-            let (gain, pitch, settled) = plan.description.mods.modulate_read_with_intensity(
-                &mut self.mods, read, frames, self.rate, intensity,
+            let (gain, pitch, settled) = table.modulate_read_with_intensity(
+                &mut self.mods,
+                |source, target| {
+                    let slot = table.voiced.iter().position(|&index| table.mods[index as usize].route == Some((source, target))).unwrap();
+                    values[slot]
+                },
+                frames, self.rate,
+                |index, _| depths[table.voiced.iter().position(|&i| usize::from(i) == index).unwrap()],
             );
             self.modulated = (gain, pitch);
             self.settled = settled.then_some(stamp);
@@ -1805,6 +1857,7 @@ impl ControlState {
             .position(|p| p.index == index)
             .map(|i| self.pitch[i].level())
     }
+    #[cfg(test)]
     pub(crate) fn invalidate_inputs(&mut self) { self.settled = None; }
     pub(crate) fn amplitude(&self) -> Primary {
         Primary { value: self.amplitude, rate: self.rate }
@@ -1957,6 +2010,98 @@ impl Primary {
 
 #[cfg(test)]
 mod adapter_tests {
+    #[test]
+    fn live_native_intensity_writes_invalidate_only_changed_cached_controls() {
+        let plan = ControlPlan::prepare(
+            ControlDescription {
+                mods: ModTable::new(
+                    vec![Mod {
+                        route: Some((Source::Cc(1), Target::Volume)),
+                        intensity: 1.,
+                        lag: 0.,
+                        curve: None,
+                    }]
+                    .into_boxed_slice(),
+                )
+                .unwrap(),
+                ..ControlDescription::default()
+            },
+            48000.,
+        )
+        .unwrap();
+        let mut state = ControlState::new(&plan);
+        state.reset_read(&plan, |_, _| 0.25, 0);
+        let reads = std::cell::Cell::new(0);
+        let read = |_, _| {
+            reads.set(reads.get() + 1);
+            0.25
+        };
+        assert_eq!(
+            state
+                .plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| 1.)
+                .0,
+            0.25
+        );
+        reads.set(0);
+        assert_eq!(
+            state
+                .plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| 1.)
+                .0,
+            0.25
+        );
+        assert_eq!(reads.get(), 1, "one raw observation, no shaped-source reevaluation");
+        // Same source stamp, different live depth must update output immediately.
+        assert_eq!(
+            state
+                .plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| 0.5)
+                .0,
+            0.625
+        );
+        assert_eq!(
+            state
+                .plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| 0.)
+                .0,
+            1.
+        );
+        assert_eq!(
+            state
+                .plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| -1.)
+                .0,
+            0.75
+        );
+        let mut forced = state.clone();
+        for intensity in [1., 1., 0.25, 0.25, 0., -0.5] {
+            forced.invalidate_inputs();
+            assert_eq!(
+                state.plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| intensity),
+                forced.plan_controls_read_with_intensity(&plan, read, 7, 64, |_, _| intensity)
+            );
+        }
+        // Raw controller writes and unfinished lag must still reevaluate on
+        // every cell. Compare the pinned recomputation path at variable lengths.
+        for lag in [0., 0.005] {
+            let plan = ControlPlan::prepare(ControlDescription {
+                mods:ModTable::new(vec![Mod { route:Some((Source::Cc(1),Target::Volume)),
+                    intensity:1., lag, curve:Some(Arc::new(std::array::from_fn(|i| (i as f32/127.).powi(2)))) }].into_boxed_slice()).unwrap(),
+                ..Default::default()
+            }, 48000.).unwrap();
+            let mut cached = ControlState::new(&plan);
+            cached.reset_read(&plan, |_,_| 0.1, 0);
+            let mut forced = cached.clone();
+            for cell in 0..400 {
+                let value = [0.1,0.9,0.3,0.3][(cell / 100).min(3)];
+                let frames = [1,7,64][cell % 3];
+                let depth = if cell < 200 { 0.7 } else { -0.4 };
+                forced.invalidate_inputs();
+                let a = cached.plan_controls_read_with_intensity(&plan, |_,_|value, 11, frames, |_,_|depth);
+                let b = forced.plan_controls_read_with_intensity(&plan, |_,_|value, 11, frames, |_,_|depth);
+                assert_eq!(a,b,"lag={lag} cell={cell}");
+                assert_eq!(cached.mods,forced.mods);
+            }
+        }
+    }
+
+
     use super::*;
     #[test]
     fn native_module_follow_retains_static_onset_and_follows_live_sources() {

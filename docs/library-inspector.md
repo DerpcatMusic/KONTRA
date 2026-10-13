@@ -106,6 +106,24 @@ source-free JSONL and reuses open banks within that process. Its source inspecti
 does not run initialization. Invalid manifests and failed stages return a nonzero
 exit status while valid records remain individually inspectable.
 
+For production load-stage counts without materializing a full inspector report,
+use `corpus-health load-audit INPUT [--program INDEX] [--stream]`. Multis default
+to every embedded program. The output contains source/admitted object counts,
+unsupported feature counts, enabled and disabled DSP-slot/target outcomes,
+unclassified tail byte totals, load time and process RSS. It never emits source
+code, raw object bytes, samples or access data. DSP dispositions distinguish
+an authored bypass from an enabled dropped slot; an approximated slot remains
+unverified against the native law.
+
+`--stream` binds all keys and scripts with a lazy 8 MiB head budget, 256 streaming
+voices, two decoders and 64-frame blocks at 48 kHz. It measures readiness for
+runtime publication, without creating a runtime, editor or auditioning audio.
+These numbers therefore cannot be compared directly with editor RSS or first
+sound. Run one input per fresh process for RSS attribution and use the existing
+`tools/audit-load.py` `loader` / `loader-stream` modes for bounded read-only
+shards. Only the private numeric header-cache directory is writable for stream
+measurements. Empty-cache "cold" does not mean OS page-cache eviction.
+
 Full reports use `format: kontra-library-inspector`, `schema: 1`. They contain
 separate `stages`, `scripts`, `converted`, `ui`, `diagnostics` and `evidence`
 sections. Script reports reuse `sampler-parity` coordinates, construct status,

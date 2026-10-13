@@ -396,7 +396,7 @@ impl View<'_> {
         let prelude = self.preps[i];
         // A prepared voice had its step set with its modulation.
         if prelude.is_none() {
-            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            v.set_step(v.base_step * expression.rendered.ratio);
         }
         let asset = &plan.prepared.pcm[v.sample];
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
@@ -428,9 +428,11 @@ impl View<'_> {
         };
         let mut native = plan.modulation.native.claim(i);
         let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = RenderContext {
             controls,
             trace: None,
+            stretch: stretch.as_mut().map(|c| &mut c[0]),
             amplifier: chain.and(prelude.and_then(|p| p.points)),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: expression.rendered.gains,
@@ -459,7 +461,7 @@ impl View<'_> {
             asset.want_levels(v.cursor.step(), self.at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
@@ -509,12 +511,14 @@ impl View<'_> {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[k] = expression.rendered.gains;
-            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan.project_wavetable(&mut v.cursor, v.group);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
             let asset = &plan.prepared.pcm[v.sample];
+            let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
+            let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[k] = v.cursor.starved();
             batch.expressions[k] = Some((n.expression, expression.value));
             let mut planar = [[0.; BLOCK]; 2];
@@ -522,10 +526,10 @@ impl View<'_> {
                 asset.want_levels(v.cursor.step(), self.at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames: resident,
+                    frames: &resident,
                     levels: guard.as_deref().map_or(&[], |l| l),
                 };
-                chain.begin(v, &pcm, frames, self.kernel, &mut planar)
+                chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
             } else {
                 asset.touch(self.at + frames as u64);
                 let head = asset.try_head();
@@ -534,7 +538,7 @@ impl View<'_> {
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
                 };
-                chain.begin(v, &pcm, frames, self.kernel, &mut planar)
+                chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
             };
             let len = begun[k].map_or(0, |b: crate::dsp::Begun| b.len);
             for (frame, x) in block[..len].iter_mut().enumerate() {

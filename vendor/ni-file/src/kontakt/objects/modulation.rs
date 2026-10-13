@@ -170,7 +170,9 @@ pub enum ModSource {
 ///
 /// Type:           Chunk<StructuredObject>, fields in private data
 /// SerType:        0x0C
-/// Versions:       0x100, 0x101, 0x102, 0x103, 0x104
+/// Versions:       0x100, 0x101, 0x102, 0x103, 0x104, 0x105
+/// Kontakt 8.13.1 reader FUN_140d09620 (vtable slot 11; slot 2 returns 0x105):
+/// 0x105 shares the 0x104 layout exactly.
 /// Kontakt 7:      BParExternalMod
 #[derive(Debug)]
 pub struct ExternalMod(pub StructuredObject);
@@ -190,7 +192,9 @@ pub struct ExternalModParams {
     /// for some CCs), two when unassigned.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_source_data: Vec<u8>,
-    /// Additional private footer bytes: one in v0x103, two in v0x104.
+    /// Additional private footer bytes: one in v0x103, two in v0x104/0x105
+    /// (Kontakt 8.13.1 FUN_140d09620 stores them as two flag bytes at +0x550/+0x551;
+    /// +0x550 defaults to 1 before v0x103).
     /// Their semantics are unknown; retain them without treating them as flags.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
@@ -198,7 +202,7 @@ pub struct ExternalModParams {
 
 impl ExternalMod {
     pub fn params(&self) -> Result<ExternalModParams, Error> {
-        if !matches!(self.0.version, 0x100..=0x104) {
+        if !matches!(self.0.version, 0x100..=0x105) {
             return Err(Error::Generic(format!(
                 "Unsupported BParExternalMod version 0x{:X}",
                 self.0.version
@@ -220,9 +224,9 @@ impl ExternalMod {
         };
         let unknown_source_data = reader.read_bytes(unknown_len)?;
         let unknown_id = reader.read_u32_le()?;
-        // The native versioned reader appends one byte at 0x103, then a
-        // second at 0x104. The common source/target layout is unchanged.
-        let tail_len = self.0.version.saturating_sub(0x102) as usize;
+        // Kontakt 8.13.1 FUN_140d09620: one flag byte from 0x103, a second from
+        // 0x104; 0x105 reads exactly the 0x104 layout.
+        let tail_len = footer_len(self.0.version);
         let unknown_tail = reader.read_bytes(tail_len)?;
         ensure_consumed(&reader)?;
 
@@ -235,6 +239,10 @@ impl ExternalMod {
             unknown_tail,
         })
     }
+}
+
+fn footer_len(version: u16) -> usize {
+    version.min(0x104).saturating_sub(0x102) as usize
 }
 
 impl TryFrom<&Chunk> for ExternalMod {
@@ -466,7 +474,7 @@ mod tests {
 
     #[test]
     fn all_external_source_shapes_keep_signed_depth_shaper_smoothing_and_version_footer() {
-        for version in 0x100u16..=0x104 {
+        for version in 0x100u16..=0x105 {
             for source in 1u32..=12 {
                 let mut data = 1u32.to_le_bytes().to_vec();
                 data.extend(5u32.to_le_bytes());
@@ -494,7 +502,7 @@ mod tests {
                 data.extend(17u32.to_le_bytes());
                 data.extend(std::iter::repeat_n(
                     0xa5,
-                    version.saturating_sub(0x102) as usize,
+                    footer_len(version),
                 ));
                 let object = ExternalMod(StructuredObject {
                     version,
@@ -511,7 +519,7 @@ mod tests {
                 };
                 assert_eq!(table.len(), 128);
                 assert_eq!((table[0], table[127]), (0.0, 1.0));
-                assert_eq!(p.unknown_tail.len(), version.saturating_sub(0x102) as usize);
+                assert_eq!(p.unknown_tail.len(), footer_len(version));
                 let expected = match source {
                     1 => ModSource::PitchBend,
                     2 => ModSource::PolyAftertouch,
