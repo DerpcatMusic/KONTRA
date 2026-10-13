@@ -6468,17 +6468,12 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
             I::Scope::Group(I::GroupRef(0)),
             I::Processor::Gain(I::Gain::Decibels(-6.)),
         ),
-        (I::Scope::Master, I::Processor::Rectify(I::Rectifier::Full)),
+        (I::Scope::Master, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Full))),
         (
             I::Scope::Bus(I::BusRef(0)),
-            I::Processor::LoFi {
-                bits: 8.,
-                frequency: 12000.,
-                noise: 0.,
-                color: 0.5,
-            },
+            I::Processor::Color(I::fx::color::Config::lofi(0.5, 0.5, 0., 0.5)),
         ),
-        (I::Scope::Voice, I::Processor::Rectify(I::Rectifier::Half)),
+        (I::Scope::Voice, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Half))),
         (
             I::Scope::Voice,
             I::Processor::Daft(I::Daft {
