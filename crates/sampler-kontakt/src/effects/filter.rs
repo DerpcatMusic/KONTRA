@@ -40,6 +40,12 @@ const fn legacy(response: Response, poles: u8) -> Config {
     c
 }
 
+const fn legacy_one(response: Response) -> Config {
+    let mut c = legacy(response, 1);
+    c.cutoff_law = CutoffLaw::LegacyOnePole;
+    c
+}
+
 const fn native(topology: Topology, response: Response, poles: u8) -> Config {
     Config::new(topology, response, poles)
 }
@@ -51,6 +57,7 @@ const SV_LP2: &str = "response measured against Kontakt 8 (cutoff, Q, -3 dB poin
 const SV: &str = "cutoff 25*800^x and Q law measured on SV LP2 only; this member shares them unmeasured, cascaded sections share one Q, and the passband loss at high resonance is not reproduced";
 const SV_ONE: &str = "one-pole section with the SV LP2 cutoff law, unmeasured; Q is unused";
 const LEGACY: &str = "pinned v1 stand-in: legacy cutoff/Q laws unmeasured, native BFilter1Pole/2Pole kernel not extracted";
+const LEGACY_ONE: &str = "BFilter1PoleLP/HP setCutoff extracted (bilinear one-pole at the native warped pole, rate independent); native cutoff modulation is a 32-frame slewed update here run on the shared clock, and the dry/accumulate output mode is not modelled";
 const LADDER: &str = "saved row/morphology and compensation tables extracted; cutoff, gain, resonance setters, control clock and nonlinear kernel unproved (audit CORE-FILTERS-045..054)";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
@@ -60,8 +67,8 @@ const BUTTERWORTH: &str = "legacy 4- and 6-pole filters measure as Butterworth, 
 fn build(id: i32) -> Option<(&'static str, Build)> {
     use Build::{Config as C, Elsewhere, Gap};
     Some(match id {
-        2 => ("Legacy LP1", C(legacy(Lp, 1), Generic, LEGACY)),
-        3 => ("Legacy HP1", C(legacy(Hp, 1), Generic, LEGACY)),
+        2 => ("Legacy LP1", C(legacy_one(Lp), Partial, LEGACY_ONE)),
+        3 => ("Legacy HP1", C(legacy_one(Hp), Partial, LEGACY_ONE)),
         4 => ("Legacy BP2", C(legacy(Bp, 2), Generic, LEGACY)),
         6 => ("Legacy LP2", C(legacy(Lp, 2), Generic, LEGACY)),
         7 => ("Legacy HP2", C(legacy(Hp, 2), Generic, LEGACY)),
@@ -166,7 +173,7 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> R
 pub(crate) fn cutoff_octaves(id: i32) -> Option<f64> {
     match build(id)? {
         (_, Build::Config(c, ..)) => match c.cutoff_law {
-            CutoffLaw::Legacy => Some(LEGACY_CUTOFF_OCTAVES),
+            CutoffLaw::Legacy | CutoffLaw::LegacyOnePole => Some(LEGACY_CUTOFF_OCTAVES),
             CutoffLaw::Sv => Some(800f64.log2()),
             _ => None,
         },
@@ -208,10 +215,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_one_pole_types_are_labelled_stand_ins() {
+    fn legacy_one_pole_types_use_the_extracted_warp() {
         for (id, high) in [(2, false), (3, true)] {
             let m = map(id, 0.5, 0.3, None).unwrap();
-            assert_eq!(m.fidelity, Generic);
+            assert_eq!(m.fidelity, Partial);
             let [Processor::Filter(f)] = m.config.processors(None).unwrap()[..] else { panic!() };
             assert_eq!(
                 f.kind,
