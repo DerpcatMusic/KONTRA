@@ -171,37 +171,8 @@ impl Translation {
                     out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
-                "CompExp" => {
-                    // Falcon manual, Compressor Expander: threshold dB, ratio,
-                    // attack/release ms, manual makeup dB. The compressor law is
-                    // the shared textbook one (ir::Compressor); UVI's own is not
-                    // recovered, and the module has no stereo-link control.
-                    for (name, why, off) in [
-                        ("AutoMakeUp", "CompExp auto makeup", 0.0),
-                        ("GateRatio", "CompExp gate (expander)", 1.0),
-                    ] {
-                        let v = number(node, name, off)?;
-                        if v != off
-                            && (name != "GateRatio"
-                                || number(node, "GateThreshold", -130.0)? > -130.0)
-                        {
-                            self.unsupported(&at, why, v);
-                        }
-                    }
-                    let mix = number(node, "Mix", 1.0)?;
-                    if mix != 1.0 {
-                        self.unsupported(&at, "CompExp mix", mix);
-                    }
-                    out.push(ir::Processor::Compressor(ir::Compressor {
-                        threshold_db: number(node, "CompThreshold", 0.0)?,
-                        ratio: number(node, "CompRatio", 10.0)?.max(1.0),
-                        attack: ir::Time::Milliseconds(number(node, "CompAttack", 10.0)?.max(0.0)),
-                        release: ir::Time::Milliseconds(
-                            number(node, "CompRelease", 100.0)?.max(0.0),
-                        ),
-                        makeup: db(number(node, "MakeUpGain", 0.0)?),
-                        link: true,
-                    }));
+                k if crate::fx::dynamics::handles(k) => {
+                    crate::fx::dynamics::translate(self, node, &at, &mut out)?;
                 }
                 "OnePole" => {
                     let tracking = number(node, "KeyTracking", 0.0)?;

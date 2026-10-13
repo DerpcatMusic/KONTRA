@@ -2967,9 +2967,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::LiveFormant { .. } => "Formant",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Space(c) => if c.impulse.is_some() { "Convolution" } else { "Reverb" },
-            ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
             ir::Processor::Eq(_) => "EQ",
-            ir::Processor::Compressor(_) => "Compressor",
+            ir::Processor::Dynamics(_) => "Compressor",
             ir::Processor::Color(c) => c.label(),
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]

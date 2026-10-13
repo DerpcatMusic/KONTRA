@@ -316,18 +316,28 @@ impl Check<'_> {
                         self.exists(Reference::Impulse(impulse.0))?;
                     }
                 }
-                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
-                    self.finite(f64::from(threshold), "compressor threshold")?;
-                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
-                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
-                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
-                }
-                Processor::Compressor(c) => {
-                    self.finite(c.threshold_db, "compressor threshold")?;
-                    self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;
-                    self.time(c.attack, "compressor attack")?;
-                    self.time(c.release, "compressor release")?;
-                    self.gain(c.makeup, "compressor makeup")?;
+                Processor::Dynamics(c) => {
+                    use crate::fx::dynamics::{Detector, Law};
+                    self.finite(c.threshold(), "dynamics threshold")?;
+                    self.time(c.attack, "dynamics attack")?;
+                    self.time(c.release, "dynamics release")?;
+                    self.gain(c.makeup, "dynamics makeup")?;
+                    self.within(c.mix, 0.0..=1.0, "dynamics mix")?;
+                    match c.law {
+                        Law::Generic(g) => {
+                            self.within(g.ratio, 1.0..=f64::MAX, "dynamics ratio")?;
+                            self.within(g.knee_db, 0.0..=f64::MAX, "dynamics knee")?;
+                            self.time(g.lookahead, "dynamics lookahead")?;
+                            self.within(g.sidechain_highpass_hz, 0.0..=f64::MAX, "dynamics side-chain")?;
+                            self.within(g.range_db, 0.0..=f64::MAX, "dynamics range")?;
+                            if let Detector::Rms { window } = g.detector {
+                                self.time(window, "dynamics rms window")?;
+                            }
+                        }
+                        Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => {
+                            self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
+                        }
+                    }
                 }
                 Processor::Mix { dry, wet, .. } => {
                     self.within(dry, 0.0..=16.0, "mix dry")?;

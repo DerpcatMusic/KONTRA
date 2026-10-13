@@ -186,8 +186,7 @@ pub(crate) fn process(
                 }
             }
             PreparedProcessor::TimeMod { .. }
-            | PreparedProcessor::Compressor(_)
-            | PreparedProcessor::KontaktEnhancedCompressor(_)
+            | PreparedProcessor::Dynamics(_)
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveFormant { .. }
             | PreparedProcessor::Daft(_)
