@@ -65,3 +65,47 @@ source quality membership. Program suffix data remain opaque, and TMP itself is
 still an unsupported source mode (T04). M1 adds executable semantic source
 budgets, but does not guess persisted offsets or suppress source diagnostics.
 A format/source worker must recover and bind those fields when TMP is admitted.
+
+## Focused validation
+
+Seven failure directions were observed before their fixes:
+
+- `m1_monophonic_release_is_isolated_between_instrument_plan_generations`: one
+  voice survived instead of two; now both plans retain their release voice.
+- `m1_monophonic_release_cuts_every_previous_layer_beyond_eight`: five voices
+  survived instead of one (four uncapped old layers plus the new layer); now one.
+- `m1_exclusive_voice_domains_cut_other_domains_with_fade_and_plan_isolation`:
+  zero steals instead of two; now both peer voices fade and the old plan survives.
+- `m1_independent_source_budget_spans_voice_groups_without_limiting_other_sources`:
+  zero steals instead of one; now the independent budget cuts only its members.
+- `m1_domain_counts_track_fades_growth_retirement_and_slot_reuse`: group counts
+  were zero instead of one live/one fading; counts now survive growth/adoption,
+  retirement invalidates the old ID, and slot reuse preserves membership.
+- `m1_exclusive_voice_group_translation_reaches_semantic_domain_without_diagnostic`:
+  the old diagnostic remained; valid sets now reach IR/runtime. Unknown positive
+  values outside the documented 16 sets retain a diagnostic and no guessed edge.
+- `m1_reconfiguring_limits_rejects_stale_domain_bindings`: shrinking limits was
+  accepted with a dangling source domain; stale source/exclusive references are
+  now rejected before preparing an invalid plan.
+
+The five `lower.rs` M1 tests, two `release_selection.rs` M1 tests and one Kontakt
+translation test pass. The new victim-mode preservation fixture passes for Any,
+Oldest, Newest, Highest and Lowest; it was also green before the refactor.
+Four existing focused preservation tests pass: global quietest stealing,
+group limits, monophonic release group/key isolation, and layered family choke.
+All render/admission fixtures assert no heap activity in their realtime spans.
+
+Commands used the `kontakto-heavy` wrapper. Final runs were crate-scoped
+`cargo test -j 4 -p sampler-core --test lower m1_`,
+`cargo test -j 4 -p sampler-core --test release_selection m1_`, and
+`cargo test -j 4 -p sampler-kontakt --lib m1_exclusive_voice_group_translation`,
+plus individual existing tests selected with `--exact`.
+`cargo check -j 4 -p sampler-kontakt` passed with existing warnings, and
+`git diff --check` passed. No workspace/no-run/release/plugin build, corpus run,
+reference recording or CPU measurement was performed. The latest user rule
+supersedes the handoff's previous workspace compile gate.
+
+Architectural result: under-limit admissions check counters in O(1), actual
+victim selection walks only the affected domain, and exclusivity uses compiled
+peer edges. Global pool-pressure victim scans retain their existing law/path.
+No numerical speedup or native allocator complexity is claimed.
