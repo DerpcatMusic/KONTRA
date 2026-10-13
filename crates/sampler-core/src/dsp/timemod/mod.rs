@@ -29,6 +29,46 @@ const LEGACY_RING: usize = 0x40000;
 const FLANGER_RING: usize = 0x1000;
 /// Samples the ring keeps beyond the longest read for neighbour taps.
 const GUARD: usize = 4;
+/// Legacy modulated delay state after its ring: second-head LFO sin, cos,
+/// then the two heads' one-pole states (all `[left, right]`).
+const LEGACY_B: usize = FLANGER_RING;
+
+/// Native leapfrog oscillator step, f32: `s -= c * k; c += s * k`.
+#[inline(always)]
+fn leapfrog(z: &mut [f64; 2], step: f32) -> [f32; 2] {
+    let [mut s, mut c] = z.map(|v| v as f32);
+    s -= c * step;
+    c += s * step;
+    *z = [f64::from(s), f64::from(c)];
+    [s, c]
+}
+
+/// Wrap an f32 phase into [0, 1) the native way (`while p >= 1 { p -= 1 }`).
+fn wrap(mut p: f32) -> f32 {
+    while p >= 1. {
+        p -= 1.;
+    }
+    p
+}
+
+/// Leapfrog state for a phase in cycles (0x1443c9bd0 sincos of `(1 - p) * 2pi`, stored f32).
+fn legacy_phase(p: f32) -> [f64; 2] {
+    let angle = f64::from(1. - wrap(p)) * TAU;
+    [f64::from(angle.sin() as f32), f64::from(angle.cos() as f32)]
+}
+
+/// Kontakt's legacy 4-point Lagrange read of the 4096 ring at float `position`
+/// (0x140aa0510 / 0x140aa2350): points `p-2 .. p+1`, `t = 0` reads `p-1`.
+#[inline(always)]
+fn lagrange(slab: &[[f64; 2]], position: f32, c: usize) -> f32 {
+    let whole = position as u32;
+    let t = position - whole as f32;
+    let at = |k: u32| slab[(k as usize) & (FLANGER_RING - 1)][c] as f32;
+    let (a, b, cc, d) = (at(whole.wrapping_sub(2)), at(whole.wrapping_sub(1)), at(whole), at(whole.wrapping_add(1)));
+    let (up, down) = (t + 1., t - 1.);
+    (up * d * t * down - t * a * (down + -1.) * down) * f32::from_bits(0x3e2aaaab)
+        + (up * b * down - up * cc * t) * (down + -1.) * 0.5
+}
 
 /// The original plain stereo delay stage: integer frames, feedback matrix,
 /// linear dry/wet. A thin constructor over [`TimeMod`].
@@ -192,7 +232,7 @@ impl TimeMod {
             match line.native {
                 Native::None => {}
                 Native::LegacyDelay { .. } => cap = LEGACY_RING,
-                Native::LegacyFlanger { .. } => cap = FLANGER_RING,
+                Native::LegacyModDelay { .. } => cap = FLANGER_RING,
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -294,13 +334,24 @@ impl TimeMod {
                 state.z[0] = [0., 0.];
                 state.z[1] = [f64::from(1. - phase), 0.];
             }
+            if let Some(Native::LegacyModDelay { second_head, .. }) = cfg.line.map(|l| l.native) {
+                // Re-phase 0x140960040 / 0x14095fee0: the left LFO's phase reads 1 at
+                // reset (0x140884620), every other LFO sits a wrapped f32 offset ahead.
+                state.z[1] = legacy_phase(1. + phase);
+                if second_head {
+                    let ahead = 1. + f32::from_bits(0x3c75c28f);
+                    let [l, r] = [legacy_phase(ahead), legacy_phase(wrap(ahead) + phase)];
+                    slab[LEGACY_B] = [l[0], r[0]];
+                    slab[LEGACY_B + 1] = [l[1], r[1]];
+                }
+            }
             state.aux[15] = 1.;
         }
         if let Some(Native::LegacyDelay { time, unit, feedback, damping, pan }) = cfg.line.map(|l| l.native) {
             return self.legacy_delay(state, slab, block, len, tempo, [time, unit, feedback, damping, pan]);
         }
-        if let Some(Native::LegacyFlanger { color, depth, feedback }) = cfg.line.map(|l| l.native) {
-            return self.legacy_flanger(state, slab, block, len, tempo, [color, depth, feedback]);
+        if let Some(Native::LegacyModDelay { base_ms, excursion, feedback, second_head, smoothing }) = cfg.line.map(|l| l.native) {
+            return self.legacy_mod_delay(state, slab, block, len, tempo, (base_ms, excursion, feedback, second_head, smoothing));
         }
         let hz = self.hz(tempo);
         let step = (2. * (f64::from(hz) * PI / self.rate).sin()) as f32;
@@ -496,19 +547,29 @@ impl TimeMod {
 }
 
 impl TimeMod {
-    /// Kontakt Legacy Flanger audio (0x140aa2350), f32 operation order. Wet-only:
-    /// the 4-point Lagrange read of a ring the input and the negated output feed.
-    fn legacy_flanger(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, [color, depth, feedback]: [f32; 3]) -> bool {
+    /// Kontakt legacy modulated delay (Flanger audio 0x140aa2350, Chorus audio
+    /// 0x140aa0510), f32 operation order. Wet-only: per head a 4-point
+    /// Lagrange read of the ring, optionally one-pole smoothed (Chorus 0.95,
+    /// 0x144737744); the Flanger subtracts its head from the ring write.
+    #[allow(clippy::type_complexity)]
+    fn legacy_mod_delay(
+        &self,
+        state: &mut ProcessorState,
+        slab: &mut [[f64; 2]],
+        block: &mut Planar,
+        len: usize,
+        tempo: f64,
+        (base_ms, excursion, feedback, second_head, smoothing): (f32, f64, f32, bool, f32),
+    ) -> bool {
+        const N: i32 = FLANGER_RING as i32;
         const MASK: usize = FLANGER_RING - 1;
-        let base = ((color * self.rate as f32 * f32::from_bits(0x3a83126f)) as i32).clamp(0, FLANGER_RING as i32);
-        let mut excursion = f64::from(depth) * 50.;
-        if excursion as i32 >= base {
-            excursion = f64::from(base - 1);
-        }
-        let fb = feedback * f32::from_bits(0x3f733333);
+        // Setters 0x1409637f0 / 0x140963970: frames truncate from f32, clamp at the ring.
+        let base = ((base_ms * self.rate as f32 * f32::from_bits(0x3a83126f)) as i32).clamp(0, N);
+        let excursion = if excursion as i32 >= base { f64::from(base - 1) } else { excursion };
         let step = (2. * (f64::from(self.hz(tempo)) * PI / self.rate).sin()) as f32;
         let mut w = state.delay_position as usize & MASK;
-        let origin = ((w as i32 - base + FLANGER_RING as i32) % FLANGER_RING as i32) as f32 + FLANGER_RING as f32;
+        let origin = |frames: i32| ((w as i32 - frames + N) % N) as f32 + N as f32;
+        let (origin_a, origin_b) = (origin(base), origin(base >> 1));
         let mut finite = true;
         let [left, right] = block;
         for i in 0..len {
@@ -516,26 +577,39 @@ impl TimeMod {
             slab[w] = input.map(f64::from);
             let mut out = [0f32; 2];
             for c in 0..2 {
-                let [mut s, mut co] = state.z[c].map(|v| v as f32);
-                s -= co * step;
-                co += s * step;
-                state.z[c] = [f64::from(s), f64::from(co)];
-                let position = (f64::from(s) * excursion + f64::from(origin + i as f32)) as f32;
-                let whole = position as u32;
-                let t = position - whole as f32;
-                let at = |k: u32| slab[(k as usize) & MASK][c] as f32;
-                let (a, b, cc, d) = (at(whole.wrapping_sub(2)), at(whole.wrapping_sub(1)), at(whole), at(whole.wrapping_add(1)));
-                let (up, down) = (t + 1., t - 1.);
-                let y = (up * d * t * down - t * a * (down + -1.) * down) * f32::from_bits(0x3e2aaaab) + (up * b * down - up * cc * t) * (down + -1.) * 0.5;
+                let [s, _] = leapfrog(&mut state.z[c], step);
+                let mut y = lagrange(slab, (f64::from(s) * excursion + f64::from(origin_a + i as f32)) as f32, c);
+                if smoothing > 0. {
+                    let previous = slab[LEGACY_B + 2][c] as f32;
+                    y = (y - previous) * smoothing + previous;
+                    slab[LEGACY_B + 2][c] = f64::from(y);
+                }
+                if second_head {
+                    let mut z = [slab[LEGACY_B][c], slab[LEGACY_B + 1][c]];
+                    let [s, _] = leapfrog(&mut z, step);
+                    (slab[LEGACY_B][c], slab[LEGACY_B + 1][c]) = (z[0], z[1]);
+                    let mut b = lagrange(slab, (f64::from(s) * excursion + f64::from(origin_b + i as f32)) as f32, c);
+                    if smoothing > 0. {
+                        let previous = slab[LEGACY_B + 3][c] as f32;
+                        b = (b - previous) * smoothing + previous;
+                        slab[LEGACY_B + 3][c] = f64::from(b);
+                    }
+                    y += b;
+                }
                 out[c] = y;
-                slab[w][c] = f64::from(slab[w][c] as f32 - y * fb);
+                if feedback != 0. {
+                    slab[w][c] = f64::from(slab[w][c] as f32 - y * feedback);
+                }
                 finite &= y.is_finite();
             }
-            (left[i], right[i]) = (self.cfg.dry * f64::from(input[0]) + self.cfg.wet * f64::from(out[0]), self.cfg.dry * f64::from(input[1]) + self.cfg.wet * f64::from(out[1]));
+            (left[i], right[i]) = (
+                self.cfg.dry * f64::from(input[0]) + self.cfg.wet * f64::from(out[0]),
+                self.cfg.dry * f64::from(input[1]) + self.cfg.wet * f64::from(out[1]),
+            );
             w = (w + 1) & MASK;
         }
         state.delay_position = w as u32;
-        for frame in &mut slab[..FLANGER_RING] {
+        for frame in &mut slab[..LEGACY_B + 4] {
             *frame = frame.map(flush);
         }
         !finite

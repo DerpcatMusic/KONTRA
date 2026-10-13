@@ -243,8 +243,48 @@ fn legacy_delay_synced_time_follows_tempo() {
 
 fn flanger(color: f32, depth: f32, feedback: f32, hz: f32) -> Config {
     let mut l = Line::single(DelayTime::Ms(f64::from(color)), 6.);
-    l.native = sampler_ir::fx::timemod::Native::LegacyFlanger { color, depth, feedback };
+    l.native = Native::LegacyModDelay {
+        base_ms: color,
+        excursion: f64::from(depth) * 50.,
+        feedback: feedback * 0.95,
+        second_head: false,
+        smoothing: 0.,
+    };
     wrap(l, Lfo { shape: LfoShape::Sine, rate: Rate::Hz(hz), phase: 0.25 })
+}
+
+fn chorus(depth: f32, hz: f32, phase: f32) -> Config {
+    let mut l = Line::single(DelayTime::Frames(1), 0.);
+    l.native = Native::LegacyModDelay {
+        base_ms: 0.,
+        excursion: f64::from(depth) * 75.,
+        feedback: 0.,
+        second_head: true,
+        smoothing: 0.95,
+    };
+    wrap(l, Lfo { shape: LfoShape::Sine, rate: Rate::Hz(hz), phase })
+}
+
+#[test]
+fn legacy_chorus_native_vector_two_smoothed_heads() {
+    // Base 0 frames (unwritten +8), so the excursion clamps to -1 whatever the depth.
+    // Head A at LFO sin 0 reads one frame back; head B's LFO starts at
+    // wrap(1 + 0.015) -> sin = -0.094108224, reading t = 0.09423828 past it
+    // (f32 position 4096.094). Values from f32 emulation of 0x140aa0510.
+    let x = impulse(8, [1., 1.]);
+    for depth in [0., 1.] {
+        let (out, fault) = run(chorus(depth, 0., 0.), 48_000, 120., &x, 64);
+        assert!(!fault);
+        assert!((out[0][0] - 0.093_347_23).abs() < 1e-7, "{:?}", out[0]);
+        assert!((out[1][0] - 1.851_864_9).abs() < 1e-6, "{:?}", out[1]);
+        assert_eq!(out[0][0], out[0][1], "phase 0: both channels alike");
+    }
+    // Partition independence up to the per-block f32 origin rebase.
+    let x: Vec<[f64; 2]> = (0..3000).map(|i| [(i as f64 * 0.05).sin(), (i as f64 * 0.031).cos()]).collect();
+    let (a, _) = run(chorus(0.7, 2., 1.), 48_000, 120., &x, 5);
+    let (b, _) = run(chorus(0.7, 2., 1.), 48_000, 120., &x, 64);
+    assert!(a.iter().zip(&b).all(|(p, q)| (p[0] - q[0]).abs() < 2e-3 && (p[1] - q[1]).abs() < 2e-3));
+    assert!(a.iter().flatten().all(|v| v.abs() < 2.5), "two heads, Lagrange overshoot");
 }
 
 #[test]
