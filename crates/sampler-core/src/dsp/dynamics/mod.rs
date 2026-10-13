@@ -14,6 +14,7 @@
 mod classic;
 mod enhanced;
 pub(super) mod generic;
+mod hilbert;
 mod limiter;
 mod pro;
 
@@ -89,6 +90,13 @@ impl DynamicsSettings {
                     .bounds()
                     .iter()
                     .all(|v| (v / 6.).abs() < 100.),
+                // Normalized drive and ceiling (the core clamps to 0..=1).
+                Law::KontaktHilbert(_) => self
+                    .threshold
+                    .bounds()
+                    .iter()
+                    .chain(&ratio)
+                    .all(|v| (0. ..=1.).contains(v)),
             }
     }
 
@@ -98,6 +106,7 @@ impl DynamicsSettings {
             Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) as u32,
             Law::KontaktPro(_) => pro::LATENCY as u32,
             Law::KontaktLimiter(_) => limiter::LATENCY as u32,
+            Law::KontaktHilbert(_) => hilbert::latency(rate) as u32,
             Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
         }
     }
@@ -154,6 +163,7 @@ impl DynamicsSettings {
             Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate),
             Law::KontaktPro(_) => pro::CELLS,
             Law::KontaktLimiter(_) => limiter::CELLS,
+            Law::KontaktHilbert(_) => hilbert::cells(rate),
             Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
         };
         *cells = offset.checked_add(own).ok_or(crate::Error::Capacity)?;
@@ -203,6 +213,7 @@ impl Dynamics {
             Law::KontaktEnhanced(_) => 2.,
             Law::KontaktPro(_) => 3.,
             Law::KontaktLimiter(_) => 4.,
+            Law::KontaktHilbert(_) => 5.,
         };
         [
             ("threshold_db", self.parameters[0]),
@@ -248,6 +259,9 @@ impl Dynamics {
             Law::KontaktPro(_) => pro::process(&shared, knobs, self.rate, state, cells, block, len),
             Law::KontaktLimiter(_) => {
                 limiter::process(&shared, knobs, self.rate, state, cells, block, len)
+            }
+            Law::KontaktHilbert(_) => {
+                hilbert::process(&shared, knobs, self.rate, state, cells, block, len)
             }
         }
     }

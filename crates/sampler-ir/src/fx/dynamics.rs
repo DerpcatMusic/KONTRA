@@ -115,6 +115,14 @@ pub enum Law {
     /// 32-frame look-ahead, channel-maximum detector, soft saturating curve
     /// `1 / (1 + y^2/4)` and a hard clamp at full scale.
     KontaktLimiter(Native),
+    /// Kontakt Transparent Limiter (SerType 0x5f), core `NI::DSP::HilbertLimiter`
+    /// (process `0x141ae3400`): `threshold_db` is the saved normalized drive
+    /// (`(1 - x) * 40` dB), `ratio` the saved normalized ceiling
+    /// (`-0.35 - (1 - x) * 39.7` dB), the release is the saved value in
+    /// seconds (at least 1 ms); `attack` is unused. Look-ahead of
+    /// `128 * int(rate / 44100)` frames, Hilbert-envelope detector, Hann-FIR
+    /// gain smoothing, brick-wall at the ceiling.
+    KontaktHilbert(Native),
 }
 
 /// A dynamics processor.
@@ -159,7 +167,11 @@ impl Config {
     pub fn threshold(&self) -> f64 {
         match self.law {
             Law::Generic(g) => g.threshold_db,
-            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) | Law::KontaktLimiter(n) => n.threshold_db,
+            Law::KontaktClassic(n)
+            | Law::KontaktEnhanced(n)
+            | Law::KontaktPro(n)
+            | Law::KontaktLimiter(n)
+            | Law::KontaktHilbert(n) => n.threshold_db,
         }
     }
 
@@ -167,7 +179,11 @@ impl Config {
     pub fn ratio(&self) -> f64 {
         match self.law {
             Law::Generic(g) => g.ratio,
-            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) | Law::KontaktLimiter(n) => n.ratio,
+            Law::KontaktClassic(n)
+            | Law::KontaktEnhanced(n)
+            | Law::KontaktPro(n)
+            | Law::KontaktLimiter(n)
+            | Law::KontaktHilbert(n) => n.ratio,
         }
     }
 
