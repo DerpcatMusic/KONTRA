@@ -108,6 +108,13 @@ pub enum Law {
     /// Kontakt Compressor mode 2, core `0x140ab35d0`: 32-frame look-ahead,
     /// dB-domain soft knee. Always detects on the channel maximum.
     KontaktPro(Native),
+    /// Kontakt Limiter (SerType 0x1c, module 3), process `0x140904890`, setter
+    /// `0x140960140`: `threshold_db` is the saved input gain (6.02 dB per
+    /// octave, `2^(x/6)`), the release is the half-life of the level follower
+    /// (`attack` is unused: the follower rises instantly); `ratio` is unused.
+    /// 32-frame look-ahead, channel-maximum detector, soft saturating curve
+    /// `1 / (1 + y^2/4)` and a hard clamp at full scale.
+    KontaktLimiter(Native),
 }
 
 /// A dynamics processor.
@@ -152,7 +159,7 @@ impl Config {
     pub fn threshold(&self) -> f64 {
         match self.law {
             Law::Generic(g) => g.threshold_db,
-            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => n.threshold_db,
+            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) | Law::KontaktLimiter(n) => n.threshold_db,
         }
     }
 
@@ -160,7 +167,7 @@ impl Config {
     pub fn ratio(&self) -> f64 {
         match self.law {
             Law::Generic(g) => g.ratio,
-            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => n.ratio,
+            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) | Law::KontaktLimiter(n) => n.ratio,
         }
     }
 
