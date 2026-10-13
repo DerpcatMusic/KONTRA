@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod sustain;
+
 const RATE: u32 = 48_000;
 const BLOCKS: [usize; 3] = [64, 128, 512];
 const EVENTS: &str = "cycles:u,instructions:u,cache-misses:u,LLC-load-misses:u,branch-misses:u,page-faults:u,context-switches";
@@ -56,6 +58,7 @@ type Message = (f64, [u8; 3]);
 enum Source {
     /// A Kontakt instrument, streamed as the host does.
     Kontakt(&'static str),
+    KontaktProgram(&'static str, usize),
     /// A UVI program in a bank, decoded up front, played through its script host.
     Uvi(&'static str, &'static str),
 }
@@ -231,17 +234,28 @@ const SILENT: f32 = 0.001;
 
 fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, String> {
     match &s.source {
-        Source::Kontakt(rel) => {
+        Source::Kontakt(rel) | Source::KontaktProgram(rel, _) => {
             let path = root(KONTAKT, "/mnt/MAIN_STORAGE/Libraries/Kontakt").join(rel);
-            let keys = messages.iter().map(|m| m.1[1]);
+            let keys = messages
+                .iter()
+                .filter(|m| m.1[0] & 0xf0 == 0x90)
+                .map(|m| m.1[1]);
             let options = sampler_kontakt::Options {
                 rate: RATE,
                 keys: keys.clone().min().unwrap_or(0)..=keys.max().unwrap_or(127),
                 library: Some(path.clone()),
                 ..Default::default()
             };
-            let streamed = sampler_kontakt::load_streamed(
-                &path,
+            let kontakt = match s.source {
+                Source::KontaktProgram(_, index) => sampler_kontakt::read_program(&path, index),
+                _ => sampler_kontakt::read(&path),
+            }
+            .map_err(fail)?;
+            if std::env::var_os("PERF_METADATA").is_some() {
+                sustain::metadata(s.name, &kontakt.instrument);
+            }
+            let streamed = sampler_kontakt::load_read_streamed(
+                kontakt,
                 &options,
                 &sampler_kontakt::StreamPolicy {
                     voices: std::env::var("PERF_STREAM_VOICES")
@@ -499,6 +513,7 @@ fn render(
                 }
             });
             EVENT_ERRORS.set(EVENT_ERRORS.get() + errors);
+            rt.drain_effects(|_| true);
             rt.flush_behaviors(|_, _, _| true);
             rt.flush_ended(|_| true);
         }
@@ -922,6 +937,7 @@ fn compare(args: &[String]) -> Result<bool, String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("sustain") => sustain::run(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
         _ => Err("usage: sampler-perf run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
