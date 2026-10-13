@@ -69,7 +69,7 @@ f:close()
 """
 
 
-def make_lua(spec, wav_dir: Path, stimulus: Path = None) -> str:
+def make_lua(spec, wav_dir: Path, stimulus: Path = None, extra_lua: str = "") -> str:
     """stimulus: an existing stereo WAV to play instead of the generated impulse."""
     cmds, starts = [], [0]
     for ch in commands(spec):
@@ -96,10 +96,11 @@ local function log(t) out:write(t .. "\\n") out:flush() end
 local inst = kt.add_instrument()
 local z = kt.add_zone(inst, 0, WAV)
 kt.set_zone_geometry(inst, z, {{ root_key = 60, low_key = 0, high_key = 127 }})
-kt.set_instrument_volume(inst, 0)
+kt.set_instrument_volume(inst, {spec.get('inst_volume', 0)})
 local chain = {{{chain}}}
 for slot, p in ipairs(chain) do log('{{"load":' .. tostring(pcall(kt.load_fx_preset, p, inst, -1, slot - 1, kt.insert_fx)) .. '}}') end
 log('{{"script":' .. tostring(pcall(kt.set_instrument_script_source, inst, 0, "{ksp_text}")) .. '}}')
+{extra_lua}
 log('{{"ready":true}}')
 out:close()
 """
