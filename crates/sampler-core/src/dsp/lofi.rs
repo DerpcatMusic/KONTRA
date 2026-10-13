@@ -1,5 +1,17 @@
-//! Port from v1 0cb7a8a0:src/fx/blocks.rs (DriveKind::LoFi).
+//! Kontakt BParFXLoFi channel processor (native 0x140aad440). Laws from the wave-3
+//! effects spec ("LoFi", audit CORE-EFFECTS-004/005/006): hold 0x140aad4e4..0x140aad679,
+//! truncating quantizer 0x140aad679..0x140aad89f, LCG noise 0x140aad8a2..0x140aadacb,
+//! parameter derivation 0x140aa3653..0x140aa3758.
+//! Still unproved (reported, not guessed): which saved field feeds each control
+//! (here bits->b, frequency->r, noise->N, color->t), the P-truncation flag (+0x1f4;
+//! P is kept fractional), host bypass lifecycle, and the native reset seed
+//! (GetTickCount at 0x14094c5b6; here a fixed non-native default seed).
 use super::{Planar, ProcessorState};
+
+/// Controls below this are active (native threshold bits 0x3f7fff58).
+const ACTIVE_BELOW: f32 = f32::from_bits(0x3f7f_ff58);
+/// Non-native default seed used when the state holds none.
+const DEFAULT_SEED: u32 = 0x9E37_79B9;
 
 /// Saved normalized Bits, Frequency, NoiseLevel and NoiseColor controls.
 #[derive(Clone, Copy, Debug)]
@@ -16,83 +28,82 @@ impl LoFiSettings {
             .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
     }
     pub(super) fn compile(self, rate: u32) -> LoFi {
-        let bits = 1.0 + 31.0 * self.bits;
-        let step = if bits >= 24.0 {
-            0.0
-        } else {
-            (1.0 - bits).exp2()
-        };
-        // ponytail: v1's hold proxy; native frequency/interpolation need calibration.
-        let hold = 1.0 + 63.0 * (1.0 - self.frequency).powi(3);
-        let noise = if self.noise > 0.0 {
-            10f32.powf((-96.0 + 90.0 * self.noise) / 20.0)
-        } else {
-            0.0
-        };
-        let hz = 20_000.0 * 0.02f32.powf(self.color);
-        let color = 1.0 - (-std::f32::consts::TAU * hz.min(0.45 * rate as f32) / rate as f32).exp();
+        let quant = (self.bits < ACTIVE_BELOW).then(|| {
+            let q = 2f64.powf(f64::from((16.0 * self.bits).max(1.0))) as f32;
+            (q, 1.0 / q)
+        });
+        let fs = rate as f32;
+        let period = (self.frequency < ACTIVE_BELOW)
+            .then(|| (fs / (fs * self.frequency).max(50.0)).max(1.0));
         LoFi {
-            step,
-            rate: 1.0 / hold,
-            noise,
-            color,
+            quant,
+            period,
+            noise_active: self.noise >= 0.001,
+            noise_gain: (f64::from(self.noise) * 0.075) as f32,
+            alpha: 1.0 - 0.9 * self.color.clamp(0.0, 1.0),
         }
     }
 }
 
 pub(crate) struct LoFi {
-    step: f32,
-    rate: f32,
-    noise: f32,
-    color: f32,
+    quant: Option<(f32, f32)>,
+    period: Option<f32>,
+    noise_active: bool,
+    noise_gain: f32,
+    alpha: f32,
 }
 impl LoFi {
     pub(crate) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize) {
-        let mut retained = std::array::from_fn::<_, 5, _>(|i| state.aux[i] as f32);
-        let mut phase = retained[4];
-        let mut rng = if state.delay_position == 0 {
-            0x9E37_79B9
+        // aux: [held0, held1, noise0, noise1, phase]
+        let mut aux = std::array::from_fn::<_, 5, _>(|i| state.aux[i] as f32);
+        let start_phase = aux[4];
+        let mut seed = if state.delay_position == 0 {
+            DEFAULT_SEED
         } else {
             state.delay_position
         };
-        for i in 0..len {
-            phase += self.rate;
-            if phase >= 1.0 {
-                phase -= 1.0;
-                retained[0] = block[0][i] as f32;
-                retained[1] = block[1][i] as f32;
-            }
-            for ch in 0..2 {
-                let mut y = retained[ch];
-                if self.step > 0.0 {
-                    y = (y / self.step).round() * self.step;
+        let mut end_phase = start_phase;
+        // Native order: each channel runs the whole block (hold, quantize, noise); the
+        // noise stream is shared, so each channel draws a contiguous run.
+        for ch in 0..2 {
+            let mut phase = start_phase;
+            let (mut held, mut h) = (aux[ch], aux[2 + ch]);
+            for i in 0..len {
+                let mut y = block[ch][i] as f32;
+                if let Some(p) = self.period {
+                    if phase >= p {
+                        phase -= p;
+                        held = y;
+                    } else {
+                        phase += 1.0;
+                    }
+                    y = held;
                 }
-                if self.noise > 0.0 {
-                    rng ^= rng << 13;
-                    rng ^= rng >> 17;
-                    rng ^= rng << 5;
-                    let white = rng as i32 as f32 * (1.0 / 2_147_483_648.0);
-                    retained[2 + ch] = super::kernels::biased_one_pole32(
-                        retained[2 + ch],
-                        self.color * (white - retained[2 + ch]),
-                    );
-                    y += self.noise * retained[2 + ch];
+                if let Some((q, inv)) = self.quant {
+                    y = ((y * q) as i32) as f32 * inv; // truncation toward zero
+                }
+                if self.noise_active {
+                    seed = seed.wrapping_mul(0x0bb3_8435).wrapping_add(0x3619_636b);
+                    let u = f32::from_bits((seed & 0x007f_ffff) | 0x4000_0000) - 3.0;
+                    h += self.alpha * (u - h);
+                    y += h * self.noise_gain;
                 }
                 block[ch][i] = f64::from(y);
             }
+            (aux[ch], aux[2 + ch], end_phase) = (held, h, phase);
         }
-        retained[4] = phase;
-        for (out, v) in state.aux.iter_mut().zip(retained) {
+        aux[4] = end_phase;
+        for (out, v) in state.aux.iter_mut().zip(aux) {
             *out = f64::from(v);
         }
-        state.delay_position = rng;
+        state.delay_position = seed;
     }
     pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 4] {
         [
-            ("quantization_step", self.step.into()),
-            ("hold_rate", self.rate.into()),
-            ("noise_gain", self.noise.into()),
-            ("noise_color_coefficient", self.color.into()),
+            ("quantization_step", self.quant.map_or(0.0, |(_, inv)| inv.into())),
+            ("hold_period", self.period.map_or(0.0, f64::from)),
+            ("noise_gain", if self.noise_active { self.noise_gain.into() } else { 0.0 }),
+            ("noise_alpha", self.alpha.into()),
         ]
     }
 }
@@ -102,153 +113,44 @@ mod tests {
     use super::super::BLOCK;
     use super::*;
 
-    #[test]
-    fn v1_hold_and_quantization_keep_the_stereo_sample_at_the_native_crossing() {
-        let kernel = LoFiSettings {
-            bits: 0.,
-            frequency: 0.,
-            noise: 0.,
-            color: 0.,
-        }
-        .compile(48_000);
-        let mut state = ProcessorState::default();
-        let mut first = [[0.74; BLOCK], [-0.74; BLOCK]];
-        kernel.process(&mut state, &mut first, BLOCK);
-        assert_eq!(&first[0][..63], &[0.; 63]);
-        assert_eq!(&first[1][..63], &[0.; 63]);
-        assert_eq!([first[0][63], first[1][63]], [1., -1.]);
-        let mut second = [[-0.74; BLOCK], [0.74; BLOCK]];
-        kernel.process(&mut state, &mut second, BLOCK);
-        assert_eq!(&second[0][..63], &[1.; 63]);
-        assert_eq!(&second[1][..63], &[-1.; 63]);
-        assert_eq!([second[0][63], second[1][63]], [-1., 1.]);
+    fn kernel(bits: f32, frequency: f32, noise: f32, color: f32) -> LoFi {
+        LoFiSettings { bits, frequency, noise, color }.compile(48_000)
     }
 
     #[test]
-    fn colored_noise_and_fractional_hold_are_fragment_independent_and_resettable() {
-        let kernel = LoFiSettings {
-            bits: 0.17,
-            frequency: 0.37,
-            noise: 0.63,
-            color: 0.7,
+    fn quantizer_truncates_toward_zero_not_nearest() {
+        // b=0 -> Q=2: 0.9*2=1.8 truncates to 1 (round would give 2).
+        let mut block = [[0.9; BLOCK], [-0.9; BLOCK]];
+        kernel(0.0, 1.0, 0.0, 0.0).process(&mut ProcessorState::default(), &mut block, BLOCK);
+        assert_eq!((block[0][0], block[1][0]), (0.5, -0.5));
+    }
+
+    #[test]
+    fn hold_has_p_plus_one_cadence() {
+        // r=0.5 at 48 kHz -> P=2: capture on frames 2, 5, 8 (phase>=P checked first).
+        let mut block = [[0.; BLOCK]; 2];
+        for i in 0..BLOCK {
+            block[0][i] = (i + 1) as f64;
         }
-        .compile(44_100);
-        let source = std::array::from_fn::<_, 2, _>(|c| {
-            std::array::from_fn::<_, BLOCK, _>(|i| ((i + 11 * c) as f64 * 0.31).sin() * 0.1)
-        });
+        kernel(1.0, 0.5, 0.0, 0.0).process(&mut ProcessorState::default(), &mut block, BLOCK);
+        assert_eq!(&block[0][..9], &[0., 0., 3., 3., 3., 6., 6., 6., 9.]);
+    }
+
+    #[test]
+    fn noise_is_the_native_lcg_and_survives_reset() {
+        // seed 1 -> 0x41cce7a0 -> u = 0.20163727; alpha=1 (color 0) so h=u; gain N*0.075.
+        let k = kernel(1.0, 1.0, 1.0, 0.0);
         let mut state = ProcessorState::default();
-        let mut whole = source;
-        kernel.process(&mut state, &mut whole, BLOCK);
-        let expected_state = (state.aux, state.delay_position);
-        state = ProcessorState::default();
-        let mut split = source;
-        for (start, end) in [(0, 1), (1, 23), (23, 32), (32, BLOCK)] {
-            let mut block = [[0.; BLOCK]; 2];
-            for c in 0..2 {
-                block[c][..end - start].copy_from_slice(&source[c][start..end]);
-            }
-            kernel.process(&mut state, &mut block, end - start);
-            for c in 0..2 {
-                split[c][start..end].copy_from_slice(&block[c][..end - start]);
-            }
-        }
-        assert_eq!(whole, split);
-        assert_eq!((state.aux, state.delay_position), expected_state);
+        state.delay_position = 1;
+        let mut block = [[0.; BLOCK]; 2];
+        k.process(&mut state, &mut block, BLOCK);
+        assert!((block[0][0] - 0.015122795104980468).abs() < 1e-9, "{}", block[0][0]);
+        // Channel 1 continues the shared stream after channel 0's run.
+        assert_ne!(block[0][0], block[1][0]);
         assert!(state.finite());
-        let mut reset = source;
-        kernel.process(&mut ProcessorState::default(), &mut reset, BLOCK);
-        assert_eq!(reset, whole);
-    }
-}
-
-#[cfg(test)]
-mod frozen_kernel_tests {
-    use super::*;
-    fn frozen_process(kernel: &LoFi, state: &mut ProcessorState, block: &mut Planar, len: usize) {
-        let mut retained = std::array::from_fn::<_, 5, _>(|i| state.aux[i] as f32);
-        let mut phase = retained[4];
-        let mut rng = if state.delay_position == 0 {
-            0x9E37_79B9
-        } else {
-            state.delay_position
-        };
-        for i in 0..len {
-            phase += kernel.rate;
-            if phase >= 1.0 {
-                phase -= 1.0;
-                retained[0] = block[0][i] as f32;
-                retained[1] = block[1][i] as f32;
-            }
-            for ch in 0..2 {
-                let mut y = retained[ch];
-                if kernel.step > 0.0 {
-                    y = (y / kernel.step).round() * kernel.step;
-                }
-                if kernel.noise > 0.0 {
-                    rng ^= rng << 13;
-                    rng ^= rng >> 17;
-                    rng ^= rng << 5;
-                    let white = rng as i32 as f32 * (1.0 / 2_147_483_648.0);
-                    retained[2 + ch] += kernel.color * (white - retained[2 + ch]) + 1e-20;
-                    y += kernel.noise * retained[2 + ch];
-                }
-                block[ch][i] = f64::from(y);
-            }
-        }
-        retained[4] = phase;
-        for (out, v) in state.aux.iter_mut().zip(retained) {
-            *out = f64::from(v);
-        }
-        state.delay_position = rng;
-    }
-
-    #[test]
-    fn shared_lofi_matches_frozen_pcm_and_state_bits() {
-        for rate in [44100, 48000, 96000] {
-            let kernel = LoFiSettings {
-                bits: 0.17,
-                frequency: 0.37,
-                noise: 0.63,
-                color: 0.7,
-            }
-            .compile(rate);
-            for len in [0, 1, 3, 4, 17, super::super::BLOCK] {
-                let (mut state, mut expected_state) =
-                    (ProcessorState::default(), ProcessorState::default());
-                for block_index in 0..8 {
-                    let mut actual = std::array::from_fn(|c| {
-                        std::array::from_fn(|i| match block_index {
-                            0 => {
-                                if i == 0 {
-                                    1.
-                                } else {
-                                    0.
-                                }
-                            }
-                            1 => ((i + 11 * c) as f64 * 0.31).sin() * 0.1,
-                            _ => {
-                                if i % 2 == 0 {
-                                    -0.
-                                } else {
-                                    f64::from_bits(1)
-                                }
-                            }
-                        })
-                    });
-                    let mut expected = actual;
-                    kernel.process(&mut state, &mut actual, len);
-                    frozen_process(&kernel, &mut expected_state, &mut expected, len);
-                    assert_eq!(
-                        actual.map(|c| c.map(f64::to_bits)),
-                        expected.map(|c| c.map(f64::to_bits))
-                    );
-                    assert_eq!(
-                        state.aux.map(f64::to_bits),
-                        expected_state.aux.map(f64::to_bits)
-                    );
-                    assert_eq!(state.delay_position, expected_state.delay_position);
-                }
-            }
-        }
+        let (mut again, mut s2) = ([[0.; BLOCK]; 2], ProcessorState::default());
+        s2.delay_position = 1;
+        k.process(&mut s2, &mut again, BLOCK);
+        assert_eq!(block, again);
     }
 }
