@@ -5813,9 +5813,13 @@ fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
         };
         ui.tick(held());
         ui.tick(held());
-        assert_eq!(
-            p.shared.keyboard.pop(),
-            Some((0, crate::plugin::Play::Note(64, 64))),
+        // Velocity follows the pointer's height in the map: the middle of an odd
+        // or even pixel height is 63 or 64.
+        assert!(
+            matches!(
+                p.shared.keyboard.pop(),
+                Some((0, crate::plugin::Play::Note(64, 63 | 64)))
+            ),
             "zoomed hit testing auditions the shown key and velocity"
         );
         ui.tick(Input::default());

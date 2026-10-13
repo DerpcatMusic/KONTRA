@@ -880,6 +880,12 @@ fn rack_interactions() {
             .size
             .height
     };
+    // Unsized, a part is as tall as the rack: it pushes the next one below the fold and
+    // that part's docked header covers its foot. Size them so the feet are in the open.
+    for part in &mut write(&p.selection).parts {
+        part.height = 200.;
+    }
+    h.idle(30);
     let open = tall(&h);
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
@@ -907,10 +913,10 @@ fn rack_interactions() {
     // double-click on the foot unfolds it again.
     let edge = |h: &Harness| center(&h.ui, "resize-0");
     let at = edge(&h);
-    for dy in [0., -4., -400.] {
+    for dy in [0., -4., -open] {
         h.tick(pointer(Point::new(at.x, at.y + dy), true));
     }
-    h.tick(pointer(Point::new(at.x, at.y - 400.), false));
+    h.tick(pointer(Point::new(at.x, at.y - open), false));
     h.idle(30);
     assert!(
         parts(&p)[0].collapsed,
@@ -926,6 +932,8 @@ fn rack_interactions() {
         !part.collapsed && part.height == 0.,
         "a double-click unfolds it whole"
     );
+    // Whole, it is rack-tall and its foot is below the fold; size it again to drag the foot.
+    write(&p.selection).parts[0].height = 200.;
     // Dragged part way, it follows the pointer as it goes and stays there.
     h.idle(60); // not a double click
     let at = edge(&h);
@@ -2299,6 +2307,7 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
     let mut watch = Watch {
         disk_counter: Some(&IDLE_DISK),
+        picture_revision: Some(|| 0),
         ..Default::default()
     };
     let computer = computer::Computer::default();
@@ -2819,8 +2828,12 @@ fn the_window_lets_go_of_a_glide_however_it_ends() {
 #[test]
 fn the_keys_play_the_selected_part_or_every_part() {
     let p = two_parts();
+    // A part is as tall as the rack by default; size both so each header shows.
+    for part in &mut p.selection.write().unwrap().parts {
+        part.height = 200.;
+    }
     let mut h = Harness::new(&p, 1180., 760.);
-    h.idle(3);
+    h.idle(30);
     let click = |h: &mut Harness, at: Point| {
         h.tick(pointer(at, true));
         h.tick(pointer(at, false));
@@ -2865,8 +2878,9 @@ fn the_keys_play_the_selected_part_or_every_part() {
     let name = center(&h.ui, "name-0");
     click(&mut h, name);
     assert_eq!(selected_slot(&p), 0);
-    let body = center(&h.ui, "body-1");
-    click(&mut h, body);
+    // The ground just under the part's header row (its body extends past its shown height).
+    let body = h.ui.scene().unwrap().surface("body-1").unwrap().frame;
+    click(&mut h, Point::new(body.x + body.size.width * 0.5, body.y + 2.));
     assert_eq!(
         selected_slot(&p),
         1,
@@ -2935,7 +2949,13 @@ fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
 #[test]
 fn the_cursor_follows_what_is_under_the_pointer() {
     let p = two_parts();
+    // A part is as tall as the rack by default, which docks the next part's header over
+    // its foot; size them so both feet are in the open.
+    for part in &mut p.selection.write().unwrap().parts {
+        part.height = 200.;
+    }
     let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(30);
     let cursor_at = |h: &mut Harness, at: Point| {
         let root = (h.build)(&mut h.ui, &mut h.bridge);
         h.ui.frame(root, Some(h.size), pointer(at, false), 1. / 60.)

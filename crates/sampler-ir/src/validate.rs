@@ -183,9 +183,12 @@ impl Check<'_> {
         }
         match c.curve {
             Curve::Identity | Curve::Rectifier(_) => {}
-            Curve::Classic { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+            Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
             Curve::Tube { drive } | Curve::Transistor { drive } => unit(drive, "distortion drive")?,
             Curve::Destructor { drive } => self.within(drive, 0.0..=1.0, "bit crusher drive")?,
+        }
+        if let Some(tone) = c.tone {
+            self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;
         }
         if let Some(damping) = c.damping {
             unit(damping, "distortion damping")?;

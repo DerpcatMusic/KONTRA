@@ -7,19 +7,24 @@
 /// Why a drive, lo-fi, amp, cabinet or utility element is not mapped.
 pub(crate) fn unproved(element: &str) -> Option<&'static str> {
     Some(match element {
-        "BitCrusher" => {
-            "kernel [ref] is proved and runs in the color superset (hold, floor quantizer, rational drive), but the public parameter conversion (BitSize, EffectSampleRate, Drive, Cutoff biquad) is not established"
+        "Redux" | "Redux2" => {
+            "kernel at [ref] dispatches to 8 specialised bit/rate variants ([ref]..[ref]) keyed by mode and flags; variant bodies and parameter conversion not transcribed"
         }
-        "Redux" | "Redux2" | "FormantCrusher" => {
-            "crusher/decimator public parameter conversion is not established"
+        "FormantCrusher" => {
+            "kernel at [ref] chains a biquad bank and a 0x1038-byte per-channel formant stage; stage laws not transcribed"
         }
-        "Drive" | "Exciter" | "GarageFuzz" | "StraightFuzz" | "SmoothOverdrive" | "TSDrive"
-        | "DiodeClipper" | "DoubleDrive" | "UviDrive" | "Maximizer" | "Buzz" | "Retro"
-        | "Vinyl" => "saturation law is not extracted from the binary",
-        "BigMuffTone" | "ToneStack" | "JCMAmp" | "BoxModeler" | "Cabinet" => {
-            "amp, tone-stack or cabinet topology is not extracted from the binary"
+        "Exciter" => "kernel [ref] runs an oversampled (up to 2^n) stage via [ref] with an FIR resampler; shaper laws not transcribed",
+        "BigMuffTone" => {
+            "tone filter at [ref] is a runtime-built biquad from unreferenced double constants at [ref]..[ref]; coefficients not transcribed"
         }
-        "Widener" => "stereo widening law is not extracted from the binary",
+        "Drive" | "GarageFuzz" | "StraightFuzz" | "SmoothOverdrive" | "TSDrive" | "DiodeClipper"
+        | "DoubleDrive" | "UviDrive" | "Maximizer" | "Buzz" | "Retro" | "Vinyl" => {
+            "per-class kernel located but its saturation law, oversampling and filter stages are not transcribed; no Kontakt/UVI oracle to prove a transcription"
+        }
+        "ToneStack" | "JCMAmp" | "BoxModeler" | "Cabinet" => {
+            "amp, tone-stack or cabinet topology kernel located but not transcribed; cabinet impulse data is not in the executable"
+        }
+        "Widener" => "kernel [ref] located; stereo widening law not transcribed",
         _ => return None,
     })
 }

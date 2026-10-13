@@ -2022,11 +2022,14 @@ fn conflux_production_load_binds_live_wave_controls_to_the_authored_group() {
         assert_eq!(rt.engine_parameter(address).unwrap(), default);
         rt.set_engine_parameter(address, 370_000).unwrap();
         assert_eq!(rt.engine_parameter(address).unwrap(), 370_000);
-        for name in ["ENGINE_PAR_WT_PHASE", "ENGINE_PAR_WT_FORM_MODE", "ENGINE_PAR_WT_FORM2_MODE"] {
-            let unbound = sampler_core::EngineParameterAddress {
-                parameter: sampler_core::engine_parameter_id(name).unwrap(), ..address };
-            assert!(rt.set_engine_parameter(unbound, 0).is_err());
+        let lane = |name: &str| sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id(name).unwrap(), ..address };
+        // The phase has no authored lane; the two form-mode lanes are bound
+        // (`wavetable_lanes`) with the discrete WavetableForm law.
+        assert!(rt.set_engine_parameter(lane("ENGINE_PAR_WT_PHASE"), 0).is_err());
+        for name in ["ENGINE_PAR_WT_FORM_MODE", "ENGINE_PAR_WT_FORM2_MODE"] {
+            rt.set_engine_parameter(lane(name), 0).expect(name);
         }
     }
-    println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_mode_unbound=true");
+    println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_unbound=true form_modes_bound=true");
 }
