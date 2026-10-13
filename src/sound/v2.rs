@@ -2983,6 +2983,10 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::LegacyPhaser { .. } => "Legacy Phaser",
             ir::Processor::Phaser(_) => "Phaser filter",
             ir::Processor::Formant(_) => "Formant I",
+            ir::Processor::FilterBank(c) => match c.topology {
+                ir::fx::filter::Topology::FormantII => "Formant II",
+                _ => "Filter",
+            },
             ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
