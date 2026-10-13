@@ -316,6 +316,14 @@ fn uvi_tables() -> &'static [[f32; UVI_ENTRIES + 1]; 6] {
     })
 }
 
+/// The UVI sine table (0x1428393a0) at a uint32 phase, linearly interpolated:
+/// also the delay modulators of SparkVerb and DualDelay.
+pub(crate) fn uvi_sine(q: u32) -> f32 {
+    let (j, u) = ((q >> 24) as usize, (q & 0xff_ffff) as f32 * (1.0 / 16_777_216.0));
+    let t = &uvi_tables()[0];
+    (1.0 - u) * t[j] + u * t[j + 1]
+}
+
 /// `seed` advanced `n` steps of `z' = a*z + c (mod 2^32)`.
 fn lcg_jump_with(a: u32, c: u32, mut seed: u32, mut n: u64) -> u32 {
     let (mut a, mut c) = (a, c);

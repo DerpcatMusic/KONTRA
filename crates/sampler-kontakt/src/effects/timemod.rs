@@ -53,10 +53,10 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 /// Why a delay or modulation module without a mapping stays unsupported.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x5a => "Replika: modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38); the core class, its style kernels and the saved-field binding are not extracted",
+        0x5a => "Replika: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38) and its style kernels are not extracted",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
-        0x63 => "Psyche Delay: modern wrapper core not located; no saved-field binding measured",
+        0x63 => "Psyche Delay: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern wrapper core is not located",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, setter case 0xe 0x140962630) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the setter's parameter binding are not yet verified",
         _ => return None,
@@ -101,11 +101,11 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 return None;
             }
             // Setter case 0x43 @0x1409645ae, audio 0x140aa1130: feedback * 0.98, damping * 0.7,
-            // pan crossing, ring 2^18. The sync getter's min/max arguments (xmm3, [rsp+0x28])
-            // are stale registers at the call, so the synced time is unclamped except by the ring.
-            if unit_set(unit).is_some() {
-                notes.push(("tempo-synced delay time clamp".into(), format!("unit {unit}"), Reason::UnknownLaw));
-            }
+            // pan crossing, ring 2^18. Synced, field 0 holds an integer note count
+            // round(1 + 11u) in 1..=12 and field 4 the unit factor (timemod-reads.tsv,
+            // fx_legacy_delay_reverb_mod.tsv). The synced time goes through the time object's vtable
+            // slot 5 (0x14072b380), which passes its own [0, 5800] ms bounds to getter
+            // 0x140a74bf0 (counts below one read as one).
             let mut line = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
             line.native = Native::LegacyDelay { time, unit, feedback, damping, pan };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
