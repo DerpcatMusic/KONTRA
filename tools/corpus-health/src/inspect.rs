@@ -1327,6 +1327,7 @@ mod tests {
         script.extend(0u32.to_le_bytes());
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
+        script.extend(0u32.to_le_bytes()); // persistent-table count
         let mut children = Vec::new();
         for child in [
             Chunk { id: 0x33, data: vec![0; 4] },
@@ -1769,7 +1770,9 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert_eq!(report["status"], "partial");
         assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
             entry["stage"] == "ui_projection" && entry["feature"] == "performance view control"));
-        assert!(!report.to_string().contains("PRIVATE_CUSTOM_FONT"));
+        // The font is a resolved bitmap-font asset now; skipped values must still stay
+        // out of the diagnostics.
+        assert!(!report["diagnostics"].to_string().contains("PRIVATE_CUSTOM_FONT"));
     }
 
     #[test]
@@ -1785,6 +1788,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
             data.extend(0u32.to_le_bytes());
             data.extend(u32::MAX.to_le_bytes());
             data.extend(0u32.to_le_bytes());
+            data.extend(0u32.to_le_bytes()); // persistent-table count
             Chunk { id: 6, data }
         };
         let program = Program(StructuredObject {
@@ -1827,6 +1831,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         data.extend(0u32.to_le_bytes());
         data.extend(u32::MAX.to_le_bytes());
         data.extend(0u32.to_le_bytes());
+        data.extend(0u32.to_le_bytes()); // persistent-table count
         let program = Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
