@@ -1,4 +1,6 @@
-//! Shared parameter lanes and worker-reserved state for the pinned v1 LP4.
+//! Shared parameter lanes and worker-reserved state for the pinned v1 Ladder kernel. The
+//! magnitude preview is this Rust kernel's small-signal response, not a native transfer
+//! measurement (CORE-FILTERS-053).
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::super::{BLOCK, Planar, ProcessorState};
 use super::ladder_kernel;

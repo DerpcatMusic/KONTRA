@@ -1,7 +1,14 @@
-// Ported directly from v1 0cb7a8a0:src/engine/filter/ladder.rs.
-// Native float32 kernel and control clock retained; storage adapter below.
-//! Native Ladder LP4's single-rate kernel and ordinary 32/4-frame control clock.
-//! HQ, modulation source sampling, and nonzero secondary cutoff clocks remain gaps.
+// Ported directly from v1 0cb7a8a0:src/engine/filter/ladder.rs; storage adapter below.
+//! Pinned-v1 Ladder single-rate kernel and its 32/4-frame control clock.
+//!
+//! Proved against the Kontakt 8 binary: the saved-row/tap selector, the per-row output
+//! weights and the selector-specific compensation curves (audit CORE-FILTERS-044, 050, 051,
+//! 081..084). Not proved, so a stand-in and reported as an unknown law by the Kontakt
+//! mapping: the normalized cutoff law and its exponential table (045, 075), the pole
+//! polynomial (076), the gain and resonance setters (046, 054), the control clock and ramp
+//! (047), the record-version instant cutoff (048), the enabled-route semantics (049) and the
+//! nonlinear four-stage state kernel itself (052). HQ, modulation source sampling and nonzero
+//! secondary cutoff clocks remain gaps.
 
 use std::sync::OnceLock;
 
