@@ -13,10 +13,13 @@
 
 mod classic;
 mod enhanced;
+mod feedback;
 pub(super) mod generic;
 mod hilbert;
 mod limiter;
 mod pro;
+mod transient;
+mod bus;
 
 use super::{
     Parameter, Planar, ProcessorState,
@@ -91,6 +94,18 @@ impl DynamicsSettings {
                     .iter()
                     .all(|v| (v / 6.).abs() < 100.),
                 // Normalized drive and ceiling (the core clamps to 0..=1).
+                // Linear drive, ratio 1..=20 and positive time constants.
+                Law::KontaktFeedback { .. } => {
+                    self.threshold.bounds().iter().all(|v| *v > 0. && v.is_finite())
+                        && ratio.iter().all(|v| (1. ..=20.).contains(v))
+                        && attack.iter().chain(&release).all(|v| *v > 0.)
+                }
+                Law::KontaktBusComp { threshold, makeup, attack, release, ratio, .. } => {
+                    [threshold, makeup, attack, release, ratio].iter().all(|v| (0. ..=1.).contains(v))
+                }
+                Law::KontaktTransient { attack, sustain, gain, .. } => {
+                    [attack, sustain, gain].iter().all(|v| (0. ..=1.).contains(v))
+                }
                 Law::KontaktHilbert(_) => self
                     .threshold
                     .bounds()
@@ -107,7 +122,11 @@ impl DynamicsSettings {
             Law::KontaktPro(_) => pro::LATENCY as u32,
             Law::KontaktLimiter(_) => limiter::LATENCY as u32,
             Law::KontaktHilbert(_) => hilbert::latency(rate) as u32,
-            Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
+            Law::KontaktFeedback { .. }
+            | Law::KontaktTransient { .. }
+            | Law::KontaktBusComp { .. }
+            | Law::KontaktClassic(_)
+            | Law::KontaktEnhanced(_) => 0,
         }
     }
 
@@ -164,7 +183,11 @@ impl DynamicsSettings {
             Law::KontaktPro(_) => pro::CELLS,
             Law::KontaktLimiter(_) => limiter::CELLS,
             Law::KontaktHilbert(_) => hilbert::cells(rate),
-            Law::KontaktClassic(_) | Law::KontaktEnhanced(_) => 0,
+            Law::KontaktFeedback { .. } => feedback::CELLS,
+            Law::KontaktClassic(_)
+            | Law::KontaktEnhanced(_)
+            | Law::KontaktTransient { .. }
+            | Law::KontaktBusComp { .. } => 0,
         };
         *cells = offset.checked_add(own).ok_or(crate::Error::Capacity)?;
         Ok(Dynamics {
@@ -214,6 +237,9 @@ impl Dynamics {
             Law::KontaktPro(_) => 3.,
             Law::KontaktLimiter(_) => 4.,
             Law::KontaktHilbert(_) => 5.,
+            Law::KontaktFeedback { .. } => 6.,
+            Law::KontaktTransient { .. } => 7.,
+            Law::KontaktBusComp { .. } => 8.,
         };
         [
             ("threshold_db", self.parameters[0]),
@@ -263,6 +289,36 @@ impl Dynamics {
             Law::KontaktHilbert(_) => {
                 hilbert::process(&shared, knobs, self.rate, state, cells, block, len)
             }
+            Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link } => bus::process(
+                &bus::Controls { threshold, makeup, attack, release, ratio, link },
+                shared.mix,
+                self.rate,
+                state,
+                block,
+                len,
+            ),
+            Law::KontaktTransient { attack, sustain, gain, clip } => transient::process(
+                &transient::Controls {
+                    attack: attack as f32,
+                    sustain: sustain as f32,
+                    gain: gain as f32,
+                    clip,
+                },
+                self.rate,
+                state,
+                block,
+                len,
+            ),
+            Law::KontaktFeedback { high_quality, .. } => feedback::process(
+                &shared,
+                knobs,
+                high_quality,
+                self.rate,
+                state,
+                cells,
+                block,
+                len,
+            ),
         }
     }
 }

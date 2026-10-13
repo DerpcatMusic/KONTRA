@@ -420,6 +420,16 @@ impl Slot {
                 link: r.flag()?,
             },
             0x1c => Params::Dynamics(dynamics::limiter(r.f32()?, r.f32()?)),
+            0x4c if self.version == 0x10 => Params::Dynamics(dynamics::feedback(
+                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                [r.flag()?, r.flag()?, r.flag()?],
+            )),
+            0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
+            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
+                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                if self.version == 0x12 { Some(r.f32()?) } else { None },
+            )),
             0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x1a => Params::Inverter {
                 invert: r.flag()?,
