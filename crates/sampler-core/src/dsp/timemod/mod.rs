@@ -330,7 +330,7 @@ impl TimeMod {
         let mut finite = true;
         let [left, right] = block;
         let mut coefficient = [0f32; 2];
-        let (mut ramp, mut chunk) = ([0f32; 2], 0usize);
+        let (mut ramp, mut chunk) = ([state.aux[3] as f32, state.aux[4] as f32], state.aux[2] as usize);
         if let Some(Allpass { law: SweepLaw::Filter { cutoff }, .. }) = cfg.allpass {
             coefficient = [filter_coefficient(cutoff); 2];
         }
@@ -469,6 +469,7 @@ impl TimeMod {
         state.delay_position = position as u32;
         state.delay_filled = filled as u32;
         (state.aux[0], state.aux[1]) = (f64::from(previous[0]), f64::from(previous[1]));
+        (state.aux[2], state.aux[3], state.aux[4]) = (chunk as f64, f64::from(ramp[0]), f64::from(ramp[1]));
         // Retained state decays to denormals only between blocks of silence.
         for frame in &mut slab[self.ap_at..self.tap_at] {
             *frame = frame.map(flush);

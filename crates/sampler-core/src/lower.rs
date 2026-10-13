@@ -1031,6 +1031,9 @@ impl Lowering<'_> {
                         feedback: 0.0,
                         ..
                     } => self.frames(*time),
+                    ir::Processor::TimeMod(config) => {
+                        self.frames(ir::Time::Milliseconds(config.tail_ms()))
+                    }
                     ir::Processor::StereoModeller { pseudo: true, .. } => {
                         (self.rate / 100).min(1023)
                     }
@@ -2327,19 +2330,7 @@ impl Lowering<'_> {
                     damping: native_parameter(&lanes, 1),
                 }
             }
-            ir::Processor::LegacyPhaser {
-                depth,
-                feedback,
-                phase,
-                speed,
-                period_unit,
-            } => Processor::LegacyPhaser {
-                depth,
-                feedback,
-                phase,
-                speed,
-                period_unit,
-            },
+            ir::Processor::TimeMod(config) => Processor::TimeMod(config),
             ir::Processor::KontaktEnhancedCompressor { knobs, link } => {
                 Processor::KontaktEnhancedCompressor { knobs, link }
             }
