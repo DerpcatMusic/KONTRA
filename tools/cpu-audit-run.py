@@ -30,8 +30,9 @@ scenarios = {
 }
 heavy = '/home/derpcat/.cache/kontakto-heavy'
 if a.sustain:
-    if a.engine != 'v2' or a.cold or a.only in scenarios:
+    if a.engine != 'v2' or a.cold or a.only in scenarios or a.block == 32:
         p.error('--sustain needs v2, no --cold, and afflatus|conflux|conflux-multi')
+    failed_cells = 0
     for name in ([a.only] if a.only else ['afflatus', 'conflux', 'conflux-multi']):
         for block in ([a.block] if a.block else [64, 256]):
             for notes in ([a.notes] if a.notes else [1, 8]):
@@ -58,8 +59,8 @@ if a.sustain:
                             time.sleep(.1)
                         if ready.exists():
                             # Frame-pointer callchains contain code addresses only, never copied sample/script stack bytes.
-                            prof = subprocess.Popen(['perf', 'record', '-g', '--call-graph', 'fp',
-                                '-F', str(a.frequency), '-e', 'cpu-clock:u', '-p', ready.read_text(),
+                            prof = subprocess.Popen(['perf', 'record', '-g', '--call-graph', 'fp', '--user-callchains',
+                                '-F', str(a.frequency), '-e', 'cycles:u', '-p', ready.read_text(),
                                 '-o', str(a.out/f'{tag}.perf.data')], stderr=err)
                         while not finished.exists() and job.poll() is None:
                             time.sleep(.01)
@@ -72,11 +73,17 @@ if a.sustain:
                             subprocess.run(['perf', 'report', '--stdio', '--no-children',
                                 '--percent-limit', '0.5', '-i', str(a.out/f'{tag}.perf.data')],
                                 stdout=report, check=True)
-                        if profile_code != 0:
+                        with (a.out/f'{tag}.audio.perf.txt').open('w') as report:
+                            subprocess.run(['perf', 'report', '--stdio', '--no-children',
+                                '--percentage', 'relative', '--tid', ready.read_text(),
+                                '--percent-limit', '0.5', '-i', str(a.out/f'{tag}.perf.data')],
+                                stdout=report, check=True)
+                        if profile_code not in (0, -signal.SIGINT, 128 + signal.SIGINT):
                             code = profile_code
                 done.write_text(json.dumps({'exit_code': code})+'\n')
                 print(tag, code, flush=True)
-    raise SystemExit(0)
+                failed_cells += int(code != 0)
+    raise SystemExit(int(failed_cells > 0))
 for name, (library, instrument) in scenarios.items():
     if a.only and a.only != name:
         continue
