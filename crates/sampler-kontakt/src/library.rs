@@ -763,7 +763,7 @@ fn voice_limit(
     };
     Ok(ir::VoiceLimit {
         voices: v.max_num_voices.max(1) as u32,
-        exclusive_set: u32::try_from(v.exclusion_group).ok(),
+        exclusive_set: u32::try_from(v.exclusion_group).ok().filter(|&set| set < 16),
         kill,
         prefer_released: v.prefer_released,
         fade: ir::Time::Milliseconds(f64::from(v.ms_fade_time.max(0))),
@@ -852,7 +852,7 @@ impl Translation {
         for (g, group) in groups.groups.iter().enumerate() {
             if let Some(group) = group {
                 let limit = voice_limit(&group.voice_limit)?;
-                if group.voice_limit.exclusion_group >= 0 {
+                if group.voice_limit.exclusion_group >= 16 {
                     self.unsupported(
                         &format!("voice group {g}"),
                         "voice group exclusion group",
@@ -3502,6 +3502,7 @@ mod saved_tests {
 #[cfg(test)]
 mod modulation {
     include!("modulation_descriptor_tests.rs");
+    include!("voice_allocation_tests.rs");
     use super::*;
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
