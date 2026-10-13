@@ -341,12 +341,25 @@ fn detail(p: ir::Processor) -> String {
             feedback * 100.,
             mix * 100.
         ),
-        ir::Processor::Reverb(r) => format!(
-            "Reverb · {:.2} s · size {:.0}% · predelay {:.0} ms",
-            r.decay_seconds,
-            r.size * 100.,
-            r.predelay_seconds * 1000.
-        ),
+        ir::Processor::Space(c) => match c.network {
+            Some(n) => format!(
+                "{} · {:.2} s · size {:.0}% · predelay {:.0} ms",
+                match n.topology {
+                    ir::fx::space::Topology::Fdn => "Reverb",
+                    ir::fx::space::Topology::CombAllpass => "Room reverb",
+                    ir::fx::space::Topology::Plate => "Plate reverb",
+                    ir::fx::space::Topology::Diffuser => "Diffusion",
+                },
+                n.decay_seconds,
+                n.size * 100.,
+                n.predelay_seconds * 1000.
+            ),
+            None => format!(
+                "Convolution · dry {:.0}% · wet {:.0}%",
+                c.dry * 100.,
+                c.wet * 100.
+            ),
+        },
         ir::Processor::Compressor(c) => format!(
             "Compressor · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
             c.threshold_db,
@@ -378,11 +391,6 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),
-        ir::Processor::Convolution { dry, wet, .. } => format!(
-            "Convolution · dry {:.0}% · wet {:.0}%",
-            dry * 100.,
-            wet * 100.
-        ),
         ir::Processor::Mix {
             dry, wet, bypass, ..
         } => format!(
