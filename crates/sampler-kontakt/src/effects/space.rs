@@ -12,9 +12,10 @@
 //!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
 //! - 0x57 Plate: framing and field order (decay, low shelf, high damp,
 //!   predelay, stereo; measured). Topology and laws unproved: generic plate.
-//! - 0x16 Convolution: Reverse, Auto Gain (`0x1419b31f0..0x1419b326e`), the
-//!   volume envelope and predelay are applied; IR size, early/late filters,
-//!   decimation and preserve-length are reported unmodeled.
+//! - 0x16 Convolution: Reverse, early/late filters and composition, the
+//!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
+//!   applied; IR size and decimation (unextracted resamplers) are reported
+//!   unmodeled.
 //! - 0x65 Raum, 0x7a Reverb Delight: framing only; reported unmodeled with
 //!   the reason in the slot's `effect` note.
 
@@ -40,8 +41,12 @@ pub(crate) struct Convolution {
     pub ir_index: i32,
 }
 
-/// The slot's impulse response, shaped as Kontakt's controls ask, in `impulses`.
-/// What it cannot shape is reported in `notes`.
+/// The slot's impulse response, prepared as Kontakt's wrapper does
+/// (`0x140abd100` → `0x140ab5e00`): reverse, early/late filters, early/late
+/// composition, volume envelope, predelay, Auto Gain. The host rate of the
+/// native preparation is taken to be the file's rate (Kontakt first
+/// resamples the file to the host rate; filter cutoffs keep their Hz).
+/// What it cannot prepare is reported in `notes`.
 pub(super) fn convolution(
     c: &Convolution,
     impulses: &mut Impulses,
@@ -51,25 +56,62 @@ pub(super) fn convolution(
     if frames.is_empty() || rate == 0 {
         return Err("the impulse response is empty".into());
     }
-    if c.early[0] != 1.0 || c.late[0] != 1.0 {
+    // 0x1419b6750 accepts sizes in [0.5, 1.5] only; others leave 1.
+    let size = |s: f32| if (0.5..=1.5).contains(&s) { s } else { 1.0 };
+    if size(c.early[0]) != 1.0 || size(c.late[0]) != 1.0 {
         notes.push((
             "IR size".into(),
-            format!("early {} late {}", c.early[0], c.late[0]),
-            NotModeled,
-        ));
-    }
-    if c.early[1..] != c.late[1..] || c.late[1] > 20.0 || c.late[2] < 20_000.0 {
-        notes.push((
-            "IR early/late filtering".into(),
-            format!("early {:?} late {:?} Hz", &c.early[1..], &c.late[1..]),
+            format!(
+                "early {} late {}: Kontakt resamples the response by the size (0x1419b3450) through a band-limited resampler whose kernel (0x1419be690) is not extracted",
+                c.early[0], c.late[0]
+            ),
             NotModeled,
         ));
     }
     if c.decimation > 1.0 {
-        notes.push(("IR sample-rate decimation".into(), c.decimation.to_string(), NotModeled));
+        notes.push((
+            "IR sample-rate decimation".into(),
+            format!("{}: the wet path's down/up resampler pair (0x140a84580) is not extracted", c.decimation),
+            NotModeled,
+        ));
+    }
+    let mut left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
+    let mut right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
+    if c.flags[0] {
+        left.reverse();
+        right.reverse();
+    }
+    // Saved [1] is the low cut and [2] the high cut: the corpus's defaults
+    // are 20 Hz and 20 kHz there.
+    let filtered = |x: &[f32], part: &[f32; 3]| {
+        let mut y = x.to_vec();
+        butterworth(&mut y, rate, part[2], false);
+        butterworth(&mut y, rate, part[1], true);
+        y
+    };
+    if c.early[1..] != c.late[1..] {
+        let len = left.len();
+        let at = (c.xpoint >= 0.0).then(|| crossover(len, c.xpoint, rate));
+        match at {
+            Some(x) => {
+                left = compose(&filtered(&left, &c.early), &filtered(&left, &c.late), x, rate);
+                right = compose(&filtered(&right, &c.early), &filtered(&right, &c.late), x, rate);
+            }
+            None => {
+                notes.push((
+                    "IR early/late crossover".into(),
+                    format!("crossover {} unset: the native default position is not read; late filters applied throughout", c.xpoint),
+                    NotModeled,
+                ));
+                left = filtered(&left, &c.late);
+                right = filtered(&right, &c.late);
+            }
+        }
+    } else {
+        left = filtered(&left, &c.late);
+        right = filtered(&right, &c.late);
     }
     let mut shape = sampler_core::neutral_impulse_shape();
-    shape.reverse = c.flags[0];
     shape.auto_gain = c.flags[1];
     if c.flags[4] {
         if let (Ok(x), Ok(db)) = (
@@ -81,12 +123,10 @@ pub(super) fn convolution(
             notes.push(("IR volume envelope".into(), "not eight knots".into(), NotModeled));
         }
     }
-    let left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
-    let right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
     let (mut left, mut right) = sampler_core::shape_impulse(rate, &left, &right, &shape);
-    // Predelay truncates to whole frames and is placed before Auto Gain's
-    // energy sum, which zeros do not change.
-    let pre = (c.predelay_ms.max(0.0) * 0.001 * rate as f32) as usize;
+    // Wrapper predelay `(int)((ps·ms)·0.001)`; Auto Gain's f32 energy sum
+    // (which includes these zeros) is unchanged by them.
+    let pre = ((rate as f32 * c.predelay_ms.max(0.0)) * 0.001) as usize;
     for ch in [&mut left, &mut right] {
         ch.splice(0..0, std::iter::repeat_n(0.0, pre));
     }
@@ -95,6 +135,53 @@ pub(super) fn convolution(
         recipes.push(c.clone());
     }
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
+}
+
+/// CConvolver's early/late filter (`0x1419b27a0`, coefficients `0x1419b7fb0`,
+/// tick `0x1419b77f0`): a bilinear 2nd-order Butterworth low-pass (bypassed
+/// above 0.45 of the rate) or high-pass (bypassed below 0.01), one causal pass.
+fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
+    let w = hz / rate as f32;
+    if (!high_pass && w > 0.45) || (high_pass && w < 0.01) || !w.is_finite() {
+        return;
+    }
+    const SQRT2: f32 = 1.414_213_5;
+    let k = (w * 3.141_592_7).tan();
+    let k2 = k * k;
+    let n = 1.0 / (SQRT2 * k + 1.0 + k2);
+    let b = if high_pass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
+    let a = [-(2.0 * (k2 - 1.0) * n), -((1.0 - SQRT2 * k + k2) * n)];
+    let (mut x1, mut x2, mut y1, mut y2) = (0f32, 0f32, 0f32, 0f32);
+    for v in x {
+        let y = b[0] * *v + b[1] * x1 + b[2] * x2 + 1e-24 + a[0] * y1 + a[1] * y2;
+        (x2, x1, y2, y1) = (x1, *v, y1, y);
+        *v = y;
+    }
+}
+
+/// The crossover sample (`0x1419b63d0`, then clamped by `0x1419b2870`), at
+/// unit decimation.
+fn crossover(len: usize, x: f32, rate: u32) -> usize {
+    let r = rate as f32;
+    ((((len as f32 * x) / r) * r + 0.5) as usize).min(len)
+}
+
+/// CConvolver's early/late composition (`0x1419b1e30`) at unit sizes: early
+/// up to the crossover, late after it, a cos² crossfade 50 ms wide.
+fn compose(early: &[f32], late: &[f32], x: usize, rate: u32) -> Vec<f32> {
+    let len = early.len();
+    let w = ((rate as f32 * 0.05 + 0.5) as i64) as f32;
+    let h = w / 2.0;
+    let start = (x as f32 - h + 0.5) as i64;
+    let end = ((x as f32 + h + 0.5) as i64).min(len as i64).max(0) as usize;
+    let first = start.max(0) as usize;
+    let mut out: Vec<f32> = early[..end].iter().chain(&late[end..]).copied().collect();
+    for (n, k) in (first..end).zip(first as i64 - start..) {
+        let c = (k as f32 * (std::f32::consts::FRAC_PI_2 / w)).cos();
+        let wgt = c * c;
+        out[n] = (1.0 - wgt) * late[n] + wgt * out[n];
+    }
+    out
 }
 
 /// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180),
@@ -201,5 +288,29 @@ mod tests {
         // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
         let f = n.freeverb.unwrap();
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
+    }
+
+    /// CConvolver's filter vectors (`0x1419b7fb0`/`0x1419b77f0`, 48 kHz, 4.8 kHz).
+    #[test]
+    fn early_late_filters_match_native_vectors() {
+        let run = |hp| {
+            let mut x = [1.0, 0.0, 0.0, 0.0];
+            butterworth(&mut x, 48_000, 4_800.0, hp);
+            x
+        };
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-6);
+        assert!(close(run(false), [0.067_455_28, 0.212_010_62, 0.281_933_64, 0.234_726_31]), "{:?}", run(false));
+        assert!(close(run(true), [0.638_945_5, -0.547_588_8, -0.250_695_56, -0.060_494_572]), "{:?}", run(true));
+        let mut x = [1.0, 0.5];
+        butterworth(&mut x, 44_100, 20_000.0, false);
+        butterworth(&mut x, 44_100, 20.0, true);
+        assert_eq!(x, [1.0, 0.5], "both bypass at their defaults");
+    }
+
+    /// `0x1419b1e30` vector: rate 40, ten samples, crossover 5.
+    #[test]
+    fn composition_crossfades_early_into_late() {
+        let out = compose(&[1.0; 10], &[0.0; 10], crossover(10, 0.5, 40), 40);
+        assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 1.0, 0.499_999_97, 0.0, 0.0, 0.0, 0.0]);
     }
 }
