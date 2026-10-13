@@ -444,10 +444,7 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
                     .unwrap()
                     .value;
                 assert!(
-                    value
-                        == sampler_core::ScriptStateValue::Text(
-                            sampler_core::Text::try_new(text).unwrap()
-                        ),
+                    capture.text(value) == Some(&sampler_core::Text::try_new(text).unwrap()),
                     "authored text array must reach native storage"
                 );
             }

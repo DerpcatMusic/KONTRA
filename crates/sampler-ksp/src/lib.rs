@@ -595,8 +595,8 @@ pub fn persistent_state_buffer(
 ) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
     use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
     let mut state = sampler_core::ScriptStateBuffer::default();
-    // Entries are ~336 bytes (inline text) and arrays reach a million cells:
-    // reserve once instead of doubling, and sort only when out of order.
+    // Arrays reach a million cells: reserve once instead of doubling, and
+    // sort only when out of order.
     state.values.reserve(
         views
             .iter()
@@ -637,9 +637,10 @@ pub fn persistent_state_buffer(
                             .checked_add(len)
                             .ok_or(sampler_core::Error::Capacity)?
                     {
+                        let value = state.push_text(sampler_core::Text::new(""));
                         state.values.push(sampler_core::ScriptStateEntry {
                             address: A::Text { instance, index },
-                            value: V::Text(sampler_core::Text::new("")),
+                            value,
                         });
                     }
                 }

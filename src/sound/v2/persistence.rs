@@ -28,25 +28,24 @@ struct Atom {
     len: usize,
 }
 impl Atom {
-    fn new(value: Value, offset: usize) -> Self {
-        let kind = match value {
+    fn kind(value: Value) -> u8 {
+        match value {
             Value::Control(ControlValue::Integer(_)) => 0,
             Value::Control(ControlValue::Real(_)) => 1,
             Value::Control(ControlValue::Toggle(_)) => 2,
             Value::Cell(_) => 3,
             Value::Text(_) => 4,
-        };
-        Self {
-            kind,
-            offset,
-            len: if kind == 4 {
-                1 + sampler_core::TEXT_CAPACITY.div_ceil(8)
-            } else {
-                1
-            },
         }
     }
-    fn write(&self, slot: &[AtomicU64], value: &Value) {
+    fn len(kind: u8) -> usize {
+        if kind == 4 {
+            1 + sampler_core::TEXT_CAPACITY.div_ceil(8)
+        } else {
+            1
+        }
+    }
+    /// `texts` holds the text a [`Value::Text`] names.
+    fn write(&self, slot: &[AtomicU64], value: Value, texts: &[sampler_core::Text]) {
         let words = &slot[self.offset..self.offset + self.len];
         let set = |index: usize, value| {
             if words[index].load(Ordering::Relaxed) != value {
@@ -54,11 +53,11 @@ impl Atom {
             }
         };
         match value {
-            Value::Control(ControlValue::Integer(v)) | Value::Cell(v) => set(0, *v as u64),
+            Value::Control(ControlValue::Integer(v)) | Value::Cell(v) => set(0, v as u64),
             Value::Control(ControlValue::Real(v)) => set(0, v.to_bits()),
-            Value::Control(ControlValue::Toggle(v)) => set(0, u64::from(*v)),
-            Value::Text(v) => {
-                let bytes = v.as_str().as_bytes();
+            Value::Control(ControlValue::Toggle(v)) => set(0, u64::from(v)),
+            Value::Text(text) => {
+                let bytes = texts[text as usize].as_str().as_bytes();
                 set(0, bytes.len() as u64);
                 for (index, chunk) in bytes.chunks(8).enumerate() {
                     let mut word = [0; 8];
@@ -92,13 +91,24 @@ impl Atom {
     }
 }
 
+/// Entries from `start`: cells of one instance at consecutive indices, one
+/// word each from `offset`, or else a single control or text entry. Persistent
+/// arrays are long runs, so a snapshot keeps ~24 bytes per cell (its 3 slot
+/// words) instead of a 32-byte address and an atom per entry.
+struct Run {
+    first: Address,
+    start: usize,
+    offset: usize,
+    kind: u8,
+}
+
 pub(super) struct Snapshot {
     schema: String,
     published: AtomicUsize,
     reading: AtomicUsize,
     read_lock: Mutex<()>,
-    atoms: Vec<Atom>,
-    addresses: Box<[Address]>,
+    runs: Box<[Run]>,
+    len: usize,
     dynamic: Box<[usize]>,
     #[cfg(test)]
     captured_values: AtomicUsize,
@@ -106,23 +116,29 @@ pub(super) struct Snapshot {
 }
 impl Snapshot {
     fn new(schema: String, state: &ScriptStateBuffer) -> Arc<Self> {
+        let mut runs: Vec<Run> = Vec::new();
         let mut size = 0;
-        let atoms = state
-            .values
-            .iter()
-            .map(|entry| {
-                let atom = Atom::new(entry.value, size);
-                size += atom.len;
-                atom
-            })
-            .collect();
+        for (index, entry) in state.values.iter().enumerate() {
+            let kind = Atom::kind(entry.value);
+            let extends = match (runs.last(), entry.address) {
+                (
+                    Some(Run { first: Address::Cell { instance: i0, index: x0 }, start, .. }),
+                    Address::Cell { instance, index: x },
+                ) => *i0 == instance && *x0 as usize + (index - start) == x as usize,
+                _ => false,
+            };
+            if !extends {
+                runs.push(Run { first: entry.address, start: index, offset: size, kind });
+            }
+            size += Atom::len(kind);
+        }
         let snapshot = Arc::new(Self {
             schema,
             published: AtomicUsize::new(0),
             reading: AtomicUsize::new(usize::MAX),
             read_lock: Mutex::new(()),
-            atoms,
-            addresses: state.values.iter().map(|entry| entry.address).collect(),
+            runs: runs.into_boxed_slice(),
+            len: state.values.len(),
             dynamic: state
                 .values
                 .iter()
@@ -136,11 +152,51 @@ impl Snapshot {
             slots: std::array::from_fn(|_| (0..size).map(|_| AtomicU64::new(0)).collect()),
         });
         for slot in &snapshot.slots {
-            for (atom, entry) in snapshot.atoms.iter().zip(&state.values) {
-                atom.write(slot, &entry.value);
+            for (index, entry) in state.values.iter().enumerate() {
+                snapshot.atom(index).write(slot, entry.value, &state.texts);
             }
         }
         snapshot
+    }
+    /// The run holding entry `index`, and the entry's place in it.
+    fn locate(&self, index: usize) -> (&Run, usize) {
+        let run = &self.runs[self.runs.partition_point(|run| run.start <= index) - 1];
+        (run, index - run.start)
+    }
+    fn run_len(&self, run: usize) -> usize {
+        self.runs.get(run + 1).map_or(self.len, |next| next.start) - self.runs[run].start
+    }
+    fn atom(&self, index: usize) -> Atom {
+        let (run, k) = self.locate(index);
+        let len = Atom::len(run.kind);
+        Atom { kind: run.kind, offset: run.offset + k * len, len }
+    }
+    fn address(&self, index: usize) -> Address {
+        match self.locate(index) {
+            (Run { first: Address::Cell { instance, index }, .. }, k) => Address::Cell {
+                instance: *instance,
+                index: index + k as u32,
+            },
+            (run, _) => run.first,
+        }
+    }
+    /// The entry index of `address`, if the snapshot holds it.
+    fn find(&self, address: Address) -> Option<usize> {
+        let run = self.runs.partition_point(|run| run.first <= address).checked_sub(1)?;
+        let k = match (self.runs[run].first, address) {
+            (Address::Cell { instance: i0, index: x0 }, Address::Cell { instance, index }) => {
+                (i0 == instance).then(|| (index - x0) as usize)?
+            }
+            (first, address) => (first == address).then_some(0)?,
+        };
+        (k < self.run_len(run)).then(|| self.runs[run].start + k)
+    }
+    /// Every cell entry's index range.
+    fn cell_ranges(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+        (0..self.runs.len()).filter(|&run| self.runs[run].kind == 3).map(|run| {
+            let start = self.runs[run].start;
+            start..start + self.run_len(run)
+        })
     }
     fn next_slot(&self) -> usize {
         let current = self.published.load(Ordering::SeqCst);
@@ -153,8 +209,8 @@ impl Snapshot {
     #[cfg(test)]
     fn publish(&self, state: &ScriptStateBuffer) {
         let next = self.next_slot();
-        for (atom, entry) in self.atoms.iter().zip(&state.values) {
-            atom.write(&self.slots[next], &entry.value);
+        for (index, entry) in state.values.iter().enumerate() {
+            self.atom(index).write(&self.slots[next], entry.value, &state.texts);
         }
         self.published.store(next, Ordering::SeqCst);
     }
@@ -168,20 +224,27 @@ impl Snapshot {
         #[cfg(test)]
         self.captured_values.store(0, Ordering::Relaxed);
         let capture = |index: usize| -> Result<(), sampler_core::Error> {
-            let address = self
-                .addresses
-                .get(index)
-                .ok_or(sampler_core::Error::InvalidInput)?;
-            let value = match *address {
-                Address::Control(id) => Value::Control(runtime.control_base_value(plan, id)?),
-                Address::Cell { instance, index } => {
-                    Value::Cell(runtime.script_cell(plan, instance, index)?)
-                }
-                Address::Text { instance, index } => {
-                    Value::Text(runtime.script_text(plan, instance, index)?)
-                }
-            };
-            self.atoms[index].write(&self.slots[next], &value);
+            if index >= self.len {
+                return Err(sampler_core::Error::InvalidInput);
+            }
+            let atom = self.atom(index);
+            match self.address(index) {
+                Address::Control(id) => atom.write(
+                    &self.slots[next],
+                    Value::Control(runtime.control_base_value(plan, id)?),
+                    &[],
+                ),
+                Address::Cell { instance, index } => atom.write(
+                    &self.slots[next],
+                    Value::Cell(runtime.script_cell(plan, instance, index)?),
+                    &[],
+                ),
+                Address::Text { instance, index } => atom.write(
+                    &self.slots[next],
+                    Value::Text(0),
+                    &[runtime.script_text(plan, instance, index)?],
+                ),
+            }
             #[cfg(test)]
             self.captured_values.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -199,7 +262,7 @@ impl Snapshot {
                 }
             }
         } else {
-            for index in 0..self.addresses.len() {
+            for index in 0..self.len {
                 capture(index)?;
             }
         }
@@ -216,10 +279,8 @@ impl Snapshot {
             if self.published.load(Ordering::SeqCst) != slot {
                 continue;
             }
-            let values = self
-                .atoms
-                .iter()
-                .map(|atom| atom.read(&self.slots[slot]))
+            let values = (0..self.len)
+                .map(|index| self.atom(index).read(&self.slots[slot]))
                 .collect();
             self.reading.store(usize::MAX, Ordering::SeqCst);
             return serde_json::to_string(&Saved {
@@ -259,7 +320,7 @@ fn schema(
         flush(&mut buffer, &mut hash, false);
     }
     for entry in &state.values {
-        let kind = Atom::new(entry.value, 0).kind;
+        let kind = Atom::kind(entry.value);
         // The derived Debug text, written directly for the (million-row) cells.
         match entry.address {
             Address::Cell { instance, index } => write!(
@@ -292,22 +353,21 @@ fn schema(
 impl Persistence {
     #[cfg(all(test, feature = "shots"))]
     pub(super) fn addresses(&self) -> Vec<Address> {
-        self.snapshot.addresses.to_vec()
+        (0..self.snapshot.len).map(|index| self.snapshot.address(index)).collect()
     }
     #[cfg(test)]
     pub(super) fn values_len(&self) -> usize {
-        self.snapshot.addresses.len()
+        self.snapshot.len
     }
     #[cfg(test)]
     pub(super) fn values_bytes(&self) -> usize {
-        self.snapshot.addresses.len() * std::mem::size_of::<Address>()
+        self.snapshot.runs.len() * std::mem::size_of::<Run>()
             + self.snapshot.dynamic.len() * std::mem::size_of::<usize>()
             + self
                 .pending_cells
                 .iter()
                 .map(|mask| mask.len() * std::mem::size_of::<u64>())
                 .sum::<usize>()
-            + self.snapshot.atoms.capacity() * std::mem::size_of::<Atom>()
             + self
                 .snapshot
                 .slots
@@ -327,8 +387,9 @@ impl Persistence {
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_widget_rows");
         // Widget values also survive recall when the author omitted make_persistent.
-        // Rows wait as 16-byte addresses (a widget row's value follows from its
-        // kind); entries are ~336 bytes and Areia adds a million of them.
+        // Only addresses the persistent rows lack wait (a widget row's value
+        // follows from its kind): Areia's widgets name millions of cells that
+        // its persistent arrays already hold.
         let mut rows = Vec::new();
         for widget in runtime.widget_definitions(plan).map_err(core)? {
             let (offset, len, text) = match widget.storage {
@@ -344,18 +405,30 @@ impl Persistence {
             let end = offset
                 .checked_add(len)
                 .ok_or_else(|| core(sampler_core::Error::Capacity))?;
-            rows.extend((offset..end).map(|index| {
+            let address = |index| {
                 if text {
                     Address::Text { instance, index }
                 } else {
                     Address::Cell { instance, index }
                 }
-            }));
+            };
+            // Values are sorted, and this widget's addresses ascend with index.
+            let mut at = state.values.partition_point(|e| e.address < address(offset));
+            for index in offset..end {
+                if state.values.get(at).is_some_and(|e| e.address == address(index)) {
+                    at += 1;
+                } else {
+                    rows.push(address(index));
+                }
+            }
         }
-        state.merge_addresses(&mut rows, |address| match address {
+        state.merge_addresses(&mut rows, |address, texts| match address {
             Address::Control(_) => Value::Control(ControlValue::Integer(0)),
             Address::Cell { .. } => Value::Cell(0),
-            Address::Text { .. } => Value::Text(Default::default()),
+            Address::Text { .. } => {
+                texts.push(Default::default());
+                Value::Text(texts.len() as u32 - 1)
+            }
         });
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_capture");
@@ -368,7 +441,6 @@ impl Persistence {
         let previous_schema = schema(runtime, views, &state)?;
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_registry_rows");
-        let previous_addresses: Vec<_> = state.values.iter().map(|entry| entry.address).collect();
         let mut rows = Vec::new();
         for descriptor in runtime
             .parameter_registry(plan)
@@ -384,10 +456,12 @@ impl Persistence {
                 ),
             });
         }
-        state.merge(rows);
+        // Registry rows are the only addresses the previous roster lacks.
+        let added = state.merge(rows);
+        let previous_len = state.values.len() - added.len();
         drop(span);
         let span = sampler_kontakt::audit::Span::new("persistence_schema");
-        let schema = if state.values.len() == previous_addresses.len() {
+        let schema = if added.is_empty() {
             previous_schema.clone()
         } else {
             schema(runtime, views, &state)?
@@ -396,18 +470,17 @@ impl Persistence {
             let saved: Saved = serde_json::from_str(saved)
                 .map_err(|_| CoreError::Invalid("Saved script state is malformed".into()))?;
             let previous =
-                saved.schema == previous_schema && saved.values.len() == previous_addresses.len();
+                saved.schema == previous_schema && saved.values.len() == previous_len;
             if !previous && (saved.schema != schema || saved.values.len() != state.values.len()) {
                 return Err(CoreError::Invalid(
                     "Saved script state schema changed".into(),
                 ));
             }
+            let texts = &mut state.texts;
             for (entry, value) in state
                 .values
                 .iter_mut()
-                .filter(|entry| {
-                    !previous || previous_addresses.binary_search(&entry.address).is_ok()
-                })
+                .filter(|entry| !previous || added.binary_search(&entry.address).is_err())
                 .zip(saved.values)
             {
                 entry.value = match (entry.value, value) {
@@ -423,8 +496,9 @@ impl Persistence {
                         Value::Control(ControlValue::Toggle(v))
                     }
                     (Value::Cell(_), SavedValue::Cell(v)) => Value::Cell(v),
-                    (Value::Text(_), SavedValue::Text(v)) => {
-                        Value::Text(sampler_core::Text::try_new(&v).map_err(core)?)
+                    (Value::Text(slot), SavedValue::Text(v)) => {
+                        texts[slot as usize] = sampler_core::Text::try_new(&v).map_err(core)?;
+                        Value::Text(slot)
                     }
                     _ => return Err(CoreError::Invalid("Saved script state type changed".into())),
                 };
@@ -493,24 +567,22 @@ impl Persistence {
         }
         let mut valid = true;
         let known = runtime.visit_dirty_script_cells(plan, |address| {
-            match self.snapshot.addresses.binary_search(&address) {
-                Ok(index) => {
+            match self.snapshot.find(address) {
+                Some(index) => {
                     for mask in &mut self.pending_cells {
                         mask[index / 64] |= 1 << (index % 64);
                     }
                 }
-                Err(_) => valid = false,
+                None => valid = false,
             }
         });
         if !valid || known.is_err() {
             return;
         }
         if known == Ok(false) || self.revision.0 != plan {
-            for (index, address) in self.snapshot.addresses.iter().enumerate() {
-                if matches!(address, Address::Cell { .. }) {
-                    for mask in &mut self.pending_cells {
-                        mask[index / 64] |= 1 << (index % 64);
-                    }
+            for index in self.snapshot.cell_ranges().flatten() {
+                for mask in &mut self.pending_cells {
+                    mask[index / 64] |= 1 << (index % 64);
                 }
             }
         }
@@ -600,7 +672,7 @@ mod tests {
         }
         for entry in &state.values {
             legacy.update(
-                format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes(),
+                format!("{:?}:{}", entry.address, Atom::kind(entry.value)).as_bytes(),
             );
         }
         for widget in runtime.widget_definitions(runtime.active_plan()).unwrap() {
@@ -664,11 +736,13 @@ mod tests {
         old.capture_script_state(old.active_plan(), &mut state)
             .unwrap();
         for entry in &mut state.values {
-            entry.value = match entry.value {
-                Value::Cell(_) => Value::Cell(837),
-                Value::Text(_) => Value::Text(sampler_core::Text::new("legacy saved text")),
-                value => value,
-            };
+            match &mut entry.value {
+                Value::Cell(v) => *v = 837,
+                Value::Text(slot) => {
+                    state.texts[*slot as usize] = sampler_core::Text::new("legacy saved text")
+                }
+                _ => {}
+            }
         }
         old.restore_script_state(old.active_plan(), None, &mut state)
             .unwrap();
@@ -792,11 +866,7 @@ mod tests {
                 instance: widget.instance,
                 index: offset + 1,
             };
-            let index = persistence
-                .snapshot
-                .addresses
-                .binary_search(&address)
-                .unwrap();
+            let index = persistence.snapshot.find(address).unwrap();
             let saved: Saved = serde_json::from_str(&persistence.snapshot.save()).unwrap();
             assert!(matches!(saved.values[index], SavedValue::Cell(v) if v == bits));
         }
@@ -861,6 +931,7 @@ mod tests {
                 value: Value::Cell(99),
             }],
             callbacks: vec![],
+            ..Default::default()
         };
         part.runtime
             .restore_script_state(part.runtime.active_plan(), None, &mut restore)
@@ -1019,6 +1090,7 @@ mod tests {
                 value: Value::Control(ControlValue::Real(0.25)),
             }],
             callbacks: vec![],
+            ..Default::default()
         };
         let snapshot = Snapshot::new("dsp-only".into(), &state);
         let mut persistence = Persistence {
@@ -1092,6 +1164,7 @@ mod tests {
                 })
                 .collect(),
             callbacks: vec![],
+            ..Default::default()
         };
         runtime
             .capture_script_state(runtime.active_plan(), &mut state)
@@ -1160,10 +1233,11 @@ mod tests {
                         instance: sampler_core::ScriptInstanceId(0),
                         index: 0,
                     },
-                    value: Value::Text(sampler_core::Text::new(&format!("声{value}"))),
+                    value: Value::Text(0),
                 },
             ],
             callbacks: vec![],
+            texts: vec![sampler_core::Text::new(&format!("声{value}"))],
         }
     }
     #[test]
@@ -1191,6 +1265,39 @@ mod tests {
             );
         }
         thread.join().unwrap();
+    }
+
+    /// Runs give back every entry's address and index, and nothing else.
+    #[test]
+    fn snapshot_runs_locate_every_entry() {
+        let cell = |instance, index| Address::Cell {
+            instance: sampler_core::ScriptInstanceId(instance),
+            index,
+        };
+        let mut state = ScriptStateBuffer::default();
+        let mut addresses = vec![Address::Control(sampler_core::ControlId(7))];
+        addresses.extend((0..5).map(|i| cell(0, i)));
+        addresses.extend((9..12).map(|i| cell(0, i)));
+        addresses.extend((0..3).map(|i| cell(1, i)));
+        addresses.push(Address::Text { instance: sampler_core::ScriptInstanceId(0), index: 2 });
+        for &address in &addresses {
+            let value = match address {
+                Address::Control(_) => Value::Control(ControlValue::Integer(0)),
+                Address::Cell { .. } => Value::Cell(0),
+                Address::Text { .. } => state.push_text(Default::default()),
+            };
+            state.values.push(ScriptStateEntry { address, value });
+        }
+        let snapshot = Snapshot::new("runs".into(), &state);
+        assert_eq!(snapshot.runs.len(), 5);
+        for (index, &address) in addresses.iter().enumerate() {
+            assert_eq!(snapshot.address(index), address);
+            assert_eq!(snapshot.find(address), Some(index));
+        }
+        for missing in [cell(0, 5), cell(0, 8), cell(1, 3), cell(2, 0), Address::Control(sampler_core::ControlId(8))] {
+            assert_eq!(snapshot.find(missing), None);
+        }
+        assert_eq!(snapshot.cell_ranges().flatten().count(), 11);
     }
 
     #[test]
@@ -1221,10 +1328,11 @@ mod tests {
                         instance: sampler_core::ScriptInstanceId(0),
                         index: 0,
                     },
-                    value: Value::Text(sampler_core::Text::new("声 🎹")),
+                    value: Value::Text(0),
                 },
             ],
             callbacks: vec![],
+            texts: vec![sampler_core::Text::new("声 🎹")],
         };
         let saved: Saved =
             serde_json::from_str(&Snapshot::new("test".into(), &state).save()).unwrap();

@@ -97,7 +97,7 @@ fn live_all_sigil_capture_restore_and_callback_outcomes_use_owned_transport_with
         state
             .values
             .iter()
-            .any(|e| e.value == ScriptStateValue::Text(Text::new("edited array")))
+            .any(|e| state.text(e.value) == Some(&Text::new("edited array")))
     );
     assert!(
         state
@@ -291,13 +291,13 @@ fn persistence_declared_in_an_init_function_restores_and_enters_native_capture()
         state
             .values
             .iter()
-            .any(|e| e.value == ScriptStateValue::Text(Text::new("restored")))
+            .any(|e| state.text(e.value) == Some(&Text::new("restored")))
     );
     assert!(
         state
             .values
             .iter()
-            .any(|e| e.value == ScriptStateValue::Text(Text::new("array")))
+            .any(|e| state.text(e.value) == Some(&Text::new("array")))
     );
     assert!(
         state
@@ -361,13 +361,13 @@ fn init_load_array_implicitly_restores_numeric_and_text_arrays() {
         state
             .values
             .iter()
-            .any(|e| e.value == ScriptStateValue::Text(Text::new("saved")))
+            .any(|e| state.text(e.value) == Some(&Text::new("saved")))
     );
     assert!(
         state
             .values
             .iter()
-            .any(|e| e.value == ScriptStateValue::Text(Text::new("text")))
+            .any(|e| state.text(e.value) == Some(&Text::new("text")))
     );
 }
 
