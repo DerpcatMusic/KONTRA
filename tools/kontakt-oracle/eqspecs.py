@@ -43,10 +43,38 @@ def geq():
     return {"chain": ["Filters/Solid G-EQ"], "pre": [[0, k, v] for k, v in NEUTRAL.items()], "steps": steps}
 
 
+def dense(secs):
+    """11-point freq / gain / Q grids per section (plus Q x gain cross grid for LMF/HMF)."""
+    steps = []
+
+    def step(name, **kv):
+        steps.append({"name": name, "set": [[0, k, v] for k, v in kv.items()]})
+
+    g11 = [i * M // 10 for i in range(11)]
+    for sec in secs:
+        for f in g11:
+            step(f"{sec} dense freq={f} gain=max", **{f"SEQ_{sec}_GAIN": M, f"SEQ_{sec}_FREQ": f})
+        for g in g11:
+            step(f"{sec} dense gain={g} freq=mid", **{f"SEQ_{sec}_GAIN": g})
+        if sec in ("LMF", "HMF"):
+            for q in g11:
+                step(f"{sec} dense q={q} gain=max", **{f"SEQ_{sec}_GAIN": M, f"SEQ_{sec}_Q": q})
+            for q in (0, M // 2, M):
+                for g in (M // 10, 3 * M // 10, 7 * M // 10, 9 * M // 10):
+                    step(f"{sec} cross q={q} gain={g}", **{f"SEQ_{sec}_GAIN": g, f"SEQ_{sec}_Q": q})
+        else:
+            for f in (0, M // 4, M // 2, 3 * M // 4, M):
+                step(f"{sec} dense bell freq={f} gain=max", **{f"SEQ_{sec}_GAIN": M, f"SEQ_{sec}_FREQ": f, f"SEQ_{sec}_BELL": 1})
+            for g in (0, M // 4, 3 * M // 4, M):
+                step(f"{sec} dense bell gain={g} freq=mid", **{f"SEQ_{sec}_GAIN": g, f"SEQ_{sec}_BELL": 1})
+    return {"chain": ["Filters/Solid G-EQ"], "pre": [[0, k, v] for k, v in NEUTRAL.items()], "steps": steps}
+
+
 def legacy():
     """Same three bands as kind 22 x3 in series (3 slots) versus one kind 24 (and kind 23 + kind 22)."""
     raise SystemExit("legacy specs are built by legacy_topology.py")
 
 
 if __name__ == "__main__":
-    json.dump({"geq": geq}[sys.argv[1]](), open(sys.argv[2], "w"), indent=1)
+    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"])}[sys.argv[1]]()
+    json.dump(spec, open(sys.argv[2], "w"), indent=1)
