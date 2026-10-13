@@ -505,6 +505,7 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
         voices,
         kill,
         prefer_released: true,
+        exclusive_set: None,
         fade: ir::Time::Milliseconds(0.0),
     };
     let zone = |group| ir::Zone {
@@ -3496,4 +3497,68 @@ fn post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owne
         }
         assert_eq!(actual.stats().v1_control_starts,0);
     }
+}
+
+fn allocation_fixture() -> ir::Instrument {
+    let limit = || ir::VoiceLimit {
+        voices: 16, kill: ir::Kill::Oldest, prefer_released: false,
+        fade: ir::Time::Samples(8), exclusive_set: None,
+    };
+    ir::Instrument {
+        assets: ["a", "b", "c"].map(asset).to_vec(),
+        groups: (0..3).map(|i| ir::Group { voice_limit: Some(i), ..Default::default() }).collect(),
+        voice_limits: (0..3).map(|_| limit()).collect(),
+        zones: (0..3).map(|i| ir::Zone {
+            keys: ir::KeyRange { low: 60 + i as u8, high: 60 + i as u8 },
+            pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
+            group: Some(ir::GroupRef(i)), ..ir::Zone::new(ir::AssetRef(i))
+        }).collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn exclusive_voice_domains_cut_other_domains_with_fade_and_plan_isolation() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits[0].exclusive_set = Some(0);
+    ir.voice_limits[1].exclusive_set = Some(0);
+    let prepare = || lower(&ir, 48000, vec![constant(0.1), constant(0.2), constant(0.3)], no_behaviors).unwrap();
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(), limits(), 2, 1).unwrap();
+    control.submit(Box::new(prepare())).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap(); // old instrument retains its voice
+        rt.poll_plan_update().unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap(); // same domain does not exclude itself
+        rt.trigger(input(62), 62, 1.).unwrap(); // unrelated exclusive set
+        rt.trigger(input(61), 61, 1.).unwrap(); // cuts both new-plan domain-0 voices
+        assert_eq!(rt.stolen_voices(), 2);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 3);
+        assert!((out[8][0] - 0.6).abs() < 1e-6, "{:?}", out[8]);
+    });
+}
+
+#[test]
+fn independent_source_budget_spans_voice_groups_without_limiting_other_sources() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits.push(ir::VoiceLimit {
+        voices: 1, kill: ir::Kill::Oldest, prefer_released: false,
+        fade: ir::Time::Samples(8), exclusive_set: None,
+    });
+    ir.groups[0].source_voice_limit = Some(3);
+    ir.groups[1].source_voice_limit = Some(3);
+    let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2), constant(0.3)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(62), 62, 1.).unwrap();
+        rt.trigger(input(61), 61, 1.).unwrap();
+        assert_eq!(rt.stolen_voices(), 1);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 2);
+        assert!((out[8][0] - 0.5).abs() < 1e-6);
+    });
 }

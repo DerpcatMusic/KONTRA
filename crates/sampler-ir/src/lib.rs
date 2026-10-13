@@ -425,6 +425,10 @@ pub struct Group {
     pub output: Output,
     /// Index into [`Instrument::voice_limits`] shared by this group's voices.
     pub voice_limit: Option<usize>,
+    /// Additional source resource domain (e.g. standard/HQ Time Machine Pro).
+    /// Indexes Instrument::voice_limits independently of the voice group.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_voice_limit: Option<usize>,
     /// A release-trigger group where playing a note again cuts that note's
     /// release samples still sounding (Kontakt manual, Release Trigger
     /// "Monophonic").
@@ -519,6 +523,9 @@ pub struct VoiceLimit {
     pub kill: Kill,
     pub prefer_released: bool,
     pub fade: Time,
+    /// Voice domains in the same set cut other domains in that set.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub exclusive_set: Option<u32>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

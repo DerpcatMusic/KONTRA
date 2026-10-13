@@ -1327,6 +1327,7 @@ mod tests {
                 voice_limit: limit.map(|voices| VoiceLimit {
                     voices,
                     kill: Kill::Oldest,
+                    exclusive_set: None,
                     prefer_released: true,
                     fade: Time::Milliseconds(0.),
                 }),
