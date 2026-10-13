@@ -29,6 +29,39 @@ const EXP_SCALE: f32 = f32::from_bits(0x3e2a_1512); // 0x144f3871c
 const EXP_A: f32 = f32::from_bits(0x3e7d_f3b6); // 0x144f38744
 const EXP_B: f32 = f32::from_bits(0x3f35_3f7d); // 0x144f38808
 
+/// The detector low-pass shared by the Kontakt limiter cores: the RBJ biquad
+/// (Q = 1/(2 * 0.91)) at angle `w`, sine and cosine from the setter's
+/// polynomials rather than libm. Returns `(b0, b1, a1, a2)`; `b2 = b0`.
+pub(super) fn biquad(w: f32) -> (f32, f32, f32, f32) {
+    let w2 = w * w;
+    let sin = (((((w2 * f32::from_bits(0xb2cd_4ca8) + f32::from_bits(0x3638_b94f)) * w2
+        - f32::from_bits(0x3950_0c03))
+        * w2
+        + f32::from_bits(0x3c08_8885))
+        * w2
+        - f32::from_bits(0x3e2a_aac1))
+        * w2
+        + 1.)
+        * w
+        * f32::from_bits(0x3f68_f5c3);
+    let inverse = 1. / (sin + 1.);
+    let cos = ((((w2 * f32::from_bits(0xb48b_dad9) + f32::from_bits(0x37cf_b5a1)) * w2
+        - f32::from_bits(0x3ab6_09bd))
+        * w2
+        + f32::from_bits(0x3d2a_aa99))
+        * w2
+        - f32::from_bits(0x3eff_f5e8))
+        * w2
+        + 1.;
+    let one_minus_cos = 1. - cos;
+    (
+        one_minus_cos * 0.5 * inverse,
+        one_minus_cos * inverse,
+        -(cos * -2. * inverse),
+        -((1. - sin) * inverse),
+    )
+}
+
 pub(super) struct Coefficients {
     threshold_db: f32,
     /// `-(1 - ratio)`.
@@ -64,38 +97,16 @@ impl Coefficients {
             rate * f32::from_bits(0x3ef0_f0f1),
         );
         let hertz = if wanted <= high { low.max(wanted) } else { high };
-        let w = hertz * (f32::from_bits(0x40c9_0fe4) / rate);
-        let w2 = w * w;
-        // Polynomial sine and cosine of the setter, not libm.
-        let sin = (((((w2 * f32::from_bits(0xb2cd_4ca8) + f32::from_bits(0x3638_b94f)) * w2
-            - f32::from_bits(0x3950_0c03))
-            * w2
-            + f32::from_bits(0x3c08_8885))
-            * w2
-            - f32::from_bits(0x3e2a_aac1))
-            * w2
-            + 1.)
-            * w
-            * f32::from_bits(0x3f68_f5c3);
-        let inverse = 1. / (sin + 1.);
-        let cos = ((((w2 * f32::from_bits(0xb48b_dad9) + f32::from_bits(0x37cf_b5a1)) * w2
-            - f32::from_bits(0x3ab6_09bd))
-            * w2
-            + f32::from_bits(0x3d2a_aa99))
-            * w2
-            - f32::from_bits(0x3eff_f5e8))
-            * w2
-            + 1.;
-        let one_minus_cos = 1. - cos;
+        let (b0, b1, a1, a2) = biquad(hertz * (f32::from_bits(0x40c9_0fe4) / rate));
         Self {
             threshold_db,
             reduction: -remaining,
             offset,
             release,
-            b0: one_minus_cos * 0.5 * inverse,
-            b1: one_minus_cos * inverse,
-            a1: -(cos * -2. * inverse),
-            a2: -((1. - sin) * inverse),
+            b0,
+            b1,
+            a1,
+            a2,
         }
     }
 }

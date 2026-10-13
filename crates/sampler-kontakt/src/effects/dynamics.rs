@@ -56,3 +56,36 @@ pub(super) fn compressor(
         mix: 1.0,
     }))
 }
+
+/// `BParFXLimiter` (0x1c): saved input gain (`2^(x/6)`) and release ms, the
+/// half-life of the level follower. Process `0x140904890`, setter `0x140960140`.
+pub(super) fn limiter(input_gain: f32, release_ms: f32) -> Result<Processor, Note> {
+    if !input_gain.is_finite() || !release_ms.is_finite() || release_ms < 0.0 || input_gain.abs() > 600.0 {
+        return Err((
+            "limiter parameters".into(),
+            format!("{input_gain} {release_ms}"),
+            Reason::InvalidValue,
+        ));
+    }
+    Ok(Processor::Dynamics(Config {
+        law: Law::KontaktLimiter(Native { threshold_db: f64::from(input_gain), ratio: 0.0 }),
+        attack: Time::Milliseconds(0.0),
+        release: Time::Milliseconds(f64::from(release_ms)),
+        link: Link::Max,
+        makeup: Gain::UNITY,
+        mix: 1.0,
+    }))
+}
+
+#[cfg(test)]
+mod limiter_tests {
+    use super::*;
+
+    #[test]
+    fn limiter_maps_to_the_native_law_and_rejects_bad_values() {
+        let Ok(Processor::Dynamics(c)) = limiter(6.0, 100.0) else { panic!() };
+        assert!(matches!(c.law, Law::KontaktLimiter(_)));
+        assert!(limiter(f32::NAN, 100.0).is_err());
+        assert!(limiter(0.0, -1.0).is_err());
+    }
+}

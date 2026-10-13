@@ -293,6 +293,8 @@ fn color_detail(c: &ir::fx::color::Config) -> String {
         Curve::Rectifier(ir::Rectifier::Full) => return "Rectifier · full wave".into(),
         Curve::Rectifier(ir::Rectifier::Half) => return "Rectifier · half wave".into(),
         Curve::Classic { shape } => return format!("Saturation · shape {shape:+.2}"),
+        Curve::Enhanced { shape } => return format!("Saturation enhanced · shape {shape:+.2}"),
+        Curve::Drums { shape } => return format!("Saturation drums · shape {shape:+.2}"),
         Curve::Tube { drive } | Curve::Transistor { drive } => {
             return format!(
                 "{} distortion · drive {:.0}% · damping {:.0}%",
@@ -381,6 +383,7 @@ fn detail(p: ir::Processor) -> String {
             ir::fx::dynamics::Law::KontaktClassic(_) => "Compressor (Classic)".into(),
             ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
             ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
+            ir::fx::dynamics::Law::KontaktLimiter(_) => "Limiter".into(),
         },
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",

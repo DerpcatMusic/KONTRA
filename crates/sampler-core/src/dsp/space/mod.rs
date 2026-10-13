@@ -11,6 +11,7 @@ mod comb;
 mod common;
 mod convolver;
 mod fdn;
+mod freeverb;
 mod plate;
 mod shape;
 
@@ -51,6 +52,10 @@ fn network_valid(n: &Network) -> bool {
         && within(n.low_shelf_db, -60.0, 0.0)
         && within(n.width, 0.0, 1.0)
         && within(n.echo_feedback, 0.0, 0.95)
+        && (n.topology != Topology::Freeverb
+            || n.freeverb.is_some_and(|f| {
+                within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
+            }))
 }
 
 /// Whether `c` can be built: finite, in range, and not empty.
@@ -83,6 +88,7 @@ enum Core {
     Comb(comb::CombAllpass),
     Plate(plate::Plate),
     Diffuser(comb::Diffuser),
+    Freeverb(freeverb::Freeverb),
 }
 
 /// Closes the wet signal a set time after the input falls silent.
@@ -126,6 +132,7 @@ impl Net {
             Topology::CombAllpass => Core::Comb(comb::CombAllpass::new(n, rate)?),
             Topology::Plate => Core::Plate(plate::Plate::new(n, rate)?),
             Topology::Diffuser => Core::Diffuser(comb::Diffuser::new(n, rate)?),
+            Topology::Freeverb => Core::Freeverb(freeverb::Freeverb::new(n, rate)?),
         };
         let rate = rate as f32;
         Ok(Self {
@@ -143,6 +150,7 @@ impl Net {
             Core::Comb(c) => c.clear(),
             Core::Plate(c) => c.clear(),
             Core::Diffuser(c) => c.clear(),
+            Core::Freeverb(c) => c.clear(),
         }
         self.tone.clear();
         if let Some(e) = &mut self.early {
@@ -165,6 +173,7 @@ impl Net {
             Core::Comb(c) => c.process(l, r),
             Core::Plate(c) => c.process(l, r),
             Core::Diffuser(c) => c.process(l, r),
+            Core::Freeverb(c) => c.process(l, r),
         }
         for i in 0..n {
             let pos = self.pos;

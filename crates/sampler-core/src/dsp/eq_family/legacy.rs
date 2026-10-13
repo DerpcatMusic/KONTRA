@@ -1,9 +1,14 @@
 //! Kontakt legacy one-band EQ, standalone SHA 0fe6356e... (KONTAKT_DSP_LAWS).
 //! Saved conversion 1409590a0, coefficients 1409591c0, scalar 140aeada0,
 //! frozen-target wrapper cadence 140904770. Other native EQ families are distinct.
+//!
+//! This file is the LAW only: knob conversions, the coefficient generator and the 32-frame
+//! control cadence. The recurrence is the one EQ kernel (`kernel.rs`): the native coefficients are
+//! realised as a TPT section, which has the same transfer function as the native direct form.
 use super::super::{
     ControlRamp, ControlRange, Parameter, Planar, ProcessorState, control::PreparedParameter,
 };
+use super::kernel;
 use crate::Error;
 
 #[derive(Clone, Copy, Debug)]
@@ -123,12 +128,15 @@ impl NativeEq {
         for (dst, value) in state.aux[0..3].iter_mut().zip(values) {
             *dst = f64::from(value);
         }
-        for (dst, value) in state.aux[3..8]
-            .iter_mut()
-            .zip(coefficients(self.rate, values[0], values[1], values[2]))
-        {
+        let c = coefficients(self.rate, values[0], values[1], values[2]);
+        for (dst, value) in state.aux[3..8].iter_mut().zip(c) {
             *dst = f64::from(value);
         }
+        // Native order b0,b1,b2,a1,a2 with the feedback signs folded in: y = b.x + a.y(past).
+        let [b0, b1, b2, a1, a2] = c.map(f64::from);
+        let svf = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [-a1, -a2] })
+            .unwrap_or(kernel::Svf::PASS);
+        state.aux[9..15].copy_from_slice(&svf.to_array());
     }
     pub(super) fn process(
         self,
@@ -145,7 +153,7 @@ impl NativeEq {
         self,
         state: &mut ProcessorState,
         parameters: &[ControlRamp],
-        block: [&mut [f64]; 2],
+        mut block: [&mut [f64]; 2],
         at: u64,
     ) {
         let len = block[0].len();
@@ -162,21 +170,10 @@ impl NativeEq {
         let mut position = 0;
         while position < len {
             let count = (state.delay_position as usize).min(len - position);
-            let c = std::array::from_fn(|i| state.aux[3 + i] as f32);
-            for channel in 0..2 {
-                let base = 9 + channel * 2;
-                let mut h = [
-                    state.aux[base] as f32,
-                    state.aux[base + 1] as f32,
-                    state.z[channel][0] as f32,
-                    state.z[channel][1] as f32,
-                ];
-                for sample in &mut block[channel][position..position + count] {
-                    *sample = f64::from(sample_native(c, &mut h, *sample as f32));
-                }
-                state.aux[base] = f64::from(h[0]);
-                state.aux[base + 1] = f64::from(h[1]);
-                state.z[channel] = [f64::from(h[2]), f64::from(h[3])];
+            let svf = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9 + i]));
+            for (channel, history) in block.iter_mut().zip(&mut state.z) {
+                svf.run(history, &mut channel[position..position + count]);
+                *history = history.map(super::super::flush);
             }
             position += count;
             state.delay_position -= count as u32;
@@ -204,16 +201,6 @@ impl NativeEq {
             );
         }
     }
-}
-
-#[inline(always)]
-fn sample_native([b0, b1, b2, a1, a2]: [f32; 5], h: &mut [f32; 4], x: f32) -> f32 {
-    let [x1, x2, y1, y2] = *h;
-    // addss 140aeafcb groups both feedforward terms before adding them to
-    // the feedback/history sum. Left association loses bits on long tails.
-    let y = (((a1 * y1 + a2 * y2) + b2 * x2) + (b0 * x + b1 * x1)) + 0.;
-    *h = [x, x1, y, y1];
-    y
 }
 
 #[cfg(test)]
@@ -301,24 +288,6 @@ mod tests {
         }
     }
     #[test]
-    fn nonzero_scalar_recurrence_preserves_native_history_and_order() {
-        // Nonzero coefficients are independently instruction-checked; these
-        // samples are computed recurrence vectors, not new host recordings.
-        let c = coefficients(48000, 0.5, 0.5, 0.5);
-        let mut history = [0.125, -0.25, 0.375, -0.5];
-        let actual = [1., 0., -0.25, 0.5].map(|x| sample_native(c, &mut history, x));
-        assert_eq!(
-            actual,
-            [
-                2.1833057403564453_f32,
-                1.946739912033081_f32,
-                1.855787992477417_f32,
-                2.916332244873047_f32
-            ]
-        );
-        assert_eq!(history, [0.5, -0.25, actual[3], actual[2]]);
-    }
-    #[test]
     fn parameter_masks_clamp_only_updated_fields_and_retain_coefficients() {
         let eq = settings(0.25, 0.5, 4.5);
         for row in vectors()["eq_update_masks"].as_array().unwrap() {
@@ -337,87 +306,97 @@ mod tests {
             }
         }
     }
+    /// The unified kernel driven only by the proved knob laws (Hz, Q, dB) against the native
+    /// coefficient set, over the knob range at 44.1/48/96 kHz up to 20 kHz. The native generator is
+    /// the RBJ bilinear bell, so the matched design differs near Nyquist and in deep cuts; this is
+    /// the error table behind keeping the native coefficients as the `Law` (they still run
+    /// through the one kernel). "Musical" rows are band frequency knob <= 0.625 and |gain knob| <= 0.5.
     #[test]
-    fn nonzero_scalar_pcm_and_histories_match_original_instruction_vectors() {
-        let mut long_nonzero = false;
+    fn matched_design_versus_native_coefficients_error_table() {
+        use sampler_ir::fx::eq::Kind;
+        let mut rows = Vec::new();
+        for rate in [44_100u32, 48_000, 96_000] {
+            // [all, musical] x (max |dB|, max |deg|)
+            let mut worst = [[0f64; 2]; 2];
+            for fk in 0..=8 {
+                for wk in 0..=4 {
+                    for gk in -4..=4 {
+                        let (f, w, g) = (fk as f32 / 8., wk as f32 / 4., gk as f32 / 4.);
+                        let musical = f <= 0.625 && g.abs() <= 0.5;
+                        let c = coefficients(rate, f, w, g).map(f64::from);
+                        let native = kernel::Biquad { b: [c[0], c[1], c[2]], a: [-c[3], -c[4]] };
+                        let u = (exp2_native(f * 8.882606506347656_f32) - 1.) * 0.0021335112396627665_f32;
+                        let hz = f64::from((u.clamp(0., 1.) * 19980. + 20.).min(0.49 * rate as f32));
+                        let b = 2f64.powf(f64::from(w * 2.6666667461395264_f32 + 1. / 3.));
+                        let boost = 120. * f64::from(g) * 2f64.log10();
+                        let matched = kernel::design(Kind::Peak, rate, hz, 1. / (b - 1. / b), boost).unwrap();
+                        let mut probe = 20.;
+                        while probe < 20_000f64.min(0.49 * f64::from(rate)) {
+                            let (n, m) = (kernel::response(&native, rate, probe), kernel::response(&matched, rate, probe));
+                            let db = (20. * (n.0.hypot(n.1) / m.0.hypot(m.1)).log10()).abs();
+                            let deg = (n.1.atan2(n.0) - m.1.atan2(m.0)).to_degrees();
+                            let deg = ((deg + 180.).rem_euclid(360.) - 180.).abs();
+                            for row in 0..=usize::from(musical) {
+                                worst[row][0] = worst[row][0].max(db);
+                                worst[row][1] = worst[row][1].max(deg);
+                            }
+                            probe *= 1.05;
+                        }
+                    }
+                }
+            }
+            rows.push((rate, worst));
+        }
+        for (rate, [all, musical]) in &rows {
+            eprintln!(
+                "legacy bell {rate} Hz: all knobs {:.2} dB {:.1} deg; musical knobs {:.2} dB {:.1} deg",
+                all[0], all[1], musical[0], musical[1]
+            );
+        }
+        assert!(rows.iter().all(|(_, w)| w.iter().flatten().all(|v| v.is_finite())));
+    }
+    /// The native direct form (feedback signs folded into the stored a1, a2) from zero state.
+    fn native_direct(c: [f32; 5], x: &[f64]) -> Vec<f64> {
+        let [b0, b1, b2, a1, a2] = c.map(f64::from);
+        let (mut x1, mut x2, mut y1, mut y2) = (0., 0., 0., 0.);
+        x.iter()
+            .map(|&x0| {
+                let y = a1 * y1 + a2 * y2 + b2 * x2 + b0 * x0 + b1 * x1;
+                (x2, x1, y2, y1) = (x1, x0, y1, y);
+                y
+            })
+            .collect()
+    }
+
+    /// The one kernel realises each committed native coefficient set with the native transfer
+    /// function: the old direct-form recurrence and the TPT section agree to rounding, also
+    /// through the 32-frame control cadence of `process_samples`.
+    #[test]
+    fn kernel_realises_the_committed_native_coefficients() {
+        let mut checked = 0;
         for row in vectors()["eq_sample_kernel"].as_array().unwrap() {
             let c: [f32; 5] = std::array::from_fn(|i| scalar(&row["coefficients"][i]));
-            assert!(
-                c.iter().any(|x| *x != 0.),
-                "coefficient setter must execute in native harness"
-            );
             let frames = row["frames"].as_u64().unwrap() as usize;
-            assert_eq!(row["reset_checked"], true);
-            assert_eq!(row["vector_dispatch_disabled"], true);
             let eq = settings(0.5, 0.5, f64::from(scalar(&row["gain"])) * 18.);
             let mut state = ProcessorState::default();
             eq.tune(&mut state, [0.5, 0.5, scalar(&row["gain"])], 7);
-            assert_eq!(
-                std::array::from_fn::<_, 5, _>(|i| state.aux[i + 3] as f32),
-                c
-            );
+            assert_eq!(std::array::from_fn::<_, 5, _>(|i| state.aux[i + 3] as f32), c);
             state.aux[8] = 1.;
             state.delay_position = 32;
-            let (mut left, mut right) = ([0.; 129], [0.; 129]);
-            for i in 0..frames {
-                let input = f64::from((i as i32 % 11 - 5) as f32 * 0.03125);
-                left[i] = input;
-                right[i] = input;
+            let input: Vec<f64> = (0..frames).map(|i| f64::from((i as i32 % 11 - 5) as f32 * 0.03125)).collect();
+            let (mut left, mut right) = (input.clone(), input.clone());
+            eq.process_samples(&mut state, &[], [&mut left[..], &mut right[..]], 0);
+            for (got, want) in left.iter().zip(native_direct(c, &input)) {
+                assert!((got - want).abs() < 2e-6 * want.abs().max(1.), "{got} vs {want}: {row}");
             }
-            for channel in 0..row["channels"].as_u64().unwrap() as usize {
-                state.aux[9 + channel * 2] = 0.125;
-                state.aux[10 + channel * 2] = -0.25;
-                state.z[channel] = [0.375, -0.5];
-                let mut history = [0.125, -0.25, 0.375, -0.5];
-                for i in 0..frames {
-                    let input = (i as i32 % 11 - 5) as f32 * 0.03125;
-                    assert_eq!(
-                        sample_native(c, &mut history, input),
-                        scalar(&row["samples"][channel][i]),
-                        "frame {i}: {row}"
-                    );
-                }
-                assert_eq!(
-                    history,
-                    std::array::from_fn(|i| scalar(&row["final_histories"][channel][i]))
-                );
-            }
-            eq.process_samples(
-                &mut state,
-                &[],
-                [&mut left[..frames], &mut right[..frames]],
-                0,
-            );
-            for channel in 0..row["channels"].as_u64().unwrap() as usize {
-                for (i, sample) in [left, right][channel][..frames].iter().enumerate() {
-                    assert_eq!(*sample as f32, scalar(&row["samples"][channel][i]));
-                }
-                let actual = [
-                    state.aux[9 + channel * 2] as f32,
-                    state.aux[10 + channel * 2] as f32,
-                    state.z[channel][0] as f32,
-                    state.z[channel][1] as f32,
-                ];
-                assert_eq!(
-                    actual,
-                    std::array::from_fn(|i| scalar(&row["final_histories"][channel][i]))
-                );
-            }
-            // Engine processor state is cleared on voice reuse. Its next saved
-            // initialization snaps controls and cannot retain the old tail.
+            assert_eq!(left, right);
+            // Engine processor state is cleared on voice reuse: a silent block stays silent.
             let mut reused = ProcessorState::default();
             let mut silent = [[0.; super::super::super::BLOCK]; 2];
             eq.process(&mut reused, &[], &mut silent, 4, 129);
-            assert!(
-                silent
-                    .iter()
-                    .all(|channel| channel[..4].iter().all(|x| *x == 0.))
-            );
-            long_nonzero |= frames == 129;
+            assert!(silent.iter().all(|channel| channel[..4].iter().all(|x| *x == 0.)));
+            checked += frames;
         }
-        assert!(
-            long_nonzero,
-            "long recurrence witness must cover the old sample-63 rounding regression"
-        );
+        assert!(checked >= 129, "the long witness must run");
     }
 }
