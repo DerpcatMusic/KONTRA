@@ -158,6 +158,9 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     {
         return Err("seconds > 0, block 64|256, notes 1|8 required".into());
     }
+    if only.is_some_and(|n| !PATCHES.iter().any(|(name, _)| *name == n)) {
+        return Err("unknown sustain scenario".into());
+    }
     let mut cells = Vec::new();
     let mut failures = Vec::new();
     for &(name, path) in PATCHES.iter().filter(|(n, _)| only.is_none_or(|o| o == *n)) {
@@ -196,6 +199,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 // Drain finite bootstrap; recurring timers continue normally.
                 phase(&mut players, b, 1.);
                 EVENT_ERRORS.set(0);
+                BEHAVIOR_ERRORS.set(0);
                 let idle = phase(&mut players, b, seconds);
                 events(&mut players, keys, true);
                 phase(&mut players, b, 1.);
@@ -213,19 +217,21 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 let post_release = phase(&mut players, b, seconds);
                 let st: Vec<_> = players.iter().map(|p| stats(&p.player)).collect();
                 let errors = EVENT_ERRORS.replace(0);
+                let behavior_errors = BEHAVIOR_ERRORS.replace(0);
                 let underruns: u64 = st.iter().map(|s| s.stream_underruns).sum();
                 if held["peak"].as_f64().unwrap_or(0.) < SILENT as f64
                     || errors > 0
+                    || behavior_errors > 0
                     || underruns > 0
                 {
                     failures.push(format!(
-                        "{name}/{b}/{n}: held peak {}, errors {errors}, underruns {underruns}",
+                        "{name}/{b}/{n}: held peak {}, errors {errors}, behavior errors {behavior_errors}, underruns {underruns}",
                         held["peak"]
                     ));
                 }
                 cells.push(json!({"scenario":name,"block":b,"notes":n,"programs":count,
                     "idle":idle,"held":held,"release":release,"post_release":post_release,
-                    "event_errors":errors,"stream_underruns":underruns}));
+                    "event_errors":errors,"behavior_errors":behavior_errors,"stream_underruns":underruns}));
                 eprintln!(
                     "{}",
                     serde_json::to_string(cells.last().unwrap()).map_err(fail)?

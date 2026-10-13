@@ -30,6 +30,7 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     static CALLS: Cell<u64> = const { Cell::new(0) };
     static EVENT_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static BEHAVIOR_ERRORS: Cell<u64> = const { Cell::new(0) };
 }
 // SAFETY: forwards every call unchanged to System; only counts on the thread that asked.
 #[allow(
@@ -275,6 +276,21 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                 streamer,
                 assets,
             } = streamed;
+            if std::env::var_os("PERF_METADATA").is_some() {
+                for view in &loaded.scripts {
+                    let callbacks: Vec<_> = (0..view.program_count())
+                        .filter_map(|p| view.callback(p))
+                        .collect();
+                    eprintln!(
+                        "script slot {}: {} programs, callbacks {:?}, listeners {:?}, init controller writes {:?}",
+                        view.slot(),
+                        view.program_count(),
+                        callbacks,
+                        view.model().listeners,
+                        view.model().controllers
+                    );
+                }
+            }
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
@@ -504,7 +520,7 @@ fn render(
                 }
             }
             let mut errors = 0;
-            let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
+            let result = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
                 if let Err(e) = r {
                     errors += 1;
                     if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 {
@@ -512,9 +528,17 @@ fn render(
                     }
                 }
             });
-            EVENT_ERRORS.set(EVENT_ERRORS.get() + errors);
+            EVENT_ERRORS.set(EVENT_ERRORS.get() + errors + u64::from(result.is_err()));
             rt.drain_effects(|_| true);
-            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_behaviors(|_, _, outcome| {
+                if matches!(
+                    outcome,
+                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
+                ) {
+                    BEHAVIOR_ERRORS.set(BEHAVIOR_ERRORS.get() + 1);
+                }
+                true
+            });
             rt.flush_ended(|_| true);
         }
         Player::Uvi(player) => {
