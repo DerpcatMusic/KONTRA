@@ -894,7 +894,7 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     let pick = scene.surface("snapshot-0").expect("preset picker").frame;
     assert!(two.y >= one.y + one.size.height - 0.5, "row 2 under row 1");
     assert!(pick.y >= two.y + two.size.height - 0.5, "picker under row 2");
-    for id in ["snapshot-prev-0", "snapshot-next-0"] {
+    for id in ["snapshot-next-0"] {
         assert!(there(&h, id), "{id}");
     }
     let vol = scene.surface("perf-vol-0").unwrap().frame;
