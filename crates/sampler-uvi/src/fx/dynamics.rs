@@ -1,6 +1,7 @@
 //! UVI `dynamics` effects onto sampler_ir::fx::dynamics.
 //!
-//! No UVI dynamics law is recovered from the binary, so every mapped effect
+//! Maximizer runs its native law (Workstation 4.0.9). No other UVI dynamics
+//! law is recovered from the binary, so every other mapped effect
 //! runs the generic kernel and is reported `UnknownLaw`; effects whose
 //! structure the generic kernel cannot express are reported `NotModeled`.
 use crate::{Translation, number};
@@ -37,6 +38,7 @@ pub(crate) fn handles(kind: &str) -> bool {
             | "Gate"
             | "Limiter"
             | "SoftLimiter"
+            | "Maximizer"
     )
 }
 
@@ -122,6 +124,25 @@ pub(crate) fn translate(
                 "FeedbackCompressor law (generic feedback kernel)",
                 ir::Reason::UnknownLaw,
             );
+        }
+        "Maximizer" => {
+            // Native law (Workstation 4.0.9, process 0x141665620); XML units
+            // go straight into the core.
+            let m = dyn_fx::Maximizer {
+                threshold_db: number(node, "Threshold", -6.0)?,
+                attack_ms: number(node, "Attack", 0.0)?,
+                lookahead_ms: number(node, "Lookahead", 2.0)?,
+                release_ms: number(node, "Release", 10.0)?,
+                ceiling_db: number(node, "Ceiling", -0.1)?,
+                knee_db: number(node, "Knee", 0.0)?,
+                release_blend: number(node, "ReleaseBlend", 0.1)?,
+                slew_ms: number(node, "SlewRate", 20.0)?,
+                mode: number(node, "CeilingMode", 0.0)?.clamp(0.0, 2.0) as u8,
+                true_peak: number(node, "TruePeak", 0.0)? > 0.5,
+            };
+            let mut c = dyn_fx::Config::generic(m.threshold_db, 1.0, ir::Time::Milliseconds(0.0), ms("Release", 10.0)?);
+            c.law = dyn_fx::Law::UviMaximizer(m);
+            out.push(ir::Processor::Dynamics(c));
         }
         _ => report(t, at, &format!("{kind} dynamics effect"), ir::Reason::NotModeled),
     }

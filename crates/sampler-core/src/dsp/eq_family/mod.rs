@@ -5,8 +5,8 @@
 //! [`Law`] that only decides which (Hz, Q, dB) or which native coefficients feed that kernel.
 //! - [`Law::KontaktLegacy`]: the native one-band knob laws, coefficient generator 0x1409591c0 and
 //!   32-frame control cadence (`legacy.rs`); its coefficients are realised by the kernel.
-//! - [`Law::Solid`]: saved knobs through the proved Solid G-EQ splines (`solid.rs`) into the
-//!   kernel's (Hz, Q, dB) design (the native topology is unproved).
+//! - [`Law::Solid`]: the native Solid G-EQ coefficient law (`solid.rs`), one stage per native
+//!   biquad (`poles` carries the biquad index), realised by the kernel.
 //! - [`Law::Rbj`]: physical Hertz/Q/dB (`generic.rs`), also the home of scripted UVI EQ inserts.
 //! A [`sampler_ir::fx::eq::Config`] is a serial cascade of bands, lowered here into one stage per
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the
@@ -15,7 +15,7 @@
 mod generic;
 mod kernel;
 pub(super) mod legacy;
-mod solid;
+pub(crate) mod solid;
 
 pub use legacy::KontaktLegacyEqSettings;
 pub use sampler_ir::fx::eq::{Kind, Law};
@@ -182,8 +182,13 @@ pub(crate) fn lower(config: &sampler_ir::fx::eq::Config) -> Vec<Processor> {
         if gainful && b.law == Law::Rbj && b.gain_db == 0. {
             continue;
         }
-        // Solid HP/LP sections are one 2-pole Butterworth (their spline has no Q).
-        let n = if matches!(b.law, Law::Solid(_)) { 2 } else { b.poles.clamp(1, 4) };
+        if let Law::Solid(section) = b.law {
+            for index in 0..solid::sections(section, b.kind) {
+                stages.push(Processor::Eq(EqBand { poles: index as u8, ..band }));
+            }
+            continue;
+        }
+        let n = b.poles.clamp(1, 4);
         if !matches!(b.kind, Kind::LowPass | Kind::HighPass) || n == 2 {
             stages.push(Processor::Eq(EqBand { poles: 2, ..band }));
             continue;
