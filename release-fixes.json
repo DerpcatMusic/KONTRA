@@ -4636,6 +4636,219 @@
       "category": "Fixed",
       "release_note": "Wait for actual Conflux callback audit readiness and completion before reporting its result.",
       "validation": "The audit previously skipped initial plan/program settling and rendered eight blocks without draining commands. A full 256-effect outbox suspended emission with Outcome::None, while the gate judged labels before callback completion. Core Emit rewinds and suspends on backpressure; production hosting interleaves command drain. The corrected audit retains the same sampled IDs, uses bounded initial settling and render/drain service until callback completion, records actual readiness and retains strict labels and the exact three-effect assertion. This is an audit-service correction, not a production behavior fix or a native Conflux parity claim. Coordinator passing exact-source callback-gate receipt: Parent exact ignored ui::loop_audit::loop_audit_conflux compiled and passed1/1 on the same installed Conflux and original sampled IDs. Finite startup completed in15 blocks,1481effects serviced; recurring listener drivers classified from compiler metadata and remaindiagnostic. Both controlcallbacks Finished in1block each with0faults/0newstalls; one emitted/applied3UIeffects including set_knob_label, the other1set_control_par_str. Strict exact-three-effects assertion and labeltargetproperty readback passed; publication changed/noop checks passed. New authored timerclassification regression included in666root passes. Complete-reviewed-product-build exited0. Receipt conflux-passing-callback-receipt.json in external evidence root. Auditonly correction; no production callback fix or native parity claimed.. Coordinator combined exact-source regression and product-build receipt: Source b44473c9e14ae4fcf42af562ee8684331ca1473f; coordinator release-mode all14/all-targets checks with final root serial rerun: 2325 distinct target tests passed, 153 ignored (666 root tests passed); 18 synthetic Python sweep-admission tests passed; actual current executable absent-probe rejection passed without artifacts. Final reviewed CLAP/VST3 library and standalone product build exited0. Fresh 1495/1495 static library inspections reconciled with0 integrityfaults; 17 selected initializedIR,9complete UI models and8incomplete. Current Conflux/Bartok/Clarinet CPU editor gates passed. Original-byte checks passed1222Kontakt records and3937Workstation cases. Evidence root /mnt/MAIN_STORAGE/kontra-runs/native-parity-20261013. Scope limits: no new whole-corpus musical audition or nativehost comparison; ConfluxVector authoredlayout remainsunsupported; UVI OnePole port and async loadSample remainopen; native SIMD/multiband/lifecycle and liveworker timing unverified. Clean versioned artifact identity checked separately after metadata commit.."
+    },
+    {
+      "id": "kontakt-8131-external-mod-0x105",
+      "summary": "Accept BParExternalMod 0x105 (Kontakt 8.13.1 reader FUN_140d09620)",
+      "source_commits": [
+        "fa81a1c7ebec7951d148564a75f837dd946bb6c3",
+        "ddb34935138954962d5a13dceaf2686e07a1aaa1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Instruments saved by Kontakt 8.13 load again.",
+      "validation": "Kontakt-saved fixture failed with 'Unsupported BParExternalMod version 0x105'; native_oracle test passes."
+    },
+    {
+      "id": "galois-reverb-room-type-enum",
+      "summary": "Decode GaloisReverb room type as the native u32 enum",
+      "source_commits": [
+        "f48d53028b9188059bcaef1d2cef9fdd97d76c01"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Hall reverbs no longer play as Room.",
+      "validation": "Reader FUN_140d019f0 reads a validated u32; f32 decode turned 1 into 1.4e-45; galois_reverb_room_type_is_a_native_u32_enum."
+    },
+    {
+      "id": "ssl-geq-v11-fields",
+      "summary": "Read SSL G-EQ v0x11 trailing fields from the native layout",
+      "source_commits": [
+        "f48d53028b9188059bcaef1d2cef9fdd97d76c01"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "SSL G-EQ presets saved by newer Kontakt decode completely.",
+      "validation": "Native reader layout FFBFFFFFFFFBFFBB; generated layouts drive EffectParameters."
+    },
+    {
+      "id": "kontakt-db-law-bus-faders",
+      "summary": "Use Kontakt's 6 dB-per-doubling law for script bus faders",
+      "source_commits": [
+        "ddb34935138954962d5a13dceaf2686e07a1aaa1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Script-set bus volumes match Kontakt's level.",
+      "validation": "Measured with the native oracle: stored gain = 2^(dB/6); kontakt_volume_db_is_six_db_per_doubling."
+    },
+    {
+      "id": "cycle-round-robin-zero-based",
+      "summary": "Treat stored cycle round-robin positions as 0-based",
+      "source_commits": [
+        "0ea2670603ed1cd0cd4ae1ce98dc57d1e98292fe"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Round-robin groups play in Kontakt's order; first-position groups are no longer dropped.",
+      "validation": "Native evaluator 0x140876bd0; group_start_conditions_match_what_kontakt_stored."
+    },
+    {
+      "id": "voice-release-cross-plan",
+      "summary": "Qualify monophonic release and voice limits by plan",
+      "source_commits": [
+        "9939af454e0f0e691a1ca2a0437be5bf40baa68d",
+        "53650365f501fe86a39ac298805717d801a47881"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Releases and voice limits no longer cut notes in other instruments.",
+      "validation": "Cross-plan isolation and twelve-layer replacement tests failed first."
+    },
+    {
+      "id": "kontakt-exclusive-voice-groups",
+      "summary": "Apply Kontakt exclusive voice groups",
+      "source_commits": [
+        "53650365f501fe86a39ac298805717d801a47881"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Exclusive voice groups cut each other like Kontakt.",
+      "validation": "Translation and isolation tests failed first."
+    },
+    {
+      "id": "purge-group-residency",
+      "summary": "Make purge_group release and reload sample residency",
+      "source_commits": [
+        "54ea85f9113ea098e9fdc007c49c36de25e6424c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Purged groups free memory and cost no CPU; unpurge reloads with async completion.",
+      "validation": "12 core + 3 Kontakt focused tests; synthetic residency 1984->0 bytes."
+    },
+    {
+      "id": "muted-groups-retained",
+      "summary": "Retain muted group definitions for live unmute",
+      "source_commits": [
+        "54ea85f9113ea098e9fdc007c49c36de25e6424c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Unmuting a saved-muted group plays it.",
+      "validation": "saved_muted_group_can_unmute_without_reloading_its_definition."
+    },
+    {
+      "id": "kontakt-archive-sample-identity",
+      "summary": "Canonicalize archive members and resolve relocated archive prefixes",
+      "source_commits": [
+        "d29003e1fa9eff72e099c7f42a1ed785d70b8e42",
+        "be0a7c5be41af2a7ec49e9150cc5a5e8608ca145"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Samples inside moved or differently spelled archives are found.",
+      "validation": "Two spelling mismatches -> zero; relocated fixture resolves."
+    },
+    {
+      "id": "voice-group-default-overrides",
+      "summary": "Bind omitted voice-group overrides to Kontakt defaults",
+      "source_commits": [
+        "c51a1cffae796dbfa1b1b83ba986cd776b77356e"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Groups using default voice groups get their voice limit instead of an error.",
+      "validation": "Native writer omits defaults; oracle confirms default 1 voice/oldest/10 ms."
+    },
+    {
+      "id": "bus-sleep-history-clears",
+      "summary": "Let silent buses sleep without repeated history clears",
+      "source_commits": [
+        "27464058f6de552c30b997e210fe50aff31282f2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Idle effect buses stop costing CPU.",
+      "validation": "101 repeated clears -> 1; exact sleep/wake PCM."
+    },
+    {
+      "id": "dormant-graph-traversal",
+      "summary": "Skip traversal of dormant plans",
+      "source_commits": [
+        "90083347a67c0ad84120c97672121c583c0223b8"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Instruments with nothing playing cost no CPU per block.",
+      "validation": "32 idle tile traversals -> 0 with identical PCM."
+    },
+    {
+      "id": "conflux-controller-skin",
+      "summary": "Resolve NativeUI resources per program",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux multi controller programs show their own skin, not Conflux's unbound one.",
+      "validation": "Program-owned resource tests for three multis."
+    },
+    {
+      "id": "conflux-vector-layout",
+      "summary": "Project the authored NativeUI layout for Conflux Vector",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux's Vector page no longer overlaps controls.",
+      "validation": "Vector geometry regression failed first."
+    },
+    {
+      "id": "nckp-presentation-fields",
+      "summary": "Import NCKP fonts, press states and table prefixes",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt UIs show their custom fonts and pressed states.",
+      "validation": "378/378 Conflux controls, zero parser diagnostics."
+    },
+    {
+      "id": "module-parameter-modulation",
+      "summary": "Route modulation to modulator rate/amount and effect knobs",
+      "source_commits": [
+        "130a2394587abfe9d5a31c4427252214dd6cb093",
+        "d771c9c0e4385bfc8d4ca7b4e413fbdfdffccff6"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux LFO motion and Analog Strings formant/lo-fi/drive modulation play.",
+      "validation": "Dropped routes: Conflux 2,207 -> 0 (excl. 550 random sources); ANALOG STRINGS 6,065 -> 1,902."
+    },
+    {
+      "id": "kontakt-lfo-native-waveforms",
+      "summary": "Use Kontakt's own LFO waveform tables",
+      "source_commits": [
+        "1d6b868742484ba883628c13a06e6f0331fa3f6b"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt LFO saw, random and pulse-width shapes play instead of being dropped.",
+      "validation": "Native 4096-entry tables with the spec's interpolation; LFO mapping test."
+    },
+    {
+      "id": "ni-file-native-readers",
+      "summary": "Decode Kontakt objects with Kontakt's own reader programs",
+      "source_commits": [
+        "fab549ae6764cef595b63debdbb379980df925a2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).",
+      "validation": "Round trip of every reader at every version; Rust/Python executors agree on 297 streams."
     }
   ]
 }
