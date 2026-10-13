@@ -912,19 +912,10 @@ impl TraceGraph {
             PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
             PreparedProcessor::LiveLoFi { knobs, .. } => ("lofi", ["bits", "frequency", "noise", "color"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
             PreparedProcessor::Distortion(d) => ("kontakt_distortion", vec![constant("damping_pole", d.damping_pole())], 0),
-            PreparedProcessor::Reverb(i) => (
-                "reverb",
+            PreparedProcessor::Space(i) => (
+                "space",
                 plan.buses
-                    .trace_reverb(*i)
-                    .into_iter()
-                    .map(|(n, v)| constant(n, v))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Convolution(i) => (
-                "convolution",
-                plan.buses
-                    .trace_convolution(*i)
+                    .trace_space(*i)
                     .into_iter()
                     .map(|(n, v)| constant(n, v))
                     .collect(),
