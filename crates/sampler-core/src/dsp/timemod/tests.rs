@@ -318,3 +318,63 @@ fn legacy_flanger_is_partition_independent_and_stays_bounded() {
     assert!(a.iter().flatten().all(|v| v.abs() < 10.));
     assert!(a.iter().any(|f| f[0] != f[1]), "the second channel's LFO is phase offset");
 }
+
+fn uvi_lfo(wave: sampler_ir::fx::timemod::UviWave, direct: bool, hz: f32, phase: f32) -> Lfo {
+    Lfo { shape: LfoShape::Uvi { wave, direct }, rate: Rate::Hz(hz), phase }
+}
+
+#[test]
+fn uvi_table_lfo_vectors() {
+    use sampler_ir::fx::timemod::UviWave;
+    // 0.8 Hz at 48 kHz: both increment forms give 71582 (0x1412e02a0 / 0x1412eeec0).
+    assert_eq!((uvi_increment(0.8, 48_000., false), uvi_increment(0.8, 48_000., true)), (71_582, 71_582));
+    let tri = uvi_table(UviWave::Triangle);
+    assert_eq!([uvi_read(tri, 0), uvi_read(tri, 0x4000_0000), uvi_read(tri, 0x8000_0000), uvi_read(tri, 0xc000_0000)], [0., 1., 0., -1.]);
+    assert_eq!(uvi_read(tri, 0x2000_0000), 0.5);
+    let sine = uvi_table(UviWave::Sine);
+    assert!((uvi_read(sine, 0x4000_0000) - 1.).abs() < 1e-7 && uvi_read(sine, 0) == 0.);
+    assert_eq!(uvi_phase(0.25), 0x4000_0000);
+}
+
+#[test]
+fn uvi_chorus_native_vector_two_summed_voices() {
+    // DelayTime 0.2, Depth 0, Mix 1 at 48 kHz: taps at 480 and 672 frames, unity each.
+    let mut l = Line::single(DelayTime::Ms(10.), 68.);
+    l.voices = 2;
+    l.voice_phase = 1.;
+    l.voice_delay_ms = 4.;
+    let cfg = Config { dry: 1., wet: 2., ..wrap(l, uvi_lfo(sampler_ir::fx::timemod::UviWave::Triangle, false, 0.8, 0.25)) };
+    let (out, fault) = run(cfg, 48_000, 120., &impulse(700, [1., 1.]), 64);
+    assert!(!fault);
+    for (i, f) in out.iter().enumerate() {
+        let expect = if matches!(i, 0 | 480 | 672) { 1. } else { 0. };
+        assert!((f[0] - expect).abs() < 1e-12 && (f[1] - expect).abs() < 1e-12, "frame {i}: {f:?}");
+    }
+}
+
+#[test]
+fn uvi_phaser_and_phasor_coefficient_vectors() {
+    use sampler_ir::fx::timemod::UviWave;
+    // Phaser, Min = Max = 1000 Hz at 48 kHz: a = (1 - 1/24) / (1 + 1/24) = 0.92; six
+    // stages answer a^6 at the first frame, added to the dry input.
+    let phaser = Config {
+        line: None,
+        allpass: Some(Allpass { stages: 6, law: SweepLaw::Linear { min_hz: 1000., max_hz: 1000. }, feedback: 0. }),
+        order: Order::LineThenAllpass,
+        lfo: uvi_lfo(UviWave::Sine, true, 0.8, 0.),
+        dry: 1.,
+        wet: 1.,
+    };
+    let (out, _) = run(phaser, 48_000, 120., &impulse(4, [1., 1.]), 64);
+    let a = (1. - 1. / 24f32) / (1. / 24f32 + 1.);
+    assert!((out[0][0] - (1. + f64::from(a).powi(6))).abs() < 1e-6, "{:?}", out[0]);
+    // Phasor defaults (Order 3, 200..3000 Hz) at the initial m = 0.5: UVI a = -0.90764648.
+    let phasor = Config {
+        allpass: Some(Allpass { stages: 6, law: SweepLaw::DelayDomain { min_hz: 200., max_hz: 3000., order: 3 }, feedback: 0. }),
+        lfo: uvi_lfo(UviWave::Triangle, false, 0.3, 0.25),
+        dry: 0.,
+        ..phaser
+    };
+    let (out, _) = run(phasor, 48_000, 120., &impulse(4, [1., 0.]), 64);
+    assert!((out[0][0] - 0.907_646_48f64.powi(6)).abs() < 1e-5, "{:?}", out[0]);
+}

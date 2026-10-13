@@ -10,7 +10,8 @@
 
 pub const MAX_TAPS: usize = 4;
 pub const MAX_VOICES: usize = 8;
-pub const MAX_STAGES: usize = 12;
+/// UVI Phasor runs `2 * order` stages, order up to 12.
+pub const MAX_STAGES: usize = 24;
 
 /// How a fractional delay read interpolates between ring samples.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -119,6 +120,8 @@ pub struct Line {
     pub voices: u8,
     pub voice_phase: f64,
     pub voice_spread: f64,
+    /// Voice `v` reads `v * voice_delay_ms` later than the tap (UVI Chorus 4 ms).
+    pub voice_delay_ms: f64,
     pub interpolation: Interpolation,
     /// Rows are line-input L/R, columns signal L/R (identity = stereo,
     /// `[[1,1],[0,0]]` style rows feed one side, e.g. ping-pong).
@@ -142,6 +145,7 @@ impl Line {
             voices: 1,
             voice_phase: 0.,
             voice_spread: 0.,
+            voice_delay_ms: 0.,
             interpolation: Interpolation::Linear,
             input: Self::IDENTITY_INPUT,
             feedback: Feedback::OFF,
@@ -163,6 +167,15 @@ pub enum SweepLaw {
     /// Generic: log sweep between two frequencies by `lfo * depth` (0..1),
     /// first-order coefficients refreshed every 32 frames.
     Sweep { min_hz: f32, max_hz: f32, depth: f32 },
+    /// UVI Phaser / Cross Phaser (native, 0x1412f0ec0 / 0x1412e4c90): per
+    /// sample `w = (lfo + 1) * (wmax - wmin) / 2 + wmin` with `w = 2 f / rate`
+    /// (no tan warp), coefficient `(1 - w) / (1 + w)`.
+    Linear { min_hz: f32, max_hz: f32 },
+    /// UVI Phasor (native, 0x14166c120): per sample the stage delay
+    /// `d = hi * (lo / hi)^m`, `m = (lfo + 1) / 2`, `hi = rate / max_hz /
+    /// order`, `lo = rate / min_hz / order`; coefficient `(1 - d) / (1 + d)`
+    /// in UVI's `y = a u + s` stage form (negated for the shared stage).
+    DelayDomain { min_hz: f32, max_hz: f32, order: u8 },
 }
 
 /// Cascade of first-order allpass stages (phaser).
@@ -183,6 +196,22 @@ pub enum LfoShape {
     Triangle,
     Saw,
     Square,
+    /// UVI table LFO (uvi-dsp-laws #1, tables 0x14163c3c0): 32-bit phase,
+    /// 257-point table read linearly at `phase >> 24`, value read before the
+    /// phase advances. `direct` selects the increment `2^32 / rate * hz`
+    /// (Flanger, Phaser) over `hz * 256 / rate * 2^24` (Chorus, Phasor).
+    Uvi { wave: UviWave, direct: bool },
+}
+
+/// UVI LFO tables (0x14283abf8 + 8 * shape).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviWave {
+    Sine,
+    Square,
+    Triangle,
+    RampUp,
+    RampDown,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -193,6 +222,8 @@ pub enum Rate {
     /// speed clamped to at least 1, result clamped to 0..=8 Hz and tempo
     /// below 0.1 BPM read as 120.
     Sync { unit: f32, speed: f32 },
+    /// UVI host sync: `tempo / 60 / beats` Hz, at most `max_hz`.
+    Beats { beats: f32, max_hz: f32 },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -259,6 +290,11 @@ impl Config {
         {
             return Err("lfo sync");
         }
+        if let Rate::Beats { beats, max_hz } = self.lfo.rate
+            && !(beats.is_finite() && beats > 0. && max_hz.is_finite() && max_hz > 0. && max_hz <= 200.)
+        {
+            return Err("lfo beats");
+        }
         if !self.lfo.phase.is_finite() {
             return Err("lfo phase");
         }
@@ -296,6 +332,9 @@ impl Config {
                     return Err("legacy modulated delay");
                 }
             }
+            if !(l.voice_delay_ms.is_finite() && l.voice_delay_ms >= 0.) {
+                return Err("voice delay");
+            }
             for v in [l.voice_phase, l.voice_spread, l.feedback.drive] {
                 fin(v, "line")?;
             }
@@ -327,7 +366,8 @@ impl Config {
                 {
                     return Err("tap beats");
                 }
-                if base + t.depth_ms > l.max_ms && !matches!(t.time, DelayTime::Frames(_)) {
+                let spread = f64::from(l.voices - 1) * l.voice_delay_ms;
+                if base + t.depth_ms + spread > l.max_ms && !matches!(t.time, DelayTime::Frames(_)) {
                     return Err("tap beyond max_ms");
                 }
             }
@@ -344,6 +384,10 @@ impl Config {
                 SweepLaw::Filter { cutoff } => cutoff.is_finite() && (0. ..=1.).contains(&cutoff),
                 SweepLaw::Sweep { min_hz, max_hz, depth } => {
                     min_hz.is_finite() && max_hz.is_finite() && min_hz > 0. && max_hz >= min_hz && (0. ..=1.).contains(&depth)
+                }
+                SweepLaw::Linear { min_hz, max_hz } => min_hz.is_finite() && max_hz.is_finite() && min_hz > 0. && max_hz > 0.,
+                SweepLaw::DelayDomain { min_hz, max_hz, order } => {
+                    min_hz.is_finite() && max_hz.is_finite() && min_hz > 0. && max_hz > 0. && (1..=12).contains(&order)
                 }
             };
             if !ok {
