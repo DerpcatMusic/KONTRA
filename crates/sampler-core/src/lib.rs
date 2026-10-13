@@ -32,6 +32,9 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod allocation;
+pub use allocation::{AllocationCounts, AllocationDomainId};
+
 mod automation;
 pub use automation::{AutomationBinding, AutomationSource};
 mod widget;
@@ -507,6 +510,8 @@ pub struct VoiceTap {
 
 #[derive(Clone, Copy, Debug)]
 struct Voice {
+    plan: PlanId,
+    allocation: [allocation::Link; 4],
     family: FamilyId,
     siblings: Siblings,
     sample: usize,
@@ -959,6 +964,7 @@ impl Runtime {
                 native_cycle: 0,
                 native_seed: 0,
                 request: 0,
+                allocation: allocation::AllocationState::new(&plan),
                 sequences: variation::SequenceState::new(&plan),
                 controls: control::ControlState::new(&plan),
                 scripts: plan
@@ -1741,7 +1747,10 @@ impl Runtime {
         let f = self.families.get(family.0).unwrap();
         let count = f.voices + 1;
         let next_sibling = f.first_voice;
+        let plan = self.notes.get(f.note.0).unwrap().plan;
         let id = VoiceId(self.voices.insert(Voice {
+            plan,
+            allocation: [allocation::Link::default(); 4],
             family,
             siblings: Siblings {
                 previous: None,
@@ -1771,6 +1780,7 @@ impl Runtime {
             source_zone: 0,
             quiet: 0,
         })?);
+        self.link_allocation(id, 0, 0);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {

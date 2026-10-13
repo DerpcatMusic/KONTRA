@@ -527,6 +527,7 @@ impl Runtime {
 
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        self.unlink_allocation(v);
         if let Some(previous) = v.siblings.previous {
             self.voices.at_mut(previous).siblings.next = v.siblings.next;
         } else {
