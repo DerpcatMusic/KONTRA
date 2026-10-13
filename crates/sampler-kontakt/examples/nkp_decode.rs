@@ -25,6 +25,17 @@ fn files(p: &Path, out: &mut Vec<PathBuf>) {
 
 /// Visit every structured object: (id path, chunk id, object).
 fn walk(chunk: &Chunk, path: &str, f: &mut impl FnMut(&str, u16, &StructuredObject)) {
+    // Effect racks are unstructured arrays of BParFX records: walk each occupied slot.
+    if chunk.id == 0x3a {
+        if let Ok(a) = ni_file::kontakt::objects::BParamArrayBParFX8::read(Cursor::new(&chunk.data), 8) {
+            for (n, c) in a.items.iter().enumerate() {
+                if let Some(c) = c {
+                    walk(c, &format!("{path}/3a[{n}]"), f);
+                }
+            }
+            return;
+        }
+    }
     let Ok(so) = StructuredObject::read(Cursor::new(&chunk.data)) else {
         return;
     };
