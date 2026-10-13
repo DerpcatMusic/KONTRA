@@ -50,13 +50,13 @@ impl DaftSettings {
         [self.gain, self.cutoff, self.resonance, self.response]
     }
 
-    pub(super) fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.parameters()
             .iter()
             .all(|p| p.valid() && !matches!(p, Parameter::Expression { .. }))
     }
 
-    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Daft {
+    pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Daft {
         table();
         Daft {
             rate: f64::from(rate) * 2.,
@@ -180,7 +180,7 @@ impl Daft {
     }
 
     /// Filter `len` planar frames in place from absolute frame `at`.
-    pub(super) fn process(
+    pub(crate) fn process(
         &self,
         state: &mut ProcessorState,
         parameters: &[ControlRamp],

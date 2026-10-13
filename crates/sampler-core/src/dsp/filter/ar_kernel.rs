@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 const TABLE_LEN: usize = 2401;
 
-pub(super) fn prepare() {
+pub(crate) fn prepare() {
     table();
 }
 
@@ -32,7 +32,7 @@ fn exponential(position: f32) -> f32 {
     t[i] + (position - f32::from(index)) * (t[i + 1] - t[i])
 }
 
-pub(super) fn targets(cutoff: f32, resonance: f32, rate: f32) -> [f32; 3] {
+pub(crate) fn targets(cutoff: f32, resonance: f32, rate: f32) -> [f32; 3] {
     let hz = exponential((cutoff * 145.).min(140.) * 5. + 1381.8816);
     let inverse = 1. / rate;
     let f = hz.max(0.);
@@ -51,7 +51,7 @@ fn saturate(x: f32) -> f32 {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct ArKernel {
+pub(crate) struct ArKernel {
     pub channels: [[f32; 9]; 2],
     pub detector: f32,
     pub adaptation: f32,
@@ -85,7 +85,7 @@ fn mix([high, band, low]: [f32; 3], weights: [f32; 3]) -> f32 {
 
 impl ArKernel {
     /// Stereo frame; the shared detector follows the signed stereo band sum.
-    pub(super) fn tick(
+    pub(crate) fn tick(
         &mut self,
         input: [f32; 2],
         mode: u8,
