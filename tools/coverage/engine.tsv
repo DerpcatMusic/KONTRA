@@ -1,0 +1,74 @@
+# Hand-maintained engine status rows, delimiter "@@" (not tab, so regexes stay readable).
+# category @@ key @@ name @@ status @@ evidence @@ probe @@ note
+# status: exact (law proved on binary/oracle) | mapped (implemented, law not independently proved)
+#         approx (implemented with a labelled approximation) | reported (translator reports unsupported) | absent
+# probe: "file::regex" must match in the named source file (searched under crates/ and vendor/);
+#        "!file::regex" must NOT match. A failing probe marks the row "stale" on the dashboard.
+# Evidence paths starting with specs/ live in ~/.cache/kontakto-wave2/specs/.
+modulator@@AHDSR@@BParEnv_AHDSR (0x3F)@@approx@@specs/modulators.md; sampler-kontakt/src/library.rs@@library.rs::Modulator::Ahdsr\(env\)@@ir::Envelope with measured curve pairs; native f32 geometric profile and saved-to-control construction not wired
+modulator@@Flex@@BParEnv_FM7 (0x40)@@approx@@specs/modulators.md; sampler-kontakt/src/library.rs@@library.rs::BOW_K@@breakpoints with measured bow constant; native affine-ratio recurrence not wired
+modulator@@DBD@@BParEnv_DBD (0x41)@@reported@@sampler-kontakt/src/library.rs@@library.rs::Modulator::Dbd\(_\) \| Modulator::Glide@@decoded (five floats), not executable
+modulator@@Glide@@BParGlide (0x0B)@@reported@@sampler-kontakt/src/library.rs@@library.rs::Modulator::Dbd\(_\) \| Modulator::Glide@@decoded, not executable
+modulator@@Follower@@BParEnvF (0x0A)@@reported@@sampler-kontakt/src/library.rs@@library.rs::Modulator::Follower\(_\)@@decoded, not executable; native slot is copy-only
+modulator@@LFO@@BParLFO (0x08)@@approx@@sampler-kontakt/src/library.rs@@library.rs::fn lfo\(@@see LFO waveform rows; sync and lifecycle partially mapped
+modulator@@Arp@@BParArp (0x09)@@absent@@specs/modulators.md@@!library.rs::Modulator::Arp@@schema-decoded only; no translation
+modulator@@ZoneLevelEnv@@BZoneLevelEnv (0x2D)@@absent@@specs/modulators.md@@!library.rs::ZoneLevel@@schema-decoded only; no translation
+modulator@@GroupDynamics@@BParGroupDynamics (0x4A)@@absent@@specs/modulators.md@@!library.rs::GroupDynamics@@schema-decoded only
+modulator@@Other@@undecoded modulator chunk@@reported@@sampler-kontakt/src/library.rs@@library.rs::Modulator::Other \{ chunk_id@@
+lfo-wave@@0@@Sine@@exact@@specs/modulators.md native tables@@library.rs::NativeWave::Sine@@recovered table
+lfo-wave@@1@@Rectangle (pulse width)@@exact@@specs/modulators.md native tables@@library.rs::NativeWave::Rectangle@@width in (0,1) only; else reported
+lfo-wave@@2@@Triangle@@exact@@specs/modulators.md native tables@@library.rs::NativeWave::Triangle@@recovered table
+lfo-wave@@3@@Sawtooth@@exact@@specs/modulators.md native tables@@library.rs::NativeWave::Saw@@recovered table
+lfo-wave@@4@@Random (held)@@exact@@specs/modulators.md noise@@library.rs::NativeWave::Held@@start phase < 0.5 only; else reported
+lfo-wave@@5@@Multi (5 weights)@@approx@@specs/modulators.md multi mix@@library.rs::LfoShape::SineScaled@@only zero-weight and sine-only mixes; other weights reported
+lfo-wave@@6@@Digital Multi@@approx@@specs/modulators.md multidigital@@library.rs::LfoShape::DigitalSine@@only sine-only with fade; other components reported
+source-mode@@0@@Sampler@@exact@@sampler-kontakt/src/library.rs@@library.rs::0 \| SOURCE_MODE_DFD@@
+source-mode@@3@@DFD@@exact@@sampler-kontakt/src/library.rs@@library.rs::SOURCE_MODE_DFD: u32 = 3@@same signal as Sampler; streaming is the loader's concern
+source-mode@@2@@Time Machine 1@@mapped@@specs/time-machine.md@@library.rs::SOURCE_MODE_TM1@@RE-derived; open parity blockers listed in time-machine.md
+source-mode@@5@@Time Machine 2@@mapped@@specs/time-machine.md@@library.rs::SOURCE_MODE_TM2@@as above
+source-mode@@8@@Time Machine Pro@@mapped@@specs/time-machine.md@@library.rs::SOURCE_MODE_TM_PRO@@as above
+source-mode@@9@@Wavetable@@mapped@@sampler-core/src/wavetable_native_vectors.json@@library.rs::wavetable source@@native vectors for supported forms; others reported
+source-mode@@1@@Tone Machine@@reported@@sampler-kontakt/src/library.rs@@library.rs::"Tone Machine"@@played as sampler, named in report
+source-mode@@4@@Beat Machine@@reported@@sampler-kontakt/src/library.rs@@library.rs::"Beat Machine"@@played as sampler, named in report
+source-mode@@6@@S1200 Machine@@reported@@sampler-kontakt/src/library.rs@@library.rs::"S1200 Machine"@@played as sampler, named in report
+source-mode@@7@@MP60 Machine@@reported@@sampler-kontakt/src/library.rs@@library.rs::"MP60 Machine"@@played as sampler, named in report
+start-mode@@0@@Always / none@@exact@@specs/start-conditions.md@@keyswitch.rs::next_criteria@@no predicate
+start-mode@@1@@Key range@@mapped@@specs/start-conditions.md@@keyswitch.rs::StartTest::Key@@
+start-mode@@2@@Controller range@@mapped@@specs/start-conditions.md@@keyswitch.rs::StartTest::Controller@@
+start-mode@@3@@Cycle round robin@@approx@@specs/start-conditions.md@@native_start.rs::position == 0@@one-based compare, rejects stored 0; native is stored-zero first, shared counter, max position + 1
+start-mode@@4@@Cycle random@@approx@@specs/start-conditions.md@@native_start.rs::native_random_groups@@distinct-group count + SplitMix64; native counts mode-4 rows, KSP PRNG unproved
+start-mode@@5@@Slice trigger@@reported@@specs/start-conditions.md@@keyswitch.rs::group start mode or range@@legacy Kontakt-2 beat-sequencer behaviour
+start-join@@0@@and@@approx@@specs/start-conditions.md@@keyswitch.rs::StartJoin::And@@left fold; native mixed precedence unproved
+start-join@@1@@and not@@approx@@specs/start-conditions.md@@keyswitch.rs::StartJoin::AndNot@@left fold; native mixed precedence unproved
+start-join@@2@@or@@approx@@specs/start-conditions.md@@keyswitch.rs::StartJoin::Or@@left fold; native mixed precedence unproved
+mod-source@@Velocity@@Velocity@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::Velocity@@
+mod-source@@KeyPosition@@Key position@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::KeyPosition@@
+mod-source@@MidiCc@@MIDI CC@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::MidiCc@@
+mod-source@@PitchBend@@Pitch bend@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::PitchBend@@
+mod-source@@MonoAftertouch@@Channel pressure@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::MonoAftertouch@@
+mod-source@@PolyAftertouch@@Poly pressure@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::PolyAftertouch@@
+mod-source@@Constant@@Constant@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::Constant@@
+mod-source@@ReleaseTriggerCounter@@Release trigger counter@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ReleaseTriggerCounter if@@needs a stored counter > 0
+mod-source@@Script@@Script value@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::Script\(id\)@@ids up to 1000
+mod-source@@RandomUnipolar@@Random unipolar@@mapped@@sampler-kontakt/src/library.rs@@library.rs::ModSource::RandomUnipolar@@
+mod-source@@RandomBipolar@@Random bipolar@@reported@@sampler-kontakt/src/library.rs@@library.rs::ModSource::RandomBipolar@@law unknown, reported
+mod-source@@ReleaseVelocity@@Release velocity@@reported@@sampler-kontakt/src/library.rs@@library.rs::not_modeled@@not modeled, reported
+target@@volume@@volume (ID 2)@@exact@@tools/kontakt-oracle/probes/volume_law.lua; ~/.cache/kontra-native-oracle/out/volume_law.jsonl@@library.rs::"volume" =>@@6 dB per doubling measured on native
+target@@pan@@pan (ID 3)@@mapped@@specs/modulation-laws.md@@library.rs::"pan" =>@@template cited; unit unproved
+target@@pitch@@pitch (ID 6)@@mapped@@specs/modulation-laws.md@@library.rs::"pitch" =>@@template cited; semitone unit measured, not native-proved
+target@@loopStart@@loopStart (ID 7)@@approx@@specs/modulation-laws.md@@library.rs::"loopStart" \| "loopLength"@@constant source without lag, invert or shaper only
+target@@loopLength@@loopLength (ID 8)@@approx@@specs/modulation-laws.md@@library.rs::"loopStart" \| "loopLength"@@constant source without lag, invert or shaper only
+target@@filterCutoff@@filterCutoff@@mapped@@docs/architecture-v2/KONTAKT_FX_MOD_FORMAT.md@@library.rs::"filterCutoff"@@10 octaves per unit, measured
+effect@@0x13@@Gainer@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Gainer@@
+effect@@0x14@@Phaser (legacy)@@mapped@@sampler-kontakt/src/effects.rs (FUN_140d01fa0 cited)@@effects.rs::Some\(Params::LegacyPhaser@@
+effect@@0x16@@Convolution@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Convolution@@bus scope only; IR size, filtering and decimation reported
+effect@@0x17@@Send Levels@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::SendLevels@@
+effect@@0x18@@Filter@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Filter@@selected filter types only; rest reported
+effect@@0x19@@Compressor@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Compressor@@
+effect@@0x1a@@Inverter@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Params::Inverter@@
+effect@@0x1d@@Saturation@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Saturation@@
+effect@@0x1e@@Distortion@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Distortion@@
+effect@@0x1f@@Stereo Modeller@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::StereoModeller@@
+effect@@0x20@@Lo-Fi@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::LoFi@@
+effect@@0x44@@Solid G-EQ@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Eq@@
+effect@@0x59@@Reverb (Galois)@@mapped@@sampler-kontakt/src/effects.rs@@effects.rs::Some\(Params::Reverb@@bus scope only

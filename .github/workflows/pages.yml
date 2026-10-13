@@ -2,7 +2,7 @@ name: Website
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml']
+    paths: ['website/**', '.github/workflows/pages.yml', 'tools/coverage/**', 'crates/**', 'vendor/ni-file/**', 'docs/re/kontakt-catalog/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,6 +32,8 @@ jobs:
           mkdir -p /tmp/kontra-site/assets
           cp website/*.html website/styles.css website/releases.js /tmp/kontra-site/
           cp website/assets/* /tmp/kontra-site/assets/
+      - name: Build feature tracker
+        run: python3 tools/coverage/tracker.py /tmp/kontra-site/tracker
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: /tmp/kontra-site

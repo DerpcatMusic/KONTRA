@@ -113,92 +113,8 @@ pub(crate) fn process(
                     }
                 }
             }
-            PreparedProcessor::Gainer { dry, gain, k } => {
-                let mut current = [0.0f32; VOICES];
-                let mut initialized = [false; VOICES];
-                for v in 0..batch.count {
-                    let state = &cells[v].as_ref().expect("batch voice")[cell];
-                    current[v] = state.z[0][0] as f32;
-                    initialized[v] = state.aux[0] != 0.0;
-                }
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let target = gain.value(parameters, at + i as u64, None) as f32;
-                    for v in 0..batch.count {
-                        if i >= batch.ends[2 * v] {
-                            continue;
-                        }
-                        if !initialized[v] {
-                            (current[v], initialized[v]) = (target, true);
-                        }
-                        let (m, next) = super::kernels::gainer(current[v], target, *dry, *k as f32);
-                        x[2 * v] = super::kernels::gain(x[2 * v], m);
-                        x[2 * v + 1] = super::kernels::gain(x[2 * v + 1], m);
-                        current[v] = next;
-                    }
-                }
-                for v in 0..batch.count {
-                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-                    state.z[0][0] = f64::from(current[v]);
-                    state.aux[0] = if initialized[v] { 1.0 } else { 0.0 };
-                }
-            }
-            PreparedProcessor::StereoModeller { stereo, .. } => {
-                assert!(stereo.batches());
-                let mut width = [0.0f32; VOICES];
-                let mut pan = [0.0f32; VOICES];
-                let mut delta = [0.0f32; VOICES];
-                let mut initialized = [false; VOICES];
-                for v in 0..batch.count {
-                    let state = &cells[v].as_ref().expect("batch voice")[cell];
-                    (width[v], pan[v]) = (state.aux[0] as f32, state.aux[1] as f32);
-                    initialized[v] = state.aux[2] != 0.0;
-                }
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let [target_width, target_pan] = stereo.targets(parameters, at + i as u64);
-                    for v in 0..batch.count {
-                        let end = batch.ends[2 * v];
-                        if i >= end {
-                            continue;
-                        }
-                        if !initialized[v] {
-                            (width[v], pan[v], initialized[v]) = (target_width, target_pan, true);
-                        }
-                        let (l, r) =
-                            super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
-                        [x[2 * v], x[2 * v + 1]] = super::stereo::balance(l, r, pan[v]);
-                        [width[v], pan[v], delta[v]] = super::stereo::advance(
-                            [width[v], pan[v], delta[v]],
-                            [target_width, target_pan],
-                            i,
-                            end,
-                        );
-                    }
-                }
-                for v in 0..batch.count {
-                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-                    (state.aux[0], state.aux[1], state.aux[2]) = (
-                        f64::from(width[v]),
-                        f64::from(pan[v]),
-                        if initialized[v] { 1.0 } else { 0.0 },
-                    );
-                }
-            }
-            PreparedProcessor::Rectify(mode) => {
-                for x in &mut block[..len] {
-                    x.iter_mut().for_each(|v| *v = mode.apply(*v));
-                }
-            }
-            PreparedProcessor::LiveSaturation(shape) => {
-                for (i, x) in block[..len].iter_mut().enumerate() {
-                    let value = shape.value(parameters, at + i as u64, None) as f32;
-                    x.iter_mut().for_each(|v| *v = super::shaping::saturation(*v, value));
-                }
-            }
-            PreparedProcessor::Saturation(shape) => {
-                for x in &mut block[..len] {
-                    x.iter_mut()
-                        .for_each(|v| *v = super::shaping::saturation(*v, *shape));
-                }
+            PreparedProcessor::Color { color, .. } => {
+                color.process_lanes(cells, cell, batch, block, parameters, at);
             }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
@@ -227,28 +143,6 @@ pub(crate) fn process(
                         std::array::from_fn(|c| [z[0][2 * v + c], z[1][2 * v + c]].map(flush));
                 }
             }
-            PreparedProcessor::PeakingEq(eq) => {
-                if eq.is_flat(parameters, at, len) {
-                    continue;
-                }
-                for v in 0..batch.count {
-                    let end = batch.ends[2 * v];
-                    let mut planar = [[0.; BLOCK]; 2];
-                    for (i, x) in block[..end].iter().enumerate() {
-                        (planar[0][i], planar[1][i]) = (x[2 * v], x[2 * v + 1]);
-                    }
-                    eq.process(
-                        &mut cells[v].as_mut().expect("batch voice")[cell],
-                        parameters,
-                        &mut planar,
-                        end,
-                        at,
-                    );
-                    for (i, x) in block[..end].iter_mut().enumerate() {
-                        (x[2 * v], x[2 * v + 1]) = (planar[0][i], planar[1][i]);
-                    }
-                }
-            }
             PreparedProcessor::StateVariable(filter) => {
                 // Scalar layout: z = [s0, s1], each [left, right].
                 let mut s = [[0.; LANES]; 2];
@@ -269,28 +163,19 @@ pub(crate) fn process(
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }
-            PreparedProcessor::Delay { .. }
-            | PreparedProcessor::Compressor(_)
-            | PreparedProcessor::Decimate(_)
-            | PreparedProcessor::LoFi(_)
-            | PreparedProcessor::LegacyPhaser(_)
-            | PreparedProcessor::KontaktEnhancedCompressor(_)
-            | PreparedProcessor::Phaser(_)
+            PreparedProcessor::TimeMod { .. }
+            | PreparedProcessor::Dynamics(_)
             | PreparedProcessor::Formant(_)
-            | PreparedProcessor::LiveDistortion(_)
             | PreparedProcessor::LiveFormant { .. }
-            | PreparedProcessor::LiveLoFi { .. }
-            | PreparedProcessor::Distortion(_)
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::LadderLP4 { .. }
             | PreparedProcessor::Ar { .. }
-            | PreparedProcessor::LiveFilter(_)
-            | PreparedProcessor::KontaktLegacyEq(_)
+            | PreparedProcessor::Eq(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
-            PreparedProcessor::Reverb(_) | PreparedProcessor::Convolution(_) => {
+            PreparedProcessor::Space(_) => {
                 unreachable!("reverbs and convolutions are bus processors")
             }
         }
@@ -451,91 +336,6 @@ mod tests {
     use super::super::{Biquad, FilterKind};
     use super::*;
 
-    #[test]
-    fn eq_lane_pcm_and_histories_match_scalar_across_flat_and_masked_blocks() {
-        for rate in [8000, 48000, 192000] {
-            for hz in [20., 1000., f64::from(rate) * 0.49] {
-                for width in [0.3, 3.] {
-                    for len in [0usize, 1, 3, 17, BLOCK] {
-                        let initial: Vec<_> = (0..VOICES)
-                            .map(|v| {
-                                let mut state = ProcessorState::default();
-                                state.z = [[v as f64 * 0.003, -0.02], [0.01, v as f64 * -0.004]];
-                                state
-                            })
-                            .collect();
-                        let mut expected_state = initial.clone();
-                        let slab = sampler_pool::Slab::new(initial.into_boxed_slice(), 1);
-                        let mut cells: Cells<'_> = std::array::from_fn(|v| Some(slab.claim(v)));
-                        let batch = Batch {
-                            count: VOICES,
-                            expressions: [None; VOICES],
-                            ends: std::array::from_fn(|k| len.saturating_sub(k / 2)),
-                            len,
-                        };
-                        let mut bank = FilterBank::new(&[], 0).unwrap();
-                        for gain in [12., 0., -12.] {
-                            let eq = super::super::PeakingEq {
-                                frequency: super::super::Parameter::Constant(
-                                    ((hz / 20f64).log10() / 3.).clamp(0., 1.),
-                                ),
-                                bandwidth: super::super::Parameter::Constant(
-                                    ((width - 0.3f64) / 2.7).clamp(0., 1.),
-                                ),
-                                gain_db: super::super::Parameter::Constant(gain),
-                            }
-                            .compile(rate, &mut Vec::new())
-                            .unwrap();
-                            let mut block: LaneBlock = std::array::from_fn(|i| {
-                                std::array::from_fn(|k| ((i + k) as f64 * 0.137).sin() * 0.2)
-                            });
-                            let mut expected = block;
-                            for v in 0..VOICES {
-                                let end = batch.ends[2 * v];
-                                let mut planar = [[0.; BLOCK]; 2];
-                                for i in 0..end {
-                                    (planar[0][i], planar[1][i]) =
-                                        (expected[i][2 * v], expected[i][2 * v + 1]);
-                                }
-                                eq.process(&mut expected_state[v], &[], &mut planar, end, 0);
-                                for i in 0..end {
-                                    (expected[i][2 * v], expected[i][2 * v + 1]) =
-                                        (planar[0][i], planar[1][i]);
-                                }
-                            }
-                            process(
-                                &[PreparedProcessor::PeakingEq(eq)],
-                                0,
-                                &mut cells,
-                                &batch,
-                                &mut block,
-                                &[],
-                                0,
-                                &mut bank,
-                            );
-                            assert_eq!(
-                                block.map(|f| f.map(f64::to_bits)),
-                                expected.map(|f| f.map(f64::to_bits))
-                            );
-                            for v in 0..VOICES {
-                                let actual = &cells[v].as_ref().unwrap()[0];
-                                assert_eq!(
-                                    actual.z.map(|c| c.map(f64::to_bits)),
-                                    expected_state[v].z.map(|c| c.map(f64::to_bits))
-                                );
-                                assert_eq!(
-                                    actual.aux.map(f64::to_bits),
-                                    expected_state[v].aux.map(f64::to_bits)
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Frozen 608a20a1 arithmetic: independent of the shared sample helper.
     fn reference(filter: Biquad, x: f64, z: [f64; 2]) -> (f64, [f64; 2]) {
         let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
         let y = b0 * x + z[0];
@@ -634,8 +434,7 @@ mod tests {
                                                 tempo: 120.0,
                                                 bank: &mut bank,
                                                 expression: None,
-                                                reverbs: &mut [],
-                                                convolutions: &mut [],
+                                                spaces: &mut [],
                                             },
                                             None,
                                         );

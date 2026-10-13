@@ -241,6 +241,25 @@ impl Group {
         Ok(state)
     }
 
+    /// Replace the group's one `BParSrcMode` record with another complete
+    /// record (e.g. a snapshot's, Kontakt8131 0x140cff070 reads it into the
+    /// same group source state). The private rack, source flag and everything
+    /// after the record are retained; both records must parse.
+    pub fn set_source_record(&mut self, record: &[u8]) -> Result<(), Error> {
+        let (mut reader, _) = self.source_reader()?;
+        let start = self.0.private_data.len() - reader.get_ref().len() + reader.position() as usize;
+        let old = super::BParSrcMode::read(&mut reader)?;
+        let mut check = Cursor::new(record);
+        let new = super::BParSrcMode::read(&mut check)?;
+        if usize::from(new.bytes) != record.len() {
+            return Err(Error::Static("Source record has trailing bytes"));
+        }
+        self.0
+            .private_data
+            .splice(start..start + usize::from(old.bytes), record.iter().copied());
+        Ok(())
+    }
+
     pub fn wavetable_source(&self) -> Result<Option<WavetableSource>, Error> {
         if self.source_identity()?.mode != 9 {
             return Ok(None);
