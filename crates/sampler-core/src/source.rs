@@ -994,6 +994,19 @@ impl Cursor {
             })
     }
 
+    /// Analysis clock of the time-stretch source (see
+    /// [`StretchEngine::render_with`]): the source position under the cursor,
+    /// loops, start/end and release exits already resolved, after the cursor
+    /// moved `elapsed` output frames on at its step (the time axis; pitch lives
+    /// in the engine). `None` once the traversal has ended. A forward read:
+    /// reverse playback is not a stretch mode yet.
+    pub(super) fn analysis(&mut self, elapsed: usize) -> Option<f64> {
+        for _ in 0..elapsed {
+            self.advance();
+        }
+        Some(self.index(i128::from(self.position))? as f64 + self.fraction)
+    }
+
     fn advance(&mut self) {
         if self.wavetable.is_some() {
             let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.))
@@ -2274,6 +2287,77 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
+mod time_machine;
+
+/// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
+/// sampler voice: scaled by the voice envelope (when `enveloped`), `gain` and
+/// the channel `gains`.
+pub(super) fn stretch_mix(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    output: &mut [Frame],
+    gain: f32,
+    gains: [f32; 2],
+    enveloped: bool,
+) -> usize {
+    let mut raw = [[0.; 2]; 256];
+    let mut done = 0;
+    while done < output.len() && !(enveloped && voice.envelope.done()) {
+        let mut n = (output.len() - done).min(raw.len());
+        if enveloped {
+            n = n.min(voice.envelope.remaining());
+        }
+        let got = stretch_block(engine, voice, pcm, &mut raw[..n]);
+        for (out, frame) in output[done..done + got].iter_mut().zip(&raw) {
+            let amplitude = if enveloped { voice.envelope.next() * gain } else { gain };
+            for c in 0..2 {
+                out[c] += frame[c] * amplitude * gains[c];
+            }
+        }
+        done += got;
+        if got < n {
+            break;
+        }
+    }
+    done
+}
+
+/// One block of a time-stretch voice: the cursor is the analysis clock, the
+/// engine plays the pitch. The first block configures and starts the engine
+/// (pre-roll included). A frozen voice (speed 0) holds the clock still.
+pub(super) fn stretch_block(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    out: &mut [Frame],
+) -> usize {
+    let Some(link) = voice.stretch.as_mut() else {
+        return 0;
+    };
+    let frozen = link.spec.speed == 0.;
+    let params = StretchParams {
+        advance: if frozen { 0. } else { voice.cursor.step() },
+        step: voice.stretch_step,
+        smooth: link.spec.smooth,
+        grain_ms: link.spec.grain_ms,
+    };
+    if !link.started {
+        engine.configure(link.spec.mode, link.spec.hq);
+        let Some(from) = voice.cursor.analysis(0) else {
+            return 0;
+        };
+        engine.start_clocked(pcm, link.frames, from, params);
+        link.started = true;
+    }
+    let cursor = &mut voice.cursor;
+    engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }))
+}
+#[allow(unused_imports)] // wired by the voice source in a later commit
+pub(crate) use time_machine::{
+    Engine as StretchEngine, Mode as StretchMode, Params as StretchParams, Region as StretchRegion,
+    Spec as StretchSpec, VOICES as STRETCH_VOICES,
+};
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
 /// Largest window `render_run` gathers across storage boundaries.
@@ -2384,6 +2468,45 @@ impl ReadFrames for PagedFrames<'_> {
             at = end;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod stretch_clock_tests {
+    use super::*;
+
+    #[test]
+    fn a_looped_cursor_clocks_the_stretch_engine_past_the_end_of_the_sample() {
+        let src: Vec<Frame> = (0..8000)
+            .map(|n| {
+                let v = (std::f32::consts::TAU * 441. * n as f32 / 48000.).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let mut cursor = Playback {
+            loop_range: Some(Loop {
+                start: 2000,
+                end: 6000,
+                mode: LoopMode::Continuous,
+                shape: LoopShape::Wrap,
+                passes: None,
+            }),
+            ..Default::default()
+        }
+        .cursor(8000, 48000, 48000)
+        .unwrap();
+        let params = StretchParams::default();
+        let mut engine = StretchEngine::new(StretchMode::TimeMachine2, false, 48000);
+        engine.start_clocked(&src[..], src.len(), 0., params);
+        let mut block = [[0.; 2]; 480];
+        let mut loudest = 0f32;
+        for _ in 0..200 {
+            // 96,000 output frames: far past the 8,000-frame sample.
+            let n = engine.render_with(&src[..], params, &mut block, |elapsed| cursor.analysis(elapsed));
+            assert_eq!(n, block.len());
+            loudest = block.iter().flatten().fold(loudest, |m, v| m.max(v.abs()));
+        }
+        assert!(loudest > 0.2 && !cursor.done());
     }
 }
 

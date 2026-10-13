@@ -118,6 +118,21 @@ fn native_parameter(
 }
 
 /// Port v1 group settings: physical source lanes feed the oscillator every block.
+fn stretch_spec(t: ir::TimeStretch) -> crate::source::StretchSpec {
+    use crate::source::StretchMode;
+    crate::source::StretchSpec {
+        mode: match t.kind {
+            ir::StretchKind::TimeMachine1 => StretchMode::TimeMachine,
+            ir::StretchKind::TimeMachine2 => StretchMode::TimeMachine2,
+            ir::StretchKind::TimeMachinePro => StretchMode::TimeMachinePro,
+        },
+        hq: t.high_quality,
+        speed: t.speed,
+        smooth: t.smooth,
+        grain_ms: t.grain_ms,
+    }
+}
+
 fn wavetable_lanes(
     instrument: &ir::Instrument,
     group: usize,
@@ -556,6 +571,13 @@ pub fn lower_with(
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
     plan.wavetable_controls = wave_controls.into_boxed_slice();
+    if instrument.groups.iter().any(|g| g.time_stretch.is_some()) {
+        plan.stretch_groups = instrument
+            .groups
+            .iter()
+            .map(|g| g.time_stretch.map(stretch_spec))
+            .collect();
+    }
     if !instrument.groups.is_empty() {
         // Group membership and authored values for script group edits
         // (`purge_group`, `set_engine_par`); selection is unaffected.
