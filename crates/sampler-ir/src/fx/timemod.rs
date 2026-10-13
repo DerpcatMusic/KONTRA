@@ -85,11 +85,27 @@ pub enum Native {
     /// when `unit` > 1e-9 the delay is `unit * 60 / tempo * time * 1000` ms
     /// (getter 0x140a74bf0).
     LegacyDelay { time: f32, unit: f32, feedback: f32, damping: f32, pan: f32 },
-    /// Kontakt Legacy Flanger (0x12): 4096-frame ring, 4-point Lagrange read,
-    /// negative feedback, LFO excursion `depth * 50` frames around `color` ms
-    /// (audio 0x140aa2350, setter 0x1409637f0). Rate and phase come from
-    /// [`Config::lfo`] (phase already scaled by 0.25).
-    LegacyFlanger { color: f32, depth: f32, feedback: f32 },
+    /// Kontakt legacy modulated delay, shared by Legacy Flanger (0x12, audio
+    /// 0x140aa2350, setter 0x1409637f0) and Legacy Chorus (0x11, audio
+    /// 0x140aa0510, setter 0x140963970): a 4096-frame ring (prepare
+    /// 0x140960f00) read with 4-point Lagrange `base + 1 - lfo * excursion`
+    /// frames behind the write, where `base = (int)(base_ms * rate * 0.001)`
+    /// and the excursion is pulled to `base - 1` when it reaches `base`.
+    /// Rate and the right channel's phase come from [`Config::lfo`] (phase
+    /// already scaled by 0.25).
+    LegacyModDelay {
+        base_ms: f32,
+        /// LFO excursion in frames before the clamp (Flanger `depth * 50`,
+        /// Chorus `depth * 75`).
+        excursion: f64,
+        /// Head output subtracted from the ring write (Flanger `feedback * 0.95`).
+        feedback: f32,
+        /// Chorus: a second head at `base >> 1` on its own LFO 0.015 cycles
+        /// ahead, summed with the first.
+        second_head: bool,
+        /// One-pole `y += (head - y) * k` on each head (Chorus 0.95; 0 = off).
+        smoothing: f32,
+    },
 }
 
 /// Modulated multi-tap delay line.
@@ -268,10 +284,16 @@ impl Config {
                     return Err("legacy delay");
                 }
             }
-            if let Native::LegacyFlanger { color, depth, feedback } = l.native {
+            if let Native::LegacyModDelay { base_ms, excursion, feedback, smoothing, .. } = l.native {
                 let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
-                if !(color.is_finite() && (0. ..=5.).contains(&color) && unit_interval(depth) && unit_interval(feedback)) {
-                    return Err("legacy flanger");
+                if !(base_ms.is_finite()
+                    && (0. ..=5.).contains(&base_ms)
+                    && excursion.is_finite()
+                    && (0. ..=75.).contains(&excursion)
+                    && unit_interval(feedback)
+                    && unit_interval(smoothing))
+                {
+                    return Err("legacy modulated delay");
                 }
             }
             for v in [l.voice_phase, l.voice_spread, l.feedback.drive] {
