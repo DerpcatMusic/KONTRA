@@ -587,6 +587,7 @@ pub fn lower_with(
                 )
             })
             .and_then(|p| p.with_group_params(params))
+            .and_then(|p| p.with_group_mutes(instrument.groups.iter().map(|g| g.muted).collect()))
             .map_err(core(Stage::Regions, "groups"))?;
     }
     // Only source modulators that actually own an amplitude envelope get lanes.

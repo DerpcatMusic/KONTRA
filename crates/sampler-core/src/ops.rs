@@ -1531,24 +1531,36 @@ impl Runtime {
             } => {
                 let plan = self.behavior_plan(owner)?;
                 let group = self.reg(id, group)?;
-                if write {
-                    self.write_param(
-                        plan,
-                        crate::ParamScope::Group,
-                        group,
-                        crate::ModTarget::Attenuate,
-                        if self.reg(id, local)? == 0 { 0 } else { 1000 },
-                        false,
-                    )?;
+                let dense = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .prepared
+                    .group_source_ids
+                    .iter()
+                    .position(|&g| i64::from(g) == group);
+                let dense = if self.plans.get(plan.0).unwrap().prepared.group_source_ids.is_empty() {
+                    usize::try_from(group).ok()
                 } else {
-                    let value = self.read_param(
-                        plan,
-                        crate::ParamScope::Group,
-                        group,
-                        crate::ModTarget::Attenuate,
-                    )?;
-                    self.set_reg(id, local, i64::from(value != 0))?;
-                }
+                    dense
+                };
+                let value = if let Some(group) = dense.and_then(|g| u32::try_from(g).ok()) {
+                    if write {
+                        let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                        let instance = self.plans.get(plan.0).unwrap().prepared.programs
+                            [callback.program]
+                            .script_instance
+                            .unwrap_or(crate::ScriptInstanceId(0));
+                        let reload = self.reg(id, local)? != 0;
+                        self.request_group_residency(plan, group, reload, instance)
+                            .map_or(-1, i64::from)
+                    } else {
+                        i64::from(self.group_resident(plan, group).unwrap_or(false))
+                    }
+                } else {
+                    if write { -1 } else { 0 }
+                };
+                self.set_reg(id, local, value)?;
             }
             Op::Store { key, local, write } => {
                 let mut k = [0; STORE_KEY];

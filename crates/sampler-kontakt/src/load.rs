@@ -209,6 +209,15 @@ pub fn load_read(
             }
             .at(crate::Stage::SampleResolve)
         })?);
+        // Keep a reopenable source recipe, never a backup of decoded PCM.
+        let source = samples.source(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
+        let length = pcm.last().unwrap().frame_count();
+        pcm.last().unwrap().set_residency_loader(move || {
+            let mut reader = crate::SampleReader::open(&source).map_err(|_| sampler_core::Error::NotReady)?;
+            let mut frames = vec![[0.; 2]; length];
+            reader.read(0, &mut frames).map_err(|_| sampler_core::Error::NotReady)?;
+            Ok(vec![(0, frames.into_boxed_slice())])
+        }).map_err(|e| LoadError::Invalid { path: sample.clone(), reason: e.to_string() })?;
     }
     if canceled() {
         return Err(LoadError::Canceled);

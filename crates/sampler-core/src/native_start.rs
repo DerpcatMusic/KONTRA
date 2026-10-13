@@ -57,6 +57,16 @@ impl Prepared {
     }
 
     pub(super) fn native_group_allowed(&self, group: u32, state: &State) -> bool {
+        if self
+            .group_mutes
+            .get(group as usize)
+            .is_some_and(|m| m.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return false;
+        }
+        if self.residency.as_ref().is_some_and(|r| !r.allowed(group)) {
+            return false;
+        }
         let Some(rows) = self.native_start.get(group as usize) else {
             return true;
         };

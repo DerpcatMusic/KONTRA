@@ -516,6 +516,18 @@ impl StreamCache {
         self.request(asset, page, deadline)
     }
 
+    /// Cancel every cached/in-flight page of a deliberately unowned asset.
+    pub(crate) fn invalidate_asset(&mut self, asset: AssetId) {
+        for slot in 0..self.entries.len() {
+            if let Some(entry) = &self.entries[slot] {
+                if entry.request.key.asset == asset {
+                    let key = entry.request.key;
+                    let _ = self.invalidate(key);
+                }
+            }
+        }
+    }
+
     /// Explicitly invalidate one page, including a failed request before retry.
     /// An in-flight result becomes stale; ready storage returns to the worker.
     pub fn invalidate(&mut self, key: PageKey) -> Result<bool, StreamError> {
