@@ -1404,6 +1404,10 @@ impl Lowering<'_> {
                     ModTarget::SourcePhase(source_of(target, &mut program)? as u32),
                     d,
                 ),
+                (ir::Target::SourceRate(target), ir::Depth::Normalized(d)) => (
+                    ModTarget::SourceRate(source_of(target, &mut program)? as u32),
+                    d,
+                ),
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,

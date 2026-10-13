@@ -1433,6 +1433,10 @@ pub enum Target {
     Control(ControlRef),
     /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
     SourcePhase(ModulatorRef),
+    /// Rate of a program-local LFO, added to its saved rate as `depth × source`
+    /// on Kontakt's normalized frequency lane (law ID26, see sampler-core
+    /// `CompiledTarget::SourceRate`). Depth is `Normalized`.
+    SourceRate(ModulatorRef),
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,

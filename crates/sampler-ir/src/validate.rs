@@ -530,10 +530,10 @@ impl Instrument {
                     })?;
                 }
                 Target::Control(control) => check.exists(Reference::Control(control.0))?,
-                Target::SourcePhase(source) => {
+                Target::SourcePhase(source) | Target::SourceRate(source) => {
                     check.exists(Reference::Modulator(source.0))?;
                     if !matches!(self.modulators[source.0].source, ModulationSource::Lfo(_)) {
-                        check.within(f64::NAN, 0.0..=0.0, "phase destination must be an LFO")?;
+                        check.within(f64::NAN, 0.0..=0.0, "phase or rate destination must be an LFO")?;
                     }
                 }
                 Target::Amplitude
