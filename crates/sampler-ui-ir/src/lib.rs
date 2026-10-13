@@ -139,6 +139,9 @@ pub struct Widget {
     /// Vertical offset of the text inside the widget, in pixels (KSP
     /// `TEXTPOS_Y`); `None` centres it.
     pub text_y: Option<i32>,
+    /// Shift a button/switch caption while pressed (KSP's stock behavior).
+    /// Sources without this behavior leave it false.
+    pub text_shift_on_press: bool,
     pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
@@ -195,6 +198,7 @@ impl Widget {
             binding: Binding::None,
             text: String::new(),
             text_y: None,
+            text_shift_on_press: false,
             value_y: None,
             value_text: None,
             tooltip: String::new(),

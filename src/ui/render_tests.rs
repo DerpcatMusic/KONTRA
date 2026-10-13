@@ -242,3 +242,80 @@ fn slider_with_a_knob_picture_draws_as_the_vector_knob() {
         blake3::hash(&paint("declare ui_slider $x(0,100)")),
     );
 }
+
+#[test]
+fn skinned_button_caption_keeps_its_text_and_state_ink() {
+    let mut face = face(Kind::Button {momentary:false});
+    face.source = ir::Source::Ksp {slot:0};
+    face.widgets[0].text = "Caption".into();
+    face.assets.push(ir::Asset {path:"button.png".into(),kind:ir::AssetKind::Image(Default::default())});
+    face.widgets[0].images.push(ir::ImageUse {role:ir::Role::Strip,asset:ir::AssetRef(0),frame:None});
+    let mut assets = Assets::default();
+    assets.sync(&face,Presentation::Bitmap,|_| Some(Arc::new(Picture::new(vec![
+        Arc::new(moose::mui::mui::scene::Image::rgba(2,2,vec![20,20,20,255].repeat(4)).unwrap())
+    ]))));
+    let mut ui = super::super::theme::ui();
+    let mut values = Values::default();
+    let mut input = InputState::default();
+    let paint = |ui:&mut Ui,face:&Interface,input:&mut InputState,values:&mut Values| {
+        for _ in 0..3 {
+            let root = view_state(ui,"",face,PageRef(0),&assets,Presentation::Bitmap,1.,values,input);
+            ui.frame(root,Some(Size::new(160.,120.)),Input::default(),1./60.).unwrap();
+        }
+        super::super::tests::pixels(ui,160,120)
+    };
+    let caption = paint(&mut ui,&face,&mut input,&mut values);
+    assert!(ui.scene().unwrap().paint.iter().any(|p|p.text.as_ref().is_some_and(|t|!t.glyphs.is_empty())),
+        "a bitmap backdrop cannot erase the authored caption");
+    face.widgets[0].text.clear();
+    assert_ne!(caption,paint(&mut ui,&face,&mut input,&mut values));
+    face.widgets[0].text = "Caption".into();
+    face.styles[0].color = ir::Rgba::rgb(0xff0011);
+    assert_ne!(caption,paint(&mut ui,&face,&mut input,&mut values),"authored font ink must reach the skin");
+}
+
+#[test]
+fn menu_responsive_font_uses_popup_state_instead_of_selected_numeric_value() {
+    let mut face = face(Kind::Menu {items:vec![
+        ir::MenuItem {text:"Choice".into(),value:0,visible:true},
+        ir::MenuItem {text:"Choice".into(),value:42,visible:true},
+    ]});
+    face.widgets[0].text.clear();
+    let mut on = face.styles[0].clone();
+    on.color = ir::Rgba::rgb(0xff0011);
+    face.styles.push(on);
+    face.widgets[0].state_styles[1] = Some(ir::StyleRef(1));
+    let closed = pixels(&face);
+    face.widgets[0].initial_value = 42.;
+    assert_eq!(closed,pixels(&face),"a different semantic menu value cannot select the ON font");
+    let mut open = InputState {menu:Some(WidgetRef(0)),..Default::default()};
+    let opened = pixels_state(&face,&mut open);
+    assert_ne!(closed,opened,"the open popup uses the authored ON state");
+}
+
+#[test]
+fn button_press_caption_shift_obeys_disable_text_shifting() {
+    let held_origin = |disable:i32| {
+        let source = format!("on init\nmake_perfview\nset_ui_width_px(160)\nset_ui_height_px(120)\ndeclare ui_button $b\nset_text($b,\"Caption\")\nmove_control_px($b,10,10)\nset_control_par(get_ui_id($b),$CONTROL_PAR_WIDTH,100)\nset_control_par(get_ui_id($b),$CONTROL_PAR_HEIGHT,80)\nset_control_par(get_ui_id($b),$CONTROL_PAR_DISABLE_TEXT_SHIFTING,{disable})\nend on");
+        let script = sampler_ksp::compile(&source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let face = resolved(&script.ui(&|_|None).unwrap());
+        assert!(face.unsupported.is_empty(),"the press-shift property must project into UI IR");
+        let mut ui = super::super::theme::ui();
+        let mut values = Values::default(); let mut state = InputState::default();
+        let mut origins = Vec::new();
+        for down in [false,true] {
+            for _ in 0..3 {
+                let root = view_state(&mut ui,"",&face,PageRef(0),&Assets::default(),Presentation::Bitmap,1.,&mut values,&mut state);
+                ui.frame(root,Some(Size::new(160.,120.)),Input {pointer:PointerInput {pos:Some(Point::new(60.,50.)),
+                    buttons:if down {Buttons::PRIMARY} else {Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();
+            }
+            assert_eq!(ui.get("ir-0").held,down);
+            origins.push(ui.scene().unwrap().paint.iter().find_map(|p|p.text.as_ref().map(|t|t.origin)).unwrap());
+        }
+        origins
+    };
+    let fixed = held_origin(1);
+    assert_eq!(fixed[0],fixed[1]);
+    let shifted = held_origin(0);
+    assert_eq!(shifted[1],Point::new(shifted[0].x+1.,shifted[0].y+1.));
+}

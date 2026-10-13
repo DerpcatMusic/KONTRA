@@ -902,7 +902,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         for c in &view.controls {
             let Some(id) = ui_id(&c.name) else { continue };
             for (name, value) in &c.properties {
-                let Some(par) = b::control_par(name) else {
+                let Some(par) = b::control_par(name)
+                    .or_else(|| (name == "table_steps_shown").then_some(TABLE_STEPS_SHOWN)) else {
                     self.warn(
                         span,
                         format!("{}: unknown performance view property {name}", c.name),
@@ -916,6 +917,22 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     },
                     (_, Value::Int(n)) => V::I(*n),
                     (_, Value::Real(r)) => V::R(*r),
+                    (_, Value::Text(t)) if name.starts_with("$CONTROL_PAR_FONT_TYPE") => {
+                        // NCKP uses the same custom-font identity as get_font_id;
+                        // resolve after any fonts registered earlier in on init.
+                        if let Ok(id) = t.parse::<i32>() { V::I(id) }
+                        else if t.is_empty() || t.contains(['/', '\\']) {
+                            self.warn(span, "invalid bitmap font resource name; using the default font");
+                            V::I(0)
+                        } else {
+                            let fonts = &mut self.st.model.interface.fonts;
+                            let index = fonts.iter().position(|f| f == t).unwrap_or_else(|| {
+                                fonts.push(t.clone());
+                                fonts.len() - 1
+                            });
+                            V::I(26 + index as i32)
+                        }
+                    }
                     (_, Value::Text(t)) => V::S(t.clone()),
                 };
                 self.set_property(id, par, value, span);

@@ -1193,7 +1193,10 @@ pub(super) fn widget_state(
     let mut v = control
         .and_then(|c| values.get(&c).copied())
         .unwrap_or(initial);
-    let state = usize::from(v > 0.5)
+    // KSP responsive menu "on" is the open popup, not its selected value.
+    // Port the state selection from v1 0cb7a8a0:src/ui/perf_view.rs.
+    let on = if matches!(wd.kind, Kind::Menu { .. }) { input.menu == Some(n) } else { v > 0.5 };
+    let state = usize::from(on)
         + if ui.get(id.as_str()).held {
             2
         } else if hovered {
@@ -1213,7 +1216,7 @@ pub(super) fn widget_state(
     let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
-        Some(s) if !own_face && s.color.a > 0 => Fill::from(colour(s.color)),
+        Some(s) if (bitmap || !own_face) && s.color.a > 0 => Fill::from(colour(s.color)),
         _ if !own_face && light_under(face, assets, n) => Fill::from(Color::srgb(0.1, 0.1, 0.1)),
         _ => Fill::from(Role::Ink),
     };
@@ -1230,6 +1233,13 @@ pub(super) fn widget_state(
             None,
             false,
         )
+    };
+    let button_caption = || {
+        let shift = if wd.text_shift_on_press && ui.get(id.as_str()).held { scale } else { 0. };
+        super::render_art::words(
+            if wd.hide.title { "" } else { &wd.text }, style, assets, bitmap,
+            ink.clone(), w, h, scale, wd.text_y, false,
+        ).offset(shift, shift)
     };
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
@@ -1371,11 +1381,11 @@ pub(super) fn widget_state(
             }
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
-                Some(p) => block(w, h).radius(0).fill(
+                Some(p) => stack![block(w, h).radius(0).fill(
                     picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len())))
                         .unwrap_or(Fill::from(Role::Field)),
-                ),
-                None => row![words(wd.text.clone())]
+                ), button_caption()],
+                None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
@@ -1390,11 +1400,11 @@ pub(super) fn widget_state(
             }
             let on = v > 0.5;
             match state_picture(on) {
-                Some(p) => block(w, h).radius(0).fill(
+                Some(p) => stack![block(w, h).radius(0).fill(
                     picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.len())))
                         .unwrap_or(Fill::from(Role::Field)),
-                ),
-                None => row![words(wd.text.clone())]
+                ), button_caption()],
+                None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
