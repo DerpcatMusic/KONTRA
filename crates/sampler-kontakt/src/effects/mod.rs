@@ -301,29 +301,17 @@ pub(crate) enum Params {
     /// size, damping, modulation, diffusion, predelay, high cut, low shelf,
     /// stereo (`$ENGINE_PAR_RV2_*` order).
     Reverb([f32; 10]),
+    /// `BParFXReverb`, the legacy Reverb: predelay, size, stereo, colour, damping.
+    LegacyReverb([f32; 5]),
+    /// `BParFXPlateReverb`: decay, low shelf, high damp, predelay, stereo.
+    Plate([f32; 5]),
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
     /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
     Fields(Vec<ni_file::kontakt::objects::EffectField>),
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
-pub(crate) struct Convolution {
-    /// Sample-rate decimation factor (1 or negative: none).
-    pub decimation: f32,
-    pub predelay_ms: f32,
-    /// Early and late parts: length ratio, low cut Hz, high cut Hz.
-    pub early: [f32; 3],
-    pub late: [f32; 3],
-    /// Early/late crossover as a fraction of the response.
-    pub xpoint: f32,
-    /// Reverse, auto gain, preserve length, bypass latency compensation,
-    /// volume envelope.
-    pub flags: [bool; 5],
-    pub curve_x: Vec<f32>,
-    pub curve_db: Vec<f32>,
-    pub ir_index: i32,
-}
+pub(crate) use space::Convolution;
 
 impl Slot {
     fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
@@ -391,6 +379,13 @@ impl Slot {
                     *x = r.f32()?;
                 }
                 Params::Reverb(v)
+            }
+            0x15 | 0x57 => {
+                if self.version != if self.module == 0x15 { 0x50 } else { 0x10 } {
+                    return None;
+                }
+                let v = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+                if self.module == 0x15 { Params::LegacyReverb(v) } else { Params::Plate(v) }
             }
             0x16 => {
                 let decimation = r.f32()?;
@@ -1245,26 +1240,28 @@ pub(crate) fn chain_with(
                     }));
                 combined = gain;
             }
-            Some(Params::Reverb(values)) if scope == Scope::Bus => {
+            Some(p @ (Params::Reverb(_) | Params::LegacyReverb(_) | Params::Plate(_))) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors
-                    .push(sampler_ir::Processor::Reverb(reverb(values, &mut notes)));
+                out.processors.push(sampler_ir::Processor::Space(match p {
+                    Params::Reverb(v) => space::galois(v, &mut notes),
+                    Params::LegacyReverb(v) => space::legacy(v, &mut notes),
+                    Params::Plate(v) => space::plate(v, &mut notes),
+                    _ => unreachable!(),
+                }));
                 combined = gain;
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
                 let source = impulses.as_deref_mut().expect("checked above");
-                match convolution(c, source, &mut notes) {
+                match space::convolution(c, source, &mut notes) {
                     Ok(impulse) => {
                         flush(&mut combined, &mut filters, &mut out);
-                        out.processors.push(sampler_ir::Processor::Convolution {
-                            impulse,
-                            dry: if mix.is_some() {
-                                0.0
-                            } else {
-                                f64::from(fx.dry_level)
-                            },
-                            wet: if mix.is_some() { 1.0 } else { wet },
-                        });
+                        out.processors.push(sampler_ir::Processor::Space(
+                            sampler_ir::fx::space::Config::convolution(
+                                impulse,
+                                if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                                if mix.is_some() { 1.0 } else { wet },
+                            ),
+                        ));
                     }
                     Err(why) => {
                         notes.push((
@@ -1374,7 +1371,7 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                format!("{name} v{:#x} len {}", fx.version, fx.public.len()),
+                format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 sampler_ir::Reason::NotModeled,
             ));
         }
@@ -1386,144 +1383,6 @@ pub(crate) fn chain_with(
     }
     flush(&mut combined, &mut filters, &mut out);
     out
-}
-
-/// The slot's impulse response, shaped as Kontakt's controls ask, in `impulses`.
-/// What it cannot shape is reported in `notes`.
-fn convolution(
-    c: &Convolution,
-    impulses: &mut Impulses,
-    notes: &mut Notes,
-) -> Result<sampler_ir::ImpulseRef, String> {
-    use sampler_ir::Reason::NotModeled;
-    let (rate, frames) = (impulses.load)(c.ir_index)?;
-    if frames.is_empty() || rate == 0 {
-        return Err("the impulse response is empty".into());
-    }
-    let mut channels: [Vec<f32>; 2] = std::array::from_fn(|ch| {
-        let mut x: Vec<f32> = frames.iter().map(|f| f[ch]).collect();
-        if c.flags[0] {
-            x.reverse();
-        }
-        x
-    });
-    if c.early[0] != 1.0 || c.late[0] != 1.0 {
-        notes.push((
-            "IR size".into(),
-            format!("early {} late {}", c.early[0], c.late[0]),
-            NotModeled,
-        ));
-    }
-    if c.early[1..] != c.late[1..] || c.late[1] > 20.0 || c.late[2] < 20_000.0 {
-        notes.push((
-            "IR early/late filtering".into(),
-            format!("early {:?} late {:?} Hz", &c.early[1..], &c.late[1..]),
-            NotModeled,
-        ));
-    }
-    if c.decimation > 1.0 {
-        notes.push((
-            "IR sample-rate decimation".into(),
-            c.decimation.to_string(),
-            NotModeled,
-        ));
-    }
-    if c.flags[4] {
-        let ok = c.curve_x.len() == 8 && c.curve_db.len() == 8;
-        if ok {
-            // Eight knots, sorted in time, interpolated in amplitude.
-            let mut knots: Vec<(f32, f32)> = c
-                .curve_x
-                .iter()
-                .zip(&c.curve_db)
-                .map(|(x, db)| (*x, (db * 0.05 * std::f32::consts::LN_10).exp()))
-                .collect();
-            knots.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let len = channels[0].len();
-            for pair in knots.windows(2) {
-                let at = |x: f32| (len as f32 * x.clamp(0.0, 1.0) + 0.5) as usize;
-                let (start, end) = (at(pair[0].0), at(pair[1].0));
-                for n in start..end.min(len) {
-                    let g = pair[0].1
-                        + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
-                    channels.iter_mut().for_each(|ch| ch[n] *= g);
-                }
-            }
-        } else {
-            notes.push((
-                "IR volume envelope".into(),
-                "not eight knots".into(),
-                NotModeled,
-            ));
-        }
-    }
-    let pre = (c.predelay_ms.max(0.0) * 0.001 * rate as f32) as usize;
-    for ch in &mut channels {
-        ch.splice(0..0, std::iter::repeat_n(0.0, pre));
-    }
-    if c.flags[1] {
-        // NI Effect Reference / Convolution Auto Gain: CConvolver 0x1419b31f0..3267
-        // accumulates f32 squares in f64, then divides/square-roots in f32.
-        let energy = channels
-            .iter()
-            .map(|ch| ch.iter().map(|x| f64::from(x * x)).sum::<f64>())
-            .fold(0.0, f64::max);
-        let gain = if energy > f64::from(0.001f32) {
-            (0.5 / energy as f32).sqrt().min(2.0)
-        } else {
-            1.0
-        };
-        channels.iter_mut().flatten().for_each(|x| *x *= gain);
-    }
-    let [left, right] = channels;
-    impulses.store.push(sampler_ir::Impulse {
-        rate,
-        left,
-        right,
-        asset: None,
-    });
-    if let Some(recipes) = impulses.recipes.as_deref_mut() {
-        recipes.push(c.clone());
-    }
-    Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
-}
-
-/// Kontakt's normalized Reverb values as physical settings. Time, predelay,
-/// high cut and low shelf follow the reference display; size, damping and
-/// diffusion are still v1's fits.
-fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
-    let [
-        room,
-        time,
-        size,
-        damping,
-        modulation,
-        diffusion,
-        predelay,
-        high_cut,
-        low_shelf,
-        stereo,
-    ] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
-    notes.push((
-        "reverb algorithm".into(),
-        format!("normalized {v:?}"),
-        sampler_ir::Reason::UnknownLaw,
-    ));
-    sampler_ir::Reverb {
-        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
-        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
-        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
-        size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: modulation * 0.0015,
-        diffusion: 0.75 * diffusion,
-        predelay_seconds: predelay * 0.25,
-        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
-        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
-        // Low Shelf shows 0 to -12 dB, linear.
-        low_shelf_db: -12.0 * low_shelf,
-        width: stereo,
-    }
 }
 
 /// An instrument bus (`$NI_BUS_OFFSET` + `index`) with the groups routed to it.
@@ -3289,10 +3148,12 @@ mod tests {
     #[test]
     fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
         let r = |time: f32, cut: f32, shelf: f32| {
-            reverb(
+            space::galois(
                 &[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0],
                 &mut Vec::new(),
             )
+            .network
+            .unwrap()
         };
         // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
         assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
@@ -3629,7 +3490,7 @@ mod tests {
         assert_eq!(v[0], 1.0);
         assert_eq!(v[1], 0.25);
         let mut notes = Vec::new();
-        let size = reverb(&v, &mut notes).size;
+        let size = space::galois(&v, &mut notes).network.unwrap().size;
         assert_eq!(size, 1.0, "hall keeps the full size factor");
         hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
         assert!(hall.params().is_none(), "Kontakt throws on room type 2");
@@ -3683,7 +3544,7 @@ mod tests {
         let chain = &instrument.chains[instrument.buses[1].chain.unwrap().0];
         assert!(matches!(
             chain.pre_amplitude[..],
-            [ir::Processor::Reverb(_)]
+            [ir::Processor::Space(_)]
         ));
         instrument.validate().unwrap();
         // A physical return at slot 3 remains addressable even when the
@@ -3815,7 +3676,7 @@ pub(crate) fn restore_impulse(
             .take()
             .ok_or_else(|| "impulse already consumed".to_owned())
     };
-    convolution(
+    space::convolution(
         c,
         &mut Impulses {
             store: &mut store,
