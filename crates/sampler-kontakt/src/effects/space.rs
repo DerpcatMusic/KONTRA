@@ -3,9 +3,9 @@
 //! and Reverb Delight (0x7a).
 //!
 //! What is proved and what is not, per effect:
-//! - 0x59 Galois: framing, field order and the display laws of time, high cut
-//!   and low shelf (measured through `get_engine_par_disp`). The network
-//!   itself is not recovered, so it runs the generic FDN, reported as such.
+//! - 0x59 Galois: the native core (`sampler_core` `dsp/space/galois.rs`),
+//!   verified against the emulated kernel; only its unsaved dry/wet lane is
+//!   assumed (fully wet).
 //! - 0x15 legacy: exact network and setter laws (`FUN_140aa3d10`,
 //!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
 //!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
@@ -20,7 +20,7 @@
 
 use super::{Impulses, Notes};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
-use sampler_ir::fx::space::{Config, Freeverb, Network, Topology};
+use sampler_ir::fx::space::{Config, Freeverb, Galois, Network, Topology};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Convolution {
@@ -153,32 +153,26 @@ pub(super) fn plate(v: &[f32; 5], notes: &mut Notes) -> Config {
     })
 }
 
-/// Kontakt's normalized Reverb (Galois, 0x59) values as physical settings.
-/// Time, predelay, high cut and low shelf follow the reference display; size,
-/// damping and diffusion are still v1's fits.
-pub(super) fn galois(v: &[f32; 10], notes: &mut Notes) -> Config {
-    let [room, time, size, damping, modulation, diffusion, predelay, high_cut, low_shelf, stereo] =
-        v.map(|x| f64::from(x.clamp(0.0, 1.0)));
-    notes.push((
-        "reverb algorithm".into(),
-        format!("normalized {v:?}: generic FDN, Galois network unrecovered"),
-        UnknownLaw,
-    ));
+/// Kontakt Reverb (Galois, 0x59): the saved type (1 Hall, 0 Room) and nine
+/// normalized controls drive the native core ([`Topology::Galois`]). The
+/// physical fields are filled for display and tail length only: decay
+/// `0.5·e^(3.7·time)` s (setter `0x141aea370` case 0), predelay
+/// `11025·x` samples at the core's 44.1 kHz.
+///
+/// The core's own dry/wet control (dispatcher lane 8) has no saved field and
+/// no binding found; it is set fully wet, so the slot's Return/Dry carry the
+/// mix (probe: send a unit impulse through a default Reverb insert and read
+/// the direct-path level).
+pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
+    let [kind, time, size, damping, modulation, diffusion, predelay, high_cut, low_shelf, stereo] = v.map(|x| x.clamp(0.0, 1.0));
     Config::network(Network {
-        topology: Topology::Fdn,
-        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
-        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
-        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
-        size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: modulation * 0.0015,
-        diffusion: 0.75 * diffusion,
-        predelay_seconds: predelay * 0.25,
-        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
-        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
-        // Low Shelf shows 0 to -12 dB, linear.
-        low_shelf_db: -12.0 * low_shelf,
-        width: stereo,
+        topology: Topology::Galois,
+        decay_seconds: f64::from((time * 3.7).exp() * 0.5),
+        predelay_seconds: f64::from(predelay) * 0.25,
+        galois: Some(Galois {
+            hall: kind >= 0.5,
+            controls: [time, size, damping, modulation, diffusion, predelay, high_cut, low_shelf, 1.0, stereo],
+        }),
         ..Network::DEFAULT
     })
 }

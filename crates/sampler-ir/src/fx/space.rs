@@ -46,8 +46,10 @@ pub enum Topology {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Galois {
-    /// Room (`true`) or Hall core: the dispatcher's control 10 (`FUN_1409ab2c0`).
-    pub room: bool,
+    /// Hall (`true`, saved type 1) or Room core: the dispatcher's control 10
+    /// (`FUN_1409ab2c0`, `>= 0.5` runs the core built with flag 1, whose
+    /// lines are the longer ones).
+    pub hall: bool,
     pub controls: [f32; 10],
 }
 
