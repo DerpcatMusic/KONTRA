@@ -2,11 +2,13 @@
 //!
 //! Laws, from the Kontakt 8.13.1 binary:
 //! - controls: setter `0x141aea370` (ten normalized controls, see
-//!   [`sampler_ir::fx::space::Galois`]); Room/Hall is the dispatcher's control
+//!   [`sampler_ir::fx::space::Galois`]); Hall/Room is the dispatcher's control
 //!   10 (`0x1409ab2c0`), which picks one of two cores built by the wrapper
-//!   constructor `0x1407cc260` (`0x141ad9d00(core, room)`).
+//!   constructor `0x1407cc260` (`0x141ad9d00(core, flag)`). Control 10 at or
+//!   above 0.5 runs the flag-1 core; saved type 1 is Hall (`FUN_140d019f0`)
+//!   and the flag-1 lines are the longer ones, so flag 1 is called Hall.
 //! - line lengths: `0x141aebb00`, `prime[(int)(slope·size·10 + 90 + base)]`
-//!   (Hall) or `prime[(int)((slope/32)^1.61·size·736 + 90 + base)]` (Room),
+//!   (Room) or `prime[(int)((slope/32)^1.61·size·736 + 90 + base)]` (Hall),
 //!   prime table `0x1479ac0c0`, base/slope tables from the constructor.
 //! - feedback matrix: 31×31 orthogonal circulant of the length-31 m-sequence
 //!   `c[n+5] = c[n] ^ c[n+2]` (seed 1,1,0,1,1), `a` where `c = 0`, `b` where
@@ -15,8 +17,8 @@
 //! - per-line gain and damping: `0x141adc7f0` and the tail of `0x141aea370`
 //!   (Jot absorption: `g^L` and a one-pole whose pole meets `(g'/g)^L` at
 //!   Nyquist).
-//! - processing: stereo kernels `0x141acf210` (Hall, four 3-delay diffusers)
-//!   and `0x141ad0590` (Room, two), dispatched by `0x141ae2c60`; diffusers
+//! - processing: stereo kernels `0x141acf210` (Room, four 3-delay diffusers)
+//!   and `0x141ad0590` (Hall, two), dispatched by `0x141ae2c60`; diffusers
 //!   `0x141ae92b0` / `0x141ae2a80`; low shelf `0x141ac9260` / `0x1419529e0` /
 //!   `0x140d947a0`; high cut and the 2 Hz delay modulation in `0x141aec0a0` /
 //!   `0x141ae1d40`.
@@ -37,7 +39,7 @@ use sampler_ir::fx::space::{Galois as Controls, Network};
 const LINES: usize = 31;
 /// `0x141aebb00`: the constructor's per-line base offsets into the prime table.
 const BASE: [u8; LINES] = [4, 3, 5, 5, 5, 5, 2, 1, 1, 1, 4, 5, 1, 5, 1, 4, 3, 4, 2, 4, 1, 2, 2, 5, 4, 2, 3, 1, 3, 0, 3];
-/// Per-line size slopes, Hall and Room cores.
+/// Per-line size slopes, Room and Hall cores.
 const SLOPE: [[u8; LINES]; 2] = [
     [0, 1, 7, 8, 20, 21, 6, 2, 3, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 4, 5, 22, 23, 24, 25, 26, 27, 28, 29, 30],
     [0, 1, 6, 7, 4, 5, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
@@ -45,20 +47,20 @@ const SLOPE: [[u8; LINES]; 2] = [
 /// Input taps (line, sign) of the left and right predelayed inputs.
 const IN_L: [(u8, f32); 10] = [(0, 1.), (2, 1.), (4, 1.), (6, -1.), (10, -1.), (14, 1.), (18, 1.), (22, -1.), (26, -1.), (28, -1.)];
 const IN_R: [(u8, f32); 10] = [(1, 1.), (3, 1.), (5, 1.), (7, -1.), (11, -1.), (15, -1.), (19, -1.), (23, -1.), (27, 1.), (29, 1.)];
-/// Output taps (line, sign) of each channel: Hall, and the Room core's
-/// (`0x141ae0160`); the Room core also drops input lines 4..=7.
-const OUT_HALL: [[(u8, f32); 8]; 2] = [
+/// Output taps (line, sign) of each channel: Room, and the Hall core's
+/// (`0x141ae0160`); the Hall core also drops input lines 4..=7.
+const OUT_ROOM: [[(u8, f32); 8]; 2] = [
     [(0, 1.), (3, -1.), (4, 1.), (8, -1.), (12, -1.), (16, 1.), (20, -1.), (24, 1.)],
     [(1, 1.), (2, -1.), (5, 1.), (9, -1.), (13, -1.), (17, 1.), (21, -1.), (25, 1.)],
 ];
-const OUT_ROOM: [[(u8, f32); 8]; 2] = [
+const OUT_HALL: [[(u8, f32); 8]; 2] = [
     [(0, 1.), (3, -1.), (6, -1.), (9, 1.), (12, -1.), (17, 1.), (20, -1.), (25, 1.)],
     [(1, 1.), (2, -1.), (7, 1.), (8, -1.), (13, 1.), (16, -1.), (21, 1.), (24, -1.)],
 ];
-/// Room output weights: the first pair of taps, then the rest, at full
+/// Hall output weights: the first pair of taps, then the rest, at full
 /// diffusion (`1/√5`, `√(19/15)`); zero diffusion weighs every tap 1.
-const ROOM_FAR: [f32; 2] = [0.447_213_6, 1.125_462_9];
-/// Diffuser delays (three per unit), Hall and Room.
+const HALL_FAR: [f32; 2] = [0.447_213_6, 1.125_462_9];
+/// Diffuser delays (three per unit), Room and Hall.
 const DIFFUSER: [[[usize; 3]; 4]; 2] = [
     [[31, 79, 41], [43, 73, 53], [59, 61, 67], [71, 47, 37]],
     [[73, 181, 97], [103, 179, 127], [59, 61, 67], [71, 47, 37]],
@@ -77,12 +79,12 @@ fn primes(n: usize) -> Vec<u32> {
 }
 
 /// Line lengths in samples for size control `x` (`0x141aebb00`).
-fn lengths(room: bool, x: f32) -> [u32; LINES] {
+fn lengths(hall: bool, x: f32) -> [u32; LINES] {
     let size = x * 3.0 + 1.0;
     let table = primes(2800);
     std::array::from_fn(|i| {
-        let (slope, base) = (f32::from(SLOPE[usize::from(room)][i]), f32::from(BASE[i]));
-        let k = if room { (slope * 0.031_25).powf(1.61) * (size * 736.0) + 90.0 } else { slope * (size * 10.0) + 90.0 };
+        let (slope, base) = (f32::from(SLOPE[usize::from(hall)][i]), f32::from(BASE[i]));
+        let k = if hall { (slope * 0.031_25).powf(1.61) * (size * 736.0) + 90.0 } else { slope * (size * 10.0) + 90.0 };
         table[(k + base) as usize]
     })
 }
@@ -259,8 +261,8 @@ impl GaloisCore {
 
     fn with(g: &Controls, rate: f64) -> Self {
         let x = g.controls;
-        let room = g.room;
-        let len = lengths(room, x[Controls::SIZE]);
+        let hall = g.hall;
+        let len = lengths(hall, x[Controls::SIZE]);
         let flen = len.map(|l| l as f32);
         // Decay (setter case 0, 0x141adc7f0).
         let t = (x[Controls::TIME] * 3.7).exp() * 0.5;
@@ -285,7 +287,7 @@ impl GaloisCore {
         let mut input = [[0.0; LINES]; 2];
         for (ch, taps) in [IN_L, IN_R].iter().enumerate() {
             for &(line, sign) in taps {
-                if !(room && (4..8).contains(&line)) {
+                if !(hall && (4..8).contains(&line)) {
                     input[ch][usize::from(line)] = sign;
                 }
             }
@@ -293,22 +295,22 @@ impl GaloisCore {
         let diffusion = x[Controls::DIFFUSION] * 0.5;
         let mut output = [[0.0; LINES]; 2];
         for ch in 0..2 {
-            let taps = if room { OUT_ROOM[ch] } else { OUT_HALL[ch] };
+            let taps = if hall { OUT_HALL[ch] } else { OUT_ROOM[ch] };
             for (k, &(line, sign)) in taps.iter().enumerate() {
-                output[ch][usize::from(line)] = if room {
+                output[ch][usize::from(line)] = if hall {
                     // 0x141aea370: C = 2g·far + (1 − 2g)·near.
                     let w = diffusion + diffusion;
-                    w * (sign * ROOM_FAR[usize::from(k >= 2)]) + (1.0 - w) * sign
+                    w * (sign * HALL_FAR[usize::from(k >= 2)]) + (1.0 - w) * sign
                 } else {
                     sign
                 };
             }
         }
         let cut = ((f64::from(((1.0 - x[Controls::HIGH_CUT]) * 19_000.0 + 2000.0) * -2.0)) * (std::f64::consts::PI / 44_100.0)).exp() as f32;
-        let units = if room { 2 } else { 4 };
+        let units = if hall { 2 } else { 4 };
         let channel = || Channel {
             diffusers: (0..units)
-                .map(|k| Diffuser::new(if k % 2 == 0 { -diffusion } else { diffusion }, DIFFUSER[usize::from(room)][k]))
+                .map(|k| Diffuser::new(if k % 2 == 0 { -diffusion } else { diffusion }, DIFFUSER[usize::from(hall)][k]))
                 .collect(),
             shelf: Shelf::new(x[Controls::LOW_SHELF] * -12.0),
             cut,
@@ -319,8 +321,8 @@ impl GaloisCore {
         Self {
             // The constructor sizes each ring to the power of two above the
             // line's largest (size 1) length; a modulated read past it wraps,
-            // as native (Hall line 7 is 1021 of 1024 at full size).
-            lines: lengths(room, 1.0).iter().map(|&l| Ring::new(l as usize)).collect(),
+            // as native (Room line 7 is 1021 of 1024 at full size).
+            lines: lengths(hall, 1.0).iter().map(|&l| Ring::new(l as usize)).collect(),
             len0: len[0] as usize,
             flen,
             v: [0.0; 32],
