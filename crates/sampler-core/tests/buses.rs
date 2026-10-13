@@ -427,7 +427,7 @@ fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
 
 #[test]
 fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
-    let settings = ReverbSettings {
+    let settings = sampler_ir::fx::space::Config::network(sampler_ir::fx::space::Network {
         decay_seconds: 0.5,
         size: 0.75,
         damping_hz: 6_000.,
@@ -437,12 +437,14 @@ fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
         input_cutoff_hz: 20_000.,
         low_shelf_db: 0.,
         width: 1.,
-    };
-    let tail = settings.tail_frames(48000);
+        ..sampler_ir::fx::space::Network::DEFAULT
+    });
+    // Predelay plus twice the decay.
+    let tail = 48_000;
     let prepared = plan(vec![[0.5, 0.5]], 1)
         .with_buses(
             vec![Bus {
-                processors: vec![Processor::Reverb(settings)],
+                processors: vec![Processor::Space(settings)],
                 sends: vec![send(None, 1.)],
                 tail_frames: tail,
             }],
@@ -466,7 +468,7 @@ fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
     assert!(
         plan(vec![[1.; 2]], 1)
             .with_voice_chains(
-                vec![VoiceChain::new(vec![Processor::Reverb(settings)], vec![], 0).unwrap()],
+                vec![VoiceChain::new(vec![Processor::Space(settings)], vec![], 0).unwrap()],
                 vec![Some(0)]
             )
             .is_err()
@@ -501,11 +503,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
     };
     let dry = render(None);
     let wet = render(Some(vec![Bus {
-        processors: vec![Processor::Convolution {
-            impulse: 0,
-            dry: 0.5,
-            wet: 2.,
-        }],
+        processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0.5, 2.))],
         sends: vec![send(None, 1.)],
         tail_frames: tail as u32,
     }]));
@@ -531,11 +529,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
             .with_voice_chains(
                 vec![
                     VoiceChain::new(
-                        vec![Processor::Convolution {
-                            impulse: 0,
-                            dry: 0.,
-                            wet: 1.
-                        }],
+                        vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                         vec![],
                         0
                     )
@@ -549,11 +543,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
         plan(vec![[1.; 2]], 1)
             .with_buses(
                 vec![Bus {
-                    processors: vec![Processor::Convolution {
-                        impulse: 0,
-                        dry: 0.,
-                        wet: 1.
-                    }],
+                    processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                     sends: vec![send(None, 1.)],
                     tail_frames: 0,
                 }],
@@ -648,11 +638,7 @@ fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_ta
         .with_impulses(vec![first])
         .with_buses(
             vec![Bus {
-                processors: vec![Processor::Convolution {
-                    impulse: 0,
-                    dry: 0.,
-                    wet: 1.,
-                }],
+                processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                 sends: vec![send(None, 1.)],
                 tail_frames: 100,
             }],

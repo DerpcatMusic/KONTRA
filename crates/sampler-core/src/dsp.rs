@@ -198,15 +198,10 @@ pub enum Processor {
     Eq(eq_family::EqBand),
     /// Rows are output L/R, columns input L/R; each cell follows a control.
     ControlMatrix([Parameter; 4]),
-    /// Stereo reverb; bus scope only (it owns megabytes of state).
-    Reverb(ReverbSettings),
-    /// `dry * x + wet * (x * impulse)`; bus scope only. `impulse` indexes
-    /// the table given to [`crate::Prepared::with_impulses`].
-    Convolution {
-        impulse: usize,
-        dry: f64,
-        wet: f64,
-    },
+    /// Reverb and/or convolution; bus scope only (it owns megabytes of
+    /// state). `impulse` indexes the table given to
+    /// [`crate::Prepared::with_impulses`].
+    Space(sampler_ir::fx::space::Config),
     /// The next `count` processors run in parallel with the unprocessed
     /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
     /// bypass control (0..=1). All three are ramped controls.
@@ -238,8 +233,7 @@ impl Processor {
             Processor::ControlMatrix(cells) => cells
                 .iter()
                 .all(|c| c.valid() && !matches!(c, Parameter::Expression { .. })),
-            Processor::Reverb(settings) => settings.valid(),
-            Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
+            Processor::Space(config) => space::valid(config),
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
@@ -271,7 +265,6 @@ mod ar_kernel;
 mod compressor;
 mod enhanced_compressor;
 pub(super) mod control;
-mod convolution;
 mod daft;
 mod formant;
 pub use ar::ArSettings;
@@ -286,20 +279,14 @@ pub use ladder::LadderSettings;
 mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
-mod reverb;
-mod impulse_shape;
-pub use impulse_shape::{neutral_impulse_shape, shape_impulse};
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
-pub use convolution::ConvolutionUpload;
-pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
-pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
+pub(super) use space::Space;
+pub use space::{ConvolutionUpload, Impulse, MAX_IMPULSE_FRAMES, neutral_impulse_shape, shape_impulse};
 pub use daft::DaftSettings;
 pub use timemod::Delay;
-pub(super) use reverb::Reverb;
-pub use reverb::ReverbSettings;
 pub use color::{
     CurveSettings, Decimator, GainerSettings, HoldSettings, NoiseSettings, QuantizerSettings, Rectifier,
     Settings as ColorSettings, StereoSettings,
@@ -343,10 +330,8 @@ pub(super) enum PreparedProcessor {
         last: bool,
     },
     StateVariable(usize),
-    /// Index into the bus graph's reverbs.
-    Reverb(usize),
-    /// Index into the bus graph's convolutions.
-    Convolution(usize),
+    /// Index into the bus graph's spaces.
+    Space(usize),
     /// `count` following stages in parallel with the dry signal; the lanes are
     /// dry, wet and bypass.
     Mix {
@@ -431,7 +416,6 @@ impl VoiceChain {
                 &mut delay_frames,
                 filters,
                 None,
-                None,
             )?,
             post: compile_processors(
                 self.post,
@@ -439,7 +423,6 @@ impl VoiceChain {
                 bindings,
                 &mut delay_frames,
                 filters,
-                None,
                 None,
             )?,
             tail_frames: self.tail_frames,
@@ -460,8 +443,7 @@ pub(super) fn compile_processors(
     bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
     filters: &mut Vec<svf::PreparedFilter>,
-    mut reverbs: Option<&mut Vec<(ReverbSettings, u32)>>,
-    mut convolutions: Option<&mut Vec<(usize, f64, f64)>>,
+    mut spaces: Option<&mut Vec<sampler_ir::fx::space::Config>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -536,15 +518,10 @@ pub(super) fn compile_processors(
                         offset,
                     }
                 }
-                Processor::Reverb(settings) => {
-                    let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
-                    reverbs.push((settings, 0));
-                    PreparedProcessor::Reverb(reverbs.len() - 1)
-                }
-                Processor::Convolution { impulse, dry, wet } => {
-                    let all = convolutions.as_deref_mut().ok_or(Error::InvalidInput)?;
-                    all.push((impulse, dry, wet));
-                    PreparedProcessor::Convolution(all.len() - 1)
+                Processor::Space(config) => {
+                    let spaces = spaces.as_deref_mut().ok_or(Error::InvalidInput)?;
+                    spaces.push(config);
+                    PreparedProcessor::Space(spaces.len() - 1)
                 }
                 Processor::Mix {
                     count,
@@ -1123,7 +1100,7 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
-            PreparedProcessor::Reverb(index) => {
+            PreparedProcessor::Space(index) => {
                 let mut wet = [[0f32; BLOCK]; 2];
                 for (w, v) in wet.iter_mut().zip(block.iter()) {
                     w[..len]
@@ -1132,24 +1109,7 @@ pub(super) fn process<const TRACE: bool>(
                         .for_each(|(w, v)| *w = *v as f32);
                 }
                 let [left, right] = &mut wet;
-                filters.reverbs[*index].process(&mut left[..len], &mut right[..len]);
-                for (v, w) in block.iter_mut().zip(&wet) {
-                    v[..len]
-                        .iter_mut()
-                        .zip(&w[..len])
-                        .for_each(|(v, w)| *v = f64::from(*w));
-                }
-            }
-            PreparedProcessor::Convolution(index) => {
-                let mut wet = [[0f32; BLOCK]; 2];
-                for (w, v) in wet.iter_mut().zip(block.iter()) {
-                    w[..len]
-                        .iter_mut()
-                        .zip(&v[..len])
-                        .for_each(|(w, v)| *w = *v as f32);
-                }
-                let [left, right] = &mut wet;
-                filters.convolutions[*index].process([&mut left[..len], &mut right[..len]]);
+                filters.spaces[*index].process([&mut left[..len], &mut right[..len]]);
                 for (v, w) in block.iter_mut().zip(&wet) {
                     v[..len]
                         .iter_mut()
@@ -1615,8 +1575,7 @@ mod tests {
                         &mut svf::FilterContext {
                             tempo: 120.0,
                             bank: &mut filters,
-                            reverbs: &mut [],
-                            convolutions: &mut [],
+                            spaces: &mut [],
                             expression: None,
                         },
                     );
@@ -1696,8 +1655,7 @@ mod tests {
                                     &mut svf::FilterContext {
                                         tempo: 120.0,
                                         bank: &mut filters,
-                                        reverbs: &mut [],
-                                        convolutions: &mut [],
+                                        spaces: &mut [],
                                         expression: None,
                                     },
                                 );
