@@ -1,0 +1,1008 @@
+// Ported directly from v1 0cb7a8a0:src/engine/filter/ladder.rs; storage adapter below.
+//! Pinned-v1 Ladder single-rate kernel and its 32/4-frame control clock.
+//!
+//! Proved against the Kontakt 8 binary: the saved-row/tap selector, the per-row output
+//! weights and the selector-specific compensation curves (audit CORE-FILTERS-044, 050, 051,
+//! 081..084). Not proved, so a stand-in and reported as an unknown law by the Kontakt
+//! mapping: the normalized cutoff law and its exponential table (045, 075), the pole
+//! polynomial (076), the gain and resonance setters (046, 054), the control clock and ramp
+//! (047), the record-version instant cutoff (048), the enabled-route semantics (049) and the
+//! nonlinear four-stage state kernel itself (052). HQ, modulation source sampling and nonzero
+//! secondary cutoff clocks remain gaps.
+
+use std::sync::OnceLock;
+
+static EXPONENTIAL: OnceLock<[f32; 2401]> = OnceLock::new();
+
+/// Warm in the loader, including when a voice will later change subtype.
+pub(crate) fn prepare() {
+    EXPONENTIAL.get_or_init(|| {
+        std::array::from_fn(|i| 2.0_f64.powf(i as f64 * (1.0 / 60.0) - 20.0) as f32)
+    });
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Ladder {
+    state: [[f32; 5]; 2],
+    controls: Controls,
+    g: f32,
+    reciprocal: f32,
+    feedback: f32,
+    compensation: f32,
+    gain: f32,
+    correction: f32,
+    correction_reciprocal: f32,
+    correction_previous: f32,
+    correction_gain: f32,
+}
+
+/// Ordinary native control interpolation, at 32 host / four internal frames.
+/// Gain is linear here; cutoff is normalized and resonance is already shaped.
+#[derive(Clone, Copy, Debug, Default)]
+struct Controls {
+    current: [f32; 3],
+    target: [f32; 3],
+    increment: [f32; 3],
+    rate: f32,
+    remaining: u32,
+    phase: u8,
+    pending: bool,
+    started: bool,
+    // bit0: version-derived instant cutoff; bit1: enabled target route;
+    // bits2-5: output selector (zero retains the default LP4)
+    modes: u8,
+}
+
+impl Controls {
+    fn clock(&mut self) {
+        if self.pending {
+            self.pending = false;
+            let ticks = (self.rate * 0.002 / 32.0 + 0.5).floor().max(1.0) as u32;
+            let inverse = 1.0 / (ticks as f32 * 32.0);
+            for lane in 0..3 {
+                let increment = (self.target[lane] - self.current[lane]) * inverse;
+                if (lane == 1 && self.modes & 1 != 0) || f64::from(increment * increment) < 1e-15 {
+                    self.current[lane] = self.target[lane];
+                    self.increment[lane] = 0.0;
+                } else {
+                    self.increment[lane] = increment;
+                }
+            }
+            self.remaining = if self.increment.iter().any(|&v| v != 0.0) {
+                ticks
+            } else {
+                0
+            };
+        } else if self.remaining != 0 {
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.current = self.target;
+                self.increment = [0.0; 3];
+            }
+        }
+    }
+
+    fn advance(&mut self) {
+        for lane in 0..3 {
+            self.current[lane] += 4.0 * self.increment[lane];
+        }
+    }
+}
+
+/// The native exponential table is generated, rather than a captured table.
+/// Adjacent entries are rounded before linear interpolation.
+fn exponential(index: f32) -> f32 {
+    let index = index.clamp(0.0, 2399.0);
+    let integer = index as usize;
+    // All prepared filter and script constructors warm this table offthread.
+    // The audio path cannot initialize it, acquire a lock, or evaluate pow.
+    let entries = EXPONENTIAL
+        .get()
+        .expect("Ladder table must be worker-prepared");
+    let a = entries[integer];
+    a + (entries[integer + 1] - a) * (index - integer as f32)
+}
+
+pub(crate) fn cutoff(value: f32) -> f32 {
+    exponential(1481.8816 + 575.0 * value.clamp(0.0, 1.0))
+}
+
+fn pole(w: f32) -> f32 {
+    let w2 = w * w;
+    ((40.802_63 * w2 + 10.335_426) * w2 + std::f32::consts::PI) * w
+}
+
+/// Output level of the LP1..LP3 taps against the shared loop, measured from
+/// Kontakt 8 recordings (noise through each type over the resonance range,
+/// level taken from the shape fit to this kernel). Points are (q, gain).
+#[rustfmt::skip]
+const TAP_COMPENSATION: [&[(f32, f32)]; 3] = [
+    &[
+        (0.000, 0.968), (0.047, 0.979), (0.122, 1.013), (0.194, 1.090), (0.263, 1.205),
+        (0.329, 1.352), (0.355, 1.413), (0.392, 1.500), (0.452, 1.606), (0.509, 1.643),
+        (0.563, 1.642), (0.642, 1.644), (0.754, 1.640), (0.839, 1.640), (0.857, 1.639),
+        (0.885, 1.454), (0.910, 1.228), (0.932, 1.052), (0.944, 0.975), (0.951, 0.935),
+        (0.961, 0.889), (0.967, 0.858), (0.975, 0.831), (0.980, 0.813), (0.986, 0.798),
+        (0.990, 0.792), (0.995, 0.786), (0.999, 0.784),
+    ],
+    &[
+        (0.047, 0.996), (0.122, 1.045), (0.194, 1.150), (0.263, 1.300), (0.329, 1.493),
+        (0.355, 1.581), (0.392, 1.694), (0.452, 1.857), (0.509, 1.919), (0.642, 1.923),
+        (0.754, 1.924), (0.839, 1.925), (0.857, 1.904), (0.885, 1.602), (0.910, 1.374),
+        (0.932, 1.217), (0.944, 1.149), (0.951, 1.112), (0.961, 1.077), (0.967, 1.052),
+        (0.975, 1.027), (0.980, 1.009), (0.986, 0.999), (0.990, 0.995), (0.995, 0.985),
+        (0.999, 0.982),
+    ],
+    &[
+        (0.047, 0.998), (0.122, 1.039), (0.194, 1.122), (0.263, 1.236), (0.329, 1.400),
+        (0.355, 1.490), (0.392, 1.577), (0.452, 1.753), (0.509, 1.908), (0.563, 1.977),
+        (0.642, 2.000), (0.754, 2.000), (0.839, 2.002), (0.857, 1.975), (0.885, 1.982),
+        (0.910, 1.669), (0.932, 1.399), (0.944, 1.285), (0.961, 1.164), (0.967, 1.132),
+        (0.975, 1.090), (0.980, 1.072), (0.986, 1.047), (0.990, 1.038), (0.995, 1.029),
+        (0.999, 1.022),
+    ],
+];
+
+fn compensation(q: f32, taps: u8) -> f32 {
+    if taps > 4 {
+        return morphology_compensation(q, usize::from(taps - 5));
+    }
+    let Some(table) = TAP_COMPENSATION.get(usize::from(taps).wrapping_sub(1)) else {
+        return lp4_compensation(q);
+    };
+    let at = table.partition_point(|&(x, _)| x <= q);
+    match (at.checked_sub(1).map(|i| table[i]), table.get(at)) {
+        (None, _) => table[0].1,
+        (Some((_, y)), None) => y,
+        (Some((x0, y0)), Some(&(x1, y1))) => y0 + (y1 - y0) * (q - x0) / (x1 - x0),
+    }
+}
+
+// NI Kontakt 8 Filter Reference: Ladder HP/BP/Peak/Notch. Ghidra
+// FUN_140b00b80; radare2 confirms weights 0x144fcebc0 and compensation
+// knots/values/reciprocal widths 0x144fcecb0/0x144fced70/0x144fceec0.
+#[rustfmt::skip]
+const MORPHOLOGY_WEIGHTS: [[f32; 5]; 8] = [
+    [1., -1., 0., 0., 0.], [1., -2., 1., 0., 0.],
+    [1., -3., 3., -1., 0.], [1., -4., 6., -4., 1.],
+    [0., -2., 2., 0., 0.], [0., 0., 6., -12., 6.],
+    [1., 0., 0., 0., 0.], [1., -4., 12., -16., 8.],
+];
+#[rustfmt::skip]
+const MORPHOLOGY_COMPENSATION: [([f32; 4], [f32; 4], [f32; 3]); 8] = [
+    ([0., 0.46, 0.79, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.030303, 4.761905]),
+    ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.2], [2.173913, 3.448276, 4.]),
+    ([0., 0.46, 0.75, 1.], [0.5, 0.5, 0.5, 0.25], [2.173913, 3.448276, 4.]),
+    ([0., 0.46, 0.76, 1.], [0.5, 0.5, 0.5, 0.28], [2.173913, 3.333333, 4.166667]),
+    ([0., 0.51, 0.63, 1.], [0.5, 0.5, 0.5, 0.25], [1.960784, 8.333333, 2.702703]),
+    ([0., 0.56, 0.63, 1.], [0.5, 0.5, 0.5, 0.19], [1.785714, 14.285714, 2.702703]),
+    ([0., 0.54, 0.80, 1.], [0.5, 0.5, 0.5, 0.2], [1.851852, 3.846154, 5.]),
+    ([0., 0.25, 0.60, 1.], [0.5, 0.5, 0.49, 0.19], [4., 2.857143, 2.5]),
+];
+fn morphology_compensation(q: f32, row: usize) -> f32 {
+    let (knots, values, inverse) = MORPHOLOGY_COMPENSATION[row];
+    let p = q * q;
+    let interval = if p < knots[1] {
+        0
+    } else if p < knots[2] {
+        1
+    } else {
+        2
+    };
+    let t = (p - knots[interval]) * inverse[interval];
+    let s = (1. - t) * (1. - t);
+    let smooth = 1. - (2. - s) * s;
+    let y = values[interval];
+    let blend = smooth + y.abs() * ((2. - t) * t - smooth);
+    let delta = values[interval + 1] - y;
+    blend * (delta + delta) + y + y
+}
+
+fn lp4_compensation(q: f32) -> f32 {
+    // Algebraic form of the three native LP4 interpolation intervals.
+    // An independent float-order comparison bounds its difference to 2 ULP.
+    let p = f64::from(q * q);
+    if p < 0.34 {
+        let u = p / 0.34;
+        let t = (2.0 - u) * u;
+        (1.02 + 0.98 * (0.49 * t * t + 0.51 * t)) as f32
+    } else if p < 0.83 {
+        2.0
+    } else {
+        let u = (p - 0.83) / 0.17;
+        (2.0 - 0.86 * (2.0 - u) * u) as f32
+    }
+}
+
+/// These readers enable the separate cutoff path whose native constructor
+/// and rate preparation leave its clock inverse zero. Other versions remain
+/// unknown; their ordinary cutoff clock is an explicitly diagnosed fallback.
+pub(crate) fn instant_cutoff(version: u16) -> bool {
+    matches!(version, 0x90..=0x92)
+}
+
+impl Ladder {
+    /// Native output selector 1..=12, stored in spare bits without growing state.
+    pub(crate) fn set_taps(&mut self, taps: u8) {
+        let taps = taps.clamp(1, 12);
+        self.controls.modes = (self.controls.modes & 3) | (if taps == 4 { 0 } else { taps } << 2);
+    }
+
+    fn taps(&self) -> u8 {
+        let taps = self.controls.modes >> 2;
+        if taps == 0 { 4 } else { taps }
+    }
+
+    pub(crate) fn record_version(&mut self, version: u16) {
+        self.controls.modes = (self.controls.modes & !1) | u8::from(instant_cutoff(version));
+    }
+
+    /// Enabled native target routes write at every control tick, including
+    /// unchanged or zero-depth targets. Route switches preserve audio history
+    /// and phase; their next write occurs on the existing 32-frame clock.
+    pub(crate) fn enabled_modulation(&mut self, enabled: bool) {
+        self.controls.modes = (self.controls.modes & !2) | (u8::from(enabled) << 1);
+    }
+
+    /// Small-signal response, including the correction in the feedback path.
+    /// Large signals additionally undergo the input soft clip.
+    pub(crate) fn magnitude(knobs: [f32; 3], hz: f32, rate: f32) -> f32 {
+        let mut filter = Self::default();
+        filter.tune(knobs, rate);
+        let mul = |[a, b]: [f64; 2], [c, d]: [f64; 2]| [a * c - b * d, a * d + b * c];
+        let div = |[a, b]: [f64; 2], [c, d]: [f64; 2]| {
+            let scale = c * c + d * d;
+            [(a * c + b * d) / scale, (b * c - a * d) / scale]
+        };
+        let w = 2.0 * std::f64::consts::PI * f64::from(hz.min(0.499 * rate) / rate);
+        let (sine, cosine) = w.sin_cos();
+        let transfer = |g: f32| {
+            let g = f64::from(g);
+            div(
+                [g * (1.0 + cosine), -g * sine],
+                [1.0 + g + (g - 1.0) * cosine, -(g - 1.0) * sine],
+            )
+        };
+        let h = transfer(filter.g);
+        let h2 = mul(h, h);
+        let h4 = mul(h2, h2);
+        let correction = transfer(filter.correction).map(|v| v * f64::from(filter.correction_gain));
+        let c4 = f64::from((filter.g * filter.reciprocal).powi(4));
+        let feedback = f64::from(filter.feedback);
+        let d = [
+            1.0 - feedback * c4 * correction[0],
+            -feedback * c4 * correction[1],
+        ];
+        let denominator = mul(h4, [1.0 + correction[0], correction[1]]);
+        let response = div(
+            mul(h4, d),
+            [
+                d[0] + feedback * denominator[0],
+                d[1] + feedback * denominator[1],
+            ],
+        );
+        ((response[0] * response[0] + response[1] * response[1]).sqrt()
+            * f64::from(filter.gain * filter.compensation)) as f32
+    }
+
+    pub(crate) fn tune(&mut self, [frequency, resonance, gain]: [f32; 3], rate: f32) {
+        let target = [
+            exponential(1200.0 + 119.589_41 * gain),
+            frequency,
+            1.0 - (1.0 - resonance).powi(2),
+        ];
+        if !self.controls.started {
+            // Native activation snapshots targets before the first audio frame.
+            self.controls = Controls {
+                current: target,
+                target,
+                rate,
+                modes: self.controls.modes,
+                ..Controls::default()
+            };
+            self.coefficients(target, rate);
+        } else {
+            self.controls.target = target;
+            self.controls.rate = rate;
+            self.controls.pending = true;
+        }
+        // R is a dimensionless fixed feedback gain; 80/R is in Hz.
+        let r = exponential(1196.0 + 0.681_396_5);
+        let w = (80.0 / r) / rate;
+        let w2 = w * w;
+        self.correction = std::f32::consts::PI * w * (1.0 + w2 * (3.289_868_4 + 12.987_881 * w2));
+        self.correction_reciprocal = 1.0 / (1.0 + self.correction);
+        self.correction_previous = self.correction - 1.0;
+        self.correction_gain = r * r - 1.0;
+    }
+
+    fn coefficients(&mut self, [gain, frequency, q]: [f32; 3], rate: f32) {
+        self.g = pole(cutoff(frequency) / rate).min(8.0);
+        self.reciprocal = 1.0 / (1.0 + self.g);
+        self.feedback = 4.16 * q;
+        self.compensation = compensation(q, self.taps());
+        self.gain = gain;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.state = [[0.0; 5]; 2];
+        self.controls.started = false;
+    }
+
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = left.len();
+        if n == 0 {
+            return;
+        }
+        if !self.controls.started {
+            // Local reset policy snapshots even when a cached unchanged key
+            // suppresses tune(). Pending clocks cannot survive that reset.
+            let target = self.controls.target;
+            let rate = self.controls.rate;
+            self.controls = Controls {
+                current: target,
+                target,
+                rate,
+                started: true,
+                modes: self.controls.modes,
+                ..Controls::default()
+            };
+            self.coefficients(target, rate);
+        }
+        if !self.controls.pending && self.controls.remaining == 0 && self.controls.modes & 2 == 0 {
+            self.process_held(left, right);
+            self.controls.phase = ((usize::from(self.controls.phase) + n) % 32) as u8;
+            return;
+        }
+        let mut start = 0;
+        while start < n {
+            if self.controls.phase == 0 {
+                self.controls.pending |= self.controls.modes & 2 != 0;
+                self.controls.clock();
+                if self.controls.remaining == 0 {
+                    self.coefficients(self.controls.current, self.controls.rate);
+                }
+            }
+            let end = if self.controls.remaining == 0 && !self.controls.pending {
+                (start + 32 - usize::from(self.controls.phase)).min(n)
+            } else {
+                if self.controls.phase % 4 == 0 {
+                    self.controls.advance();
+                    self.coefficients(self.controls.current, self.controls.rate);
+                }
+                (start + 4 - usize::from(self.controls.phase % 4)).min(n)
+            };
+            self.process_held(&mut left[start..end], &mut right[start..end]);
+            self.controls.phase = ((usize::from(self.controls.phase) + end - start) % 32) as u8;
+            start = end;
+        }
+    }
+
+    fn process_held(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let c = self.g * self.reciprocal;
+        let c4 = ((c * c) * c) * c;
+        let taps = usize::from(self.taps());
+        for (channel, samples) in [left, right].into_iter().enumerate() {
+            let state = &mut self.state[channel];
+            for sample in samples {
+                let input = self.gain * *sample;
+                let mut histories = 2.0 * state[0] * c + 2.0 * state[1];
+                histories = histories * c + 2.0 * state[2];
+                histories = histories * c + 2.0 * state[3];
+                let predicted =
+                    (c4 * input + histories * self.reciprocal) / (1.0 + self.feedback * c4);
+                let feedback = self.feedback * predicted;
+                let correction =
+                    (feedback - state[4] * self.correction_previous) * self.correction_reciprocal;
+                let feedback =
+                    feedback + (state[4] + correction) * self.correction * self.correction_gain;
+                state[4] = correction;
+                let mut value = (input - feedback).clamp(-24.0, 24.0);
+                value *= 1.0 - value.abs() / 48.0;
+                let mut outputs = [value; 5];
+                for (stage, history) in state[..4].iter_mut().enumerate() {
+                    let previous = *history;
+                    let predicted = (2.0 * previous + self.g * value) * self.reciprocal;
+                    *history = previous + self.g * (value - predicted);
+                    value = previous + *history;
+                    outputs[stage + 1] = value;
+                }
+                let tap = if taps <= 4 {
+                    outputs[taps]
+                } else {
+                    let weights = MORPHOLOGY_WEIGHTS[taps - 5];
+                    // Native sum order: stages 4,3,2, then (stage 1 + input).
+                    ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
+                        + (outputs[1] * weights[1] + outputs[0] * weights[0])
+                };
+                *sample = tap * self.compensation;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn morphology_hp2_bp4_notch_use_native_weights_and_compensation() {
+        // Independent first-frame vectors: g=1, no feedback, unit input is
+        // clipped to 47/48; stage outputs then halve at each pole.
+        for (taps, expected, end_gain) in [
+            (6, 47.0 / 192.0, 0.4),
+            (10, 47.0 / 128.0, 0.38),
+            (12, 47.0 / 96.0, 0.38),
+        ] {
+            let mut filter = Ladder {
+                g: 1.0,
+                reciprocal: 0.5,
+                gain: 1.0,
+                compensation: 1.0,
+                ..Ladder::default()
+            };
+            filter.set_taps(taps);
+            let (mut l, mut r) = ([1.0], [-1.0]);
+            filter.process_held(&mut l, &mut r);
+            assert!((l[0] - expected).abs() < 1e-6, "taps {taps}: {}", l[0]);
+            assert!((r[0] + expected).abs() < 1e-6);
+            assert!((compensation(1.0, taps) - end_gain).abs() < 1e-6);
+            assert_eq!(compensation(0.0, taps), 1.0);
+        }
+    }
+
+    /// Kontakt 8 recording (calibration noise, x = 0.4997): LP1..LP3 response vs bypass in dB
+    /// at 200/500/1000/2000/5000 Hz for resonance 0.5039 and 0.8031.
+    #[test]
+    fn ladder_taps_match_the_measured_kontakt_responses() {
+        prepare();
+        let measured: [(u8, f32, [f32; 5]); 6] = [
+            (1, 0.5039, [-6.2, 3.6, 2.2, -5.2, -12.9]),
+            (2, 0.5039, [-5.2, 3.2, -1.1, -13.3, -28.8]),
+            (3, 0.5039, [-5.3, 1.7, -5.5, -22.5, -45.8]),
+            (1, 0.8031, [-13.4, -4.3, -2.5, -10.6, -18.3]),
+            (2, 0.8031, [-12.0, -4.5, -5.6, -18.5, -33.9]),
+            (3, 0.8031, [-11.7, -5.5, -9.6, -27.2, -50.5]),
+        ];
+        for (taps, resonance, expected) in measured {
+            for (hz, expected) in [200.0_f32, 500., 1000., 2000., 5000.]
+                .into_iter()
+                .zip(expected)
+            {
+                let mut filter = Ladder::default();
+                filter.record_version(0x92);
+                filter.set_taps(taps);
+                filter.tune([0.4997, resonance, 0.0], 48_000.0);
+                let sine: Vec<f32> = (0..24_000)
+                    .map(|n| 0.01 * (std::f32::consts::TAU * hz * n as f32 / 48_000.0).sin())
+                    .collect();
+                let (mut l, mut r) = (sine.clone(), sine.clone());
+                filter.process(&mut l, &mut r);
+                let power = |v: &[f32]| {
+                    v[12_000..]
+                        .iter()
+                        .map(|x| f64::from(*x).powi(2))
+                        .sum::<f64>()
+                };
+                let db = 10.0 * (power(&l) / power(&sine)).log10();
+                assert!(
+                    (db - f64::from(expected)).abs() < 0.7,
+                    "LP{taps} r={resonance} {hz} Hz: {db} dB vs Kontakt {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_ladder_enabled_routes_rearm_on_persistent_control_ticks() {
+        prepare();
+        for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+            let ticks = (rate * 0.002 / 32.0 + 0.5).floor().max(1.0) as usize;
+            let target = 10_f64.powf(6.0 / 20.0);
+            for disable in [false, true] {
+                let mut filter = Ladder::default();
+                filter.record_version(0x92);
+                filter.tune([1.0, 0.0, 0.0], rate);
+                filter.process(&mut [0.0; 17], &mut [0.0; 17]);
+                filter.tune([1.0, 0.0, 0.5], rate);
+                filter.enabled_modulation(true);
+                let mut split = filter;
+                let (mut l, mut r) = ([0.0001; 512], [-0.0001; 512]);
+                let (mut sl, mut sr) = (l, r);
+                // Route enable/disable is mid-tick; neither switch changes phase.
+                let cut = if disable { 128 } else { 512 }; // global frame145
+                filter.process(&mut l[..cut], &mut r[..cut]);
+                if disable {
+                    filter.enabled_modulation(false);
+                }
+                filter.process(&mut l[cut..], &mut r[cut..]);
+                for range in [
+                    0..1,
+                    1..15,
+                    15..47,
+                    47..83,
+                    83..128,
+                    128..129,
+                    129..303,
+                    303..512,
+                ] {
+                    if disable && range.start == 128 {
+                        split.enabled_modulation(false);
+                    }
+                    split.process(&mut sl[range.clone()], &mut sr[range]);
+                }
+                assert_eq!(l, sl);
+                assert_eq!(r, sr);
+                // Independent geometric approach for repeated setter writes,
+                // followed by a finite linear remainder when the route disconnects.
+                // This differs from a single finite 2ms ramp even at zero depth.
+                let hz = 2_f64.powf((1481.881591796875 + 575.0) / 60.0 - 20.0);
+                let w = hz / f64::from(rate);
+                let g = (w
+                    * (std::f64::consts::PI
+                        + w * w * (10.335426330566406 + 40.80263137817383 * w * w)))
+                    .min(8.0);
+                let mut voltage = [0_f64; 4];
+                for (i, &actual) in l.iter().enumerate() {
+                    let frame = i + 17;
+                    let gain = if frame < 32 {
+                        1.0
+                    } else {
+                        let block = ((frame - 32) / 32).min(if disable { 3 } else { usize::MAX });
+                        let begin =
+                            target - (target - 1.0) * (1.0 - 1.0 / ticks as f64).powi(block as i32);
+                        let elapsed = ((frame - (32 + block * 32)) / 4 + 1) * 4;
+                        begin + (target - begin) * (elapsed as f64 / (32 * ticks) as f64).min(1.0)
+                    };
+                    let input = 0.0001 * gain;
+                    let mut value = input * (1.0 - input / 48.0);
+                    for memory in &mut voltage {
+                        let out = (*memory + g * value) / (1.0 + g);
+                        *memory = 2.0 * out - *memory;
+                        value = out;
+                    }
+                    assert!(
+                        (f64::from(actual) - 1.02 * value).abs() < 2e-8,
+                        "repeated physical reference rate={rate} frame={frame} disable={disable}"
+                    );
+                    assert_eq!(actual, -r[i]);
+                }
+                if disable {
+                    assert_eq!(filter.controls.current, filter.controls.target);
+                }
+                filter.clear();
+                filter.process(&mut [0.0; 1], &mut [0.0; 1]);
+                assert_eq!(filter.controls.current, filter.controls.target);
+                assert_eq!(filter.controls.modes & 2 != 0, !disable);
+            }
+        }
+    }
+
+    #[test]
+    fn native_ladder_legacy_cutoff_snap_retains_gain_resonance_clock() {
+        prepare();
+        for version in [0x90, 0x91, 0x92, 0, 0x95] {
+            for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+                let duration = ((rate * 0.002 / 32.0 + 0.5).floor() as usize).max(1) * 32;
+                let mut filter = Ladder::default();
+                filter.record_version(version);
+                filter.tune([0.25, 0.0, 0.0], rate);
+                let (mut l, mut r) = ([0.0; 9], [0.0; 9]);
+                filter.process(&mut l, &mut r);
+                filter.tune([0.75, 0.5, 0.5], rate);
+                let mut split = filter;
+                let (mut l, mut r) = ([0.00001; 512], [-0.00001; 512]);
+                let (mut sl, mut sr) = (l, r);
+                filter.process(&mut l, &mut r);
+                for range in [0..1, 1..23, 23..71, 71..117, 117..512] {
+                    split.process(&mut sl[range.clone()], &mut sr[range]);
+                }
+                assert_eq!(l, sl);
+                assert_eq!(r, sr);
+                let mut clock = Ladder::default();
+                clock.record_version(version);
+                clock.tune([0.25, 0.0, 0.0], rate);
+                clock.process(&mut [0.0; 9], &mut [0.0; 9]);
+                clock.tune([0.75, 0.5, 0.5], rate);
+                for frame in 9..32 + duration {
+                    clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                    let elapsed = if frame < 32 {
+                        0
+                    } else {
+                        (((frame - 32) / 4 + 1) * 4).min(duration)
+                    };
+                    let fraction = elapsed as f64 / duration as f64;
+                    let cutoff_fraction = if matches!(version, 0x90..=0x92) && frame >= 32 {
+                        1.0
+                    } else {
+                        fraction
+                    };
+                    assert!(
+                        (f64::from(clock.controls.current[1]) - (0.25 + 0.5 * cutoff_fraction))
+                            .abs()
+                            < 0.000002
+                    );
+                    assert!(
+                        (f64::from(clock.gain)
+                            - (1.0 + (10_f64.powf(6.0 / 20.0) - 1.0) * fraction))
+                            .abs()
+                            < 0.00003
+                    );
+                    assert!((f64::from(clock.feedback) - 4.16 * 0.75 * fraction).abs() < 0.000004);
+                }
+                // Retarget downward: the zero-inverse secondary clock snaps;
+                // no positive-increment cap artifact is introduced or claimed.
+                clock.tune([0.1, 0.5, 0.5], rate);
+                clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                if matches!(version, 0x90..=0x92) {
+                    assert_eq!(clock.controls.current[1], 0.1);
+                }
+                clock.clear();
+                clock.process(&mut [0.0; 1], &mut [0.0; 1]);
+                assert_eq!(clock.controls.current, clock.controls.target);
+                assert_eq!(clock.controls.remaining, 0);
+                assert_eq!(
+                    clock.controls.modes & 1 != 0,
+                    matches!(version, 0x90..=0x92)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_ladder_lp4_control_steps_follow_physical_clock_and_partition() {
+        prepare();
+        for rate in [32_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+            let duration = ((rate * 0.002 / 32.0 + 0.5).floor() as usize).max(1) * 32;
+            let mut filter = Ladder::default();
+            filter.tune([0.2, 0.0, -0.25], rate);
+            // All initial writes are snapshotted before activation, without a ramp.
+            filter.tune([0.3, 0.0, 0.0], rate);
+            let (mut warm_l, mut warm_r) = ([0.0; 9], [0.0; 9]);
+            filter.process(&mut warm_l, &mut warm_r);
+            assert_eq!(filter.controls.current, filter.controls.target);
+            filter.tune([0.75, 0.0, 0.5], rate);
+            let mut split = filter;
+            let source: [f32; 512] = std::array::from_fn(|i| {
+                if i == 91 {
+                    -0.012
+                } else {
+                    (i as f32 * 0.17).sin() * 0.007
+                }
+            });
+            let (mut left, mut right) = (source, source.map(|v| -v));
+            filter.process(&mut left, &mut right);
+            let (mut split_l, mut split_r) = (source, source.map(|v| -v));
+            for range in [0..1, 1..22, 22..23, 23..28, 28..68, 68..511, 511..512] {
+                split.process(&mut split_l[range.clone()], &mut split_r[range]);
+            }
+            assert_eq!(left, split_l);
+            assert_eq!(right, split_r);
+            assert_eq!(filter.controls.current, filter.controls.target);
+            assert_eq!(filter.controls.remaining, 0);
+
+            // Independent trapezoidal RC voltages, in double precision. The
+            // step starts at host frame32, and the first quartet uses 4/duration.
+            // Gain interpolates in amplitude; cutoff interpolates before Hz mapping.
+            let gain_end = 10_f64.powf(6.0 / 20.0);
+            let mut voltage = [0.0_f64; 4];
+            for (i, (&input, &actual)) in source.iter().zip(&left).enumerate() {
+                let frame = i + 9;
+                let elapsed = if frame < 32 {
+                    0
+                } else {
+                    (((frame - 32) / 4 + 1) * 4).min(duration)
+                };
+                let fraction = elapsed as f64 / duration as f64;
+                let gain = 1.0 + (gain_end - 1.0) * fraction;
+                let raw_cutoff = 0.3 + (0.75 - 0.3) * fraction;
+                let hz = 2_f64.powf((1481.881591796875 + 575.0 * raw_cutoff) / 60.0 - 20.0);
+                let w = hz / f64::from(rate);
+                let g = (w
+                    * (std::f64::consts::PI
+                        + w * w * (10.335426330566406 + 40.80263137817383 * w * w)))
+                    .min(8.0);
+                let input = f64::from(input) * gain;
+                let mut value = input * (1.0 - input.abs() / 48.0);
+                for memory in &mut voltage {
+                    let output = (*memory + g * value) / (1.0 + g);
+                    *memory = 2.0 * output - *memory;
+                    value = output;
+                }
+                assert!(
+                    (f64::from(actual) - value * 1.02).abs() < 0.000001,
+                    "physical moving-pole reference: rate={rate} frame={frame}"
+                );
+                assert_eq!(actual, -right[i]);
+            }
+
+            // Resonance is smoothed after its nonlinear shaping, rather than
+            // treating its normalized control or resulting Hz as a linear ramp.
+            let mut resonance = Ladder::default();
+            resonance.tune([0.5, 0.0, 0.0], rate);
+            let (mut l, mut r) = ([0.0; 32], [0.0; 32]);
+            resonance.process(&mut l, &mut r);
+            resonance.tune([0.5, 0.5, 0.0], rate);
+            for frame in 0..duration {
+                let (mut l, mut r) = ([0.0; 1], [0.0; 1]);
+                resonance.process(&mut l, &mut r);
+                let fraction = ((frame / 4 + 1) * 4) as f32 / duration as f32;
+                assert!((resonance.feedback - 4.16 * 0.75 * fraction).abs() < 0.000003);
+            }
+            // A target change partway through a ramp waits for the next
+            // 32-frame boundary and starts from the value reached there.
+            let mut retarget = Ladder::default();
+            retarget.tune([0.5, 0.0, 0.0], rate);
+            retarget.process(&mut l, &mut r);
+            retarget.tune([0.5, 0.5, 0.0], rate);
+            let (mut l17, mut r17) = ([0.0; 17], [0.0; 17]);
+            retarget.process(&mut l17, &mut r17);
+            retarget.tune([0.5, 1.0, 0.0], rate);
+            let (mut l15, mut r15) = ([0.0; 15], [0.0; 15]);
+            retarget.process(&mut l15, &mut r15);
+            let reached = 0.75 * 32.0 / duration as f32;
+            assert!((retarget.controls.current[2] - reached).abs() < 0.000001);
+            let (mut one_l, mut one_r) = ([0.0; 1], [0.0; 1]);
+            retarget.process(&mut one_l, &mut one_r);
+            let expected = reached + (1.0 - reached) * 4.0 / duration as f32;
+            assert!((retarget.controls.current[2] - expected).abs() < 0.000001);
+
+            let mut tiny = Ladder::default();
+            tiny.tune([0.5, 0.0, 0.0], rate);
+            tiny.process(&mut l, &mut r);
+            tiny.tune([0.500001, 0.0000001, 0.000001], rate);
+            tiny.process(&mut one_l, &mut one_r);
+            assert_eq!(tiny.controls.current, tiny.controls.target);
+            assert_eq!(tiny.controls.remaining, 0, "sub-threshold deltas snap");
+
+            for retuned in [false, true] {
+                let mut reset = Ladder::default();
+                reset.tune([0.2, 0.0, 0.0], rate);
+                reset.process(&mut l, &mut r);
+                reset.tune([0.75, 0.5, 0.5], rate);
+                reset.process(&mut l17, &mut r17);
+                assert_ne!(reset.controls.remaining, 0);
+                reset.clear();
+                let target = if retuned {
+                    [0.3, 0.25, -0.5]
+                } else {
+                    [0.75, 0.5, 0.5]
+                };
+                if retuned {
+                    reset.tune(target, rate);
+                }
+                let mut fresh = Ladder::default();
+                fresh.tune(target, rate);
+                let mut reset_l = [0.0001; 71];
+                let mut reset_r = [-0.0001; 71];
+                let (mut fresh_l, mut fresh_r) = (reset_l, reset_r);
+                reset.process(&mut reset_l, &mut reset_r);
+                fresh.process(&mut fresh_l, &mut fresh_r);
+                assert_eq!(reset_l, fresh_l, "reset snapshots with retune={retuned}");
+                assert_eq!(reset_r, fresh_r);
+                assert_eq!(reset.controls.current, reset.controls.target);
+                assert_eq!(reset.controls.remaining, 0);
+                assert!(!reset.controls.pending);
+            }
+
+            resonance.process(&mut l, &mut r);
+            assert_eq!(resonance.controls.current, resonance.controls.target);
+            assert_eq!(resonance.controls.remaining, 0);
+        }
+    }
+
+    #[test]
+    fn native_ladder_lp4_scalar_laws_partition_reset_and_resonance() {
+        prepare();
+        assert_eq!(std::mem::size_of::<Ladder>(), 124);
+        assert!((cutoff(0.0) - 25.956726).abs() < 0.0001);
+        assert!((cutoff(1.0) - 19912.266).abs() < 0.01);
+        assert_eq!(exponential(1200.0), 1.0, "native Gain0 is unity");
+        assert!((exponential(1200.0 + 119.58941) - 10_f32.powf(12.0 / 20.0)).abs() < 0.0001);
+        // Independent dB gain and DC/soft-clip law, including signed direct Gain.
+        for rate in [32_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for raw in [-1.0_f32, -0.25, 0.0, 0.5, 1.0] {
+                let mut filter = Ladder::default();
+                filter.tune([0.5, 0.0, raw], rate);
+                let amplitude = 0.0001_f64 * 10_f64.powf(12.0 * f64::from(raw) / 20.0);
+                let expected = 1.02 * amplitude * (1.0 - amplitude / 48.0);
+                let mut last = 0.0;
+                for _ in 0..128 {
+                    let (mut l, mut r) = ([0.0001; 128], [-0.0001; 128]);
+                    filter.process(&mut l, &mut r);
+                    last = l[127];
+                    assert!((l[127] + r[127]).abs() < 1e-8);
+                }
+                assert!(
+                    (f64::from(last) - expected).abs() < 2e-8,
+                    "signed Gain{raw} rate{rate}"
+                );
+            }
+        }
+        for rate in [32_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for frequency in [0.0, 0.5, 1.0] {
+                let mut filter = Ladder::default();
+                filter.tune([frequency, 0.0, 0.0], rate);
+                // Independent double direct-form one-poles. They have the
+                // same transfer function as the half-integrator state, but
+                // neither its histories nor its update recurrence.
+                let w = f64::from(cutoff(frequency)) / f64::from(rate);
+                let g = (std::f64::consts::PI
+                    + w * w * (10.335426330566406 + 40.80263137817383 * w * w))
+                    * w;
+                let g = g.min(8.0);
+                let (b, a) = (g / (1.0 + g), (1.0 - g) / (1.0 + g));
+                let mut direct = [[0_f64; 2]; 4];
+                let mut reference = [0.0; 512];
+                let source: [f32; 512] = std::array::from_fn(|i| match i {
+                    0 => 0.5,
+                    53 => -0.75,
+                    129 => 24.0,
+                    257 => -48.0,
+                    _ => 0.0,
+                });
+                for (sample, expected) in source.iter().zip(&mut reference) {
+                    let input = f64::from(*sample).clamp(-24.0, 24.0);
+                    let mut x = input * (1.0 - input.abs() / 48.0);
+                    for history in &mut direct {
+                        let y = b * (x + history[0]) + a * history[1];
+                        *history = [x, y];
+                        x = y;
+                    }
+                    *expected = x * 1.02;
+                }
+                let (mut left, mut right) = (source, source.map(|v| -v));
+                let mut partitioned = filter;
+                let (mut split_l, mut split_r) = (left, right);
+                filter.process(&mut left, &mut right);
+                for range in [0..1, 1..37, 37..128, 128..129, 129..512] {
+                    partitioned.process(&mut split_l[range.clone()], &mut split_r[range]);
+                }
+                assert_eq!(left, split_l);
+                assert_eq!(right, split_r);
+                for ((&l, &r), expected) in left.iter().zip(&right).zip(&reference) {
+                    assert_eq!(l, -r);
+                    assert!(
+                        (f64::from(l) - expected).abs() < 0.00002,
+                        "independent pole/clip rate={rate} cutoff={frequency}"
+                    );
+                }
+                filter.clear();
+                let (mut silent_l, mut silent_r) = ([0.0; 128], [0.0; 128]);
+                filter.process(&mut silent_l, &mut silent_r);
+                assert_eq!(silent_l, [0.0; 128]);
+                assert_eq!(silent_r, [0.0; 128]);
+
+                // Constant input checks the physical DC response separately
+                // from the signed impulse and direct-form transient above.
+                let mut last = 0.0;
+                for _ in 0..(rate as usize).div_ceil(128) {
+                    let (mut l, mut r) = ([0.0001; 128], [-0.0001; 128]);
+                    filter.process(&mut l, &mut r);
+                    last = l[127];
+                }
+                assert!((last - 1.02 * 0.0001 * (1.0 - 0.0001 / 48.0)).abs() < 0.00000002);
+                for resonance in [0.0, 0.25, 0.6, 0.7] {
+                    let knobs = [frequency, resonance, 0.0];
+                    filter.clear();
+                    filter.tune(knobs, rate);
+                    let hz = cutoff(frequency).min(rate * 0.4);
+                    let (mut ip, mut op) = (0_f64, 0_f64);
+                    for block in 0..2048 {
+                        let mut l = std::array::from_fn::<_, 128, _>(|i| {
+                            (((block * 128 + i) as f64 * std::f64::consts::TAU * f64::from(hz)
+                                / f64::from(rate))
+                            .sin()
+                                * 1e-5) as f32
+                        });
+                        let mut r = l.map(|x| -x);
+                        if block >= 1024 {
+                            ip += l.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                        }
+                        filter.process(&mut l, &mut r);
+                        if block >= 1024 {
+                            op += l.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+                        }
+                    }
+                    let measured = (op / ip).sqrt();
+                    let expected = f64::from(Ladder::magnitude(knobs, hz, rate));
+                    assert!(
+                        (measured / expected - 1.0).abs() < 0.002,
+                        "small-signal rate={rate} cutoff={frequency} res={resonance}"
+                    );
+                }
+                // Full resonance can self-oscillate. Its nonlinear bounded
+                // output is checked instead of a stable linear sine gain.
+                filter.clear();
+                filter.tune([frequency, 1.0, 1.0], rate);
+                for block in 0..512 {
+                    let mut l = [0.0; 128];
+                    if block == 0 {
+                        l[0] = 0.1;
+                    }
+                    let mut r = l.map(|x| -x);
+                    filter.process(&mut l, &mut r);
+                    assert!(l.iter().chain(&r).all(|x| x.is_finite() && x.abs() < 48.0));
+                }
+            }
+        }
+    }
+}
+
+// Plan-owned numeric storage: only Ladder stages reserve these cells.
+impl Ladder {
+    pub(crate) fn restore(cells: &[[f64; 2]]) -> Self {
+        let mut out = Self::default();
+        out.state[0][0] = cells[0][0] as f32;
+        out.state[0][1] = cells[0][1] as f32;
+        out.state[0][2] = cells[1][0] as f32;
+        out.state[0][3] = cells[1][1] as f32;
+        out.state[0][4] = cells[2][0] as f32;
+        out.state[1][0] = cells[2][1] as f32;
+        out.state[1][1] = cells[3][0] as f32;
+        out.state[1][2] = cells[3][1] as f32;
+        out.state[1][3] = cells[4][0] as f32;
+        out.state[1][4] = cells[4][1] as f32;
+        out.controls.current[0] = cells[5][0] as f32;
+        out.controls.current[1] = cells[5][1] as f32;
+        out.controls.current[2] = cells[6][0] as f32;
+        out.controls.target[0] = cells[6][1] as f32;
+        out.controls.target[1] = cells[7][0] as f32;
+        out.controls.target[2] = cells[7][1] as f32;
+        out.controls.increment[0] = cells[8][0] as f32;
+        out.controls.increment[1] = cells[8][1] as f32;
+        out.controls.increment[2] = cells[9][0] as f32;
+        out.controls.rate = cells[9][1] as f32;
+        out.controls.remaining = cells[10][0] as u32;
+        out.controls.phase = cells[10][1] as u8;
+        out.controls.pending = cells[11][0] != 0.0;
+        out.controls.started = cells[11][1] != 0.0;
+        out.controls.modes = cells[12][0] as u8;
+        out.g = cells[12][1] as f32;
+        out.reciprocal = cells[13][0] as f32;
+        out.feedback = cells[13][1] as f32;
+        out.compensation = cells[14][0] as f32;
+        out.gain = cells[14][1] as f32;
+        out.correction = cells[15][0] as f32;
+        out.correction_reciprocal = cells[15][1] as f32;
+        out.correction_previous = cells[16][0] as f32;
+        out.correction_gain = cells[16][1] as f32;
+        out
+    }
+    pub(crate) fn retain(&self, cells: &mut [[f64; 2]]) {
+        cells[0][0] = f64::from(self.state[0][0]);
+        cells[0][1] = f64::from(self.state[0][1]);
+        cells[1][0] = f64::from(self.state[0][2]);
+        cells[1][1] = f64::from(self.state[0][3]);
+        cells[2][0] = f64::from(self.state[0][4]);
+        cells[2][1] = f64::from(self.state[1][0]);
+        cells[3][0] = f64::from(self.state[1][1]);
+        cells[3][1] = f64::from(self.state[1][2]);
+        cells[4][0] = f64::from(self.state[1][3]);
+        cells[4][1] = f64::from(self.state[1][4]);
+        cells[5][0] = f64::from(self.controls.current[0]);
+        cells[5][1] = f64::from(self.controls.current[1]);
+        cells[6][0] = f64::from(self.controls.current[2]);
+        cells[6][1] = f64::from(self.controls.target[0]);
+        cells[7][0] = f64::from(self.controls.target[1]);
+        cells[7][1] = f64::from(self.controls.target[2]);
+        cells[8][0] = f64::from(self.controls.increment[0]);
+        cells[8][1] = f64::from(self.controls.increment[1]);
+        cells[9][0] = f64::from(self.controls.increment[2]);
+        cells[9][1] = f64::from(self.controls.rate);
+        cells[10][0] = f64::from(self.controls.remaining);
+        cells[10][1] = f64::from(self.controls.phase);
+        cells[11][0] = f64::from(u8::from(self.controls.pending));
+        cells[11][1] = f64::from(u8::from(self.controls.started));
+        cells[12][0] = f64::from(self.controls.modes);
+        cells[12][1] = f64::from(self.g);
+        cells[13][0] = f64::from(self.reciprocal);
+        cells[13][1] = f64::from(self.feedback);
+        cells[14][0] = f64::from(self.compensation);
+        cells[14][1] = f64::from(self.gain);
+        cells[15][0] = f64::from(self.correction);
+        cells[15][1] = f64::from(self.correction_reciprocal);
+        cells[16][0] = f64::from(self.correction_previous);
+        cells[16][1] = f64::from(self.correction_gain);
+    }
+}

@@ -22,13 +22,38 @@ pub struct GroupState {
     pub fx: (u16, Vec<Option<RackSlot>>),
     /// Internal and external modulation array chunks, preserving versions and slots.
     pub modulation: Vec<RackSlot>,
+    /// Compact record version (1..=4).
+    pub version: u16,
+    /// The saved `BParSrcMode` record plus any retained bytes after it
+    /// (Kontakt8131 0x140cff070 reads it into the group source state).
+    pub source: Vec<u8>,
+    /// Compact public bytes 14..24: release-trigger flags, release counter,
+    /// MIDI channel and voice-group state. Native applies them at group
+    /// +0x671..0x674, +0x678, +0xd8 and +0xba0 (0x140cff070); their laws are
+    /// unproved, so they are retained and reported, never applied.
+    pub compact_state: [u8; 10],
+    /// Trailing selection byte and the v4 words (group +0x120/+0x124, selection
+    /// via 0x1409a8650/0x1409a8c60); ownership unproved, retained and reported.
+    pub selection: u8,
+    pub v4_words: Vec<u8>,
 }
 
 /// One insert slot: chunk id and bytes.
 pub type RackSlot = (u16, Vec<u8>);
 
-/// Replace only the two modulation arrays, retaining the original group topology.
-pub(crate) fn overlay_modulation(
+/// Replace the two modulation arrays and the source-mode record (Kontakt8131
+/// 0x140cff070), retaining every other child of the original group.
+pub(crate) fn overlay_group(
+    group: &ni_file::kontakt::objects::Group,
+    state: &GroupState,
+) -> Result<ni_file::kontakt::objects::Group, ni_file::Error> {
+    let mut overlaid = overlay_modulation(group, &state.modulation);
+    let record = ni_file::kontakt::objects::BParSrcMode::read(std::io::Cursor::new(&state.source))?;
+    overlaid.set_source_record(&state.source[..usize::from(record.bytes)])?;
+    Ok(overlaid)
+}
+
+fn overlay_modulation(
     group: &ni_file::kontakt::objects::Group,
     saved: &[RackSlot],
 ) -> ni_file::kontakt::objects::Group {
@@ -120,6 +145,11 @@ pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
                         .collect(),
                 ),
                 modulation,
+                version: g.version,
+                source: g.source_data.clone(),
+                compact_state: g.public_data[14..24].try_into().expect("ten bytes"),
+                selection: g.trailing_flag,
+                v4_words: g.trailing_data.clone(),
             })
         })
         .collect::<Result<Vec<_>, ni_file::Error>>()
@@ -212,6 +242,53 @@ mod probe {
             [0, 0x12, 0, 1],
             "base remains unchanged"
         );
+    }
+
+    #[test]
+    fn snapshot_source_mode_record_replaces_the_base_source() {
+        use ni_file::kontakt::{StructuredObject, objects::Group};
+        let record = |mode: u8| {
+            let mut r = vec![0, 0, 1, mode, 0, 0, 0];
+            r.extend([0; 40]);
+            let n = ni_file::kontakt::objects::BParSrcMode::read(std::io::Cursor::new(&r)).unwrap();
+            r.truncate(usize::from(n.bytes));
+            r
+        };
+        let mut private = Vec::new();
+        for _ in 0..136 {
+            private.extend(8u32.to_le_bytes());
+            private.extend([0; 8]);
+        }
+        private.extend([0; 24]);
+        private.extend([0, 0x13, 0]);
+        private.extend(8u32.to_le_bytes());
+        private.extend([0; 8]);
+        private.push(0);
+        private.extend(record(0));
+        private.extend([0xde, 0xad]);
+        let base = Group(StructuredObject {
+            version: 1,
+            private_data: private,
+            public_data: Vec::new(),
+            children: Vec::new(),
+        });
+        let state = GroupState {
+            volume: 1.0,
+            pan: 0.0,
+            octaves: 0.0,
+            key_tracking: true,
+            reverse: false,
+            fx: (0x13, Vec::new()),
+            modulation: Vec::new(),
+            version: 3,
+            source: record(5),
+            compact_state: [0; 10],
+            selection: 0,
+            v4_words: Vec::new(),
+        };
+        let overlaid = overlay_group(&base, &state).unwrap();
+        assert_eq!(overlaid.source_identity().unwrap().mode, 5);
+        assert!(overlaid.0.private_data.ends_with(&[0xde, 0xad]));
     }
 
     /// What differs between snapshots and their instrument: run with --ignored.
