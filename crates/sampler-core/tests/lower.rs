@@ -553,8 +553,8 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
     assert_eq!(voices, 5);
 }
 
-/// A 4-pole filter lowers as two cascaded 2-pole sections: it attenuates a
-/// tone well above the cutoff more than one 2-pole section does.
+/// A 4-pole filter lowers as two cascaded 2-pole sections (6-pole: three): each
+/// attenuates a tone well above the cutoff more than the one before.
 #[test]
 fn four_pole_filters_lower_to_two_cascaded_sections() {
     let tone = |poles| {
@@ -586,9 +586,11 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
         rt.render(&mut out).unwrap();
         out[256..].iter().map(|f| f[0] * f[0]).sum::<f32>()
     };
-    let (two, four) = (tone(2), tone(4));
-    assert!(two.is_finite() && four.is_finite());
+    let (two, four, six) = (tone(2), tone(4), tone(6));
+    assert!(two.is_finite() && four.is_finite() && six.is_finite());
     assert!(four < two * 0.5, "two {two}, four {four}");
+    // Three sections: SV LP6 is six cascaded one-poles at zero resonance.
+    assert!(six < four * 0.5, "four {four}, six {six}");
 }
 
 #[test]
@@ -950,10 +952,8 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     rt.set_engine_offsets(&[]).unwrap();
     rt.render(&mut out).unwrap();
     assert!((out[32][0] / before - 0.25).abs() < 0.001);
-    instrument.chains[0].pre_amplitude[0] = ir::Processor::Gainer {
-        gain: ir::Gain::UNITY,
-        dry: 0.,
-    };
+    instrument.chains[0].pre_amplitude[0] =
+        ir::Processor::Color(ir::fx::color::Config::gainer(ir::Gain::UNITY, 0.));
     let mut rt = Runtime::new(prepare(&instrument, constant(0.5)), limits()).unwrap();
     rt.trigger(input(60), 60, 1.).unwrap();
     rt.render(&mut out).unwrap();
@@ -1087,11 +1087,7 @@ fn native_stereo_width_and_pan_controls_reach_the_processor() {
         }],
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::StereoModeller {
-                width: 0.5,
-                pan: 0.,
-                pseudo: false,
-            }],
+            pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0., false))],
             post_amplitude: vec![],
         }],
         controls: keys
@@ -1436,11 +1432,7 @@ fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
             feedback: 0.0,
             mix: 1.0,
         },
-        ir::Processor::StereoModeller {
-            width: 0.5,
-            pan: 0.0,
-            pseudo: true,
-        },
+        ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0.0, true)),
     ] {
         let instrument = ir::Instrument {
             assets: vec![asset("tail probe")],
@@ -2102,6 +2094,8 @@ fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
 
 #[test]
 fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
+    /// Centre gain in true dB per displayed dB of the native legacy EQ.
+    const GAIN_SCALE: f64 = 2.006_866_648_250_223;
     let instrument = ir::Instrument {
         source_indices: ir::SourceIndices {
             control_aliases: vec![ir::SourceControlAlias {
@@ -2129,13 +2123,13 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
         }],
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(0.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            })],
+            pre_amplitude: vec![ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+                law: ir::fx::eq::Law::KontaktLegacy,
+                frequency: sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.),
+                q: sampler_core::KontaktLegacyEqSettings::bandwidth_knob(1.),
+                gain_db: 0.,
+                ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+            }))],
             post_amplitude: vec![],
         }],
         processor_controls: vec![ir::ProcessorControl {
@@ -2223,7 +2217,7 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     let power = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
     let gain_db = 10. * (power(&output[1024..]) / power(&frames[1024..4096])).log10();
     assert!(
-        (gain_db - 12. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.05,
+        (gain_db - 12. * GAIN_SCALE).abs() < 0.4,
         "center-frequency gain: {gain_db} dB"
     );
     let id = sampler_core::lower::ir_control_id("eq/physical-slot-5/band-2/gain");
@@ -2238,8 +2232,9 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     });
     let edited_db = 10. * (power(&edited[128..]) / power(&frames[4224..4608])).log10();
     assert!(
-        // +18 dB shown is 36 dB true; the 512-frame window has not fully settled.
-        (edited_db - 18. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.6,
+        // The native wrapper slews 1% of the distance per 32 frames toward the +36 dB target, so
+        // 512 frames only start the climb from the 24 dB the velocity route held.
+        edited_db > 12. * GAIN_SCALE + 0.5 && edited_db < 18. * GAIN_SCALE,
         "native base plus held modulation clamps at +18 dB: {edited_db}"
     );
     let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id)
@@ -2269,15 +2264,13 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
         controls,
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(12.),
-                },
-                cutoff: ir::Frequency::Hertz(20. * 10f64.powf(0.9)),
-                resonance: ir::Resonance::Q(
-                    1. / (2. * (std::f64::consts::LN_2 * 0.5 * 0.84).sinh()),
-                ),
-            })],
+            pre_amplitude: vec![ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+                law: ir::fx::eq::Law::KontaktLegacy,
+                frequency: 0.3,
+                q: 0.2,
+                gain_db: 12.,
+                ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+            }))],
             post_amplitude: vec![],
         }],
         processor_controls: [
@@ -2337,7 +2330,7 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
         }],
         ..Default::default()
     };
-    let hz = 20f32 * 10f32.powf(3. * 0.7);
+    let hz = sampler_core::KontaktLegacyEqSettings::frequency_hz(0.7, 48000);
     let frames: Vec<_> = (0..10000)
         .map(|n| [0.01 * (std::f32::consts::TAU * hz * n as f32 / 48000.).sin(); 2])
         .collect();
@@ -2359,8 +2352,8 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
     let power = |f: &[[f32; 2]]| f.iter().map(|x| f64::from(x[0]).powi(2)).sum::<f64>();
     let boosted_db = 10. * (power(&out[1024..]) / power(&frames[1024..4096])).log10();
     assert!(
-        (boosted_db - 12.).abs() < 0.03,
-        "frequency moved in log-knob domain: {boosted_db}"
+        (boosted_db - 12. * 2.006_866_648_250_223).abs() < 0.3,
+        "frequency moved in the native knob domain: {boosted_db}"
     );
     let mut edited = [[0.; 2]; 1024];
     support::without_heap(|| {
@@ -2380,8 +2373,8 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
     });
     let edited_db = 10. * (power(&edited[512..]) / power(&frames[4608..5120])).log10();
     assert!(
-        edited_db < 1.,
-        "native base edits move the same held knobs: {edited_db}"
+        edited_db < boosted_db - 5.,
+        "native base edits move the same held knobs (slewing at the native cadence): {edited_db}"
     );
 
     let mut width_outputs = [[[0.; 2]; 1024]; 2];
@@ -2461,14 +2454,12 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
     i.chains = vec![ir::Chain {
         scope: ir::Scope::Voice,
         pre_amplitude: vec![],
-        post_amplitude: vec![ir::Processor::Compressor(ir::Compressor {
-            threshold_db: -12.,
-            ratio: 4.,
-            attack: ir::Time::Seconds(0.01),
-            release: ir::Time::Seconds(0.1),
-            makeup: ir::Gain::Linear(1.),
-            link: true,
-        })],
+        post_amplitude: vec![ir::Processor::Dynamics(ir::fx::dynamics::Config::generic(
+            -12.,
+            4.,
+            ir::Time::Seconds(0.01),
+            ir::Time::Seconds(0.1),
+        ))],
     }];
     i.register_compressor_controls();
     i.register_compressor_controls(); // Re-registration preserves identities.
@@ -2943,6 +2934,7 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
                     })
                     .collect(),
                 sustain: Some(1),
+                flex_release: false,
             }),
         });
         ir.routes.push(ir::Route::new(
@@ -3369,7 +3361,7 @@ fn controlled_native_flex_fixture() -> ir::Instrument {
         ir::kontakt::FlexPoint{time_ms:3.,level:0.,curve:0.5},
     ];
     ir.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::Breakpoints(ir::Breakpoints{
-        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),
+        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),flex_release:false,
     })});
     ir.routes.push(ir::Route::new(ir::ModulatorRef(1),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
     ir.zones[0].routes.push(ir::RouteRef(0));
@@ -3816,7 +3808,7 @@ fn routes_move_scripted_effect_lanes_additively() {
             }],
             chains: vec![ir::Chain {
                 scope: ir::Scope::Voice,
-                pre_amplitude: vec![ir::Processor::LiveSaturation { shape, address }],
+                pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::classic(shape).at(address))],
                 post_amplitude: vec![],
             }],
             modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Key }],

@@ -2963,29 +2963,26 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
-            ir::Processor::Gainer { .. } => "Gainer",
-            ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
-            ir::Processor::LoFi { .. } | ir::Processor::LiveLoFi { .. } => "LoFi",
             ir::Processor::LiveFormant { .. } => "Formant",
-            ir::Processor::Saturation(_) | ir::Processor::LiveSaturation { .. } => "Saturation",
-            ir::Processor::Distortion { .. } | ir::Processor::LiveDistortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
-            ir::Processor::Reverb(_) => "Reverb",
-            ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
-            ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ",
-            ir::Processor::Compressor(_) => "Compressor",
-            ir::Processor::Rectify(_) => "Rectify",
+            ir::Processor::Space(c) => if c.impulse.is_some() { "Convolution" } else { "Reverb" },
+            ir::Processor::Eq(_) => "EQ",
+            ir::Processor::Dynamics(_) => "Compressor",
+            ir::Processor::Color(c) => c.label(),
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
                 [usize::from(d.taps.clamp(1, 12)) - 1],
             ir::Processor::Ar(_) => "AR filter",
-            ir::Processor::LegacyPhaser { .. } => "Legacy Phaser",
+            ir::Processor::TimeMod(_) => "Delay / modulation",
             ir::Processor::Phaser(_) => "Phaser filter",
             ir::Processor::Formant(_) => "Formant I",
+            ir::Processor::FilterBank(c) => match c.topology {
+                ir::fx::filter::Topology::FormantII => "Formant II",
+                _ => "Filter",
+            },
             ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
-            ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
             ir::Processor::Delay { .. } => "Delay",
             ir::Processor::Mix { .. } => "Mix",
@@ -3706,8 +3703,10 @@ mod tests {
             let buses = (0..3)
                 .map(|b| sampler_core::Bus {
                     processors: if b == 1 {
-                        vec![sampler_core::Processor::Rectify(
-                            sampler_core::Rectifier::Full,
+                        vec![sampler_core::Processor::Color(
+                            sampler_core::ColorSettings::curve(sampler_core::CurveSettings::Rectifier(
+                                sampler_core::Rectifier::Full,
+                            )),
                         )]
                     } else {
                         vec![]
