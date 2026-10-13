@@ -187,9 +187,12 @@ impl Samples {
                 }
                 let archive = self.canonical[archive.as_os_str()].clone();
                 if archive.starts_with(&self.root)
-                    && self.archive(&archive)?.find(&member).is_some()
+                    && let Some(entry) = self.archive(&archive)?.find(&member)
                 {
-                    return Ok(Some(archive.join(member)));
+                    // Port v1 0cb7a8a0:src/import.rs Resolver::member_path:
+                    // use the directory's actual spelling, so aliases share
+                    // one asset/source/header rather than duplicate residency.
+                    return Ok(Some(archive.join(&entry.name)));
                 }
             } else if candidate.is_file() {
                 let file = candidate
@@ -210,6 +213,25 @@ impl Samples {
             })?
         {
             return Ok(Some(file));
+        }
+        // A moved archive's stored Windows prefix is not a host path. Resolve
+        // the archive itself with the same library-bounded, longest-unique-
+        // suffix search used for moved loose files, then keep its member exact.
+        // Never search every archive by member basename: Close/Far often share
+        // sample names. This extends v1 Resolver's moved-file rule to NKX/NKR.
+        if let Some((prefix, member)) = archive_reference(&name) {
+            if member.split('/').any(|p| matches!(p, "" | "." | "..")) {
+                return Err(LoadError::Invalid {
+                    path: parent.join(&name),
+                    reason: "invalid moved archive member path".into(),
+                });
+            }
+            if let Some(archive) = self.resolve(parent, prefix)? {
+                return Ok(self
+                    .archive(&archive)?
+                    .find(member)
+                    .map(|entry| archive.join(&entry.name)));
+            }
         }
         // Moved loose samples: match by name, preferring the longest unique
         // directory suffix; never silently pick one of several duplicates.
@@ -734,6 +756,16 @@ fn archive_member_where(
     None
 }
 
+fn archive_reference(name: &str) -> Option<(&str, &str)> {
+    name.match_indices('/').find_map(|(at, _)| {
+        let prefix = &name[..at];
+        Path::new(prefix)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"))
+            .then_some((prefix, &name[at + 1..]))
+    })
+}
+
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -1158,11 +1190,7 @@ mod tests {
             samples
                 .resolve_impulse(&parent, "C:/old/resources/IR/AUTHORED.WAV", &containers)
                 .unwrap(),
-            Some(
-                root.canonicalize()
-                    .unwrap()
-                    .join("Samples/authored.nkr/resources/IR/AUTHORED.WAV")
-            )
+            Some(expected.clone())
         );
         let aliases = ["Samples/authored.nkr".into(), "Samples/authored.nkr".into()];
         assert_eq!(
