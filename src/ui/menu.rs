@@ -1106,9 +1106,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::EditSound(slot) => {
             cx.show(slot);
             cx.state.tab = super::Tab::Rack;
-            let state = cx.state.inside.entry(slot).or_default();
-            state.view = Some(super::inside::View::Sound);
-            state.sound_tab = super::inside::SoundTab::Controls;
+            cx.state.inside.entry(slot).or_default().view = Some(super::inside::View::Sound);
         }
         Command::Art(slot, action) => super::inside::action(ui, cx, slot, action),
         Command::Open(path) => cx.open(Path::new(&path)),

@@ -42,16 +42,15 @@ pub(crate) fn strict_table(data: &[u8], version: u16) -> (&'static str, BTreeMap
     let parsed = sampler_kontakt::Chunks::parse(&wire, limits)
         .and_then(|c| sampler_kontakt::Script::parse(c.iter().next().unwrap(), limits));
     match parsed {
-        Ok(script) => match script.persistent {
-            None => ("absent", BTreeMap::new()),
-            Some(entries) => {
-                let mut tags = BTreeMap::new();
-                for e in entries.iter() {
-                    add(&mut tags, metrics::metadata::sigil(e.data()));
-                }
-                ("decoded", tags)
+        // The table is always present now; an empty one reads as "absent".
+        Ok(script) if script.persistent.is_empty() => ("absent", BTreeMap::new()),
+        Ok(script) => {
+            let mut tags = BTreeMap::new();
+            for e in script.persistent.iter() {
+                add(&mut tags, metrics::metadata::sigil(e.data()));
             }
-        },
+            ("decoded", tags)
+        }
         Err(_) => ("malformed", BTreeMap::new()),
     }
 }
