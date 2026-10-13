@@ -954,6 +954,42 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn amplifier_prepares_gain_slopes_once_with_exact_pcm_and_fade_clock() {
+        use crate::voice_mod::{Outputs, Ramp, SAMPLE_GAIN_CALLS};
+        use crate::FadeCurve::*;
+        for curve in [Linear, EqualPower, SCurve, Exponential, Logarithmic] {
+            for fade in [None, Some(Fade { from:0.17, to:0.89, start:37, frames:65, curve, stop:false }),
+                Some(Fade { from:0.89, to:0.17, start:37, frames:65, curve, stop:true })] {
+                for (begin, end) in [(0,0), (0,64), (37,102), (u64::MAX-128,u64::MAX-64)] {
+                    let ramp = Ramp { from:Outputs { gains:[0.037, -0.], ..Default::default() },
+                        to:Outputs { gains:[0.981, 0.713], ..Default::default() }, begin,end,script_fade:fade };
+                    let times = [0,36,37,38,63,64,65,101,102,103,u64::MAX-65,u64::MAX];
+                    let expected: Vec<_> = times.iter().map(|&at| ramp.gains_at(at)).collect();
+                    SAMPLE_GAIN_CALLS.set(0);
+                    let prepared = ramp.prepare_gains();
+                    for (&at, original) in times.iter().zip(expected) {
+                        let got = prepared.at(at);
+                        for c in 0..2 {
+                            assert_eq!(got[c].to_bits(), original[c].to_bits(), "{curve:?} frame {at}");
+                            for sample in [0., -0., 0.731, -0.29, f64::MIN_POSITIVE] {
+                                let level = 0.73119f64;
+                                assert_eq!((sample * (level * f64::from(got[c]))).to_bits(),
+                                    (sample * (level * f64::from(original[c]))).to_bits());
+                            }
+                        }
+                    }
+                    assert_eq!(SAMPLE_GAIN_CALLS.get(), 0, "sample loop must reuse prepared slopes");
+                }
+            }
+            SAMPLE_GAIN_CALLS.set(0);
+            // Exercise the production voice-chain amplifier, not only the reader.
+            let audio = curved_audio(curve, false, true, 65);
+            assert!(audio.iter().flatten().any(|x| *x > 0.));
+            assert_eq!(SAMPLE_GAIN_CALLS.get(), 0, "chain render must use prepared slopes");
+        }
+    }
     use super::*;
 
     #[test]

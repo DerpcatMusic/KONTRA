@@ -2,6 +2,11 @@
 use crate::dsp::{BLOCK, ControlRamp, PreparedProcessor, ProcessorState, allocate};
 use crate::{ControlRange, Error, Frame, Prepared, Processor};
 
+#[cfg(test)]
+std::thread_local! {
+    static STATE_CLEARS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One post-processing send. `None` targets the runtime's stereo output.
 #[derive(Clone, Copy, Debug)]
 pub struct BusSend {
@@ -234,6 +239,8 @@ struct Buffer {
     remaining: u32,
     /// Written since last cleared; idle buses cost nothing to begin.
     dirty: bool,
+    /// Processor cells need a reset after processing, never while already asleep.
+    state_dirty: bool,
 }
 
 impl Default for Buffer {
@@ -243,6 +250,7 @@ impl Default for Buffer {
             input_frames: 0,
             remaining: 0,
             dirty: false,
+            state_dirty: false,
         }
     }
 }
@@ -335,6 +343,11 @@ impl BusState {
     pub fn active(&self) -> bool {
         self.tone_ringing || self.buffers.iter().any(|b| b.remaining != 0)
     }
+    /// Render scheduling includes one pending history reset; ownership still
+    /// uses `active`, so a diagnostic reset does not extend a plan's tail.
+    pub fn needs_render(&self) -> bool {
+        self.tone_ringing || self.buffers.iter().any(|b| b.remaining != 0 || b.state_dirty)
+    }
     pub fn reset(&mut self) {
         self.begin();
         self.cells.fill(ProcessorState::default());
@@ -346,6 +359,7 @@ impl BusState {
             .for_each(crate::dsp::Convolution::clear);
         for buffer in &mut self.buffers {
             buffer.remaining = 0;
+            buffer.state_dirty = false;
         }
     }
     /// `outs` are whole-render buffers; this block starts at `offset` in them.
@@ -364,6 +378,17 @@ impl BusState {
         for &index in &graph.order {
             let node = &graph.nodes[index];
             let buffer = &mut self.buffers[index];
+            // Port v1 0cb7a8a0:src/fx/processor.rs::mix_buses sleeping early exit.
+            // Retain v2's exact declared tail and the independent input-tone history;
+            // no threshold, DSP law or control cadence is changed (NI signal-flow
+            // manual; Kontakt 0x1408fa270 cadence remains owned by each processor).
+            if buffer.input_frames == 0
+                && buffer.remaining == 0
+                && !buffer.state_dirty
+                && graph.input != Some(index)
+            {
+                continue;
+            }
             let states = &mut self.cells[node.states.clone()];
             // Input frames hold the tail at its maximum; it then counts down
             // over zero input until it ends, which clears the bus's history.
@@ -435,6 +460,7 @@ impl BusState {
                 }
             }
             if produced > 0 {
+                buffer.state_dirty = true;
                 let mut block = [[0.; BLOCK]; 2];
                 for (i, frame) in buffer.samples[..produced].iter().enumerate() {
                     block[0][i] = f64::from(frame[0]);
@@ -504,7 +530,10 @@ impl BusState {
                 }
             }
             // The tail ended inside this block: nothing carries over.
-            if produced < len {
+            if produced < len && buffer.state_dirty {
+                buffer.state_dirty = false;
+                #[cfg(test)]
+                STATE_CLEARS.set(STATE_CLEARS.get() + states.len());
                 states.fill(ProcessorState::default());
             }
             if produced == 0 {
@@ -738,5 +767,71 @@ impl PreparedBuses {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+
+    #[test]
+    fn sleeping_bus_clears_once_and_wakes_with_identical_pcm() {
+        let filter = crate::Biquad::new(48000, crate::FilterKind::LowPass, 12000., 1.).unwrap();
+        let coefficients = filter.trace_coefficients();
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_buses(
+                vec![Bus {
+                    processors: vec![Processor::Biquad(filter)],
+                    sends: vec![BusSend {
+                        bus: None,
+                        gain: 1.,
+                    }],
+                    tail_frames: 3,
+                }],
+                vec![],
+            )
+            .unwrap();
+        let mut state = BusState::new(&plan).unwrap();
+        let step = |state: &mut BusState, input: bool, at: u64| {
+            state.begin();
+            if input {
+                state.input(0, 1)[0] = [1., -0.5];
+                state.fed(0, 1);
+            }
+            let mut output = [[0.; 2]; 64];
+            assert_eq!(
+                state.render::<false>(&plan.buses, &mut output, &mut [], 0, at, None, 120., None),
+                0
+            );
+            output
+        };
+        STATE_CLEARS.set(0);
+        let first = step(&mut state, true, 0);
+        // Independently evaluate the same retained coefficients; bus output is f32.
+        let [b0, b1, b2, a1, a2] = coefficients;
+        let mut history = [0.; 2];
+        for (i, frame) in first.iter().enumerate() {
+            let expected = if i < 4 {
+                let input = if i == 0 { 1. } else { 0. };
+                let y = b0 * input + history[0];
+                history = [b1 * input - a1 * y + history[1], b2 * input - a2 * y];
+                [y as f32, (y * -0.5) as f32]
+            } else {
+                [0.; 2]
+            };
+            assert_eq!(*frame, expected, "frame {i}");
+        }
+        assert_eq!(STATE_CLEARS.get(), 1, "one reset when the tail ends");
+        for i in 1..101 {
+            assert_eq!(step(&mut state, false, i * 64), [[0.; 2]; 64]);
+        }
+        assert_eq!(
+            STATE_CLEARS.get(),
+            1,
+            "sleeping buses must not repeatedly clear zero state"
+        );
+        assert_eq!(step(&mut state, true, 101 * 64), first, "wake is bit-exact");
+        assert_eq!(STATE_CLEARS.get(), 2);
     }
 }
