@@ -127,7 +127,7 @@ fn events(players: &mut [Loaded], keys: &[u8], on: bool) {
         )
     }));
     for loaded in players {
-        // Use the existing MIDI ingress and effect drain; event cost is recorded separately.
+        // Use the existing MIDI ingress and effect drain; event blocks are outside the steady-phase timings.
         play(&mut loaded.player, &messages, 64, 64);
     }
 }
@@ -181,6 +181,12 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 } else {
                     1
                 };
+                if count == 0 { return Err(format!("{name}: multi has no physical programs")); }
+                EVENT_ERRORS.set(0);
+                BEHAVIOR_ERRORS.set(0);
+                SERVICE_ERRORS.set(0);
+                SERVICE_MASK.set(0);
+                STREAM_SERVICE_ERRORS.set(0);
                 let mut players = Vec::new();
                 for program in 0..count {
                     let scenario = Scenario {
@@ -198,8 +204,6 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 eprintln!("{name} block {b} notes {n}: loaded {count} programs");
                 // Drain finite bootstrap; recurring timers continue normally.
                 phase(&mut players, b, 1.);
-                EVENT_ERRORS.set(0);
-                BEHAVIOR_ERRORS.set(0);
                 let idle = phase(&mut players, b, seconds);
                 events(&mut players, keys, true);
                 phase(&mut players, b, 1.);
@@ -218,20 +222,26 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                 let st: Vec<_> = players.iter().map(|p| stats(&p.player)).collect();
                 let errors = EVENT_ERRORS.replace(0);
                 let behavior_errors = BEHAVIOR_ERRORS.replace(0);
+                let service_errors = SERVICE_ERRORS.replace(0);
+                let service_mask = SERVICE_MASK.replace(0);
+                let stream_service_errors = STREAM_SERVICE_ERRORS.replace(0);
                 let underruns: u64 = st.iter().map(|s| s.stream_underruns).sum();
                 if held["peak"].as_f64().unwrap_or(0.) < SILENT as f64
                     || errors > 0
                     || behavior_errors > 0
+                    || service_errors > 0
+                    || stream_service_errors > 0
                     || underruns > 0
                 {
                     failures.push(format!(
-                        "{name}/{b}/{n}: held peak {}, errors {errors}, behavior errors {behavior_errors}, underruns {underruns}",
+                        "{name}/{b}/{n}: held peak {}, errors {errors}, behavior errors {behavior_errors}, external service refusals {service_errors} (mask {service_mask}), stream service errors {stream_service_errors}, underruns {underruns}",
                         held["peak"]
                     ));
                 }
                 cells.push(json!({"scenario":name,"block":b,"notes":n,"programs":count,
                     "idle":idle,"held":held,"release":release,"post_release":post_release,
-                    "event_errors":errors,"behavior_errors":behavior_errors,"stream_underruns":underruns}));
+                    "event_errors":errors,"behavior_errors":behavior_errors,"external_service_refusals":service_errors,
+                    "external_service_mask":service_mask,"stream_service_errors":stream_service_errors,"stream_underruns":underruns}));
                 eprintln!(
                     "{}",
                     serde_json::to_string(cells.last().unwrap()).map_err(fail)?
@@ -241,6 +251,9 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     }
     let result = json!({"format":"sampler-perf-sustain-1","rate":RATE,"threads":1,
         "seconds_per_phase":seconds,"release_settle_seconds":8,"cells":cells,"failures":failures,
+        "external_service_mask_bits":{"1":"MIDI service","2":"array file service"},
+        "ui_effects":"presentation effects drained without a UI; file/MIDI jobs retained and reported as failure",
+        "key_range":"only sample zones intersecting held MIDI keys are loaded; script-generated out-of-range notes are not a full-library audit",
         "multi_routing":"all physical programs auditioned on MIDI channel 1; rack channel/fader routing is not modeled",
         "loadavg":std::fs::read_to_string("/proc/loadavg").ok()});
     let text = serde_json::to_string_pretty(&result).map_err(fail)?;

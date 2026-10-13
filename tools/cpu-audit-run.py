@@ -39,6 +39,8 @@ if a.sustain:
                 tag = f'{name}-{block}-{notes}' + ('-perf' if a.profile else '')
                 done = a.out / f'{tag}.done'
                 if done.exists():
+                    # Resuming a failed cell must still fail the overall audit.
+                    failed_cells += int(json.loads(done.read_text()).get('exit_code', 1) != 0)
                     continue
                 ready = a.out / f'{tag}.ready'
                 finished = a.out / f'{tag}.finished'
@@ -67,17 +69,21 @@ if a.sustain:
                         if prof and prof.poll() is None:
                             prof.send_signal(signal.SIGINT)
                     code = job.wait()
+                    if a.profile and prof is None:
+                        code = code or 1
                     if prof:
                         profile_code = prof.wait()
                         with (a.out/f'{tag}.perf.txt').open('w') as report:
-                            subprocess.run(['perf', 'report', '--stdio', '--no-children',
+                            report_job = subprocess.run(['perf', 'report', '--stdio', '--no-children',
                                 '--percent-limit', '0.5', '-i', str(a.out/f'{tag}.perf.data')],
-                                stdout=report, check=True)
+                                stdout=report, check=False)
+                            code = code or report_job.returncode
                         with (a.out/f'{tag}.audio.perf.txt').open('w') as report:
-                            subprocess.run(['perf', 'report', '--stdio', '--no-children',
+                            report_job = subprocess.run(['perf', 'report', '--stdio', '--no-children',
                                 '--percentage', 'relative', '--tid', ready.read_text(),
                                 '--percent-limit', '0.5', '-i', str(a.out/f'{tag}.perf.data')],
-                                stdout=report, check=True)
+                                stdout=report, check=False)
+                            code = code or report_job.returncode
                         if profile_code not in (0, -signal.SIGINT, 128 + signal.SIGINT):
                             code = profile_code
                 done.write_text(json.dumps({'exit_code': code})+'\n')
