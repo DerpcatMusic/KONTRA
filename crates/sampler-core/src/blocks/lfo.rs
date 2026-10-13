@@ -217,8 +217,15 @@ fn lcg_jump(mut seed: u32, mut n: u64) -> u32 {
     seed
 }
 
+/// Whether the held-noise reset seed is the native one. It is not: the native chaotic
+/// reset (0x1405f4510) seeds from GetTickCount()*0x0bb38435+0x3619636b, so repeated
+/// resets differ; here the caller's deterministic `seed` is folded instead
+/// (audit CORE-SOURCE-MOD-018). Only the recurrence and grid below are native.
+pub const HELD_RESET_SEED_IS_NATIVE: bool = false;
+
 /// Held noise (0x140b06f50): the seed recurrence advances at each half cycle;
-/// `seed` is the reset seed (native resets from the tick count).
+/// `seed` is the caller's deterministic stand-in for the tick-count reset seed
+/// (see [`HELD_RESET_SEED_IS_NATIVE`]).
 fn held_native(phase: f64, seed: u64) -> f64 {
     let reset = ((seed ^ (seed >> 32)) as u32).wrapping_mul(LCG.0).wrapping_add(LCG.1);
     let bits = lcg_jump(reset, (2.0 * phase).floor().max(0.0) as u64);
@@ -529,6 +536,11 @@ mod tests {
         assert!((r(0.5, 0.25) - 0.999688982963562).abs() < 1e-6);
         assert_eq!(r(0.505, 0.25), r(0.5, 0.25));
         assert!((r(0.5, 0.75) + 0.999688982963562).abs() < 1e-6);
+    }
+
+    #[test]
+    fn held_noise_reset_seed_is_labelled_non_native() {
+        assert!(!HELD_RESET_SEED_IS_NATIVE);
     }
 
     #[test]

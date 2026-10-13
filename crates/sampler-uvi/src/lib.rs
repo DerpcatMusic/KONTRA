@@ -652,8 +652,8 @@ impl Translation {
                 self.unsupported(&at, fade, number(keygroup, fade, 0.0)?);
             }
         }
-        // The amplitude envelope: a plain Gain connection from a DAHDSR or
-        // AnalogADSR. Every other connection is a route or a static factor.
+        // The amplitude envelope: a plain Gain connection from a DAHDSR. Every other
+        // connection is a route or a static factor. AnalogADSR is not modeled (below).
         let mut amplitude = None;
         let mut shared = modulation::Modulation::default();
         for connection in scoped {
@@ -673,7 +673,7 @@ impl Translation {
                 keygroup,
                 connection.attribute("Source").unwrap_or_default(),
             )
-            .filter(|n| matches!(n.tag_name().name(), "DAHDSR" | "AnalogADSR"))
+            .filter(|n| n.tag_name().name() == "DAHDSR")
             .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0));
             match envelope {
                 Some(envelope)
@@ -919,10 +919,11 @@ impl Translation {
             envelope.attack_shape = curve(number(node, "AttackCurve", 0.0)?);
             envelope.decay_shape = curve(number(node, "DecayCurve", 0.0)?);
             envelope.release_shape = curve(number(node, "ReleaseCurve", 0.0)?);
-        } else {
-            // AnalogADSR integrates an RC stage law this envelope does not model.
-            self.unsupported(&at, "analog ADSR stage law (linear stages used)", "");
         }
+        // AnalogADSR is never built here: native 0x14113f0a0 runs a stateful exponential
+        // recurrence (attack toward a target, decay/release multiplying the level by
+        // 1-coefficient, coefficient from pow helper 0x1419ef640; audit uvi-core-analog-law)
+        // whose field units are unproved, so it is reported as unsupported, not linear.
         // v1 measured law: level × (1 − a + a·velocity^(1 − log2(1 − sensitivity))),
         // a = VelocityAmount; sensitivity 1 gates at 127.
         let sensitivity = number(node, "VelocitySens", 0.75)?.clamp(-1.0, 1.0);
