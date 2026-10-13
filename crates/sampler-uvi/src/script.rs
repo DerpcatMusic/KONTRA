@@ -3163,6 +3163,34 @@ mod tests {
         ScriptHost::new(&xml, (), Config::default()).unwrap()
     }
 
+    /// Every insert holds a convolver; impulses are a one-tap dirac.
+    struct Convolvers;
+    impl Files for Convolvers {
+        fn script(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn convolver_slot(&self, _: usize) -> Option<usize> {
+            Some(0)
+        }
+    }
+
+    #[test]
+    fn impulse_fields_set_together_rebuild_the_impulse_once() {
+        let xml = "<UVI4><Program Name='P'><Auxs><AuxEffect Name='Aux0'><Inserts>\
+             <Convolver Dry='0' Wet='1'/></Inserts></AuxEffect></Auxs>\
+             <EventProcessors><ScriptProcessor Name='S'><script><![CDATA[\
+             local c = Program.auxs[1].inserts[1]\n\
+             function onInit() c:setParameter('Wet', 0.5); c:setParameter('Dry', 0.25);\
+             c:setParameter('NormalizePower', true) end]]></script></ScriptProcessor></EventProcessors>\
+             <Layers><Layer Name='A'><Keygroups><Keygroup Name='K'><Oscillators>\
+             <SamplePlayer Name='o1'/></Oscillators></Keygroup></Keygroups></Layer></Layers>\
+             </Program></UVI4>";
+        let mut h = ScriptHost::new(xml, Convolvers, Config::default()).unwrap();
+        let impulses = |c: Vec<Command>| c.iter().filter(|c| matches!(c, Command::Impulse { .. })).count();
+        assert_eq!(impulses(h.take_commands()), 1, "{:?}", h.findings());
+        assert_eq!(impulses(h.take_commands()), 0);
+    }
+
     #[test]
     fn note_on_plays_the_oscillator_the_script_picks() {
         let mut h = host(
