@@ -18,6 +18,7 @@ pub(crate) mod svf;
 //   and the control domain (077) are not, so live Formant II is not offered.
 // - daft: PROVED parameter laws and scheduling; the audio kernel, resampler and saturation
 //   (029..031, 087) are stand-ins.
-// - ladder, ladder_kernel: PROVED selector, weights, compensation; the rest (045..049, 052..054,
-//   075, 076) is the pinned v1 kernel, labelled as such.
+// - ladder, ladder_kernel: PROVED selector, weights, compensation (all 12 rows); wave 4 adds the
+//   cutoff law and table (045, 075), pole polynomial (076) and the kernel structure (052) from
+//   FUN_140b00be2; gain law (046), correction constants, rate factor and clock (047) remain.
 // - svf: generic TPT stand-in (065..072, 080, 090); only SV LP2's response is measured.
