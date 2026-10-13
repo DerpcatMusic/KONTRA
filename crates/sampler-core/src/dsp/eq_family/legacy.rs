@@ -246,6 +246,27 @@ mod tests {
             903.2728881835938_f32
         );
     }
+    /// Kontakt measurement (docs/re/kontakt-bindings/legacy-eq-responses.tsv): stored +12 dB /
+    /// 1 oct applies as an RBJ peak of 24.08 dB, Q 0.667 (twice the stored dB and octaves).
+    #[test]
+    fn stored_twelve_db_one_octave_measures_twenty_four_db() {
+        let hz = 1000_f32;
+        let c = coefficients(
+            48000,
+            KontaktLegacyEqSettings::frequency_knob(hz),
+            KontaktLegacyEqSettings::bandwidth_knob(1.),
+            KontaktLegacyEqSettings::gain_knob(12.),
+        )
+        .map(f64::from);
+        let f = f64::from(KontaktLegacyEqSettings::frequency_hz(KontaktLegacyEqSettings::frequency_knob(hz), 48000));
+        let w = std::f64::consts::TAU * f / 48000.;
+        let mag = |p: [f64; 3]| {
+            let (re, im) = (p[0] + p[1] * w.cos() + p[2] * (2. * w).cos(), -p[1] * w.sin() - p[2] * (2. * w).sin());
+            re.hypot(im)
+        };
+        let db = 20. * (mag([c[0], c[1], c[2]]) / mag([1., -c[3], -c[4]])).log10();
+        assert!((db - 24.08).abs() < 0.01, "{db}");
+    }
     #[test]
     fn coefficients_match_original_instruction_vectors_at_all_rates() {
         for row in vectors()["eq_coefficients"].as_array().unwrap() {
