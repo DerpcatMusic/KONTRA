@@ -1,0 +1,85 @@
+step	name	result
+1	SV_LP1 cutoff=0 res=0	kind=lp fc=46.88 passband=-3.68 slope_db_per_oct=5.78 reso_peak=1.58
+2	SV_LP1 cutoff=250000 res=0	kind=lp fc=140.62 passband=-0.20 slope_db_per_oct=5.35 reso_peak=0.11
+3	SV_LP1 cutoff=500000 res=0	kind=lp fc=717.77 passband=-0.01 slope_db_per_oct=5.39 reso_peak=0.00
+4	SV_LP1 cutoff=750000 res=0	kind=lp fc=3773.44 passband=-0.00 slope_db_per_oct=8.25 reso_peak=0.00
+5	SV_LP1 cutoff=1000000 res=0	kind=lp fc=18260.74 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+6	SV_LP1 cutoff=500000 res=500000	kind=lp fc=717.77 passband=-0.01 slope_db_per_oct=5.39 reso_peak=0.00
+7	SV_LP1 cutoff=500000 res=900000	kind=lp fc=717.77 passband=-0.01 slope_db_per_oct=5.39 reso_peak=0.00
+8	SV_HP1 cutoff=0 res=0	kind=hp fc=26.37 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+9	SV_HP1 cutoff=250000 res=0	kind=hp fc=137.70 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+10	SV_HP1 cutoff=500000 res=0	kind=hp fc=720.70 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+11	SV_HP1 cutoff=750000 res=0	kind=hp fc=3752.93 passband=-0.05 slope_db_per_oct=5.37 reso_peak=0.04
+12	SV_HP1 cutoff=1000000 res=0	kind=hp fc=14625.00 passband=-3.24 slope_db_per_oct=6.42 reso_peak=2.25
+13	SV_HP1 cutoff=500000 res=500000	kind=hp fc=720.70 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+14	SV_HP1 cutoff=500000 res=900000	kind=hp fc=720.70 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+15	SV_BP2 cutoff=0 res=0	kind=bp f0=26.37 peak=-0.00 q=0.60 slope_lo=5.74 slope_hi=5.64
+16	SV_BP2 cutoff=250000 res=0	kind=bp f0=137.70 peak=-0.00 q=0.50 slope_lo=5.63 slope_hi=5.65
+17	SV_BP2 cutoff=500000 res=0	kind=bp f0=717.77 peak=-0.00 q=0.50 slope_lo=5.63 slope_hi=5.95
+18	SV_BP2 cutoff=750000 res=0	kind=bp f0=3785.16 peak=-0.00 q=0.56 slope_lo=5.65 slope_hi=93.41
+19	SV_BP2 cutoff=1000000 res=0	kind=bp f0=18278.32 peak=-0.01 q=2.13 slope_lo=6.12 slope_hi=0.00
+20	SV_BP2 cutoff=500000 res=500000	kind=bp f0=717.77 peak=15.48 q=3.95 slope_lo=6.43 slope_hi=6.75
+21	SV_BP2 cutoff=500000 res=900000	kind=bp f0=717.77 peak=49.90 q=81.67 slope_lo=13.07 slope_hi=7.23
+22	SV_BP4 cutoff=0 res=0	kind=bp f0=26.37 peak=-0.00 q=0.90 slope_lo=11.48 slope_hi=11.28
+23	SV_BP4 cutoff=250000 res=0	kind=bp f0=137.70 peak=-0.00 q=0.77 slope_lo=11.26 slope_hi=11.29
+24	SV_BP4 cutoff=500000 res=0	kind=bp f0=717.77 peak=-0.00 q=0.78 slope_lo=11.27 slope_hi=11.89
+25	SV_BP4 cutoff=750000 res=0	kind=bp f0=3785.16 peak=-0.00 q=0.84 slope_lo=11.31 slope_hi=90.16
+26	SV_BP4 cutoff=1000000 res=0	kind=bp f0=18275.39 peak=-0.01 q=2.90 slope_lo=12.22 slope_hi=0.00
+27	SV_BP4 cutoff=500000 res=500000	kind=bp f0=717.77 peak=10.91 q=4.22 slope_lo=12.68 slope_hi=13.35
+28	SV_BP4 cutoff=500000 res=900000	kind=bp f0=717.77 peak=41.77 q=81.67 slope_lo=0.69 slope_hi=7.68
+29	SV_LP4 cutoff=0 res=0	kind=lp fc=38.09 passband=-12.34 slope_db_per_oct=6.51 reso_peak=4.18
+30	SV_LP4 cutoff=250000 res=0	kind=lp fc=67.38 passband=-0.82 slope_db_per_oct=15.78 reso_peak=0.43
+31	SV_LP4 cutoff=500000 res=0	kind=lp fc=313.48 passband=-0.03 slope_db_per_oct=14.48 reso_peak=0.02
+32	SV_LP4 cutoff=750000 res=0	kind=lp fc=1669.92 passband=-0.00 slope_db_per_oct=15.86 reso_peak=0.00
+33	SV_LP4 cutoff=1000000 res=0	kind=lp fc=12758.79 passband=-0.01 slope_db_per_oct=nan reso_peak=0.00
+34	SV_LP4 cutoff=500000 res=500000	kind=lp fc=990.23 passband=-9.71 slope_db_per_oct=26.13 reso_peak=13.84
+35	SV_LP4 cutoff=500000 res=900000	kind=lp fc=958.01 passband=-13.58 slope_db_per_oct=6.49 reso_peak=53.67
+36	SV_HP4 cutoff=0 res=0	kind=hp fc=61.52 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+37	SV_HP4 cutoff=250000 res=0	kind=hp fc=316.41 passband=-0.00 slope_db_per_oct=14.33 reso_peak=0.00
+38	SV_HP4 cutoff=500000 res=0	kind=hp fc=1649.41 passband=-0.01 slope_db_per_oct=14.45 reso_peak=0.01
+39	SV_HP4 cutoff=750000 res=0	kind=hp fc=7839.84 passband=-0.19 slope_db_per_oct=15.99 reso_peak=0.15
+40	SV_HP4 cutoff=1000000 res=0	kind=hp fc=17129.88 passband=-12.97 slope_db_per_oct=26.23 reso_peak=9.01
+41	SV_HP4 cutoff=500000 res=500000	kind=hp fc=524.41 passband=-9.72 slope_db_per_oct=25.46 reso_peak=13.86
+42	SV_HP4 cutoff=500000 res=900000	kind=hp fc=398.44 passband=-12.81 slope_db_per_oct=4.94 reso_peak=51.86
+43	SV_NOTCH4 cutoff=0 res=0	kind=notch f0=26.37 depth=-72.29 passband=-34.39
+44	SV_NOTCH4 cutoff=250000 res=0	kind=notch f0=137.70 depth=-85.19 passband=-1.68
+45	SV_NOTCH4 cutoff=500000 res=0	kind=notch f0=720.70 depth=-106.13 passband=-0.06
+46	SV_NOTCH4 cutoff=750000 res=0	kind=notch f0=3788.09 depth=-121.12 passband=-0.00
+47	SV_NOTCH4 cutoff=1000000 res=0	kind=notch f0=18284.18 depth=-72.58 passband=-0.01
+48	SV_NOTCH4 cutoff=500000 res=500000	kind=notch f0=21000.00 depth=-12.76 passband=-12.74
+49	SV_NOTCH4 cutoff=500000 res=900000	kind=notch f0=20.51 depth=-24.02 passband=-21.89
+50	SV_LP6 cutoff=0 res=0	kind=lp fc=38.09 passband=-15.09 slope_db_per_oct=6.24 reso_peak=4.49
+51	SV_LP6 cutoff=250000 res=0	kind=lp fc=55.66 passband=-1.23 slope_db_per_oct=20.52 reso_peak=0.65
+52	SV_LP6 cutoff=500000 res=0	kind=lp fc=251.95 passband=-0.05 slope_db_per_oct=17.94 reso_peak=0.02
+53	SV_LP6 cutoff=750000 res=0	kind=lp fc=1344.73 passband=-0.02 slope_db_per_oct=19.09 reso_peak=0.00
+54	SV_LP6 cutoff=1000000 res=0	kind=lp fc=11103.52 passband=-0.02 slope_db_per_oct=nan reso_peak=0.00
+55	SV_LP6 cutoff=500000 res=500000	kind=lp fc=1019.53 passband=-16.00 slope_db_per_oct=40.75 reso_peak=28.95
+56	SV_LP6 cutoff=500000 res=900000	kind=lp fc=1280.27 passband=13.66 slope_db_per_oct=6.94 reso_peak=48.19
+57	LP1POLE cutoff=0 res=0	kind=lp fc=58.59 passband=-1.69 slope_db_per_oct=5.61 reso_peak=0.82
+58	LP1POLE cutoff=250000 res=0	kind=lp fc=249.02 passband=-0.06 slope_db_per_oct=5.33 reso_peak=0.03
+59	LP1POLE cutoff=500000 res=0	kind=lp fc=1189.45 passband=-0.00 slope_db_per_oct=5.52 reso_peak=0.00
+60	LP1POLE cutoff=750000 res=0	kind=lp fc=5355.47 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+61	LP1POLE cutoff=1000000 res=0	kind=lp fc=21000.00 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+62	LP1POLE cutoff=500000 res=500000	kind=lp fc=1189.45 passband=-0.00 slope_db_per_oct=5.52 reso_peak=0.00
+63	LP1POLE cutoff=500000 res=900000	kind=lp fc=1189.45 passband=-0.00 slope_db_per_oct=5.52 reso_peak=0.00
+64	HP1POLE cutoff=0 res=0	kind=hp fc=38.09 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+65	HP1POLE cutoff=250000 res=0	kind=hp fc=208.01 passband=-0.00 slope_db_per_oct=5.30 reso_peak=0.00
+66	HP1POLE cutoff=500000 res=0	kind=hp fc=990.23 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+67	HP1POLE cutoff=750000 res=0	kind=hp fc=4388.67 passband=-0.07 slope_db_per_oct=5.40 reso_peak=0.05
+68	HP1POLE cutoff=1000000 res=0	kind=hp fc=14525.39 passband=-3.05 slope_db_per_oct=6.40 reso_peak=2.13
+69	HP1POLE cutoff=500000 res=500000	kind=hp fc=990.23 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+70	HP1POLE cutoff=500000 res=900000	kind=hp fc=990.23 passband=-0.00 slope_db_per_oct=5.31 reso_peak=0.00
+71	LP4POLE cutoff=0 res=0	kind=lp fc=43.95 passband=-0.43 slope_db_per_oct=8.82 reso_peak=0.03
+72	LP4POLE cutoff=250000 res=0	kind=lp fc=246.09 passband=0.00 slope_db_per_oct=24.10 reso_peak=0.00
+73	LP4POLE cutoff=500000 res=0	kind=lp fc=1192.38 passband=0.00 slope_db_per_oct=24.94 reso_peak=0.00
+74	LP4POLE cutoff=750000 res=0	kind=lp fc=5364.26 passband=0.00 slope_db_per_oct=nan reso_peak=0.00
+75	LP4POLE cutoff=1000000 res=0	kind=lp fc=21000.00 passband=0.00 slope_db_per_oct=nan reso_peak=0.00
+76	LP4POLE cutoff=500000 res=500000	kind=lp fc=1725.59 passband=-5.23 slope_db_per_oct=27.55 reso_peak=20.88
+77	LP4POLE cutoff=500000 res=900000	kind=lp fc=1760.74 passband=-9.88 slope_db_per_oct=27.66 reso_peak=37.26
+78	LP6POLE cutoff=0 res=0	kind=lp fc=43.95 passband=-0.43 slope_db_per_oct=7.05 reso_peak=0.19
+79	LP6POLE cutoff=250000 res=0	kind=lp fc=246.09 passband=0.00 slope_db_per_oct=36.18 reso_peak=0.00
+80	LP6POLE cutoff=500000 res=0	kind=lp fc=1192.38 passband=0.00 slope_db_per_oct=37.43 reso_peak=0.00
+81	LP6POLE cutoff=750000 res=0	kind=lp fc=5367.19 passband=-0.00 slope_db_per_oct=nan reso_peak=0.00
+82	LP6POLE cutoff=1000000 res=0	kind=lp fc=21000.00 passband=0.00 slope_db_per_oct=nan reso_peak=0.00
+83	LP6POLE cutoff=500000 res=500000	kind=lp fc=1672.85 passband=-11.17 slope_db_per_oct=41.17 reso_peak=30.46
+84	LP6POLE cutoff=500000 res=900000	kind=lp fc=1705.08 passband=-22.92 slope_db_per_oct=40.35 reso_peak=52.30
