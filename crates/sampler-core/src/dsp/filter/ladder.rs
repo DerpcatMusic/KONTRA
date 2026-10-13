@@ -1,6 +1,9 @@
-//! Shared parameter lanes and worker-reserved state for the pinned v1 LP4.
-use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
-use super::{BLOCK, Planar, ProcessorState, ladder_kernel};
+//! Shared parameter lanes and worker-reserved state for the pinned v1 Ladder kernel. The
+//! magnitude preview is this Rust kernel's small-signal response, not a native transfer
+//! measurement (CORE-FILTERS-053).
+use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::{BLOCK, Planar, ProcessorState};
+use super::ladder_kernel;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LadderSettings {
@@ -25,7 +28,7 @@ impl LadderSettings {
         ladder_kernel::Ladder::magnitude(knobs, hz, rate as f32)
     }
 
-    pub(super) fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         (1..=12).contains(&self.taps)
             && [self.cutoff, self.resonance].iter().all(|p| {
                 p.valid()
@@ -37,7 +40,7 @@ impl LadderSettings {
             && self.gain.bounds().iter().all(|v| (-1.0..=1.0).contains(v))
     }
 
-    pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ladder {
+    pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ladder {
         ladder_kernel::prepare();
         Ladder {
             rate: rate as f32,
@@ -49,7 +52,7 @@ impl LadderSettings {
     }
 }
 
-pub(super) const CELLS: usize = 19;
+pub(crate) const CELLS: usize = 19;
 
 pub(crate) struct Ladder {
     rate: f32,
@@ -67,7 +70,7 @@ impl Ladder {
             ("gain", self.parameters[2]),
         ]
     }
-    pub(super) fn process(
+    pub(crate) fn process(
         &self,
         state: &mut ProcessorState,
         cells: &mut [[f64; 2]],

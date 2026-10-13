@@ -682,14 +682,14 @@ impl Instrument {
                 .chain(&processors.post_amplitude)
                 .enumerate()
             {
-                let Processor::Compressor(c) = *processor else {
+                let Processor::Dynamics(c) = *processor else {
                     continue;
                 };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
                         "Threshold",
-                        c.threshold_db,
+                        c.threshold(),
                         -60_f64,
                         0_f64,
                         ControlUnit::Decibels,
@@ -697,9 +697,9 @@ impl Instrument {
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
-                        c.ratio,
-                        1_f64,
-                        20_f64,
+                        c.ratio(),
+                        if c.is_native() { 0_f64 } else { 1_f64 },
+                        if c.is_native() { 1_f64 } else { 20_f64 },
                         ControlUnit::None,
                     ),
                     (
@@ -1676,12 +1676,10 @@ pub enum Processor {
     /// Linear stereo mix: rows are output left/right, columns input
     /// left/right. Width, balance, polarity and channel swaps.
     StereoMatrix([[f64; 2]; 2]),
-    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
-    Reverb(Reverb),
-    /// Feed-forward compressor on the stereo pair.
-    Compressor(Compressor),
-    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
+    /// Reverb and convolution over a summed signal: bus and master scope.
+    Space(fx::space::Config),
+    /// Every compressor, limiter, gate and expander: one configurable superset.
+    Dynamics(fx::dynamics::Config),
     /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
     LiveFormant { knobs: [f32; 3], address: SlotAddress },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
@@ -1692,6 +1690,8 @@ pub enum Processor {
     Ar(Ar),
     /// Native Formant I: saved Talk, Sharp, Size normalized controls.
     Formant([f32; 3]),
+    /// A filter-family configuration with no dedicated variant yet (Formant II).
+    FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
@@ -1710,13 +1710,6 @@ pub enum Processor {
         gain: Gain,
         first: bool,
         last: bool,
-    },
-    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
-    /// master scope. Convolution adds no latency.
-    Convolution {
-        impulse: ImpulseRef,
-        dry: f64,
-        wet: f64,
     },
     /// The next `count` processors of the chain run beside the unprocessed
     /// signal: `dry` of it passes around them, `wet` of their output follows,
@@ -1775,22 +1768,6 @@ pub enum Rectifier {
     Half,
 }
 
-/// A feed-forward compressor. The level law is the textbook hard-knee one;
-/// only the linked detector (signed channel mean) is recovered from Kontakt.
-// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Compressor {
-    pub threshold_db: f64,
-    /// At least 1.
-    pub ratio: f64,
-    pub attack: Time,
-    pub release: Time,
-    pub makeup: Gain,
-    /// Detect on the signed mean of both channels and apply one gain to both.
-    pub link: bool,
-}
-
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and
 /// generic arguments (-1 where they do not apply).
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1836,27 +1813,12 @@ pub struct ImpulseShape {
     pub normalize: bool,
     /// A SampledReverb (its own gain references) rather than a Convolver.
     pub sampled_reverb: bool,
-}
-
-/// Physical reverb settings; an importing profile maps its own controls
-/// here. Wet signal only: the dry path is the bus's other send.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Seconds for the tail to fall 60 dB.
-    pub decay_seconds: f64,
-    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
-    pub size: f64,
-    pub damping_hz: f64,
-    pub modulation_seconds: f64,
-    /// Input diffusion, 0..=0.75.
-    pub diffusion: f64,
-    pub predelay_seconds: f64,
-    pub input_cutoff_hz: f64,
-    /// Wet low-frequency change in dB (zero or negative).
-    pub low_shelf_db: f64,
-    /// 0 mono .. 1 full width.
-    pub width: f64,
+    /// Play the response backwards.
+    pub reverse: bool,
+    /// Scale to Kontakt's Auto Gain (see `shape_impulse`).
+    pub auto_gain: bool,
+    /// Volume envelope knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

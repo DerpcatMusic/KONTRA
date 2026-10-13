@@ -294,6 +294,7 @@ fn translate(
         start_criteria: Vec::new(),
         voice_groups: Vec::new(),
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
+        retained_snapshot: Default::default(),
         engine: Vec::new(),
         dynamic: false,
         eq_mod_slots: HashMap::new(),
@@ -495,6 +496,7 @@ fn translate(
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
         out.ir.source_indices.groups.push(Some(runtime));
     }
+    out.flush_retained_snapshot_state();
     for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
         if let Some(slot) = behavior.slot {
             out.ir.source_indices.slots.resize(
@@ -706,6 +708,9 @@ struct Translation {
     voice_groups: Vec<Option<usize>>,
     /// A snapshot's saved state per group, applied over the program's.
     snapshot_groups: Vec<crate::GroupState>,
+    /// Retained-but-unproved snapshot group bytes -> the groups carrying them,
+    /// reported once per distinct value (see `flush_retained_snapshot_state`).
+    retained_snapshot: std::collections::BTreeMap<String, Vec<usize>>,
     /// What the scripts' `on init` wrote with `set_engine_par`.
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
@@ -1095,12 +1100,10 @@ impl Translation {
                 for (band, [hz, width, db]) in bands.iter().enumerate() {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
-                        ("FREQ", if bands.len() == 1 {
-                            f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz))
-                        } else { (f64::from(*hz) / 20.).log10() / 3. }, 0., 1.),
+                        ("FREQ", f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz)), 0., 1.),
                         (
                             "BW",
-                            sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)),
+                            f64::from(sampler_core::KontaktLegacyEqSettings::bandwidth_knob(*width)),
                             0.,
                             1.,
                         ),
@@ -1272,6 +1275,19 @@ impl Translation {
         });
     }
 
+    /// One entry per distinct retained value with its group count, instead of
+    /// one per group (thousands on large instruments).
+    fn flush_retained_snapshot_state(&mut self) {
+        for (value, groups) in std::mem::take(&mut self.retained_snapshot) {
+            self.ir.unsupported.push(ir::Unsupported {
+                location: format!("snapshot groups ({} of them, first {})", groups.len(), groups[0]),
+                feature: "saved release/MIDI/voice state and v4 selection words".into(),
+                value,
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+
     /// A group's complete settings, including dormant saved-mute content.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -1291,15 +1307,13 @@ impl Translation {
         let overlaid;
         let group = if let Some(state) = &saved {
             overlaid = crate::snapshot::overlay_group(group, state)?;
-            self.ir.unsupported.push(ir::Unsupported {
-                location: format!("snapshot group {index}"),
-                feature: "saved release/MIDI/voice state and v4 selection words".into(),
-                value: format!(
+            self.retained_snapshot
+                .entry(format!(
                     "compact bytes 14..24 {:02x?}, selection {}, v4 words {:02x?}",
                     state.compact_state, state.selection, state.v4_words
-                ),
-                reason: ir::Reason::NotModeled,
-            });
+                ))
+                .or_default()
+                .push(index);
             &overlaid
         } else {
             group
@@ -1493,16 +1507,15 @@ impl Translation {
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                     for &(slot, processor) in &filter_slots {
-                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s| {
-                            matches!(
-                                s.params(),
-                                Some(crate::effects::Params::Filter { kind: 2 | 3, .. })
-                            )
+                        if let Some(octaves) = slots.iter().find(|s| s.slot == slot).and_then(|s| {
+                            match s.params() {
+                                Some(crate::effects::Params::Filter { kind, .. }) => {
+                                    crate::effects::cutoff_octaves(kind)
+                                }
+                                _ => None,
+                            }
                         }) {
-                            self.cutoff_octaves.insert(
-                                (chain.unwrap().0, processor),
-                                crate::effects::LEGACY_CUTOFF_OCTAVES,
-                            );
+                            self.cutoff_octaves.insert((chain.unwrap().0, processor), octaves);
                         }
                     }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
@@ -2056,13 +2069,6 @@ impl Translation {
                     let b = eq.bands[0];
                     [f64::from(b.gain_db), f64::from(b.frequency), f64::from(b.q)]
                 }
-                Some(ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::Peak { gain },
-                    cutoff: ir::Frequency::Hertz(hz),
-                    resonance: ir::Resonance::Q(q),
-                })) => [20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
-                    (hz / 20.).log10() / 3.,
-                    sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q))],
                 _ => continue,
             };
             let band = bands.entry(slot).or_default();
@@ -2520,14 +2526,7 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
-                    return matches!(
-                        processor,
-                        ir::Processor::Filter(ir::Filter {
-                            kind: ir::FilterKind::Peak { .. },
-                            ..
-                        }) | ir::Processor::Eq(_)
-                    )
-                    .then_some((
+                    return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
@@ -2542,13 +2541,7 @@ impl Translation {
                 );
                 let parameter = match target.param.as_str() {
                     "filterCutoff"
-                        if !matches!(
-                            processor,
-                            ir::Processor::Filter(ir::Filter {
-                                kind: ir::FilterKind::Peak { .. },
-                                ..
-                            })
-                        ) =>
+                        if !matches!(processor, ir::Processor::Eq(_)) =>
                     {
                         ir::ProcessorParameter::Cutoff
                     }
@@ -3640,6 +3633,7 @@ mod saved_tests {
             let name = r"C:\old\source.TXT";
             public.extend((name.len() as u32).to_le_bytes());
             public.extend(name.as_bytes());
+            public.extend(0u32.to_le_bytes()); // persistent-table count
             let mut script = vec![0, 0x50, 0];
             script.extend(public);
             let program = Program(StructuredObject {
@@ -3702,6 +3696,7 @@ mod saved_tests {
         script.extend(0u32.to_le_bytes());
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
+        script.extend(0u32.to_le_bytes()); // persistent-table count
         Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
@@ -3730,6 +3725,7 @@ mod saved_tests {
         std::fs::write(&path, [0; 16]).unwrap();
         let mut program = menu_program();
         let script = program.0.children.iter_mut().find(|c| c.id == 6).unwrap();
+        script.data.truncate(script.data.len() - 4); // the fixture's empty persistent table
         script.data.extend(2u32.to_le_bytes());
         for entry in [b"%steps ".as_slice(), b"?xy "] {
             script.data.extend((entry.len() as u32).to_le_bytes());
@@ -4067,6 +4063,7 @@ mod modulation {
             start_criteria: Vec::new(),
             voice_groups: Vec::new(),
             snapshot_groups: Vec::new(),
+            retained_snapshot: Default::default(),
             engine: Vec::new(),
             dynamic: false,
             eq_mod_slots: HashMap::new(),
@@ -4584,7 +4581,7 @@ mod modulation {
             post_amplitude: vec![filter],
         });
         t.cutoff_octaves
-            .insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+            .insert((0, 1), sampler_ir::fx::filter::LEGACY_CUTOFF_OCTAVES);
         for (slot, expected) in [(0, -30.), (5, -26.88)] {
             let route = t
                 .route(
@@ -4608,16 +4605,21 @@ mod modulation {
         }
     }
 
+    /// One native legacy EQ band (the only EQ owner Kontakt translation emits).
+    fn legacy_peak(gain_db: f32) -> ir::Processor {
+        ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+            law: ir::fx::eq::Law::KontaktLegacy,
+            frequency: 0.5,
+            q: 0.25,
+            gain_db,
+            ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+        }))
+    }
+
     #[test]
     fn eq_frequency_and_width_routes_keep_the_physical_band() {
         let mut t = translation();
-        let peak = ir::Processor::Filter(ir::Filter {
-            kind: ir::FilterKind::Peak {
-                gain: ir::Gain::Decibels(6.),
-            },
-            cutoff: ir::Frequency::Hertz(1000.),
-            resonance: ir::Resonance::Q(1.),
-        });
+        let peak = legacy_peak(6.);
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
             pre_amplitude: vec![peak; 3],
@@ -4678,13 +4680,7 @@ mod modulation {
         let mut t = translation();
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(40.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            })],
+            pre_amplitude: vec![legacy_peak(40.)],
             post_amplitude: vec![],
         });
         t.eq_controls(7, ir::ChainRef(0), &[(5, 0)]);
@@ -4801,13 +4797,7 @@ mod modulation {
     fn eq_gain_routes_keep_band_and_physical_slot_identity() {
         for (name, index) in [("eqGain1", 0), ("eqGain2", 1), ("eqGain3", 2)] {
             let mut t = translation();
-            let peak = ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(0.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            });
+            let peak = legacy_peak(0.);
             t.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: vec![peak; 3],

@@ -293,6 +293,8 @@ fn color_detail(c: &ir::fx::color::Config) -> String {
         Curve::Rectifier(ir::Rectifier::Full) => return "Rectifier · full wave".into(),
         Curve::Rectifier(ir::Rectifier::Half) => return "Rectifier · half wave".into(),
         Curve::Classic { shape } => return format!("Saturation · shape {shape:+.2}"),
+        Curve::Enhanced { shape } => return format!("Saturation enhanced · shape {shape:+.2}"),
+        Curve::Drums { shape } => return format!("Saturation drums · shape {shape:+.2}"),
         Curve::Tube { drive } | Curve::Transistor { drive } => {
             return format!(
                 "{} distortion · drive {:.0}% · damping {:.0}%",
@@ -351,19 +353,38 @@ fn detail(p: ir::Processor) -> String {
             feedback * 100.,
             mix * 100.
         ),
-        ir::Processor::Reverb(r) => format!(
-            "Reverb · {:.2} s · size {:.0}% · predelay {:.0} ms",
-            r.decay_seconds,
-            r.size * 100.,
-            r.predelay_seconds * 1000.
-        ),
-        ir::Processor::Compressor(c) => format!(
-            "Compressor · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
-            c.threshold_db,
-            c.ratio,
-            c.attack.seconds() * 1000.,
-            c.release.seconds() * 1000.
-        ),
+        ir::Processor::Space(c) => match c.network {
+            Some(n) => format!(
+                "{} · {:.2} s · size {:.0}% · predelay {:.0} ms",
+                match n.topology {
+                    ir::fx::space::Topology::Fdn => "Reverb",
+                    ir::fx::space::Topology::CombAllpass => "Room reverb",
+                    ir::fx::space::Topology::Plate => "Plate reverb",
+                    ir::fx::space::Topology::Diffuser => "Diffusion",
+                },
+                n.decay_seconds,
+                n.size * 100.,
+                n.predelay_seconds * 1000.
+            ),
+            None => format!(
+                "Convolution · dry {:.0}% · wet {:.0}%",
+                c.dry * 100.,
+                c.wet * 100.
+            ),
+        },
+        ir::Processor::Dynamics(c) => match c.law {
+            ir::fx::dynamics::Law::Generic(g) => format!(
+                "Dynamics (generic) · {:.1} dB · {:.1}:1 · attack {:.1} ms · release {:.1} ms",
+                g.threshold_db,
+                g.ratio,
+                c.attack.seconds() * 1000.,
+                c.release.seconds() * 1000.
+            ),
+            ir::fx::dynamics::Law::KontaktClassic(_) => "Compressor (Classic)".into(),
+            ir::fx::dynamics::Law::KontaktEnhanced(_) => "Compressor (Enhanced)".into(),
+            ir::fx::dynamics::Law::KontaktPro(_) => "Compressor (Pro)".into(),
+            ir::fx::dynamics::Law::KontaktLimiter(_) => "Limiter".into(),
+        },
         ir::Processor::Daft(d) => format!(
             "Daft {} · cutoff {:.0}% · resonance {:.0}%",
             if d.highpass { "high-pass" } else { "low-pass" },
@@ -373,9 +394,15 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"][usize::from(d.taps.clamp(1, 12)) - 1].into(),
         ir::Processor::TimeMod(_) => "Delay / modulation".into(),
         ir::Processor::Phaser(_) => "Phaser filter".into(),
-        ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)".into(),
         ir::Processor::Eq(_) => "EQ".into(),
         ir::Processor::Formant(_) => "Formant I".into(),
+        ir::Processor::FilterBank(c) => match c.topology {
+            ir::fx::filter::Topology::FormantII => format!(
+                "Formant II · talk {:.2} · sharp {:.2} · size {:.2}",
+                c.cutoff, c.resonance, c.extra
+            ),
+            _ => "Filter".into(),
+        },
         ir::Processor::Ar(d) => format!(
             "Adaptive-resonance {}-pole {} · cutoff {:.0}% · resonance {:.0}%",
             ["2", "4", "2/4"][usize::from(d.mode / 3)],
@@ -386,11 +413,6 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),
-        ir::Processor::Convolution { dry, wet, .. } => format!(
-            "Convolution · dry {:.0}% · wet {:.0}%",
-            dry * 100.,
-            wet * 100.
-        ),
         ir::Processor::Mix {
             dry, wet, bypass, ..
         } => format!(

@@ -59,6 +59,24 @@ pub struct Transport {
     pub tempo: i32,
 }
 
+impl Transport {
+    /// A host with no playing transport: 120 BPM in 4/4. A loader that has no
+    /// DAW transport at load time passes this explicitly (reads are warned),
+    /// instead of every script that reads `$SIGNATURE_NUM` failing to initialize.
+    pub const STANDALONE: Self = Self {
+        quarter: 500_000,
+        eighth: 250_000,
+        sixteenth: 125_000,
+        quarter_triplet: 333_333,
+        eighth_triplet: 166_666,
+        sixteenth_triplet: 83_333,
+        bar: 2_000_000,
+        signature_num: 4,
+        signature_denom: 4,
+        tempo: 120,
+    };
+}
+
 /// Steps one `on init` may take before evaluation is abandoned.
 pub const INIT_FUEL: u64 = 200_000_000;
 
@@ -756,7 +774,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         })
     }
 
-    fn sys(&self, sys: b::SysVar, span: Span) -> Result<i32> {
+    fn sys(&mut self, sys: b::SysVar, span: Span) -> Result<i32> {
         use b::SysVar::*;
         if matches!(
             sys,
@@ -767,6 +785,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             let Some(t) = self.env.transport else {
                 return fault(span, format!("{sys:?} depends on host transport, which `on init` does not have"));
             };
+            self.warn(span, format!("{sys:?} read in on init takes the host transport the loader supplied"));
             return Ok(match sys {
                 DurationQuarter => t.quarter,
                 DurationEighth => t.eighth,

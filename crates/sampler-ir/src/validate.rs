@@ -183,9 +183,12 @@ impl Check<'_> {
         }
         match c.curve {
             Curve::Identity | Curve::Rectifier(_) => {}
-            Curve::Classic { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+            Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
             Curve::Tube { drive } | Curve::Transistor { drive } => unit(drive, "distortion drive")?,
             Curve::Destructor { drive } => self.within(drive, 0.0..=1.0, "bit crusher drive")?,
+        }
+        if let Some(tone) = c.tone {
+            self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;
         }
         if let Some(damping) = c.damping {
             unit(damping, "distortion damping")?;
@@ -285,6 +288,11 @@ impl Check<'_> {
                 Processor::Formant(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
                 }
+                Processor::FilterBank(c) => {
+                    for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
+                        self.within(v, 0.0..=1.0, field)?;
+                    }
+                }
                 Processor::TimeMod(config) => {
                     config.check().map_err(|field| ValidationError::OutOfRange {
                         owner: self.owner.clone(),
@@ -306,38 +314,39 @@ impl Check<'_> {
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
                     self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
-                Processor::Reverb(r) => {
-                    for (v, field) in [
-                        (r.decay_seconds, "reverb decay"),
-                        (r.size, "reverb size"),
-                        (r.damping_hz, "reverb damping"),
-                        (r.modulation_seconds, "reverb modulation"),
-                        (r.diffusion, "reverb diffusion"),
-                        (r.predelay_seconds, "reverb predelay"),
-                        (r.input_cutoff_hz, "reverb input cutoff"),
-                        (r.low_shelf_db, "reverb low shelf"),
-                        (r.width, "reverb width"),
-                    ] {
-                        self.finite(v, field)?;
+                Processor::Space(c) => {
+                    self.finite(c.dry, "space dry")?;
+                    self.finite(c.wet, "space wet")?;
+                    if !c.finite() {
+                        self.finite(f64::NAN, "space parameter")?;
+                    }
+                    if let Some(impulse) = c.impulse {
+                        self.exists(Reference::Impulse(impulse.0))?;
                     }
                 }
-                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
-                    self.finite(f64::from(threshold), "compressor threshold")?;
-                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
-                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
-                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
-                }
-                Processor::Compressor(c) => {
-                    self.finite(c.threshold_db, "compressor threshold")?;
-                    self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;
-                    self.time(c.attack, "compressor attack")?;
-                    self.time(c.release, "compressor release")?;
-                    self.gain(c.makeup, "compressor makeup")?;
-                }
-                Processor::Convolution { impulse, dry, wet } => {
-                    self.exists(Reference::Impulse(impulse.0))?;
-                    self.finite(dry, "convolution dry")?;
-                    self.finite(wet, "convolution wet")?;
+                Processor::Dynamics(c) => {
+                    use crate::fx::dynamics::{Detector, Law};
+                    self.finite(c.threshold(), "dynamics threshold")?;
+                    self.time(c.attack, "dynamics attack")?;
+                    self.time(c.release, "dynamics release")?;
+                    self.gain(c.makeup, "dynamics makeup")?;
+                    self.within(c.mix, 0.0..=1.0, "dynamics mix")?;
+                    match c.law {
+                        Law::Generic(g) => {
+                            self.within(g.ratio, 1.0..=f64::MAX, "dynamics ratio")?;
+                            self.within(g.knee_db, 0.0..=f64::MAX, "dynamics knee")?;
+                            self.time(g.lookahead, "dynamics lookahead")?;
+                            self.within(g.sidechain_highpass_hz, 0.0..=f64::MAX, "dynamics side-chain")?;
+                            self.within(g.range_db, 0.0..=f64::MAX, "dynamics range")?;
+                            if let Detector::Rms { window } = g.detector {
+                                self.time(window, "dynamics rms window")?;
+                            }
+                        }
+                        Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => {
+                            self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
+                        }
+                        Law::KontaktLimiter(_) => {}
+                    }
                 }
                 Processor::Mix { dry, wet, .. } => {
                     self.within(dry, 0.0..=16.0, "mix dry")?;

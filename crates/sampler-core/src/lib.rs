@@ -81,10 +81,10 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    Biquad, DynamicsSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     ArSettings, ColorSettings, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
     MAX_IMPULSE_FRAMES, NoiseSettings, OutputLowPass, QuantizerSettings,
-    EqBand, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
+    EqBand, Parameter, KontaktLegacyEqSettings, Processor, Rectifier,
     StateVariableFilter, neutral_impulse_shape, shape_impulse,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
