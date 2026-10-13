@@ -217,7 +217,7 @@ fn intensity_assignments_chain_on_the_lane() {
         sources: vec![ModSource::Key, ModSource::Constant],
         routes: vec![ModRoute {
             scale: Some(scale(0, 0.5)),
-            more_scales: [Some(scale(1, 0.5)), None],
+            more_scales: [Some(scale(1, 0.5)), None, None, None, None, None, None, None],
             ..ModRoute::new(0, ModTarget::Attenuate, 0.8)
         }],
         shapes: vec![vec![(0., 0.5), (1., 0.5)], vec![(0., 0.2), (1., 0.2)]],

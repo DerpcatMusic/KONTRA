@@ -1515,7 +1515,7 @@ impl Translation {
                 }
                 let mut bypass = None;
                 for (_ordinal, target) in params.targets.iter().enumerate() {
-                    if target.param == "startPhase" && target.slot.is_some() {
+                    if matches!(target.param.as_str(), "startPhase" | "frequency") && target.slot.is_some() {
                         phase_routes.push((
                             at.clone(),
                             modulator,
@@ -1658,7 +1658,7 @@ impl Translation {
                     address.runtime = Some(modulator);
                 }
                 for (_ordinal, target) in params.targets.iter().enumerate() {
-                    if target.param == "startPhase" && target.slot.is_some() {
+                    if matches!(target.param.as_str(), "startPhase" | "frequency") && target.slot.is_some() {
                         phase_routes.push((
                             at.clone(),
                             modulator,
@@ -4946,18 +4946,6 @@ impl Translation {
                 );
                 continue;
             };
-            let live = matches!(
-                self.ir.modulators.get(scale.source.0).map(|m| &m.source),
-                Some(
-                    ir::ModulationSource::Controller(_)
-                        | ir::ModulationSource::PitchBend
-                        | ir::ModulationSource::ChannelPressure
-                        | ir::ModulationSource::PolyPressure
-                        | ir::ModulationSource::Timbre
-                        | ir::ModulationSource::Script(_)
-                        | ir::ModulationSource::ScriptBipolar(_)
-                )
-            );
             let bipolar = matches!(
                 self.ir.modulators.get(scale.source.0).map(|m| &m.source),
                 Some(
@@ -4979,8 +4967,6 @@ impl Translation {
                 // The compiler's fifth argument picks ftable($c, frange_uni(s))
                 // or ftable($c, s); they agree only for unipolar sources.
                 why = Some("shaped bipolar source".into());
-            } else if live {
-                why = Some("live source".into());
             }
             let targets: Vec<usize> = (0..self.ir.routes.len())
                 .filter(|&r| self.ir.routes[r].source == destination)
@@ -5041,7 +5027,7 @@ impl Translation {
                             Some(reason) => self.unsupported(
                                 &scale.at,
                                 "modulation of a modulator's intensity",
-                                reason.into(),
+                                reason,
                                 ir::Reason::NotModeled,
                             ),
                             None => self.ir.source_indices.chained_scales.push((route, assignment)),

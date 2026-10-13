@@ -676,10 +676,6 @@ fn id25_unverified_init_flags_range_and_live_paths_are_rejected() {
             scale: Some(ModScale { law: ModScaleLaw::KontaktIntensity {
                 depth: 0.5, flags: 0x10, unit }, ..scale }), ..route }));
     }
-    for source in [ModSource::Controller(1), ModSource::Pressure, ModSource::Timbre,
-        ModSource::PitchBend, ModSource::Script(0)] {
-        assert!(rejected(source, route));
-    }
 }
 
 #[test]
