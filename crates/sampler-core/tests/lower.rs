@@ -3701,3 +3701,38 @@ fn m1_domain_membership_preserves_existing_victim_modes() {
         });
     }
 }
+
+#[test]
+fn m1_reconfiguring_limits_rejects_stale_domain_bindings() {
+    use sampler_core::{Error, Kill, VoiceLimit};
+    let ir = allocation_fixture();
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let limit = VoiceLimit {
+        voices: 1,
+        kill: Kill::Oldest,
+        prefer_released: false,
+        fade: 8,
+    };
+    let source = prepare()
+        .with_source_voice_limits(vec![Some(2), None, None])
+        .unwrap();
+    assert!(matches!(
+        source.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+    let exclusive = prepare()
+        .with_exclusive_sets(vec![Some(0), Some(0), None])
+        .unwrap();
+    assert!(matches!(
+        exclusive.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+}

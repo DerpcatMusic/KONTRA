@@ -36,6 +36,16 @@ impl Prepared {
     ) -> Result<Self, Error> {
         if groups.len() != self.group_count as usize
             || groups.iter().flatten().any(|&l| l >= limits.len())
+            || self
+                .group_source_voice_limits
+                .iter()
+                .flatten()
+                .any(|&l| l >= limits.len())
+            || self
+                .exclusive_peers
+                .iter()
+                .flat_map(|peers| peers.iter())
+                .any(|&domain| domain > limits.len())
             || instrument.iter().chain(&limits).any(|l| l.voices == 0)
         {
             return Err(Error::InvalidInput);
