@@ -13,6 +13,7 @@ A stream decodes when some assignment of those choices consumes it exactly.
 import re
 
 M64 = (1 << 64) - 1
+CURRENT = {}  # SerType -> current version, set by reader_schemas.load
 OBJ = 0x1000_0000
 STREAM = 0x2000_0000
 CTX = 0x3000_0000
@@ -66,14 +67,15 @@ class Chooser:
     """Replays a prefix of recorded choices; later choices take their first candidate."""
 
     def __init__(self, prefix):
-        self.prefix, self.taken, self.sizes, self.kinds = prefix, [], [], []
+        self.prefix, self.taken, self.sizes, self.kinds, self.sites = prefix, [], [], [], []
 
-    def pick(self, n, kind="v"):
+    def pick(self, n, kind="v", site=None):
         i = len(self.taken)
         c = self.prefix[i] if i < len(self.prefix) else 0
         self.taken.append(c)
         self.sizes.append(n)
         self.kinds.append(kind)
+        self.sites.append(site)
         return c
 
 
@@ -84,11 +86,12 @@ class RandomChooser(Chooser):
         super().__init__([])
         self.rng = rng
 
-    def pick(self, n, kind="v"):
+    def pick(self, n, kind="v", site=None):
         c = 0 if self.rng.random() < 0.25 else self.rng.randrange(n)
         self.taken.append(c)
         self.sizes.append(n)
         self.kinds.append(kind)
+        self.sites.append(site)
         return c
 
 
@@ -259,41 +262,53 @@ class Machine:
         raise Stop("bad-read-kind")
 
     def read_object(self, start):
+        """Nested object: u8 structured, u16 version, then (structured) three length-prefixed
+        areas or (inline) the class reader's own fields. The class comes from `g_cls`."""
         s = self.stream
         flag = s.take(1, "B")[0]
+        if flag > 1:
+            raise Stop("throw")  # Kontakt compares the flag with the class's own
         ver = int.from_bytes(s.take(2, "H"), "little")
         cls = self.globals.get("g_cls")
         prog = self.readers.get(cls) if cls is not None else None
-        if flag == 1:
-            sizes = []
-            body = None
-            for i in range(3):
-                n = int.from_bytes(s.take(4, "I"), "little")
-                if n > 1 << 28:
-                    raise Stop("nested-length")
-                if i == 1 and prog:
-                    body = s.sub(n)
-                else:
-                    s.take(n)
-                sizes.append(n)
-            if body is not None:
-                saved = self.stream
-                self.stream = body
+        if prog is not None and ver > CURRENT.get(cls, 0xFFFF):
+            raise Stop("throw")  # newer than the class understands
+        if flag == 0:
+            if prog is None:
+                s.reads.append(("O?", start, 3, ver))
+                raise Stop("unframed-nested-object-unknown-class")
+            s.reads.append(("O", start, 3, ver))
+            self.run_nested(prog, ver)
+            return None
+        if s.data is None:  # synthesize: empty private/children areas, public = the body
+            s.out += bytes(4)
+            s.pos += 4
+            body = Stream(None, self.chooser, s.values)
+            if prog:
+                saved, self.stream = self.stream, body
                 try:
                     self.run_nested(prog, ver)
-                    if body.data is not None and body.pos != len(body.data):
-                        raise Stop("nested-trailing")
                 finally:
                     self.stream = saved
-                s.reads.append(("O", start, s.pos - start, ver))
-            else:
-                s.reads.append(("O*", start, s.pos - start, ver))
+            s.out += len(body.out).to_bytes(4, "little") + body.out + bytes(4)
+            s.pos += 8 + len(body.out)
+            s.reads.append(("O" if prog else "O*", start, s.pos - start, ver))
             return None
-        if prog is None:
-            s.reads.append(("O?", start, 3, ver))
-            raise Stop("unframed-nested-object-unknown-class")
-        s.reads.append(("O", start, 3, ver))
-        self.run_nested(prog, ver)
+        areas = []
+        for i in range(3):
+            n = int.from_bytes(s.take(4, "I"), "little")
+            if n > len(s.data) - s.pos:
+                raise Stop("short")
+            areas.append(s.sub(n))
+        if prog:
+            saved, self.stream = self.stream, areas[1]
+            try:
+                self.run_nested(prog, ver)
+                if areas[1].pos != len(areas[1].data):
+                    raise Stop("nested-trailing")
+            finally:
+                self.stream = saved
+        s.reads.append(("O" if prog else "O*", start, s.pos - start, ver))
         return None
 
     def run_nested(self, prog, ver):
@@ -319,12 +334,14 @@ class Machine:
                 regs[ins[1]] = self.ev(ins[2], regs)
             elif op == "st":
                 self.store(self.ev(ins[2], regs), int(ins[1]), self.ev(ins[3], regs))
-            elif op == "br":
+            elif op in ("br", "brb", "brt"):
                 c = self.ev(ins[1], regs)
-                if c is None:
+                if c is None and op != "br":
+                    c = 1 if op == "brt" else 0  # proven not to matter: fixed direction
+                elif c is None:
                     self.undef_hits.append(name)
                     self.undef_exprs.append(ins[1])
-                    c = self.chooser.pick(2, "b")
+                    c = self.chooser.pick(2, "b", (name, pc - 1))
                 self.cov.add((name, pc, bool(c)))
                 if c:
                     pc = labels[ins[2]]
@@ -411,7 +428,7 @@ def constants(progs, names):
             m = re.match(r"\(call (\w+) ", op)
             if m:
                 todo.append(m.group(1))
-            if op.startswith("(br "):
+            if op.startswith(("(br ", "(brb ", "(brt ")):
                 out |= {int(x) for x in re.findall(r"(?<![\w-])(\d+)(?![\w])", op)}
     return sorted(c for c in out if c <= 255)
 
@@ -445,14 +462,23 @@ def explore(progs, readers, name, version, cls=None, tries=400, seed=1):
 
 
 def host_dependent(progs, readers, name, version, values, cls, run):
-    """True if flipping a host-state branch of this run still decodes, but differently."""
+    """Flip each host-state branch of a run -> {site: [(original direction, outcome)]}.
+
+    outcome: "same" (still decodes, same reads), "diff" (decodes differently), "fail".
+    """
     st, ch = run
     base = [(k, n) for k, _, n, _ in st.reads]
-    branches = [i for i, k in enumerate(ch.kinds) if k == "b"][:16]
-    for i in branches:
+    out = {}
+    for i in [i for i, k in enumerate(ch.kinds) if k == "b"][:48]:
+        site = ch.sites[i]
         prefix = list(ch.taken)
         prefix[i] = 1 - prefix[i]
         status, st2, m2, _ = attempt(progs, readers, name, version, None, prefix, values, cls)
-        if status == "ok" and [(k, n) for k, _, n, _ in st2.reads] != base:
-            return True
-    return False
+        if status != "ok":
+            res = "fail"
+        elif [(k, n) for k, _, n, _ in st2.reads] != base:
+            res = "diff"
+        else:
+            res = "same"
+        out.setdefault(site, []).append((ch.taken[i], res))
+    return out
