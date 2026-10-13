@@ -1,26 +1,25 @@
-//! Universal dynamics (wave 4): one stereo kernel family, configured by
+//! Universal dynamics (wave 4): ONE engine, configured by
 //! `sampler_ir::fx::dynamics::Config`.
 //!
-//! * `generic`: the textbook kernel (detector, knee, direction, topology,
-//!   look-ahead, side-chain high-pass) every format may use.
-//! * `classic`, `enhanced`, `pro`: the three Kontakt Compressor cores, each
-//!   reproduced from Kontakt 8.13.1 (dispatcher `0x1409047a0`).
+//! `pipeline` runs a frame through a chain of stages: input conditioning,
+//! detector, gain computer, ballistics and gain-path smoothing, gain map,
+//! look-ahead delay, output (make-up, link, wet/dry, clip). `laws` turns each
+//! law into a chain once per block (its knob laws and stage choice; the table
+//! there lists them); the stage implementations live by role in `detector`,
+//! `computer`, `ballistics` and `output`. The generic law is the configurable
+//! textbook chain; the native laws are the recovered cores' own stages.
 //!
-//! Every kernel gets the same four live knobs (threshold, ratio, attack,
+//! Every law gets the same four live knobs (threshold, ratio, attack,
 //! release), re-read once per block, plus the shared stages: stereo link,
-//! make-up and wet/dry. Wet/dry is exact against the kernel's own latency:
+//! make-up and wet/dry. Wet/dry is exact against the law's own latency:
 //! the dry path is the audio the gain is applied to (`d * (1 + mix * (g - 1))`).
 
-mod classic;
-mod enhanced;
-mod feedback;
-pub(super) mod generic;
-mod hilbert;
-mod limiter;
-mod pro;
-mod transient;
-mod bus;
-mod maximizer;
+mod ballistics;
+mod computer;
+mod detector;
+mod laws;
+mod output;
+mod pipeline;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +27,7 @@ use super::{
     Parameter, Planar, ProcessorState,
     control::{ControlRamp, ControlRange, PreparedParameter},
 };
+use pipeline::Shared;
 use sampler_ir::fx::dynamics::{Detector, Law, Link};
 
 /// A dynamics stage. The knobs are the live parameters; the `law`'s own
@@ -134,18 +134,7 @@ impl DynamicsSettings {
 
     /// Frames the stage delays the signal by.
     pub fn latency_frames(&self, rate: u32) -> u32 {
-        match self.law {
-            Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) as u32,
-            Law::KontaktPro(_) => pro::LATENCY as u32,
-            Law::KontaktLimiter(_) => limiter::LATENCY as u32,
-            Law::KontaktHilbert(_) => hilbert::latency(rate) as u32,
-            Law::UviMaximizer(m) => maximizer::latency(&maximizer_controls(&m), rate) as u32,
-            Law::KontaktFeedback { .. }
-            | Law::KontaktTransient { .. }
-            | Law::KontaktBusComp { .. }
-            | Law::KontaktClassic(_)
-            | Law::KontaktEnhanced(_) => 0,
-        }
+        laws::latency(&self.law, rate) as u32
     }
 
     /// Off-audio static transfer of the generic law at a steady `input_db`:
@@ -163,20 +152,19 @@ impl DynamicsSettings {
         {
             return Err(crate::Error::InvalidInput);
         }
-        let input = (input_db / generic::DB_PER_NEPER).exp();
+        let input = (input_db / computer::DB_PER_NEPER).exp();
         if !input.is_finite() || input <= 0. {
             return Err(crate::Error::InvalidInput);
         }
         let k = knobs.map(|p| p.bounds()[0]);
-        let c = generic::Coefficients::new(&g, k, 48_000);
-        let reduction = c.target(input);
+        let reduction = laws::generic_ratio(&g, k, 1).target(input);
         let signed = if g.direction == sampler_ir::fx::dynamics::Direction::Upward {
             -reduction
         } else {
             reduction
         };
-        let output = input * (-signed / generic::DB_PER_NEPER).exp();
-        Ok((generic::DB_PER_NEPER * output.ln(), signed))
+        let output = input * (-signed / computer::DB_PER_NEPER).exp();
+        Ok((computer::DB_PER_NEPER * output.ln(), signed))
     }
 
     pub(in crate::dsp) fn prepare(
@@ -196,24 +184,7 @@ impl DynamicsSettings {
             .all(|p| matches!(p, Parameter::Constant(_)))
             .then(|| parameters.map(|p| p.bounds()[0]));
         let offset = *cells;
-        let own = match self.law {
-            Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) + generic::extra_cells(&g),
-            Law::KontaktPro(_) => pro::CELLS,
-            Law::KontaktLimiter(_) => limiter::CELLS,
-            Law::KontaktHilbert(_) => hilbert::cells(rate),
-            Law::KontaktFeedback { .. } => feedback::CELLS,
-            Law::UviMaximizer(m) => {
-                let c = maximizer_controls(&m);
-                if maximizer::window(c.lookahead, rate) < 2 {
-                    return Err(crate::Error::InvalidInput);
-                }
-                maximizer::cells(&c, rate)
-            }
-            Law::KontaktClassic(_)
-            | Law::KontaktEnhanced(_)
-            | Law::KontaktTransient { .. }
-            | Law::KontaktBusComp { .. } => 0,
-        };
+        let own = laws::cells(&self.law, rate).ok_or(crate::Error::InvalidInput)?;
         *cells = offset.checked_add(own).ok_or(crate::Error::Capacity)?;
         Ok(Dynamics {
             law: self.law,
@@ -227,25 +198,6 @@ impl DynamicsSettings {
             cells: own,
         })
     }
-}
-
-fn maximizer_controls(m: &sampler_ir::fx::dynamics::Maximizer) -> maximizer::Controls {
-    maximizer::Controls {
-        threshold: m.threshold_db as f32,
-        attack: m.attack_ms as f32,
-        lookahead: m.lookahead_ms as f32,
-        release: m.release_ms as f32,
-        ceiling: m.ceiling_db as f32,
-        knee: m.knee_db as f32,
-        blend: m.release_blend as f32,
-        slew: m.slew_ms as f32,
-        mode: m.mode,
-        true_peak: m.true_peak,
-    }
-}
-
-fn lookahead_frames(seconds: f64, rate: u32) -> usize {
-    (seconds * f64::from(rate)).round() as usize
 }
 
 #[derive(Clone, Copy)]
@@ -316,73 +268,6 @@ impl Dynamics {
             makeup: self.makeup,
             mix: self.mix,
         };
-        match self.law {
-            Law::Generic(g) => generic::Kernel::new(&g, knobs, self.rate, self.cells)
-                .process(&shared, state, cells, block, len),
-            Law::KontaktClassic(_) => classic::process(&shared, knobs, self.rate, state, block, len),
-            Law::KontaktEnhanced(_) => {
-                enhanced::process(&shared, knobs, self.rate, state, block, len)
-            }
-            Law::KontaktPro(_) => pro::process(&shared, knobs, self.rate, state, cells, block, len),
-            Law::KontaktLimiter(_) => {
-                limiter::process(&shared, knobs, self.rate, state, cells, block, len)
-            }
-            Law::KontaktHilbert(_) => {
-                hilbert::process(&shared, knobs, self.rate, state, cells, block, len)
-            }
-            Law::UviMaximizer(m) => {
-                maximizer::process(&maximizer_controls(&m), self.rate, state, cells, block, len)
-            }
-            Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link } => bus::process(
-                &bus::Controls { threshold, makeup, attack, release, ratio, link },
-                shared.mix,
-                self.rate,
-                state,
-                block,
-                len,
-            ),
-            Law::KontaktTransient { attack, sustain, gain, clip } => transient::process(
-                &transient::Controls {
-                    attack: attack as f32,
-                    sustain: sustain as f32,
-                    gain: gain as f32,
-                    clip,
-                },
-                self.rate,
-                state,
-                block,
-                len,
-            ),
-            Law::KontaktFeedback { high_quality, .. } => feedback::process(
-                &shared,
-                knobs,
-                high_quality,
-                self.rate,
-                state,
-                cells,
-                block,
-                len,
-            ),
-        }
-    }
-}
-
-/// The stages around a law.
-pub(super) struct Shared {
-    pub link: Link,
-    pub makeup: f64,
-    pub mix: f64,
-}
-
-impl Shared {
-    /// Factor on the audio the gain `g` applies to: make-up, then wet/dry.
-    #[inline(always)]
-    pub fn factor(&self, g: f64) -> f64 {
-        let wet = g * self.makeup;
-        if self.mix == 1. {
-            wet
-        } else {
-            1. + self.mix * (wet - 1.)
-        }
+        laws::process(self.law, &shared, knobs, self.rate, state, cells, block, len);
     }
 }
