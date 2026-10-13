@@ -130,6 +130,10 @@ impl LfoFrequency {
         }
         Ok(Self { inverse_rate })
     }
+    /// Cycles per second at a normalized lane point (`increment` times the control rate).
+    pub fn hertz(input: f32) -> f64 {
+        Self { inverse_rate: 1. }.increment(input)
+    }
     /// One normalized lane point; original 0x140b07bd9..0x140b07c69.
     pub fn increment(&self, input: f32) -> f64 {
         // COMISS treats NaN as below zero; preserve this before MINSS.
