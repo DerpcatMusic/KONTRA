@@ -2,6 +2,10 @@
 """Dump Kontakt's own post-load state for .nki files (the native oracle).
 
     tools/kontakt-oracle/dump.py OUT.jsonl A.nki [B.nki ...]
+    ORACLE_LUA=probe.lua tools/kontakt-oracle/dump.py OUT.jsonl [inputs...]   # custom probe
+
+A probe gets the same ORACLE_INPUTS / ORACLE_OUT globals and must end its output
+with the line {"done":true}.
 
 Runs Kontakt 8 standalone under Wine on a private Xvfb with dump.lua (Kontakt Lua
 API; needs DeveloperFeatures=dw:1 in Portapotty/UserData/Settings.cfg). No audio,
@@ -46,7 +50,7 @@ def lua_str(s: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2 or (len(sys.argv) < 3 and "ORACLE_LUA" not in os.environ):
         print(__doc__, file=sys.stderr)
         return 2
     out = Path(sys.argv[1]).resolve()
@@ -60,7 +64,7 @@ def main() -> int:
     script.write_text(
         "ORACLE_INPUTS = {" + ",".join(lua_str(winpath(p)) for p in inputs) + "}\n"
         + "ORACLE_OUT = " + lua_str(winpath(raw)) + "\n"
-        + (HERE / "dump.lua").read_text())
+        + Path(os.environ.get("ORACLE_LUA", HERE / "dump.lua")).read_text())
 
     xvfb = subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1600x1000x24"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -91,7 +95,7 @@ def main() -> int:
     records = [json.loads(line) for line in raw.read_text().splitlines() if line.strip()]
     records = [r for r in records if not r.get("done")]
     out.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in records))
-    print(f"{len(records)}/{len(inputs)} instruments dumped -> {out}" + ("" if done else " (TIMED OUT)"))
+    print(f"{len(records)} records for {len(inputs)} inputs -> {out}" + ("" if done else " (TIMED OUT)"))
     return 0 if done else 1
 
 
