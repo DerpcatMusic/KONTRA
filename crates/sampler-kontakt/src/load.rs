@@ -650,7 +650,7 @@ pub(crate) fn script_environment(
     sampler_ksp::Environment {
         evaluation_budget: None,
         coverage: None,
-        transport: None,
+        transport: Some(sampler_ksp::Transport::STANDALONE),
         groups,
         engine_values: source
             .engine_values
