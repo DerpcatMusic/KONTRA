@@ -21,6 +21,8 @@ mod pro;
 mod transient;
 mod bus;
 mod maximizer;
+#[cfg(test)]
+mod tests;
 
 use super::{
     Parameter, Planar, ProcessorState,
