@@ -115,6 +115,9 @@ impl Census {
                                 }
                                 Modulator::Lfo(l) => format!("LFO:{}", l.waveform),
                                 Modulator::Flex(_) => "Flex".into(),
+                                Modulator::Dbd(_) => "DBD".into(),
+                                Modulator::Glide(_) => "Glide".into(),
+                                Modulator::Follower(_) => "Follower".into(),
                                 Modulator::Other { chunk_id } => format!("Other:{chunk_id:#x}"),
                             };
                             self.add(
