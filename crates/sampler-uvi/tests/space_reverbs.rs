@@ -63,11 +63,18 @@ fn filtered_reverb_is_a_comb_allpass_reverb() {
 }
 
 #[test]
-fn spark_verb_predelay_is_milliseconds() {
-    let net = one("<SparkVerb PreDelay='20' DecayTime='4' Width='0.5'/>").network.unwrap();
+fn spark_verb_runs_its_native_engine() {
+    let c = one("<SparkVerb PreDelay='20' DecayTime='4' Width='0.5' Mix='0.25'/>");
+    let net = c.network.unwrap();
+    assert_eq!(net.topology, Topology::SparkVerb);
     close(net.predelay_seconds, 0.02);
-    close(net.decay_seconds, 4.0);
-    close(net.width, 0.5);
+    // RT60 is 0.1 * RoomSize (20 m default) * DecayTime.
+    close(net.decay_seconds, 8.0);
+    let spark = net.spark.unwrap();
+    assert_eq!((spark.quality, spark.mode, spark.diffuser), (3, 1, None));
+    // Equal-power mix by default (MixMode 1).
+    close(c.dry, 0.75f64.sqrt());
+    close(c.wet, 0.5);
 }
 
 #[test]
