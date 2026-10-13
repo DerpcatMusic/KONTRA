@@ -244,7 +244,22 @@ pub struct SourceIndices {
     /// bipolar source): FUN_140873040's `need_uni` targets outside its signed sets.
     #[cfg_attr(feature = "cache", serde(default))]
     pub unipolar_routes: Vec<RouteRef>,
+    /// Native identity of Kontakt external routes with a proved source type.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+/// What a Kontakt external route record says about its law: the native target
+/// id (registry id of the serialized target name), the target flag byte and
+/// the external source type (+0x544). Consumed by sampler-core
+/// `voice_mod::laws`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeRoute {
+    pub target: u16,
+    pub flags: u8,
+    pub source_type: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

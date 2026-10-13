@@ -255,3 +255,30 @@ fn intensity_assignment_lag_smooths_its_source() {
     let (plain, lagged) = (range(0), range(4800));
     assert!(plain > 0.1 && lagged < plain * 0.6, "{plain} {lagged}");
 }
+
+/// A Kontakt external volume route with a proved source type runs through the
+/// native `prepare_source`/`combine` laws (voice_mod/laws.rs) and, on the
+/// modeled H target, agrees with the generic path; a 128-sample table is read
+/// at 127 steps. Unproved source types (keyPos, 7) keep the generic path.
+#[test]
+fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
+    let table: Vec<(f64, f64)> =
+        (0..128).map(|k| (k as f64 / 127., 1. - (k as f64 / 127.) * 0.5)).collect();
+    let run = |native: Option<ModNative>, shape: Option<usize>, invert: bool| {
+        let program = ModProgram {
+            controls: vec![],
+            breakpoints: vec![],
+            sources: vec![ModSource::Constant],
+            routes: vec![ModRoute { shape, invert, native, ..ModRoute::new(0, ModTarget::Attenuate, 0.8) }],
+            shapes: vec![table.clone()],
+        };
+        let p = plan(8192).with_voice_modulation(vec![program], vec![Some(0)], vec![0]).unwrap();
+        gains(&mut start(p, 0), 1024, 0)[900]
+    };
+    let id = |source_type| Some(ModNative { target: 2, flags: 0, source_type });
+    for (shape, invert) in [(None, false), (None, true), (Some(0), false)] {
+        let generic = run(None, shape, invert);
+        assert!((run(id(8), shape, invert) - generic).abs() < 1e-6, "{shape:?} {invert}");
+        assert_eq!(run(id(7), shape, invert), generic);
+    }
+}
