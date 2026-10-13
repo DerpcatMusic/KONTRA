@@ -203,7 +203,12 @@ impl Prepared {
         for lanes in self.wavetable_controls.iter().flatten() {
             for (lane, control) in lanes.iter().enumerate() {
                 let index = self.control_index(*control)?;
-                if self.controls[index].domain != (ControlDomain::Real { min: 0., max: if lane < 3 { 1. } else { 33. } }) {
+                if self.controls[index].domain
+                    != (ControlDomain::Real {
+                        min: 0.,
+                        max: if lane < 3 { 1. } else { 33. },
+                    })
+                {
                     return Err(Error::InvalidInput);
                 }
             }
@@ -556,6 +561,16 @@ impl Runtime {
             let index = definitions.control_index(write.id)?;
             if !definitions.controls[index].domain.accepts(write.value) {
                 return Err(Error::InvalidInput);
+            }
+            if let Some(binding) = definitions
+                .engine_parameters
+                .get(generation.controls.engine_index[index])
+                && binding.law == crate::EngineParameterLaw::WavetableForm
+            {
+                let ControlValue::Real(value) = write.value else {
+                    return Err(Error::InvalidInput);
+                };
+                binding.law.normalized_value(value)?;
             }
         }
         let revision = generation

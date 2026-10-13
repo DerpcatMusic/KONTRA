@@ -169,7 +169,8 @@ impl Table {
 mod tests {
     #[test]
     fn phase_forms_match_original_kontakt_instructions() {
-        let receipt: serde_json::Value = serde_json::from_str(include_str!("wavetable_native_vectors.json")).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(include_str!("wavetable_native_vectors.json")).unwrap();
         assert_eq!(receipt["entry"], "0x140567aa0");
         assert_eq!(receipt["helper_substitutions"].as_array().unwrap().len(), 0);
         for case in receipt["cases"].as_array().unwrap() {
@@ -178,8 +179,10 @@ mod tests {
             let amount = case[2].as_f64().unwrap() as f32;
             let native = case[3].as_f64().unwrap() as f32;
             let actual = super::warp(phase, amount, mode);
-            assert!((actual - native).abs() <= 2e-7,
-                "mode{mode} phase{phase} amount{amount}: actual{actual}, native{native}");
+            assert!(
+                (actual - native).abs() <= 2e-7,
+                "mode{mode} phase{phase} amount{amount}: actual{actual}, native{native}"
+            );
         }
     }
 }

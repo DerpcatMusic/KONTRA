@@ -161,6 +161,19 @@ impl EngineParameterLaw {
         if !self.valid() || !value.is_finite() {
             return Err(Error::InvalidInput);
         }
+        if self == Self::WavetableForm {
+            // The measured phase dispatcher takes an integer ordinal. A real
+            // host control must not round an unproved or fractional mode into
+            // another sound (NI Source Module; native switch 0x140567aa0).
+            return if value.fract() == 0.
+                && (0. ..=33.).contains(&value)
+                && sampler_ir::Wavetable::supports_form(value as u8)
+            {
+                Ok(value as i32)
+            } else {
+                Err(Error::InvalidInput)
+            };
+        }
         let (a, b) = (
             self.decode(if self == Self::SignedNormalized {
                 -1_000_000
