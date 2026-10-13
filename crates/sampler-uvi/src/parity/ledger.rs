@@ -160,7 +160,10 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         for module in modules {
             let (file, anchor, supported) = match module {
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer" | "AuxEffect" | "ScriptProcessor" => ("script.rs", "fn build_program", true),
-                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb" => ("inserts.rs", "fn inserts", true),
+                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb"
+                | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho"
+                | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser"
+                | "Phasor" | "PhasorFilter" => ("inserts.rs", "fn inserts", true),
                 "ConstantModulation" | "ScriptEventModulation" | "DAHDSR" | "AHD" | "LFO" | "MultiLFO" | "StepEnvelope" => ("modulation.rs", "fn signal", true),
                 _ => ("inserts.rs", "fn inserts", false),
             };

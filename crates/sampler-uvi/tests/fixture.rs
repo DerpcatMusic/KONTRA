@@ -608,6 +608,23 @@ fn track_delay_moves_the_impulse_without_feedback() {
 }
 
 #[test]
+fn time_modulation_inserts_run_on_the_universal_engine() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "tm-plain");
+    let delayed = through(r#"<FxDelay DelayTime="0.01" Feedback="0" Mix="1"/>"#, "tm-fxdelay");
+    assert!(delayed[..470].iter().flatten().all(|x| x.abs() < 1e-7));
+    for (actual, expected) in delayed[490..].iter().zip(&plain[10..]) {
+        for c in 0..2 {
+            assert!((actual[c] - expected[c]).abs() < 2e-3, "linear read of an integer delay");
+        }
+    }
+    for tag in ["Chorus", "Flanger", "Phaser", "Phasor", "WhiteChorus", "TapeEcho", "DualDelay"] {
+        let out = through(&format!(r#"<{tag} Mix="0.5"/>"#), &format!("tm-{tag}"));
+        assert!(out.iter().flatten().all(|x| x.is_finite()), "{tag}");
+        assert!(out[2000..].iter().flatten().any(|x| x.abs() > 1e-3), "{tag} stays audible");
+    }
+}
+
+#[test]
 fn program_and_layer_inserts_are_distinct_summed_scopes() {
     let xml = insert_program(None)
         .replace("<Layers>", r#"<Inserts><GainMatrix Gain_1_1="0" Gain_2_1="1" Gain_1_2="0" Gain_2_2="0"/></Inserts><Layers>"#)
