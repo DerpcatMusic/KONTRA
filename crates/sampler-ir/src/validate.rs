@@ -618,16 +618,16 @@ impl Instrument {
                 Depth::Normalized(value) => check.finite(value, "depth")?,
             }
         }
+        // Sets, not rescans of earlier entries: these lists reach thousands
+        // on large instruments and validation runs on every load.
+        let mut routes = std::collections::HashSet::new();
         for (i, &(route, depth, bypass)) in self.source_indices.route_controls.iter().enumerate() {
             check.owner = format!("source route controls {i}");
             check.exists(Reference::Route(route.0))?;
             for control in [depth, bypass] {
                 check.exists(Reference::Control(control.0))?;
             }
-            if self.source_indices.route_controls[..i]
-                .iter()
-                .any(|b| b.0 == route)
-            {
+            if !routes.insert(route) {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "duplicate source route controls",
@@ -635,13 +635,10 @@ impl Instrument {
                 });
             }
         }
+        let mut processors = std::collections::HashSet::new();
         for (i, binding) in self.processor_controls.iter().enumerate() {
             check.owner = format!("processor control {i}");
-            if self.processor_controls[..i].iter().any(|p| {
-                p.chain == binding.chain
-                    && p.index == binding.index
-                    && p.parameter == binding.parameter
-            }) {
+            if !processors.insert((binding.chain, binding.index, binding.parameter)) {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "duplicate processor control",
@@ -655,6 +652,10 @@ impl Instrument {
             })?;
             check.time(binding.ramp, "ramp")?;
         }
+        let bound: std::collections::HashSet<_> = (self.processor_controls.iter())
+            .map(|binding| binding.control)
+            .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
+            .collect();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
             check.owner = format!("source control alias {i}");
             check.exists(Reference::Control(alias.control.0))?;
@@ -666,15 +667,7 @@ impl Instrument {
             if !matches!(
                 self.controls[alias.control.0].value,
                 crate::ControlValue::Continuous { .. }
-            ) || !(self
-                .processor_controls
-                .iter()
-                .any(|binding| binding.control == alias.control)
-                || self
-                    .source_indices
-                    .route_controls
-                    .iter()
-                    .any(|b| b.1 == alias.control || b.2 == alias.control))
+            ) || !bound.contains(&alias.control)
             {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
