@@ -1288,7 +1288,16 @@ impl Translation {
         let saved = self.snapshot_groups.get(index).cloned();
         let overlaid;
         let group = if let Some(state) = &saved {
-            overlaid = crate::snapshot::overlay_modulation(group, &state.modulation);
+            overlaid = crate::snapshot::overlay_group(group, state)?;
+            self.ir.unsupported.push(ir::Unsupported {
+                location: format!("snapshot group {index}"),
+                feature: "saved release/MIDI/voice state and v4 selection words".into(),
+                value: format!(
+                    "compact bytes 14..24 {:02x?}, selection {}, v4 words {:02x?}",
+                    state.compact_state, state.selection, state.v4_words
+                ),
+                reason: ir::Reason::NotModeled,
+            });
             &overlaid
         } else {
             group

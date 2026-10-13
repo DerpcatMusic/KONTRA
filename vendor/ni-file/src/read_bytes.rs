@@ -183,7 +183,8 @@ pub trait ReadBytesExt: Read + Seek {
     fn read_optional_sized_utf8(&mut self) -> Result<Option<String>, ReadBytesError> {
         let length = self.read_u32_le()?;
 
-        if length == 0xFFFFFFFF {
+        // Native optional string 0x140743010: all negative signed lengths are absent.
+        if (length as i32) < 0 {
             return Ok(None);
         }
 
