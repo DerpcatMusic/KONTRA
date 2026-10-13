@@ -29,6 +29,28 @@ pub enum Topology {
     Plate,
     /// Only the input allpass diffuser (no feedback tank): a smearing effect.
     Diffuser,
+    /// The exact Kontakt legacy Reverb (0x15) network, driven by
+    /// [`Network::freeverb`] and `predelay_seconds`/`input_cutoff_hz`.
+    Freeverb,
+}
+
+/// Direct coefficients of the Kontakt legacy Reverb network (`FUN_140aa3d10`):
+/// eight damped combs into four allpasses behind a predelay, with the native
+/// Freeverb delay lengths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Freeverb {
+    /// Comb feedback gain.
+    pub feedback: f64,
+    /// Comb damping coefficient `d`: `store = out*d + (1-d)*store`.
+    pub damp: f64,
+    /// Allpass gain `g`.
+    pub allpass: f64,
+    /// Input gain ahead of the network.
+    pub input_gain: f64,
+    /// Channel-mix weight `w` in `0..=1` (`1` keeps the channels apart): the
+    /// input becomes `b*mean + (1-b)*x` with `b = 2*(1-w)`.
+    pub width: f64,
 }
 
 /// Decay ratios of the low and high bands against the mid band.
@@ -78,6 +100,8 @@ pub struct Network {
     pub gate_seconds: Option<f64>,
     /// Feedback of the predelay line (an echo before the tank), `0..=0.95`.
     pub echo_feedback: f64,
+    /// Coefficients for [`Topology::Freeverb`]; ignored by other topologies.
+    pub freeverb: Option<Freeverb>,
 }
 
 impl Network {
@@ -98,6 +122,7 @@ impl Network {
         width: 1.0,
         gate_seconds: None,
         echo_feedback: 0.0,
+        freeverb: None,
     };
 }
 
@@ -133,6 +158,7 @@ impl Config {
         let net = self.network.is_none_or(|n| {
             let band = n.bands.is_none_or(|b| [b.low, b.high, b.low_hz, b.high_hz].iter().all(|v| v.is_finite()));
             band && n.gate_seconds.is_none_or(f64::is_finite)
+                && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
                 && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
                     .iter()
                     .all(|v| v.is_finite())
