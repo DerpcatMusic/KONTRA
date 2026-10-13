@@ -1,6 +1,9 @@
-//! A live TPT bell (v1 0cb7a8a0:src/engine/filter.rs) with the Kontakt 8 laws measured
-//! against the standalone plugin: centre gain is `GAIN_SCALE` x the displayed dB,
-//! `alpha = sin(w0) * sinh(ln2 * octaves)`, frequency 20 Hz * 10^(3x).
+//! GENERIC / v1 FALLBACK live TPT bell (v1 0cb7a8a0:src/engine/filter.rs). This is NOT the
+//! native Kontakt EQ: native legacy EQ kind22 is `native_eq::NativeEq` (coefficient
+//! generator 0x1409591c0: its own frequency law, 903.27 Hz at x=0.5 against this
+//! module's 632.46 Hz, and a five-value biquad state, not this six-value TPT layout;
+//! wave3 audit CORE-FILTERS-032/034). The gain scale below is only the algebraic
+//! observation A = 2^(dB/6); nothing else here is claimed native.
 use super::{
     Parameter, Planar, ProcessorState,
     control::{ControlRamp, ControlRange, PreparedParameter},
@@ -21,7 +24,7 @@ impl PeakingEq {
     /// Centre gain in true dB per displayed dB: 20*log10(2)/3 (native A = 2^(3g), gain A^2).
     pub const GAIN_SCALE: f64 = 2.006_866_648_250_223;
 
-    /// The same normalized frequency conversion and Nyquist guard as playback.
+    /// This generic fallback's frequency conversion (20 Hz * 10^(3x), not the native law).
     pub fn frequency_hz(normalized: f32, rate: u32) -> f32 {
         (20. * 10f32.powf(3. * normalized.clamp(0., 1.))).min(0.49 * rate as f32)
     }
@@ -203,6 +206,14 @@ fn section([a1, a2, a3, m0, m1, m2]: [f32; 6], history: &mut [f32; 2], x: f32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_peaking_frequency_is_not_the_native_legacy_eq_law() {
+        let generic = PeakingEq::frequency_hz(0.5, 48_000);
+        let native = super::super::native_eq::KontaktLegacyEqSettings::frequency_hz(0.5, 48_000);
+        assert!((generic - 632.4555).abs() < 0.01);
+        assert_eq!(native, 903.2728881835938_f32);
+    }
 
     // Literal v1 Section::process_body two-frame SSE arithmetic, expressed as scalars.
     #[cfg(target_arch = "x86_64")]
