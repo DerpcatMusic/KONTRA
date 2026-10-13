@@ -1,0 +1,18 @@
+shape_type	shape	status	static curve (stimulus 200 Hz sine ramp; in_pk post group pan, out_pk at the effect output)	harmonics at max level	evidence
+method	-	-	stimrender.py, Effects/Shaper INIT (Saturation), SHAPE_TYPE and SHAPE set with generic=1, instrument volume -6 dB undone; dry reference on R	-	/tmp/w3 sat.json
+0 Classic	0	PROVED	expander: in .082/.235/.389/.542/.696 -> out .008/.033/.088/.194/.369	H3 -11.6 dB, no H2	sat.npz
+0 Classic	0.25	PROVED	mild expander: -> .055/.162/.280/.416/.577	H3 -25.8	sat.npz
+0 Classic	0.5	PROVED	identity (bit-equal to bypass levels)	none	sat.npz
+0 Classic	0.75	PROVED	saturator into a hard ceiling 1.0: -> .299/.718/.948/.998/.998	H3 -12.4, H5 -23.2, H2 -42	sat.npz
+0 Classic	1	PROVED	-> .545/.994/.998/.998/.998 (ceiling 1.0)	H3 -10.3, H5 -16.3	sat.npz
+1 Enhanced	0	PROVED	identity	none	sat.npz
+1 Enhanced	0.25	PROVED	symmetric soft saturation: -> .131/.339/.507/.650/.767	H3 -40.6, H5 -54.8	sat.npz
+1 Enhanced	0.5	PROVED	-> .247/.545/.709/.801/.852	H3 -34.5	sat.npz
+1 Enhanced	0.75	PROVED	-> .419/.709/.783/.801/.806 (asymptote ~0.81)	H3 -32.7	sat.npz
+1 Enhanced	1	PROVED	-> .584/.729/.735/.735/.734 (asymptote ~0.735)	H3 -32.6	sat.npz
+2 Drums	0	PROVED	identity	none	sat.npz
+2 Drums	0.25	PROVED	-> .099/.276/.443/.597/.740	H3 -31.4	sat.npz
+2 Drums	0.5	PROVED	-> .174/.451/.661/.806/.884	H3 -18.5	sat.npz
+2 Drums	0.75	PROVED	hard limit at .634: -> .342/.631/.634/.634/.634	H3 -10.3, H5 -16.3	sat.npz
+2 Drums	1	PROVED	hard limit at .578 (already reached at .082 in)	H3 -9.6, H5 -14.2	sat.npz
+all	all	PROVED	symmetric (no even harmonics above -98 dB except Classic .75 H2 -42 dB), no added latency (onsets within detection noise of the dry reference), memoryless at 200 Hz (out+ = out- within 0.01)	-	sat.npz
