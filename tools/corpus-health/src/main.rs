@@ -18,6 +18,7 @@
 //! cannot stall the run.
 mod heap;
 mod inspect;
+mod load_audit;
 
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
@@ -2929,6 +2930,7 @@ fn main() {
     let code = match args.as_slice() {
         [cmd, rest @ ..] if cmd == "inspect" => inspect::run(rest),
         [cmd, rest @ ..] if cmd == "inspect-list" => inspect::run_list(rest),
+        [cmd, rest @ ..] if cmd == "load-audit" => load_audit::run(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
             let mut it = rest.iter();
