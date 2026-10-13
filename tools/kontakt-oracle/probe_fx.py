@@ -64,7 +64,7 @@ def lua(effects: list[tuple[str, Path]], steps: list[tuple[int, str, int]]) -> s
 local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 local EFFECTS = {{{",".join(lua_s(winpath(p)) for _, p in effects)}}}
-local STEPS = {{{",".join(f'{{{e},{lua_s(par)},{v}}}' for e, par, v in steps)}}}
+local STEPS = {{{",".join(f'{{{e},{lua_s(par)},{v if isinstance(v, int) else lua_s(v)}}}' for e, par, v in steps)}}}
 local PRE = {lua_s(PRE)}
 local DIR = {lua_s(winpath(STEPS) + chr(92))}
 kt.reset_multi()
@@ -184,7 +184,7 @@ def main() -> int:
     effects = [(e, init_preset(e)) for e in a.effects]
     pars = a.pars.split(",") if a.pars else all_pars()
     pars = [p if p.startswith("$") else "$ENGINE_PAR_" + p for p in pars]
-    values = [int(v) for v in a.values.split(",")]
+    values = [int(v) if v.lstrip('-').isdigit() else v for v in a.values.split(",")]  # non-numeric: KSP expression, e.g. $FILTER_TYPE_LDR_LP4
 
     def plan(per_effect_pars, vals):
         st = []
