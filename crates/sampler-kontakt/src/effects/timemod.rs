@@ -3,13 +3,15 @@
 //! Native (Kontakt 8.13.1 binary): Legacy Phaser (0x14), Legacy Delay (0x10,
 //! audio 0x140aa1130), Legacy Chorus (0x11, audio 0x140aa0510) and Legacy
 //! Flanger (0x12, audio 0x140aa2350); the last two are one legacy modulated
-//! delay kernel. The modern effects stay unsupported with the reasons in
-//! [`unproved`].
+//! delay kernel. Choral (0x5d) configures the line's voice bank
+//! ([`choral`]). The other modern effects stay unsupported with the reasons
+//! in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
+        Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
+        VoiceBank,
     },
 };
 
@@ -23,6 +25,133 @@ pub(crate) enum Unit {
     /// Choral (0x5d, reader schema 7 f32, 2 flags, i32): amount, rate, delay,
     /// voices, width, feedback, mix, invert, scatter, mode.
     Choral { fields: [f32; 7], invert: bool, scatter: bool, mode: i32 },
+}
+
+/// Choral voice tables (0x14193cd70), f32 bits: G0 delay scale, G1 rate scale,
+/// G2 LFO1 phase offset, G3 LFO2 rate ratio, G4 LFO2 depth, G5 filter Hz, G6
+/// high-pass blend, G7 LFO1 shape, G8 modulation smoothing; seven voices each.
+/// Modes 3 and 4 share a table; G8[6] is written after each branch.
+const MODES: [[u32; 63]; 4] = [
+    [
+        0x3b449ba6, 0x3b449ba6, 0x3be56042, 0x3be56042, 0x3c343958, 0x3c343958, 0x3c54fdf4,
+        0x3f800000, 0x3f800000, 0x3fb6db62, 0x3fb70a31, 0x3fdcb296, 0x3fdd2395, 0x3f3e075f,
+        0x00000000, 0x3f000000, 0x00000000, 0x3f000000, 0x00000000, 0x3f000000, 0x00000000,
+        0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x3dcccccd, 0x3dcccccd, 0x3f800000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x3c23d70a, 0x3c23d70a, 0x00000000,
+        0x459c4000, 0x459c4000, 0x459c4000, 0x459c4000, 0x461c4000, 0x461c4000, 0x42480000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+        0x3e4ccccd, 0x3e570a3d, 0x3e570a3d, 0x3e4ccccd, 0x3ecccccd, 0x3ecccccd, 0x00000000,
+        0x3ecccccd, 0x3ecccccd, 0x3ecccccd, 0x3ecccccd, 0x3ecccccd, 0x3ecccccd, 0x3ecccccd,
+    ],
+    [
+        0x3be56042, 0x3be56042, 0x3be56042, 0x3be56042, 0x3c54fdf4, 0x3c54fdf4, 0x3ced9168,
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f3e075f,
+        0x00000000, 0x3f000000, 0x3eaaaa3b, 0x3f55551d, 0x3f2aaa3b, 0x3e2aa8eb, 0x00000000,
+        0x40833333, 0x40833333, 0x40800000, 0x40800000, 0x4083d70a, 0x4083f8cb, 0x3f800000,
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x00000000,
+        0x457a0000, 0x457a0000, 0x45bb8000, 0x45bb8000, 0x461c4000, 0x461c4000, 0x42480000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+        0x3c23d70a, 0x3c23d70a, 0x3c23d70a, 0x3c54fdf4, 0x3c656042, 0x3c449ba6, 0x00000000,
+        0x3e99999a, 0x3ea3d70a, 0x3ea3d70a, 0x3e99999a, 0x3ea8f5c3, 0x3e99999a, 0x3ecccccd,
+    ],
+    [
+        0x3c343958, 0x3c343958, 0x3c343958, 0x3c343958, 0x3c343958, 0x3c343958, 0x3d591687,
+        0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f3e075f,
+        0x00000000, 0x3f000000, 0x3f000000, 0x00000000, 0x3e800000, 0x3f400000, 0x00000000,
+        0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x3f800000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x463b8000, 0x463b8000, 0x43160000, 0x43160000, 0x469c4000, 0x469c4000, 0x42480000,
+        0x00000000, 0x00000000, 0x3f800000, 0x3f800000, 0x00000000, 0x00000000, 0x3f800000,
+        0x3dcccccd, 0x3dcccccd, 0x3dced917, 0x3dced917, 0x3ecccccd, 0x3ecccccd, 0x00000000,
+        0x3e4ccccd, 0x3e6147ae, 0x3e6147ae, 0x3e4ccccd, 0x3e4ccccd, 0x3e4ccccd, 0x3f7d70a4,
+    ],
+    [
+        0x3be56042, 0x3be56042, 0x3c343958, 0x3c343958, 0x3c54fdf4, 0x3c54fdf4, 0x3ced9168,
+        0x3f800000, 0x3f800000, 0x3fb6db62, 0x3fb6db62, 0x3fdcb296, 0x3fdcb296, 0x3f3e075f,
+        0x00000000, 0x00000000, 0x00000000, 0x3e800000, 0x00000000, 0x3e800000, 0x00000000,
+        0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x40c33333, 0x3f800000,
+        0x00000000, 0x00000000, 0x3e99999a, 0x3e99999a, 0x3f19999a, 0x3f19999a, 0x00000000,
+        0x469c4000, 0x469c4000, 0x469c4000, 0x469c4000, 0x469c4000, 0x469c4000, 0x42480000,
+        0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x3f800000,
+        0x00000000, 0x3e4ccccd, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        0x3f7d70a4, 0x3f7d70a4, 0x3f7d70a4, 0x3f7d70a4, 0x3f7d70a4, 0x3f7d70a4, 0x3f7d70a4,
+    ],
+];
+
+/// Kontakt 8.13.1 Choral core setters, resolved to the voice bank: amount
+/// 0x14193a2f0, rate 0x14193b140, delay 0x14193ac00, voices 0x14193a3e0,
+/// width 0x14193a4a0, feedback 0x14193a610, scatter 0x14193a620, invert
+/// 0x14193a6a0, mix 0x14193a6d0, mode 0x14193a230 / 0x14193e160.
+fn choral([amount, rate, delay, voices, width, feedback, mix]: [f32; 7], invert: bool, scatter: bool, mode: usize) -> VoiceBank {
+    let table = MODES[mode.min(3)].map(|bits| f64::from(f32::from_bits(bits)));
+    let group = |g: usize, v: usize| table[g * 7 + v];
+    // Amount: d = (a*a f32) * 0.99 + 0.01, pitch ratio R = 2^(d * 0.025).
+    let d = f64::from(amount * amount) * 0.99 + 0.01;
+    let excursion = 0.5 * (2f64.powf(d * 0.025) - 1.);
+    // Rate: r^3 * 7.4 + 0.25 Hz.
+    let r = f64::from(rate);
+    let speed = r * r * r * 7.4 + 0.25;
+    // Delay: seconds = G0 * (D * 5 + 0.1).
+    let span = f64::from(delay) * 5. + 0.1;
+    // Feedback: g = fb^(1/4) * 0.999; input gain (1 - min(g, .99)^4)^(1/4).
+    let g = f64::from(feedback).sqrt().sqrt() * 0.999;
+    let clamped = if 0.99 <= g { 0.99 } else { g };
+    let c2 = clamped * clamped;
+    let input = (1. - c2 * c2).sqrt().sqrt();
+    // Voices: pairs 2/3 and 4/5 fade in over the two halves; 0/1 are 1 (ctor
+    // 0x141939fa4), 6 is 0.
+    let fade = |k: f64| (f64::from(voices) + f64::from(voices) - k).clamp(0., 1.).sqrt();
+    let gains = [1., 1., fade(0.), fade(0.), fade(1.), fade(1.), 0.];
+    let sum = 2. + fade(0.) * 2. + fade(1.) * 2.;
+    let norm = (sum * 0.2 + 0.6).sqrt() * (1. / sum);
+    // Width: pair k turns by -/+ w * pi/4 * (1 - 2k/7); voice 6 stays put.
+    let (left_turn, right_turn) = (f64::from(width) * -std::f64::consts::FRAC_PI_4, f64::from(width) * std::f64::consts::FRAC_PI_4);
+    let turn = |angle: f64| {
+        let (s, c) = angle.sin_cos();
+        [c, -s, s, c]
+    };
+    let voices: [BankVoice; BANK_VOICES] = std::array::from_fn(|v| {
+        let reach = 1. - (v / 2 * 2) as f64 * 0.142_857_142_857_142_85;
+        let lfo_hz = group(1, v) * speed;
+        BankVoice {
+            gain: gains[v],
+            feedback: if v == 0 { g } else { g.powf(group(0, v) * (1. / group(0, 0))) },
+            rotation: match v {
+                6 => [1., -0., 0., 1.],
+                _ if v % 2 == 0 => turn(left_turn * reach),
+                _ => turn(right_turn * reach),
+            },
+            delay_s: group(0, v) * span,
+            excursion,
+            lfo_hz,
+            lfo2_ratio: group(3, v),
+            // LFO2 runs when G4 > 1e-8, scaled by G4 / G3.
+            lfo2: if 1e-8 < group(4, v) { group(4, v) / group(3, v) } else { 0. },
+            offset: group(2, v),
+            shape: group(7, v),
+            smoothing: group(8, v),
+            filter_hz: group(5, v),
+            highpass: group(6, v),
+        }
+    });
+    // Shelf: S = max(1 - g, 0.2), corner min(0.25 / T0, 50) Hz warped by S^(1/4).
+    let s = if 1. - g <= 0.2 { 0.2 } else { 1. - g };
+    let fc = 0.25 / (group(0, 0) * span);
+    let fc = if 50. <= fc { 50. } else { fc };
+    let sc = if scatter { 1. } else { 0. };
+    let (a, b) = (sc * -0.261_203_874_963_740_98, sc * 0.445_902_906_222_805_98);
+    let mix = f64::from(mix);
+    VoiceBank {
+        voices,
+        scatter: [1. - sc * 0.554_097_093_777_194_07, a, a, b, a, b, b],
+        invert: 1. - f64::from(if invert { 2f32 } else { 0. }),
+        input,
+        // Output 0x14193be50: mix * input * norm * 0.707 (0x147697a98).
+        wet: mix * input * norm * 0.707,
+        dry: 1. - mix,
+        shelf_hz: fc / s.sqrt().sqrt(),
+        shelf_gain: s,
+    }
 }
 
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
@@ -166,7 +295,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 return None;
             }
             let mut line = Line::single(DelayTime::Frames(1), 0.);
-            line.native = Native::Choral { amount, rate, delay, voices, width, feedback, mix, invert, scatter, mode: mode as u8 };
+            line.native = Native::VoiceBank(choral([amount, rate, delay, voices, width, feedback, mix], invert, scatter, mode as usize));
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry: 0., wet: 1. }
         }
     };
@@ -249,22 +378,79 @@ mod tests {
         let built = chain(&[s], Scope::Voice);
         let sampler_ir::Processor::TimeMod(cfg) = built.processors[0] else { panic!("{:?}", built.processors) };
         assert!(built.notes.is_empty(), "{:?}", built.notes);
-        assert_eq!(
-            cfg.line.unwrap().native,
-            sampler_ir::fx::timemod::Native::Choral {
-                amount: 0.25,
-                rate: 0.5,
-                delay: 0.18,
-                voices: 1.,
-                width: 0.75,
-                feedback: 0.3,
-                mix: 0.6,
-                invert: true,
-                scatter: false,
-                mode: 2
-            }
-        );
+        assert_eq!(cfg.line.unwrap().native, sampler_ir::fx::timemod::Native::VoiceBank(super::choral([0.25, 0.5, 0.18, 1., 0.75, 0.3, 0.6], true, false, 2)));
         assert_eq!((cfg.dry, cfg.wet), (0., 1.));
+    }
+
+    #[test]
+    fn choral_laws_match_native_vectors() {
+        use super::choral;
+        // Delay 0.18, mode 0: B0 = 0.003f * (0.18f * 5 + 0.1) s (0x14193ac00) -> 144 frames at 48 kHz.
+        let c = choral([1., 0.5, 0.18, 0., 0., 0.5, 1.], false, false, 0);
+        let v0 = c.voices[0];
+        assert!((v0.delay_s * 48_000. - 144.000_006_4).abs() < 1e-6, "{}", v0.delay_s);
+        // Rate 0.5 -> 0.125 * 7.4 + 0.25 = 1.175 Hz (0x14193b140); amount 1 -> 2^0.025 (0x14193a2f0).
+        assert!((v0.lfo_hz - 1.175).abs() < 1e-12);
+        assert!(((48_000. / v0.lfo_hz) * v0.excursion - 357.032).abs() < 1e-3);
+        // Feedback 0.5 (0x14193a610): g = 0.5^(1/4) * 0.999, input (1 - g^4)^(1/4).
+        assert!((v0.feedback - 0.840_055_518_8).abs() < 1e-9);
+        assert!((c.input - 0.841_734_796_5).abs() < 1e-9);
+        // Voices (0x14193a3e0): 0 -> sqrt(1) / 2, 1 -> sqrt(1.8) / 6.
+        assert_eq!(c.wet, 0.5 * c.input * 0.707);
+        let full = choral([0., 0., 0., 1., 0., 0., 1.], false, false, 0);
+        assert!((full.wet - 1.8f64.sqrt() / 6. * 0.707).abs() < 1e-15);
+        assert_eq!(full.voices.map(|v| v.gain), [1., 1., 1., 1., 1., 1., 0.]);
+        // Mode 1 voice 2: LFO2 depth G4 / G3 = 1 / 4, phase offset 0.33333f.
+        let m1 = choral([0.; 7], false, false, 1);
+        assert_eq!(m1.voices[2].lfo2, 0.25);
+        assert_eq!(m1.voices[2].offset, f64::from(f32::from_bits(0x3eaaaa3b)));
+    }
+
+    /// Kontakt 8.13.1 under tools/re/kemu.py: native ctor 0x141939b10,
+    /// prepare 0x14193b840 at 48 kHz, setters, process 0x14193be50 in 32-frame
+    /// blocks on `0.5 sin(0.05 n) + impulse` / `0.5 sin(0.031 n)` (f32); output
+    /// f32 bits. Rendered here from the saved bytes through the engine.
+    #[test]
+    fn choral_renders_native_kemu_vectors() {
+        let input: Vec<[f32; 2]> = (0..3000)
+            .map(|i| {
+                let n = f64::from(i);
+                [((n * 0.05).sin() * 0.5 + if i == 0 { 1. } else { 0. }) as f32, ((n * 0.031).sin() * 0.5) as f32]
+            })
+            .collect();
+        let cases: [([f32; 7], bool, bool, i32, [(usize, u32, u32); 6]); 2] = [
+            ([0.6, 0.5, 0.18, 0.7, 0.4, 0.5, 0.8], true, true, 1, [(0, 0x3f32c0a0, 0), (1, 0x3c7145ad, 0x3c314b45), (150, 0x3ea49034, 0xbebce4dd), (777, 0x3e88e9e0, 0xbe871bd9), (1500, 0xbe883379, 0x3e1418bb), (2999, 0xbdc85a44, 0xbea4ea2d)]),
+            ([0.3, 0.8, 0.5, 1.0, 1.0, 0.9, 1.0], false, true, 2, [(0, 0x3e820df2, 0), (1, 0x3bc4ddf0, 0x3b80fe4e), (150, 0x3defac3e, 0xbe071ad4), (777, 0x3ded953d, 0xbddf899f), (1500, 0xbd45a8a0, 0xbdf18584), (2999, 0xbe25b166, 0x3d3db892)]),
+        ];
+        for (fields, invert, scatter, mode, want) in cases {
+            let mut public: Vec<u8> = fields.iter().flat_map(|f| f.to_le_bytes()).collect();
+            public.extend([u8::from(invert), u8::from(scatter)]);
+            public.extend(mode.to_le_bytes());
+            let mut s = slot(0x5d, 0x51, &[]);
+            s.public = public;
+            let built = chain(&[s], Scope::Voice);
+            assert!(built.notes.is_empty(), "{:?}", built.notes);
+            let mut instrument = sampler_ir::Instrument::default();
+            instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+            instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
+            let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+            zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
+            zone.chain = Some(sampler_ir::ChainRef(0));
+            zone.velocity = sampler_ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let pcm = sampler_core::Pcm::new(48000, input.clone().into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+            let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+            let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+            let key = sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+            rt.trigger(key, 60, 1.0).unwrap();
+            let mut y = vec![[0f32; 2]; 3000];
+            rt.render(&mut y).unwrap();
+            for (i, l, r) in want {
+                let ulps = |g: f32, w: u32| (i64::from(g.to_bits()) - i64::from(w)).abs();
+                assert!(ulps(y[i][0], l) <= 1 && ulps(y[i][1], r) <= 1, "mode {mode} frame {i}: {:?} vs {:?}", y[i], [f32::from_bits(l), f32::from_bits(r)]);
+            }
+        }
     }
 
     #[test]
