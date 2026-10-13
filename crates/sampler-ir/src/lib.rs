@@ -418,6 +418,10 @@ pub struct Group {
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
+    /// Independent time/pitch source (Kontakt Time Machine family). Absent for
+    /// plain sampler playback, where transposition also changes tempo.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub time_stretch: Option<TimeStretch>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -441,6 +445,35 @@ pub struct Group {
     /// Set by [`Instrument::tap_group`]: the bus that carries this group's
     /// fader and sends.
     pub tap: Option<GroupTap>,
+}
+
+/// Which time-stretch engine configuration a group's source uses. The engine
+/// is shared (`sampler-core` `StretchEngine`); the kind only picks its
+/// configuration, so formats add kinds without new DSP code paths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StretchKind {
+    TimeMachine1,
+    TimeMachine2,
+    TimeMachinePro,
+}
+
+/// Saved controls of a time-stretch source. Pitch is the group/zone tuning
+/// plus key tracking, exactly as for sampler playback; these controls only
+/// decouple tempo from it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeStretch {
+    pub kind: StretchKind,
+    /// Playback speed as a ratio of the original; 0 freezes the position.
+    pub speed: f32,
+    /// Time Machine Pro high-quality mode (separate voice limit).
+    pub high_quality: bool,
+}
+impl TimeStretch {
+    pub fn valid(self) -> bool {
+        self.speed.is_finite() && (0. ..=64.).contains(&self.speed)
+    }
 }
 
 /// Saved controls for the measured 2048-frame Kontakt wavetable subset.

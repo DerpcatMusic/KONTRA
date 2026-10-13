@@ -376,6 +376,9 @@ impl Instrument {
                 check.output(Output::Bus(send.to))?;
                 check.gain(send.gain, "send")?;
             }
+            if let Some(stretch) = group.time_stretch {
+                check.within(f64::from(stretch.speed), 0.0..=64.0, "time stretch speed")?;
+            }
             if let Some(limit) = group.source_voice_limit {
                 check.exists(Reference::VoiceLimit(limit))?;
             }
