@@ -294,6 +294,7 @@ fn translate(
         start_criteria: Vec::new(),
         voice_groups: Vec::new(),
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
+        retained_snapshot: Default::default(),
         engine: Vec::new(),
         dynamic: false,
         eq_mod_slots: HashMap::new(),
@@ -495,6 +496,7 @@ fn translate(
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
         out.ir.source_indices.groups.push(Some(runtime));
     }
+    out.flush_retained_snapshot_state();
     for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
         if let Some(slot) = behavior.slot {
             out.ir.source_indices.slots.resize(
@@ -706,6 +708,9 @@ struct Translation {
     voice_groups: Vec<Option<usize>>,
     /// A snapshot's saved state per group, applied over the program's.
     snapshot_groups: Vec<crate::GroupState>,
+    /// Retained-but-unproved snapshot group bytes -> the groups carrying them,
+    /// reported once per distinct value (see `flush_retained_snapshot_state`).
+    retained_snapshot: std::collections::BTreeMap<String, Vec<usize>>,
     /// What the scripts' `on init` wrote with `set_engine_par`.
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
@@ -1272,6 +1277,19 @@ impl Translation {
         });
     }
 
+    /// One entry per distinct retained value with its group count, instead of
+    /// one per group (thousands on large instruments).
+    fn flush_retained_snapshot_state(&mut self) {
+        for (value, groups) in std::mem::take(&mut self.retained_snapshot) {
+            self.ir.unsupported.push(ir::Unsupported {
+                location: format!("snapshot groups ({} of them, first {})", groups.len(), groups[0]),
+                feature: "saved release/MIDI/voice state and v4 selection words".into(),
+                value,
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+
     /// A group's complete settings, including dormant saved-mute content.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -1291,15 +1309,13 @@ impl Translation {
         let overlaid;
         let group = if let Some(state) = &saved {
             overlaid = crate::snapshot::overlay_group(group, state)?;
-            self.ir.unsupported.push(ir::Unsupported {
-                location: format!("snapshot group {index}"),
-                feature: "saved release/MIDI/voice state and v4 selection words".into(),
-                value: format!(
+            self.retained_snapshot
+                .entry(format!(
                     "compact bytes 14..24 {:02x?}, selection {}, v4 words {:02x?}",
                     state.compact_state, state.selection, state.v4_words
-                ),
-                reason: ir::Reason::NotModeled,
-            });
+                ))
+                .or_default()
+                .push(index);
             &overlaid
         } else {
             group
@@ -4061,6 +4077,7 @@ mod modulation {
             start_criteria: Vec::new(),
             voice_groups: Vec::new(),
             snapshot_groups: Vec::new(),
+            retained_snapshot: Default::default(),
             engine: Vec::new(),
             dynamic: false,
             eq_mod_slots: HashMap::new(),
