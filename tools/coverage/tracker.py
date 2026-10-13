@@ -92,6 +92,7 @@ def effects():
         else:
             s, n = "todo", "no kernel yet; reported as not modeled"
         out.append(feat("Kontakt", "Effects", f"{sid:02x}", name, s, n, "crates/sampler-kontakt/src/effects.rs", proof_of(row) if row else "unproven"))
+        out[-1]["keys"] = [cls, cls.removeprefix("BParFX")]
     return out
 
 
@@ -163,6 +164,7 @@ def ksp_families():
         bad = [n for n, st in items if st in ("Unsupported", "Stub")]
         note = f"{works} of {len(items)} members run" + (f"; stubbed or unsupported: {', '.join(bad[:4])}{'...' if len(bad) > 4 else ''}" if bad else "")
         out.append(feat("Kontakt", "Script (KSP)", f, f, s, note, "crates/sampler-ksp/src/parity_ledger.rs"))
+        out[-1]["keys"] = [n.lstrip("$%!") for n, _ in items if len(n.lstrip("$%!")) >= 7 and not n.startswith("@")]
     return out
 
 
@@ -241,32 +243,72 @@ COLLAPSED = {"Modulation targets", "File format objects", "Legacy modules"}
 
 
 AUDIT = os.path.join(HERE, "data/audit")
+ALIASES = os.path.join(HERE, "data/audit-aliases.tsv")
+AREA_PATH = {  # an audit row may only join a feature whose area plausibly owns the audited file
+    "Effects": r"effects|/dsp/|inserts|reverb|filters?\b", "Script (KSP)": r"sampler-ksp", "File format objects": r"vendor/ni-file|parser",
+    "Modulators": r"library|modulation|voice_mod|lower|blocks/|lfo|source_parameters|envelope", "LFO waveforms": r"library|lfo|modulation|blocks/",
+    "Modulation sources": r"library|modulation|voice_mod|lower|source_parameters", "Modulation targets": r"library|modulation|voice_mod|lower",
+    "Modulation law families": r"library|modulation|voice_mod|lower", "Source modes": r"library|source|time_machine|wavetable",
+    "Start conditions": r"library|native_start|keyswitch|start", "Script (Lua) classes": r"script", "Script (Lua) callbacks": r"script",
+}
+unassigned = []
+
+
+def _keys(f):
+    name = f["name"]
+    ks = {name, re.sub(r"\s*\(.*?\)", "", name), f["id"].rsplit("/", 1)[-1], *f.get("keys", ())}
+    ks |= {m for m in re.findall(r"\(([^)]*)\)", name) if not m.startswith("0x")}
+    return [k.strip() for k in ks if len(k.strip()) >= 4 and not k.startswith("0x")]
+
+
+def _rx(k, weak):
+    k = re.escape(k)
+    return re.compile(rf"(^|[^A-Za-z0-9_]){k}@|^{k}\b" if weak else rf"(?<![A-Za-z0-9_]){k}(?![A-Za-z0-9_])", re.I)
 
 
 def audit(feats):
-    """Fold per-mapping verdict ledgers (id, file:line, native_thing, current_mapping, verdict, evidence, fix, proof_method)
-    into features. A ledger id may be a feature id, its key or its name. Present only once the audits are committed."""
+    """Join per-mapping audit rows (id, file:line, native_thing, verdict) to features by key words found in
+    native_thing, gated by the audited file path. data/audit-aliases.tsv (regex<TAB>feature id) wins first."""
+    unassigned.clear()
     if not os.path.isdir(AUDIT):
         return
-    idx = {}
+    byid = {f["id"]: f for f in feats}
+    alias = []
+    if os.path.exists(ALIASES):
+        for line in open(ALIASES, encoding="utf-8"):
+            if line.strip() and not line.startswith("#"):
+                rx, fid = line.rstrip("\n").split("\t")[:2]
+                alias.append((re.compile(rx, re.I), fid.lower()))
+    matchers = []
     for f in feats:
-        for k in (f["id"], f["id"].rsplit("/", 1)[-1], f["name"].lower()):
-            idx.setdefault(k.lower(), []).append(f)
-    verdicts = {}
+        gate = re.compile(AREA_PATH[f["area"]], re.I) if f["area"] in AREA_PATH else None
+        if f["product"] == "UVI":
+            gate = re.compile("sampler-uvi", re.I)
+        elif f["product"] == "Kontakt" and f["area"] in ("Effects", "Modulators", "LFO waveforms", "Modulation sources", "Source modes"):
+            gate = re.compile(AREA_PATH[f["area"]] + "|sampler-kontakt|sampler-core", re.I)
+        for k in _keys(f):
+            matchers.append((len(k), _rx(k, len(k) < 6 and not re.search(r"[0-9_]|[a-z][A-Z]", k)), gate, f["id"]))
+    matchers.sort(key=lambda m: -m[0])
+    rows = {}  # feature id -> [(verdict, native_thing)]
     for fn in sorted(os.listdir(AUDIT)):
-        if fn.endswith(".tsv"):
-            for r in build.tsv(os.path.join(AUDIT, fn)):
-                for f in idx.get((r.get("id") or "").lower(), []):
-                    verdicts.setdefault(f["id"], []).append((r.get("verdict", "").upper(), r.get("fix", "")))
-    for f in feats:
-        v = verdicts.get(f["id"])
-        if not v:
+        if not fn.endswith(".tsv"):
             continue
-        vs = {x for x, _ in v}
-        f["proof"] = "debunked" if "DEBUNKED" in vs else "proved" if vs == {"PROVED"} else "unproven"
-        if f["proof"] == "debunked":
-            fix = next((x for _, x in v if x), "")
-            f["note"] = ("audit found a mismatch with the original" + (f"; fix: {fix}" if fix else "; fix in progress"))[:200]
+        for r in build.tsv(os.path.join(AUDIT, fn)):
+            text, where, v = r.get("native_thing", ""), r.get("file:line", ""), r.get("verdict", "").upper()
+            hit = next((fid for rx, fid in alias if rx.search(text) or rx.search(where)), None)
+            hit = hit or next((fid for _, rx, gate, fid in matchers if rx.search(text) and (gate is None or gate.search(where))), None)
+            if hit in byid:
+                rows.setdefault(hit, []).append((v, text))
+            else:
+                unassigned.append((fn[:-4], r.get("id", ""), where, text, v))
+    for fid, items in rows.items():
+        f = byid[fid]
+        n, p = len(items), sum(v == "PROVED" for v, _ in items)
+        bad = [x for v, x in items if v == "DEBUNKED"]
+        f["proof"] = "debunked" if bad else "proved" if p == n else "unproven"
+        f["audit"] = [p, n, len(bad)]
+        f["note"] = (f"{p} of {n} audited mappings proved" + (f"; mismatch found: {bad[0][:90]}" if bad else "")
+                     + (f"; {f['note']}" if f["note"] else ""))[:260]
 
 
 def finalize(feats):
@@ -378,15 +420,21 @@ def render(fs):
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "_site")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    out = args[0] if args else os.path.join(HERE, "_site")
     fs = all_features()
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, "index.html"), "w", encoding="utf-8").write(render(fs))
-    json.dump(fs, open(os.path.join(out, "features.json"), "w"), indent=1)
+    json.dump([{k: v for k, v in x.items() if k != "keys"} for x in fs], open(os.path.join(out, "features.json"), "w"), indent=1)
     for p in ("Kontakt", "UVI"):
         for a in OrderedDict.fromkeys(x["area"] for x in fs if x["product"] == p):
             print(p, a, stats([x for x in fs if x["product"] == p and x["area"] == a]))
     print("total", stats(fs))
+    by = Counter(u[0] for u in unassigned)
+    print("audit rows unassigned:", len(unassigned), dict(by))
+    if "--unassigned" in sys.argv:
+        for u in unassigned:
+            print("\t".join(u))
 
 
 if __name__ == "__main__":
