@@ -111,7 +111,7 @@ const views = {
     const all = {};
     for (const l of L) for (const [f, reason, n] of l.unsupported) { const a = all[f] ??= {feature: f, reason, count: 0, libs: new Set()}; a.count += n; a.libs.add(l.library); }
     const rank = Object.values(all).map(a => ({...a, libs: [...a.libs].join(", ")})).sort((a, b) => b.count - a.count);
-    m.append($("p", {className: "mut"}, `Survey of ${L.length} installed Kontakt libraries (one instrument each), run ${D.libraries.surveyed}. Oracle = Kontakt's own post-load state diffed against KONTRA's translation (tools/kontakt-oracle/diff.py).`));
+    m.append($("p", {className: "mut"}, `Survey of ${L.length} instruments across ${new Set(L.map(l => l.library)).size} installed Kontakt libraries, run ${D.libraries.surveyed}. Oracle = Kontakt's own post-load state diffed against KONTRA's translation (tools/kontakt-oracle/diff.py).`));
     m.append(table(L.map(l => ({...l, status: ""})), [
       ["Library", r => esc(r.library)], ["Instrument", r => esc(r.instrument)],
       ["Prepare", r => `<span class="${r.prepare?.ok ? "ok" : "bad"}">${esc(r.prepare?.text)}</span>`, r => r.prepare?.text],
@@ -129,9 +129,19 @@ const views = {
     return m;
   },
   uvi() {
-    const u = D.uvi;
+    const u = D.uvi, m = $("div");
     if (!u.present) return $("p", {className: "mut"}, "UVI layer: waiting for ~/.cache/kontakto-wave3/specs/uvi-elements.tsv (B-uvi). It will appear here on the next build.");
-    return table(u.rows.map(r => ({...r, status: r.status || ""})), u.columns.map(c => [c, r => c === "status" ? chip(r) : esc(r[c])]), {status: u.columns.includes("status")});
+    const tot = {}; for (const k of Object.values(u.kinds)) for (const s of Object.keys(k)) tot[s] = (tot[s] || 0) + k[s];
+    const n = Object.values(tot).reduce((a, b) => a + b, 0);
+    m.append($("p", {className: "mut"}, `${u.source}. Status here is the sampler-uvi reader coverage, not DSP law proof: mapped = reader maps it, approx = partial or mapped+ignored, reported = ignored/unsupported, absent = no translation read found or not a proven element.`), seg(tot, n), legend(tot));
+    m.append(table(Object.entries(u.kinds).map(([k, c]) => ({kind: k, ...c, status: ""})), [["Record kind", r => esc(r.kind)], ...ST.map(s => [s, r => r[s] || 0, r => r[s] || 0, "n"])]));
+    m.append($("h3", {}, `Elements (${u.elements.length})`));
+    m.append(table(u.elements, [["Element", r => esc(r.element)], ["Category", r => esc(r.category)], ["Status", chip, r => r.status], ["XML attrs", r => r.xml_attributes, null, "n"], ["mapped", r => r.xml_mapped, null, "n"],
+      ["API params", r => r.api_parameters, null, "n"], ["Reader coverage", r => esc(r.reader_coverage), null, "ev"], ["Native class", r => esc(r.native_class), null, "ev"]], {status: true, cat: r => r.category || "-"}));
+    m.append($("h3", {}, `XML attributes (${u.attributes.length})`));
+    m.append(table(u.attributes, [["Element", r => esc(r.element)], ["Attribute", r => esc(r.attribute)], ["Status", chip, r => r.status], ["Type", r => esc(r.value_type)], ["Range", r => esc(r.range), null, "n"],
+      ["Default", r => esc(r.default), null, "n"], ["Modulable", r => esc(r.modulable)], ["Evidence", r => esc(r.evidence_status), null, "ev"]], {status: true}));
+    return m;
   },
 };
 const tabs = document.getElementById("tabs"), main = document.getElementById("main");

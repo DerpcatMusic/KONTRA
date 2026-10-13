@@ -170,11 +170,49 @@ def library_layer():
     return json.load(open(p)) if os.path.exists(p) else {"surveyed": None, "libraries": []}
 
 
+def uvi_status(coverage):
+    """Map the catalog's reader_coverage text onto the dashboard statuses."""
+    c = coverage or ""
+    if c == "mapped":
+        return "mapped"
+    if "partial" in c or c.startswith("mapped +"):
+        return "approx"
+    if c.startswith("ignored"):
+        return "reported"
+    return "absent"
+
+
 def uvi_layer():
+    """Compact view of uvi-elements.tsv (3.8 MB): elements, XML attributes, per-kind totals."""
     if not os.path.exists(UVI):
-        return {"present": False, "rows": [], "columns": []}
+        return {"present": False}
     rows = tsv(UVI)
-    return {"present": True, "columns": list(rows[0]) if rows else [], "rows": rows}
+    for r in rows:
+        r["status"] = uvi_status(r["reader_coverage"])
+    kinds = {}
+    for r in rows:
+        kinds.setdefault(r["record_kind"], Counter())[r["status"]] += 1
+    per = {}
+    for r in rows:
+        if r["record_kind"] in ("xml_attribute", "api_parameter", "api_parameter_current_delta"):
+            c = per.setdefault(r["element"], {"xml": Counter(), "api": 0})
+            if r["record_kind"] == "xml_attribute":
+                c["xml"][r["status"]] += 1
+            else:
+                c["api"] += 1
+    elements = []
+    for r in rows:
+        if r["record_kind"] != "element":
+            continue
+        c = per.get(r["element"], {"xml": Counter(), "api": 0})
+        elements.append({"element": r["element"], "category": r["category"], "native_class": r["native_class"],
+                         "status": r["status"], "reader_coverage": r["reader_coverage"], "evidence": r["evidence_status"],
+                         "xml_attributes": sum(c["xml"].values()), "xml_mapped": c["xml"]["mapped"],
+                         "api_parameters": c["api"]})
+    attributes = [{k: r[k] for k in ("element", "attribute", "status", "value_type", "range", "default", "modulable", "evidence_status")}
+                  for r in rows if r["record_kind"] == "xml_attribute"]
+    return {"present": True, "kinds": {k: dict(v) for k, v in kinds.items()}, "elements": elements, "attributes": attributes,
+            "source": "uvi-elements.tsv (wave 3 B-uvi); status derived from reader_coverage"}
 
 
 def main():
