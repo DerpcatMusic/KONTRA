@@ -6,11 +6,10 @@
 //! - 0x59 Galois: framing, field order and the display laws of time, high cut
 //!   and low shelf (measured through `get_engine_par_disp`). The network
 //!   itself is not recovered, so it runs the generic FDN, reported as such.
-//! - 0x15 legacy: framing, field order (predelay in ms, size, stereo, colour,
-//!   damping; measured), and the structure of
-//!   eight parallel damped combs into four serial allpasses
-//!   (`FUN_140aa3d10`). Delay lengths and the size/damping/colour laws are
-//!   not recovered: generic comb/allpass layout.
+//! - 0x15 legacy: exact network and setter laws (`FUN_140aa3d10`,
+//!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
+//!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
+//!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
 //! - 0x57 Plate: framing and field order (decay, low shelf, high damp,
 //!   predelay, stereo; measured). Topology and laws unproved: generic plate.
 //! - 0x16 Convolution: Reverse, Auto Gain (`0x1419b31f0..0x1419b326e`), the
@@ -21,7 +20,7 @@
 
 use super::{Impulses, Notes};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
-use sampler_ir::fx::space::{Config, Network, Topology};
+use sampler_ir::fx::space::{Config, Freeverb, Network, Topology};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Convolution {
@@ -98,28 +97,37 @@ pub(super) fn convolution(
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
-/// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180,
-/// RE of the setter), then size, stereo, colour, damping, each 0..1.
+/// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180),
+/// size, stereo, colour, damping, each 0..1. The setter (case 0x3e of
+/// `FUN_1409619b0`) turns them into: comb feedback `size*0.3 + 0.65`, comb
+/// damping coefficient `1 - (1-colour)*0.35`, channel-mix weight
+/// `(stereo+1)/2`, an input lowpass at normalized cutoff
+/// `(1-damping)*0.75 + 0.25`, fixed allpass gain 0.5 and input gain 0.015.
 pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
     let predelay_ms = f64::from(v[0].clamp(0.0, 180.0));
-    let [_, size, stereo, colour, damping] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
+    let [_, size, stereo, colour, damping] = v.map(|x| x.clamp(0.0, 1.0));
+    let feedback = size * 0.3 + 0.65;
+    let damp = 1.0 - (1.0 - colour) * 0.35;
+    let width = (stereo + 1.0) * 0.5;
+    let cutoff = (1.0 - damping) * 0.75 + 0.25;
     notes.push((
-        "legacy reverb algorithm".into(),
+        "legacy reverb input lowpass".into(),
         format!(
-            "size {size} damping {damping} stereo {stereo}: generic comb/allpass, delay lengths and laws unproved; colour {colour} not applied"
+            "normalized cutoff {cutoff}: Kontakt runs a shared biquad-prototype filter whose prototype coefficients are not in the static image; a one-pole at 20 Hz * 1000^cutoff stands in"
         ),
         UnknownLaw,
     ));
     Config::network(Network {
-        topology: Topology::CombAllpass,
-        // Size is the feedback in classic comb reverbs: a generic 0.2 s to 12 s.
-        decay_seconds: 0.2 * 60f64.powf(size),
-        size: 1.0,
+        topology: Topology::Freeverb,
         predelay_seconds: predelay_ms * 0.001,
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: 0.0,
-        diffusion: 0.5,
-        width: stereo,
+        input_cutoff_hz: 20.0 * 1000f64.powf(f64::from(cutoff)),
+        freeverb: Some(Freeverb {
+            feedback: f64::from(feedback),
+            damp: f64::from(damp),
+            allpass: 0.5,
+            input_gain: f64::from(0.015f32),
+            width: f64::from(width),
+        }),
         ..Network::DEFAULT
     })
 }
@@ -193,7 +201,11 @@ mod tests {
     fn legacy_predelay_is_stored_milliseconds() {
         let mut notes = Notes::new();
         let c = legacy(&[90.0, 0.5, 1.0, 0.5, 0.5], &mut notes);
-        assert!((c.network.unwrap().predelay_seconds - 0.09).abs() < 1e-12);
+        let n = c.network.unwrap();
+        assert!((n.predelay_seconds - 0.09).abs() < 1e-12);
         assert_eq!(notes.len(), 1);
+        // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
+        let f = n.freeverb.unwrap();
+        assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
     }
 }
