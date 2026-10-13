@@ -6,8 +6,8 @@
 //! - 0x59 Galois: framing, field order and the display laws of time, high cut
 //!   and low shelf (measured through `get_engine_par_disp`). The network
 //!   itself is not recovered, so it runs the generic FDN, reported as such.
-//! - 0x15 legacy: framing, field order (predelay, size, stereo, colour,
-//!   damping; measured), the predelay display table, and the structure of
+//! - 0x15 legacy: framing, field order (predelay in ms, size, stereo, colour,
+//!   damping; measured), and the structure of
 //!   eight parallel damped combs into four serial allpasses
 //!   (`FUN_140aa3d10`). Delay lengths and the size/damping/colour laws are
 //!   not recovered: generic comb/allpass layout.
@@ -98,16 +98,11 @@ pub(super) fn convolution(
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
-/// Seconds of predelay for the legacy Reverb's stored 0..1 value: the measured
-/// display table (0 to 180 ms), `2 ms * (91^x - 1)`, matches it to within 0.1%.
-fn legacy_predelay_seconds(x: f64) -> f64 {
-    0.002 * (91f64.powf(x) - 1.0)
-}
-
-/// Legacy Reverb 0x15: the stored values are predelay, size, stereo, colour,
-/// damping, each 0..1.
+/// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180,
+/// RE of the setter), then size, stereo, colour, damping, each 0..1.
 pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
-    let [predelay, size, stereo, colour, damping] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
+    let predelay_ms = f64::from(v[0].clamp(0.0, 180.0));
+    let [_, size, stereo, colour, damping] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
     notes.push((
         "legacy reverb algorithm".into(),
         format!(
@@ -120,7 +115,7 @@ pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
         // Size is the feedback in classic comb reverbs: a generic 0.2 s to 12 s.
         decay_seconds: 0.2 * 60f64.powf(size),
         size: 1.0,
-        predelay_seconds: legacy_predelay_seconds(predelay),
+        predelay_seconds: predelay_ms * 0.001,
         damping_hz: 18_000.0 * 0.05f64.powf(damping),
         modulation_seconds: 0.0,
         diffusion: 0.5,
@@ -187,5 +182,18 @@ pub(super) fn why_unbound(module: u16) -> &'static str {
         0x65 => ": Raum fields unbound (probe: set each ENGINE_PAR_RAUM_* alone and save)",
         0x7a => ": Reverb Delight fields unbound (amp, tremolo and spring-reverb controls)",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_predelay_is_stored_milliseconds() {
+        let mut notes = Notes::new();
+        let c = legacy(&[90.0, 0.5, 1.0, 0.5, 0.5], &mut notes);
+        assert!((c.network.unwrap().predelay_seconds - 0.09).abs() < 1e-12);
+        assert_eq!(notes.len(), 1);
     }
 }
