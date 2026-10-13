@@ -20,6 +20,12 @@ pub enum SvfMode {
 
 /// Stereo trapezoidal state-variable filter. Smoothing occurs in hertz and Q,
 /// before coefficient calculation; histories belong to the voice or summed bus.
+///
+/// A generic TPT stand-in, not the Kontakt SV kernel: the validation domain, coefficient law,
+/// mode mixes, state recurrence, one-pole conversion, coefficient cache cadence and the
+/// modulation midpoint adaptation are KONTRA's own (audit CORE-FILTERS-065..072, 080, 090).
+/// What is measured against Kontakt 8 is the response of SV LP2 (cutoff and Q laws live in
+/// `sampler_ir::fx::filter`), not this recurrence.
 #[derive(Clone, Copy, Debug)]
 pub struct StateVariableFilter {
     pub mode: SvfMode,
