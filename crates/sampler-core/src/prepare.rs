@@ -970,10 +970,10 @@ impl Prepared {
         if native.len() != programs.len() { return Err(Error::InvalidInput); }
         if regions.len() != self.regions.len()
             || programs.iter().any(|p| {
+                // Registry-resolved routes keep their live depth control; it is
+                // attached to every consumer lane below.
                 p.controls.iter().any(|&(index, _)| {
-                    p.routes.get(index).is_none_or(|r| {
-                        r.target.compiled().is_none() || r.target == super::ModTarget::SampleStart
-                    })
+                    p.routes.get(index).is_none_or(|r| r.target == super::ModTarget::SampleStart)
                 })
             })
             || programs
