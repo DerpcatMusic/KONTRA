@@ -64,6 +64,10 @@ pub enum Curve {
     Identity,
     /// Kontakt Classic Saturator / Shaper algorithm 0, signed Shape -1..1.
     Classic { shape: f32 },
+    /// Kontakt Saturator Enhanced (algorithm 1): peak-linked table shaper, signed Shape.
+    Enhanced { shape: f32 },
+    /// Kontakt Saturator Drums (algorithm 2): table-driven clipper, signed Shape.
+    Drums { shape: f32 },
     /// Kontakt Tube Distortion, normalized Drive 0..1.
     Tube { drive: f32 },
     /// Kontakt Transistor Distortion, normalized Drive 0..1.
@@ -165,6 +169,16 @@ impl Config {
         Self { curve: Curve::Classic { shape }, ..Self::IDENTITY }
     }
 
+    /// Kontakt Saturator Enhanced.
+    pub fn enhanced(shape: f32) -> Self {
+        Self { curve: Curve::Enhanced { shape }, ..Self::IDENTITY }
+    }
+
+    /// Kontakt Saturator Drums.
+    pub fn drums(shape: f32) -> Self {
+        Self { curve: Curve::Drums { shape }, ..Self::IDENTITY }
+    }
+
     /// A memoryless rectifier.
     pub fn rectifier(mode: Rectifier) -> Self {
         Self { curve: Curve::Rectifier(mode), ..Self::IDENTITY }
@@ -185,7 +199,7 @@ impl Config {
             return lanes;
         }
         let mut lane = |name, role, value: f64, law| lanes.push(Lane { name, role, value, law });
-        if let Curve::Classic { shape } = self.curve {
+        if let Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } = self.curve {
             lane("ENGINE_PAR_SHAPE", P::Shape, f64::from(shape), LaneLaw::Signed);
         }
         if let Curve::Tube { drive } | Curve::Transistor { drive } = self.curve {
@@ -213,7 +227,7 @@ impl Config {
     pub fn label(&self) -> &'static str {
         match self {
             Self { quantizer: Some(_), .. } | Self { hold: Some(_), .. } | Self { noise: Some(_), .. } => "LoFi",
-            Self { curve: Curve::Classic { .. }, .. } => "Saturation",
+            Self { curve: Curve::Classic { .. } | Curve::Enhanced { .. } | Curve::Drums { .. }, .. } => "Saturation",
             Self { curve: Curve::Tube { .. } | Curve::Transistor { .. }, .. } => "Distortion",
             Self { curve: Curve::Rectifier(_), .. } => "Rectify",
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",

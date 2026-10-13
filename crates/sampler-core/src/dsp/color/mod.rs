@@ -10,6 +10,7 @@
 //! per-frame order because no stage reads another stage's state.
 mod distortion;
 mod lofi;
+mod saturator;
 mod shaping;
 mod stereo;
 
@@ -53,6 +54,10 @@ pub enum CurveSettings {
     Identity,
     /// Signed Shape -1..1.
     Classic(Parameter),
+    /// Signed Shape -1..1 through the Enhanced table shaper.
+    Enhanced(Parameter),
+    /// Signed Shape -1..1 through the Drums clipper.
+    Drums(Parameter),
     /// Normalized Drive.
     Tube(Parameter),
     Transistor(Parameter),
@@ -136,7 +141,7 @@ impl Settings {
             }
             && match &self.curve {
                 CurveSettings::Identity | CurveSettings::Rectifier(_) => true,
-                CurveSettings::Classic(p) => shape(p),
+                CurveSettings::Classic(p) | CurveSettings::Enhanced(p) | CurveSettings::Drums(p) => shape(p),
                 CurveSettings::Tube(p) | CurveSettings::Transistor(p) => live_knob(p),
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
             }
@@ -155,6 +160,7 @@ impl Settings {
             && self.damping.is_none()
             && self.noise.is_none()
             && self.stereo.is_none()
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -171,6 +177,14 @@ impl Settings {
         let curve = match self.curve {
             CurveSettings::Identity => Curve::Identity,
             CurveSettings::Classic(p) => Curve::Classic(p.compile(bindings)),
+            CurveSettings::Enhanced(p) => {
+                saturator::prepare();
+                Curve::Enhanced(p.compile(bindings), saturator::Rates::new(rate))
+            }
+            CurveSettings::Drums(p) => {
+                saturator::prepare();
+                Curve::Drums(p.compile(bindings), saturator::Rates::new(rate))
+            }
             CurveSettings::Rectifier(mode) => Curve::Rectifier(mode),
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
@@ -226,6 +240,8 @@ enum Quantizer {
 enum Curve {
     Identity,
     Classic(PreparedParameter),
+    Enhanced(PreparedParameter, saturator::Rates),
+    Drums(PreparedParameter, saturator::Rates),
     /// A Distortion curve whose drive is constant.
     Fixed(distortion::Shape),
     Driven { drive: PreparedParameter, transistor: bool },
@@ -261,6 +277,7 @@ pub(super) struct State {
     decimator: shaping::DecimatorState,
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
+    saturator: saturator::State,
     stereo: stereo::StereoState,
 }
 
@@ -271,6 +288,7 @@ impl State {
         f32s.iter().all(|v| v.is_finite())
             && self.decimator.z.iter().flatten().chain(&self.decimator.delta).chain([&self.decimator.phase]).all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
+            && self.saturator.finite()
     }
 }
 
@@ -296,7 +314,7 @@ impl Color {
             "lofi"
         } else if matches!(self.curve, Curve::Fixed(_) | Curve::Driven { .. }) {
             "kontakt_distortion"
-        } else if matches!(self.curve, Curve::Classic(_)) {
+        } else if matches!(self.curve, Curve::Classic(_) | Curve::Enhanced(..) | Curve::Drums(..)) {
             "kontakt_classic_saturation"
         } else if matches!(self.curve, Curve::Rectifier(_)) {
             "rectifier"
@@ -325,7 +343,7 @@ impl Color {
             parameters.push(("bits", constant(*bits)));
         }
         match &self.curve {
-            Curve::Classic(p) => parameters.push(("shape", *p)),
+            Curve::Classic(p) | Curve::Enhanced(p, _) | Curve::Drums(p, _) => parameters.push(("shape", *p)),
             Curve::Driven { drive, .. } => parameters.push(("drive", *drive)),
             _ => {}
         }
@@ -358,7 +376,7 @@ impl Color {
     }
 
     /// The memoryless curve over `len` frames (and the Distortion curves).
-    fn shape(&self, parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64) {
+    fn shape(&self, state: &mut State, parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64) {
         match &self.curve {
             Curve::Identity => {}
             Curve::Rectifier(mode) => {
@@ -373,6 +391,14 @@ impl Color {
                         channel[i] = shaping::saturation(channel[i], value);
                     }
                 }
+            }
+            Curve::Enhanced(shape, rates) => {
+                let shape = shape.value(parameters, at, None) as f32;
+                saturator::enhanced(shape, *rates, &mut state.saturator, block, len);
+            }
+            Curve::Drums(shape, rates) => {
+                let shape = shape.value(parameters, at, None) as f32;
+                saturator::drums(shape, *rates, &mut state.saturator, block, len);
             }
             Curve::Fixed(shape) => curve(shape, block, len),
             Curve::Driven { drive, transistor } => {
@@ -436,7 +462,7 @@ impl Color {
             Some(Quantizer::Floor(bits)) => lofi::quantize_floor(*bits, block, len),
             None => {}
         }
-        self.shape(parameters, block, len, at);
+        self.shape(state, parameters, block, len, at);
         if let Some(damping) = &self.damping {
             self.damper(damping, parameters, at).process(&mut state.damper, block, len);
         }
