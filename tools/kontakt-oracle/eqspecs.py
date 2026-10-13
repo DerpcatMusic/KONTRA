@@ -70,11 +70,36 @@ def dense(secs):
     return {"chain": ["Filters/Solid G-EQ"], "pre": [[0, k, v] for k, v in NEUTRAL.items()], "steps": steps}
 
 
-def legacy():
-    """Same three bands as kind 22 x3 in series (3 slots) versus one kind 24 (and kind 23 + kind 22)."""
-    raise SystemExit("legacy specs are built by legacy_topology.py")
+def legacy(kind):
+    """Legacy Filters/EQ: one slot of kind 23/24 versus kind-22 slots in series, same bands.
+    Bands 500 Hz / 1 kHz / 2 kHz, 1 octave, +12 dB (overlapping, so serial and parallel sums differ)."""
+    import math
+    fq = lambda hz: round(math.log(hz / 20, 1000) * M)
+    bw, up, dn, flat = M // 4, round(30 / 36 * M), round(6 / 36 * M), M // 2
+    bands = [fq(500), fq(1000), fq(2000)]
+    nb = {22: 3, 23: 2, 24: 3}[kind]
+    if kind == 22:      # nb slots of kind 22, band i in slot i
+        chain = ["Filters/EQ"] * nb
+        pre = [[i, "EFFECT_SUBTYPE", 22] for i in range(nb)]
+        pre += [x for i in range(nb) for x in ([i, "FREQ1", bands[i]], [i, "BW1", bw], [i, "GAIN1", flat])]
+        g = lambda i, v: [i, "GAIN1", v]
+    else:
+        chain = ["Filters/EQ"]
+        pre = [[0, "EFFECT_SUBTYPE", kind]]
+        pre += [x for i in range(nb) for x in ([0, f"FREQ{i + 1}", bands[i]], [0, f"BW{i + 1}", bw], [0, f"GAIN{i + 1}", flat])]
+        g = lambda i, v: [0, f"GAIN{i + 1}", v]
+    steps = [{"name": f"k{kind} all +12", "set": [g(i, up) for i in range(nb)]}]
+    steps += [{"name": f"k{kind} band{i + 1} +12", "set": [g(i, up)]} for i in range(nb)]
+    steps += [{"name": f"k{kind} band1 +12 band2 -12", "set": [g(0, up), g(1, dn)]}]
+    steps += [{"name": f"k{kind} all 0", "set": []}]
+    # a flat step first and between measured steps: multi-slot writes in one callback sometimes landed late
+    out = [{"name": f"k{kind} settle", "set": []}]
+    for st in steps:
+        out += [st, {"name": f"k{kind} flat", "set": []}]
+    steps = out
+    return {"chain": chain, "pre": pre, "steps": steps}
 
 
 if __name__ == "__main__":
-    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"])}[sys.argv[1]]()
+    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24)}[sys.argv[1]]()
     json.dump(spec, open(sys.argv[2], "w"), indent=1)
