@@ -195,6 +195,7 @@ impl Runtime {
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
         self.start_plan_programs();
+        self.service_residency()?;
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
@@ -430,7 +431,7 @@ impl Runtime {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames,
+                    frames: &frames,
                     levels: guard.as_deref().map_or(&[], |l| l),
                 };
                 chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
@@ -846,7 +847,7 @@ impl Runtime {
             asset.want_levels(v.cursor.step(), at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
