@@ -505,6 +505,7 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
         voices,
         kill,
         prefer_released: true,
+        exclusive_set: None,
         fade: ir::Time::Milliseconds(0.0),
     };
     let zone = |group| ir::Zone {
@@ -3496,4 +3497,361 @@ fn post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owne
         }
         assert_eq!(actual.stats().v1_control_starts,0);
     }
+}
+
+fn allocation_fixture() -> ir::Instrument {
+    let limit = || ir::VoiceLimit {
+        voices: 16,
+        kill: ir::Kill::Oldest,
+        prefer_released: false,
+        fade: ir::Time::Seconds(8.0 / 48000.0),
+        exclusive_set: None,
+    };
+    ir::Instrument {
+        assets: ["a", "b", "c"].map(asset).to_vec(),
+        groups: (0..3)
+            .map(|i| ir::Group {
+                voice_limit: Some(i),
+                ..Default::default()
+            })
+            .collect(),
+        voice_limits: (0..3).map(|_| limit()).collect(),
+        zones: (0..3)
+            .map(|i| ir::Zone {
+                keys: ir::KeyRange {
+                    low: 60 + i as u8,
+                    high: 60 + i as u8,
+                },
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                group: Some(ir::GroupRef(i)),
+                ..ir::Zone::new(ir::AssetRef(i))
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn m1_exclusive_voice_domains_cut_other_domains_with_fade_and_plan_isolation() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits[0].exclusive_set = Some(0);
+    ir.voice_limits[1].exclusive_set = Some(0);
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(), limits(), 2, 1).unwrap();
+    control.submit(Box::new(prepare())).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap(); // old instrument retains its voice
+        rt.poll_plan_update().unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap(); // same domain does not exclude itself
+        rt.trigger(input(62), 62, 1.).unwrap(); // unrelated exclusive set
+        rt.trigger(input(61), 61, 1.).unwrap(); // cuts both new-plan domain-0 voices
+        assert_eq!(rt.stolen_voices(), 2);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 3);
+        assert!((out[8][0] - 0.6).abs() < 1e-6, "{:?}", out[8]);
+    });
+}
+
+#[test]
+fn m1_independent_source_budget_spans_voice_groups_without_limiting_other_sources() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits.push(ir::VoiceLimit {
+        voices: 1,
+        kill: ir::Kill::Oldest,
+        prefer_released: false,
+        fade: ir::Time::Seconds(8.0 / 48000.0),
+        exclusive_set: None,
+    });
+    ir.groups[0].source_voice_limit = Some(3);
+    ir.groups[1].source_voice_limit = Some(3);
+    let plan = lower(
+        &ir,
+        48000,
+        vec![constant(0.1), constant(0.2), constant(0.3)],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(62), 62, 1.).unwrap();
+        rt.trigger(input(61), 61, 1.).unwrap();
+        assert_eq!(rt.stolen_voices(), 1);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 2);
+        assert!((out[8][0] - 0.5).abs() < 1e-6);
+    });
+}
+
+#[test]
+fn m1_domain_counts_track_fades_growth_retirement_and_slot_reuse() {
+    use sampler_core::{AllocationCounts, Error};
+    let mut ir = allocation_fixture();
+    ir.voice_limits[0].voices = 1;
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(), limits(), 2, 1).unwrap();
+    let old = rt.active_plan();
+    let instrument = rt.allocation_domain(old, None).unwrap();
+    let group = rt.allocation_domain(old, Some(0)).unwrap();
+    let a = rt.trigger(input(60), 60, 1.).unwrap();
+    let b = rt.trigger(input(60), 60, 1.).unwrap();
+    assert_eq!(
+        rt.allocation_counts(group),
+        Ok(AllocationCounts { live: 1, fading: 1 })
+    );
+    assert_eq!(
+        rt.allocation_counts(instrument),
+        Ok(AllocationCounts { live: 1, fading: 1 })
+    );
+    control.grow_voices(64).unwrap();
+    control.submit(Box::new(prepare())).unwrap();
+    support::without_heap(|| {
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        assert_eq!(rt.voice_capacity(), 64);
+        assert_eq!(
+            rt.allocation_counts(group),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        rt.poll_plan_update().unwrap();
+        let active = rt.active_plan();
+        let other = rt.allocation_domain(active, Some(0)).unwrap();
+        assert_ne!(group, other);
+        rt.trigger(input(60), 60, 1.).unwrap();
+        assert_eq!(
+            rt.allocation_counts(other),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        assert_eq!(
+            rt.allocation_counts(group),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        rt.key_up(a, None).unwrap();
+        rt.key_up(b, None).unwrap();
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        rt.flush_ended(|_| true);
+        rt.collect_retired_plans();
+        assert_eq!(rt.allocation_counts(group), Err(Error::StaleHandle));
+        rt.trigger(input(60), 60, 1.).unwrap(); // reuse ended voice slots
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        assert_eq!(
+            rt.allocation_counts(other),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+    });
+    drop(control.retired());
+}
+
+#[test]
+fn m1_domain_membership_preserves_existing_victim_modes() {
+    // This freezes the existing law, including Any=quietest. It is not a native
+    // Any/Pref.Rel parity assertion; those modes still require the native probe.
+    for (kill, surviving_level) in [
+        (ir::Kill::Any, 0.5),
+        (ir::Kill::Oldest, 0.5),
+        (ir::Kill::Newest, 0.4),
+        (ir::Kill::Highest, 0.4),
+        (ir::Kill::Lowest, 0.5),
+    ] {
+        let mut ir = allocation_fixture();
+        for zone in &mut ir.zones {
+            zone.group = Some(ir::GroupRef(0));
+        }
+        ir.voice_limits[0].voices = 2;
+        ir.voice_limits[0].kill = kill;
+        let plan = lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        support::without_heap(|| {
+            for key in [60, 61, 62] {
+                rt.trigger(input(key), key, 1.).unwrap();
+            }
+            let mut out = [[0.; 2]; 9];
+            rt.render(&mut out).unwrap();
+            assert_eq!(rt.voice_count(), 2);
+            assert!(
+                (out[8][0] - surviving_level).abs() < 1e-6,
+                "{kill:?}: {:?}",
+                out[8]
+            );
+        });
+    }
+}
+
+#[test]
+fn m1_reconfiguring_limits_rejects_stale_domain_bindings() {
+    use sampler_core::{Error, Kill, VoiceLimit};
+    let ir = allocation_fixture();
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let limit = VoiceLimit {
+        voices: 1,
+        kill: Kill::Oldest,
+        prefer_released: false,
+        fade: 8,
+    };
+    let source = prepare()
+        .with_source_voice_limits(vec![Some(2), None, None])
+        .unwrap();
+    assert!(matches!(
+        source.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+    let exclusive = prepare()
+        .with_exclusive_sets(vec![Some(0), Some(0), None])
+        .unwrap();
+    assert!(matches!(
+        exclusive.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+}
+
+/// IR lowering of the router's new forms: an LFO rate route, a lagged signed
+/// shaped intensity assignment and a chained second one all reach audio.
+#[test]
+fn rate_routes_and_chained_intensity_assignments_lower_and_render() {
+    let lfo = ir::Lfo {
+        shape: ir::LfoShape::Sine,
+        rate: ir::Frequency::Hertz(2.),
+        delay: ir::Time::ZERO,
+        fade_in: ir::Time::ZERO,
+        phase: 0.,
+        retrigger: true,
+    };
+    let voice = |source| ir::Modulator { scope: ir::Scope::Voice, source };
+    let law = |depth| ir::ScaleLaw::KontaktIntensity { depth, flags: 0x12, unit: 1. };
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("a")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            routes: vec![ir::RouteRef(0), ir::RouteRef(1)],
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![
+            voice(ir::ModulationSource::Lfo(lfo)),
+            voice(ir::ModulationSource::Constant),
+            voice(ir::ModulationSource::Key),
+        ],
+        routes: vec![
+            ir::Route::new(ir::ModulatorRef(1), ir::Target::SourceRate(ir::ModulatorRef(0)), ir::Depth::Normalized(0.1)),
+            ir::Route {
+                scale: Some(ir::RouteScale {
+                    source: ir::ModulatorRef(1),
+                    shape: None,
+                    law: law(-0.5),
+                    lag_ms: 10.,
+                }),
+                ..ir::Route::new(ir::ModulatorRef(2), ir::Target::Amplitude, ir::Depth::Normalized(0.8))
+            },
+        ],
+        ..Default::default()
+    };
+    instrument.source_indices.chained_scales.push((
+        ir::RouteRef(1),
+        ir::RouteScale { source: ir::ModulatorRef(1), shape: None, law: law(-0.25), lag_ms: 0. },
+    ));
+    instrument.validate().unwrap();
+    let plan = lower(&instrument, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut audio = [[0.; 2]; 512];
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    // 0.8 * (1 + 0.5*0) * (1 + 0.25*0): Constant is 1, so the lane stays 0.8.
+    let key = 60. / 127.;
+    let expected = 0.5 * (1. - 0.8 * (1. - key));
+    assert!((f64::from(audio[500][0]) - expected).abs() < 1e-3, "{}", audio[500][0]);
+}
+
+/// A route reaches a script-addressed effect module's knob: the lane moves by
+/// `depth x span x source` (additive, FUN_140873040's remaining-ID template), so
+/// the routed render equals a module saved at the moved point.
+#[test]
+fn routes_move_scripted_effect_lanes_additively() {
+    let address = ir::SlotAddress { group: 0, slot: 7, generic: -1 };
+    let build = |shape: f32, routed: bool| {
+        let mut i = ir::Instrument {
+            assets: vec![asset("a")],
+            zones: vec![ir::Zone {
+                keys: ir::KeyRange { low: 60, high: 60 },
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                chain: Some(ir::ChainRef(0)),
+                routes: if routed { vec![ir::RouteRef(0)] } else { vec![] },
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            chains: vec![ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![ir::Processor::LiveSaturation { shape, address }],
+                post_amplitude: vec![],
+            }],
+            modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Key }],
+            ..Default::default()
+        };
+        if routed {
+            i.routes.push(ir::Route::new(
+                ir::ModulatorRef(0),
+                ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index: 0,
+                    parameter: ir::ProcessorParameter::Shape,
+                },
+                ir::Depth::Normalized(0.25),
+            ));
+        }
+        i
+    };
+    let render = |i: &ir::Instrument| {
+        let plan = lower(i, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut audio = [[0.; 2]; 2048];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.).unwrap();
+            for chunk in audio.chunks_mut(64) {
+                rt.render(chunk).unwrap();
+            }
+        });
+        audio[2000][0]
+    };
+    // Shape spans -1..=1, so 0.25 of the range times the key (60/127).
+    let moved = -0.5 + 0.25 * 2. * (60. / 127.);
+    let routed = render(&build(-0.5, true));
+    let saved = render(&build(moved as f32, false));
+    let unmoved = render(&build(-0.5, false));
+    assert!((routed - saved).abs() < 1e-4, "{routed} vs {saved}");
+    assert!((routed - unmoved).abs() > 1e-3, "{routed} vs {unmoved}");
 }

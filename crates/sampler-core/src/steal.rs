@@ -36,6 +36,16 @@ impl Prepared {
     ) -> Result<Self, Error> {
         if groups.len() != self.group_count as usize
             || groups.iter().flatten().any(|&l| l >= limits.len())
+            || self
+                .group_source_voice_limits
+                .iter()
+                .flatten()
+                .any(|&l| l >= limits.len())
+            || self
+                .exclusive_peers
+                .iter()
+                .flat_map(|peers| peers.iter())
+                .any(|&domain| domain > limits.len())
             || instrument.iter().chain(&limits).any(|l| l.voices == 0)
         {
             return Err(Error::InvalidInput);
@@ -43,6 +53,44 @@ impl Prepared {
         self.voice_limit = instrument;
         self.voice_limits = limits.into_boxed_slice();
         self.group_voice_limits = groups.into_boxed_slice();
+        Ok(self)
+    }
+}
+
+impl Prepared {
+    /// Optional source-resource domain per group, independent of voice-group
+    /// membership. Indices name limits supplied to with_voice_limits.
+    pub fn with_source_voice_limits(mut self, groups: Vec<Option<usize>>) -> Result<Self, Error> {
+        if groups.len() != self.group_count as usize
+            || groups
+                .iter()
+                .flatten()
+                .any(|&l| l >= self.voice_limits.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.group_source_voice_limits = groups.into_boxed_slice();
+        Ok(self)
+    }
+
+    /// Allocation domains assigned to the same exclusive set cut other domains
+    /// in that set. Self-exclusion is never implied by a domain's membership.
+    pub fn with_exclusive_sets(mut self, sets: Vec<Option<u32>>) -> Result<Self, Error> {
+        if sets.len() != self.voice_limits.len() {
+            return Err(Error::InvalidInput);
+        }
+        self.exclusive_peers = sets
+            .iter()
+            .enumerate()
+            .map(|(domain, set)| {
+                sets.iter()
+                    .enumerate()
+                    .filter_map(|(peer, other)| {
+                        (peer != domain && set.is_some() && set == other).then_some(peer + 1)
+                    })
+                    .collect()
+            })
+            .collect();
         Ok(self)
     }
 }
@@ -120,10 +168,8 @@ impl Runtime {
             let Some(victim) = self.victim() else {
                 break;
             };
-            self.voices.at_mut(victim).stolen = true;
-            self.stolen += 1;
             self.steals += 1;
-            self.choke_voice(victim, stealing.fade);
+            self.steal_voice(victim, stealing.fade);
         }
         while self.voices.available() < required {
             let Some(oldest) = self.slots_where(|v| v.stolen).min_by_key(|&(_, v)| v.born) else {
@@ -133,64 +179,63 @@ impl Runtime {
         }
     }
 
-    /// After `new` (of `plan`, in `group`) started: fade out voices past the
-    /// instrument's and the group's voice limits.
+    /// After a selected voice starts, enforce generation-qualified allocation
+    /// domains. Logical counts exclude steals immediately; lists retain fades.
     pub(crate) fn enforce_voice_limits(&mut self, plan: PlanId, group: Option<u32>, new: VoiceId) {
-        self.cut_monophonic_release(plan, group, new);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
-        if prepared.voice_limit.is_none() && prepared.voice_limits.is_empty() {
-            return;
-        }
-        let set_of = |g: Option<u32>| {
-            g.and_then(|g| {
-                prepared
-                    .group_voice_limits
-                    .get(g as usize)
-                    .copied()
-                    .flatten()
-            })
-        };
-        let set = set_of(group);
+        let voice_set = group.and_then(|g| {
+            prepared
+                .group_voice_limits
+                .get(g as usize)
+                .copied()
+                .flatten()
+        });
+        let source_set = group.and_then(|g| {
+            prepared
+                .group_source_voice_limits
+                .get(g as usize)
+                .copied()
+                .flatten()
+        });
+        let selection = group.map(|g| 1 + prepared.voice_limits.len() + g as usize);
         let limits = [
-            prepared.voice_limit.map(|l| (l, None)),
-            set.map(|s| (prepared.voice_limits[s], Some(s))),
+            prepared.voice_limit.map(|l| (l, 0)),
+            voice_set.map(|s| (prepared.voice_limits[s], s + 1)),
+            source_set
+                .filter(|s| Some(*s) != voice_set)
+                .map(|s| (prepared.voice_limits[s], s + 1)),
         ];
-        for (limit, set) in limits.into_iter().flatten() {
-            loop {
-                let prepared = &self.plans.get(plan.0).unwrap().prepared;
-                // (index, born, key, level, releasing) of the other members.
+        if let Some(set) = voice_set {
+            self.link_allocation(new, 1, set + 1);
+        }
+        if let Some(domain) = selection {
+            self.link_allocation(new, 2, domain);
+        }
+        if let Some(set) = source_set {
+            self.link_allocation(new, 3, set + 1);
+        }
+        self.cut_monophonic_release(plan, group, new);
+        if let Some(set) = voice_set {
+            self.cut_exclusive_domains(plan, set);
+        }
+        for (limit, domain) in limits.into_iter().flatten() {
+            // No allocated-slot or member traversal below the limit.
+            while self.domain_live(plan, domain) > limit.voices as usize {
                 let members = || {
-                    self.slots_where(|v| !v.stolen)
-                        .filter(|&(i, _)| i.get() != new.0.index)
+                    self.domain_members(plan, domain)
+                        .filter(|(i, v)| i.get() != new.0.index && !v.stolen)
                         .filter_map(|(i, v)| {
                             let note = self.notes.get(self.families.get(v.family.0)?.note.0)?;
-                            let member = note.plan == plan
-                                && set.is_none_or(|s| {
-                                    v.group
-                                        .and_then(|g| prepared.group_voice_limits.get(g as usize))
-                                        .copied()
-                                        .flatten()
-                                        == Some(s)
-                                });
                             let level = if v.started {
                                 v.envelope.current() * v.gain
                             } else {
                                 -1.0
                             };
-                            member.then_some((
-                                i,
-                                v.born,
-                                note.pitch.key(),
-                                level,
-                                v.envelope.releasing(),
-                            ))
+                            Some((i, v.born, note.pitch.key(), level, v.envelope.releasing()))
                         })
                 };
-                // ponytail: O(voices) scan per admission (Kontakt instruments all
-                // carry a limit); keep per-limit member counts if it shows up.
-                if members().count() < limit.voices as usize {
-                    break;
-                }
+                // Preserve the pre-M1 Any and Pref.Rel laws until a native
+                // labeled-victim probe resolves them (KONTAKT_TOPOLOGY.md T19).
                 let released = limit.prefer_released && members().any(|m| m.4);
                 let pool = members().filter(|m| !released || m.4);
                 let victim = match limit.kill {
@@ -201,18 +246,42 @@ impl Runtime {
                     Kill::Any => pool.min_by(|a, b| a.3.total_cmp(&b.3).then(a.1.cmp(&b.1))),
                 };
                 let Some((index, ..)) = victim else { break };
-                self.voices.at_mut(index).stolen = true;
-                self.stolen += 1;
-                self.choke_voice(index, limit.fade);
+                self.steal_voice(index, limit.fade);
             }
         }
     }
 
-    /// A monophonic release group's new voice fades out earlier notes' voices
-    /// of the same key in that group. KONTAKT_Manual.pdf p.205 (Group Editor, Release
-    /// Trigger "Monophonic"): repeating a note "will cut off any previous
-    /// release samples that are still sounding". The cut is a 10 ms fade (the
-    /// manual gives none; Kontakt's voice-group default).
+    /// Kontakt 8 manual, Group Editor / Voice Groups / Excl.Grp: cut samples
+    /// in other voice domains sharing the set. BVoiceLimit reader 0x140d049b0
+    /// confirms the saved exclusion field; it does not establish a victim law.
+    /// Retain v1 0cb7a8a0 src/engine/mod.rs make_room's victim-domain fade.
+    /// See docs/re/KONTAKT_ALLOCATION_M1.md for evidence and native probe limits.
+    fn cut_exclusive_domains(&mut self, plan: PlanId, set: usize) {
+        let peers = self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .prepared
+            .exclusive_peers
+            .get(set)
+            .map_or(0, |peers| peers.len());
+        for p in 0..peers {
+            let prepared = &self.plans.get(plan.0).unwrap().prepared;
+            let domain = prepared.exclusive_peers[set][p];
+            let fade = prepared.voice_limits[domain - 1].fade;
+            let mut next = self.domain_head(plan, domain);
+            while let Some(index) = next {
+                next = self.domain_next(index, domain);
+                self.steal_voice(index, fade);
+            }
+        }
+    }
+
+    /// Kontakt 8 manual, Source Module / Sampler / Release Trigger / Monophonic:
+    /// repeated notes cut previous release samples. Selection membership is
+    /// qualified by PlanId (including generation), not a bare dense group.
+    /// Retain the existing 10 ms fade; no native duration is claimed (see
+    /// docs/re/KONTAKT_ALLOCATION_M1.md, BVoiceLimit reader 0x140d049b0).
     fn cut_monophonic_release(&mut self, plan: PlanId, group: Option<u32>, new: VoiceId) {
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let Some(g) = group.filter(|&g| prepared.monophonic_release.get(g as usize) == Some(&true))
@@ -220,27 +289,25 @@ impl Runtime {
             return;
         };
         let fade = prepared.rate / 100;
-        let note_of = |v: &crate::Voice| self.families.get(v.family.0).map(|f| f.note);
-        let Some(new_note) = self.voices.get(new.0).and_then(note_of) else {
+        let domain = 1 + prepared.voice_limits.len() + g as usize;
+        let note_of = |rt: &Self, v: &crate::Voice| rt.families.get(v.family.0).map(|f| f.note);
+        let Some(new_note) = self.voices.get(new.0).and_then(|v| note_of(self, v)) else {
             return;
         };
         let key = self.notes.get(new_note.0).map(|n| n.pitch.key());
-        let mut cut = [None; 8];
-        let mut n = 0;
-        for (i, v) in self.slots_where(|v| !v.stolen && v.group == Some(g)) {
-            let Some(note) = note_of(v) else { continue };
-            if note != new_note
-                && self.notes.get(note.0).map(|n| n.pitch.key()) == key
-                && n < cut.len()
-            {
-                cut[n] = Some(i);
-                n += 1;
+        let mut next = self.domain_head(plan, domain);
+        while let Some(index) = next {
+            next = self.domain_next(index, domain);
+            let voice = self.voices.slots[index.get()].value.as_ref().unwrap();
+            if voice.stolen {
+                continue;
             }
-        }
-        for i in cut.into_iter().flatten() {
-            self.voices.at_mut(i).stolen = true;
-            self.stolen += 1;
-            self.choke_voice(i, fade);
+            let Some(note) = note_of(self, voice) else {
+                continue;
+            };
+            if note != new_note && self.notes.get(note.0).map(|n| n.pitch.key()) == key {
+                self.steal_voice(index, fade);
+            }
         }
     }
 

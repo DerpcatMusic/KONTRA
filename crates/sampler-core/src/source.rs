@@ -1,7 +1,7 @@
 //! Immutable per-region playback metadata and independent per-voice cursors.
 use crate::{
     Error, Frame,
-    envelope::EnvelopeState,
+    blocks::envelope::EnvelopeState,
     resample::{DECIMATION_REACH, Kernel, MAX_STEP, MIN_STEP},
 };
 
@@ -409,6 +409,9 @@ pub(super) struct Cursor {
     lead: u64,
 }
 
+#[cfg(test)]
+std::thread_local! { static DIRECT_TAP_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 struct ReadAddress {
     primary: usize,
     // Partner index and (primary, partner) gains.
@@ -525,8 +528,13 @@ impl Cursor {
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
         self.wavetable
     }
-    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2]: [f32; 3]) {
+    pub(super) fn set_wavetable_controls(
+        &mut self,
+        [position, form1, form2, form1_type, form2_type]: [f32; 5],
+    ) {
         if let Some(source) = &mut self.wavetable {
+            source.form1_type = form1_type as u8;
+            source.form2_type = form2_type as u8;
             source.position = position;
             source.form1 = form1;
             source.form2 = form2;
@@ -986,6 +994,19 @@ impl Cursor {
             })
     }
 
+    /// Analysis clock of the time-stretch source (see
+    /// [`StretchEngine::render_with`]): the source position under the cursor,
+    /// loops, start/end and release exits already resolved, after the cursor
+    /// moved `elapsed` output frames on at its step (the time axis; pitch lives
+    /// in the engine). `None` once the traversal has ended. A forward read:
+    /// reverse playback is not a stretch mode yet.
+    pub(super) fn analysis(&mut self, elapsed: usize) -> Option<f64> {
+        for _ in 0..elapsed {
+            self.advance();
+        }
+        Some(self.index(i128::from(self.position))? as f64 + self.fraction)
+    }
+
     fn advance(&mut self) {
         if self.wavetable.is_some() {
             let phase = (self.position as f64 + self.fraction + self.step.rem_euclid(2048.))
@@ -1343,6 +1364,31 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && self.step() == 1.0 && self.fraction == 0.0 {
+            // Port v1 0cb7a8a0:src/engine/voice.rs::taps centre-tap run.
+            // NI Source Module loop/crossfade scope is unchanged: the span above
+            // already proves neither leg is crossfading. Preserve v2 arithmetic
+            // and signed-zero cubic results; this is not a different DSP law.
+            #[cfg(test)]
+            DIRECT_TAP_RUNS.set(DIRECT_TAP_RUNS.get() + 1);
+            let constant = envelope.constant_level();
+            for (i, frame) in output.iter_mut().enumerate() {
+                let centre = span[i + radius as usize];
+                let source = if centre.iter().any(|v| *v == 0.0) {
+                    // Zero's sign can depend on the cubic's neighbouring terms.
+                    kernel.sample_window(0.0, 1.0, &span[i..i + width])
+                } else {
+                    centre
+                };
+                let level = constant.unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+                self.last = if source.iter().all(|v| v.is_finite()) { source } else { [0.; 2] };
+            }
+            self.position += count as u64;
+            return count;
+        }
         if kernel.uses_cubic(self.step()) && output.len() >= 4 {
             sampler_simd::dispatch(
                 #[inline(always)]
@@ -1567,6 +1613,85 @@ fn mix<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn integer_crossfade_runs_skip_cubic_and_preserve_pcm_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let pcm: Vec<Frame> = (0..600)
+            .map(|i| match i % 13 {
+                0 => [-0.0, 0.0],
+                1 => [f32::MIN_POSITIVE, -f32::MIN_POSITIVE],
+                _ => [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()],
+            })
+            .collect();
+        for len in [1, 3, 4, 63, 64, 65] {
+            for shape in [
+                Envelope::default(),
+                Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                    EnvelopeCurve::exponential(2.).unwrap(),
+                    EnvelopeCurve::exponential(-3.).unwrap(),
+                    EnvelopeCurve::default(),
+                ),
+            ] {
+                let mut old = Playback {
+                    loop_range: Some(Loop {
+                        start: 160,
+                        end: 500,
+                        mode: LoopMode::Continuous,
+                        shape: LoopShape::Crossfade { frames: 80 },
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                }
+                .cursor(pcm.len(), 48000, 48000)
+                .unwrap();
+                old.position = 20;
+                let mut new = old;
+                let mut expected = vec![[0.123, -0.567]; len];
+                let mut actual = expected.clone();
+                let mut old_env = EnvelopeState::new(shape);
+                let mut new_env = old_env;
+                old.run(
+                    &pcm[18..],
+                    5,
+                    &mut expected,
+                    &mut old_env,
+                    0.731,
+                    [0.7, -0.2],
+                    |f, w| kernel.sample_window(f, 1., w),
+                );
+                DIRECT_TAP_RUNS.set(0);
+                assert_eq!(
+                    new.render_run(
+                        pcm.as_slice(),
+                        &mut actual,
+                        &mut new_env,
+                        0.731,
+                        [0.7, -0.2],
+                        &kernel
+                    ),
+                    len
+                );
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+                }
+                assert_eq!(
+                    (new.position, new.fraction, new.last.map(f32::to_bits)),
+                    (old.position, old.fraction, old.last.map(f32::to_bits))
+                );
+                assert_eq!(new_env.current().to_bits(), old_env.current().to_bits());
+                assert_eq!(new_env.remaining(), old_env.remaining());
+                assert_eq!(
+                    DIRECT_TAP_RUNS.get(),
+                    1,
+                    "integer clear spans must use the centre-tap run"
+                );
+            }
+        }
+    }
+
+
     #[test]
     #[ignore = "focused CPU/work witness; 64x is deliberately injected past admission for diagnosis"]
     fn pitch_limit_increase_work_witness() {
@@ -2162,6 +2287,77 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
+mod time_machine;
+
+/// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
+/// sampler voice: scaled by the voice envelope (when `enveloped`), `gain` and
+/// the channel `gains`.
+pub(super) fn stretch_mix(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    output: &mut [Frame],
+    gain: f32,
+    gains: [f32; 2],
+    enveloped: bool,
+) -> usize {
+    let mut raw = [[0.; 2]; 256];
+    let mut done = 0;
+    while done < output.len() && !(enveloped && voice.envelope.done()) {
+        let mut n = (output.len() - done).min(raw.len());
+        if enveloped {
+            n = n.min(voice.envelope.remaining());
+        }
+        let got = stretch_block(engine, voice, pcm, &mut raw[..n]);
+        for (out, frame) in output[done..done + got].iter_mut().zip(&raw) {
+            let amplitude = if enveloped { voice.envelope.next() * gain } else { gain };
+            for c in 0..2 {
+                out[c] += frame[c] * amplitude * gains[c];
+            }
+        }
+        done += got;
+        if got < n {
+            break;
+        }
+    }
+    done
+}
+
+/// One block of a time-stretch voice: the cursor is the analysis clock, the
+/// engine plays the pitch. The first block configures and starts the engine
+/// (pre-roll included). A frozen voice (speed 0) holds the clock still.
+pub(super) fn stretch_block(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    out: &mut [Frame],
+) -> usize {
+    let Some(link) = voice.stretch.as_mut() else {
+        return 0;
+    };
+    let frozen = link.spec.speed == 0.;
+    let params = StretchParams {
+        advance: if frozen { 0. } else { voice.cursor.step() },
+        step: voice.stretch_step,
+        smooth: link.spec.smooth,
+        grain_ms: link.spec.grain_ms,
+    };
+    if !link.started {
+        engine.configure(link.spec.mode, link.spec.hq);
+        let Some(from) = voice.cursor.analysis(0) else {
+            return 0;
+        };
+        engine.start_clocked(pcm, link.frames, from, params);
+        link.started = true;
+    }
+    let cursor = &mut voice.cursor;
+    engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }))
+}
+#[allow(unused_imports)] // wired by the voice source in a later commit
+pub(crate) use time_machine::{
+    Engine as StretchEngine, Mode as StretchMode, Params as StretchParams, Region as StretchRegion,
+    Spec as StretchSpec, VOICES as STRETCH_VOICES,
+};
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
 /// Largest window `render_run` gathers across storage boundaries.
@@ -2272,6 +2468,45 @@ impl ReadFrames for PagedFrames<'_> {
             at = end;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod stretch_clock_tests {
+    use super::*;
+
+    #[test]
+    fn a_looped_cursor_clocks_the_stretch_engine_past_the_end_of_the_sample() {
+        let src: Vec<Frame> = (0..8000)
+            .map(|n| {
+                let v = (std::f32::consts::TAU * 441. * n as f32 / 48000.).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let mut cursor = Playback {
+            loop_range: Some(Loop {
+                start: 2000,
+                end: 6000,
+                mode: LoopMode::Continuous,
+                shape: LoopShape::Wrap,
+                passes: None,
+            }),
+            ..Default::default()
+        }
+        .cursor(8000, 48000, 48000)
+        .unwrap();
+        let params = StretchParams::default();
+        let mut engine = StretchEngine::new(StretchMode::TimeMachine2, false, 48000);
+        engine.start_clocked(&src[..], src.len(), 0., params);
+        let mut block = [[0.; 2]; 480];
+        let mut loudest = 0f32;
+        for _ in 0..200 {
+            // 96,000 output frames: far past the 8,000-frame sample.
+            let n = engine.render_with(&src[..], params, &mut block, |elapsed| cursor.analysis(elapsed));
+            assert_eq!(n, block.len());
+            loudest = block.iter().flatten().fold(loudest, |m, v| m.max(v.abs()));
+        }
+        assert!(loudest > 0.2 && !cursor.done());
     }
 }
 

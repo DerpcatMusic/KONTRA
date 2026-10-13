@@ -11,7 +11,11 @@
 //! Layout: every prepared program is flat arrays (sources, routes, shapes);
 //! runtime state is structure-of-arrays sized at runtime construction for the
 //! largest program, so rendering never allocates.
-use crate::{Envelope, EnvelopeCurve, Error, envelope::EnvelopeState};
+use crate::{Envelope, Error, blocks::envelope::EnvelopeState};
+pub use crate::blocks::envelope::{Breakpoint, Breakpoints};
+use crate::blocks::envelope::Segment;
+pub use crate::blocks::lfo::{Lfo, LfoInputs, LfoRate, LfoShape};
+use crate::blocks::lfo::{hash, uniform, wave};
 
 struct Shape {
     points: Box<[(f32, f32)]>,
@@ -66,51 +70,6 @@ impl Shape {
         };
         interpolate(points, x, after)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LfoShape {
-    /// Saved Digital Multi sine; prepared native fade gains, separate from the linear `Lfo::fade`.
-    DigitalSine {
-        level: f64,
-        fade: crate::KontaktLfoFade,
-    },
-    /// Signed bipolar peak, prepared in -1..=1.
-    SineScaled(f64),
-    /// Bipolar zero, including every phase, delay and fade state.
-    Zero,
-    Sine,
-    Triangle,
-    Square,
-    SawUp,
-    SawDown,
-    SampleAndHold,
-    /// A new random value each cycle, reached linearly by the cycle's end.
-    Random,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LfoRate {
-    Hertz(f64),
-    /// Cycle length in quarter-note beats at [`crate::Runtime::set_tempo`].
-    Beats(f64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lfo {
-    pub shape: LfoShape,
-    pub rate: LfoRate,
-    /// Cycle position at the start, 0..1.
-    pub phase: f64,
-    /// Silent frames after the voice starts.
-    pub delay: u32,
-    /// Frames of linear depth ramp after the delay.
-    pub fade: u32,
-    /// Per-voice cycle from `phase`; otherwise one cycle on the runtime clock.
-    pub retrigger: bool,
-    /// With `retrigger`: one instance shared by every voice, restarted at
-    /// `phase` (and its delay and fade) whenever any voice starts.
-    pub shared: bool,
 }
 
 /// What a route reads. Lfo is bipolar (-1..=1); every other source is 0..=1.
@@ -183,6 +142,10 @@ pub(crate) enum CompiledTarget {
     SampleStart,
     Control(usize),
     SourcePhase(u32),
+    /// Rate of LFO source `n`: the normalized frequency lane (ID26, additive
+    /// set of FUN_140873040: `$out := $in + E * $intensity`) moves by
+    /// depth·v each control cell; the LFO integrates the resulting rate.
+    SourceRate(u32),
     LoopStart,
     LoopLength,
 }
@@ -211,6 +174,7 @@ impl crate::ParameterAddress {
             (0, 11) => T::Tone,
             (0, 12) => T::SampleStart,
             (i, 14) => T::SourcePhase(i),
+            (i, 17) => T::SourceRate(i),
             (0, 15) => T::LoopStart,
             (0, 16) => T::LoopLength,
             _ => return None,
@@ -232,7 +196,19 @@ pub struct ModRoute {
     pub lag: u32,
     /// Depth modifier from a second source, using its selected combination law.
     pub scale: Option<ModScale>,
+    /// Multiplies a live depth control's value (a saved `depth` is already in
+    /// destination units). A lane's range span: Normalized depth is a fraction of it.
+    pub live_gain: f64,
+    /// The target's law reads the source's unipolar view (FUN_140873040 `need_uni`).
+    pub unipolar: bool,
+    /// Further intensity assignments to the same route, applied in order after
+    /// `scale`: each template's `$in` is the previous result.
+    pub more_scales: [Option<ModScale>; MORE_SCALES],
 }
+
+/// Intensity assignments a route takes beyond its first.
+pub const MORE_SCALES: usize = 8;
+const SCALE_LAGS: usize = MORE_SCALES + 1;
 
 /// Changes an outgoing route's depth using another source. The default law
 /// multiplies by its unipolar view (or shaped value). Evaluated with the route.
@@ -244,6 +220,9 @@ pub struct ModScale {
     pub shape: Option<usize>,
     /// Generic product or checked native per-target intensity combination.
     pub law: ModScaleLaw,
+    /// One-pole lag frames on the processed source (99% of a step; FUN_140873040
+    /// smooths the complete expression E, template 0x144f1d950). 0: none.
+    pub lag: u32,
 }
 
 /// How a second source changes one outgoing target's saved depth.
@@ -287,26 +266,16 @@ impl ModRoute {
             shape: None,
             lag: 0,
             scale: None,
+            live_gain: 1.,
+            unipolar: false,
+            more_scales: [None; MORE_SCALES],
         }
     }
-}
 
-/// A point a breakpoint envelope glides to from the previous level (0 at the
-/// start) over `frames`, along `curve`.
-#[derive(Clone, Copy, Debug)]
-pub struct Breakpoint {
-    pub frames: u32,
-    pub level: f32,
-    pub curve: EnvelopeCurve,
-}
-
-/// A multi-segment envelope. It holds at `points[sustain]` while gated; a
-/// release glides from the current level through the points after
-/// `sustain` (jumping there if it is not reached yet), then holds the last.
-#[derive(Clone, Debug, Default)]
-pub struct Breakpoints {
-    pub points: Vec<Breakpoint>,
-    pub sustain: Option<usize>,
+    /// Every intensity assignment of the route, in application order.
+    pub fn scales(&self) -> impl Iterator<Item = ModScale> + '_ {
+        self.scale.iter().chain(self.more_scales.iter().flatten()).copied()
+    }
 }
 
 /// One voice modulation program, shared by the regions bound to it.
@@ -355,6 +324,10 @@ struct Program {
     /// Prepared source order and incoming phase-route spans; no callback graph scans.
     source_order: Box<[usize]>,
     phase_routes: Box<[Box<[usize]>]>,
+    /// Incoming rate routes per LFO source, and that LFO's saved rate as a point
+    /// of the normalized frequency lane (NaN: unrouted).
+    rate_routes: Box<[Box<[usize]>]>,
+    rate_lane: Box<[f64]>,
     loop_routes: Box<[(usize, Option<[usize; 2]>)]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
@@ -501,6 +474,9 @@ impl VoiceModulation {
                             {
                                 return Err(Error::InvalidInput);
                             }
+                            if !lfo.valid() {
+                                return Err(Error::InvalidInput);
+                            }
                             if matches!(lfo.shape, LfoShape::DigitalSine { .. })
                                 && (lfo.delay != 0
                                     || lfo.fade != 0
@@ -526,10 +502,7 @@ impl VoiceModulation {
                         }
                         ModSource::Breakpoints(index) => {
                             let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
-                            if b.points.len() > u32::MAX as usize - 1
-                                || b.sustain.is_some_and(|s| s >= b.points.len())
-                                || b.points.iter().any(|p| !p.level.is_finite())
-                            {
+                            if !b.valid() {
                                 return Err(Error::InvalidInput);
                             }
                             Prepared::Breakpoints(index)
@@ -580,19 +553,18 @@ impl VoiceModulation {
                         || route.scale.is_some()
                         || route.lag != 0))
                     || route.shape.is_some_and(|s| s >= shapes.len())
-                    || route.scale.is_some_and(|s| {
+                    || route.scales().any(|s| {
                         s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
                             // Native lag/init/inversion/live paths have no numeric proof.
+                            // The target's own shape and lag act on its source
+                            // expression; `$intensity` is a separate variable
+                            // (FUN_140873040 templates), so they stay admissible.
                             || matches!(s.law, ModScaleLaw::KontaktIntensity { depth, flags, unit }
-                                if !depth.is_finite() || !(0. ..=1.).contains(&depth)
+                                if !depth.is_finite() || !(-1. ..=1.).contains(&depth)
                                 || !unit.is_finite() || unit == 0.
                                 || !(0. ..=1.).contains(&(route.depth / unit))
-                                || !matches!(flags, 0x10 | 0x14)
-                                || s.shape.is_some() || route.lag != 0
-                                || route.target == ModTarget::SampleStart
-                                || matches!(sources.get(s.source), Some(Prepared::Controller(_)
-                                    | Prepared::Pressure | Prepared::Timbre
-                                    | Prepared::PitchBend | Prepared::Script(_))))
+                                || !matches!(flags & !0x02, 0x10 | 0x14)
+                                || route.target == ModTarget::SampleStart)
                     })
                 {
                     return Err(Error::InvalidInput);
@@ -612,6 +584,22 @@ impl VoiceModulation {
                     phase_routes[target].push(index);
                 }
             }
+            let mut rate_routes = vec![Vec::new(); sources.len()];
+            let mut rate_lane = vec![f64::NAN; sources.len()];
+            for (index, route) in program.routes.iter().enumerate() {
+                if let Some(CompiledTarget::SourceRate(target)) = route.target.compiled() {
+                    let target = target as usize;
+                    // A shared clock or a beat-length cycle has no per-voice frequency lane.
+                    let Some(Prepared::Lfo(Lfo { rate: LfoRate::Hertz(hz), shared: false, .. })) =
+                        sources.get(target)
+                    else {
+                        return Err(Error::InvalidInput);
+                    };
+                    let lane = crate::v1_voice_controls::LfoFrequency::lane(*hz).ok_or(Error::InvalidInput)?;
+                    rate_lane[target] = lane;
+                    rate_routes[target].push(index);
+                }
+            }
             let mut source_order = Vec::with_capacity(sources.len());
             let mut emitted = vec![false; sources.len()];
             while source_order.len() < sources.len() {
@@ -619,6 +607,7 @@ impl VoiceModulation {
                     !emitted[i]
                         && phase_routes[i]
                             .iter()
+                            .chain(&rate_routes[i])
                             .all(|&r| emitted[program.routes[r].source])
                 });
                 let Some(next) = next else {
@@ -724,6 +713,8 @@ impl VoiceModulation {
                     .into_iter()
                     .map(Vec::into_boxed_slice)
                     .collect(),
+                rate_routes: rate_routes.into_iter().map(Vec::into_boxed_slice).collect(),
+                rate_lane: rate_lane.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
@@ -799,8 +790,8 @@ impl VoiceModulation {
             };
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
-            let depth = route.scale.map_or(route.depth,
-                |s| program.depth(route.depth, s, at_start(s.source)));
+            let depth = route.scales().fold(route.depth,
+                |d, s| program.depth(d, s, at_start(s.source), &mut 0., 0, true));
             fraction += depth * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
@@ -832,19 +823,78 @@ impl Prepared {
 const FULL_SCALE: f64 = 1.0 / u32::MAX as f64;
 
 impl Program {
-    fn depth(&self, base: f64, scale: ModScale, raw: f64) -> f64 {
-        let (source, bipolar) = match scale.shape {
+    fn depth(
+        &self,
+        base: f64,
+        scale: ModScale,
+        raw: f64,
+        lagged: &mut f64,
+        frames: u32,
+        onset: bool,
+    ) -> f64 {
+        let (mut source, bipolar) = match scale.shape {
             Some(shape) => {
                 let x = unipolar(raw, self.bipolar[scale.source]);
                 (f64::from(self.shapes[shape].evaluate(x as f32)), false)
             }
             None => (raw, self.bipolar[scale.source]),
         };
+        if scale.lag != 0 && !onset {
+            // Same one-pole law as a target's lag, on the complete expression.
+            let alpha = 1.0
+                - (-2.0 * std::f64::consts::LN_10 * f64::from(frames) / f64::from(scale.lag)).exp();
+            source = *lagged + (source - *lagged) * alpha;
+        }
+        *lagged = source;
         match scale.law {
             ModScaleLaw::Multiply => base * unipolar(source, bipolar),
             ModScaleLaw::KontaktIntensity { unit, .. } =>
                 scale.law.apply(base / unit, source, bipolar) * unit,
         }
+    }
+
+    /// Live depth control of route `i`, else its saved depth.
+    fn base_depth(&self, i: usize, inputs: &Inputs<'_>) -> f64 {
+        match self.controls.binary_search_by_key(&i, |c| c.0) {
+            Ok(at) => {
+                let [depth, bypass] = self.controls[at].1;
+                match (inputs.controls[depth], inputs.controls[bypass]) {
+                    (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * self.routes[i].live_gain,
+                    _ => 0.,
+                }
+            }
+            Err(_) => self.routes[i].depth,
+        }
+    }
+
+    /// One residual route at a control point: its processed source value
+    /// (inversion, shape, lag) and effective depth (second-source scale).
+    fn route_point(
+        &self,
+        route: &ModRoute,
+        values: &[f64],
+        lagged: &mut f64,
+        scale_lagged: &mut [f64],
+        base: f64,
+        frames: u32,
+        onset: bool,
+    ) -> (f64, f64) {
+        let mut v = self.transform(route, values[route.source], self.bipolar[route.source]);
+        if route.unipolar {
+            v = unipolar(v, self.bipolar[route.source]);
+        }
+        if route.lag != 0 && !onset {
+            // 99% of a step in `lag` frames: Kontakt's one-pole lag law.
+            let alpha = 1.0
+                - (-2.0 * std::f64::consts::LN_10 * f64::from(frames) / f64::from(route.lag)).exp();
+            v = *lagged + (v - *lagged) * alpha;
+        }
+        *lagged = v;
+        let d = route
+            .scales()
+            .zip(scale_lagged)
+            .fold(base, |d, (s, lag)| self.depth(d, s, values[s.source], lag, frames, onset));
+        (v, d)
     }
 
     fn transform(&self, route: &ModRoute, raw: f64, bipolar: bool) -> f64 {
@@ -892,58 +942,6 @@ fn interpolate(points: &[(f32, f32)], x: f32, after: usize) -> f32 {
     }
 }
 
-/// splitmix64 of a seed, source and cycle: deterministic per voice and cycle,
-/// and identical across voices for free-running sources (seed 0).
-fn hash(seed: u64, source: u64, cycle: u64) -> u64 {
-    let mut z = seed
-        .wrapping_add(source.wrapping_mul(0x9e37_79b9_7f4a_7c15))
-        .wrapping_add(cycle.wrapping_mul(0xbf58_476d_1ce4_e5b9));
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
-fn uniform(bits: u64) -> f64 {
-    (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-}
-
-/// Waveform value at cycle position `phase` (any real; the integer part counts
-/// cycles for the random shapes).
-fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
-    let cycle = phase.floor();
-    let t = phase - cycle;
-    match shape {
-        LfoShape::DigitalSine { level, .. } | LfoShape::SineScaled(level) => {
-            f64::from((t * std::f64::consts::TAU).sin() as f32 * level as f32)
-        }
-        LfoShape::Zero => 0.,
-        LfoShape::Sine => (t * std::f64::consts::TAU).sin(),
-        LfoShape::Triangle => {
-            if t < 0.25 {
-                4.0 * t
-            } else if t < 0.75 {
-                2.0 - 4.0 * t
-            } else {
-                4.0 * t - 4.0
-            }
-        }
-        LfoShape::Square => {
-            if t < 0.5 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        LfoShape::SawUp => 2.0 * t - 1.0,
-        LfoShape::SawDown => 1.0 - 2.0 * t,
-        LfoShape::SampleAndHold => 2.0 * uniform(hash(seed, 0, cycle as i64 as u64)) - 1.0,
-        LfoShape::Random => {
-            let from = 2.0 * uniform(hash(seed, 0, cycle as i64 as u64)) - 1.0;
-            let to = 2.0 * uniform(hash(seed, 0, (cycle as i64 + 1) as u64)) - 1.0;
-            from + (to - from) * t
-        }
-    }
-}
 
 /// Note and controller inputs read by a voice's sources.
 pub(crate) struct Inputs<'a> {
@@ -1027,6 +1025,8 @@ pub(crate) struct VoiceModState {
     phase: Box<[f64]>,
     values: Box<[f64]>,
     lagged: Box<[f64]>,
+    /// Lag state of each route's intensity assignments, `SCALE_LAGS` per route.
+    scale_lagged: Box<[f64]>,
     processor_values: Box<[f64]>,
     previous_processor_values: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
@@ -1034,55 +1034,6 @@ pub(crate) struct VoiceModState {
     /// Runtime frame and seed of the latest voice start: the restart of every
     /// shared retriggered LFO.
     restart: (u64, u64),
-}
-
-/// A voice's position in one breakpoint envelope.
-#[derive(Clone, Copy, Debug, Default)]
-struct Segment {
-    /// The point being glided to; past the end, the last level holds.
-    index: u32,
-    age: u32,
-    from: f32,
-    level: f32,
-    released: bool,
-}
-
-impl Segment {
-    fn advance(&mut self, envelope: &Breakpoints, mut frames: u32) -> f32 {
-        while let Some(point) = envelope.points.get(self.index as usize) {
-            let left = point.frames - self.age;
-            if frames < left {
-                self.age += frames;
-                let t = f64::from(self.age) / f64::from(point.frames);
-                self.level = self.from + (point.level - self.from) * point.curve.value(t) as f32;
-                return self.level;
-            }
-            frames -= left;
-            self.age = point.frames;
-            self.level = point.level;
-            if !self.released && envelope.sustain == Some(self.index as usize) {
-                return self.level;
-            }
-            self.index += 1;
-            self.age = 0;
-            self.from = self.level;
-        }
-        self.level
-    }
-
-    fn release(&mut self, envelope: &Breakpoints) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        if let Some(sustain) = envelope.sustain
-            && self.index as usize <= sustain
-        {
-            self.index = sustain as u32 + 1;
-            self.age = 0;
-            self.from = self.level;
-        }
-    }
 }
 
 impl VoiceModState {
@@ -1113,6 +1064,7 @@ impl VoiceModState {
             phase: crate::dsp::allocate(slots(modulation.sources)?)?,
             values: crate::dsp::allocate(slots(modulation.sources)?)?,
             lagged: crate::dsp::allocate(slots(modulation.routes)?)?,
+            scale_lagged: crate::dsp::allocate(slots(modulation.routes * SCALE_LAGS)?)?,
             processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             previous_processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
             envelope: std::iter::repeat_n(
@@ -1148,6 +1100,7 @@ impl VoiceModState {
         take(&mut self.phase, &mut larger.phase);
         take(&mut self.values, &mut larger.values);
         take(&mut self.lagged, &mut larger.lagged);
+        take(&mut self.scale_lagged, &mut larger.scale_lagged);
         take(&mut self.processor_values, &mut larger.processor_values);
         take(
             &mut self.previous_processor_values,
@@ -1175,6 +1128,7 @@ impl VoiceModState {
             phase: Box::new([]),
             values: Box::new([]),
             lagged: Box::new([]),
+            scale_lagged: Box::new([]),
             processor_values: Box::new([]),
             previous_processor_values: Box::new([]),
             envelope: Box::new([]),
@@ -1466,6 +1420,12 @@ impl VoiceModState {
         self.age[voice] = age;
         let values = &mut self.values[voice * self.sources..][..p.sources.len()];
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
+        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
+        let previous_processor_values =
+            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
+        let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
+        let scale_lagged = &mut self.scale_lagged[voice * self.routes * SCALE_LAGS..][..p.routes.len() * SCALE_LAGS];
+        previous_processor_values.copy_from_slice(processor_values);
         let mut changed = onset;
         for &i in &p.source_order {
             let source = p.sources[i];
@@ -1483,10 +1443,25 @@ impl VoiceModState {
                 _ if native.is_some_and(|n| n.flex_source == Some(i)) => 0.,
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
-                    let hz = match lfo.rate {
-                        LfoRate::Hertz(hz) => hz,
-                        LfoRate::Beats(beats) => clock.tempo / (60.0 * beats),
-                    };
+                    let mut inputs_lfo = LfoInputs::UNITY;
+                    if !p.rate_routes[i].is_empty() {
+                        // Rate routes settle first (source_order); the lane
+                        // moves, the cycle integrates it, so no phase jumps.
+                        // LfoInputs.rate is relative to the saved rate.
+                        let mut lane = p.rate_lane[i];
+                        for &r in &p.rate_routes[i] {
+                            let base = p.base_depth(r, inputs);
+                            let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], &mut scale_lagged[r * SCALE_LAGS..][..SCALE_LAGS], base, frames, onset);
+                            processor_values[r] = d * v;
+                            if onset {
+                                previous_processor_values[r] = processor_values[r];
+                            }
+                            lane += d * v;
+                        }
+                        let saved = lfo.hertz(clock.tempo, LfoInputs::UNITY);
+                        inputs_lfo.rate = crate::v1_voice_controls::LfoFrequency::hertz(lane as f32) / saved;
+                    }
+                    let hz = lfo.hertz(clock.tempo, inputs_lfo);
                     let since = clock.now.saturating_sub(self.restart.0);
                     let age = if lfo.shared && lfo.retrigger {
                         u32::try_from(since).unwrap_or(u32::MAX)
@@ -1496,7 +1471,10 @@ impl VoiceModState {
                     let (phase, seed) = if lfo.shared && lfo.retrigger {
                         let t = since as f64 / clock.rate;
                         (lfo.phase + hz * t, self.restart.1 ^ i as u64)
-                    } else if lfo.retrigger || !p.phase_routes[i].is_empty() {
+                    } else if lfo.retrigger
+                        || !p.phase_routes[i].is_empty()
+                        || !p.rate_routes[i].is_empty()
+                    {
                         // An absolute onset lane also replaces a private free-cycle phase.
                         phases[i] += hz * f64::from(frames) / clock.rate;
                         (phases[i], seed ^ i as u64)
@@ -1509,14 +1487,7 @@ impl VoiceModState {
                         let gain = gains.get((age / 32) as usize).copied().unwrap_or(1.);
                         f64::from(wave(lfo.shape, phase, seed) as f32 * gain)
                     } else {
-                        let depth = if age < lfo.delay {
-                            0.0
-                        } else if lfo.fade == 0 {
-                            1.0
-                        } else {
-                            (f64::from(age - lfo.delay) / f64::from(lfo.fade)).min(1.0)
-                        };
-                        depth * wave(lfo.shape, phase, seed)
+                        lfo.value(phase, seed, age, LfoInputs::UNITY)
                     }
                 }
                 Prepared::Envelope(e) => {
@@ -1534,7 +1505,8 @@ impl VoiceModState {
         }
         let native_point = native.map(|native| {
             let state = self.native.as_mut_slice()[voice].as_mut().unwrap();
-            if changed || p.native_controls.iter().any(Option::is_some) { state.invalidate_inputs(); }
+            // The pinned owner observes raw inputs and live intensity/bypass
+            // values. Unrelated residual sources must not invalidate its cache.
             state.plan_controls_read_with_intensity(&native.plan,
                 |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize,
                 |assignment, m| match p.native_controls[assignment] {
@@ -1545,10 +1517,6 @@ impl VoiceModState {
                     None => m.intensity,
                 })
         });
-        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
-        let previous_processor_values =
-            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
-        previous_processor_values.copy_from_slice(processor_values);
         if p.cacheable && !changed && native.is_none() {
             return self.outputs[voice];
         }
@@ -1559,15 +1527,15 @@ impl VoiceModState {
         out.pitch = native_point.map_or(0., |p| f64::from(p.1));
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
-        let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
         let mut controls = p.controls.iter().peekable();
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
+            let scale_lagged = &mut scale_lagged[i * SCALE_LAGS..][..SCALE_LAGS];
             // Bypass masks the route, not the source clock/lag; resume never restarts it.
             let base = match controls.peek().copied() {
                 Some(&(index, [depth, bypass])) if index == i => {
                     controls.next();
                     match (inputs.controls[depth], inputs.controls[bypass]) {
-                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d,
+                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * route.live_gain,
                         _ => 0.,
                     }
                 }
@@ -1591,19 +1559,12 @@ impl VoiceModState {
                 }
                 crate::whole_voice::Route::Residual => {}
             }
-            let bipolar = p.bipolar[route.source];
-            let mut v = p.transform(route, values[route.source], bipolar);
-            if route.lag != 0 && !onset {
-                // 99% of a step in `lag` frames: Kontakt's one-pole lag law.
-                let alpha = 1.0
-                    - (-2.0 * std::f64::consts::LN_10 * f64::from(frames) / f64::from(route.lag))
-                        .exp();
-                v = *lagged + (v - *lagged) * alpha;
+            // Rate routes were settled with their LFO, before it ran.
+            if matches!(p.targets[i], CompiledTarget::SourceRate(_)) {
+                continue;
             }
-            *lagged = v;
-            let d = route
-                .scale
-                .map_or(base, |s| p.depth(base, s, values[s.source]));
+            let bipolar = p.bipolar[route.source];
+            let (v, d) = p.route_point(route, values, lagged, scale_lagged, base, frames, onset);
             processor_values[i] = d * v;
             if onset {
                 previous_processor_values[i] = processor_values[i];
@@ -1616,7 +1577,9 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
-                CompiledTarget::SampleStart | CompiledTarget::SourcePhase(_) => {}
+                CompiledTarget::SampleStart
+                | CompiledTarget::SourcePhase(_)
+                | CompiledTarget::SourceRate(_) => {}
                 CompiledTarget::LoopStart | CompiledTarget::LoopLength => {}
                 CompiledTarget::ProcessorCutoff(_)
                 | CompiledTarget::ProcessorResonance(_)
@@ -1724,8 +1687,44 @@ pub(crate) struct Ramp {
     pub script_fade: Option<crate::script_params::Fade>,
 }
 
+/// Cell slopes prepared once; preserve the original F32 operation order and
+/// physical sample-clock fade. Port the v1 0cb7a8a0:src/engine/voice.rs block
+/// delta preparation, retaining v2's absolute offset law. NI group amplifier
+/// scope and Kontakt topology B11 effect-owned cadence remain unchanged.
+/// No recursive accumulation or cadence change.
+pub(crate) struct GainRamp {
+    from: [f32; 2],
+    step: [f32; 2],
+    begin: u64,
+    script_fade: Option<crate::script_params::Fade>,
+}
+impl GainRamp {
+    pub(crate) fn at(&self, at: u64) -> [f32; 2] {
+        let offset = at.saturating_sub(self.begin) as f32;
+        let gains = std::array::from_fn(|c| self.from[c] + self.step[c] * offset);
+        match self.script_fade {
+            Some(fade) => {
+                let factor = fade.at(at) as f32;
+                gains.map(|gain| gain * factor)
+            },
+            None => gains,
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! { pub(crate) static SAMPLE_GAIN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 impl Ramp {
+    pub(crate) fn prepare_gains(self) -> GainRamp {
+        let len = self.end.saturating_sub(self.begin).max(1) as f32;
+        GainRamp { from:self.from.gains,
+            step:std::array::from_fn(|c| (self.to.gains[c] - self.from.gains[c]) / len),
+            begin:self.begin, script_fade:self.script_fade }
+    }
     pub(crate) fn gains_at(self, at: u64) -> [f32; 2] {
+        #[cfg(test)]
+        SAMPLE_GAIN_CALLS.set(SAMPLE_GAIN_CALLS.get() + 1);
         let len = self.end.saturating_sub(self.begin).max(1) as f32;
         let offset = at.saturating_sub(self.begin) as f32;
         let gains = std::array::from_fn(|c| {

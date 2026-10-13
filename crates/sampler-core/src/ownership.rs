@@ -525,8 +525,43 @@ impl Runtime {
         }
     }
 
+    /// Give a new voice the time-stretch engine its group's source asks for.
+    /// Without a free engine (or for reverse playback, which stretch does not
+    /// serve) the voice plays as a plain sampler and is counted.
+    pub(super) fn assign_stretch(&mut self, id: VoiceId, plan: crate::PlanId, group: Option<u32>) {
+        use crate::source::STRETCH_VOICES;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        let Some(spec) = group
+            .and_then(|g| generation.prepared.stretch_groups.get(g as usize))
+            .copied()
+            .flatten()
+        else {
+            return;
+        };
+        let voice = self.voices.get_mut(id.0).unwrap();
+        let free = !generation.dsp.stretch_busy & ((1u64 << STRETCH_VOICES) - 1);
+        if free == 0 || voice.cursor.trace_direction() != crate::Direction::Forward {
+            self.stretch_fallbacks = self.stretch_fallbacks.saturating_add(1);
+            return;
+        }
+        let engine = free.trailing_zeros();
+        generation.dsp.stretch_busy |= 1 << engine;
+        let asset = &generation.prepared.pcm[voice.sample];
+        voice.stretch = Some(crate::StretchLink {
+            engine: engine as u8,
+            spec,
+            rate_ratio: f64::from(asset.sample_rate()) / f64::from(generation.prepared.sample_rate()),
+            frames: asset.frame_count(),
+            started: false,
+        });
+    }
+
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        if let Some(link) = v.stretch {
+            self.plans.get_mut(v.plan.0).unwrap().dsp.stretch_busy &= !(1 << link.engine);
+        }
+        self.unlink_allocation(v);
         if let Some(previous) = v.siblings.previous {
             self.voices.at_mut(previous).siblings.next = v.siblings.next;
         } else {

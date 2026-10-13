@@ -162,7 +162,7 @@ impl Envelope {
     }
 
     /// Ends by itself, whatever the gate and the source do.
-    pub(super) fn finite(&self) -> bool {
+    pub(crate) fn finite(&self) -> bool {
         self.one_shot && self.hold != u32::MAX
     }
 
@@ -284,7 +284,7 @@ enum Phase {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct EnvelopeState {
+pub(crate) struct EnvelopeState {
     shape: Envelope,
     phase: Phase,
     age: u32,
@@ -300,7 +300,7 @@ impl EnvelopeState {
     }
 
     pub(crate) fn trace_parameters(&self) -> [f64; 10] { self.shape.trace_parameters().map(|(_,v)|v) }
-    pub(super) fn new(shape: Envelope) -> Self {
+    pub(crate) fn new(shape: Envelope) -> Self {
         let mut state = Self {
             shape,
             phase: Phase::Delay,
@@ -386,7 +386,7 @@ impl EnvelopeState {
     }
 
     /// Repeated cleanup must never restart an already progressing release.
-    pub(super) fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         if let Some(native) = &mut self.shape.native {
             native.release();
             return;
@@ -399,7 +399,7 @@ impl EnvelopeState {
 
     /// A note released before its storage onset enters release from sustain;
     /// its source and release clock still wait for the first complete window.
-    pub(super) fn release_onset(&mut self) {
+    pub(crate) fn release_onset(&mut self) {
         // Storage-onset release starts from sustain under the existing v2 policy.
         self.shape.native = None;
         self.shape.controlled = true;
@@ -410,7 +410,7 @@ impl EnvelopeState {
     }
 
     /// Capture any curved stage's next level, then apply a non-extending linear fade.
-    pub(super) fn choke(&mut self, frames: u32) {
+    pub(crate) fn choke(&mut self, frames: u32) {
         if self.shape.native.is_some() && frames as usize >= self.remaining() {
             return;
         }
@@ -427,30 +427,30 @@ impl EnvelopeState {
         self.enter(Phase::Release);
     }
 
-    pub(super) fn releasing(&self) -> bool {
+    pub(crate) fn releasing(&self) -> bool {
         if let Some(native) = &self.shape.native { return matches!(native.phase(), crate::v1_voice_controls::Phase::Release | crate::v1_voice_controls::Phase::Done); }
         matches!(self.phase, Phase::Release | Phase::Done)
     }
 
-    pub(super) fn editor_phase(&self)->u8 {
+    pub(crate) fn editor_phase(&self)->u8 {
         if let Some(native) = &self.shape.native {
             use crate::v1_voice_controls::Phase as N;
             return match native.phase() { N::Attack=>0, N::Hold=>1, N::Decay=>2, N::Sustain=>3, N::Release=>4, N::Done=>6, N::Flex=>5 };
         }
         match self.phase {Phase::Attack=>0,Phase::Hold=>1,Phase::Decay=>2,Phase::Sustain=>3,Phase::Release=>4,Phase::Delay=>5,Phase::Done=>6}}
     /// The level the next frame starts from.
-    pub(super) fn current(&self) -> f32 {
+    pub(crate) fn current(&self) -> f32 {
         self.level()
     }
 
-    pub(super) fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         if let Some(native) = &self.shape.native {
             return native.done();
         }
         self.phase == Phase::Done
     }
 
-    pub(super) fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         if let Some(native) = &self.shape.native {
             return native.remaining();
         }
@@ -473,7 +473,7 @@ impl EnvelopeState {
     }
 
     /// Only return levels that remain constant indefinitely: callers may skip clocks.
-    pub(super) fn constant_level(&self) -> Option<f32> {
+    pub(crate) fn constant_level(&self) -> Option<f32> {
         // Native destination interpolation must drain even after the source reaches sustain.
         if self.shape.native.is_some() {
             return None;
@@ -493,7 +493,7 @@ impl EnvelopeState {
 
     /// Port v1 voice.rs::Envelope::run(None): advance without discarded levels.
     /// Keep v2's recurrence bits; a 64-frame anchor overwrites earlier steps.
-    pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
+    pub(crate) fn advance(&mut self, mut frames: u32) -> f32 {
         if let Some(native) = &mut self.shape.native {
             native.skip(frames as usize);
             return native.level();
@@ -525,7 +525,7 @@ impl EnvelopeState {
         self.level()
     }
 
-    pub(super) fn next(&mut self) -> f32 {
+    pub(crate) fn next(&mut self) -> f32 {
         if let Some(native) = &mut self.shape.native {
             let mut out = [0.];
             native.render(&mut out);
@@ -559,6 +559,154 @@ impl EnvelopeState {
                 }
             }
         }
+    }
+}
+
+/// A point a breakpoint envelope glides to from the previous level (0 at the
+/// start) over `frames`, along `curve`.
+#[derive(Clone, Copy, Debug)]
+pub struct Breakpoint {
+    pub frames: u32,
+    pub level: f32,
+    pub curve: EnvelopeCurve,
+}
+
+/// The multi-segment envelope: any point list is an envelope. It holds at
+/// `points[sustain]` while gated; a release glides from the current level
+/// through the points after `sustain` (jumping there if it is not reached yet),
+/// then holds the last. While gated, reaching `loop_range.1` returns to
+/// `loop_range.0` (a flex loop). AHDSR, DAHDSR, DBD and Flex are builders or
+/// direct point lists, see [`Breakpoints::dahdsr`].
+#[derive(Clone, Debug, Default)]
+pub struct Breakpoints {
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+    /// Inclusive (start, end) point indices; the cycle must span at least one frame.
+    pub loop_range: Option<(usize, usize)>,
+}
+
+/// Optional second decay of a decay-break-decay shape: decay to `level`, then
+/// over `frames` along `curve` to the sustain level.
+#[derive(Clone, Copy, Debug)]
+pub struct Break {
+    pub level: f32,
+    pub frames: u32,
+    pub curve: EnvelopeCurve,
+}
+
+/// Every stage of the superset envelope; stages of zero frames vanish, so
+/// ADSR is `delay = hold = 0`, AHD has `sustain = 0` with no gate hold in the
+/// caller, DBD sets `brk`.
+#[derive(Clone, Copy, Debug)]
+pub struct Dahdsr {
+    pub delay: u32,
+    pub attack: u32,
+    pub attack_curve: EnvelopeCurve,
+    pub hold: u32,
+    pub decay: u32,
+    pub decay_curve: EnvelopeCurve,
+    pub brk: Option<Break>,
+    pub sustain: f32,
+    pub release: u32,
+    pub release_curve: EnvelopeCurve,
+}
+
+impl Breakpoints {
+    /// Point list for a [`Dahdsr`]; the sustain index is the last decay point.
+    pub fn dahdsr(d: &Dahdsr) -> Self {
+        let linear = EnvelopeCurve::default();
+        let mut points = Vec::with_capacity(7);
+        if d.delay > 0 {
+            points.push(Breakpoint { frames: d.delay, level: 0.0, curve: linear });
+        }
+        points.push(Breakpoint { frames: d.attack, level: 1.0, curve: d.attack_curve });
+        if d.hold > 0 {
+            points.push(Breakpoint { frames: d.hold, level: 1.0, curve: linear });
+        }
+        match d.brk {
+            Some(b) => {
+                points.push(Breakpoint { frames: d.decay, level: b.level, curve: d.decay_curve });
+                points.push(Breakpoint { frames: b.frames, level: d.sustain, curve: b.curve });
+            }
+            None => points.push(Breakpoint { frames: d.decay, level: d.sustain, curve: d.decay_curve }),
+        }
+        let sustain = Some(points.len() - 1);
+        points.push(Breakpoint { frames: d.release, level: 0.0, curve: d.release_curve });
+        Self { points, sustain, loop_range: None }
+    }
+
+    /// Whether a prepared program may run this envelope: finite levels, valid
+    /// indices, and a loop that consumes time (no zero-length spin).
+    pub fn valid(&self) -> bool {
+        let n = self.points.len();
+        n <= u32::MAX as usize - 1
+            && self.sustain.is_none_or(|s| s < n)
+            && self.points.iter().all(|p| p.level.is_finite())
+            && self.loop_range.is_none_or(|(a, b)| {
+                a <= b
+                    && b < n
+                    && self.points[a..=b].iter().map(|p| u64::from(p.frames)).sum::<u64>() > 0
+            })
+    }
+}
+
+/// A voice's position in one breakpoint envelope.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Segment {
+    /// The point being glided to; past the end, the last level holds.
+    index: u32,
+    age: u32,
+    from: f32,
+    level: f32,
+    released: bool,
+}
+
+impl Segment {
+    pub(crate) fn advance(&mut self, envelope: &Breakpoints, mut frames: u32) -> f32 {
+        while let Some(point) = envelope.points.get(self.index as usize) {
+            let left = point.frames - self.age;
+            if frames < left {
+                self.age += frames;
+                let t = f64::from(self.age) / f64::from(point.frames);
+                self.level = self.from + (point.level - self.from) * point.curve.value(t) as f32;
+                return self.level;
+            }
+            frames -= left;
+            self.age = point.frames;
+            self.level = point.level;
+            if !self.released && envelope.sustain == Some(self.index as usize) {
+                return self.level;
+            }
+            match envelope.loop_range {
+                Some((start, end)) if !self.released && self.index as usize == end => {
+                    self.index = start as u32;
+                }
+                _ => self.index += 1,
+            }
+            self.age = 0;
+            self.from = self.level;
+        }
+        self.level
+    }
+
+    pub(crate) fn release(&mut self, envelope: &Breakpoints) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        if let Some(sustain) = envelope.sustain
+            && self.index as usize <= sustain
+        {
+            self.index = sustain as u32 + 1;
+            self.age = 0;
+            self.from = self.level;
+        }
+    }
+
+    /// Restart from the first point at the current level (retrigger); legato
+    /// is simply not calling this.
+    pub fn retrigger(&mut self) {
+        *self = Self { from: self.level, level: self.level, ..Self::default() };
     }
 }
 
@@ -739,5 +887,108 @@ mod tests {
             state.release();
             assert!(state.done());
         }
+    }
+
+    fn bp_levels(b: &Breakpoints, release_at: Option<u32>, frames: u32) -> Vec<f32> {
+        let mut seg = Segment::default();
+        (1..=frames)
+            .map(|n| {
+                if Some(n) == release_at {
+                    seg.release(b);
+                }
+                seg.advance(b, 1)
+            })
+            .collect()
+    }
+
+    fn dahdsr(delay: u32, c: EnvelopeCurve) -> Dahdsr {
+        Dahdsr {
+            delay,
+            attack: 40,
+            attack_curve: c,
+            hold: 8,
+            decay: 50,
+            decay_curve: c,
+            brk: None,
+            sustain: 0.3,
+            release: 60,
+            release_curve: c,
+        }
+    }
+
+    /// The point-list superset reproduces the verified stage envelope.
+    #[test]
+    fn dahdsr_points_match_the_stage_envelope() {
+        for k in [0.0, -3.0, 2.5] {
+            let c = EnvelopeCurve::exponential(k).unwrap();
+            for delay in [0, 7] {
+                let d = dahdsr(delay, c);
+                let b = Breakpoints::dahdsr(&d);
+                assert!(b.valid());
+                let shape = Envelope::new(40, 8, 50, 0.3, 60)
+                    .unwrap()
+                    .with_delay(delay)
+                    .with_curves(c, c, c);
+                let mut stage = EnvelopeState::new(shape);
+                let mut seg = Segment::default();
+                for n in 1..=320u32 {
+                    if n == 200 {
+                        stage.release();
+                        seg.release(&b);
+                    }
+                    let want = stage.advance(1);
+                    let got = seg.advance(&b, 1);
+                    assert!((want - got).abs() < 2e-6, "k={k} delay={delay} n={n} {want} {got}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn break_adds_a_second_decay_before_sustain() {
+        let mut d = dahdsr(0, EnvelopeCurve::default());
+        d.attack = 0;
+        d.hold = 0;
+        d.decay = 10;
+        d.brk = Some(Break { level: 0.8, frames: 20, curve: EnvelopeCurve::default() });
+        let b = Breakpoints::dahdsr(&d);
+        let l = bp_levels(&b, None, 40);
+        assert!((l[9] - 0.8).abs() < 1e-6, "break level {}", l[9]);
+        assert!((l[19] - 0.55).abs() < 1e-6);
+        assert!((l[29] - 0.3).abs() < 1e-6);
+        assert_eq!(l[39], 0.3);
+    }
+
+    #[test]
+    fn gated_loop_cycles_until_release() {
+        let p = |frames, level| Breakpoint { frames, level, curve: EnvelopeCurve::default() };
+        let b = Breakpoints {
+            points: vec![p(4, 1.0), p(4, 0.0), p(4, 0.0)],
+            sustain: None,
+            loop_range: Some((0, 1)),
+        };
+        let l = bp_levels(&b, Some(17), 24);
+        assert_eq!(l[3], 1.0);
+        assert_eq!(l[7], 0.0);
+        assert_eq!(l[11], 1.0, "second pass peaks again");
+        assert_eq!(l[15], 0.0);
+        // Released at 17: continues past the loop end and stays at the last point's level.
+        assert_eq!(l[23], 0.0);
+        let spin = Breakpoints { points: vec![p(0, 1.0)], sustain: None, loop_range: Some((0, 0)) };
+        assert!(!spin.valid(), "a zero-length loop would spin");
+    }
+
+    #[test]
+    fn retrigger_restarts_from_the_current_level() {
+        let d = dahdsr(0, EnvelopeCurve::default());
+        let b = Breakpoints::dahdsr(&d);
+        let mut seg = Segment::default();
+        let held = seg.advance(&b, 20);
+        assert!(held > 0.4 && held < 0.6);
+        seg.retrigger();
+        let first = seg.advance(&b, 1);
+        assert!(first > held && first < held + 0.05, "{held} -> {first}");
+        let end = seg.advance(&b, 40);
+        assert_eq!(end, 1.0);
     }
 }

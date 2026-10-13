@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod sustain;
+
 const RATE: u32 = 48_000;
 const BLOCKS: [usize; 3] = [64, 128, 512];
 const EVENTS: &str = "cycles:u,instructions:u,cache-misses:u,LLC-load-misses:u,branch-misses:u,page-faults:u,context-switches";
@@ -28,6 +30,10 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     static CALLS: Cell<u64> = const { Cell::new(0) };
     static EVENT_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static SERVICE_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static SERVICE_MASK: Cell<u8> = const { Cell::new(0) };
+    static STREAM_SERVICE_ERRORS: Cell<u64> = const { Cell::new(0) };
+    static BEHAVIOR_ERRORS: Cell<u64> = const { Cell::new(0) };
 }
 // SAFETY: forwards every call unchanged to System; only counts on the thread that asked.
 #[allow(
@@ -56,6 +62,7 @@ type Message = (f64, [u8; 3]);
 enum Source {
     /// A Kontakt instrument, streamed as the host does.
     Kontakt(&'static str),
+    KontaktProgram(&'static str, usize),
     /// A UVI program in a bank, decoded up front, played through its script host.
     Uvi(&'static str, &'static str),
 }
@@ -231,17 +238,28 @@ const SILENT: f32 = 0.001;
 
 fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, String> {
     match &s.source {
-        Source::Kontakt(rel) => {
+        Source::Kontakt(rel) | Source::KontaktProgram(rel, _) => {
             let path = root(KONTAKT, "/mnt/MAIN_STORAGE/Libraries/Kontakt").join(rel);
-            let keys = messages.iter().map(|m| m.1[1]);
+            let keys = messages
+                .iter()
+                .filter(|m| m.1[0] & 0xf0 == 0x90)
+                .map(|m| m.1[1]);
             let options = sampler_kontakt::Options {
                 rate: RATE,
                 keys: keys.clone().min().unwrap_or(0)..=keys.max().unwrap_or(127),
                 library: Some(path.clone()),
                 ..Default::default()
             };
-            let streamed = sampler_kontakt::load_streamed(
-                &path,
+            let kontakt = match s.source {
+                Source::KontaktProgram(_, index) => sampler_kontakt::read_program(&path, index),
+                _ => sampler_kontakt::read(&path),
+            }
+            .map_err(fail)?;
+            if std::env::var_os("PERF_METADATA").is_some() {
+                sustain::metadata(s.name, &kontakt.instrument);
+            }
+            let streamed = sampler_kontakt::load_read_streamed(
+                kontakt,
                 &options,
                 &sampler_kontakt::StreamPolicy {
                     voices: std::env::var("PERF_STREAM_VOICES")
@@ -261,6 +279,21 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                 streamer,
                 assets,
             } = streamed;
+            if std::env::var_os("PERF_METADATA").is_some() {
+                for view in &loaded.scripts {
+                    let callbacks: Vec<_> = (0..view.program_count())
+                        .filter_map(|p| view.callback(p))
+                        .collect();
+                    eprintln!(
+                        "script slot {}: {} programs, callbacks {:?}, listeners {:?}, init controller writes {:?}",
+                        view.slot(),
+                        view.program_count(),
+                        callbacks,
+                        view.model().listeners,
+                        view.model().controllers
+                    );
+                }
+            }
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
@@ -468,6 +501,7 @@ fn render(
                 let t = Instant::now();
                 let r = rt.service_streaming(*h);
                 service = t.elapsed().as_nanos() as u64;
+                if r.is_err() { STREAM_SERVICE_ERRORS.set(STREAM_SERVICE_ERRORS.get() + 1); }
                 match r {
                     Err(e) if std::env::var_os("PERF_DEBUG").is_some() => {
                         eprintln!("service_streaming: {e:?} voices {}", rt.voice_count())
@@ -490,7 +524,7 @@ fn render(
                 }
             }
             let mut errors = 0;
-            let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
+            let result = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| {
                 if let Err(e) = r {
                     errors += 1;
                     if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 {
@@ -498,8 +532,31 @@ fn render(
                     }
                 }
             });
-            EVENT_ERRORS.set(EVENT_ERRORS.get() + errors);
-            rt.flush_behaviors(|_, _, _| true);
+            EVENT_ERRORS.set(EVENT_ERRORS.get() + errors + u64::from(result.is_err()));
+            // Match sampler-native's headless service policy: retain external
+            // async work and fail the cell, rather than pretending it completed.
+            // UI presentation effects may be discarded by this headless audit.
+            rt.drain_effects(|effect| {
+                let bit = match effect.service {
+                    sampler_core::MIDI_SERVICE => 1,
+                    sampler_core::ARRAY_FILE_SERVICE => 2,
+                    _ => 0,
+                };
+                if bit != 0 {
+                    SERVICE_ERRORS.set(SERVICE_ERRORS.get() + 1);
+                    SERVICE_MASK.set(SERVICE_MASK.get() | bit);
+                    false
+                } else { true }
+            });
+            rt.flush_behaviors(|_, _, outcome| {
+                if matches!(
+                    outcome,
+                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
+                ) {
+                    BEHAVIOR_ERRORS.set(BEHAVIOR_ERRORS.get() + 1);
+                }
+                true
+            });
             rt.flush_ended(|_| true);
         }
         Player::Uvi(player) => {
@@ -922,9 +979,10 @@ fn compare(args: &[String]) -> Result<bool, String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("sustain") => sustain::run(&args[1..]).map(|()| true),
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
-        _ => Err("usage: sampler-perf run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
+        _ => Err("usage: sampler-perf sustain [--only afflatus|conflux|conflux-multi] [--block 64|256] [--notes 1|8] [--seconds S] [--out FILE] | run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
     };
     match result {
         Ok(true) => {}

@@ -1,5 +1,3 @@
-use std::io::Cursor;
-
 use crate::{
     kontakt::{error::KontaktError, Chunk},
     read_bytes::ReadBytesExt,
@@ -10,15 +8,19 @@ const CHUNK_ID: u16 = 0x22;
 
 /// Type:           Chunk<Data>
 /// SerType:        0x22
-/// Versions:       ?
+/// Versions:       0x50
 /// Kontakt 7:      BParFXRotator
 /// KontaktIO:
 #[derive(Debug)]
-pub struct BParFXRotator;
+/// Native fields in read order (speed, balance, accel_hi, accel_lo, distance, mix).
+pub struct BParFXRotator(pub super::EffectParameters);
 
 impl BParFXRotator {
-    pub fn read<R: ReadBytesExt>(mut _reader: R) -> Result<Self, Error> {
-        Ok(Self)
+    pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+        let data = reader.read_all()?;
+        super::EffectParameters::read(CHUNK_ID, 0x50, &data)?
+            .map(Self)
+            .ok_or(Error::Static("BParFXRotator has no native reader"))
     }
 }
 
@@ -33,7 +35,9 @@ impl std::convert::TryFrom<&Chunk> for BParFXRotator {
             }
             .into());
         }
-        let reader = Cursor::new(&chunk.data);
-        Self::read(reader)
+        let object = crate::kontakt::StructuredObject::try_from(chunk)?;
+        super::EffectParameters::read(CHUNK_ID, object.version, &object.public_data)?
+            .map(Self)
+            .ok_or(Error::Static("BParFXRotator has no native reader"))
     }
 }

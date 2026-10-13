@@ -165,6 +165,10 @@ impl ParameterAddress {
     pub const fn SourcePhase(node: u32) -> Self {
         Self::legacy(node, 14)
     }
+    /// Rate of a program-local LFO on Kontakt's normalized frequency lane (ID26).
+    pub const fn SourceRate(node: u32) -> Self {
+        Self::legacy(node, 17)
+    }
     pub const fn ProcessorCutoff(node: u32) -> Self {
         Self::legacy(node, 6)
     }

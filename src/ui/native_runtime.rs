@@ -147,8 +147,12 @@ impl Package {
         Self::load_cancel(path, || false)
     }
     pub fn load_cancel(path: &Path, canceled: impl Fn() -> bool) -> anyhow::Result<Self> {
+        Self::load_cancel_for_program(path, 0, canceled)
+    }
+    pub fn load_cancel_for_program(path: &Path, program: u32, canceled: impl Fn() -> bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!canceled(), "NativeUI preparation canceled");
-        let mut source = Source::of(path);
+        let mut source = Source::for_program(path, program)
+            .map_err(|e| anyhow::anyhow!("NativeUI resource {}", super::pictures::resource_category(e)))?;
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
         let mut font_names = Vec::new();

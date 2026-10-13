@@ -13,7 +13,9 @@ pub struct LfoRecord {
     pub values: [f32; 3],
 }
 
-/// BParLFO (0x08), versions 0x71..=0x73.
+/// SerType: 0x08
+/// Versions: 0x71, 0x72, 0x73
+/// BParLFO. Version 0x70 (no sync records) is decoded by `native_schema` only.
 /// The first public integer selects the waveform, not the payload layout:
 /// sine 0, rectangle 1, triangle 2, sawtooth 3, random 4, Multi 5.
 /// Type 6 has the same packed fields as Multi; its name remains unverified.

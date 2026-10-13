@@ -204,6 +204,10 @@ pub enum Processor {
     /// NI Saturator Shape / KSP ENGINE_PAR_SHAPE; direct template copy 0x1408378f0.
     LiveSaturation(Parameter),
     LiveDistortion { transistor: bool, drive: Parameter, damping: Parameter },
+    /// Formant I with Talk, Sharp, Size as event-rate lanes (KSP ENGINE_PAR_FORMANT_*).
+    LiveFormant([Parameter; 3]),
+    /// Lo-Fi with Bits, Frequency, Noise level and color as lanes.
+    LiveLoFi { bits: Parameter, frequency: Parameter, noise: Parameter, color: Parameter },
     /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
     Distortion { transistor: bool, drive: f32, damping: f32 },
     /// Formant Crusher decimation; per-voice scalar path.
@@ -234,6 +238,14 @@ pub enum Processor {
         wet: ControlRange,
         bypass: ControlRange,
     },
+}
+
+
+/// A normalized effect knob: a constant or a lane without a ramp, within 0..=1.
+fn live_knob(p: &Parameter) -> bool {
+    p.valid()
+        && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. }))
+        && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
 }
 
 impl Processor {
@@ -268,6 +280,8 @@ impl Processor {
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
             Processor::LiveSaturation(shape) => shape.valid() && !matches!(shape, Parameter::Expression { .. }) && shape.bounds().iter().all(|v| (-1.0..=1.0).contains(v)),
+            Processor::LiveFormant(knobs) => knobs.iter().all(live_knob),
+            Processor::LiveLoFi { bits, frequency, noise, color } => [bits, frequency, noise, color].into_iter().all(live_knob),
             Processor::LiveDistortion { drive, damping, .. } => [drive, damping].iter().all(|p| p.valid() && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. })) && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))),
             Processor::Saturation(shape) => shape.is_finite() && (-1.0..=1.0).contains(shape),
             Processor::Distortion { drive, damping, .. } => [drive, damping].into_iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
@@ -345,6 +359,8 @@ pub(super) enum PreparedProcessor {
     Saturation(f32),
     LiveSaturation(control::PreparedParameter),
     LiveDistortion(distortion::LiveDistortion),
+    LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
+    LiveLoFi { knobs: [control::PreparedParameter; 4], rate: u32 },
     Formant(formant::Formant),
     Phaser(phaser::Phaser),
     LegacyPhaser(phaser::LegacyPhaser),
@@ -409,6 +425,8 @@ pub(super) struct RenderContext<'a> {
     pub at: u64,
     pub feeds: &'a mut [taps::TapFeed],
     pub trace: Option<crate::trace::VoiceTrace<'a>>,
+    /// This voice's time-stretch engine, if it has one.
+    pub stretch: Option<&'a mut crate::source::StretchEngine>,
 }
 
 /// Serial stereo processing with an explicit envelope boundary.
@@ -557,6 +575,8 @@ pub(super) fn compile_processors(
                 Processor::Saturation(shape) => PreparedProcessor::Saturation(shape),
                 Processor::LiveSaturation(shape) => PreparedProcessor::LiveSaturation(shape.compile(bindings)),
                 Processor::LiveDistortion { transistor, drive, damping } => PreparedProcessor::LiveDistortion(distortion::LiveDistortion::compile(transistor, drive.compile(bindings), damping.compile(bindings), rate)),
+                Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
+                Processor::LiveLoFi { bits, frequency, noise, color } => PreparedProcessor::LiveLoFi { knobs: [bits, frequency, noise, color].map(|k| k.compile(bindings)), rate },
                 Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => PreparedProcessor::LegacyPhaser(phaser::LegacyPhaser::compile(depth, feedback, phase, speed, period_unit, rate)),
                 Processor::Phaser(knobs) => PreparedProcessor::Phaser(phaser::Phaser::compile(knobs)),
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, rate)),
@@ -672,7 +692,14 @@ impl PreparedVoiceChain {
         let mut rendered = 0;
         for (chunk_index, chunk) in output.chunks_mut(BLOCK).enumerate() {
             let mut block = [[0.; BLOCK]; 2];
-            let Some(begun) = self.begin(voice, pcm, chunk.len(), kernel, &mut block) else {
+            let Some(begun) = self.begin(
+                voice,
+                pcm,
+                chunk.len(),
+                kernel,
+                &mut block,
+                context.stretch.as_deref_mut(),
+            ) else {
                 break;
             };
             let len = begun.len;
@@ -709,6 +736,7 @@ impl PreparedVoiceChain {
             } else { levels(voice, len, begun.held) };
 
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
+            let amplifier = context.amplifier.map(|r| r.prepare_gains());
             let [left, right] = &mut block;
             for (i, ((l, r), level)) in left[..len]
                 .iter_mut()
@@ -716,9 +744,7 @@ impl PreparedVoiceChain {
                 .zip(&levels)
                 .enumerate()
             {
-                let gains = context
-                    .amplifier
-                    .map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+                let gains = amplifier.as_ref().map_or([1.0; 2], |r| r.at(at + i as u64 + 1));
                 *l *= level * f64::from(gains[0]);
                 *r *= level * f64::from(gains[1]);
             }
@@ -819,6 +845,7 @@ impl PreparedVoiceChain {
         frames: usize,
         kernel: &crate::resample::Kernel,
         block: &mut Planar,
+        stretch: Option<&mut crate::source::StretchEngine>,
     ) -> Option<Begun> {
         if self.done(voice) {
             return None;
@@ -839,6 +866,8 @@ impl PreparedVoiceChain {
         let count = if waiting { frames } else { frames.min(active) };
         let produced = if voice.cursor.done() || voice.envelope.done() {
             0
+        } else if let (Some(engine), false) = (stretch, waiting) {
+            crate::source::stretch_block(engine, voice, pcm, &mut raw[..count])
         } else {
             voice
                 .cursor
@@ -932,6 +961,8 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Phaser(_)
                         | PreparedProcessor::Formant(_)
                         | PreparedProcessor::LiveDistortion(_)
+                        | PreparedProcessor::LiveFormant { .. }
+                        | PreparedProcessor::LiveLoFi { .. }
                         | PreparedProcessor::Distortion(_)
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::LadderLP4 { .. }
@@ -1216,6 +1247,16 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::Formant(formant) => formant.process(state, block, len),
             PreparedProcessor::Distortion(distortion) => distortion.process(state, block, len),
             PreparedProcessor::LiveDistortion(distortion) => distortion.process(state, block, len, parameters, at),
+            // Event-rate lanes: constant within a fragment (as LiveDistortion); the
+            // coefficients follow them while the filter and noise states persist.
+            PreparedProcessor::LiveFormant { knobs, rate } => {
+                let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
+                formant::Formant::compile([talk, sharp, size], *rate).process(state, block, len)
+            }
+            PreparedProcessor::LiveLoFi { knobs, rate } => {
+                let [bits, frequency, noise, color] = knobs.map(|k| k.value(parameters, at, None) as f32);
+                LoFiSettings { bits, frequency, noise, color }.compile(*rate).process(state, block, len)
+            }
             PreparedProcessor::LiveSaturation(shape) => {
                 for i in 0..len {
                     let value = shape.value(parameters, at + i as u64, None) as f32;
@@ -1398,6 +1439,10 @@ pub(super) struct DspState {
     pub buses: crate::bus::BusState,
     pub feeds: Box<[taps::TapFeed]>,
     pub trace: Option<crate::trace::Recorder>,
+    /// Time-stretch engines, allocated only for a plan with stretch groups.
+    pub stretch: Slab<crate::source::StretchEngine>,
+    /// Bit per engine in use; touched by the audio writer at voice start/end.
+    pub stretch_busy: u64,
 }
 impl DspState {
     pub fn new(
@@ -1456,6 +1501,17 @@ impl DspState {
                 .as_ref()
                 .map(|t| t.recorder())
                 .transpose()?,
+            stretch: Slab::new(
+                if plan.stretch_groups.iter().any(Option::is_some) {
+                    (0..crate::source::STRETCH_VOICES)
+                        .map(|_| crate::source::StretchEngine::with_capacity(plan.rate))
+                        .collect()
+                } else {
+                    Box::new([])
+                },
+                1,
+            ),
+            stretch_busy: 0,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).

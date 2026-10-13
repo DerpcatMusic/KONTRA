@@ -229,6 +229,7 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ir::Target::Pan => "Pan".into(),
         ir::Target::SampleStart => "Sample start".into(),
         ir::Target::SourcePhase(_) => "LFO start phase".into(),
+        ir::Target::SourceRate(_) => "LFO rate".into(),
         ir::Target::LoopStart => "Loop start".into(),
         ir::Target::LoopLength => "Loop length".into(),
         ir::Target::Control(c) => i
@@ -259,6 +260,16 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::CellLR => "Left to right",
                 ir::ProcessorParameter::CellRL => "Right to left",
                 ir::ProcessorParameter::CellRR => "Right to right",
+                ir::ProcessorParameter::Shape => "Shape",
+                ir::ProcessorParameter::Drive => "Drive",
+                ir::ProcessorParameter::Damping => "Damping",
+                ir::ProcessorParameter::FormantTalk => "Talk",
+                ir::ProcessorParameter::FormantSharp => "Sharp",
+                ir::ProcessorParameter::FormantSize => "Size",
+                ir::ProcessorParameter::LoFiBits => "Bits",
+                ir::ProcessorParameter::LoFiFrequency => "Sample rate",
+                ir::ProcessorParameter::LoFiNoise => "Noise",
+                ir::ProcessorParameter::LoFiColor => "Color",
             },
             index + 1
         ),
@@ -276,10 +287,20 @@ fn detail(p: ir::Processor) -> String {
             frequency,
             noise,
             color,
+        }
+        | ir::Processor::LiveLoFi {
+            bits,
+            frequency,
+            noise,
+            color,
+            ..
         } => format!(
             "LoFi · {bits:.1} bits · {frequency:.0} Hz · noise {noise:.2} · color {color:.2}"
         ),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
+        ir::Processor::LiveFormant { knobs: [talk, sharp, size], .. } => {
+            format!("Formant · talk {talk:.2} · sharp {sharp:.2} · size {size:.2}")
+        }
         ir::Processor::Saturation(shape) | ir::Processor::LiveSaturation { shape, .. } => format!("Saturation · shape {shape:+.2}"),
         ir::Processor::Distortion { transistor, drive, damping } | ir::Processor::LiveDistortion { transistor, drive, damping, .. } => format!(
             "{} distortion · drive {:.0}% · damping {:.0}%",

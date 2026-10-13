@@ -200,10 +200,23 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             }
         }
-        for control in self.wavetable_controls.iter().flatten().flatten() {
-            let index = self.control_index(*control)?;
-            if self.controls[index].domain != (ControlDomain::Real { min: 0., max: 1. }) {
-                return Err(Error::InvalidInput);
+        for lanes in self.wavetable_controls.iter().flatten() {
+            for (lane, control) in lanes.iter().enumerate() {
+                let index = self.control_index(*control)?;
+                if self.controls[index].domain
+                    != (ControlDomain::Real {
+                        min: 0.,
+                        max: if lane < 3 { 1. } else { 33. },
+                    })
+                {
+                    return Err(Error::InvalidInput);
+                }
+                if lane >= 3 {
+                    let ControlValue::Real(value) = self.controls[index].default else {
+                        return Err(Error::InvalidInput);
+                    };
+                    crate::EngineParameterLaw::WavetableForm.normalized_value(value)?;
+                }
             }
         }
         for control in self
@@ -555,6 +568,16 @@ impl Runtime {
             if !definitions.controls[index].domain.accepts(write.value) {
                 return Err(Error::InvalidInput);
             }
+            if let Some(binding) = definitions
+                .engine_parameters
+                .get(generation.controls.engine_index[index])
+                && binding.law == crate::EngineParameterLaw::WavetableForm
+            {
+                let ControlValue::Real(value) = write.value else {
+                    return Err(Error::InvalidInput);
+                };
+                binding.law.normalized_value(value)?;
+            }
         }
         let revision = generation
             .controls
@@ -624,6 +647,9 @@ mod tests {
                     shape: None,
                     lag: 0,
                     scale: None,
+                    live_gain: 1.,
+                    unipolar: false,
+                    more_scales: [None; crate::voice_mod::MORE_SCALES],
                 }],
                 ..Default::default()
             }],

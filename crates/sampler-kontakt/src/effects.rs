@@ -379,8 +379,15 @@ impl Slot {
                 pseudo: r.flag()?,
             },
             0x59 => {
+                // Kontakt 8.13.1 FUN_140d019f0 (v0x10): a validated u32 room type
+                // (0 room, 1 hall), then nine floats. Reading it as f32 turned hall
+                // (1) into 1.4e-45 and every hall played as a room.
                 let mut v = [0.0; 10];
-                for x in &mut v {
+                v[0] = match r.i32()? {
+                    t @ (0 | 1) => t as f32,
+                    _ => return None,
+                };
+                for x in &mut v[1..] {
                     *x = r.f32()?;
                 }
                 Params::Reverb(v)
@@ -721,6 +728,9 @@ pub(crate) struct Chain {
     /// Each translated filter/EQ band slot and its index in `processors`, for
     /// modulation targets that name a module slot.
     pub filter_slots: Vec<(usize, usize)>,
+    /// Each script-addressed effect module (distortion, saturation, formant,
+    /// lo-fi) slot and its index in `processors`: modulation targets name them.
+    pub lane_slots: Vec<(usize, usize)>,
     pub send_taps: Vec<SendTap>,
 }
 
@@ -777,6 +787,12 @@ pub(crate) fn voice_chain(
     before.filter_slots.extend(
         after
             .filter_slots
+            .into_iter()
+            .map(|(slot, index)| (slot, index + boundary)),
+    );
+    before.lane_slots.extend(
+        after
+            .lane_slots
             .into_iter()
             .map(|(slot, index)| (slot, index + boundary)),
     );
@@ -874,6 +890,9 @@ pub(crate) fn chain_with(
                     && [*drive, *damping].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
                 {
                     flush(&mut combined, &mut filters, &mut out);
+                    if dynamic.is_some() {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                    }
                     out.processors.push(if let Some((group, generic)) = dynamic {
                         sampler_ir::Processor::LiveDistortion {
                             transistor: *mode == 1., drive: *drive, damping: *damping,
@@ -893,6 +912,9 @@ pub(crate) fn chain_with(
             Some(Params::Saturation { shape, mode }) => {
                 if *mode == 0.0 && shape.is_finite() && (-1.0..=1.0).contains(shape) {
                     flush(&mut combined, &mut filters, &mut out);
+                    if dynamic.is_some() {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                    }
                     out.processors.push(if let Some((group, generic)) = dynamic {
                         sampler_ir::Processor::LiveSaturation { shape: *shape,
                             address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic } }
@@ -943,7 +965,15 @@ pub(crate) fn chain_with(
                 // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
                 let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
                 if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    if let Some((group, generic)) = dynamic {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                        out.processors.push(sampler_ir::Processor::LiveFormant {
+                            knobs,
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        });
+                    } else {
+                        out.processors.push(sampler_ir::Processor::Formant(knobs));
+                    }
                     combined = gain;
                 } else {
                     notes.push(("Formant I parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
@@ -956,12 +986,23 @@ pub(crate) fn chain_with(
                     .iter()
                     .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
                 {
-                    out.processors.push(sampler_ir::Processor::LoFi {
-                        bits: values[0],
-                        frequency: values[1],
-                        noise: values[2],
-                        color: values[3],
-                    });
+                    if let Some((group, generic)) = dynamic {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                        out.processors.push(sampler_ir::Processor::LiveLoFi {
+                            bits: values[0],
+                            frequency: values[1],
+                            noise: values[2],
+                            color: values[3],
+                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
+                        });
+                    } else {
+                        out.processors.push(sampler_ir::Processor::LoFi {
+                            bits: values[0],
+                            frequency: values[1],
+                            noise: values[2],
+                            color: values[3],
+                        });
+                    }
                     combined = product(gain, combined);
                     if *flag {
                         notes.push((
@@ -1316,7 +1357,7 @@ pub(crate) fn chain_with(
                         bypass: fx.bypass,
                     },
                 );
-                for (_, at) in &mut out.filter_slots {
+                for (_, at) in out.filter_slots.iter_mut().chain(&mut out.lane_slots) {
                     if *at >= begin {
                         *at += 1;
                     }
@@ -2582,7 +2623,8 @@ mod tests {
     // Authored independently of the decoder schema: native Raum reader
     // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
     fn raum_payload() -> Vec<u8> {
-        let mut bytes = (-17i32).to_le_bytes().to_vec();
+        // Kontakt 8.13.1 FUN_140ac5cc0 validates the leading u32 as an enum 0..=2.
+        let mut bytes = 2i32.to_le_bytes().to_vec();
         bytes.extend(
             [
                 0.125f32, 0.25, 0.5, 1., 2., 4., 8., 16., 32., 64., 128., 256.,
@@ -2627,8 +2669,9 @@ mod tests {
             (
                 0x65,
                 0x10,
+                // Kontakt validates Raum's leading enum before any other read.
                 vec![0xde, 0xad, 0xbe, 0xef],
-                "Static error: Truncated FX parameter",
+                "Generic error: BParFXRaum 0x10: Rejected",
             ),
             (
                 0x65,
@@ -2721,7 +2764,7 @@ mod tests {
                 );
                 assert_eq!(saved.fields.len(), 19);
                 for (name, value) in [
-                    ("param_0", SourceParameterValue::Integer(-17)),
+                    ("param_0", SourceParameterValue::Integer(2)),
                     ("param_1", SourceParameterValue::Number(0.125)),
                     ("param_12", SourceParameterValue::Number(256.)),
                     ("param_13", SourceParameterValue::Integer(0xa5)),
@@ -3534,6 +3577,26 @@ mod tests {
     }
 
     #[test]
+    fn galois_reverb_room_type_is_a_native_u32_enum() {
+        // Kontakt 8.13.1 FUN_140d019f0 reads a u32 room type before nine floats.
+        // Hall (1) used to decode as the f32 1.4e-45 and play as a room.
+        let mut public = 1u32.to_le_bytes().to_vec();
+        for x in [0.25f32, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            public.extend(x.to_le_bytes());
+        }
+        let mut hall = slot(0x59, public, 1.0);
+        hall.version = 0x10;
+        let Some(Params::Reverb(v)) = hall.params() else { panic!("hall reverb decodes") };
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.25);
+        let mut notes = Vec::new();
+        let size = reverb(&v, &mut notes).size;
+        assert_eq!(size, 1.0, "hall keeps the full size factor");
+        hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(hall.params().is_none(), "Kontakt throws on room type 2");
+    }
+
+    #[test]
     fn send_rack_reverb_becomes_a_send_bus_fed_by_send_levels() {
         use sampler_ir as ir;
         let mut levels = 2u32.to_le_bytes().to_vec();
@@ -3545,7 +3608,9 @@ mod tests {
         }
         let mut instrument = ir::Instrument {
             groups: vec![ir::Group {
+                muted: false,
                 wavetable: None,
+                time_stretch: None,
                 start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,
@@ -3554,6 +3619,7 @@ mod tests {
                 chain: None,
                 output: ir::Output::Master,
                 voice_limit: None,
+                source_voice_limit: None,
                 monophonic_release: false,
                 sends: Vec::new(),
                 tap: None,

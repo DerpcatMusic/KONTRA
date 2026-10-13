@@ -83,7 +83,11 @@ pub(crate) fn translate(
                         high: c.cc_max as u8,
                     }
                 }
-                3 if c.cycle_class > 0 => ir::StartTest::RoundRobin(c.cycle_class as u32),
+                // Kontakt 8.13.1 cycle round robin (0x140876bd0 / 0x144f180b8): stored
+                // positions are 0-based, the cycle length is max stored + 1 and one
+                // instrument counter advances on every note. StartTest positions are
+                // 1-based, so stored 0 (the first step) becomes 1.
+                3 if c.cycle_class >= 0 => ir::StartTest::RoundRobin(c.cycle_class as u32 + 1),
                 4 => ir::StartTest::Random,
                 _ => {
                     instrument.unsupported.push(ir::Unsupported {
