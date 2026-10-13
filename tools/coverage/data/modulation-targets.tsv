@@ -1,0 +1,169 @@
+target_id	param	template	notes
+2	volume	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144e9134c;register@0x140a6d476;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+3	pan	$out := $in + {} * $intensity	name@0x144e91354;register@0x140a6d48a;need_uni=0;runtime_units/range/cadence=UNPROVED
+6	pitch	$out := $in + {} * $intensity	name@0x144e91358;register@0x140a6d4a2;need_uni=0;runtime_units/range/cadence=UNPROVED;internal type2,+600==2 scale=9;others same-source scale3;existing measured reference: semitones;not native consumer proof here
+7	loopStart	$out := $in + {} * $intensity	name@0x144f19660;register@0x140a6d6ca;need_uni=0;runtime_units/range/cadence=UNPROVED
+8	loopLength	$out := $in + {} * $intensity	name@0x144f19670;register@0x140a6d6e2;need_uni=0;runtime_units/range/cadence=UNPROVED
+11	warpFactor	$out := $in + {} * $intensity	name@0x144f195a0;register@0x140a6d57a;need_uni=0;runtime_units/range/cadence=UNPROVED
+12	warpFactor2	$out := $in + {} * $intensity	name@0x144f195b0;register@0x140a6d592;need_uni=0;runtime_units/range/cadence=UNPROVED
+13	wavetablePosition	$out := $in + {} * $intensity	name@0x144f195c0;register@0x140a6d5aa;need_uni=0;runtime_units/range/cadence=UNPROVED
+14	wavetableInharmonic	$out := $in + {} * $intensity	name@0x144f195d8;register@0x140a6d5c2;need_uni=0;runtime_units/range/cadence=UNPROVED
+15	wavetableModAmount	$out := $in + {} * $intensity	name@0x144f195f0;register@0x140a6d5da;need_uni=0;runtime_units/range/cadence=UNPROVED
+16	wavetableModFrequency	$out := $in + {} * $intensity	name@0x144f19608;register@0x140a6d5f2;need_uni=0;runtime_units/range/cadence=UNPROVED
+17	formantShift	$out := $in + {} * $intensity	name@0x144f19588;register@0x140a6d54a;need_uni=0;runtime_units/range/cadence=UNPROVED;internal type2,+600==2 scale=9;others same-source scale3
+18	overlap	$out := $in + {} * $intensity	name@0x144f19598;register@0x140a6d562;need_uni=0;runtime_units/range/cadence=UNPROVED
+19	grainSize	$out := $in + {} * $intensity	name@0x144f19640;register@0x140a6d69a;need_uni=0;runtime_units/range/cadence=UNPROVED
+21	grainSpeed	$out := $in + {} * $intensity	name@0x144f19650;register@0x140a6d6b2;need_uni=0;runtime_units/range/cadence=UNPROVED
+25	intensity	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19680;register@0x140a6d6fa;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;flags&4: I+@0x144f1daf0;else H;default depth=.05
+26	frequency	$out := $in + {} * $intensity	name@0x144e99130;register@0x140a6d72a;need_uni=0;runtime_units/range/cadence=UNPROVED;frequency ADD,not proven Hz;default depth=.1
+27	pulseWidth	$out := $in + {} * $intensity	name@0x144f196a8;register@0x140a6d742;need_uni=0;runtime_units/range/cadence=UNPROVED
+31	filterCutoff	$out := $in + {} * $intensity	name@0x144f19530;register@0x140a6d4ba;need_uni=0;runtime_units/range/cadence=UNPROVED;existing measured reference: octaves (10 octaves per unit depth);not native consumer proof here
+32	filterQ	$out := $in + {} * $intensity	name@0x144f19540;register@0x140a6d4d2;need_uni=0;runtime_units/range/cadence=UNPROVED
+33	filterFM	$out := $in + {} * $intensity	name@0x144f19630;register@0x140a6d682;need_uni=0;runtime_units/range/cadence=UNPROVED
+34	filterFeedback	$out := $in + {} * $intensity	name@0x144f19620;register@0x140a6d66a;need_uni=0;runtime_units/range/cadence=UNPROVED
+35	filterBandwidth	$out := $in + {} * $intensity	name@0x144f19548;register@0x140a6d4ea;need_uni=0;runtime_units/range/cadence=UNPROVED
+36	formantTalk	$out := $in + {} * $intensity	name@0x144f19558;register@0x140a6d502;need_uni=0;runtime_units/range/cadence=UNPROVED
+37	formantSize	$out := $in + {} * $intensity	name@0x144f19568;register@0x140a6d51a;need_uni=0;runtime_units/range/cadence=UNPROVED
+38	formantSharp	$out := $in + {} * $intensity	name@0x144f19578;register@0x140a6d532;need_uni=0;runtime_units/range/cadence=UNPROVED
+40	eqFreq1	$out := $in + {} * $intensity	name@0x144f196c8;register@0x140a6d772;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+41	eqBandWidth1	$out := $in + {} * $intensity	name@0x144f196d0;register@0x140a6d78a;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+42	eqGain1	$out := $in + {} * $intensity	name@0x144f196e0;register@0x140a6d7a2;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.666666666666667
+43	eqFreq2	$out := $in + {} * $intensity	name@0x144f196e8;register@0x140a6d7ba;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+44	eqBandWidth2	$out := $in + {} * $intensity	name@0x144f196f0;register@0x140a6d7d2;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+45	eqGain2	$out := $in + {} * $intensity	name@0x144f19700;register@0x140a6d7ea;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.666666666666667
+46	eqFreq3	$out := $in + {} * $intensity	name@0x144f19708;register@0x140a6d802;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+47	eqBandWidth3	$out := $in + {} * $intensity	name@0x144f19710;register@0x140a6d81a;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.5
+48	eqGain3	$out := $in + {} * $intensity	name@0x144f19720;register@0x140a6d832;need_uni=0;runtime_units/range/cadence=UNPROVED;source scale=0.666666666666667
+51	vfShift	$out := $in + {} * $intensity	name@0x144f19728;register@0x140a6d84a;need_uni=1;runtime_units/range/cadence=UNPROVED
+52	vfType	$out := $in + {} * $intensity	name@0x144f19730;register@0x140a6d862;need_uni=1;runtime_units/range/cadence=UNPROVED
+53	vfBypass	$out := $in + {} * $intensity	name@0x144f19738;register@0x140a6d87a;need_uni=1;runtime_units/range/cadence=UNPROVED
+55	cutoffLP	$out := $in + {} * $intensity	name@0x144e98f28;register@0x140a6d60a;need_uni=0;runtime_units/range/cadence=UNPROVED
+56	cutoffHP	$out := $in + {} * $intensity	name@0x144e98f38;register@0x140a6d622;need_uni=0;runtime_units/range/cadence=UNPROVED
+57	resoLP	$out := $in + {} * $intensity	name@0x144e98f44;register@0x140a6d63a;need_uni=0;runtime_units/range/cadence=UNPROVED
+58	resoHP	$out := $in + {} * $intensity	name@0x144e98f4c;register@0x140a6d652;need_uni=0;runtime_units/range/cadence=UNPROVED
+61	crywahPedal	$out := $in + {} * $intensity	name@0x144f198f0;register@0x140a6db02;need_uni=1;runtime_units/range/cadence=UNPROVED
+64	distortionIntensity	$out := $in + {} * $intensity	name@0x144f198d8;register@0x140a6daea;need_uni=1;runtime_units/range/cadence=UNPROVED
+67	dyx_morph	$out := $in + {} * $intensity	name@0x144f19900;register@0x140a6db1a;need_uni=1;runtime_units/range/cadence=UNPROVED
+68	dyx_dry	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19910;register@0x140a6db32;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+71	skr_tone	$out := $in + {} * $intensity	name@0x144f19918;register@0x140a6db4a;need_uni=1;runtime_units/range/cadence=UNPROVED
+72	skr_drive	$out := $in + {} * $intensity	name@0x144f19928;register@0x140a6db62;need_uni=1;runtime_units/range/cadence=UNPROVED
+75	sslgeq_lf_gain	$out := $in + {} * $intensity	name@0x144e992b8;register@0x140a6db92;need_uni=0;runtime_units/range/cadence=UNPROVED
+76	sslgeq_lf_freq	$out := $in + {} * $intensity	name@0x144e992c8;register@0x140a6dbaa;need_uni=0;runtime_units/range/cadence=UNPROVED
+77	sslgeq_lmf_gain	$out := $in + {} * $intensity	name@0x144e992d8;register@0x140a6dbc2;need_uni=0;runtime_units/range/cadence=UNPROVED
+78	sslgeq_lmf_freq	$out := $in + {} * $intensity	name@0x144e992e8;register@0x140a6dbda;need_uni=0;runtime_units/range/cadence=UNPROVED
+79	sslgeq_lmf_q	$out := $in + {} * $intensity	name@0x144e992f8;register@0x140a6dbf2;need_uni=0;runtime_units/range/cadence=UNPROVED
+80	sslgeq_hmf_gain	$out := $in + {} * $intensity	name@0x144e99308;register@0x140a6dc0a;need_uni=0;runtime_units/range/cadence=UNPROVED
+81	sslgeq_hmf_freq	$out := $in + {} * $intensity	name@0x144e99318;register@0x140a6dc22;need_uni=0;runtime_units/range/cadence=UNPROVED
+82	sslgeq_hmf_q	$out := $in + {} * $intensity	name@0x144e99328;register@0x140a6dc3a;need_uni=0;runtime_units/range/cadence=UNPROVED
+83	sslgeq_hf_gain	$out := $in + {} * $intensity	name@0x144e99338;register@0x140a6dc52;need_uni=0;runtime_units/range/cadence=UNPROVED
+84	sslgeq_hf_freq	$out := $in + {} * $intensity	name@0x144e99348;register@0x140a6dc6a;need_uni=0;runtime_units/range/cadence=UNPROVED
+85	sslgeq_hp_freq	$out := $in + {} * $intensity	name@0x144e99298;register@0x140a6db7a;need_uni=0;runtime_units/range/cadence=UNPROVED
+86	sslgeq_lp_freq	$out := $in + {} * $intensity	name@0x144e992a8;register@0x140a6dc82;need_uni=0;runtime_units/range/cadence=UNPROVED
+89	tape_gain	$out := $in + {} * $intensity	name@0x144e991b8;register@0x140a6dc9a;need_uni=1;runtime_units/range/cadence=UNPROVED
+90	tape_warmth	$out := $in + {} * $intensity	name@0x144e991c8;register@0x140a6dcb2;need_uni=1;runtime_units/range/cadence=UNPROVED
+91	tape_hfrolloff	$out := $in + {} * $intensity	name@0x144f19938;register@0x140a6dcca;need_uni=1;runtime_units/range/cadence=UNPROVED
+94	stereoSpreadIntensity	$out := $in + {} * $intensity	name@0x144f19948;register@0x140a6dce2;need_uni=0;runtime_units/range/cadence=UNPROVED
+95	stereoPan	$out := $in + {} * $intensity	name@0x144f19960;register@0x140a6dcfa;need_uni=0;runtime_units/range/cadence=UNPROVED
+98	shaper	$out := $in + {} * $intensity	name@0x144f1996c;register@0x140a6dd12;need_uni=0;runtime_units/range/cadence=UNPROVED
+101	bitdepth	$out := $in + {} * $intensity	name@0x144f19978;register@0x140a6dd2a;need_uni=0;runtime_units/range/cadence=UNPROVED
+102	downsample	$out := $in + {} * $intensity	name@0x144f19988;register@0x140a6dd42;need_uni=0;runtime_units/range/cadence=UNPROVED
+103	noiselevel	$out := $in + {} * $intensity	name@0x144f19998;register@0x140a6dd5a;need_uni=1;runtime_units/range/cadence=UNPROVED
+104	noisecolor	$out := $in + {} * $intensity	name@0x144f199a8;register@0x140a6dd72;need_uni=0;runtime_units/range/cadence=UNPROVED
+107	off_distance	$out := $in + {} * $intensity	name@0x144f199b8;register@0x140a6dd8a;need_uni=1;runtime_units/range/cadence=UNPROVED
+108	off_azimuth	$out := $in + {} * $intensity	name@0x144f199c8;register@0x140a6dda2;need_uni=0;runtime_units/range/cadence=UNPROVED
+109	off_x	$out := $in + {} * $intensity	name@0x144f199d4;register@0x140a6ddba;need_uni=0;runtime_units/range/cadence=UNPROVED
+110	off_y	$out := $in + {} * $intensity	name@0x144f199dc;register@0x140a6ddd2;need_uni=0;runtime_units/range/cadence=UNPROVED
+113	sendLevel0	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19748;register@0x140a6d892;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+114	sendLevel1	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19758;register@0x140a6d8aa;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+115	sendLevel2	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19768;register@0x140a6d8c2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+116	sendLevel3	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19778;register@0x140a6d8da;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+117	sendLevel4	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19788;register@0x140a6d8f2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+118	sendLevel5	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19798;register@0x140a6d90a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+119	sendLevel6	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197a8;register@0x140a6d922;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+120	sendLevel7	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197b8;register@0x140a6d93a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+121	scLevelB00	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197c8;register@0x140a6d952;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+122	scLevelB01	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197d8;register@0x140a6d96a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+123	scLevelB02	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197e8;register@0x140a6d982;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+124	scLevelB03	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f197f8;register@0x140a6d99a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+125	scLevelB04	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19808;register@0x140a6d9b2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+126	scLevelB05	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19818;register@0x140a6d9ca;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+127	scLevelB06	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19828;register@0x140a6d9e2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+128	scLevelB07	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19838;register@0x140a6d9fa;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+129	scLevelB08	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19848;register@0x140a6da12;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+130	scLevelB09	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19858;register@0x140a6da2a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+131	scLevelB10	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19868;register@0x140a6da42;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+132	scLevelB11	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19878;register@0x140a6da5a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+133	scLevelB12	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19888;register@0x140a6da72;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+134	scLevelB13	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19898;register@0x140a6da8a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+135	scLevelB14	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f198a8;register@0x140a6daa2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+136	scLevelB15	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f198b8;register@0x140a6daba;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+137	scLevelPGM	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f198c8;register@0x140a6dad2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;H-direct@0x144f1da68 if internal type2,+600<2,+548!=0;external type7..13 inner=fcubic
+141	arp32step_v1	$out := $in * {} * $intensity	name@0x144f19c00;register@0x140a6e11a;need_uni=0;runtime_units/range/cadence=UNPROVED
+142	arp32step_v2	$out := $in * {} * $intensity	name@0x144f19c10;register@0x140a6e132;need_uni=0;runtime_units/range/cadence=UNPROVED
+143	arp32step_v3	$out := $in * {} * $intensity	name@0x144f19c20;register@0x140a6e14a;need_uni=0;runtime_units/range/cadence=UNPROVED
+144	arp32step_v4	$out := $in * {} * $intensity	name@0x144f19c30;register@0x140a6e162;need_uni=0;runtime_units/range/cadence=UNPROVED
+145	arp32step_v5	$out := $in * {} * $intensity	name@0x144f19c40;register@0x140a6e17a;need_uni=0;runtime_units/range/cadence=UNPROVED
+146	arp32step_v6	$out := $in * {} * $intensity	name@0x144f19c50;register@0x140a6e192;need_uni=0;runtime_units/range/cadence=UNPROVED
+147	arp32step_v7	$out := $in * {} * $intensity	name@0x144f19c60;register@0x140a6e1aa;need_uni=0;runtime_units/range/cadence=UNPROVED
+148	arp32step_v8	$out := $in * {} * $intensity	name@0x144f19c70;register@0x140a6e1c2;need_uni=0;runtime_units/range/cadence=UNPROVED
+149	arp32step_v9	$out := $in * {} * $intensity	name@0x144f19c80;register@0x140a6e1da;need_uni=0;runtime_units/range/cadence=UNPROVED
+150	arp32step_v10	$out := $in * {} * $intensity	name@0x144f19c90;register@0x140a6e1f2;need_uni=0;runtime_units/range/cadence=UNPROVED
+151	arp32step_v11	$out := $in * {} * $intensity	name@0x144f19ca0;register@0x140a6e20a;need_uni=0;runtime_units/range/cadence=UNPROVED
+152	arp32step_v12	$out := $in * {} * $intensity	name@0x144f19cb0;register@0x140a6e222;need_uni=0;runtime_units/range/cadence=UNPROVED
+153	arp32step_v13	$out := $in * {} * $intensity	name@0x144f19cc0;register@0x140a6e23a;need_uni=0;runtime_units/range/cadence=UNPROVED
+154	arp32step_v14	$out := $in * {} * $intensity	name@0x144f19cd0;register@0x140a6e252;need_uni=0;runtime_units/range/cadence=UNPROVED
+155	arp32step_v15	$out := $in * {} * $intensity	name@0x144f19ce0;register@0x140a6e26a;need_uni=0;runtime_units/range/cadence=UNPROVED
+156	arp32step_v16	$out := $in * {} * $intensity	name@0x144f19cf0;register@0x140a6e282;need_uni=0;runtime_units/range/cadence=UNPROVED
+157	arp32step_v17	$out := $in * {} * $intensity	name@0x144f19d00;register@0x140a6e29a;need_uni=0;runtime_units/range/cadence=UNPROVED
+158	arp32step_v18	$out := $in * {} * $intensity	name@0x144f19d10;register@0x140a6e2b2;need_uni=0;runtime_units/range/cadence=UNPROVED
+159	arp32step_v19	$out := $in * {} * $intensity	name@0x144f19d20;register@0x140a6e2ca;need_uni=0;runtime_units/range/cadence=UNPROVED
+160	arp32step_v20	$out := $in * {} * $intensity	name@0x144f19d30;register@0x140a6e2e2;need_uni=0;runtime_units/range/cadence=UNPROVED
+161	arp32step_v21	$out := $in * {} * $intensity	name@0x144f19d40;register@0x140a6e2fa;need_uni=0;runtime_units/range/cadence=UNPROVED
+162	arp32step_v22	$out := $in * {} * $intensity	name@0x144f19d50;register@0x140a6e312;need_uni=0;runtime_units/range/cadence=UNPROVED
+163	arp32step_v23	$out := $in * {} * $intensity	name@0x144f19d60;register@0x140a6e32a;need_uni=0;runtime_units/range/cadence=UNPROVED
+164	arp32step_v24	$out := $in * {} * $intensity	name@0x144f19d70;register@0x140a6e342;need_uni=0;runtime_units/range/cadence=UNPROVED
+165	arp32step_v25	$out := $in * {} * $intensity	name@0x144f19d80;register@0x140a6e35a;need_uni=0;runtime_units/range/cadence=UNPROVED
+166	arp32step_v26	$out := $in * {} * $intensity	name@0x144f19d90;register@0x140a6e372;need_uni=0;runtime_units/range/cadence=UNPROVED
+167	arp32step_v27	$out := $in * {} * $intensity	name@0x144f19da0;register@0x140a6e38a;need_uni=0;runtime_units/range/cadence=UNPROVED
+168	arp32step_v28	$out := $in * {} * $intensity	name@0x144f19db0;register@0x140a6e3a2;need_uni=0;runtime_units/range/cadence=UNPROVED
+169	arp32step_v29	$out := $in * {} * $intensity	name@0x144f19dc0;register@0x140a6e3ba;need_uni=0;runtime_units/range/cadence=UNPROVED
+170	arp32step_v30	$out := $in * {} * $intensity	name@0x144f19dd0;register@0x140a6e3d2;need_uni=0;runtime_units/range/cadence=UNPROVED
+171	arp32step_v31	$out := $in * {} * $intensity	name@0x144f19de0;register@0x140a6e3ea;need_uni=0;runtime_units/range/cadence=UNPROVED
+176	playPos	$out := $in + {} * $intensity	name@0x144f199e8;register@0x140a6ddea;need_uni=0;runtime_units/range/cadence=UNPROVED
+177	playDirection	$out := $in + {} * $intensity	name@0x144f199f0;register@0x140a6de02;need_uni=1;runtime_units/range/cadence=UNPROVED
+180	startPhase	$out := $in + {} * $intensity	name@0x144f196b8;register@0x140a6d75a;need_uni=1;runtime_units/range/cadence=UNPROVED
+184	ahdsr_attack	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a00;register@0x140a6de1a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_a outer/base,inner=fcubic
+185	ahdsr_hold	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a10;register@0x140a6de32;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_a outer/base,inner=fcubic
+186	ahdsr_decay	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a20;register@0x140a6de4a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_d outer/base,inner=fcubic
+187	ahdsr_release	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a40;register@0x140a6de7a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_d outer/base,inner=fcubic
+189	ahdsr_sustain	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a30;register@0x140a6de62;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+191	dbd_decay1	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a50;register@0x140a6de92;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_d outer/base,inner=fcubic
+192	dbd_decay2	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a70;register@0x140a6dec2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in;external +53d: env_d outer/base,inner=fcubic
+194	dbd_break	$out := $in * {} * $intensity	name@0x144f19a60;register@0x140a6deaa;need_uni=0;runtime_units/range/cadence=UNPROVED
+196	fm7_level1	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a80;register@0x140a6deda;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+197	fm7_level2	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19a90;register@0x140a6def2;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+198	fm7_level3	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19aa0;register@0x140a6df0a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+199	fm7_level4	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19ab0;register@0x140a6df22;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+200	fm7_level5	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19ac0;register@0x140a6df3a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+201	fm7_level6	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19ad0;register@0x140a6df52;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+202	fm7_level7	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19ae0;register@0x140a6df6a;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+203	fm7_level8	$out := {}({} * {}(1.0 - (1.0 - ... {}) * $intensity))	name@0x144f19af0;register@0x140a6df82;need_uni=1;runtime_units/range/cadence=UNPROVED;H default outer/inner=empty,base=$in
+206	fm7_time1	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b00;register@0x140a6df9a;need_uni=1;runtime_units/range/cadence=UNPROVED
+207	fm7_time2	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b10;register@0x140a6dfb2;need_uni=1;runtime_units/range/cadence=UNPROVED
+208	fm7_time3	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b20;register@0x140a6dfca;need_uni=1;runtime_units/range/cadence=UNPROVED
+209	fm7_time4	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b30;register@0x140a6dfe2;need_uni=1;runtime_units/range/cadence=UNPROVED
+210	fm7_time5	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b40;register@0x140a6dffa;need_uni=1;runtime_units/range/cadence=UNPROVED
+211	fm7_time6	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b50;register@0x140a6e012;need_uni=1;runtime_units/range/cadence=UNPROVED
+212	fm7_time7	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b60;register@0x140a6e02a;need_uni=1;runtime_units/range/cadence=UNPROVED
+213	fm7_time8	$out := fcubic(1.0 - (1.0 - ... {}) * $intensity)	name@0x144f19b70;register@0x140a6e042;need_uni=1;runtime_units/range/cadence=UNPROVED
+216	fm7_slope1	$out := $in + {} * $intensity	name@0x144f19b80;register@0x140a6e05a;need_uni=0;runtime_units/range/cadence=UNPROVED
+217	fm7_slope2	$out := $in + {} * $intensity	name@0x144f19b90;register@0x140a6e072;need_uni=0;runtime_units/range/cadence=UNPROVED
+218	fm7_slope3	$out := $in + {} * $intensity	name@0x144f19ba0;register@0x140a6e08a;need_uni=0;runtime_units/range/cadence=UNPROVED
+219	fm7_slope4	$out := $in + {} * $intensity	name@0x144f19bb0;register@0x140a6e0a2;need_uni=0;runtime_units/range/cadence=UNPROVED
+220	fm7_slope5	$out := $in + {} * $intensity	name@0x144f19bc0;register@0x140a6e0ba;need_uni=0;runtime_units/range/cadence=UNPROVED
+221	fm7_slope6	$out := $in + {} * $intensity	name@0x144f19bd0;register@0x140a6e0d2;need_uni=0;runtime_units/range/cadence=UNPROVED
+222	fm7_slope7	$out := $in + {} * $intensity	name@0x144f19be0;register@0x140a6e0ea;need_uni=0;runtime_units/range/cadence=UNPROVED
+223	fm7_slope8	$out := $in + {} * $intensity	name@0x144f19bf0;register@0x140a6e102;need_uni=0;runtime_units/range/cadence=UNPROVED
+244	legacyAddIntensity	$out := $in + {} * $intensity	name@0x144f19690;register@0x140a6d712;need_uni=1;runtime_units/range/cadence=UNPROVED;legacyAddIntensity ADD;not ID25 I+
+172	UNREGISTERED	$out := $in * {} * $intensity	compiler interval 0x8d..0xac includes this ID;need_uni=0;name/units/validity=UNPROVED
+OTHER	UNREGISTERED	$out := $in + {} * $intensity	default compiler branch only;does not establish valid target;need_uni=1 unless listed in D/F;units/range/cadence=UNPROVED
