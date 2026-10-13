@@ -830,7 +830,7 @@ impl Translation {
     }
 
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
-    /// defined voice groups, then one voice limit per defined group.
+    /// saved overrides, then one voice limit per override.
     fn voice_groups(&mut self, data: &[u8]) -> Result<(), ni_file::Error> {
         let mut reader = Cursor::new(data);
         let groups = VoiceGroups::read(&mut reader)?;
@@ -1216,11 +1216,28 @@ impl Translation {
         // groups 0 and 1 defined, Afflatus 2 Horns KS 1..=8 with 0..=7.
         let voice_group = usize::try_from(v.voice_group_index - 1).ok();
         let voice_limit = voice_group.and_then(|g| {
-            let limit = self.voice_groups.get(g).copied().flatten();
-            if limit.is_none() {
-                self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
+            match self.voice_groups.get(g).copied() {
+                Some(Some(limit)) => Some(limit),
+                Some(None) => {
+                    // Kontakt manual, Classic view / Voice Groups: all 128
+                    // groups are predefined. Native writer 0x140d14978..9ab
+                    // omits these defaults; None is an absent override, not
+                    // an undefined group (KONTAKT_VOICE_GROUP_DEFAULTS.md).
+                    let limit = self.ir.voice_limits.len();
+                    self.ir.voice_limits.push(ir::VoiceLimit {
+                        voices: 1,
+                        kill: ir::Kill::Oldest,
+                        prefer_released: true,
+                        fade: ir::Time::Milliseconds(10.0),
+                    });
+                    self.voice_groups[g] = Some(limit);
+                    Some(limit)
+                }
+                None => {
+                    self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
+                    None
+                }
             }
-            limit
         });
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
@@ -2849,6 +2866,10 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "voice_group_default_tests.rs"]
+mod voice_group_default_tests;
 
 #[cfg(test)]
 mod saved_tests {
