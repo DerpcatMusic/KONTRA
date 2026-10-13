@@ -21,7 +21,7 @@ fn grid() -> [f64; N] {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Spline {
+pub(crate) struct Spline {
     x: [f64; N],
     y: [f64; N],
     m: [f64; N],
@@ -30,7 +30,7 @@ pub(super) struct Spline {
 impl Spline {
     /// Second derivatives for a spline with zero slope at the left end and zero second
     /// derivative at the right (the checked boundary controls 11 and 1e32).
-    pub(super) fn new(y: [f64; N]) -> Self {
+    pub(crate) fn new(y: [f64; N]) -> Self {
         let x = grid();
         let (mut m, mut u) = ([0.; N], [0.; N]);
         m[0] = -0.5;
@@ -50,7 +50,7 @@ impl Spline {
     }
 
     /// Evaluate at `u`, clamped to the grid's ends.
-    pub(super) fn eval(&self, u: f64) -> f64 {
+    pub(crate) fn eval(&self, u: f64) -> f64 {
         let u = if u.is_nan() { 0. } else { u.clamp(self.x[0], self.x[N - 1]) };
         let i = (0..N - 1).rev().find(|&i| u >= self.x[i]).unwrap_or(0);
         let h = self.x[i + 1] - self.x[i];

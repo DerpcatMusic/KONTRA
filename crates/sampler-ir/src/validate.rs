@@ -346,6 +346,20 @@ impl Check<'_> {
                             self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
                         }
                         Law::KontaktLimiter(_) => {}
+                        Law::KontaktFeedback { native: n, .. } => {
+                            self.within(n.threshold_db, 0.0..=1000.0, "dynamics drive")?;
+                            self.within(n.ratio, 1.0..=20.0, "dynamics ratio")?;
+                        }
+                        Law::KontaktTransient { attack, sustain, gain, .. } => {
+                            for v in [attack, sustain, gain] {
+                                self.within(v, 0.0..=1.0, "transient control")?;
+                            }
+                        }
+                        Law::KontaktBusComp { threshold, makeup, attack, release, ratio, .. } => {
+                            for v in [threshold, makeup, attack, release, ratio] {
+                                self.within(v, 0.0..=1.0, "bus comp control")?;
+                            }
+                        }
                         Law::KontaktHilbert(n) => {
                             self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
                             self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;

@@ -15,7 +15,7 @@
 mod generic;
 mod kernel;
 pub(super) mod legacy;
-mod solid;
+pub(crate) mod solid;
 
 pub use legacy::KontaktLegacyEqSettings;
 pub use sampler_ir::fx::eq::{Kind, Law};
