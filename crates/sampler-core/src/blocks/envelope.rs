@@ -78,6 +78,15 @@ impl Curve {
     }
 }
 
+/// Why this stage envelope is NOT retired in favour of [`Breakpoints`]:
+/// `dahdsr_points_match_the_stage_envelope` only measures equality of the generic
+/// f64 path (< 2e-6, not bit-exact: closed-form vs recurrence). The `native`
+/// Primary path (f32 geometric AHDSR, 32-frame interpolation, verified against
+/// the v1 oracle in tests/v1_voice_controls.rs) has no point-list form, and this
+/// type also owns choke, release onset, one-shot retirement, stage-control edits
+/// and constant-level skipping that `Segment` lacks. Retire only after those
+/// move into `Segment` and the Primary law is proved expressible as points.
+///
 /// Validated immutable envelope parameters. Zero-length stages are skipped.
 /// Attack starts at zero, decay at one, release at the next held sample's level.
 /// Each ramp reaches its endpoint at the exclusive end of its duration.
