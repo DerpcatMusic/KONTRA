@@ -412,6 +412,9 @@ pub enum Encoding {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
+    /// Saved mute preserves the complete definition for live unmute.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub muted: bool,
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,

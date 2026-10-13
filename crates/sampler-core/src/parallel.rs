@@ -459,7 +459,7 @@ impl View<'_> {
             asset.want_levels(v.cursor.step(), self.at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
@@ -522,7 +522,7 @@ impl View<'_> {
                 asset.want_levels(v.cursor.step(), self.at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames: resident,
+                    frames: &resident,
                     levels: guard.as_deref().map_or(&[], |l| l),
                 };
                 chain.begin(v, &pcm, frames, self.kernel, &mut planar)

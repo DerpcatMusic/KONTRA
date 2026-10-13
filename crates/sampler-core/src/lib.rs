@@ -126,6 +126,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod residency;
 mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
@@ -147,6 +148,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
+    ResidencyRanges, ResidentFrames,
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
     Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
@@ -1699,6 +1701,9 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        if !asset.residency_permitted() {
+            return Err(Error::NotReady);
+        }
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
