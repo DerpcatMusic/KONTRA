@@ -156,14 +156,20 @@ fn wavetable_lanes(
         (
             ControlDefinition {
                 id,
-                domain: ControlDomain::Real { min: 0., max: if form { 33. } else { 1. } },
+                domain: ControlDomain::Real {
+                    min: 0.,
+                    max: if form { 33. } else { 1. },
+                },
                 default: ControlValue::Real(f64::from(value)),
             },
             crate::EngineParameterBinding {
                 address,
                 control: id,
-                law: if form { crate::EngineParameterLaw::WavetableForm }
-                    else { crate::EngineParameterLaw::Linear { low: 0., high: 1. } },
+                law: if form {
+                    crate::EngineParameterLaw::WavetableForm
+                } else {
+                    crate::EngineParameterLaw::Linear { low: 0., high: 1. }
+                },
             },
         )
     }))

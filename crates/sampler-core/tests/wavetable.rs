@@ -440,27 +440,92 @@ fn wave_control_schema_cannot_replace_amounts_with_integer_values() {
 #[test]
 fn addressed_phase_form_switch_changes_held_sound_without_restarting_the_clock() {
     let data: Vec<_> = (0..CYCLE).map(|i| [i as f32 / CYCLE as f32; 2]).collect();
-    let source = Wavetable { phase: 0.17, form1: 0.125, form1_type: 16, ..Default::default() };
+    let source = Wavetable {
+        phase: 0.17,
+        form1: 0.125,
+        form1_type: 16,
+        ..Default::default()
+    };
     let plan = addressed_wave_plan(&data, source, false);
-    let mut rt = Runtime::new(plan, Limits {
-        notes: 1, performances: 1, families: 1, expressions: 1, voices: 1, commands: 4,
-        channels: 0, decisions: 0, behaviors: 0, behavior_fuel: 0, behavior_cells: 0, note_cells: 0,
-    }).unwrap();
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            notes: 1,
+            performances: 1,
+            families: 1,
+            expressions: 1,
+            voices: 1,
+            commands: 4,
+            channels: 0,
+            decisions: 0,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
     let mut before = [[0.; 2]; 37];
     support::without_heap(|| {
         rt.trigger(input(69), 69, 1.).unwrap();
         rt.render(&mut before).unwrap();
-        rt.set_engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7), 0).unwrap();
-        assert_eq!(rt.engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7)).unwrap(), 0);
+        rt.set_engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7), 0)
+            .unwrap();
+        assert_eq!(
+            rt.engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7))
+                .unwrap(),
+            0
+        );
     });
     let mut source = source;
     source.form1_type = 0;
     let step = 440. * CYCLE as f64 / 48000.;
     let mut phase = f64::from(source.phase) * CYCLE as f64;
-    for _ in 0..37 { phase = (phase + step).rem_euclid(CYCLE as f64); }
+    for _ in 0..37 {
+        phase = (phase + step).rem_euclid(CYCLE as f64);
+    }
     let mut expected = [[0.; 2]; 41];
     oracle(&data, source, phase, step, &mut expected);
     let mut actual = [[0.; 2]; 41];
     support::without_heap(|| rt.render(&mut actual).unwrap());
-    assert_eq!(actual, expected, "mode changes must preserve the oscillator phase");
+    assert_eq!(
+        actual, expected,
+        "mode changes must preserve the oscillator phase"
+    );
+}
+
+#[test]
+fn phase_form_controls_reject_unproved_or_fractional_modes_atomically() {
+    use sampler_core::{ControlValue, ControlWrite, EngineParameterLaw, Error};
+    let data = vec![[0.; 2]; CYCLE];
+    let plan = addressed_wave_plan(&data, Wavetable::default(), false);
+    let address = wave_address("ENGINE_PAR_WT_FORM_MODE", 7);
+    let control = plan
+        .engine_parameter_bindings()
+        .iter()
+        .find(|binding| binding.address == address)
+        .unwrap()
+        .control;
+    let limits = Limits::for_plan(&plan, 1, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    for value in [1., 18., 8.5] {
+        support::without_heap(|| {
+            assert_eq!(
+                EngineParameterLaw::WavetableForm.normalized_value(value),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                rt.edit_controls(
+                    rt.active_plan(),
+                    None,
+                    &[ControlWrite {
+                        id: control,
+                        value: ControlValue::Real(value)
+                    }]
+                ),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.engine_parameter(address).unwrap(), 0);
+        });
+    }
 }

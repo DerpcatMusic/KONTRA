@@ -46,6 +46,21 @@ mod tests {
         }
     }
     #[test]
+    fn native_phase_ordinals_decode_from_one_based_saved_forms() {
+        for kind in [0, 7, 8, 9, 10, 11, 14, 15, 16, 17, 31, 32, 33] {
+            let mut saved = source();
+            saved.form_type = u32::from(kind) + 1;
+            saved.form2_type = u32::from(kind) + 1;
+            let wave = admitted(&saved, true).expect("original-byte-verified phase form");
+            assert_eq!((wave.form1_type, wave.form2_type), (kind, kind));
+        }
+        for serialized in [0, 2, 13, 14, 19, 24, 35, u32::MAX] {
+            let mut saved = source();
+            saved.form_type = serialized;
+            assert!(admitted(&saved, true).is_none());
+        }
+    }
+    #[test]
     fn saved_scalars_forward_decode_and_unproved_modes_stay_out() {
         let original = source();
         let wave = admitted(&original, true).unwrap();
