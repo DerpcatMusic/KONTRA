@@ -470,8 +470,11 @@ mod tests {
         );
         // Every negative F0 is an empty native filename (0x140cfb6d0, js at
         // 0x140cfb6ea), not an index into the special-filetable.
-        let empty = super::Resources::program_resources(&path, &program(-7), &specials).unwrap();
-        assert!(empty.locations().iter().all(|p| p.extension().is_none_or(|e| e != "nkr")));
+        let mut empty = super::Resources::program_resources(&path, &program(-7), &specials).unwrap();
+        assert_eq!(
+            empty.read("Resources/native_ui/main.nui").unwrap(),
+            b"library main"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

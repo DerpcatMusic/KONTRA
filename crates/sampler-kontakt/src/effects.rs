@@ -1922,8 +1922,8 @@ mod tests {
                 built.processors.is_empty(),
                 "mode {mode} must not use the textbook compressor"
             );
-            assert!(built.notes.iter().any(|(feature, _, reason)| {
-                feature == "compressor mode" && *reason == sampler_ir::Reason::NotModeled
+            assert!(built.notes.iter().any(|(_, feature, _, reason)| {
+                feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
             }));
         }
     }
