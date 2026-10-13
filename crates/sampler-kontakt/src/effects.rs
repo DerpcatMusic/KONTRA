@@ -1199,8 +1199,20 @@ pub(crate) fn chain_with(
                     combined = gain;
                 } else { notes.push(("Enhanced compressor parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue)); modelled = false; }
             }
+            Some(Params::Compressor { mode, .. }) if *mode != 0.0 => {
+                // The dispatcher 0x1409047a0 runs a separate core per mode (Classic
+                // 0x140ab2250, Enhanced 0x140ab2c80, Pro 0x140ab35d0). Mode 1 is
+                // admitted above; Pro's coefficients are unrecovered and unknown
+                // modes have no core, so neither takes the textbook compressor.
+                notes.push((
+                    "compressor mode".into(),
+                    format!("{mode}"),
+                    sampler_ir::Reason::NotModeled,
+                ));
+                modelled = false;
+            }
             Some(Params::Compressor {
-                mode,
+                mode: _,
                 threshold_db,
                 ratio,
                 attack_ms,
@@ -1216,14 +1228,8 @@ pub(crate) fn chain_with(
                 // KONTAKT_REFERENCE (ANALOG STRINGS C4/E4/G4, compressor on vs
                 // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
                 // output gain with about 0.3-0.7 dB of reduction. Only mode 0
-                // (Classic) is taken to share the kernel.
-                if *mode != 0.0 {
-                    notes.push((
-                        "compressor mode".into(),
-                        format!("{mode}"),
-                        sampler_ir::Reason::UnknownLaw,
-                    ));
-                }
+                // (Classic) is taken to share the kernel; its native core is not
+                // extracted, so this stays a measured approximation.
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
                     .push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
@@ -1901,6 +1907,27 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compressor_modes_without_a_proved_core_are_not_modeled() {
+        for mode in [2i32, 3, -1] {
+            let mut bytes = mode.to_le_bytes().to_vec();
+            for v in [-12f32, 0.5, 10., 100.] {
+                bytes.extend(v.to_le_bytes());
+            }
+            bytes.push(0);
+            let mut fx = slot(0x19, bytes, 1.);
+            fx.version = 0x70;
+            let built = super::chain(&[fx], super::Scope::Voice);
+            assert!(
+                built.processors.is_empty(),
+                "mode {mode} must not use the textbook compressor"
+            );
+            assert!(built.notes.iter().any(|(_, feature, _, reason)| {
+                feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
+            }));
+        }
+    }
+
     #[test]
     fn live_shape_drive_and_damping_reach_only_the_physical_slot() {
         for (module, payload, parameter, value, expected) in [
