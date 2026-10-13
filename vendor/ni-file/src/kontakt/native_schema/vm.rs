@@ -76,6 +76,26 @@ pub struct Decoded {
 
 type Val = Option<(i64, u32)>;
 
+/// Addresses are well spread already; SipHash only slows the executor down.
+#[derive(Default)]
+struct AddrHasher(u64);
+
+impl std::hash::Hasher for AddrHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn write_i64(&mut self, i: i64) {
+        self.0 = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type Mem = HashMap<i64, (u8, u32), std::hash::BuildHasherDefault<AddrHasher>>;
+
 #[derive(Debug)]
 enum Un {
     Not,
@@ -392,7 +412,7 @@ struct Machine<'a> {
     stream: Stream<'a>,
     chooser: Chooser,
     values: &'a [i64],
-    mem: HashMap<i64, (u8, u32)>,
+    mem: Mem,
     fields: Vec<Field>,
     depth: u8,
     steps: u32,
@@ -408,16 +428,16 @@ fn wrap(v: i64, bits: u8, signed: bool) -> i64 {
 }
 
 impl<'a> Machine<'a> {
-    fn new(stream: Stream<'a>, chooser: Chooser, values: &'a [i64], class: Option<u16>) -> Self {
+    fn new(stream: Stream<'a>, chooser: Chooser, values: &'a [i64], class: Option<u16>, steps: u32) -> Self {
         let mut m = Self {
             lib: library(),
             stream,
             chooser,
             values,
-            mem: HashMap::new(),
+            mem: Mem::default(),
             fields: Vec::new(),
             depth: 0,
-            steps: 400_000,
+            steps,
             next_sp: STACK,
             nobj: 0,
             globals: [class.map(|c| (i64::from(c), 0)), None],
@@ -802,7 +822,12 @@ fn attempt(r: &'static ReaderSrc, version: u16, stream: Stream<'_>, prefix: Vec<
     let lib = library();
     let prog = lib.index[r.program];
     let chooser = Chooser { prefix, ..Chooser::default() };
-    let mut m = Machine::new(stream, chooser, values, element_of(r));
+    // A reader does bounded work per byte it reads; a path that spins on host state does not.
+    let steps = match stream.data {
+        Some(d) => 4_000 + 600 * d.len() as u32,
+        None => 120_000,
+    };
+    let mut m = Machine::new(stream, chooser, values, element_of(r), steps);
     let args = [Some((OBJ, 0)), Some((STREAM, 0)), Some((i64::from(version), 0)), Some((CTX, 0))];
     let stop = m.call(prog, &args, 0).err();
     Outcome { stop, fields: m.fields, consumed: m.stream.pos, out: m.stream.out, chooser: m.chooser }
@@ -887,6 +912,12 @@ pub fn readers() -> Vec<ReaderInfo> {
         .collect()
 }
 
+/// The Kontakt class whose reader accepts `version` of `sertype` (several classes share a
+/// SerType: 0x1D, 0x2A, 0x54).
+pub fn class_of(sertype: u16, version: u16) -> Option<&'static str> {
+    reader_for(sertype, version).map(|r| r.class)
+}
+
 /// Whether `version` of `sertype` is one Kontakt's reader accepts.
 pub fn accepts(sertype: u16, version: u16) -> bool {
     reader_for(sertype, version).is_some()
@@ -928,16 +959,34 @@ fn constants(prog: &str) -> Vec<i64> {
 /// A stream Kontakt's reader for `sertype`/`version` accepts, found by search. Used to
 /// build fixtures and to check that every schema round-trips through `decode`.
 pub fn synthesize(sertype: u16, version: u16) -> Result<Vec<u8>, Undecoded> {
+    synthesize_all(sertype, version, 1).map(|mut v| v.swap_remove(0))
+}
+
+/// Up to `limit` accepted streams with different field sequences (every validated enum
+/// value, every branch the reader takes on values it checks), in depth-first order.
+pub fn synthesize_all(sertype: u16, version: u16, limit: usize) -> Result<Vec<Vec<u8>>, Undecoded> {
     let r = reader_for(sertype, version).ok_or(Undecoded::NoReader)?;
     let values = constants(r.program);
     let mut prefix = Vec::new();
     let mut last = Undecoded::Budget;
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut shapes = std::collections::HashSet::new();
     for _ in 0..3000 {
         let o = attempt(r, version, Stream::synth(), prefix.clone(), &values);
         match o.stop {
-            None if !o.fields.is_empty() => return Ok(o.out),
+            None if !o.fields.is_empty() => {
+                let shape: Vec<(char, usize)> = o.fields.iter().map(|f| (f.kind, f.len)).collect();
+                if shapes.insert(shape) {
+                    out.push(o.out);
+                    if out.len() == limit {
+                        return Ok(out);
+                    }
+                }
+            }
             None => last = Undecoded::Unresolved("reads nothing".into()),
-            Some(Stop::Virtual(w)) => return Err(Undecoded::Unresolved(w)),
+            Some(Stop::Virtual(w)) => {
+                return if out.is_empty() { Err(Undecoded::Unresolved(w)) } else { Ok(out) };
+            }
             Some(s) => last = to_undecoded(s),
         }
         match next_prefix(&o.chooser) {
@@ -945,5 +994,5 @@ pub fn synthesize(sertype: u16, version: u16) -> Result<Vec<u8>, Undecoded> {
             None => break,
         }
     }
-    Err(last)
+    if out.is_empty() { Err(last) } else { Ok(out) }
 }

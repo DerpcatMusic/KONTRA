@@ -7,6 +7,8 @@ use crate::{
     Error,
 };
 
+/// SerType: 0x4F
+/// Versions: 0x1, 0x3
 /// Kontakt snapshot v1/v3: saved state for an existing instrument, without zones
 /// or sample mappings. The compact group records remain opaque.
 #[derive(Debug)]
