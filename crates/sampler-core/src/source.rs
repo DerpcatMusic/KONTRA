@@ -1,7 +1,7 @@
 //! Immutable per-region playback metadata and independent per-voice cursors.
 use crate::{
     Error, Frame,
-    envelope::EnvelopeState,
+    blocks::envelope::EnvelopeState,
     resample::{DECIMATION_REACH, Kernel, MAX_STEP, MIN_STEP},
 };
 
