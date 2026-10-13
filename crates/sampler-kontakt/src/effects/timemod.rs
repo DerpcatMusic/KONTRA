@@ -136,3 +136,63 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Scope, Slot, chain};
+
+    fn slot(module: u16, version: u16, floats: &[f32]) -> Slot {
+        Slot {
+            slot: 0,
+            module,
+            version,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.5,
+            output_set: true,
+            public: floats.iter().flat_map(|f| f.to_le_bytes()).collect(),
+        }
+    }
+
+    fn config(module: u16, floats: &[f32]) -> (sampler_ir::fx::timemod::Config, Vec<(usize, String, String, sampler_ir::Reason)>) {
+        let built = chain(&[slot(module, 0x50, floats)], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.processors) };
+        (config, built.notes)
+    }
+
+    #[test]
+    fn legacy_phaser_is_exact_and_reports_nothing() {
+        let (cfg, notes) = config(0x14, &[0.5, 0.25, 1., 1., -1.]);
+        assert!(notes.is_empty());
+        assert_eq!(cfg.lfo.phase, 0.25);
+        assert_eq!(cfg.allpass.unwrap().feedback, (0.25f64 * 0.85) as f32);
+        assert_eq!((cfg.dry, cfg.wet), (0., 1.));
+    }
+
+    #[test]
+    fn delay_chorus_flanger_map_stored_values_and_say_generic() {
+        // Time is stored in ms (measured table 5..2900), Speed in Hz.
+        let (delay, notes) = config(0x10, &[250., 0.4, 0.5, 0.25, -1.]);
+        let line = delay.line.unwrap();
+        assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(250.));
+        assert!((line.feedback.matrix[0][0] - f64::from(0.4f32)).abs() < 1e-12);
+        assert_eq!(delay.dry, 0.5, "the slot's dry level mixes outside a Mix block");
+        assert!(notes.iter().all(|n| n.3 == sampler_ir::Reason::UnknownLaw) && !notes.is_empty());
+
+        let (chorus, notes) = config(0x11, &[0.5, 2., 1., -1.]);
+        assert_eq!(chorus.lfo.rate, sampler_ir::fx::timemod::Rate::Hz(2.));
+        assert!(!notes.is_empty());
+
+        let (flanger, _) = config(0x12, &[0.5, 0.5, 1., 0., 2., -1.]);
+        assert!(flanger.line.unwrap().feedback.matrix[0][0] > 0.4);
+    }
+
+    #[test]
+    fn replika_and_friends_stay_unsupported_with_a_reason() {
+        for module in [0x5a, 0x5b, 0x5c, 0x5d, 0x22] {
+            let built = chain(&[slot(module, 0x50, &[0.; 12])], Scope::Voice);
+            assert!(built.processors.is_empty());
+            assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
+        }
+    }
+}

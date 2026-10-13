@@ -92,6 +92,8 @@ pub struct Line {
     pub feedback: Feedback,
     /// Ring capacity; tempo-synced and modulated reads clamp to it.
     pub max_ms: f64,
+    /// Right-channel delay times are the left ones times this (1 = equal).
+    pub right_scale: f64,
 }
 
 impl Line {
@@ -109,6 +111,7 @@ impl Line {
             input: Self::IDENTITY_INPUT,
             feedback: Feedback::OFF,
             max_ms,
+            right_scale: 1.,
         }
     }
 }
@@ -199,7 +202,7 @@ impl Config {
     /// nothing recirculates (0 when it does).
     pub fn tail_ms(&self) -> f64 {
         match self.line {
-            Some(l) if l.feedback.matrix == [[0.; 2]; 2] => l.max_ms,
+            Some(l) if l.feedback.matrix == [[0.; 2]; 2] => l.max_ms * l.right_scale.max(1.),
             _ => 0.,
         }
     }
@@ -234,6 +237,9 @@ impl Config {
             }
             if !(l.max_ms.is_finite() && l.max_ms >= 0. && l.max_ms <= 20_000.) {
                 return Err("max_ms");
+            }
+            if !(0.1..=10.).contains(&l.right_scale) {
+                return Err("right_scale");
             }
             for v in [l.voice_phase, l.voice_spread, l.feedback.drive] {
                 fin(v, "line")?;

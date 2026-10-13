@@ -184,3 +184,13 @@ fn loops_stay_bounded_and_nonfinite_input_faults() {
     bad[10][0] = f64::NAN;
     assert!(run(wrap(l, LFO_OFF), 1000, 120., &bad, 64).1);
 }
+
+#[test]
+fn right_channel_scales_the_delay_time() {
+    let mut l = line(&[Tap::at(DelayTime::Frames(4))], 0.);
+    l.interpolation = Interpolation::Nearest;
+    l.right_scale = 2.;
+    let (out, _) = run(wrap(l, LFO_OFF), 48_000, 120., &impulse(12, [1., 1.]), 5);
+    assert_eq!(out[4], [1., 0.]);
+    assert_eq!(out[8], [0., 1.]);
+}
