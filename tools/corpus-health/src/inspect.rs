@@ -1769,7 +1769,9 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert_eq!(report["status"], "partial");
         assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
             entry["stage"] == "ui_projection" && entry["feature"] == "performance view control"));
-        assert!(!report.to_string().contains("PRIVATE_CUSTOM_FONT"));
+        // The font is a resolved bitmap-font asset now; skipped values must still stay
+        // out of the diagnostics.
+        assert!(!report["diagnostics"].to_string().contains("PRIVATE_CUSTOM_FONT"));
     }
 
     #[test]
