@@ -1073,8 +1073,7 @@ fn modulation_plan() -> Prepared {
                 scale: None,
                 live_gain: 1.,
                 unipolar: false,
-                more_scales: [None; MORE_SCALES],
-            }],
+                more_scales: [None; MORE_SCALES], native: None, }],
             ..Default::default()
         }],
         vec![Some(0)],
