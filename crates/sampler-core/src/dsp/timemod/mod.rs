@@ -157,11 +157,12 @@ impl TimeMod {
             if line.interpolation != Interpolation::Nearest && line.interpolation != Interpolation::Linear {
                 min_delay = 2.;
             }
-            let mut longest = line.max_ms * 0.001 * rate;
+            let scale = line.right_scale.max(1.);
+            let mut longest = line.max_ms * 0.001 * rate * scale;
             for (head, tap) in heads.iter_mut().zip(&line.taps[..taps]) {
                 head.time = tap.time;
                 head.depth = tap.depth_ms * 0.001 * rate;
-                longest = longest.max(match tap.time {
+                longest = longest.max(scale * match tap.time {
                     DelayTime::Frames(n) => f64::from(n),
                     DelayTime::Ms(ms) => (ms + tap.depth_ms) * 0.001 * rate,
                     DelayTime::Beats(_) => 0.,
@@ -283,8 +284,6 @@ impl TimeMod {
                 state.z[0] = [0., 0.];
                 state.z[1] = [f64::from(1. - phase), 0.];
             }
-            state.aux[0] = f64::NAN;
-            state.aux[1] = f64::NAN;
             state.aux[15] = 1.;
         }
         let hz = self.hz(tempo);
@@ -334,6 +333,7 @@ impl TimeMod {
         if let Some(Allpass { law: SweepLaw::Filter { cutoff }, .. }) = cfg.allpass {
             coefficient = [filter_coefficient(cutoff); 2];
         }
+        let mut primed = state.aux[5] != 0.;
         let mut previous = [state.aux[0] as f32, state.aux[1] as f32];
 
         for i in 0..len {
@@ -357,7 +357,7 @@ impl TimeMod {
                 }
             }
             let mut sig = x;
-            let stage_pass = |sig: &mut [f64; 2], slab: &mut [[f64; 2]], chunk: &mut usize, ramp: &mut [f32; 2], previous: &mut [f32; 2], coefficient: &mut [f32; 2], finite: &mut bool| {
+            let stage_pass = |sig: &mut [f64; 2], slab: &mut [[f64; 2]], chunk: &mut usize, primed: &mut bool, ramp: &mut [f32; 2], previous: &mut [f32; 2], coefficient: &mut [f32; 2], finite: &mut bool| {
                 let ap = cfg.allpass.expect("section present");
                 match ap.law {
                     SweepLaw::Legacy { depth } => {
@@ -374,11 +374,12 @@ impl TimeMod {
                                     .min(self.rate * 0.45);
                                 let t = (PI * f / self.rate).tan();
                                 let target = ((1. - t) / (1. + t)) as f32;
-                                if previous[c].is_nan() {
+                                if !*primed {
                                     previous[c] = target;
                                 }
                                 ramp[c] = (target - previous[c]) / CHUNK as f32;
                             }
+                            *primed = true;
                         }
                         for c in 0..2 {
                             previous[c] += ramp[c];
@@ -402,7 +403,7 @@ impl TimeMod {
                 }
             };
             if cfg.order == Order::AllpassThenLine && cfg.allpass.is_some() {
-                stage_pass(&mut sig, slab, &mut chunk, &mut ramp, &mut previous, &mut coefficient, &mut finite);
+                stage_pass(&mut sig, slab, &mut chunk, &mut primed, &mut ramp, &mut previous, &mut coefficient, &mut finite);
             }
             if let Some(line) = &cfg.line {
                 let source = usize::from(line.feedback.source);
@@ -423,7 +424,7 @@ impl TimeMod {
                             } else {
                                 shape(cfg.lfo.shape, state.z[c][0] + vp)
                             };
-                            let d = (base[k] + head.depth * mod_value).clamp(self.min_delay, max_d.max(self.min_delay));
+                            let d = (base[k] * if c == 1 { line.right_scale } else { 1. } + head.depth * mod_value).clamp(self.min_delay, max_d.max(self.min_delay));
                             let sample = read(slab, cap, position, filled, d, line.interpolation, c);
                             out[c] += sample * head.gain[v][c];
                             if k == source {
@@ -461,7 +462,7 @@ impl TimeMod {
                 }
             }
             if cfg.order == Order::LineThenAllpass && cfg.allpass.is_some() {
-                stage_pass(&mut sig, slab, &mut chunk, &mut ramp, &mut previous, &mut coefficient, &mut finite);
+                stage_pass(&mut sig, slab, &mut chunk, &mut primed, &mut ramp, &mut previous, &mut coefficient, &mut finite);
             }
             left[i] = cfg.dry * x[0] + cfg.wet * sig[0];
             right[i] = cfg.dry * x[1] + cfg.wet * sig[1];
@@ -469,7 +470,7 @@ impl TimeMod {
         state.delay_position = position as u32;
         state.delay_filled = filled as u32;
         (state.aux[0], state.aux[1]) = (f64::from(previous[0]), f64::from(previous[1]));
-        (state.aux[2], state.aux[3], state.aux[4]) = (chunk as f64, f64::from(ramp[0]), f64::from(ramp[1]));
+        (state.aux[2], state.aux[3], state.aux[4], state.aux[5]) = (chunk as f64, f64::from(ramp[0]), f64::from(ramp[1]), f64::from(u8::from(primed)));
         // Retained state decays to denormals only between blocks of silence.
         for frame in &mut slab[self.ap_at..self.tap_at] {
             *frame = frame.map(flush);
