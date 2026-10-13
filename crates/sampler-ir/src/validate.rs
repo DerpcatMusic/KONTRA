@@ -303,6 +303,7 @@ impl Check<'_> {
                             self.within(g.knee_db, 0.0..=f64::MAX, "dynamics knee")?;
                             self.time(g.lookahead, "dynamics lookahead")?;
                             self.within(g.sidechain_highpass_hz, 0.0..=f64::MAX, "dynamics side-chain")?;
+                            self.within(g.range_db, 0.0..=f64::MAX, "dynamics range")?;
                             if let Detector::Rms { window } = g.detector {
                                 self.time(window, "dynamics rms window")?;
                             }
