@@ -242,20 +242,22 @@ fn schema(
     views: &[sampler_ksp::ScriptView],
     state: &ScriptStateBuffer,
 ) -> Result<String, CoreError> {
+    use std::io::Write;
+    // Streams the same bytes `format!` produced, without a String per entry
+    // (persistent arrays reach hundreds of thousands of entries).
     let mut hash = blake3::Hasher::new();
     for view in views {
-        hash.update(format!("{:?}", view.model().persistent).as_bytes());
+        write!(hash, "{:?}", view.model().persistent).expect("hasher write");
     }
     for entry in &state.values {
-        hash.update(format!("{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).as_bytes());
+        write!(hash, "{:?}:{}", entry.address, Atom::new(entry.value, 0).kind).expect("hasher write");
     }
     for widget in runtime
         .widget_definitions(runtime.active_plan())
         .map_err(|error| CoreError::Invalid(format!("Script persistence: {error:?}")))?
     {
-        hash.update(
-            format!("{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage).as_bytes(),
-        );
+        write!(hash, "{:?}:{:?}:{:?}", widget.id, widget.instance, widget.storage)
+            .expect("hasher write");
     }
     Ok(hash.finalize().to_hex().to_string())
 }
