@@ -358,8 +358,31 @@ but calls FIFO `Runtime::note_off(input, velocity)`, which scans all allocated
 4,096 note slots for each of 300 IDs. The parent is implementing an exact-ID
 physical key-up API retaining input-key bookkeeping, pedal policy, velocity,
 generation and release callbacks. `release()` would bypass pedals and is not
-a sound-preserving substitute. Scheduled-command cleanup and per-prepared-stage
-callback trimming remain separate costs to measure after that lookup fix.
+a sound-preserving substitute. The API was committed as `13eb6624f` and checked
+against FIFO behavior, pedals, stale generations, callbacks and heap guards.
+
+The rebuilt exact-host owned-WAV witness still verifies 300 sustained physical
+voices with positive PCM energy and zero heap calls, drops, steals, underruns or
+nonfinite samples. At 64 frames, only initial admission now misses (2,504.1 us
+wall, 1,879.2 us caller); mass release no longer misses. All begin/events work
+is bounded by 1,042.9 us in this receipt, versus the previous 4,717.0 us peak.
+At 256 frames there are zero misses and begin/events is at most 1,069.1 us,
+versus 5,086.2 us before. Held p50/p99/p99.9 is 270.3/337.6/366.9 us at 64
+and 1,029.0/1,239.0/1,248.2 us at 256, or 20.27%/19.29% of the deadline.
+This remains a core adapter measurement, not the entire plugin meter.
+Raw: `v2-owned-300-exact-release-64.json`,
+`v2-owned-300-exact-release-256.json`.
+
+A following event-detail receipt captures successful as well as late callbacks.
+At frame 96,000, 300 release events cost 157.1/188.7 us at 64/256 frames;
+the complete callbacks cost 516.5/1,750.8 us. An external synth compilation
+overlapped this following window, so these exact event values are labeled
+contended and do not establish clean acceptance timing. The original quiet
+receipt above independently bounds all release work and proves the old release
+miss is absent. Raw: `v2-owned-300-exact-detail-64.json`,
+`v2-owned-300-exact-detail-256.json`. Duplicate-input admission still scans
+allocated note slots and is being measured separately. Scheduled-command cleanup
+and per-prepared-stage callback trimming remain separate costs.
 
 The actual Brass saved voice policy permits 512 program voices, prefers released
 voices and has a 10 ms fade; it does not explain the rejected 12-voice witness
