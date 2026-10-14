@@ -148,13 +148,16 @@ pub fn load(
 }
 
 /// [`load`], stopping with [`LoadError::Canceled`] once `canceled` returns true;
-/// it is polled before each sample is decoded and before lowering.
+/// it is polled before reading the container, before each sample is decoded, and before lowering.
 pub fn load_cancelable(
     path: &Path,
     options: &Options,
     progress: impl FnMut(Progress),
     canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
+    if canceled() {
+        return Err(LoadError::Canceled);
+    }
     let options = Options {
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
@@ -1138,6 +1141,31 @@ fn prepare_inner(
         scripts,
         resources,
     })
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn canceled_path_load_does_not_read_a_container_or_emit_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("must-not-be-read.nki");
+        let mut progress_calls = 0;
+        let result = load_cancelable(
+            &missing,
+            &Options::default(),
+            |_| progress_calls += 1,
+            || true,
+        );
+        assert!(matches!(result, Err(LoadError::Canceled)));
+        assert_eq!(progress_calls, 0);
+        assert!(!missing.exists());
+        assert!(matches!(
+            load_cancelable(&missing, &Options::default(), |_| {}, || false),
+            Err(LoadError::Io { .. })
+        ));
+    }
 }
 
 #[cfg(test)]
