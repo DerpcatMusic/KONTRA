@@ -469,8 +469,8 @@ pub(super) fn compile_processors(
                 },
                 Processor::Filter(settings) => {
                     let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(settings.cells()).ok_or(Error::Capacity)?;
                     let mut engine = settings.compile(rate, bindings);
+                    *delay_frames = offset.checked_add(engine.cells()).ok_or(Error::Capacity)?;
                     engine.modulation_index = filters.len();
                     filters.push(svf::PreparedFilter::NativeControl);
                     PreparedProcessor::Filter { engine, offset }
