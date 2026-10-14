@@ -377,12 +377,15 @@ fn source_program(
 }
 
 fn instrument(report: &mut Value, ir: &sampler_ir::Instrument, scope: &str) {
+    // Retained dormant players preserve mappings for later loadSample calls.
+    // A converted zone count alone does not imply a bound or audible source.
+    let zones_with_asset = ir.zones.iter().filter(|zone| zone.asset.is_some()).count();
     let ownership: Vec<_> = ir.source_indices.modulators.iter().map(|m| json!({
         "source_group": m.group,"source_slot":m.slot,"external":m.external,"name":m.name,"runtime":m.runtime.map(|r|r.0)
     })).collect();
     report["converted"] = json!({
         "status":"ok","scope":scope,
-        "summary":{"groups":ir.groups.len(),"zones":ir.zones.len(),"assets":ir.assets.len(),"buses":ir.buses.len(),"chains":ir.chains.len(),"modulators":ir.modulators.len(),"routes":ir.routes.len(),"controls":ir.controls.len(),"scripts":ir.behaviors.len(),"impulses":ir.impulses.len()},
+        "summary":{"groups":ir.groups.len(),"zones":ir.zones.len(),"zones_with_asset":zones_with_asset,"dormant_zones":ir.zones.len()-zones_with_asset,"assets":ir.assets.len(),"buses":ir.buses.len(),"chains":ir.chains.len(),"modulators":ir.modulators.len(),"routes":ir.routes.len(),"controls":ir.controls.len(),"scripts":ir.behaviors.len(),"impulses":ir.impulses.len()},
         "groups":ir.groups,"zones":ir.zones,"buses":ir.buses,"chains":ir.chains,
         "modulators":ir.modulators,"routes":ir.routes,"controls":ir.controls,"processor_controls":ir.processor_controls,
         "ownership":ownership,"physical_control_aliases":ir.source_indices.control_aliases,
@@ -1989,9 +1992,13 @@ mod tests {
         let report = inspect(&opts);
         assert_ne!(report["status"], "failed");
         assert_eq!(
-            report["converted"]["summary"]["zones"], 0,
-            "a missing sample is an omitted source zone, not admitted audio"
+            report["converted"]["summary"]["zones"], 1,
+            "a dormant player's mapping is retained for later sample replacement"
         );
+        assert_eq!(report["converted"]["summary"]["zones_with_asset"], 0);
+        assert_eq!(report["converted"]["summary"]["dormant_zones"], 1);
+        assert_eq!(report["converted"]["summary"]["assets"], 0);
+        assert!(report["converted"]["zones"][0]["asset"].is_null());
         assert!(
             report["metadata"]["elements"]
                 .as_array()
