@@ -780,12 +780,20 @@ pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
 /// A decoded impulse response: its sample rate and frames.
 pub(crate) type Decoded = (u32, Vec<[f32; 2]>);
 
+/// A file-table reference belongs to the exact physical effect that authored it.
+/// Equal indices in base and overlaid snapshot records are separate identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ImpulseRequest {
+    pub index: i32,
+    pub address: sampler_ir::SlotAddress,
+}
+
 /// Where convolution slots find their impulse responses: `load` decodes the
 /// response an other-files index names, `store` collects the shaped ones.
 pub(crate) struct Impulses<'a> {
     pub store: &'a mut Vec<sampler_ir::Impulse>,
-    pub recipes: Option<&'a mut Vec<Convolution>>,
-    pub load: &'a mut dyn FnMut(i32) -> Result<Decoded, String>,
+    pub recipes: Option<&'a mut Vec<(ImpulseRequest, Convolution)>>,
+    pub load: &'a mut dyn FnMut(ImpulseRequest) -> Result<Decoded, String>,
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
@@ -1218,7 +1226,10 @@ pub(crate) fn chain_with(
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
                 let source = impulses.as_deref_mut().expect("checked above");
-                match space::convolution(c, source, &mut notes) {
+                let request = ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress {
+                    group: physical.0, slot: fx.slot as i32, generic: physical.1,
+                }};
+                match space::convolution(c, request, source, &mut notes) {
                     Ok(impulse) => {
                         flush(&mut combined, &mut filters, &mut out);
                         out.processors.push(sampler_ir::Processor::Space(
@@ -1398,7 +1409,8 @@ pub(crate) fn instrument_buses(
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
-    instrument_buses_with_recipes(ir, racks, buses, dynamic, load, None)
+    let mut indexed = |request: ImpulseRequest| load(request.index);
+    instrument_buses_with_recipes(ir, racks, buses, dynamic, &mut indexed, None)
 }
 
 pub(crate) fn instrument_buses_with_recipes(
@@ -1406,8 +1418,8 @@ pub(crate) fn instrument_buses_with_recipes(
     racks: &[(String, Vec<Slot>)],
     buses: &[BusPlan],
     dynamic: bool,
-    load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
-    recipes: Option<&mut Vec<Convolution>>,
+    load: &mut dyn FnMut(ImpulseRequest) -> Result<Decoded, String>,
+    recipes: Option<&mut Vec<(ImpulseRequest, Convolution)>>,
 ) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
@@ -3625,6 +3637,7 @@ pub(crate) fn restore_impulse(
     };
     space::convolution(
         c,
+        ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } },
         &mut Impulses {
             store: &mut store,
             load: &mut load,

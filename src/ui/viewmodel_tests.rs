@@ -82,6 +82,7 @@ fn audit_ui_real_frames() {
             instrument: String::new(),
             persistent: Vec::new(),
             effects: Vec::new(),
+            other_files: Default::default(),
             groups: Vec::new(),
         })
     } else {
