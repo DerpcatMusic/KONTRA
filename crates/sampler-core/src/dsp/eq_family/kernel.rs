@@ -210,6 +210,7 @@ impl Svf {
     }
 
     /// Filter `x` in place; `s` is the section's `[s1, s2]` state.
+    #[cfg(test)]
     #[inline]
     pub fn run(&self, s: &mut [f64; 2], x: &mut [f64]) {
         let ([a1, a2, a3], [m0, m1, m2]) = (self.a, self.m);
@@ -223,6 +224,66 @@ impl Svf {
             *sample = m0 * *sample + m1 * v1 + m2 * v2;
         }
         *s = [s1, s2];
+    }
+
+    /// The same recurrence for two independent channels in one sample loop.
+    /// Keeping the channel states in adjacent lanes lets the compiler use
+    /// baseline stereo SIMD without changing any per-channel arithmetic.
+    #[inline]
+    pub fn run_stereo(&self, states: &mut [[f64; 2]; 2], [left, right]: [&mut [f64]; 2]) {
+        debug_assert_eq!(left.len(), right.len());
+        let ([a1, a2, a3], [m0, m1, m2]) = (self.a, self.m);
+        let mut s1 = [states[0][0], states[1][0]];
+        let mut s2 = [states[0][1], states[1][1]];
+        for (left, right) in left.iter_mut().zip(right) {
+            let sample = [*left, *right];
+            let v3: [f64; 2] = std::array::from_fn(|c| sample[c] - s2[c]);
+            let v1: [f64; 2] = std::array::from_fn(|c| a1 * s1[c] + a2 * v3[c]);
+            let v2: [f64; 2] = std::array::from_fn(|c| s2[c] + a2 * s1[c] + a3 * v3[c]);
+            s1 = std::array::from_fn(|c| 2. * v1[c] - s1[c]);
+            s2 = std::array::from_fn(|c| 2. * v2[c] - s2[c]);
+            [*left, *right] = std::array::from_fn(|c| m0 * sample[c] + m1 * v1[c] + m2 * v2[c]);
+        }
+        *states = std::array::from_fn(|c| [s1[c], s2[c]]);
+    }
+}
+
+#[cfg(test)]
+mod stereo_cpu_tests {
+    use super::*;
+
+    #[test]
+    fn stereo_recurrence_preserves_scalar_pcm_and_history_bits_when_coefficients_move() {
+        let mut random = 0x1234_5678_u64;
+        for len in [0, 1, 3, 4, 7, 31, 32, 63, 64] {
+            for start in [[[0., -0.], [-0., 0.]], [[1e-300, -1e-300], [-0.01, 0.02]]] {
+                let (mut actual_state, mut expected_state) = (start, start);
+                for cell in 0..200 {
+                    let rate = [32000, 44100, 48000, 96000][cell % 4];
+                    let kind = [Kind::Peak, Kind::LowShelf, Kind::HighShelf, Kind::LowPass, Kind::HighPass, Kind::Notch][cell % 6];
+                    let hz = 20. + (cell % 97) as f64 / 100. * 0.49 * f64::from(rate);
+                    let f = cookbook(kind, rate, hz, 0.5 + (cell % 5) as f64, (cell % 19) as f64 - 9.).unwrap();
+                    let svf = Svf::from_biquad(&f).unwrap();
+                    let mut actual: [[f64; 64]; 2] = std::array::from_fn(|_| std::array::from_fn(|i| {
+                        random ^= random << 13;
+                        random ^= random >> 7;
+                        random ^= random << 17;
+                        match i % 11 {
+                            0 => 0., 1 => -0., 2 => 1e-300, 3 => -1e-300,
+                            _ => (random as f64 / u64::MAX as f64 - 0.5) * 0.25,
+                        }
+                    }));
+                    let mut expected = actual;
+                    for (channel, state) in expected.iter_mut().zip(&mut expected_state) {
+                        svf.run(state, &mut channel[..len]);
+                    }
+                    let [left, right] = &mut actual;
+                    svf.run_stereo(&mut actual_state, [&mut left[..len], &mut right[..len]]);
+                    assert_eq!(actual.map(|c| c.map(f64::to_bits)), expected.map(|c| c.map(f64::to_bits)), "PCM len={len} cell={cell}");
+                    assert_eq!(actual_state.map(|c| c.map(f64::to_bits)), expected_state.map(|c| c.map(f64::to_bits)), "history len={len} cell={cell}");
+                }
+            }
+        }
     }
 }
 
