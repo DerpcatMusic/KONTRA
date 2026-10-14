@@ -64,6 +64,11 @@ pub enum Variant {
     Ladder,
     /// Kontakt 3x2 Versatile (saved type 19) and its stored knobs.
     Versatile(Versatile),
+    /// Kontakt SV LP1..Notch 6 (saved types 50..=62), named by response and poles.
+    Sv,
+    /// Kontakt SV Par. LP/HP, Par. BP/BP, Ser. LP/HP (saved 63..=65: `mode` 0..=2) and the
+    /// stored bandwidth.
+    MultiSv { mode: u8, bandwidth: f32 },
 }
 
 /// The 3x2 Versatile knobs beyond cutoff and resonance, as stored (0..=1).

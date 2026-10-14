@@ -2973,6 +2973,24 @@ fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
         V::Pro52 => return Some(L::Pro52),
         V::Ladder => return Some(L::Ladder),
         V::Versatile(v) => return Some(L::Versatile(v)),
+        V::MultiSv { mode, bandwidth } => return Some(L::Sv(crate::SvFilter::Multi { mode, bandwidth })),
+        V::Sv => {
+            use crate::SvFilter as S;
+            let mode = match c.response {
+                R::LowPass => 0,
+                R::BandPass => 1,
+                R::HighPass => 2,
+                R::Notch => 3,
+                R::Peak => return None,
+            };
+            return Some(L::Sv(match (c.poles, mode) {
+                (1, 0 | 2) => S::One { high: mode == 2 },
+                (2, 0..=2) => S::Two { mode },
+                (4, _) => S::Four { mode },
+                (6, _) => S::Six { mode },
+                _ => return None,
+            }));
+        }
     }
     Some(match (c.response, c.poles) {
         (R::LowPass, 1) => L::Lp1,
