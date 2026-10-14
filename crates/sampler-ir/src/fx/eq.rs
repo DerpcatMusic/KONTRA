@@ -110,6 +110,12 @@ pub struct Config {
     pub count: u8,
     /// Applied after the last band; 0 adds no stage.
     pub output_gain_db: f32,
+    /// The script slot whose `set_engine_par` writes drive [`Config::lanes`].
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<crate::SlotAddress>,
+    /// Which band of the slot's module this one-band config is (FREQ1 is 0).
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub band: u8,
 }
 
 impl Config {
@@ -120,10 +126,31 @@ impl Config {
         }
         let mut all = [Band::OFF; MAX_BANDS];
         all[..bands.len()].copy_from_slice(bands);
-        Some(Self { bands: all, count: bands.len() as u8, output_gain_db: 0. })
+        Some(Self { bands: all, count: bands.len() as u8, output_gain_db: 0., address: None, band: 0 })
     }
     pub fn band(band: Band) -> Self {
         Self::new(&[band]).expect("one band fits")
+    }
+    /// The live knobs of a script-addressed one-band legacy EQ: FREQn, BWn,
+    /// GAINn (laws: kontakt-bindings filters_eq.tsv; the band holds the native
+    /// frequency and bandwidth knobs, `(octaves - 1/3) 0.375`).
+    pub fn lanes(&self) -> Vec<super::Lane> {
+        use super::{Lane, Law as L};
+        use crate::ProcessorParameter as P;
+        let [b] = self.bands() else { return Vec::new() };
+        if self.address.is_none() || b.law != Law::KontaktLegacy {
+            return Vec::new();
+        }
+        const FREQ: [&str; 3] = ["ENGINE_PAR_FREQ1", "ENGINE_PAR_FREQ2", "ENGINE_PAR_FREQ3"];
+        const BW: [&str; 3] = ["ENGINE_PAR_BW1", "ENGINE_PAR_BW2", "ENGINE_PAR_BW3"];
+        const GAIN: [&str; 3] = ["ENGINE_PAR_GAIN1", "ENGINE_PAR_GAIN2", "ENGINE_PAR_GAIN3"];
+        let Some(n) = FREQ.get(usize::from(self.band)).map(|_| usize::from(self.band)) else { return Vec::new() };
+        let octaves = f64::from(b.q) / 0.375 + 1. / 3.;
+        vec![
+            Lane::new(FREQ[n], P::Frequency, f64::from(b.frequency), L::LegacyEqFrequency),
+            Lane::new(BW[n], P::Quality, octaves, L::Linear { a: 1. / 3., b: 8. / 3. }).scaled([0., 1.]),
+            Lane::new(GAIN[n], P::GainDecibels, f64::from(b.gain_db), L::Linear { a: -18., b: 36. }),
+        ]
     }
     pub fn bands(&self) -> &[Band] {
         &self.bands[..usize::from(self.count).min(MAX_BANDS)]

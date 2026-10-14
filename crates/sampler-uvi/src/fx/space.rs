@@ -94,7 +94,7 @@ impl Translation {
         };
         let mix = n("Mix", 0.5)?.clamp(0.0, 1.0);
         let (dry, wet) = if n("MixMode", 1.0)? != 0.0 { ((1.0 - mix).sqrt(), mix.sqrt()) } else { (1.0 - mix, mix) };
-        Ok(ir::Processor::Space(Config { network: Some(network), impulse: None, dry, wet }))
+        Ok(ir::Processor::Space(Config { address: None, network: Some(network), impulse: None, dry, wet }))
     }
 
     /// `Convolver` and `SampledReverb`: an impulse response from the library.
@@ -227,6 +227,7 @@ impl Translation {
                 }
                 generic(self);
                 return Ok(Some(ir::Processor::Space(Config {
+                    address: None,
                     network: Some(network),
                     impulse: None,
                     dry: 1.0 - mix,
@@ -243,6 +244,7 @@ impl Translation {
         }
         generic(self);
         Ok(Some(ir::Processor::Space(Config {
+            address: None,
             network: Some(network),
             impulse: None,
             dry: 1.0 - mix,

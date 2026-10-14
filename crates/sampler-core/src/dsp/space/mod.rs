@@ -226,6 +226,8 @@ impl Net {
 
 /// One reverb or convolution unit's state.
 pub(crate) struct Space {
+    config: Config,
+    rate: u32,
     net: Option<Net>,
     conv: Option<Conv>,
     dry: f32,
@@ -238,6 +240,8 @@ impl Space {
             return Err(Error::InvalidInput);
         }
         Ok(Self {
+            config: *c,
+            rate,
             net: c.network.as_ref().map(|n| Net::new(n, rate)).transpose()?,
             conv: c
                 .impulse
@@ -246,6 +250,23 @@ impl Space {
             dry: c.dry as f32,
             wet: c.wet as f32,
         })
+    }
+
+    pub(crate) fn config(&self) -> Config {
+        self.config
+    }
+
+    /// Take `config`'s knobs (a lane write); the network keeps its state.
+    pub(crate) fn retune(&mut self, config: Config) {
+        if config == self.config {
+            return;
+        }
+        if let (Some(net), Some(n)) = (&mut self.net, &config.network)
+            && let Core::Freeverb(c) = &mut net.core
+        {
+            c.retune(n, self.rate);
+        }
+        self.config = config;
     }
 
     pub(crate) fn clear(&mut self) {
@@ -407,7 +428,7 @@ mod tests {
     fn convolution_and_network_sum() {
         let ir = Arc::new(Impulse::new(vec![1.0], vec![1.0]).unwrap());
         let net = Network::DEFAULT;
-        let both = Config { network: Some(net), impulse: Some(ImpulseRef(0)), dry: 0.0, wet: 1.0 };
+        let both = Config { address: None, network: Some(net), impulse: Some(ImpulseRef(0)), dry: 0.0, wet: 1.0 };
         let (a, _) = run(&both, &[ir.clone()], 4800);
         let (b, _) = run(&Config::network(net), &[], 4800);
         // A unit impulse response adds the input itself to the network's tail.
@@ -428,7 +449,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_out_of_range() {
-        assert!(!valid(&Config { network: None, impulse: None, dry: 0.0, wet: 1.0 }));
+        assert!(!valid(&Config { address: None, network: None, impulse: None, dry: 0.0, wet: 1.0 }));
         assert!(!valid(&Config::network(Network { size: 0.0, ..Network::DEFAULT })));
         assert!(Space::new(&Config::convolution(ImpulseRef(3), 0.0, 1.0), 48_000, &[]).is_err());
     }

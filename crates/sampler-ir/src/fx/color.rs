@@ -11,6 +11,7 @@
 //! Nothing here approximates: each curve, hold and quantizer variant names the
 //! one native law it reproduces. A native effect whose law is not proved is
 //! reported unsupported by its translator, never mapped onto the nearest curve.
+use super::{Lane, Law};
 use crate::{Gain, Rectifier, SlotAddress};
 
 /// Smoothed gain with a dry contribution: `x * (dry + g)`, `g` slewing to `gain`
@@ -249,30 +250,36 @@ impl Config {
         if self.address.is_none() {
             return lanes;
         }
-        let mut lane = |name, role, value: f64, law| lanes.push(Lane { name, role, value, law });
+        let mut lane = |name, role, value: f64, law| lanes.push(Lane::new(name, role, value, law));
         if let Some(Gainer { gain, .. }) = self.gainer {
-            lane("ENGINE_PAR_GN_GAIN", P::Gain, gain.linear(), LaneLaw::OutputGain);
+            lane("ENGINE_PAR_GN_GAIN", P::Gain, gain.linear(), Law::Pow { a: 16., p: 3. });
         }
         if let Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } = self.curve {
-            lane("ENGINE_PAR_SHAPE", P::Shape, f64::from(shape), LaneLaw::Signed);
+            lane("ENGINE_PAR_SHAPE", P::Shape, f64::from(shape), Law::Linear { a: -1., b: 2. });
         }
         if let Curve::Tube { drive } | Curve::Transistor { drive } = self.curve {
-            lane("ENGINE_PAR_DRIVE", P::Drive, f64::from(drive), LaneLaw::Unit);
+            lane("ENGINE_PAR_DRIVE", P::Drive, f64::from(drive), Law::Identity);
         }
         if let Some(damping) = self.damping {
-            lane("ENGINE_PAR_DAMPING", P::Damping, f64::from(damping), LaneLaw::Unit);
+            lane("ENGINE_PAR_DAMPING", P::Damping, f64::from(damping), Law::Identity);
         }
         if let Some(Quantizer::Native { bits }) = self.quantizer {
-            lane("ENGINE_PAR_BITS", P::LoFiBits, f64::from(bits), LaneLaw::Unit);
+            lane("ENGINE_PAR_BITS", P::LoFiBits, f64::from(bits), Law::Identity);
         }
         if let Some(Hold::Native { frequency }) = self.hold {
-            lane("ENGINE_PAR_FREQUENCY", P::LoFiFrequency, f64::from(frequency), LaneLaw::Unit);
+            lane("ENGINE_PAR_FREQUENCY", P::LoFiFrequency, f64::from(frequency), Law::Identity);
         }
         if let Some(Noise { level, color }) = self.noise {
             // Measured (Kontakt 8.13.1 probe): the stored noise amount is the
             // cube of the written value.
-            lane("ENGINE_PAR_NOISELEVEL", P::LoFiNoise, f64::from(level), LaneLaw::Cubic);
-            lane("ENGINE_PAR_NOISECOLOR", P::LoFiColor, f64::from(color), LaneLaw::Unit);
+            lane("ENGINE_PAR_NOISELEVEL", P::LoFiNoise, f64::from(level), Law::Pow { a: 1., p: 3. });
+            lane("ENGINE_PAR_NOISECOLOR", P::LoFiColor, f64::from(color), Law::Identity);
+        }
+        if let Some(Stereo { width, pan, .. }) = self.stereo {
+            // Stereo Modeller (fx_other.tsv): both knobs -1..1; the unit's width is 0..1.
+            let signed = Law::Linear { a: -1., b: 2. };
+            lanes.push(Lane::new("ENGINE_PAR_STEREO", P::Width, width * 2. - 1., signed).scaled([0., 1.]));
+            lanes.push(Lane::new("ENGINE_PAR_STEREO_PAN", P::Pan, pan, signed));
         }
         lanes
     }
@@ -293,29 +300,4 @@ impl Config {
             _ => "Color",
         }
     }
-}
-
-/// One script-addressable knob of a [`Config`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lane {
-    pub name: &'static str,
-    pub role: crate::ProcessorParameter,
-    /// The saved (DSP-domain) value, which is also the lane's default.
-    pub value: f64,
-    pub law: LaneLaw,
-}
-
-/// How the engine-parameter integer maps to the knob's DSP value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LaneLaw {
-    /// 0..1 linear.
-    Unit,
-    /// -1..1 linear.
-    Signed,
-    /// `(v / 1e6)^3`.
-    Cubic,
-    /// `16 (v / 1e6)^3`: +24 dB at the top, unity at 396851, the law of
-    /// Kontakt's effect output gains. The Gainer's GN_GAIN uses it too: Conflux
-    /// saves `$Footer__Volume` 397000 beside a stored Gainer gain of 1.00113.
-    OutputGain,
 }

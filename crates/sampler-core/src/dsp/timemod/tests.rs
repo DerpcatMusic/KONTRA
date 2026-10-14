@@ -35,7 +35,7 @@ fn line(taps: &[Tap], max_ms: f64) -> Line {
 }
 
 fn wrap(l: Line, lfo: Lfo) -> Config {
-    Config { line: Some(l), allpass: None, order: Order::LineThenAllpass, lfo, dry: 0., wet: 1. }
+    Config { address: None, line: Some(l), allpass: None, order: Order::LineThenAllpass, lfo, dry: 0., wet: 1. }
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn synced_taps_and_rates_follow_tempo() {
     let x = impulse(2000, [1., 1.]);
     assert_eq!(run(beat, 1000, 120., &x, 64).0, run(ms, 1000, 120., &x, 64).0);
     // Native getter: 2 beats per cycle at 120 BPM is the same 1 Hz LFO.
-    let mut ap = Config { line: None, allpass: Some(Allpass { stages: 4, law: SweepLaw::Legacy { depth: 0.5 }, feedback: 0.2 }), order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(1.), phase: 0.25 }, dry: 0., wet: 1. };
+    let mut ap = Config { address: None, line: None, allpass: Some(Allpass { stages: 4, law: SweepLaw::Legacy { depth: 0.5 }, feedback: 0.2 }), order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(1.), phase: 0.25 }, dry: 0., wet: 1. };
     let x: Vec<[f64; 2]> = (0..300).map(|n| [(n as f64 * 0.3).sin(), 0.5]).collect();
     let free = run(ap, 48_000, 120., &x, 64).0;
     ap.lfo.rate = Rate::Sync { unit: 2., speed: 1. };
@@ -365,6 +365,7 @@ fn uvi_phaser_and_phasor_coefficient_vectors() {
     // Phaser, Min = Max = 1000 Hz at 48 kHz: a = (1 - 1/24) / (1 + 1/24) = 0.92; six
     // stages answer a^6 at the first frame, added to the dry input.
     let phaser = Config {
+        address: None,
         line: None,
         allpass: Some(Allpass { stages: 6, law: SweepLaw::Linear { min_hz: 1000., max_hz: 1000. }, feedback: 0. }),
         order: Order::LineThenAllpass,
