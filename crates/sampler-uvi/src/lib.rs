@@ -1763,6 +1763,22 @@ pub fn inspect_decoded_scripted_program_with_options(
     coverage: bool,
     profile: bool,
 ) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
+    inspect_decoded_scripted_program_with_config(
+        text, files, origin, coverage, profile, script::Config::default(),
+    )
+}
+
+/// Explicit inspection configuration, including scanner-only deterministic RNG.
+/// Ordinary production and legacy inspection entry points retain their defaults.
+#[cfg(feature = "library-access")]
+pub fn inspect_decoded_scripted_program_with_config(
+    text: String,
+    files: script::Scripts,
+    origin: ScriptedOrigin<'_>,
+    coverage: bool,
+    profile: bool,
+    config: script::Config,
+) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
     let (source, path, files) = match origin {
         ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program), files),
         ScriptedOrigin::BankWithResources(bank, program) => (
@@ -1774,7 +1790,7 @@ pub fn inspect_decoded_scripted_program_with_options(
         }
     };
     let ((mut instrument, ..), host) =
-        initialized_translation_profiled(text, files, source, path, coverage, profile)?;
+        initialized_translation_configured(text, files, source, path, coverage, profile, config)?;
     note_script(&host, &mut instrument);
     Ok((instrument, host))
 }
@@ -1799,15 +1815,30 @@ fn initialized_translation_profiled(
     inspected: bool,
     profile: bool,
 ) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    initialized_translation_configured(
+        text, files, source, path, inspected, profile, script::Config::default(),
+    )
+}
+
+#[cfg(feature = "library-access")]
+fn initialized_translation_configured(
+    text: String,
+    files: script::Scripts,
+    source: Source,
+    path: &Path,
+    inspected: bool,
+    profile: bool,
+    config: script::Config,
+) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
     let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
     let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
     let host = if profile {
-        script::ScriptHost::new_profiled(&text, files.clone(), script::Config::default(), inspected)
+        script::ScriptHost::new_profiled(&text, files.clone(), config, inspected)
     } else if inspected {
-        script::ScriptHost::new_inspected(&text, files.clone(), script::Config::default())
+        script::ScriptHost::new_inspected(&text, files.clone(), config)
     } else {
-        script::ScriptHost::new(&text, files.clone(), script::Config::default())
+        script::ScriptHost::new(&text, files.clone(), config)
     }
     .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
     if profile {

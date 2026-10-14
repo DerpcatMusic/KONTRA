@@ -104,3 +104,13 @@ Top-frame visits are still safepoint-biased sample counts rather than exclusive
 CPU time. The profiler's stack-gather clock includes the new counter updates;
 the preceding frozen receipt predates this extension and measures its earlier
 instrumentation only.
+
+For subsequent deterministic A/B oracles, the inspector honors the existing
+scanner-only `KONTRA_UVI_AUDIT_SEED` and records it in `mode.audit_seed` for
+initialized UVI inputs. The CLI passes that explicit configuration through the
+same production initialization helper. Legacy inspection and plugin entry points
+keep `Config::default`; absent seeds preserve the prior behavior, and malformed
+seeds are rejected before initialization. Seeded on/off CLI fixtures produce
+identical complete interface records, while a no-seed configured inspection
+matches the legacy default wrapper. These are authored fixtures; the preceding
+six-run frozen receipt did not fix the Lua RNG seed and claims count invariants.
