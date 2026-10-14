@@ -89,12 +89,16 @@ def summary(run, previous):
             lines.append(f"- FAIL `{c['check']}` {json.dumps(c['detail'])}")
         ctl = i.get('controls', {})
         bad = [(kind, c) for kind in ('ui', 'host', 'engine') for c in ctl.get(kind, [])
-               if c.get('verdict') not in ('pass', 'masked-by-noise')]
-        if bad:
-            lines += ['', f"Controls that fail (noise threshold {i.get('baseline', {})}):"]
-            for kind, c in bad[:30]:
+               if c.get('verdict') not in ('pass', 'masked-by-noise', 'inert-in-state')]
+        inert = [(kind, c) for kind in ('ui', 'host', 'engine') for c in ctl.get(kind, []) if c.get('verdict') == 'inert-in-state']
+        for title, rows in ((f"Controls that fail (noise threshold {i.get('baseline', {})}):", bad),
+                            ('Controls the script leaves inert in this state (no engine write; not a failure):', inert)):
+            if not rows:
+                continue
+            lines += ['', title]
+            for kind, c in rows[:30]:
                 where = c.get('id') or c.get('route') or f"host {c.get('address')}"
-                extra = ', '.join(c.get('routes', []))
+                extra = ', '.join(c.get('owners', []) + c.get('routes', []) + c.get('engine_writes', {}).get('unbound', []))
                 lines.append(f"- {kind} `{where}` {c.get('verdict')} at={c.get('at', '')} {extra} {json.dumps(c.get('audio', {}))}")
         bad = [p for p in i.get('presets', []) if not p.get('pass')]
         if bad:

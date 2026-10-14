@@ -43,7 +43,8 @@ pub(crate) fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
             match (field, digits.parse::<usize>()) {
                 ("Enabled", Ok(n @ 1..=16)) => vec![(n - 1, P::Enabled)],
                 ("Freq", Ok(n @ 1..=16)) => vec![(n - 1, P::Frequency)],
-                ("Q" | "Bandwidth", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Q", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Bandwidth", Ok(n @ 1..=16)) => vec![(n - 1, P::Bandwidth)],
                 ("Gain", Ok(n @ 1..=16)) => vec![(n - 1, P::GainDecibels)],
                 _ => Vec::new(),
             }
@@ -193,10 +194,6 @@ pub(crate) fn register(
         };
         let kind = node.tag_name().name();
         for p in parameters::definitions(kind) {
-            // Bandwidth is the same band parameter as Q: it writes through Q's control.
-            if p.name.starts_with("Bandwidth") {
-                continue;
-            }
             let lanes: Vec<_> = node_lanes(node, p.name)
                 .into_iter()
                 .filter(|(offset, _)| *offset < insert.count)
@@ -207,11 +204,9 @@ pub(crate) fn register(
             let read = |n: &str| node.attribute(n).and_then(|v| v.parse::<f64>().ok());
             let mut default = read(p.name).unwrap_or(p.default);
             if kind == "DigitalEq" {
-                default = match band_field(p.name) {
-                    Some(("Q", band)) => band_q(read, band),
-                    Some(("Gain", _)) => default * read("GainScale").unwrap_or(1.),
-                    _ => default,
-                };
+                if p.name == "OverallGain" || matches!(band_field(p.name), Some(("Gain", _))) {
+                    default *= read("GainScale").unwrap_or(1.);
+                }
             }
             // A bypassed rack chain starts silent: its gain is what bypass is.
             if kind == "AuxEffect"
@@ -264,26 +259,8 @@ fn band_field(name: &str) -> Option<(&str, usize)> {
     Some((&name[..name.len() - digits.len()], digits.parse().ok()?))
 }
 
-/// Q for a band's width in octaves (RBJ), within the catalog's Q range.
-fn q_for_octaves(octaves: f64) -> f64 {
-    (0.5 / (std::f64::consts::LN_2 / 2. * octaves).sinh()).clamp(0.018, 28.284)
-}
-
-/// A DigitalEq band's Q. Q and Bandwidth are one parameter saved twice; a
-/// program whose Q is still the default but whose Bandwidth was edited (the
-/// English Horn formant EQs) was authored by bandwidth.
-pub(crate) fn band_q(read: impl Fn(&str) -> Option<f64>, band: usize) -> f64 {
-    let q = read(&format!("Q{band}")).unwrap_or(std::f64::consts::FRAC_1_SQRT_2);
-    match read(&format!("Bandwidth{band}")) {
-        Some(octaves) if (octaves - 1.).abs() > 1e-6 && (q - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6 => {
-            q_for_octaves(octaves)
-        }
-        _ => q,
-    }
-}
-
 /// The control name and value a script's write of `name` reaches the DSP as:
-/// DigitalEq band gains are scaled by GainScale, and a Bandwidth is Q.
+/// DigitalEq band gains are scaled by GainScale (Q and Bandwidth are separate native fields).
 pub(crate) fn effective(
     kind: &str,
     name: &str,
@@ -293,7 +270,7 @@ pub(crate) fn effective(
     if kind == "DigitalEq" {
         match band_field(name) {
             Some(("Gain", _)) => return (name.into(), value * read("GainScale").unwrap_or(1.)),
-            Some(("Bandwidth", band)) => return (format!("Q{band}"), q_for_octaves(value)),
+            _ if name == "OverallGain" => return (name.into(), value * read("GainScale").unwrap_or(1.)),
             _ => {}
         }
     }
@@ -426,22 +403,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn digital_eq_bandwidth_is_q_and_gain_follows_the_scale() {
-        // One octave is Q 1.414; Q stays inside the catalog range.
-        let (name, q) = effective("DigitalEq", "Bandwidth2", 1., |_| None);
-        assert_eq!(name, "Q2");
-        assert!((q - std::f64::consts::SQRT_2).abs() < 1e-3, "{q}");
-        assert!((0.018..0.04).contains(&q_for_octaves(10.)) && q_for_octaves(0.01) == 28.284);
+    fn digital_eq_gain_follows_the_scale_and_bandwidth_is_its_own_lane() {
         let (name, gain) = effective("DigitalEq", "Gain3", 6., |n| (n == "GainScale").then_some(0.5));
         assert_eq!((name.as_str(), gain), ("Gain3", 3.));
-        // Q still at its default with an edited Bandwidth: authored by bandwidth.
-        let read = |n: &str| match n {
-            "Q1" => Some(std::f64::consts::FRAC_1_SQRT_2),
-            "Bandwidth1" => Some(0.4),
-            _ => None,
-        };
-        assert!((band_q(read, 1) - q_for_octaves(0.4)).abs() < 1e-9);
-        assert!((band_q(|_| None, 1) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
+        assert_eq!(effective("DigitalEq", "Bandwidth2", 0.4, |_| None), ("Bandwidth2".into(), 0.4));
+        assert_eq!(lanes("DigitalEq", "Bandwidth2"), vec![(1, P::Bandwidth)]);
     }
 
     #[test]

@@ -900,9 +900,13 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             );
             let text = format!("{} · {}", a.name, inside::input_label(&input));
             items.push(
-                row![caption(text.clone()).lines(1).flex(1).min_w(0)]
-                .align(Align::Center).flex(1).min_w(0)
-                .tip(text)
+                row![caption(text.clone()).fill(secondary()).lines(1).flex(1).min_w(0).justify(Justify::End)]
+                    .align(Align::Center)
+                    .basis(text_basis(&text))
+                    .shrink(3)
+                    .grow(0)
+                    .min_w(0)
+                    .tip(text)
                 .named("Articulation")
                 .id(format!("perf-art-{slot}")),
             );
@@ -944,6 +948,7 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             .map_or(0, |d| d.1);
         let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
         let words = badge_text(&moving.join("/"), picked, loaded, needs);
+        let basis = text_basis(&words);
         let badge = if words.starts_with("Needs") {
             caption(words.clone()).fill(Role::Warning).tip(format!(
                 "{words}\nNear-silent until the controller moves; set where it starts"
@@ -952,40 +957,50 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             caption(words.clone()).fill(secondary()).tip(words)
         };
         items.push(
-            row![
-                badge
-                    .lines(1)
-                    .flex(1)
-                    .min_w(0)
-                    .id(format!("perf-needs-{slot}")),
-                segmented(tabs).shrink(0)
-            ]
-            .gap(SPACE)
-            .align(Align::Center)
-            .flex(1)
-            .min_w(0),
+            badge
+                .lines(1)
+                .justify(Justify::End)
+                .basis(basis)
+                .grow(0)
+                .min_w(0)
+                .id(format!("perf-needs-{slot}")),
         );
+        items.push(segmented(tabs).shrink(0));
     }
     items
 }
 
+/// A caption's natural width, as a flex basis it can shrink from.
+// ponytail: two-class glyph estimate fitted to the UI font; measure the
+// text if labels clip early or leave gaps.
+fn text_basis(text: &str) -> f64 {
+    let em: f64 = text
+        .chars()
+        .map(|c| if c.is_ascii_uppercase() || c.is_ascii_digit() { 0.64 } else { 0.41 })
+        .sum();
+    (em * SMALL).ceil() + 2.
+}
+
 /// The header's second row: the view switch (interface, articulations,
-/// mapping, sound, info) then compact performance chips, on one line.
-/// The row is `None` when the part has neither.
+/// mapping, sound, info) at the left, the performance context (articulation,
+/// controller needs, dynamics start) right-aligned; the context gives way
+/// first, truncating behind tooltips. The row is `None` when the part has neither.
 pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Option<El>) {
     let (view, tabs) = inside::bar(ui, cx, slot);
-    let items: Vec<El> = tabs.into_iter().chain(performance(ui, cx, slot)).collect();
-    let row2 = (!items.is_empty()).then(|| {
-        row(items)
-            .gap(SPACE)
-            .line_gap(TIGHT)
-            .align(Align::Center)
-            .pad((INSET, 2.))
-            .w(Len::Pct(100.))
-            .shrink(0)
-            .id(format!("header2-{slot}"))
-    });
-    (view, row2)
+    let context = performance(ui, cx, slot);
+    if tabs.is_none() && context.is_empty() {
+        return (view, None);
+    }
+    let items: Vec<El> = tabs
+        .into_iter()
+        .chain([spacer().flex(1).min_w(0)])
+        .chain(context)
+        .collect();
+    let row2 = row(items)
+        .gap(SPACE)
+        .align(Align::Center)
+        .h(Len::Pct(100.));
+    (view, Some(row2))
 }
 
 /// The picked view's body: its interface, articulations, mapping, sound or info.

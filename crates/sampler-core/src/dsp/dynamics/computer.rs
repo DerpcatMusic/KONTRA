@@ -1,7 +1,7 @@
 //! Gain-computer stages: the static curve from detector level to the amount
 //! the ballistics follow (or straight to a gain).
 
-use super::pipeline::{Frame, Stage};
+use super::pipeline::{each, Frame, Stage};
 use sampler_ir::fx::dynamics::Direction;
 use std::sync::LazyLock;
 
@@ -31,7 +31,9 @@ pub(super) fn table_db(level: f64) -> f64 {
 #[inline(always)]
 pub(super) fn table_gain(db: f64) -> f64 {
     let x = (db / DB_PER_BIT).clamp(-1000., 1000.);
-    let whole = x.floor();
+    // floor without a libm call (baseline x86-64 has no roundsd); |x| <= 1000.
+    let t = x as i64 as f64;
+    let whole = if t > x { t - 1. } else { t };
     let at = (x - whole) * SEGMENTS as f64;
     let i = (at as usize).min(SEGMENTS - 1);
     let t = &*EXP2;
@@ -110,8 +112,9 @@ fn db(level: f64) -> f64 {
 impl Stage for Ratio {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        for ch in 0..self.channels {
-            f.level[ch] = self.target(f.level[ch]);
+        f.level[0] = self.target(f.level[0]);
+        if self.channels == 2 {
+            f.level[1] = self.target(f.level[1]);
         }
     }
 }
@@ -122,7 +125,7 @@ pub(super) struct Trigger(pub f32);
 impl Stage for Trigger {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| if v as f32 <= self.0 { 0. } else { 1. });
+        f.level = each(f.level, |v| if v as f32 <= self.0 { 0. } else { 1. });
     }
 }
 
@@ -147,7 +150,7 @@ const CURVE: [[f32; 3]; 8] = [
 impl Stage for Segments {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| {
+        f.level = each(f.level, |v| {
             let excess = v as f32 - self.threshold;
             f64::from(if excess >= 0. {
                 let x = excess * self.excess_scale;
@@ -255,10 +258,11 @@ pub(super) struct BusRatio {
     pub slope: f64,
 }
 
-impl Stage for BusRatio {
+impl BusRatio {
+    /// The 0..=1 reduction depth for a tap value (run by `BusEnvelope`).
     #[inline(always)]
-    fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| ((self.threshold - v) * self.slope).clamp(0., 1.));
+    pub fn depth(&self, tap: f64) -> f64 {
+        ((self.threshold - super::detector::bus_level(tap.abs().min(1.))) * self.slope).clamp(0., 1.)
     }
 }
 
@@ -273,7 +277,7 @@ pub(super) struct TransientMix {
 impl Stage for TransientMix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let [a, sustain] = f.level.map(|v| v as f32);
+        let [a, sustain] = each(f.level, |v| v as f32);
         let db = (sustain * self.sustain - self.sustain * f32::from_bits(0x3ea8_f5c3) * a) + a * self.attack + self.gain;
         let gain = super::super::filter::ar_kernel::exponential(db * f32::from_bits(0x411f_73da) + 1200.);
         f.gain = [f64::from(gain); 2];

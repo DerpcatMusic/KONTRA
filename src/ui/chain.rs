@@ -254,6 +254,7 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::Frequency => "Frequency",
                 ir::ProcessorParameter::Quality => "Q",
                 ir::ProcessorParameter::GainDecibels => "Gain",
+                ir::ProcessorParameter::Bandwidth => "Bandwidth",
                 ir::ProcessorParameter::ReferenceDecibels => "Reference gain",
                 ir::ProcessorParameter::Enabled => "Enabled",
                 ir::ProcessorParameter::CellLL => "Left to left",

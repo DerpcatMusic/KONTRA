@@ -250,6 +250,9 @@ impl Config {
             return lanes;
         }
         let mut lane = |name, role, value: f64, law| lanes.push(Lane { name, role, value, law });
+        if let Some(Gainer { gain, .. }) = self.gainer {
+            lane("ENGINE_PAR_GN_GAIN", P::Gain, gain.linear(), LaneLaw::OutputGain);
+        }
         if let Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } = self.curve {
             lane("ENGINE_PAR_SHAPE", P::Shape, f64::from(shape), LaneLaw::Signed);
         }
@@ -311,4 +314,8 @@ pub enum LaneLaw {
     Signed,
     /// `(v / 1e6)^3`.
     Cubic,
+    /// `16 (v / 1e6)^3`: +24 dB at the top, unity at 396851, the law of
+    /// Kontakt's effect output gains. The Gainer's GN_GAIN uses it too: Conflux
+    /// saves `$Footer__Volume` 397000 beside a stored Gainer gain of 1.00113.
+    OutputGain,
 }

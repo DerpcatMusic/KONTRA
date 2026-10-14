@@ -942,8 +942,8 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     for id in ["perf-art-0", "perf-needs-0"] {
         assert!(there(&h, id), "{id}");
     }
-    // Two header rows (bar, then views + performance), the old full-width
-    // strip gone, and the preset picker directly under them.
+    // One two-row header (bar, then views + performance), the old full-width
+    // strips gone, the preset picker in row 1.
     assert!(!there(&h, "perf-0"), "no separate CC7 row");
     assert!(!there(&h, "perf-vol-0"), "CC7 is information on the gain control, not a row");
     let scene = h.ui.scene().unwrap();
@@ -951,7 +951,8 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     let two = scene.surface("header2-0").unwrap().frame;
     let pick = scene.surface("snapshot-0").expect("preset picker").frame;
     assert!(two.y >= one.y + one.size.height - 0.5, "row 2 under row 1");
-    assert!(pick.y >= two.y + two.size.height - 0.5, "picker under row 2");
+    assert!(pick.y >= one.y && pick.y + pick.size.height <= one.y + one.size.height + 0.5, "picker in row 1");
+    assert!((two.size.height - one.size.height).abs() < 0.5, "rows share one height");
     for id in ["snapshot-next-0"] {
         assert!(there(&h, id), "{id}");
     }
