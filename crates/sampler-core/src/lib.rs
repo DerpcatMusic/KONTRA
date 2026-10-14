@@ -1155,6 +1155,12 @@ impl Runtime {
     pub fn note_count(&self) -> usize {
         self.notes.count()
     }
+    /// Fixed ownership slots, including held notes, tails and generated notes.
+    /// Transport adapters prepare matching binding/scratch storage off audio;
+    /// MIDI key range does not bound overlapping host note IDs.
+    pub fn note_capacity(&self) -> usize {
+        self.notes.slots.len()
+    }
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }

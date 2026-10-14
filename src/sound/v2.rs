@@ -61,8 +61,6 @@ mod host_contract_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
-/// Notes a part holds at once, sounding or awaiting NOTE_END.
-const NOTES: usize = 128;
 /// [`Held::part`] of a note whose runtime was replaced: ends at the next block.
 const ORPHAN: usize = usize::MAX;
 /// Every input reaches a part's zone as MIDI 1.0 on its manager channel, so a
@@ -253,7 +251,7 @@ impl Part {
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe =
-            Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
+            Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, runtime.note_capacity().max(1)).map_err(core)?;
         // Plans without articulations have nothing to drive.
         let articulator = runtime
             .performance(0)
@@ -3679,7 +3677,7 @@ impl V2Loader {
         let mut part = Part::new(runtime, tree.clone())?;
         part.waveform_sources = waveform_sources;
         if request.mpe_upper {
-            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, NOTES)
+            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, part.runtime.note_capacity().max(1))
                 .map_err(core)?;
         }
         part.mpe.set_timbre_controller(timbre);
@@ -5409,6 +5407,45 @@ mod tests {
             5,
             "v1 sums lost commands and stream underruns"
         );
+    }
+
+    #[test]
+    fn host_binding_budget_admits_300_overlapping_ids_and_reuses_terminal_slots_without_heap() {
+        let pcm = Pcm::new(48000, vec![[0.01; 2]; 48000].into_boxed_slice()).unwrap();
+        let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+            velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::new(0, 0, 0, 1.0, 0).unwrap(), playback: Playback::default() };
+        let plan = Prepared::new(48000, vec![pcm], vec![region], 512).unwrap();
+        let budget = Limits { families: 512, decisions: 512, ..Limits::for_plan(&plan, 512, 512) };
+        let runtime = Runtime::new(plan, budget).unwrap();
+        assert_eq!(runtime.note_capacity(), 512);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("polyphonic")).unwrap())));
+        let note = |id| HostNote { port: 0, channel: 0, key: 60, id, clap: true };
+        let calls = crate::plugin::tests::allocations(|| {
+            for round in 0..2 {
+                for id in 0..300 { core.event(0, on(note(id + round * 300))); }
+                core.render(32);
+                assert_eq!(core.voices().active, 300);
+                assert_eq!(core.voices().audible, 300);
+                assert_eq!(core.held.len(), 300);
+                core.event(0, Event::Ump([0x40a0_3c00, 123]));
+                let runtime = &core.parts[0].as_ref().unwrap().runtime;
+                for h in &core.held {
+                    assert_eq!(runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure, 123);
+                }
+                core.event(0, Event::NoteOff(super::super::event::HostPattern {
+                    port: -1, channel: -1, key: -1, id: -1, clap: true,
+                }));
+                core.render(32);
+                let mut ended = 0;
+                core.end_block(32, &mut |_| { ended += 1; true });
+                assert_eq!(ended, 300);
+                assert!(core.held.is_empty());
+            }
+        });
+        assert_eq!(calls, 0, "admission, pressure, release and NOTE_END must allocate/free nothing on audio");
+        assert_eq!(core.problems(0).capacity_drops, 0);
     }
 
     #[test]
