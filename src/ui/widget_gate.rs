@@ -36,10 +36,10 @@ pub(super) fn submitted_widget(widget: &ir::Widget, indices: &[u32]) {
                     edits.extend(
                         indices
                             .iter()
-                            .map(|index| format!("typed-{}-{index}", id.0)),
+                            .map(|index| format!("typed-{}-{index}", { id.0 })),
                     );
                 } else {
-                    edits.insert(format!("typed-{}", id.0));
+                    edits.insert(format!("typed-{}", { id.0 }));
                 }
             });
         }
