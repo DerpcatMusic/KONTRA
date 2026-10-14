@@ -389,10 +389,10 @@ fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }
 
-/// Every header has compact name/actions and routing/mix rows at every width:
+/// The main header keeps its settings in one compact line at every width:
 /// the name shrinks before anything leaves the rack.
 #[test]
-fn a_header_has_two_compact_rows_at_any_width() {
+fn a_header_main_row_is_compact_at_any_width() {
     for width in [900., 1180., 1920.] {
         let p = Arc::new(SamplerParams::new());
         p.selection.write().unwrap().parts.push(Part {
@@ -435,8 +435,8 @@ fn a_header_has_two_compact_rows_at_any_width() {
             "the title remains meaningful at {width}: {name:?}, {header:?}"
         );
         assert!(
-            port.y >= name.y + name.size.height - 0.5,
-            "routing belongs below the readable name at {width}: {port:?}, {name:?}"
+            port.y < name.y + name.size.height && name.y < port.y + port.size.height,
+            "at {width}"
         );
         for id in [
             "name-0",
@@ -504,6 +504,39 @@ fn a_header_has_two_compact_rows_at_any_width() {
             read(&p.selection).parts[0].path.is_empty(),
             "Remove remains reachable from the Part menu at {width}"
         );
+    }
+}
+
+#[test]
+fn expanded_header_has_a_preset_picker_for_ordinary_instrument_files() {
+    for (width, height) in [(900., 640.), (1180., 780.)] {
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts.push(Part {
+            path: "/virtual/Library/B.nki".into(),
+            ..Default::default()
+        });
+        {
+            let mut v = p.shared.view.lock().unwrap();
+            v.files = Arc::new(vec!["/virtual/Library/A.nki".into(), "/virtual/Library/B.nki".into(), "/virtual/Library/C.nki".into()]);
+            v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
+            v.parts[0].instrument = Some(Arc::new(sampler_ir::Instrument::default()));
+        }
+        let mut h = Harness::new(&p, width, height);
+        h.idle(30);
+        let scene = h.ui.scene().unwrap();
+        let continuation = scene.surface("header2-0").unwrap().frame;
+        let picker = scene.surface("preset-picker-0").unwrap().frame;
+        assert!(continuation.size.height <= CONTROL + 5.);
+        assert!(picker.y >= continuation.y + continuation.size.height - 0.5);
+        h.press("preset-picker-next-0");
+        assert!(p.selection.read().unwrap().parts[0].path.ends_with("C.nki"));
+        h.press("preset-picker-0");
+        h.press("menu-item-0");
+        assert!(p.selection.read().unwrap().parts[0].path.ends_with("A.nki"));
+        h.press("collapse-0");
+        h.idle(30);
+        assert!(h.ui.scene().unwrap().surface("header2-0").is_none());
+        assert!(h.ui.scene().unwrap().surface("preset-picker-0").is_none());
     }
 }
 

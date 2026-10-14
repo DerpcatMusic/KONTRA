@@ -151,7 +151,7 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 - **Behavior:** search filters both libraries and instruments; folder settings remain in the same editor shell.
 
 ### Rack Rows
-- **Style:** each instrument has two compact header rows: name and preset/actions above; MIDI, output, pan, level, tune, mute and solo below. The name retains its width at the minimum editor size.
+- **Style:** the main instrument header keeps its usual name, routing and mix settings. An expanded continuation row holds the Interface, Articulations, Mapping, Sound, Info and Scripts views and hides when folded. A preset picker sits directly below these rows for both snapshots and ordinary instrument files. The instrument's CC7 volume is in the gain control's tooltip rather than a separate strip.
 - **State:** the selected part receives a raised neutral fill; load errors appear inline and retain the name of any still-playing instrument.
 
 ### Library Browser
