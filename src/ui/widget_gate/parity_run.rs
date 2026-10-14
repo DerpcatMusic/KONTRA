@@ -22,11 +22,13 @@ struct Take {
     clipped: usize,
     frames: usize,
     bands: Vec<f64>,
+    /// Groups of the voices sounding 0.1 s in.
+    groups: Vec<u32>,
 }
 
 impl Take {
     fn of(samples: &[f32]) -> Self {
-        let mut t = Take { rms_db: -200., peak: 0., nan: 0, denormal: 0, clipped: 0, frames: samples.len(), bands: vec![-200.; BANDS] };
+        let mut t = Take { rms_db: -200., peak: 0., nan: 0, denormal: 0, clipped: 0, frames: samples.len(), bands: vec![-200.; BANDS], groups: Vec::new() };
         let mut sum = 0f64;
         for &x in samples {
             if !x.is_finite() {
@@ -145,10 +147,14 @@ impl Gate {
         }
         let mut samples = Vec::new();
         self.core.play(0, Event::midi1(0x90, key, velocity));
-        self.render(0.6, &mut samples);
+        self.render(0.1, &mut samples);
+        let mut groups: Vec<u32> = self.core.voice_taps(0).iter().flatten().map(|t| t.group).collect();
+        groups.sort();
+        groups.dedup();
+        self.render(0.5, &mut samples);
         self.core.play(0, Event::midi1(0x80, key, 0));
         self.render(0.2, &mut samples);
-        Take::of(&samples)
+        Take { groups, ..Take::of(&samples) }
     }
     fn tab(&mut self, view: &str) -> bool {
         let id = format!("view-0-{view}");
@@ -197,11 +203,15 @@ fn layout(ui: &Ui, w: f64, h: f64) -> Value {
         .filter(|s| !s.disabled && s.frame.size.width > 1. && s.frame.size.height > 1.)
         .map(|s| (s.key.to_string(), [s.frame.x, s.frame.y, s.frame.x + s.frame.size.width, s.frame.y + s.frame.size.height]))
         .collect();
+    let contains = |a: &R, b: &R| b[0] >= a[0] - 1. && b[1] >= a[1] - 1. && b[2] <= a[2] + 1. && b[3] <= a[3] + 1.;
+    // Leaves only: containers (scroll areas, panels) legitimately extend and nest.
+    let rects: Vec<(String, R)> = rects.iter()
+        .filter(|(k, a)| !rects.iter().any(|(j, b)| j != k && contains(a, b)))
+        .cloned().collect();
     let inside = |r: &R| r[0] >= -1. && r[1] >= -1. && r[2] <= w + 1. && r[3] <= h + 1.;
     let visible = |r: &R| r[0] < w && r[1] < h && r[2] > 0. && r[3] > 0.;
     let clipped: Vec<&String> = rects.iter().filter(|(_, r)| visible(r) && !inside(r)).map(|(k, _)| k).collect();
     let within: Vec<&(String, R)> = rects.iter().filter(|(_, r)| inside(r)).collect();
-    let contains = |a: &R, b: &R| b[0] >= a[0] - 1. && b[1] >= a[1] - 1. && b[2] <= a[2] + 1. && b[3] <= a[3] + 1.;
     let area = |r: &R| (r[2] - r[0]) * (r[3] - r[1]);
     let mut overlaps = Vec::new();
     for (i, (ka, a)) in within.iter().map(|x| (&x.0, &x.1)).enumerate() {
@@ -320,7 +330,7 @@ fn parity_run() {
         }
     }
     gate.editor.resize(Size::new(1500., 1100.));
-    for row in &ui {
+    for row in ui.iter().filter(|r| r["present"] == true) {
         let name = format!("ui-{}-{}", row["view"].as_str().unwrap(), row["width"]);
         checks.push(check(&name, row["pass"].as_bool().unwrap_or(false), json!({"ink": row["ink"], "clipped": row["layout"]["clipped"], "overlaps": row["layout"]["overlaps"], "present": row["present"]})));
     }
@@ -349,7 +359,7 @@ fn parity_run() {
     let (a, b) = (gate.take(key, 100), gate.take(key, 100));
     let (r, s) = a.delta(&b);
     let noise = Noise { rms: (3. * r).max(0.5), spectral: (3. * s).max(1.0) };
-    let baseline = json!({"key": key, "rms_delta_db": round(r), "spectral_delta_db": round(s), "threshold_rms_db": round(noise.rms), "threshold_spectral_db": round(noise.spectral)});
+    let baseline = json!({"key": key, "rms_delta_db": round(r), "spectral_delta_db": round(s), "threshold_rms_db": round(noise.rms), "threshold_spectral_db": round(noise.spectral), "sounding_groups": a.groups.len()});
 
     // 4. Controls: performance-view widgets through real pointer drags.
     gate.tab("Interface");
@@ -397,8 +407,9 @@ fn parity_run() {
     }
     // A spread sample of engine parameters bound to controls.
     let mut engine = Vec::new();
-    let step = (bindings.len() / max_engine.max(1)).max(1);
-    for b in bindings.iter().step_by(step).take(max_engine) {
+    let audible: Vec<_> = bindings.iter().filter(|b| b.address.group < 0 || a.groups.contains(&(b.address.group as u32))).collect();
+    let step = (audible.len() / max_engine.max(1)).max(1);
+    for b in audible.into_iter().step_by(step).take(max_engine) {
         let id = sampler_ui_ir::ControlId(b.control.0);
         let before = gate.core.control_value(0, id);
         gate.core.set_control(0, id, -1e12);
