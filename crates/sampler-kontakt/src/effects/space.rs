@@ -16,8 +16,10 @@
 //!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
 //!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
 //!   preparation at the inner rate untraced) are reported unmodeled.
-//! - 0x65 Raum, 0x7a Reverb Delight: field bindings measured, cores not
-//!   extracted; reported unmodeled with the reason in the slot's `effect` note.
+//! - 0x65 Raum: Grounded and Airy drive the native core ([`Topology::Raum`],
+//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic is reported unmodeled.
+//! - 0x7a Reverb Delight: field binding measured, cores not extracted;
+//!   reported unmodeled with the reason in the slot's `effect` note.
 
 use super::{Impulses, Notes};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
@@ -185,11 +187,61 @@ pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
     })
 }
 
+/// Raum v0x10 after its type enum (reader `0x140ac5cc0`): floats predelay
+/// (+8), feedback, low shelf, high cut, reverb, diffusion, decay, mod, size,
+/// damping, rate, mix (+0x34); bytes freeze, sparse; the predelay time
+/// object's unit (+0x60) and two floats; a byte. Returns the core controls
+/// (apply `0x140abb190`) and whether the predelay is tempo-synced.
+pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
+    let kind = r.i32()? as f32;
+    let mut f = [0f32; 12];
+    for x in &mut f {
+        *x = r.f32()?;
+    }
+    let (freeze, sparse) = (r.flag()?, r.flag()?);
+    let unit = r.f32()?;
+    r.f32()?;
+    r.f32()?;
+    r.flag()?;
+    let [predelay, feedback, low_shelf, high_cut, reverb, diffusion, decay, modulation, size, damping, rate, mix] = f;
+    // Field ms → core 1: raw up to 1, else `√(0.0125t)` below 80 ms or
+    // `√((t - 80)·0.00052083) + 1`, halved and capped at 1.
+    let t = predelay;
+    let pre = if t <= 1.0 {
+        t
+    } else {
+        let s = if t < 80.0 { (f32::from_bits(0x3c4c_cccd) * t).sqrt() } else { ((t - 80.0) * f32::from_bits(0x3a08_8889)).sqrt() + 1.0 };
+        (s / 2.0).min(1.0)
+    };
+    let b = |v: bool| if v { 1.0 } else { 0.0 };
+    let core = [mix, pre, 0.0, 0.25, 0.0625, 0.0, feedback, high_cut, low_shelf, kind * 0.5, decay, size, damping, modulation, rate, diffusion, b(freeze), reverb, b(sparse), 1.0];
+    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), unit > f32::from_bits(0x3089_705f)))
+}
+
+/// Raum (0x65) Grounded or Airy on the native core; its own mix law carries
+/// the dry path. Input gain (core 19) has no saved field and stays 1.
+pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config {
+    if synced {
+        notes.push(("predelay sync".into(), "Raum's tempo-synced predelay (core 2..5, `240·n/(f·m·bpm)`) is not bound; the saved time is read as milliseconds".into(), UnknownLaw));
+    }
+    if core[6] > 0.0 {
+        notes.push(("feedback limiter".into(), "Raum's feedback limiter (NI::DSP::Limiter `0x141ae3ba0`) is reduced to its ±2.5 clamp: its gain table is not extracted".into(), UnknownLaw));
+    }
+    let x = f64::from(core[1]);
+    Config::network(Network {
+        topology: Topology::Raum,
+        decay_seconds: 199.75 * f64::from(core[10]) / (75.0 * (1.0 - f64::from(core[10])) + 1.0) + 0.25,
+        predelay_seconds: if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 },
+        raum: Some(*core),
+        ..Network::DEFAULT
+    })
+}
+
 /// Why a reverb with a recovered reader but no recovered parameters is not
 /// translated; empty for every other module.
 pub(super) fn why_unbound(module: u16) -> &'static str {
     match module {
-        0x65 => ": Raum field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); its modern reverb core is not extracted",
+        0x65 => ": Raum Cosmic: its eight-stage allpass core is not built (Grounded and Airy are)",
         0x7a => ": Reverb Delight field binding measured (MONO unproved: field 11 bytes unstable); its amp, tremolo and spring-reverb cores are not extracted",
         _ => "",
     }
