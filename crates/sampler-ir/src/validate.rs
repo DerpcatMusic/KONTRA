@@ -588,7 +588,11 @@ impl Instrument {
                     {
                         check.within(level, -1.0..=1.0, "sine level")?;
                     }
-                    if let crate::LfoShape::Native(crate::NativeWave::Multi { weights, width, .. }) =
+                    if let crate::LfoShape::NativeFaded { fade_ms, .. } = lfo.shape {
+                        check.within(f64::from(fade_ms), 0.0..=5000.0, "native fade")?;
+                    }
+                    if let crate::LfoShape::Native(crate::NativeWave::Multi { weights, width, .. })
+                    | crate::LfoShape::NativeFaded { wave: crate::NativeWave::Multi { weights, width, .. }, .. } =
                         lfo.shape
                     {
                         for weight in weights {
