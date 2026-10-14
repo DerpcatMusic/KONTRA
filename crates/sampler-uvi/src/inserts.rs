@@ -245,6 +245,16 @@ impl Translation {
                     };
                     out.push(ir::Processor::Color(Config { curve: Curve::Exciter(exciter), ..Config::IDENTITY }));
                 }
+                "Widener" => {
+                    use ir::fx::color::{Config, Widener};
+                    let widener = Widener {
+                        delay: number(node, "Delay", 0.0)?.clamp(-15.0, 15.0) as f32,
+                        width: number(node, "Width", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        shelf_hertz: number(node, "HighShelfFreqSide", 10_000.0)?.clamp(2000.0, 20_000.0) as f32,
+                        shelf_db: number(node, "HighSelfGainSide", 0.0)?.clamp(-15.0, 15.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { widener: Some(widener), ..Config::IDENTITY }));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};

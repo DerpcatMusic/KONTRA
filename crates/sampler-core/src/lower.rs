@@ -180,6 +180,7 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             color: knob(P::LoFiColor, n.color),
         }),
         tone: c.tone,
+        widener: c.widener,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
             width: Parameter::Constant(s.width),

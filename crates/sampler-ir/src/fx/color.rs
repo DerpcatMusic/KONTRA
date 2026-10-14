@@ -154,6 +154,17 @@ pub struct Exciter {
     pub oversampling: u8,
 }
 
+/// UVI Widener controls as stored: Delay ms (-15..15, negative delays the left), Width
+/// -1..1, the side shelf's HighShelfFreqSide Hz and HighSelfGainSide dB.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Widener {
+    pub delay: f32,
+    pub width: f32,
+    pub shelf_hertz: f32,
+    pub shelf_db: f32,
+}
+
 /// UVI ToneStack controls: Bass, Mid, Treble, Gain 0..1, Model 0..=25.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -210,6 +221,8 @@ pub struct Config {
     /// Wet share of the stages above (UVI Mix); 1 is fully wet.
     pub mix: f64,
     pub stereo: Option<Stereo>,
+    /// UVI Widener (after the mix).
+    pub widener: Option<Widener>,
 }
 
 impl Config {
@@ -227,6 +240,7 @@ impl Config {
         tone: None,
         mix: 1.0,
         stereo: None,
+        widener: None,
     };
 
     /// Kontakt Gainer.
@@ -371,6 +385,7 @@ impl Config {
             Self { decimator: Some(_), .. } => "Formant crusher",
             Self { gainer: Some(_), .. } => "Gainer",
             Self { stereo: Some(_), .. } => "Stereo Modeller",
+            Self { widener: Some(_), .. } => "Widener",
             _ => "Color",
         }
     }
