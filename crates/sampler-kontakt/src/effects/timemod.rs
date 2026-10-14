@@ -5,13 +5,13 @@
 //! (0x11, audio 0x140aa0510) stays generic: its setter (0x140963970) reads a
 //! base delay from saved-struct +8, which neither the reader (0x140d00760) nor
 //! the constructor writes, so the value is unknown. Twin Delay (0x6B, kernel
-//! 0x140ab07d0) is native; the other modern effects stay unsupported with
+//! 0x140ab07d0) and Psyche Delay (0x63, kernel 0x140aadb50) are native; the other modern effects stay unsupported with
 //! the reasons in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, TwinDelay,
+        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay, SweepLaw, TwinDelay,
     },
 };
 
@@ -23,6 +23,7 @@ pub(crate) enum Unit {
     Chorus { depth: f32, speed: f32, phase: f32, unit: f32 },
     Flanger { depth: f32, feedback: f32, speed: f32, phase: f32, color: f32, unit: f32 },
     Twin(TwinDelay),
+    Psyche(PsycheDelay),
 }
 
 /// Twin Delay v0x10 (reader `0x140ac6280`): four time sub-objects (predelay
@@ -55,6 +56,25 @@ pub(super) fn read_twin(version: u16, r: &mut Reader) -> Option<Unit> {
     }))
 }
 
+/// Psyche Delay v0x10 (reader `0x140ac5bc0`): time, feedback, detune, pitch,
+/// offset, cross; reverse-stereo, detune-stereo and reverse bytes; the time
+/// sub-object's unit factor and two unused floats, then a flag.
+pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x10 {
+        return None;
+    }
+    let mut v = [0f32; 6];
+    for x in &mut v {
+        *x = r.f32()?;
+    }
+    let [reverse_stereo, detune_stereo, reverse] = [r.flag()?, r.flag()?, r.flag()?];
+    let unit = r.f32()?;
+    r.f32()?;
+    r.f32()?;
+    r.flag()?;
+    Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
+}
+
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
 pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
     let unit = match module {
@@ -83,7 +103,6 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
         0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
         0x5d => "Choral: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
-        0x63 => "Psyche Delay: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern wrapper core is not located",
         0x69 => "Vibrato Chorus: modern wrapper core not located; no saved-field binding measured",
         _ => return None,
     })
@@ -159,6 +178,12 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             // effect's output is wet only; the slot's dry level mixes.
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
             line.native = Native::TwinDelay(t);
+            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+        }
+        Unit::Psyche(p) => {
+            // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::PsycheDelay(p);
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Flanger { depth, feedback, speed, phase, color, unit } => {
@@ -246,6 +271,26 @@ mod tests {
             assert!(built.processors.is_empty());
             assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
         }
+    }
+
+    /// Reader 0x140ac5bc0: six floats, three bytes, three floats, a byte.
+    #[test]
+    fn psyche_delay_reads_its_stream_and_runs_native() {
+        let mut public = Vec::new();
+        for f in [20f32, 0.5, 0.7, 0.75, 0.6, 0.25] {
+            public.extend(f.to_le_bytes());
+        }
+        public.extend([0, 1, 0]);
+        for f in [-1f32, 500., 0.] {
+            public.extend(f.to_le_bytes());
+        }
+        public.push(0);
+        let built = chain(&[Slot { public, ..slot(0x63, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::PsycheDelay(p) = config.line.unwrap().native else { panic!() };
+        assert_eq!((p.time, p.feedback, p.detune, p.pitch, p.offset, p.cross, p.unit), (20., 0.5, 0.7, 0.75, 0.6, 0.25, -1.));
+        assert!(!p.reverse_stereo && p.detune_stereo && !p.reverse);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     /// Reader 0x140ac6280: four sync groups, then ten floats.
