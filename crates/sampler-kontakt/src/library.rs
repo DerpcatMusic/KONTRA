@@ -2177,39 +2177,56 @@ impl Translation {
             return false;
         }
         let mut lane = |name: &str, generic: i32, max: f64, saved: f64| {
-            let default = self
-                .script_par(name, group as i32, slot as i32, generic)
-                .map_or(saved, |v| {
-                    if name == "ENGINE_PAR_INTMOD_BYPASS" {
+            let bypass = name == "ENGINE_PAR_INTMOD_BYPASS";
+            let script = |name| self.script_par(name, group as i32, slot as i32, generic);
+            // The legacy and MP intensities write the same depth on the signed
+            // cubic law (v1: INTMOD 1e6 at the target's generic is depth 1).
+            let cubic = ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+                .into_iter()
+                .find_map(|name| script(name))
+                .filter(|_| !bypass)
+                .map(|v| max * sampler_core::EngineParameterLaw::SignedCubic.decode(v));
+            let default = cubic.or_else(|| {
+                script(name).map(|v| {
+                    if bypass {
                         f64::from(v != 0)
                     } else {
                         max * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.
                     }
-                });
+                })
+            });
             let control = ir::ControlRef(self.ir.controls.len());
             self.ir.controls.push(ir::Control {
                 key: format!("kontakt/group/{group}/mod/{slot}/{generic}/{name}"),
                 label: name.into(),
                 value: ir::ControlValue::Continuous {
-                    min: 0.,
+                    // A depth may be negative (inverted) through the cubic writers.
+                    min: if bypass { 0. } else { -max },
                     max,
-                    default,
+                    default: default.unwrap_or(saved),
                     unit: ir::ControlUnit::Percent,
                 },
                 automation: ir::Automation::None,
             });
-            self.ir
-                .source_indices
-                .control_aliases
-                .push(ir::SourceControlAlias {
-                    control,
-                    parameter: name.into(),
-                    address: ir::SlotAddress {
-                        group: group as i32,
-                        slot: slot as i32,
-                        generic,
-                    },
-                });
+            let names: &[&str] = if bypass {
+                &["ENGINE_PAR_INTMOD_BYPASS"]
+            } else {
+                &["ENGINE_PAR_MOD_TARGET_INTENSITY", "ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+            };
+            for name in names {
+                self.ir
+                    .source_indices
+                    .control_aliases
+                    .push(ir::SourceControlAlias {
+                        control,
+                        parameter: (*name).into(),
+                        address: ir::SlotAddress {
+                            group: group as i32,
+                            slot: slot as i32,
+                            generic,
+                        },
+                    });
+            }
             control
         };
         let bypass = *bypass.get_or_insert_with(|| {
@@ -2221,6 +2238,18 @@ impl Translation {
             unit,
             f64::from(target.intensity) * unit,
         );
+        // Generic -1 is the modulator's own intensity (ANALOG STRINGS writes its
+        // LFO amounts there); as for external modulators it reaches the first target.
+        // ponytail: -1 aliases target 0 only; multi-target -1 semantics unmeasured.
+        if ordinal == 0 {
+            for parameter in ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"] {
+                self.ir.source_indices.control_aliases.push(ir::SourceControlAlias {
+                    control: depth,
+                    parameter: parameter.into(),
+                    address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 },
+                });
+            }
+        }
         self.ir
             .source_indices
             .route_controls

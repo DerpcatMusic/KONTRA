@@ -946,7 +946,16 @@ pub fn lower_with(
                 alias.parameter.as_str(),
                 "ENGINE_PAR_INTMOD_INTENSITY" | "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"
             ) {
-                crate::EngineParameterLaw::SignedCubic
+                // An internal route's depth control spans -unit..unit (v1: INTMOD
+                // 1e6 at the target's generic is depth 1, MP 750000 is 0.125).
+                if max == 1. {
+                    crate::EngineParameterLaw::SignedCubic
+                } else {
+                    crate::EngineParameterLaw::ScaledSignedCubic { scale: max }
+                }
+            } else if alias.parameter == "ENGINE_PAR_MOD_TARGET_INTENSITY" {
+                // The target knob: 0..1e6 is 0..100% of the route's unit.
+                crate::EngineParameterLaw::Linear { low: 0., high: max }
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
             } else {
