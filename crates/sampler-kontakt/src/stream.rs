@@ -864,7 +864,7 @@ impl Streamer {
     /// Clone the existing source for bounded control-worker reads. Opening or
     /// decoding it belongs off the audio thread; this does not preload frames.
     pub fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
-        self.sources.get(&asset).cloned()
+        self.sources.get(&asset).cloned().or_else(|| self.dynamic.source(asset))
     }
 
     /// Open every source as a streamed asset, timing an open plus first-page
@@ -2486,6 +2486,10 @@ mod tests {
         let new_registration = dynamic.register(&new, Arc::new(Numeric(100.))).unwrap();
         assert!(dynamic.register(&old, Arc::new(Numeric(999.))).is_err());
         for (pcm, offset) in [(&old, 1.), (&new, 100.)] {
+            let mut reopened = streamer.source(pcm.asset_id()).unwrap().open().unwrap();
+            let mut check = [[0.;2];1];
+            reopened.read(PAGE_FRAMES+17, &mut check).unwrap();
+            assert_eq!(check, [[offset+(PAGE_FRAMES+17) as f32;2]]);
             cache.begin_epoch().unwrap();
             cache.request(pcm, 1, 0).unwrap();
             for t in &streamer.threads {

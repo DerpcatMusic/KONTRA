@@ -138,6 +138,56 @@ explicit normal control edit. An unavailable or unidentified UI trigger must not
 be replaced by invoking an internal vendor Lua function. The fresh-load zero
 request receipt remains separate from any subsequent interaction witness.
 
+The normal, visible first-layer `LayerNext` button reproduces **1,746 requests**.
+The first complete interaction receipt (`ao-layer-next-dynamic-source-evidence.json`)
+records 1,746 failures, zero successful commits, zero changed source identities
+and zero dynamic payload bytes. A bounded first-error probe identified a path
+resolution failure before allocation: the host had replaced the raw relative
+sample path with a single module-relative path, discarding the other read contexts.
+The failed receipt is retained, rather than overwritten by a successful rerun.
+
+`SamplePath` now carries the raw path and the calling module directory to the
+same admitted source authority. Bank lookup tries the available native contexts
+in order: bank-relative as given, script folder, preset folder, then that bank's
+`Samples` folder. Explicit rooted paths and `$Volume` references retain one exact
+authority; different banks, invalid volumes and escaping roots fail. Unknown
+multi/original-load folders and host CWD are not fabricated. Loose loading uses
+the known script/program contexts and preserves explicitly authored absolute
+paths. Only typed absence advances to another candidate: ambiguity, corruption,
+permission errors and changed-source failures remain errors. Channel bundles
+resolve wholly within one context. Exact map lookups and same-directory lossless
+extension alternatives avoid per-request scans of the bank member inventory;
+there is no dynamic basename search. This follows the documented read-context
+law, with unavailable contexts kept explicit. [UVI file paths](https://lua.uvi.net/print.html)
+
+The first real after-fix gesture completed **1,746 successful owner acknowledgments,
+zero failures/cancellations/pending tasks**, and exactly 1,746 changed target source
+identities. All 6,984 authored targets remained covered. New sources retained
+streamed bodies; their physical heads held/peaked at 28,785,138 bytes against the
+separate 256 MiB dynamic quota. Eight typed meter requests resolved to eight exact
+owners, without establishing native display laws. This receipt is a source-service
+correctness result: it played no MIDI notes, and compiler/external CPU contention
+prevents a speed/deadline claim. The first-success numeric summary remains
+separate from the initial zero-request and complete failed receipts.
+
+Task timing uses fixed histograms and saturating count/total/max counters for
+all worker jobs: metadata queue wait, resolution including headers, exact path
+lookup, reader open, file metadata, preparation/decode, ready-to-submit delay,
+commit acknowledgment and total task lifetime. Substages overlap their parent
+resolution span, and queue/ack spans overlap across tasks; summing them is not
+instrument wall time or CPU time. Fixed histograms retain later jobs after the
+example's first 64 detailed observations fill. The example can compare bounded
+installed resident-head windows against independently reopened registered readers,
+including header geometry, without saving sample payloads or rendered audio.
+
+Independent path fixtures cover nested-module raw context, exact ordered roots,
+explicit volumes, ASCII case folding with unchanged Unicode names, extension
+ambiguity, escape rejection, whole-bundle roots, and absence-only fallback.
+Readback fixtures cover mono/stereo 16/24/float packed storage, holes and invalid
+bounds without partial output mutation, immutable generation pinning, retained
+leases and allocation/deallocation guards. These do not establish whole-file or
+native audio equivalence for an installed instrument.
+
 Static cancelable wrappers preserve `LoadError::Canceled` through UVI staging;
 the noncancelable APIs remain compatible wrappers. Cancellation is checked during
 source resolution, around impulse preparation and between bounded 4,096-frame
