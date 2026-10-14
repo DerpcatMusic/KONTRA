@@ -161,41 +161,78 @@ impl NativeEq {
             return;
         }
         if state.aux[8] == 0. {
-            // Prepared saved state starts settled. Native initial dirty/reset and
-            // modulation-buffer cadence remain unverified; do not invent a ramp from zero.
+            // Native dirty path (wrapper 0x140918420, flag +0x1a1, also set by local reset
+            // 0x14094a790): current cutoff/gain snap to their targets, coefficients once.
             self.tune(state, self.targets(parameters, at), 7);
+            state.aux[15] = state.aux[2];
             state.aux[8] = 1.;
             state.delay_position = 32;
         }
+        // A lane with a modulation buffer (+0x308/+0x310/+0x318) is latched only when the
+        // 32-frame countdown reloads: cutoff snaps (no smoothing), bandwidth applies, gain
+        // becomes the smoothing target. Unmodulated lanes follow their setters at once.
+        let modulated = [self.frequency, self.bandwidth, self.gain].map(|p| p.projected(parameters));
         let mut position = 0;
         while position < len {
-            let count = (state.delay_position as usize).min(len - position);
+            let live = self.targets(parameters, at + position as u64);
+            if !modulated[1] && live[1] != state.aux[1] as f32 {
+                self.tune(state, live, 2);
+            }
+            let targets = |state: &ProcessorState| {
+                [
+                    if modulated[0] { state.aux[0] as f32 } else { live[0] },
+                    if modulated[2] { state.aux[15] as f32 } else { live[2] },
+                ]
+            };
+            // Native settle test: |target - current| as f32 against 1e-4 (cutoff), 1e-5 (gain).
+            let unsettled = |state: &ProcessorState, [cutoff, gain]: [f32; 2]| {
+                f64::from((cutoff - state.aux[0] as f32).abs()) > 1e-4
+                    || f64::from((gain - state.aux[2] as f32).abs()) > 1e-5
+            };
+            let active = modulated.contains(&true) || unsettled(state, targets(state));
+            // Settled and unmodulated: the rest of the call runs on the held coefficients and
+            // the countdown stays frozen.
+            let count = if active {
+                (state.delay_position as usize).min(len - position)
+            } else {
+                len - position
+            };
             let svf = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9 + i]));
             for (channel, history) in block.iter_mut().zip(&mut state.z) {
                 svf.run(history, &mut channel[position..position + count]);
                 *history = history.map(super::super::flush);
             }
             position += count;
+            if !active {
+                continue;
+            }
             state.delay_position -= count as u32;
+            let mut mask = 5;
             if state.delay_position == 0 && position < len {
                 state.delay_position = 32;
+                let latched = self.targets(parameters, at + position as u64);
+                if modulated[0] {
+                    self.tune(state, latched, 1);
+                }
+                if modulated[1] && latched[1] != state.aux[1] as f32 {
+                    mask |= 2;
+                    self.tune(state, latched, 2);
+                }
+                if modulated[2] {
+                    state.aux[15] = f64::from(latched[2]);
+                }
             }
             // The native wrapper updates after partial chunks too; inherited
             // zero countdown produces an update before samples in the next call.
-            let target = self.targets(parameters, at + position.saturating_sub(1) as u64);
-            let frequency = state.aux[0] as f32;
-            let gain = state.aux[2] as f32;
-            let mask = 5 | if target[1] != state.aux[1] as f32 {
-                2
-            } else {
-                0
-            };
+            let target = targets(state);
+            let (frequency, gain) = (state.aux[0] as f32, state.aux[2] as f32);
+            let step = unsettled(state, target);
             self.tune(
                 state,
                 [
-                    frequency + (target[0] - frequency) * 0.01_f32,
-                    target[1],
-                    gain + (target[2] - gain) * 0.01_f32,
+                    if step { frequency + (target[0] - frequency) * 0.01_f32 } else { frequency },
+                    state.aux[1] as f32,
+                    if step { gain + (target[1] - gain) * 0.01_f32 } else { gain },
                 ],
                 mask,
             );
@@ -308,6 +345,37 @@ mod tests {
             }
         }
     }
+    /// Wrapper 0x140918420: a settled, unmodulated band freezes its countdown; a modulated
+    /// cutoff snaps to the buffer value when the countdown reloads instead of smoothing.
+    #[test]
+    fn settled_bands_freeze_the_cadence_and_modulated_cutoff_snaps() {
+        let eq = settings(0.5, 0.5, 9.);
+        let mut state = ProcessorState::default();
+        let (mut left, mut right) = ([0.; 40], [0.; 40]);
+        eq.process_samples(&mut state, &[], [&mut left[..], &mut right[..]], 0);
+        assert_eq!(state.delay_position, 32, "settled: countdown frozen");
+
+        let mut lanes = Vec::new();
+        let eq = KontaktLegacyEqSettings {
+            frequency: Parameter::Control(ControlRange { control: crate::ControlId(1), low: 0., high: 1., ramp_frames: 0 }),
+            bandwidth: Parameter::Constant(0.5),
+            gain_db: Parameter::Constant(9.),
+        }
+        .compile(48000, &mut lanes)
+        .unwrap();
+        let mut ramp = ControlRamp::test_ramp(0.5, 0.5, 0, 0);
+        ramp.add_modulation(0.25, lanes[0]);
+        let mut state = ProcessorState::default();
+        eq.process_samples(&mut state, &[ramp], [&mut left[..], &mut right[..]], 0);
+        assert_eq!(state.aux[0] as f32, 0.75, "dirty start takes the modulated cutoff");
+        let mut moved = ControlRamp::test_ramp(0.5, 0.5, 0, 0);
+        moved.add_modulation(-0.25, lanes[0]);
+        eq.process_samples(&mut state, &[moved], [&mut left[..10], &mut right[..10]], 40);
+        assert_eq!(state.aux[0] as f32, 0.75, "held until the countdown reloads");
+        eq.process_samples(&mut state, &[moved], [&mut left[..30], &mut right[..30]], 50);
+        assert_eq!(state.aux[0] as f32, 0.25, "snapped, not smoothed");
+    }
+
     #[test]
     fn parameter_masks_clamp_only_updated_fields_and_retain_coefficients() {
         let eq = settings(0.25, 0.5, 4.5);

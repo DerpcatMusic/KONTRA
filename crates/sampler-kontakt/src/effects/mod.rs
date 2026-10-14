@@ -1021,9 +1021,6 @@ pub(crate) fn chain_with(
                         modelled = false;
                     }
                 }
-                notes.push(("native legacy EQ lifecycle".into(),
-                    "initial dirty state, modulation buffers, host reset/latency/tail unverified".into(),
-                    sampler_ir::Reason::UnknownLaw));
                 combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) => {
