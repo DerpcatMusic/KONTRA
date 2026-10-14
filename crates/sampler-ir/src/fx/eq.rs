@@ -58,6 +58,11 @@ pub enum Law {
     /// RBJ cookbook biquads by the bilinear transform: Hertz, Q (`alpha = sin(w0) / 2q`), decibels
     /// (`A = 10^(dB/40)`). UVI TwoBandEq/ThreeBandEq/ParametricEQ coefficient routines (proved).
     Cookbook,
+    /// UVI DigitalEq band design (0x1412840f0): `poles` is the order (1, 2, 3, 4, 6, 8, 12, 16 for
+    /// slopes 6..96 dB/oct) of a prototype whose poles `q` spreads (0.707 is Butterworth); band
+    /// pass, notch and peak take `bandwidth` octaves; `gain_db` is the band gain. Proved under
+    /// emulation.
+    UviDigital,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -75,6 +80,8 @@ pub struct Band {
     /// SSL-style proportional Q: the effective Q is `q * (1 + proportional_q * |gain_db| / 12)`.
     /// Zero keeps Q constant. Generic option, not a proved native law.
     pub proportional_q: f32,
+    /// Octaves: the band-pass/notch/peak width under [`Law::UviDigital`]; other laws ignore it.
+    pub bandwidth: f32,
 }
 
 impl Band {
@@ -89,6 +96,7 @@ impl Band {
             gain_db,
             poles: 2,
             proportional_q: 0.,
+            bandwidth: 1.,
         }
     }
     pub const OFF: Self = Self::new(Kind::Peak, 1000., 0.7071, 0.);
