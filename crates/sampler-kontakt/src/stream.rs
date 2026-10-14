@@ -6,7 +6,7 @@ use crate::{
     LoadError,
     samples::{FileAt, Source},
 };
-use sampler_core::{AssetId, DecodeFailure, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
+use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
 use sampler_ir as ir;
 use std::{
     collections::{HashMap, HashSet},
@@ -354,6 +354,9 @@ pub struct StreamReport {
     pub head_source_frames: u64,
     /// Configured cap on packed resident starts; decoded staging is separate.
     pub head_budget: usize,
+    /// Eager attack preparation explicitly fell back to cold starts after this
+    /// packed-budget failure. Mandatory wavetable ranges still remain resident.
+    pub head_fallback: Option<HeadBudgetExceeded>,
     /// Bytes every asset would take fully decoded, as `load` holds them.
     pub full_bytes: u64,
     pub pool_pages: usize,
@@ -406,10 +409,14 @@ pub struct StreamPolicy {
     pub voices: usize,
     /// Decode/preload threads, clamped to 1..=8.
     pub decoders: usize,
-    /// Maximum resident start-range bytes; cold starts load only on demand.
+    /// Shared cap on packed staged/current/retired start ranges. Decoder
+    /// workspaces and the stream page pool have independent bounds.
     pub head_budget: usize,
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
+    /// Opt in to cold starts only when eager heads exceed their packed budget.
+    /// Source, metadata, cancellation and mandatory-residency failures propagate.
+    pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
     pub resident_budget: Option<usize>,
 }
@@ -425,6 +432,7 @@ impl Default for StreamPolicy {
             decoders: 4,
             head_budget: usize::MAX,
             lazy: false,
+            allow_cold_fallback: false,
             resident_budget: None,
         }
     }
@@ -564,11 +572,12 @@ pub(crate) struct Opened {
 }
 
 /// Read `ranges` of `pcm` from `reader` and make them resident; their bytes.
-fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) -> io::Result<usize> {
-    let prepared = match prepare_head_ranges(pcm, reader, ranges, &|| false, None) {
+fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>], page:&mut[Frame]) -> io::Result<usize> {
+    let prepared = match prepare_head_ranges(&pcm.head_preparer(), reader, ranges, page, &|| !pcm.residency_permitted(), None) {
         Ok(prepared) => prepared,
         // A concurrent KSP purge can remove the final residency owner while
         // this worker reads. That transaction is obsolete, not a source fault.
+        Err(_) if !pcm.residency_permitted() => return Ok(0),
         Err(e)
             if e.get_ref()
                 .and_then(|e| e.downcast_ref::<sampler_core::Error>())
@@ -583,14 +592,14 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
     }
     let bytes = prepared.bytes();
     match pcm.publish_ranges(prepared) {
-        Ok(_) => Ok(bytes),
+        Ok(old) => {drop(old);pcm.head_bytes();Ok(bytes)},
         Err(sampler_core::Error::NotReady) => Ok(0),
         Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
     }
 }
 
 /// A startup capacity failure, distinct from unreadable/missing source bytes.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeadBudgetExceeded {
     pub budget_bytes: usize,
     pub required_at_least_bytes: usize,
@@ -645,53 +654,82 @@ fn range_bounds(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<(usize, usize)
     ))
 }
 fn prepare_head_ranges(
-    pcm: &Pcm,
+    recipe: &HeadPreparer,
     reader: &mut SampleReader,
     ranges: &[Range<usize>],
+    page:&mut[Frame],
     canceled: &(dyn Fn() -> bool + Sync),
     mut timing: Option<&mut head_prepare::Timing>,
 ) -> io::Result<sampler_core::PreparedRanges> {
-    range_bounds(pcm, ranges)?;
-    if reader.rate() != pcm.sample_rate() || reader.frames() != pcm.frame_count() {
+    // Metadata and all geometry are validated before quota admission or payload
+    // allocation. The decoder workspace is one page, independent of source size.
+    if ranges.windows(2).any(|r| r[0].end > r[1].start)
+        || ranges
+            .iter()
+            .any(|r| r.start >= r.end || r.end > recipe.frame_count())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid sample head ranges",
+        ));
+    }
+    if reader.rate() != recipe.sample_rate() || reader.frames() != recipe.frame_count() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "sample metadata changed since admission",
         ));
     }
-    let mut resident = Vec::with_capacity(ranges.len());
+    let mut builder = recipe.builder();
+    if page.len()!=PAGE_FRAMES {return Err(io::Error::new(io::ErrorKind::InvalidInput,"invalid head decoder workspace"));}
     for range in ranges {
-        if canceled() {
-            return Err(canceled_head());
-        }
-        let mut frames = vec![[0.0; 2]; range.len()];
-        for (page, out) in frames.chunks_mut(PAGE_FRAMES).enumerate() {
+        let mut position = range.start;
+        while position < range.end {
             if canceled() {
                 return Err(canceled_head());
             }
+            let frames = &mut page[..(range.end - position).min(PAGE_FRAMES)];
             let read_start = timing.as_ref().map(|_| Instant::now());
-            let result = reader.read(range.start + page * PAGE_FRAMES, out);
+            let result = reader.read(position, frames);
             if let Some(timing) = &mut timing {
                 timing.read_decode_us = timing
                     .read_decode_us
                     .saturating_add(read_start.unwrap().elapsed().as_micros() as u64);
             }
             result?;
+            if canceled() {
+                return Err(canceled_head());
+            }
+            let pack_start = timing.as_ref().map(|_| Instant::now());
+            let result = builder
+                .push(position, frames)
+                .map_err(|e| head_prepare_error(recipe, e));
+            if let Some(timing) = &mut timing {
+                timing.validate_pack_us = timing
+                    .validate_pack_us
+                    .saturating_add(pack_start.unwrap().elapsed().as_micros() as u64);
+            }
+            result?;
+            position += frames.len();
         }
-        resident.push((range.start, frames.into_boxed_slice()));
     }
     if canceled() {
         return Err(canceled_head());
     }
-    let pack_start = timing.as_ref().map(|_| Instant::now());
-    let result = pcm
-        .prepare_ranges(resident)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
-    if let Some(timing) = &mut timing {
-        timing.validate_pack_us = pack_start.unwrap().elapsed().as_micros() as u64;
-    }
-    result
+    Ok(builder.finish())
 }
-
+fn head_prepare_error(recipe: &HeadPreparer, error: sampler_core::Error) -> io::Error {
+    if error == sampler_core::Error::Capacity {
+        if let Some(status) = recipe
+            .budget_status()
+            .filter(|s| s.limit_bytes < usize::MAX)
+        {
+            // A failed exact reservation proves this lower bound; concurrent
+            // transactions may release storage before this diagnostic is read.
+            return head_budget_error(status.limit_bytes, status.limit_bytes + 1);
+        }
+    }
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
 /// A bounded registry for sources published after initial plan compilation.
 /// Only decoder/control workers take its lock; audio carries numeric AssetIds.
 #[derive(Clone, Default)]
@@ -753,11 +791,17 @@ pub struct Streamer {
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
     head_budget: usize,
+    residency_budget: HeadBudget,
+    head_fallback: Option<HeadBudgetExceeded>,
     // Control/reload writers share one budget snapshot; audio never takes this lock.
     head_mutation: Arc<Mutex<()>>,
 }
 
 impl Streamer {
+    /// Packed current, staged and retired heads across all shared writers.
+    /// Decode workspaces and page pools are reported separately.
+    pub fn head_budget_status(&self)->HeadBudgetStatus {self.residency_budget.status()}
+    pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
     pub fn dynamic_sources(&self) -> DynamicSources {
         self.dynamic.clone()
     }
@@ -927,6 +971,7 @@ impl Streamer {
             head_ranges: 0,
             head_source_frames: 0,
             head_budget: policy.head_budget,
+            head_fallback: None,
             full_bytes: full,
             pool_pages: policy.voices * PAGES_PER_VOICE,
             pool_bytes: 0,
@@ -963,6 +1008,7 @@ impl Streamer {
             lazy,
             head_budget,
             pinned_wavetables,
+            false,
             &|| false,
         )
     }
@@ -975,6 +1021,7 @@ impl Streamer {
         lazy: bool,
         head_budget: usize,
         pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
@@ -999,39 +1046,67 @@ impl Streamer {
         if canceled() {
             return Err(canceled_head());
         }
-        let mut read = HashSet::new();
-        let mut selected = Vec::new();
-        let mut base_bytes = 0usize;
-        let mut minimum = 0usize;
-        for pcm in assets.iter().filter(|pcm| read.insert(pcm.asset_id())) {
-            let id = pcm.asset_id();
-            let ranges = &table[&id];
-            if (!lazy || pinned_wavetables.contains(&id)) && !ranges.is_empty() {
+        let select = |lazy: bool| {
+            let mut read = HashSet::new();
+            assets
+                .iter()
+                .filter(|pcm| read.insert(pcm.asset_id()))
+                .filter_map(|pcm| {
+                    let ranges = &table[&pcm.asset_id()];
+                    ((!lazy || pinned_wavetables.contains(&pcm.asset_id())) && !ranges.is_empty())
+                        .then_some((pcm, ranges.as_slice()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut selected = select(lazy);
+        let residency_budget = HeadBudget::new(head_budget);
+        // Binding and publication serialize on each Pcm's control mutation lock.
+        // Escaped unbudgeted recipes can never publish into a bound asset.
+        for pcm in assets {
+            pcm.bind_head_budget(&residency_budget).map_err(|e| {
+                if e == sampler_core::Error::Capacity {
+                    head_budget_error(head_budget, head_budget.saturating_add(1))
+                } else {
+                    io::Error::new(io::ErrorKind::InvalidInput, e)
+                }
+            })?;
+        }
+        let prepare = |selected: &[(&Pcm, &[Range<usize>])]| {
+            let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
                 let (min, _) = range_bounds(pcm, ranges)?;
-                minimum = minimum
-                    .checked_add(min)
-                    .ok_or_else(|| io::Error::other("sample head size overflow"))?;
-                selected.push((pcm, ranges.as_slice()));
-            } else {
-                base_bytes = base_bytes
-                    .checked_add(pcm.head_bytes())
-                    .ok_or_else(|| io::Error::other("resident head size overflow"))?;
+                sum.checked_add(min)
+                    .ok_or_else(|| io::Error::other("sample head size overflow"))
+            })?;
+            let minimum = residency_budget
+                .status()
+                .held_bytes
+                .checked_add(minimum)
+                .ok_or_else(|| io::Error::other("sample head size overflow"))?;
+            if minimum > head_budget {
+                return Err(head_budget_error(head_budget, minimum));
             }
-        }
-        let min_total = base_bytes
-            .checked_add(minimum)
-            .ok_or_else(|| io::Error::other("sample head size overflow"))?;
-        if min_total > head_budget {
-            return Err(head_budget_error(head_budget, min_total));
-        }
-        let (staged, bytes) = head_prepare::prepare(
-            &selected,
-            &sources,
-            head_budget,
-            base_bytes,
-            decoders,
-            canceled,
-        )?;
+            head_prepare::prepare(selected, &sources, &residency_budget, decoders, canceled)
+        };
+        let mut head_fallback = None;
+        let (staged, bytes) = match prepare(&selected) {
+            Ok(staged) => staged,
+            Err(error) => {
+                let reason = error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<HeadBudgetExceeded>())
+                    .copied();
+                if let Some(reason) = reason.filter(|_| allow_cold_fallback && !lazy) {
+                    // Failed preparation publishes nothing and releases every
+                    // staging lease before this retry, over the same sources.
+                    selected = select(true);
+                    let staged = prepare(&selected)?;
+                    head_fallback = Some(reason);
+                    staged
+                } else {
+                    return Err(error);
+                }
+            }
+        };
         if canceled() {
             return Err(canceled_head());
         }
@@ -1044,6 +1119,9 @@ impl Streamer {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             }
         }
+        // One page workspace shared by the explicit-residency worker recipes,
+        // rather than a retained decoder or head-sized buffer per source.
+        let residency_page=Arc::new(Mutex::new(vec![[0.;2];PAGE_FRAMES]));
         // Each asset keeps source metadata, never a backup of sample buffers.
         // Explicit KSP reload returns staging ranges to the core's residency worker.
         for pcm in assets {
@@ -1054,17 +1132,23 @@ impl Streamer {
             ) else {
                 continue;
             };
-            pcm.set_residency_loader(move || {
+            let recipe = pcm.head_preparer();
+            let residency_page=residency_page.clone();
+            pcm.set_prepared_residency_loader(move || {
+                let mut page=residency_page.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut reader = source.open().map_err(|_| sampler_core::Error::NotReady)?;
-                let mut resident = Vec::with_capacity(ranges.len());
-                for range in &ranges {
-                    let mut frames = vec![[0.; 2]; range.len()];
-                    reader
-                        .read(range.start, &mut frames)
-                        .map_err(|_| sampler_core::Error::NotReady)?;
-                    resident.push((range.start, frames.into_boxed_slice()));
-                }
-                Ok(resident)
+                prepare_head_ranges(&recipe, &mut reader, &ranges, &mut page, &|| false, None).map_err(
+                    |error| {
+                        if error
+                            .get_ref()
+                            .is_some_and(|e| e.is::<HeadBudgetExceeded>())
+                        {
+                            sampler_core::Error::Capacity
+                        } else {
+                            sampler_core::Error::NotReady
+                        }
+                    },
+                )
             })
             .map_err(|e| io::Error::other(e.to_string()))?;
         }
@@ -1083,6 +1167,8 @@ impl Streamer {
             threads: Vec::new(),
             reloader: None,
             head_budget,
+            residency_budget,
+            head_fallback,
             head_mutation: Arc::new(Mutex::new(())),
         };
         for _ in 0..decoders.max(1) {
@@ -1129,9 +1215,10 @@ impl Streamer {
         streamer.reloader = Some(reloader);
         Ok((streamer, bytes))
     }
-
     /// Purge the start ranges of streamed assets not played since `before`
-    /// (runtime clock). Returns the bytes freed. Their next start fails
+    /// (runtime clock). Returns bytes removed from current coverage; retired
+    /// storage remains charged until control reclaims its final audio reader.
+    /// Their next start fails
     /// `NotReady` and marks them for `reload`.
     pub fn purge(&self, assets: &[Pcm], before: u64) -> usize {
         self.trim(assets, 0, before)
@@ -1139,7 +1226,8 @@ impl Streamer {
 
     /// Purge start ranges, least recently played first, until those of
     /// `assets` take at most `budget` bytes; only assets not played since
-    /// `before` are purged. Returns the bytes freed.
+    /// `before` are purged. Returns bytes removed from current coverage, which
+    /// may remain physically held in retired generations.
     pub fn trim(&self, assets: &[Pcm], budget: usize, before: u64) -> usize {
         let _mutation = self
             .head_mutation
@@ -1188,14 +1276,19 @@ fn reload(
     assets: &[Pcm],
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     ranges: &HashMap<AssetId, Vec<Range<usize>>>,
-    budget: usize,
+    _budget: usize,
     head_mutation: &Mutex<()>,
 ) -> io::Result<usize> {
     let _mutation = head_mutation
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut count = 0;
-    let mut held = None;
+    let mut page=Vec::new();
+    // Reclaim only on this worker. Dropping an audio read guard alone must
+    // leave its retired generation and lease charged.
+    for pcm in assets {
+        pcm.head_bytes();
+    }
     for pcm in assets {
         if !pcm.residency_permitted() || pcm.resident_frames().is_some() || !pcm.take_cold() {
             continue;
@@ -1204,42 +1297,26 @@ fn reload(
         let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
             continue;
         };
-        // Starts get their onset from the prioritized page workers as well.
-        // Cache complete start ranges only within the fixed admission budget;
-        // a large/offset-heavy source keeps streaming rather than growing RSS.
-        let estimate = ranges.iter().fold(0usize, |sum, range| {
-            sum.saturating_add(range.len().saturating_mul(size_of::<Frame>()))
-        });
-        // Scan once, only on a cold request; serialized writers keep this
-        // local total valid through all reads/publications in the batch.
-        let held = held.get_or_insert_with(|| {
-            assets
-                .iter()
-                .fold(0usize, |sum, pcm| sum.saturating_add(pcm.head_bytes()))
-        });
-        if held.saturating_add(estimate) <= budget {
-            let previous = pcm.head_bytes();
-            let loaded = match source
-                .open_stream()
-                .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges))
-            {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    if !matches!(
-                        error.kind(),
-                        io::ErrorKind::InvalidData
-                            | io::ErrorKind::UnexpectedEof
-                            | io::ErrorKind::NotFound
-                            | io::ErrorKind::PermissionDenied
-                    ) {
-                        pcm.mark_cold();
-                    }
-                    return Err(error);
+        if page.is_empty() {page.resize(PAGE_FRAMES,[0.;2]);}
+        let loaded = match source
+            .open_stream()
+            .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges,&mut page))
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                ) {
+                    pcm.mark_cold();
                 }
-            };
-            *held = held.saturating_sub(previous).saturating_add(loaded);
-            count += 1;
-        }
+                return Err(error);
+            }
+        };
+        count += usize::from(loaded > 0);
     }
     Ok(count)
 }
@@ -1672,6 +1749,7 @@ impl Streamed {
             policy.lazy,
             policy.head_budget,
             pinned_wavetables,
+            policy.allow_cold_fallback,
             canceled,
         )
         .map_err(|e| {
@@ -1682,6 +1760,7 @@ impl Streamed {
             }
         })?;
         report.head_bytes = bytes;
+        report.head_fallback = streamer.head_fallback();
         cache.set_wake(
             streamer
                 .threads
@@ -1846,9 +1925,10 @@ mod tests {
                     )
                     .unwrap();
                     let limits = sampler_core::Limits::for_plan(&plan, 2, 1);
-                    let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+                    let (cache,_worker)=StreamCache::new(4).unwrap();
+                    let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
                     runtime
-                        .note_on(
+                        .trigger(
                             sampler_core::Input {
                                 protocol: sampler_core::Protocol::Native,
                                 port: 0,
@@ -1861,8 +1941,10 @@ mod tests {
                             1.,
                         )
                         .unwrap();
+                    assert_eq!(runtime.voice_count(),1);
                     let mut frames = [[0.; 2]; 64];
                     runtime.render(&mut frames).unwrap();
+                    assert!(frames.iter().flatten().any(|v|v.abs()>0.0001),"golden source must actually sound");
                     frames.map(|f| f.map(f32::to_bits))
                 };
                 assert_eq!(
@@ -2043,6 +2125,59 @@ mod tests {
     }
 
     #[test]
+    fn cold_fallback_is_opt_in_typed_and_preserves_mandatory_residency() {
+        for (allow,pinned,budget,success,partial) in [
+            (false,false,80,false,false),
+            (true,false,80,true,true),
+            (true,true,80,true,true),
+            (true,true,63,false,false),
+        ] {
+            let pcm=Pcm::streamed(48000,8192).unwrap();
+            let other=Pcm::streamed(48000,8192).unwrap();
+            let assets=vec![pcm,other];
+            let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),cancel:None,frames:8192,wide:false}) as Arc<dyn AssetSource>)).collect();
+            let (_,worker)=StreamCache::new(1).unwrap();
+            let pinned_ids=if pinned {HashSet::from([assets[0].asset_id()])} else {HashSet::new()};
+            let result=Streamer::start_cancelable(sources,&assets,vec![vec![0..32];2],worker,2,false,budget,pinned_ids,allow,&||false);
+            assert_eq!(result.is_ok(),success,"allow={allow} pinned={pinned} budget={budget}");
+            if success {
+                let (streamer,bytes)=result.unwrap();
+                assert_eq!(streamer.head_fallback().is_some(),partial);
+                assert_eq!(bytes,if pinned{64}else{0});
+                assert_eq!(streamer.head_budget_status().held_bytes,bytes);
+                assert!(streamer.head_budget_status().peak_bytes<=budget);
+                assert_eq!(assets[0].resident_covers(0..32),pinned);
+                assert!(!assets[1].resident_covers(0..32));
+                assert!(!streamer.head_readiness(&assets).complete());
+            } else {
+                assert!(result.err().unwrap().get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+                assert!(assets.iter().all(|p|p.head_bytes()==0));
+            }
+        }
+    }
+
+    #[test]
+    fn cold_fallback_does_not_swallow_source_or_metadata_failures() {
+        for wrong_header in [false,true] {
+            struct Failed(bool);
+            impl AssetSource for Failed {
+                fn open(&self)->io::Result<SampleReader> {
+                    if self.0 {Ok(SampleReader::custom(44100,64,|_,out|{out.fill([0.5;2]);Ok(())}))}
+                    else {Err(io::Error::new(io::ErrorKind::InvalidData,"admitted source changed"))}
+                }
+            }
+            let pcm=Pcm::streamed(48000,64).unwrap();
+            let sources=HashMap::from([(pcm.asset_id(),Arc::new(Failed(wrong_header)) as Arc<dyn AssetSource>)]);
+            let (_,worker)=StreamCache::new(1).unwrap();
+            let error=Streamer::start_cancelable(sources,std::slice::from_ref(&pcm),vec![vec![0..32]],worker,1,false,1024,HashSet::new(),true,&||false).err().unwrap();
+            assert_eq!(error.kind(),io::ErrorKind::InvalidData);
+            assert!(!error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+            assert_eq!(pcm.head_bytes(),0);
+            assert_eq!(pcm.head_preparer().budget_status().unwrap().held_bytes,0);
+        }
+    }
+
+    #[test]
     fn eager_heads_reject_short_source_and_cancel_before_publication() {
         for action in ["short", "cancel_before", "cancel_during"] {
             let pcm = Pcm::streamed(48000, 8192).unwrap();
@@ -2066,6 +2201,7 @@ mod tests {
                 false,
                 8192 * 2,
                 HashSet::new(),
+                false,
                 &|| cancel.load(Ordering::Relaxed),
             );
             assert_eq!(
@@ -2365,6 +2501,8 @@ mod tests {
         let assets: Vec<_> = (0..count)
             .map(|_| Pcm::streamed(48000, 64).unwrap())
             .collect();
+        let residency_budget=HeadBudget::new(budget);
+        for pcm in &assets {pcm.bind_head_budget(&residency_budget).unwrap();}
         let streamer = Streamer {
             dynamic: DynamicSources::default(),
             pinned_wavetables: HashSet::new(),
@@ -2384,6 +2522,8 @@ mod tests {
             threads: Vec::new(),
             reloader: None,
             head_budget: budget,
+            residency_budget,
+            head_fallback: None,
             head_mutation: Arc::new(Mutex::new(())),
         };
         (streamer, assets)
@@ -2398,11 +2538,12 @@ mod tests {
         for pcm in &assets {
             pcm.mark_cold();
         }
-        // First head is replaced, not charged twice. Each packed mono head
-        // takes 64 bytes, but admission still reserves 256 raw bytes per read.
-        assert_eq!(streamer.reload(&assets).unwrap(), 2);
-        assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), 128);
-        assert_eq!(assets[2].head_frames(), 0);
+        // The first head is transactionally replaced. Both missing mono heads
+        // also fit exact packed admission, including temporary old generations.
+        assert_eq!(streamer.reload(&assets).unwrap(), 3);
+        assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), 192);
+        assert_eq!(assets[2].head_frames(), 32);
+        assert_eq!(streamer.head_budget_status().held_bytes,192);
     }
 
     #[test]
@@ -2601,7 +2742,8 @@ mod tests {
             }
             resume.send(()).unwrap();
             assert!(entered);
-            assert_eq!(loading.join().unwrap().unwrap(), 1);
+            assert_eq!(loading.join().unwrap().unwrap(), 0,
+                "purged staging transaction is not a committed reload");
         });
         let until = Instant::now() + Duration::from_secs(3);
         while assets[0].head_bytes() != 0 {
@@ -2702,21 +2844,20 @@ mod tests {
         );
         assets[0].mark_cold();
         std::thread::scope(|scope| {
-            let first = scope.spawn(|| streamer.reload(&assets));
+            let first = scope.spawn(|| streamer.reload(&assets[..1]));
             let entered = received.recv_timeout(Duration::from_secs(5));
             let locked = streamer.head_mutation.try_lock().is_err();
             assets[1].mark_cold();
-            let second = scope.spawn(|| streamer.reload(&assets));
+            let second = scope.spawn(|| streamer.reload(&assets[1..]));
             resume.send(()).unwrap();
             assert!(entered.is_ok());
             assert!(
                 locked,
                 "a second reload cannot take a stale budget snapshot"
             );
-            assert_eq!(
-                first.join().unwrap().unwrap() + second.join().unwrap().unwrap(),
-                1
-            );
+            assert_eq!(first.join().unwrap().unwrap(),1);
+            let error=second.join().unwrap().err().unwrap();
+            assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
         });
         assert_eq!(assets[0].head_bytes(), streamer.head_budget);
         assert_eq!(assets[1].head_bytes(), 0);
