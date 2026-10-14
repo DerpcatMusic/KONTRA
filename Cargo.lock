@@ -4284,6 +4284,7 @@ dependencies = [
  "mlua",
  "roxmltree",
  "rtrb",
+ "rustix",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
