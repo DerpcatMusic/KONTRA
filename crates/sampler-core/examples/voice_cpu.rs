@@ -74,7 +74,7 @@ fn main() {
                 external_id: Some(id as i32),
             },
             60,
-            (0.5 + id as f64 / 512.).min(1.),
+            0.5 + id as f64 / if voices <= 256 { 512. } else { voices as f64 * 2. },
         )
         .unwrap();
     }
