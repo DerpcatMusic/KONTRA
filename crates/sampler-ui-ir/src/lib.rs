@@ -782,6 +782,30 @@ pub enum Presentation {
 
 // ---------------------------------------------------------------- queries
 
+/// Documented Kontakt back-to-front type priority within one Z layer.
+/// Image is the shared-IR representation of a picture label; panels paint no
+/// pixels and retain their position before ordinary controls.
+fn kontakt_paint_rank(kind: &Kind) -> u8 {
+    match kind {
+        Kind::Panel => 0,
+        Kind::FileSelector { .. } => 1,
+        Kind::Waveform => 2,
+        Kind::Wavetable { .. } => 3,
+        Kind::LevelMeter { .. } => 4,
+        Kind::Label | Kind::Image => 5,
+        Kind::Knob { .. } => 6,
+        Kind::Slider { .. } => 7,
+        Kind::Switch => 8,
+        Kind::Button { .. } => 9,
+        Kind::ValueEdit { .. } => 10,
+        Kind::Menu { .. } => 11,
+        Kind::Table { .. } => 12,
+        Kind::Xy { .. } => 13,
+        Kind::TextEdit => 14,
+        Kind::MouseArea => 15,
+    }
+}
+
 impl Interface {
     /// Which assets `presentation` draws, indexed like [`Self::assets`].
     /// Everything else need not be decoded, or may be released.
@@ -851,7 +875,8 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// `page`'s widgets back to front. Kontakt layers order by widget type,
+    /// then declaration order (KSP Control Parameters, `$CONTROL_PAR_Z_LAYER`).
     /// Kontakt uses global layers; native graphs order siblings and draw each
     /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
@@ -871,7 +896,10 @@ impl Interface {
                 .filter(|(_, w)| w.page == page)
                 .map(|(n, _)| WidgetRef(n))
                 .collect();
-            out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
+            out.sort_by_key(|n| {
+                let w = &self.widgets[n.0];
+                (w.z, kontakt_paint_rank(&w.kind), n.0)
+            });
             return out;
         }
         let mut children: Vec<Vec<WidgetRef>> = vec![Vec::new(); self.widgets.len() + 1];
@@ -1170,13 +1198,33 @@ mod tests {
         ui.widgets[1].z = 2;
         assert_eq!(
             ui.draw_order(PageRef(0)),
-            [WidgetRef(0), WidgetRef(1), WidgetRef(2)]
+            [WidgetRef(0), WidgetRef(2), WidgetRef(1)],
+            "a label remains behind a knob within the same Kontakt layer"
         );
         ui.widgets[0].hidden = true;
         assert!(
             !ui.visible(WidgetRef(1)),
             "global layers retain inherited hiding"
         );
+    }
+
+    #[test]
+    fn kontakt_layers_use_native_type_priority_before_declaration_order() {
+        let mut ui = sample();
+        ui.widgets = vec![
+            Widget::new("menu", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Menu { items: vec![] }),
+            Widget::new("slider", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Slider { range: Range::default(), orientation: Orientation::Vertical }),
+            Widget::new("first-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
+            Widget::new("second-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
+            Widget::new("meter", PageRef(0), Rect::new(0, 0, 20, 20), Kind::LevelMeter { orientation: Orientation::Vertical }),
+        ];
+        // NI's documented top-to-bottom priority is Menu, Slider, Label, Meter.
+        // The two labels retain their declaration-order tie break.
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(4), WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0)]);
+        ui.widgets[4].z = 1;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
+        ui.source = Source::PerformanceView;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
     }
 
     #[test]

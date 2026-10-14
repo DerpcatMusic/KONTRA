@@ -139,6 +139,10 @@ impl FaultInbox {
     pub(crate) fn take_dropped(&self) -> u64 {
         self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
+    #[cfg(feature = "shots")]
+    pub(crate) fn counts(&self) -> (usize, u64) {
+        (self.queue.len(), self.dropped.load(std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// Problems while playing, cumulative since the part was installed.
