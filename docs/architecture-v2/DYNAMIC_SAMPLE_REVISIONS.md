@@ -180,6 +180,33 @@ example's first 64 detailed observations fill. The example can compare bounded
 installed resident-head windows against independently reopened registered readers,
 including header geometry, without saving sample payloads or rendered audio.
 
+The final map-based receipt (`ao-layer-next-resolved-source-evidence.json`) again
+completed all 1,746 tasks successfully and replaced exactly 1,746 source identities.
+It independently reopened every changed source: **4,656 resident windows / 1,191,936
+frames matched bit for bit**, with zero header mismatches, missing registrations,
+read failures or truncated verification. Both numeric FNV64 receipts were
+`2777464607603900197`. The comparisons cover bounded resident windows and header
+identity; they do not compare every source frame or native rendering.
+
+| All 1,746 jobs, measured wall spans | Total | Maximum per job |
+| --- | ---: | ---: |
+| Exact path lookup (5,238 candidate roots) | 12.30 ms | 68.79 µs |
+| Reader admission/open | 478.86 ms | 29.04 ms |
+| File metadata | 14.84 ms | 55.27 µs |
+| Resolution including open/metadata | 506.44 ms | 29.09 ms |
+| Preparation/decode/packing/registration | 293.46 ms | 449.43 µs |
+| Metadata queue wait (overlapping task lifetimes) | 19,884.06 s | 21.45 s |
+| Commit acknowledgment wait (overlapping tasks) | 516.01 s | 714.49 ms |
+
+The complete process took 32.09 seconds, including initialization and a 603.09 ms
+independent readback pass. Every process observation saw compiler activity; OS
+cache state was uncontrolled. Neither this duration nor the earlier 75.89-second
+scan-based successful run is an isolated speed comparison. The stage clocks
+instead expose that source preparation spans account for much less wall time
+than the serialized task queue/acknowledgment path under these conditions. Owner
+callback/UI/command scheduling attribution remains separate work. No notes were
+played, so zero reported stream underruns is not a disk-deadline receipt.
+
 Independent path fixtures cover nested-module raw context, exact ordered roots,
 explicit volumes, ASCII case folding with unchanged Unicode names, extension
 ambiguity, escape rejection, whole-bundle roots, and absence-only fallback.
