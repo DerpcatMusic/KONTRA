@@ -593,6 +593,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
         face.input.meters = shared.widget_meters(&face.face, generation);
+        face.input.uvi_meters = shared.uvi_widget_meters(&face.face, generation);
         let waveforms =
             shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
         face.input.wave_duration_us = waveforms
