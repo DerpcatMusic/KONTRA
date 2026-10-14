@@ -1,6 +1,32 @@
 //! Wait-capable load callbacks use the live scheduler, never static polling.
 use sampler_core::{Limits, MidiCompletion, Outcome, Prepared, Runtime, ScriptInstanceId};
 use sampler_ksp::{Environment, model::PersistenceCompletion};
+
+/// A snapshot load runs `on persistence_changed` as the instrument first, then
+/// with the snapshot's values: ANALOG STRINGS' `$init_flag` re-routes its
+/// buses only on the second pass.
+#[test]
+fn snapshot_load_runs_the_instrument_pass_before_the_snapshot_pass() {
+    use sampler_ksp::model::Value;
+    let source = "on init\ndeclare $init_flag := 1\ndeclare $level := 0\nmake_persistent($level)\nend on\n\
+        on persistence_changed\nif ($init_flag = 0)\nset_engine_par($ENGINE_PAR_VOLUME, $level, -1, -1, $NI_BUS_OFFSET)\nend if\n$init_flag := 0\nend on";
+    let bus_volume = |instrument: Option<i32>| {
+        let environment = Environment {
+            persisted: [("$level".to_owned(), Value::Int(500_000))].into(),
+            instrument_persisted: instrument
+                .map(|level| ([("$level".to_owned(), Value::Int(level))].into(), Default::default())),
+            ..Default::default()
+        };
+        sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &environment)
+            .unwrap()
+            .engine_pars()
+            .into_iter()
+            .find(|w| w.parameter.ends_with("ENGINE_PAR_VOLUME"))
+            .map(|w| w.value)
+    };
+    assert_eq!(bus_volume(Some(1)), Some(500_000), "second pass sees the snapshot");
+    assert_eq!(bus_volume(None), None, "an instrument load has one pass");
+}
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
 

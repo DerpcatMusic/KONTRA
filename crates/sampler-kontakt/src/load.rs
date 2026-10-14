@@ -654,6 +654,23 @@ pub fn prepare(
     prepare_inner(instrument, pcm, options, None).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
+/// A behavior's saved state as the KSP evaluator's scalar and array values.
+fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
+    let (mut scalars, mut arrays) = sampler_ksp::SavedValues::default();
+    for (name, saved) in state {
+        let name = name.clone();
+        match saved {
+            ir::Saved::Int(n) => _ = scalars.insert(name, Value::Int(*n as i32)),
+            ir::Saved::Real(r) => _ = scalars.insert(name, Value::Real(*r)),
+            ir::Saved::Text(t) => _ = scalars.insert(name, Value::Text(t.clone())),
+            ir::Saved::Ints(v) => _ = arrays.insert(name, v.iter().map(|n| Value::Int(*n as i32)).collect()),
+            ir::Saved::Reals(v) => _ = arrays.insert(name, v.iter().map(|r| Value::Real(*r)).collect()),
+            ir::Saved::Texts(v) => _ = arrays.insert(name, v.iter().cloned().map(Value::Text).collect()),
+        }
+    }
+    (scalars, arrays)
+}
+
 /// What a script may query while its `on init` runs.
 pub(crate) fn script_environment(
     behavior: &ir::Behavior,
@@ -663,6 +680,7 @@ pub(crate) fn script_environment(
     zones: &[ir::Zone],
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
+    let (persisted, persisted_arrays) = saved_values(&behavior.state);
     sampler_ksp::Environment {
         evaluation_budget: None,
         coverage: None,
@@ -705,32 +723,9 @@ pub(crate) fn script_environment(
             .collect(),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
-        persisted: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let value = match saved {
-                    ir::Saved::Int(n) => Value::Int(*n as i32),
-                    ir::Saved::Real(r) => Value::Real(*r),
-                    ir::Saved::Text(t) => Value::Text(t.clone()),
-                    _ => return None,
-                };
-                Some((name.clone(), value))
-            })
-            .collect(),
-        persisted_arrays: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let values = match saved {
-                    ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
-                    ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
-                    ir::Saved::Texts(v) => v.iter().cloned().map(Value::Text).collect(),
-                    _ => return None,
-                };
-                Some((name.clone(), values))
-            })
-            .collect(),
+        persisted,
+        persisted_arrays,
+        instrument_persisted: None,
         performance_view,
         midi_object: Default::default(),
         folders: Default::default(),
@@ -819,6 +814,8 @@ pub(crate) fn initialize_scripts(
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
+            environment.instrument_persisted =
+                instrument.snapshot_base_state.get(index).map(|state| saved_values(state));
             environment.folders = script_folders(library);
             environment.control_values.extend(
                 control_values

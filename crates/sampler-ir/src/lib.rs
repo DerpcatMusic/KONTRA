@@ -131,6 +131,12 @@ pub struct Instrument {
     pub native_family: Option<NativeFamily>,
     /// Native groups with an active sample-start modulation target.
     pub native_start_mod_groups: Option<Vec<u32>>,
+    /// A snapshot load: each behavior's own saved state before the snapshot's
+    /// values replaced it (`behaviors[i].state`); empty otherwise. Scripts run
+    /// `on persistence_changed` with it first, as Kontakt loads the instrument
+    /// and then applies the snapshot.
+    #[cfg_attr(feature = "cache", serde(skip))]
+    pub snapshot_base_state: Vec<Vec<(String, Saved)>>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
