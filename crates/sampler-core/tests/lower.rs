@@ -1012,6 +1012,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         unit: ir::ControlUnit::None,
     };
     instrument.chains[0].pre_amplitude[0] = ir::Processor::Daft(ir::Daft {
+        address: None,
         gain: 0.,
         cutoff: 0.,
         resonance: 0.,
@@ -1571,6 +1572,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                         })
                     } else {
                         ir::Processor::Daft(ir::Daft {
+                            address: None,
                             gain: 0.,
                             cutoff,
                             resonance: 0.1,
@@ -1709,6 +1711,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                     })
                 } else {
                     ir::Processor::Daft(ir::Daft {
+                        address: None,
                         gain,
                         cutoff: 0.5,
                         resonance,
@@ -2786,8 +2789,9 @@ fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
         out[511][0]
     };
     let (authored, held) = (level(None), level(Some(1_000_000)));
-    // The envelope sits at sustain after 1 ms: 0 leaves the route's -40 dB, 1 adds none.
-    assert!((held / authored).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
+    // The envelope sits at sustain after 1 ms: 0 applies none of the route's
+    // -40 dB, sustain 1 all of it.
+    assert!((authored / held).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
 }
 
 fn native_primary_fixture() -> ir::Instrument {
