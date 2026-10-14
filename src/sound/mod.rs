@@ -258,6 +258,9 @@ pub struct KeyLook {
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
+    /// The resolved instrument owning these resources, including when the
+    /// selected preset is a snapshot rather than an instrument file.
+    pub resource_path: Option<std::path::PathBuf>,
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
     pub uvi_revision: u64,
     pub uvi_source: Option<(String, u32, String)>,

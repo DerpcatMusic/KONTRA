@@ -1,6 +1,6 @@
 //! The rack: every part stacked Kontakt-style, each under its own header.
 //!
-//! A header, one compact line, names the part, steps its preset, routes it
+//! A header, two compact lines, names the part, steps its preset, routes it
 //! and mixes it; its chevron folds the part down to the header alone (the
 //! height springs), its ✕ removes it.
 //! Below an open header sit its second row (views and performance chips),
@@ -32,9 +32,9 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
-/// A header's height with the rule under it: one line of controls. Parts
+/// A header's height with the rule under it: name/actions, then routing/mix. Parts
 /// shrink no further, and stuck headers stack at this pitch.
-pub const SLIM: f64 = CONTROL + 6.;
+pub const SLIM: f64 = CONTROL * 2. + 6.;
 
 /// Parts built in a frame before the rack knows where they are.
 const UNPLACED: usize = 4;
@@ -914,7 +914,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     } else {
         SPACE
     });
-    let mut tail = vec![switches];
+    let mut tail = Vec::new();
     if !narrow {
         tail.push(dot);
     }
@@ -922,9 +922,19 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     tail.push(more_el);
     tail.extend(remove_el);
     let tail = cluster(tail).gap(TIGHT + 1.);
-    let body = row![fold_el, name_row, mix, tail]
-        .gap(if narrow { TIGHT } else { SPACE })
+    let top = row![fold_el, name_row, tail]
+        .gap(SPACE)
         .align(Align::Center)
+        .h(CONTROL)
+        .w(Len::Pct(100.));
+    let routing = row![mix, spacer().flex(1), switches]
+        .gap(SPACE)
+        .align(Align::Center)
+        .h(CONTROL)
+        .w(Len::Pct(100.));
+    let body = col![top, routing]
+        .gap(0)
+        .align(Align::Stretch)
         .pad(edges(0., SPACE, 0., TIGHT))
         .flex(1)
         .min_w(0);
