@@ -1610,6 +1610,8 @@ pub enum ProcessorParameter {
     /// Hertz, on a Filter (live: scripted insert effects).
     Frequency,
     Quality,
+    /// Octaves: a UVI DigitalEq band's width (band pass, notch, peak).
+    Bandwidth,
     /// Decibels: a Filter's boost or a Gain's level.
     GainDecibels,
     /// Decibels subtracted from `GainDecibels` (a relative shelf).

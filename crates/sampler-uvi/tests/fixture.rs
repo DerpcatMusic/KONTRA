@@ -800,9 +800,8 @@ fn digital_eq_slope_sets_the_pass_band_order() {
             _ => None,
         })
         .collect();
-    assert_eq!(bands, [(ir::fx::eq::Kind::HighPass, 4), (ir::fx::eq::Kind::LowPass, 4)]);
-    let steep = instrument.unsupported.iter().filter(|u| u.feature.contains("steeper than 24")).count();
-    assert_eq!(steep, 1);
+    // Slope 3 is order 4 (24 dB/oct), slope 5 order 8 (48 dB/oct), under the native band design.
+    assert_eq!(bands, [(ir::fx::eq::Kind::HighPass, 4), (ir::fx::eq::Kind::LowPass, 8)]);
 }
 
 #[test]

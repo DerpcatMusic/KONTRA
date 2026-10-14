@@ -8,12 +8,15 @@
 //! - [`Law::Solid`]: the native Solid G-EQ coefficient law (`solid.rs`), one stage per native
 //!   biquad (`poles` carries the biquad index), realised by the kernel.
 //! - [`Law::Rbj`]: physical Hertz/Q/dB (`generic.rs`), also the home of scripted UVI EQ inserts.
+//! - [`Law::UviDigital`]: UVI DigitalEq's order-1..16 band design (`digital.rs`), one stage per
+//!   section, realised by the kernel.
 //! - [`Law::Cookbook`]: Hertz/Q/dB through the bilinear RBJ cookbook (`kernel::cookbook`), the
 //!   native law of UVI's TwoBandEq/ThreeBandEq/ParametricEQ, realised by the kernel.
 //! A [`sampler_ir::fx::eq::Config`] is a serial cascade of bands, lowered here into one stage per
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the
 //! stage's `ProcessorState`, so nothing allocates while rendering.
 //!
+mod digital;
 mod generic;
 mod kernel;
 pub(super) mod legacy;
@@ -45,6 +48,10 @@ pub struct EqBand {
     pub poles: u8,
     /// Effective Q is `q * (1 + proportional_q * |boost| / 12)` (generic laws only).
     pub proportional_q: f32,
+    /// Octaves (`UviDigital` band pass, notch and peak).
+    pub bandwidth: Parameter,
+    /// `UviDigital`: which section of the band's design this stage runs (`poles` is the order).
+    pub section: u8,
 }
 
 impl EqBand {
@@ -61,6 +68,8 @@ impl EqBand {
             enabled: c(1.),
             poles: 2,
             proportional_q: 0.,
+            bandwidth: c(1.),
+            section: 0,
         }
     }
 
@@ -71,6 +80,14 @@ impl EqBand {
         common
             && match self.law {
                 Law::Rbj | Law::Cookbook => live(self.frequency) && live(self.q) && live(self.gain_db),
+                Law::UviDigital => {
+                    live(self.frequency)
+                        && within(self.q, 1e-3, 1e3)
+                        && live(self.gain_db)
+                        && within(self.bandwidth, 1e-3, 20.)
+                        && digital::ORDERS.contains(&self.poles)
+                        && usize::from(self.section) < digital::sections(self.kind, self.poles)
+                }
                 Law::KontaktLegacy => {
                     self.kind == Kind::Peak
                         && within(self.frequency, 0., 1.)
@@ -105,6 +122,7 @@ impl EqBand {
                 gain: self.gain_db.compile(bindings),
                 reference: self.reference_db.compile(bindings),
                 enabled: self.enabled.compile(bindings),
+                bandwidth: self.bandwidth.compile(bindings),
             }),
         })
     }
@@ -166,6 +184,8 @@ pub(crate) fn live_band(b: &sampler_ir::fx::eq::Band) -> EqBand {
         enabled: c(f64::from(u8::from(b.enabled))),
         poles: b.poles,
         proportional_q: b.proportional_q,
+        bandwidth: c(f64::from(b.bandwidth)),
+        section: 0,
     }
 }
 
@@ -175,8 +195,15 @@ pub(crate) fn live_band(b: &sampler_ir::fx::eq::Band) -> EqBand {
 /// add nothing.
 pub(crate) fn lower(config: &sampler_ir::fx::eq::Config) -> Vec<Processor> {
     let mut stages = Vec::new();
-    for b in config.bands().iter().filter(|b| b.enabled) {
+    // A UviDigital band keeps its stages while disabled: its `enabled` lane may be live.
+    for b in config.bands().iter().filter(|b| b.enabled || b.law == Law::UviDigital) {
         let band = live_band(b);
+        if b.law == Law::UviDigital {
+            for index in 0..digital::sections(b.kind, b.poles) {
+                stages.push(Processor::Eq(EqBand { section: index as u8, ..band }));
+            }
+            continue;
+        }
         let gainful = matches!(
             b.kind,
             Kind::Peak | Kind::LowShelf | Kind::HighShelf | Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf

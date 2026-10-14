@@ -2015,6 +2015,7 @@ impl Lowering<'_> {
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
+            (Processor::Eq(eq), Bandwidth) => eq.bandwidth = parameter,
             (Processor::Eq(eq), ReferenceDecibels) => eq.reference_db = parameter,
             (Processor::Eq(eq), Enabled) => eq.enabled = parameter,
             (Processor::Dynamics(c), Threshold) => c.threshold = parameter,
@@ -2045,6 +2046,7 @@ impl Lowering<'_> {
                     b.parameter,
                     P::Frequency
                         | P::Quality
+                        | P::Bandwidth
                         | P::GainDecibels
                         | P::ReferenceDecibels
                         | P::Enabled
@@ -2077,7 +2079,8 @@ impl Lowering<'_> {
         use ir::fx::eq::Kind as S;
         match *p {
             ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
-            ir::Processor::Eq(c) if c.count == 1 => {
+            // A UviDigital band is several sections: `processors` lowers it and binds each.
+            ir::Processor::Eq(c) if c.count == 1 && c.bands[0].law != ir::fx::eq::Law::UviDigital => {
                 Some(Processor::Eq(crate::dsp::eq_family::live_band(&c.bands[0])))
             }
             ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([
