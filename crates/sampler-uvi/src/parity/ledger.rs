@@ -145,7 +145,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         }
         add(row("loadData", K::LuaApi, S::Approximate, "script/async_data.rs", "pub(super) fn install", "Bounded asynchronous filesystem JSON loading; other native formats unavailable.", "loadData worker -> JSON decode -> completion coroutine"));
         add(row("loadImpulse", K::LuaApi, S::Approximate, "script.rs", "\"loadImpulse\"", "Requires a supplied impulse resolver and a translated bus convolution slot; task can fail.", "impulse resolver -> convolution upload"));
-        add(row("loadSample", K::LuaApi, S::Unsupported, "script.rs", "for name in [\"loadSample\"]", "Resource task unavailable; callback receives nil.", "failed resource task"));
+        add(row("loadSample", K::LuaApi, S::Unsupported, "script.rs", "for name in [\"loadSample\"]", "Resource replacement unavailable; callback receives the same completed failed AsyncTask returned to the caller.", "failed resource task"));
         for name in ["class", "AsyncUpdater"] {
             add(row(name, K::LuaApi, S::Approximate, "script/modules.rs", if name == "class" { "fn install_class" } else { "struct AsyncUpdater" }, "Host class/module implementation; full native behavior unverified.", "host class / module"));
         }
