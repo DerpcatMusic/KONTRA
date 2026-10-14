@@ -26,29 +26,33 @@ impl SmoothBranch {
 impl Stage for SmoothBranch {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let mut gain = [1.; 2];
-        for ch in 0..if self.linked { 1 } else { 2 } {
-            let target = f.level[ch];
-            let coefficient = if target > self.change[ch] { self.attack } else { self.release };
-            let mut value = target + coefficient * (self.change[ch] - target);
+        let (attack, release, upward) = (self.attack, self.release, self.upward);
+        let channel = |change: &mut f64, target: f64| {
+            let coefficient = if target > *change { attack } else { release };
+            let mut value = target + coefficient * (*change - target);
             if value < 1e-12 {
                 value = 0.;
             }
-            self.change[ch] = value;
-            gain[ch] = if value == 0. {
+            *change = value;
+            if value == 0. {
                 1.
-            } else if self.upward {
+            } else if upward {
                 table_gain(value)
             } else {
                 table_gain(-value)
-            };
-        }
-        if self.linked {
-            (self.change[1], gain[1]) = (self.change[0], gain[0]);
-        }
-        f.gain = gain;
+            }
+        };
+        let [c0, c1] = &mut self.change;
+        let g0 = channel(c0, f.level[0]);
+        f.gain = if self.linked {
+            *c1 = *c0;
+            [g0; 2]
+        } else {
+            [g0, channel(c1, f.level[1])]
+        };
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         (state.z[0][0], state.z[1][0]) = (self.change[0], self.change[1]);
     }
@@ -103,6 +107,7 @@ impl Stage for HoldFollower {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.z = self.z;
     }
@@ -144,6 +149,7 @@ impl Stage for Velocity {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.z = self.z.map(|c| c.map(f64::from));
         state.aux[..2].copy_from_slice(&self.hold.map(f64::from));
@@ -183,6 +189,7 @@ impl Stage for ReleaseLowPass {
         f.level = [f64::from(filtered); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[2..6].copy_from_slice(&self.m.map(f64::from));
     }
@@ -211,6 +218,7 @@ impl Stage for PeakRelease {
         f.level = [f64::from(level); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[2] = f64::from(self.follower);
     }
@@ -240,6 +248,7 @@ impl Stage for LowPass2 {
         f.level = [f64::from(y); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[3..5].copy_from_slice(&self.w.map(f64::from));
     }
@@ -272,6 +281,7 @@ impl Stage for HilbertRelease {
         f.level = [f64::from(self.smoothed); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[3] = f64::from(self.released);
         state.aux[4] = f64::from(self.smoothed);
@@ -346,6 +356,7 @@ impl Stage for Hann<'_> {
         f.gain = [smoothed; 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[9..14].copy_from_slice(&[self.sum, self.y1, self.y2, self.since as f64, self.at as f64]);
     }
@@ -391,6 +402,7 @@ impl Stage for SlewEnvelope<'_> {
         f.level = [self.window.push(f64::from(out)); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[..4].copy_from_slice(&self.s.map(f64::from));
         self.window.store(state);
@@ -426,6 +438,7 @@ impl Stage for MovingAverage2<'_> {
         f.gain = [f64::from(g); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[4..7].copy_from_slice(&[self.sums[0], self.sums[1], self.at as f64]);
     }
@@ -449,33 +462,39 @@ impl BusEnvelope {
     }
 }
 
+impl BusEnvelope {
+    /// One channel; called with constant `ch` so the frame stays in registers.
+    #[inline(always)]
+    fn channel(&mut self, d: f64, ch: usize) -> f64 {
+        let env = self.env[ch];
+        let next = match self.auto {
+            None => {
+                let c = if d <= env { self.release } else { self.attack };
+                (1. - c) * d + env * c
+            }
+            Some([up, down]) => {
+                let c = if d <= self.slow[ch] { down } else { up };
+                let slow = (1. - c) * d + c * self.slow[ch];
+                self.slow[ch] = slow;
+                if d > env {
+                    (1. - self.attack) * d + env * self.attack
+                } else {
+                    (1. - self.release) * d.max(slow) + env * self.release
+                }
+            }
+        };
+        self.env[ch] = next;
+        (next * -32.).clamp(-32., 0.).exp2()
+    }
+}
+
 impl Stage for BusEnvelope {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        for ch in 0..2 {
-            let d = f.level[ch];
-            let env = self.env[ch];
-            let next = match self.auto {
-                None => {
-                    let c = if d <= env { self.release } else { self.attack };
-                    (1. - c) * d + env * c
-                }
-                Some([up, down]) => {
-                    let c = if d <= self.slow[ch] { down } else { up };
-                    let slow = (1. - c) * d + c * self.slow[ch];
-                    self.slow[ch] = slow;
-                    if d > env {
-                        (1. - self.attack) * d + env * self.attack
-                    } else {
-                        (1. - self.release) * d.max(slow) + env * self.release
-                    }
-                }
-            };
-            self.env[ch] = next;
-            f.gain[ch] = (next * -32.).clamp(-32., 0.).exp2();
-        }
+        f.gain = [self.channel(f.level[0], 0), self.channel(f.level[1], 1)];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[..2].copy_from_slice(&self.env);
         state.aux[4..6].copy_from_slice(&self.slow);
@@ -540,6 +559,7 @@ impl Stage for SixEnvelopes {
         fr.level = [f64::from(e[2]), f64::from(sustain)];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.e.iter().enumerate() {
             state.aux[4 + i] = f64::from(*v) - f64::from(f32::from_bits(INIT[i]));
@@ -554,7 +574,7 @@ impl Stage for SixEnvelopes {
 /// feedback tap), lets a peak follower rise with the attack and relax with
 /// the release toward a floor while two coupled one-poles (178.8 rad/s per
 /// sub-step) average it, and asks the curve for the gain. Cells `[A, D, E,
-/// G]` per detector, f64; `aux[12]` set once started.
+/// G]` per detector, f64, zero from reset (native: no init but bypass).
 pub(super) struct FeedbackLoop<'a> {
     pub curve: FeedbackCurve,
     pub attack: f32,
@@ -579,14 +599,8 @@ impl<'a> FeedbackLoop<'a> {
         linked: bool,
         bypass: bool,
         cells: &'a mut [[f64; 2]],
-        state: &mut ProcessorState,
     ) -> Self {
-        let mut s = std::array::from_fn(|ch| std::array::from_fn(|k| cells[k][ch]));
-        if state.aux[12] == 0. || bypass {
-            let floor = f64::from(floor);
-            s = [[floor, floor, floor, 1.]; 2];
-            state.aux[12] = 1.;
-        }
+        let s = std::array::from_fn(|ch| std::array::from_fn(|k| cells[k][ch]));
         Self { curve, attack, release, couple, floor, steps, linked, bypass, cells, s }
     }
 
@@ -611,20 +625,25 @@ impl<'a> FeedbackLoop<'a> {
 impl Stage for FeedbackLoop<'_> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        for k in 0..if self.linked { 1 } else { 2 } {
-            let mut st = self.s[k];
-            for _ in 0..self.steps {
-                self.step(f.level[k], &mut st);
+        let run = |this: &Self, mut st: [f64; 4], det: f64| {
+            for _ in 0..this.steps {
+                this.step(det, &mut st);
             }
-            self.s[k] = st;
+            st
+        };
+        self.s[0] = run(self, self.s[0], f.level[0]);
+        if !self.linked {
+            self.s[1] = run(self, self.s[1], f.level[1]);
         }
         if self.bypass {
             let floor = f64::from(self.floor);
             self.s = [[floor, floor, floor, 1.]; 2];
         }
-        f.gain = [0, 1].map(|ch| f64::from(self.s[if self.linked { 0 } else { ch }][3] as f32));
+        let g = |k: usize| f64::from(self.s[k][3] as f32);
+        f.gain = if self.linked { [g(0); 2] } else { [g(0), g(1)] };
     }
 
+    #[inline(always)]
     fn store(&mut self, _: &mut ProcessorState) {
         for (k, cell) in self.cells.iter_mut().enumerate().take(FEEDBACK_CELLS) {
             *cell = [self.s[0][k], self.s[1][k]];

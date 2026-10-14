@@ -2,7 +2,7 @@
 //! audio, post-filters, make-up, wet/dry, clip).
 
 use super::detector::EPS_18;
-use super::pipeline::{Frame, Shared, Stage};
+use super::pipeline::{each, Frame, Shared, Stage};
 use super::ProcessorState;
 
 /// Kontakt Classic: `1 - (1 - g) * b`, f32.
@@ -11,7 +11,7 @@ pub(super) struct Reach(pub f64);
 impl Stage for Reach {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.gain = f.level.map(|b| f64::from((1. - self.0 * b) as f32));
+        f.gain = each(f.level, |b| f64::from((1. - self.0 * b) as f32));
     }
 }
 
@@ -21,7 +21,7 @@ pub(super) struct Reciprocal;
 impl Stage for Reciprocal {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.gain = f.level.map(|h| f64::from(1. / (h as f32 + 1.)));
+        f.gain = each(f.level, |h| f64::from(1. / (h as f32 + 1.)));
     }
 }
 
@@ -72,7 +72,7 @@ pub(super) struct Mix(pub Shared);
 impl Stage for Mix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.out = [0, 1].map(|ch| f.heard[ch] * self.0.factor(f.gain[ch]));
+        f.out = [f.heard[0] * self.0.factor(f.gain[0]), f.heard[1] * self.0.factor(f.gain[1])];
     }
 }
 
@@ -83,7 +83,8 @@ pub(super) struct F32Apply(pub Shared);
 impl Stage for F32Apply {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.out = [0, 1].map(|ch| f64::from(f.gain[ch] as f32 * f.audio[ch] as f32) * self.0.factor(1.));
+        let out = |ch: usize| f64::from(f.gain[ch] as f32 * f.audio[ch] as f32) * self.0.factor(1.);
+        f.out = [out(0), out(1)];
     }
 }
 
@@ -94,7 +95,7 @@ impl Stage for ProMix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, gain) = (self.0, f.gain[0] as f32);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             if s.mix == 1. { f64::from(gain * d as f32) * s.makeup } else { d * s.factor(f64::from(gain)) }
         });
     }
@@ -108,7 +109,7 @@ impl Stage for LimiterOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, gain) = (self.0, f.gain[0] as f32);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let limited = f64::from((gain * d as f32).clamp(-1., 1.));
             if s.mix == 1. { limited * s.makeup } else { d + s.mix * (limited * s.makeup - d) }
         });
@@ -126,7 +127,7 @@ impl Stage for CeilingOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, scale) = (self.shared, f.gain[0] as f32 * self.ceiling);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let wet = f64::from(scale * d as f32) * s.makeup;
             if s.mix == 1. { wet } else { d + s.mix * (wet - d) }
         });
@@ -144,7 +145,7 @@ impl Stage for ClipOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let g = f.gain[0] as f32;
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let y = d as f32 * g;
             f64::from(if self.hard { y.clamp(-self.ceiling, self.ceiling) } else { y })
         });
@@ -192,6 +193,7 @@ impl Stage for FeedbackOut {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[4 + i] = f64::from(*v);
@@ -225,6 +227,7 @@ impl Stage for DcBlock {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[12 + i] = f64::from(*v);
@@ -245,10 +248,11 @@ impl Stage for BusOut {
     fn tick(&mut self, f: &mut Frame) {
         let low = f.gain[0].min(f.gain[1]);
         let (wet, dry) = (self.wet, 1. - self.wet);
-        f.out = [0, 1].map(|ch| {
+        let out = |ch: usize| {
             let x = f.audio[ch];
             let w = x * if self.link { low } else { f.gain[ch] } * self.makeup;
             f64::from((x * dry + w * wet) as f32)
-        });
+        };
+        f.out = [out(0), out(1)];
     }
 }
