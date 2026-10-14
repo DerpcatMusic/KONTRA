@@ -7,7 +7,7 @@
 //! All in f32 in the native register order (model sv/rs_model.py).
 
 /// Largest factor.
-pub(crate) const MAX: usize = 8;
+pub(crate) const MAX: usize = 4;
 
 fn big(y: f64) -> f64 {
     let p = (((y * 0.003_923_77 - 0.016_476_33) * y + 0.026_355_37) * y - 0.020_577_06) * y + 0.009_162_81;
@@ -106,20 +106,19 @@ pub(crate) enum Wrapper {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct WrapperState {
     two: EffektrigState,
-    up: State,
-    down: State,
+    kaiser: State,
 }
 
 impl WrapperState {
     pub(crate) fn finite(&self) -> bool {
-        self.two.finite() && self.up.finite() && self.down.finite()
+        self.two.finite() && self.kaiser.finite()
     }
 }
 
 impl Wrapper {
     pub(crate) fn new(n: i32, rate: u32) -> Self {
         let e = (2f64.powi(n) * 44_100.0 / f64::from(rate)).log2().round().max(0.0) as u32;
-        match (1usize << e.min(3)).min(MAX) {
+        match 1usize << e.min(2) {
             1 => Self::One,
             2 => Self::Two(Effektrig::new()),
             f => Self::Many(Kaiser::new(f)),
@@ -140,7 +139,7 @@ impl Wrapper {
         match self {
             Self::One => out[0] = x,
             Self::Two(e) => (out[0], out[1]) = e.up(&mut s.two, x),
-            Self::Many(k) => k.up(&mut s.up, x, out),
+            Self::Many(k) => k.up(&mut s.kaiser, x, out),
         }
     }
 
@@ -150,7 +149,7 @@ impl Wrapper {
         match self {
             Self::One => frame[0],
             Self::Two(e) => e.down(&mut s.two, frame[0], frame[1]),
-            Self::Many(k) => k.down(&mut s.down, frame),
+            Self::Many(k) => k.down(&mut s.kaiser, frame),
         }
     }
 }
@@ -183,7 +182,8 @@ pub(crate) struct Kaiser {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct State {
-    delay: [f32; 9],
+    up_delay: [f32; 8],
+    down_delay: [f32; 9],
     up: [Block; MAX - 1],
     down: [Block; MAX - 1],
     acc: f32,
@@ -191,7 +191,7 @@ pub(crate) struct State {
 
 impl State {
     pub(crate) fn finite(&self) -> bool {
-        self.up.iter().chain(&self.down).flatten().chain(&self.delay).all(|v| v.is_finite()) && self.acc.is_finite()
+        self.up.iter().chain(&self.down).flatten().chain(&self.up_delay).chain(&self.down_delay).all(|v| v.is_finite()) && self.acc.is_finite()
     }
 }
 
@@ -218,9 +218,9 @@ impl Kaiser {
     /// One input sample to `factor` outputs.
     #[inline(always)]
     pub(crate) fn up(&self, s: &mut State, x: f32, out: &mut [f32]) {
-        out[0] = s.delay[0];
-        s.delay.copy_within(1..8, 0);
-        s.delay[7] = x;
+        out[0] = s.up_delay[0];
+        s.up_delay.copy_within(1..8, 0);
+        s.up_delay[7] = x;
         if self.factor == 2 {
             let h = &self.up[0];
             let p: [f32; 8] = std::array::from_fn(|j| x * h[j]);
@@ -243,9 +243,9 @@ impl Kaiser {
     /// `factor` inputs (phase 0 first) to one output.
     #[inline(always)]
     pub(crate) fn down(&self, s: &mut State, frame: &[f32]) -> f32 {
-        s.delay.copy_within(0..8, 1);
-        s.delay[0] = frame[0];
-        let y = (s.delay[8] + s.acc) * self.inverse;
+        s.down_delay.copy_within(0..8, 1);
+        s.down_delay[0] = frame[0];
+        let y = (s.down_delay[8] + s.acc) * self.inverse;
         s.acc = 0.0;
         if self.factor == 2 {
             let h = &self.up[0];

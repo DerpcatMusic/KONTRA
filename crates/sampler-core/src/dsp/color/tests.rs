@@ -512,3 +512,10 @@ fn uvi_redux2_matches_the_native() {
         1e-5,
     );
 }
+
+/// Every processor stage of every voice carries a color state: shapers share one slot, so
+/// adding a shaper must not grow it past the largest (2.9 KB when written).
+#[test]
+fn color_state_holds_one_shaper_at_a_time() {
+    assert!(std::mem::size_of::<State>() <= 3072, "{}", std::mem::size_of::<State>());
+}
