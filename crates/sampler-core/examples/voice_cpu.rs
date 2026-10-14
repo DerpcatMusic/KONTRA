@@ -52,7 +52,7 @@ fn main() {
         "plain" | "fractional" | "filtered" | "modulated" | "eq-stereo"
     ));
     assert!(matches!(residency.as_str(), "resident" | "pages"));
-    assert!(voices <= 256 && blocks > 1 && block > 0);
+    assert!(voices <= 4096 && blocks > 1 && block > 0);
     let (mut rt, _decoder) = fixture(
         rate,
         &workload,
@@ -74,7 +74,7 @@ fn main() {
                 external_id: Some(id as i32),
             },
             60,
-            0.5 + id as f64 / 512.,
+            (0.5 + id as f64 / 512.).min(1.),
         )
         .unwrap();
     }

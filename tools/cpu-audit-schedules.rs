@@ -13,6 +13,15 @@ fn audit_schedule(name: &str) -> AuditSchedule {
         events.push((at + length, 0x80, key, 0));
     };
     let (frames, idle_blocks, steady) = match name {
+        "held-stress" => {
+            // Afflatus's lower keys contain articulation selectors. Use a
+            // playable 19-key chord: 16 physical layers per key would be 304
+            // sounding sources. Actual voice counts must still prove this.
+            for key in 60..79 {
+                note(&mut events, 0, key, 100, 2 * 48000);
+            }
+            (4 * 48000, 1000, 48000..2 * 48000)
+        }
         "fast-repeat" => {
             // Sixteenths at quarter=140 BPM; half-length gates, no pedal.
             let mut ordinal = 0;
@@ -87,6 +96,16 @@ fn audit_schedule(name: &str) -> AuditSchedule {
 #[cfg(test)]
 mod schedule_tests {
     use super::*;
+    #[test]
+    fn held_stress_avoids_low_keyswitches_and_measures_the_settled_second_second() {
+        let s = audit_schedule("held-stress");
+        let on: Vec<_> = s.events.iter().filter(|e| e.1 == 0x90).collect();
+        assert_eq!(on.len(), 19);
+        assert_eq!(on.iter().map(|e| e.2).collect::<Vec<_>>(), (60..79).collect::<Vec<_>>());
+        assert!(on.iter().all(|e| e.0 == 0));
+        assert_eq!(s.events.iter().filter(|e| e.1 == 0x80 && e.0 == 96000).count(), 19);
+        assert_eq!(s.steady, 48000..96000);
+    }
     #[test]
     fn repeats_use_exact_tempo_alternating_velocities_and_octaves() {
         let s = audit_schedule("fast-repeat");
