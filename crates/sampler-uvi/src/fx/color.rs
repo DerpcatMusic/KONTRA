@@ -2,14 +2,14 @@
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
 //! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve;
-//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper; ToneStack (26 models); Exciter (Tape/Tube, HIIR); Widener.
+//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper; ToneStack (26 models); Exciter (Tape/Tube, HIIR); Widener; Redux2 (all 8 variants).
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
 /// Why a drive, lo-fi, amp, cabinet or utility element is not mapped.
 pub(crate) fn unproved(element: &str) -> Option<&'static str> {
     Some(match element {
-        "Redux" | "Redux2" => {
+        "Redux" => {
             "kernel at 0x1411e4de0 dispatches to 8 specialised bit/rate variants (0x1411e59f0..0x1411eb6d0) keyed by mode and flags; variant bodies and parameter conversion not transcribed"
         }
         "BigMuffTone" => {

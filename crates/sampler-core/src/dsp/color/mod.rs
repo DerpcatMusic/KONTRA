@@ -14,6 +14,7 @@ mod exciter;
 mod tonestack;
 mod diode;
 mod lofi;
+mod redux;
 mod saturator;
 mod shaping;
 mod skreamer;
@@ -95,6 +96,8 @@ pub struct Settings {
     pub filter: Option<sampler_ir::fx::color::Biquad>,
     pub hold: Option<HoldSettings>,
     pub decimator: Option<Decimator>,
+    /// UVI Redux2's clocked reduction.
+    pub redux: Option<sampler_ir::fx::color::Redux>,
     pub quantizer: Option<QuantizerSettings>,
     pub curve: CurveSettings,
     /// Normalized damping of the Kontakt Distortion low-pass (plus DC blocker).
@@ -115,6 +118,7 @@ impl Settings {
         filter: None,
         hold: None,
         decimator: None,
+        redux: None,
         quantizer: None,
         curve: CurveSettings::Identity,
         damping: None,
@@ -176,6 +180,7 @@ impl Settings {
             && self.mix.is_finite()
             && (0.0..=1.0).contains(&self.mix)
             && self.stereo.is_none_or(StereoSettings::valid)
+            && self.redux.is_none_or(|r| [r.frequency, r.bits, r.jitter, r.dither, r.band_limit].iter().all(|v| v.is_finite() && *v >= 0.0) && r.frequency > 0.0)
             && self.widener.is_none_or(|w| [w.delay, w.width, w.shelf_hertz, w.shelf_db].iter().all(|v| v.is_finite()) && w.delay.abs() <= 15.0)
     }
 
@@ -184,6 +189,7 @@ impl Settings {
         self.gainer.is_none()
             && self.hold.is_none()
             && self.decimator.is_none()
+            && self.redux.is_none()
             && self.filter.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
@@ -252,6 +258,7 @@ impl Settings {
             }),
             decimator: self.decimator.map(|d| shaping::Decimate::new(d, rate)),
             filter: self.filter.map(|b| shaping::Biquad::new(b, rate)),
+            redux: self.redux.map(|r| Box::new(redux::Engine::new(r, rate))),
             quantizer: self.quantizer.map(|q| match q {
                 QuantizerSettings::Native(p) => Quantizer::Native(p.compile(bindings)),
                 QuantizerSettings::Floor(bits) => Quantizer::Floor(bits),
@@ -305,6 +312,7 @@ pub(crate) struct Color {
     hold: Option<Hold>,
     decimator: Option<shaping::Decimate>,
     filter: Option<shaping::Biquad>,
+    redux: Option<Box<redux::Engine>>,
     quantizer: Option<Quantizer>,
     curve: Curve,
     damping: Option<Damping>,
@@ -323,6 +331,7 @@ pub(super) struct State {
     hold: lofi::HoldState,
     decimator: shaping::DecimatorState,
     biquad: [[f32; 2]; 2],
+    redux: redux::State,
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
@@ -352,6 +361,7 @@ impl State {
             && self.diode.finite()
             && self.tone.finite()
             && self.widener.finite()
+            && self.redux.finite()
     }
 }
 
@@ -361,6 +371,7 @@ impl Color {
     pub(super) fn batches(&self) -> bool {
         self.hold.is_none()
             && self.decimator.is_none()
+            && self.redux.is_none()
             && self.filter.is_none()
             && self.quantizer.is_none()
             && self.damping.is_none()
@@ -525,6 +536,9 @@ impl Color {
         }
         if let Some(decimator) = &self.decimator {
             decimator.process(&mut state.decimator, block, len);
+        }
+        if let Some(r) = &self.redux {
+            r.process(&mut state.redux, block, len);
         }
         match &self.quantizer {
             Some(Quantizer::Native(bits)) => {

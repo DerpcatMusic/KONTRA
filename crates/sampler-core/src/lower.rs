@@ -151,6 +151,7 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Hold::Rate { hertz } => HoldSettings::Rate(hertz),
         }),
         decimator: c.decimator,
+        redux: c.redux,
         filter: c.filter,
         quantizer: c.quantizer.map(|q| match q {
             fx::Quantizer::Native { bits } => QuantizerSettings::Native(knob(P::LoFiBits, bits)),
