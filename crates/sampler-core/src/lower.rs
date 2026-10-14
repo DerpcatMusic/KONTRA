@@ -57,6 +57,7 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ir::fx::color::LaneLaw::Unit => unit,
                 ir::fx::color::LaneLaw::Signed => Linear { low: -1., high: 1. },
                 ir::fx::color::LaneLaw::Cubic => crate::EngineParameterLaw::CubicGain { unity: 1e6 },
+                ir::fx::color::LaneLaw::OutputGain => crate::EngineParameterLaw::CubicGain { unity: 396851. },
             };
             (slot, c.lanes().into_iter().map(|l| (l.name, l.value, law(l.law))).collect())
         }
@@ -88,7 +89,8 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
             (
                 ControlDefinition {
                     id,
-                    domain: ControlDomain::Real { min: low, max: 1. },
+                    // The DSP value at the top of the native range (16 for an output gain).
+                    domain: ControlDomain::Real { min: low, max: law.decode(1_000_000).max(1.) },
                     default: ControlValue::Real(value),
                 },
                 crate::EngineParameterBinding {
@@ -143,7 +145,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
     };
     crate::ColorSettings {
         gainer: c.gainer.map(|g| crate::GainerSettings {
-            gain: Parameter::Constant(g.gain.linear()),
+            gain: knob(P::Gain, g.gain.linear() as f32),
             dry: g.dry,
         }),
         hold: c.hold.map(|h| match h {
