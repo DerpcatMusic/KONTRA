@@ -173,6 +173,7 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Curve::Drive(d) => Curve::Drive(d),
             fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
             fx::Curve::Dirt(d) => Curve::Dirt(d),
+            fx::Curve::Freak(d) => Curve::Freak(d),
             fx::Curve::Bite(d) => Curve::Bite(d),
             fx::Curve::Tape(d) => Curve::Tape(d),
             fx::Curve::Exciter(d) => Curve::Exciter(d),

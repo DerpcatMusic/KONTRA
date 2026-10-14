@@ -42,7 +42,7 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 4] = [0x42, 0x66, 0x67, 0x78];
+pub(super) const TYPED_CORES: [u16; 5] = [0x42, 0x66, 0x67, 0x68, 0x78];
 
 /// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
 /// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
@@ -90,6 +90,15 @@ pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::Effec
             let knobs = scatter(&values, &[0, 2, 6, 4, 1, 3, 7, 5, 13, 14, 10, 11, 8, 9, 12], DEFAULTS)?;
             Some(Config::dirt(sampler_ir::fx::color::Dirt { knobs }))
         }
+        // Freak (apply 0x140aba860): f32 x13, u8 x5, the mode enum; unsaved knobs keep the
+        // init-slot defaults.
+        0x68 => {
+            const DEFAULTS: [f32; 19] =
+                [0.0, 0.5, 1.0, 0.5, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.0, 1.0, 0.5, 0.5, 0.0, 0.5, 1.0, 1.0];
+            let to = [3, 4, 11, 18, 13, 12, 14, 1, 0, 10, 5, 7, 6, 15, 17, 2, 8, 9, 16];
+            let knobs = scatter(&values, &to, DEFAULTS)?;
+            Some(Config::freak(sampler_ir::fx::color::Freak { knobs }))
+        }
         // Tubescreamer (BParFXSkreamerDlx, apply 0x140abb9f0): mode, drive, tone, pot a, pot b,
         // filter, then a u8 that only resets the cores (no param). Level is fixed at 0.5.
         0x78 => {
@@ -124,7 +133,6 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
-        0x68 => "creative drive module: core not extracted",
         _ => return None,
     })
 }
