@@ -484,6 +484,17 @@ pub(crate) fn start_ranges(
     head: usize,
     policy: &StreamPolicy,
 ) -> Vec<Vec<Range<usize>>> {
+    start_ranges_with_offsets(instrument, assets, rate, head, policy, true)
+}
+
+fn start_ranges_with_offsets(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    head: usize,
+    policy: &StreamPolicy,
+    include_offsets: bool,
+) -> Vec<Vec<Range<usize>>> {
     let mut ranges = vec![Vec::new(); assets.len()];
     for zone in &instrument.zones {
         let Some(asset) = zone.asset.map(|a| a.0) else {
@@ -513,7 +524,7 @@ pub(crate) fn start_ranges(
         // modulation range. Cover that complete interval, not just offset zero.
         // The runtime clamps this range to u32; arbitrary script offsets remain
         // a separate cold-start case rather than an invented static bound.
-        let offset = if zone.routes.iter().any(|route| {
+        let offset = if include_offsets && zone.routes.iter().any(|route| {
             instrument.routes.get(route.0).is_some_and(|route| route.target == ir::Target::SampleStart)
         }) { playback.start_range.min(u64::from(u32::MAX)) } else { 0 };
         let frames = ((head as f64 * step).ceil() as u64)
@@ -545,6 +556,86 @@ pub(crate) fn start_ranges(
         keep_whole(assets, &mut ranges, room);
     }
     ranges
+}
+
+/// Opt-in control-side evidence only. The counterfactual removes static start
+/// modulation coverage to attribute demand; it never changes published ranges.
+fn audit_start_ranges(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    ranges: &[Vec<Range<usize>>],
+    pinned: &HashSet<AssetId>,
+    rate: u32,
+    head: usize,
+    policy: &StreamPolicy,
+) {
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_none() { return; }
+    let base = start_ranges_with_offsets(instrument, assets, rate, head, policy, false);
+    let frames = |list: &[Range<usize>]| list.iter().map(|r| r.len() as u64).sum::<u64>();
+    let mut full_assets = 0usize;
+    let mut full_bytes = 0u64;
+    let mut pinned_assets = 0usize;
+    let mut pinned_min = 0u64;
+    let mut optional_assets = 0usize;
+    let mut optional_frames = 0u64;
+    let mut base_frames = 0u64;
+    let mut rows = Vec::new();
+    // Match the startup table's current physical-asset collapse, and expose
+    // aliases separately rather than counting duplicate Pcm handles as RAM.
+    let last: HashMap<_, _> = assets.iter().enumerate().map(|(i,p)| (p.asset_id(),i)).collect();
+    for (i, pcm) in assets.iter().enumerate() {
+        if last[&pcm.asset_id()] != i { continue; }
+        let actual = frames(&ranges[i]);
+        let without_offset = frames(&base[i]);
+        if pcm.requires_resident() {
+            full_assets += 1;
+            full_bytes = full_bytes.saturating_add(pcm.frame_count() as u64 * size_of::<Frame>() as u64);
+        } else if pinned.contains(&pcm.asset_id()) {
+            pinned_assets += 1;
+            pinned_min = pinned_min.saturating_add(actual.saturating_mul(2));
+        } else if actual != 0 {
+            optional_assets += 1;
+            optional_frames = optional_frames.saturating_add(actual);
+            base_frames = base_frames.saturating_add(without_offset);
+        }
+        rows.push((actual.saturating_sub(without_offset), i, actual, without_offset,
+            ranges[i].len(), pcm.frame_count(), pcm.requires_resident(), pinned.contains(&pcm.asset_id())));
+    }
+    rows.sort_unstable_by(|a,b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let top: Vec<_> = rows.into_iter().take(16).map(|(extra,index,actual,base,count,total,full,pin)|
+        serde_json::json!({"asset_index":index,"offset_extra_frames":extra,"range_frames":actual,
+            "offset_free_range_frames":base,"ranges":count,"source_frames":total,
+            "requires_full_residency":full,"pinned_wavetable":pin})).collect();
+    let mut offset_zones = 0usize;
+    let mut zero_depth_routes = 0usize;
+    let mut max_offset = 0u64;
+    let mut reverse_zones = 0usize;
+    let mut bounded_end_zones = 0usize;
+    for zone in &instrument.zones {
+        reverse_zones += usize::from(zone.playback.reverse);
+        bounded_end_zones += usize::from(zone.playback.end.is_some());
+        let routes: Vec<_> = zone.routes.iter().filter_map(|r| instrument.routes.get(r.0))
+            .filter(|r| r.target == ir::Target::SampleStart).collect();
+        if !routes.is_empty() {
+            offset_zones += 1;
+            max_offset = max_offset.max(zone.playback.start_range.min(u64::from(u32::MAX)));
+            zero_depth_routes += routes.iter().filter(|r| matches!(r.depth, ir::Depth::Normalized(v) if v == 0.)).count();
+        }
+    }
+    eprintln!("stream_preload_geometry {}", serde_json::json!({
+        "schema":"kontra-preload-geometry-v1","sample_rate":rate,"head_output_frames":head,
+        "max_step":policy.max_step,"block_frames":policy.block_frames,"head_budget_bytes":policy.head_budget,
+        "logical_assets":assets.len(),"physical_assets":last.len(),"alias_entries":assets.len()-last.len(),
+        "zones":instrument.zones.len(),"reverse_zones":reverse_zones,"bounded_end_zones":bounded_end_zones,
+        "sample_start_route_zones":offset_zones,"sample_start_zero_depth_routes":zero_depth_routes,
+        "max_sample_start_offset_frames":max_offset,"mandatory_full_assets":full_assets,
+        "mandatory_full_pcm_bytes":full_bytes,"mandatory_wavetable_assets":pinned_assets,
+        "mandatory_wavetable_min_packed_bytes":pinned_min,"optional_start_assets":optional_assets,
+        "optional_start_frames":optional_frames,"optional_start_min_packed_bytes":optional_frames.saturating_mul(2),
+        "offset_free_optional_start_frames":base_frames,"offset_free_optional_start_min_packed_bytes":base_frames.saturating_mul(2),
+        "offset_union_extra_frames":optional_frames.saturating_sub(base_frames),"top_offset_assets":top,
+        "scope":"request geometry before decode/admission; offset-free is attribution only; no payload or source names"
+    }));
 }
 
 // Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
@@ -1806,6 +1897,7 @@ impl Streamed {
             })
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
+        audit_start_ranges(&loaded.instrument, &kept, &ranges, &pinned_wavetables, rate, head, &policy);
         let (streamer, bytes) = Streamer::start_cancelable(
             sources,
             &kept,
