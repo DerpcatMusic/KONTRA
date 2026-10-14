@@ -82,7 +82,7 @@ fn quantiles(mut times: Vec<u64>) -> Value {
     assert!(!times.is_empty());
     times.sort_unstable();
     let n = times.len();
-    json!({"blocks":n,"p50_us":times[n/2] as f64/1000.,"p99_us":times[(n-1)*99/100] as f64/1000.,"max_us":times[n-1] as f64/1000.})
+    json!({"blocks":n,"p50_us":times[n/2] as f64/1000.,"p99_us":times[(n-1)*99/100] as f64/1000.,"p999_us":times[(n-1)*999/1000] as f64/1000.,"max_us":times[n-1] as f64/1000.})
 }
 fn main() {
     let args: Vec<_> = std::env::args().collect();
@@ -111,7 +111,7 @@ fn main() {
     assert_eq!(
         args.len(),
         4,
-        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump|held-stress"
+        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump|held-stress|host-300"
     );
     let block: usize = args[2].parse().unwrap();
     assert!([32, 64, 256].contains(&block));
@@ -125,6 +125,11 @@ fn main() {
     }
     let start = Instant::now();
     let (mut p, mut info) = Player::load(Path::new(&args[1]));
+    if args[3] == "host-300" {
+        assert_eq!(info["engine"], "v2", "exact-host-ID schedule requires the typed V2 event adapter");
+    }
+    info["schedule"] = json!(&args[3]);
+    info["requested_host_note_ids"] = json!(if args[3] == "host-300" { 300 } else { 0 });
     info["load_seconds"] = json!(start.elapsed().as_secs_f64());
     info["rss_kb_loaded"] = json!(proc_value("/proc/self/status", "VmRSS:"));
     let mut idle = Vec::with_capacity(1000);
@@ -143,6 +148,7 @@ fn main() {
     );
     let (mut next, mut peak, mut voice_sum, mut voice_peak, mut misses) =
         (0, 0.0f32, 0usize, 0usize, 0usize);
+    let (mut steady_voices_min, mut steady_voices_max, mut steady_audible_blocks) = (usize::MAX, 0, 0);
     let (mut allocations, mut event_allocations) = (0u64, 0u64);
     let mut miss_detail = Vec::with_capacity(6000);
     let (io0, rchar0) = (
@@ -192,6 +198,11 @@ fn main() {
         event_allocations += after_events - before;
         let v = p.voices();
         let got = p.render(block);
+        if schedule.steady.contains(&begin) {
+            steady_voices_min = steady_voices_min.min(v);
+            steady_voices_max = steady_voices_max.max(v);
+            steady_audible_blocks += usize::from(got > 0.);
+        }
         let ns = t.elapsed().as_nanos() as u64;
         let cpu_ns = thread_cpu_ns().saturating_sub(cpu_start);
         let switches_after = if scheduling_diagnostic {
@@ -246,6 +257,9 @@ fn main() {
     }
     info["all"] = quantiles(all.clone());
     if !steady.is_empty() {
+        info["steady_voices_min"] = json!(steady_voices_min);
+        info["steady_voices_max"] = json!(steady_voices_max);
+        info["steady_audible_blocks"] = json!(steady_audible_blocks);
         info["steady"] = quantiles(steady);
         info["amortized_per_voice"] = quantiles(per_voice)
     }

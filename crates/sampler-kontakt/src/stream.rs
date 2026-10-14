@@ -162,6 +162,26 @@ pub struct SampleReader {
 }
 
 impl SampleReader {
+    /// Charged owned userspace capacities for the built-in WAV/NCW reader,
+    /// including its File Arc allocation. Allocator and kernel FD overhead are
+    /// separate from this capacity budget. A custom
+    /// closure can own opaque allocations, so it keeps the legacy entry cap
+    /// rather than entering the expanded byte-budget cache.
+    fn cache_bytes(&self) -> Option<usize> {
+        let bytes = |b: &Bytes| {
+            let owned_handle = if b.source.handle.is_none() {
+                (std::mem::size_of::<File>() + 2 * std::mem::size_of::<usize>()).next_multiple_of(std::mem::align_of::<usize>().max(std::mem::align_of::<File>()))
+            } else { 0 };
+            b.buffer.capacity() + b.source.path.capacity() + owned_handle
+        };
+        let codec = match &self.codec {
+            Codec::Wav(_) => self.bytes.as_ref().map_or(0, bytes),
+            Codec::Ncw(reader) => std::mem::size_of_val(&**reader) + reader.workspace_bytes() + bytes(reader.get_ref()),
+            Codec::Custom(_) => return None,
+        };
+        Some(self.scratch.capacity() + codec)
+    }
+
     pub fn open(source: &Source) -> io::Result<Self> {
         Self::open_counted(source, false)
     }
@@ -737,7 +757,7 @@ impl Streamer {
                 .spawn({
                     let (sources, stop) = (streamer.sources.clone(), streamer.stop.clone());
                     let worker = worker.clone();
-                    move || decode(&worker, &sources, &stop)
+                    move || decode(&worker, &sources, &stop, READER_CACHE_BYTES / decoders.max(1))
                 })?;
             streamer.threads.push(thread);
         }
@@ -894,19 +914,128 @@ impl Drop for Streamer {
 /// Open readers kept per decode thread between pages of the same assets
 /// (each holds a 16 KiB read buffer).
 const OPEN_READERS: usize = 16;
+const MAX_CACHED_READERS: usize = 128;
+/// Across all workers; PCM stream pages and authored resident heads are separate.
+const READER_CACHE_BYTES: usize = 8 << 20;
+
+struct CachedReader {
+    asset: AssetId,
+    reader: SampleReader,
+    used: u64,
+    bytes: Option<usize>,
+}
+struct ReaderCache {
+    entries: Vec<CachedReader>,
+    total_limit: usize,
+    byte_limit: usize,
+    bytes: usize,
+    opaque: usize,
+    evictions: u64,
+    peak_retained_bytes: usize,
+    storage_bytes: usize,
+    entry_limit: usize,
+}
+impl ReaderCache {
+    fn new(byte_limit: usize) -> Self {
+        let entry_limit = MAX_CACHED_READERS.min(byte_limit / std::mem::size_of::<CachedReader>() / 2);
+        let entries = Vec::with_capacity(entry_limit);
+        let storage_bytes = entries.capacity() * std::mem::size_of::<CachedReader>();
+        Self { entries, total_limit: byte_limit, byte_limit: byte_limit.saturating_sub(storage_bytes), bytes: 0, opaque: 0, evictions: 0, peak_retained_bytes: storage_bytes, storage_bytes, entry_limit }
+    }
+    fn remove(&mut self, index: usize) {
+        let entry = self.entries.swap_remove(index);
+        match entry.bytes { Some(bytes) => self.bytes -= bytes, None => self.opaque -= 1 }
+        self.evictions += 1;
+    }
+    fn insert(&mut self, asset: AssetId, reader: SampleReader, used: u64) -> usize {
+        if self.entry_limit > 0 && self.entries.len() == self.entry_limit {
+            let oldest = (0..self.entries.len()).min_by_key(|&i| self.entries[i].used).unwrap();
+            self.remove(oldest);
+        }
+        let bytes = reader.cache_bytes();
+        match bytes { Some(bytes) => self.bytes += bytes, None => self.opaque += 1 }
+        self.entries.push(CachedReader { asset, reader, used, bytes });
+        self.storage_bytes = self.entries.capacity() * std::mem::size_of::<CachedReader>();
+        self.byte_limit = self.total_limit.saturating_sub(self.storage_bytes);
+        self.entries.len() - 1
+    }
+    /// Scratch and channel capacities may grow during decoding. Charge actual
+    /// capacities before retaining the reader. An oversized reader is released
+    /// after its current job, so it never persists above the byte budget.
+    fn trim_after_read(&mut self, index: usize) {
+        let entry = &mut self.entries[index];
+        if let Some(old) = entry.bytes {
+            let next = entry.reader.cache_bytes().expect("built-in codec");
+            entry.bytes = Some(next);
+            self.bytes = self.bytes - old + next;
+        }
+        while self.bytes > self.byte_limit || self.opaque > OPEN_READERS {
+            let known = self.bytes > self.byte_limit;
+            let oldest = (0..self.entries.len()).filter(|&i| self.entries[i].bytes.is_some() == known).min_by_key(|&i| self.entries[i].used).unwrap();
+            self.remove(oldest);
+        }
+        if self.entry_limit == 0 {
+            // Tiny per-worker budgets can serve a job but retain no reader or
+            // vector capacity. Decoder workspaces remain transient worker work.
+            self.entries.clear();
+            self.entries = Vec::new();
+            self.bytes = 0;
+            self.opaque = 0;
+            self.storage_bytes = 0;
+            self.byte_limit = self.total_limit;
+        }
+        self.peak_retained_bytes = self.peak_retained_bytes.max(self.bytes + self.storage_bytes);
+    }
+}
+
+/// Opt-in, worker-only aggregate instrumentation. No PCM/resource data leaves
+/// the decoder and no audio-thread clocks, allocations or logging are added.
+#[derive(Default)]
+struct DecodeAudit {
+    jobs: u64,
+    opens: u64,
+    evictions: u64,
+    failures: u64,
+    open_nanos: u64,
+    decode_nanos: u64,
+    first_128_job_nanos: u64,
+    max_job_nanos: u64,
+    job_us_log2: [u64; 32],
+    reader_budget_bytes: usize,
+    peak_retained_reader_bytes: usize,
+    retained_opaque_readers: usize,
+}
+impl Drop for DecodeAudit {
+    fn drop(&mut self) {
+        eprintln!("stream_decode_audit {}", serde_json::json!({
+            "worker": format!("{:?}", std::thread::current().id()),
+            "jobs": self.jobs, "opens": self.opens, "reader_evictions": self.evictions,
+            "failures": self.failures, "open_total_us": self.open_nanos / 1000,
+            "decode_total_us": self.decode_nanos / 1000,
+            "first_128_job_total_us": self.first_128_job_nanos / 1000,
+            "max_job_us": self.max_job_nanos / 1000,
+            "job_us_log2_histogram": self.job_us_log2,
+            "reader_budget_bytes": self.reader_budget_bytes,
+            "peak_retained_reader_bytes": self.peak_retained_reader_bytes,
+            "retained_opaque_readers": self.retained_opaque_readers,
+        }));
+    }
+}
 
 fn decode(
     worker: &Mutex<StreamWorker>,
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     stop: &AtomicBool,
+    reader_byte_limit: usize,
 ) {
+    let mut audit = std::env::var_os("KONTRA_STREAM_AUDIT").map(|_| DecodeAudit::default());
     let worker = || {
         worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     };
     // ponytail: linear LRU over a few dozen readers; a map if that shows up.
-    let mut readers: Vec<(AssetId, SampleReader, u64)> = Vec::new();
+    let mut readers = ReaderCache::new(reader_byte_limit);
     let mut tick = 0u64;
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
@@ -916,28 +1045,28 @@ fn decode(
             std::thread::park();
             continue;
         };
+        let job_start = audit.as_ref().map(|_| Instant::now());
         tick += 1;
         let asset = job.key().asset;
-        let index = match readers.iter().position(|(id, ..)| *id == asset) {
+        let open_start = audit.as_ref().map(|_| Instant::now());
+        let mut opened = false;
+        let index = match readers.entries.iter().position(|entry| entry.asset == asset) {
             Some(i) => Some(i),
-            None => sources
-                .get(&asset)
-                .and_then(|s| s.open_stream().ok())
-                .map(|r| {
-                    if readers.len() == OPEN_READERS {
-                        let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
-                        readers.swap_remove(oldest);
-                    }
-                    readers.push((asset, r, tick));
-                    readers.len() - 1
-                }),
+            None => {
+                opened = true;
+                sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|reader| readers.insert(asset, reader, tick))
+            }
         };
+        if let Some(audit) = &mut audit {
+            audit.opens += u64::from(opened);
+            if opened { audit.open_nanos += open_start.unwrap().elapsed().as_nanos() as u64; }
+        }
+        let decode_start = audit.as_ref().map(|_| Instant::now());
         let result = match index {
             Some(i) => {
-                readers[i].2 = tick;
+                readers.entries[i].used = tick;
                 let start = job.range().start;
-                readers[i]
-                    .1
+                readers.entries[i].reader
                     .read(start, job.frames_mut())
                     .map_err(|error| match error.kind() {
                         io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => {
@@ -948,10 +1077,23 @@ fn decode(
             }
             None => Err(DecodeFailure::Unavailable),
         };
-        if result == Err(DecodeFailure::Unavailable) {
-            if let Some(i) = index {
-                readers.swap_remove(i);
-            }
+        if let Some(index) = index {
+            if result == Err(DecodeFailure::Unavailable) { readers.remove(index); }
+            else { readers.trim_after_read(index); }
+        }
+        if let Some(audit) = &mut audit {
+            let nanos = job_start.unwrap().elapsed().as_nanos() as u64;
+            audit.jobs += 1;
+            audit.failures += u64::from(result.is_err());
+            audit.decode_nanos += decode_start.unwrap().elapsed().as_nanos() as u64;
+            audit.max_job_nanos = audit.max_job_nanos.max(nanos);
+            if audit.jobs <= 128 { audit.first_128_job_nanos += nanos; }
+            let us = (nanos / 1000).max(1);
+            audit.job_us_log2[(63 - us.leading_zeros() as usize).min(31)] += 1;
+            audit.evictions = readers.evictions;
+            audit.reader_budget_bytes = readers.byte_limit + readers.storage_bytes;
+            audit.peak_retained_reader_bytes = readers.peak_retained_bytes;
+            audit.retained_opaque_readers = readers.opaque;
         }
         let completed = worker().complete(job, result);
         if let Err(rejected) = completed {
@@ -1048,6 +1190,72 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cache_fixture_reader() -> SampleReader {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let source = Source { size: std::fs::metadata(&path).unwrap().len(), path, offset: 0, key: None, handle: None, header: None };
+        SampleReader::open(&source).unwrap()
+    }
+
+    #[test]
+    fn decoder_cache_reuses_many_small_readers_without_changing_pcm() {
+        let mut cache = ReaderCache::new(2 << 20);
+        let mut expected = [[0.; 2]; 64];
+        cache_fixture_reader().read(0, &mut expected).unwrap();
+        let assets: Vec<_> = (0..40).map(|_| Pcm::streamed(48000, 1024).unwrap()).collect();
+        for (tick, asset) in assets.iter().enumerate() {
+            let index = cache.insert(asset.asset_id(), cache_fixture_reader(), tick as u64);
+            let mut actual = [[0.; 2]; 64];
+            cache.entries[index].reader.read(0, &mut actual).unwrap();
+            cache.trim_after_read(index);
+            assert_eq!(actual.map(|f| f.map(f32::to_bits)), expected.map(|f| f.map(f32::to_bits)));
+        }
+        assert_eq!(cache.entries.len(), 40, "active small decoders must not churn after 16 assets");
+        assert_eq!(cache.evictions, 0);
+        assert!(cache.bytes + cache.storage_bytes <= 2 << 20);
+        for asset in &assets {
+            let index = cache.entries.iter().position(|e| e.asset == asset.asset_id()).unwrap();
+            let mut actual = [[0.; 2]; 64];
+            cache.entries[index].reader.read(0, &mut actual).unwrap();
+            cache.trim_after_read(index);
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn decoder_cache_evicts_by_actual_grown_capacity_and_does_not_retain_oversized_readers() {
+        let mut cache = ReaderCache::new(64 << 10);
+        for tick in 0..10 {
+            let asset = Pcm::streamed(48000, 1024).unwrap();
+            let index = cache.insert(asset.asset_id(), cache_fixture_reader(), tick);
+            cache.entries[index].reader.read(0, &mut [[0.; 2]; 64]).unwrap();
+            cache.trim_after_read(index);
+            assert!(cache.bytes + cache.storage_bytes <= 64 << 10);
+        }
+        assert!(cache.evictions > 0);
+        let asset = Pcm::streamed(48000, 1024).unwrap();
+        let index = cache.insert(asset.asset_id(), cache_fixture_reader(), 100);
+        cache.entries[index].reader.scratch.resize(128 << 10, 0);
+        cache.trim_after_read(index);
+        assert!(!cache.entries.iter().any(|e| e.asset == asset.asset_id()));
+        assert!(cache.bytes + cache.storage_bytes <= 64 << 10);
+        let mut opaque = ReaderCache::new(2 << 20);
+        for tick in 0..32 {
+            let asset = Pcm::streamed(48000, 1024).unwrap();
+            let index = opaque.insert(asset.asset_id(), SampleReader::custom(48000, 1024, |_, out| { out.fill([0.1; 2]); Ok(()) }), tick);
+            opaque.trim_after_read(index);
+        }
+        assert_eq!(opaque.opaque, OPEN_READERS, "opaque workspaces keep their legacy cap");
+        for budget in [0, 1, std::mem::size_of::<CachedReader>()] {
+            let mut tiny = ReaderCache::new(budget);
+            let index = tiny.insert(asset.asset_id(), cache_fixture_reader(), 0);
+            tiny.entries[index].reader.read(0, &mut [[0.; 2]; 64]).unwrap();
+            tiny.trim_after_read(index);
+            assert!(tiny.entries.is_empty());
+            assert!(tiny.bytes + tiny.storage_bytes <= budget);
+            assert!(tiny.peak_retained_bytes <= budget);
+        }
+    }
 
     // No decoder/reloader threads: each test controls the exact cold-head order.
     fn reload_fixture(count: usize, budget: usize) -> (Streamer, Vec<Pcm>) {
