@@ -49,22 +49,24 @@ pub(super) fn process(
                 Detector::Rms { window } => window.seconds(),
                 Detector::Peak | Detector::TruePeak => 0.,
             };
-            let mut sc = Sidechain::new(state, true_peak);
-            sc.feedback = feedback;
-            sc.link = shared.link;
-            sc.detector = g.detector;
-            sc.rms = pole(window, rate);
-            sc.highpass = if g.sidechain_highpass_hz > 0. {
+            let highpass = if g.sidechain_highpass_hz > 0. {
                 let fs = f64::from(rate);
                 (-std::f64::consts::TAU * g.sidechain_highpass_hz.min(fs / 2.) / fs).exp()
             } else {
                 0.
             };
+            let set = (highpass, shared.link, g.detector, pole(window, rate));
             let ratio = generic_ratio(&g, knobs, if linked { 1 } else { 2 });
             let [attack, release] = [knobs[2], knobs[3]].map(|s| pole(s, rate));
             let ballistics = SmoothBranch::new(attack, release, linked, g.direction == Direction::Upward, state);
             let delay = Delay::new(ring, state);
-            run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            if feedback {
+                let sc = Sidechain::<true>::new(state, true_peak).with(set);
+                run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            } else {
+                let sc = Sidechain::<false>::new(state, true_peak).with(set);
+                run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            }
         }
         Law::KontaktClassic(_) => {
             let c = Classic::new(knobs, rate);

@@ -23,32 +23,35 @@ impl SmoothBranch {
     }
 }
 
+impl SmoothBranch {
+    #[inline(always)]
+    fn channel(&mut self, ch: usize, target: f64) -> f64 {
+        let change = self.change[ch];
+        let coefficient = if target > change { self.attack } else { self.release };
+        let mut value = target + coefficient * (change - target);
+        if value < 1e-12 {
+            value = 0.;
+        }
+        self.change[ch] = value;
+        if value == 0. {
+            1.
+        } else if self.upward {
+            table_gain(value)
+        } else {
+            table_gain(-value)
+        }
+    }
+}
+
 impl Stage for SmoothBranch {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let (attack, release, upward) = (self.attack, self.release, self.upward);
-        let channel = |change: &mut f64, target: f64| {
-            let coefficient = if target > *change { attack } else { release };
-            let mut value = target + coefficient * (*change - target);
-            if value < 1e-12 {
-                value = 0.;
-            }
-            *change = value;
-            if value == 0. {
-                1.
-            } else if upward {
-                table_gain(value)
-            } else {
-                table_gain(-value)
-            }
-        };
-        let [c0, c1] = &mut self.change;
-        let g0 = channel(c0, f.level[0]);
+        let g0 = self.channel(0, f.level[0]);
         f.gain = if self.linked {
-            *c1 = *c0;
+            self.change[1] = self.change[0];
             [g0; 2]
         } else {
-            [g0, channel(c1, f.level[1])]
+            [g0, self.channel(1, f.level[1])]
         };
     }
 
