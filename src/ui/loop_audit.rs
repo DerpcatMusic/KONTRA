@@ -556,7 +556,7 @@ fn loop_audit_conflux() {
         }
         let complete = outcome == Some(sampler_core::Outcome::Finished)
             && outcome_error.is_none() && faults.is_empty();
-        callbacks.push(serde_json::json!({"control":format!("{:032x}",id.0),
+        callbacks.push(serde_json::json!({"control":format!("{:032x}",{ id.0 }),
             "admitted":admitted.is_ok(),"admission_error":admitted.as_ref().err().map(|e|format!("{e:?}")),
             "admit_us":admit_us,"callback":callback.is_some(),"complete":complete,
             "truncated":callback.is_some() && outcome.is_none() && outcome_error.is_none() && blocks == MAX_CALLBACK_BLOCKS,
