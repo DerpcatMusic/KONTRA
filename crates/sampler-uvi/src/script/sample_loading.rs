@@ -10,10 +10,38 @@ use sampler_core::{
     SampleControl, SampleTargetId, SampleTask,
 };
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     sync::{Arc, mpsc},
     thread::JoinHandle,
 };
+
+/// Owner-thread task accounting. Success is counted only after a real core
+/// commit reply. Pending includes metadata, decode, ready and submitted work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SampleLoadStatus {
+    pub requested: usize,
+    pub successful: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub pending: usize,
+    pub queued_metadata: usize,
+    pub worker_active: usize,
+    pub ready: usize,
+    pub submitted: usize,
+}
+#[derive(Default)]
+struct Counts {
+    requested: Cell<usize>,
+    successful: Cell<usize>,
+    failed: Cell<usize>,
+    cancelled: Cell<usize>,
+}
+impl ScriptHost {
+    pub fn sample_load_status(&self) -> SampleLoadStatus {
+        self.shared.sample_loads.borrow().status()
+    }
+}
 
 pub type SampleSource = Arc<dyn Fn(&str, bool) -> Result<SampleResource, String> + Send + Sync>;
 /// Numeric file facts plus the same immutable authority used by page decoding.
@@ -357,6 +385,7 @@ pub(super) struct SampleLoads {
     committed: BTreeMap<u32, Info>,
     latest: BTreeMap<u32, Arc<SampleTask>>,
     next_collect: f64,
+    counts: Counts,
 }
 impl SampleLoads {
     pub fn new(doc: &roxmltree::Document<'_>, source: Option<SampleSource>, rate: u32) -> Self {
@@ -381,6 +410,7 @@ impl SampleLoads {
             committed: BTreeMap::new(),
             latest: BTreeMap::new(),
             next_collect: 0.,
+            counts: Counts::default(),
         }
     }
     pub fn bind(&mut self, mut control: SampleControl) -> Result<(), String> {
@@ -405,11 +435,36 @@ impl SampleLoads {
         self.dynamic = Some(dynamic);
         Ok(())
     }
-    fn finish(shared: &Shared, mut pending: Pending, error: Option<&str>) {
+    fn status(&self) -> SampleLoadStatus {
+        let queued_metadata = self.pending.len();
+        let worker_active = usize::from(self.active.is_some());
+        let ready = usize::from(self.ready.is_some());
+        let submitted = self.submitted.len();
+        SampleLoadStatus {
+            requested: self.counts.requested.get(),
+            successful: self.counts.successful.get(),
+            failed: self.counts.failed.get(),
+            cancelled: self.counts.cancelled.get(),
+            pending: queued_metadata + worker_active + ready + submitted,
+            queued_metadata,
+            worker_active,
+            ready,
+            submitted,
+        }
+    }
+    fn finish(shared: &Shared, counts: &Counts, mut pending: Pending, error: Option<&str>) {
         if let Some(error) = error {
             pending.status.fail();
             shared.find("lua loadSample failed", error);
         }
+        let count = if pending.status.cancelled() {
+            &counts.cancelled
+        } else if pending.status.success() {
+            &counts.successful
+        } else {
+            &counts.failed
+        };
+        count.set(count.get().saturating_add(1));
         if let (Some(thread), Some(task)) = (pending.callback.take(), pending.task.take()) {
             shared.deferred.borrow_mut().push((
                 thread,
@@ -419,16 +474,25 @@ impl SampleLoads {
         }
     }
     fn enqueue(&mut self, shared: &Shared, pending: Pending) {
+        self.counts
+            .requested
+            .set(self.counts.requested.get().saturating_add(1));
         if self.source.is_none() || !self.recipes.contains_key(&pending.target) {
             Self::finish(
                 shared,
+                &self.counts,
                 pending,
                 Some("sample source authority/oscillator kind unavailable"),
             );
             return;
         }
         if pending.path.len() > 4096 {
-            Self::finish(shared, pending, Some("sample load path capacity exceeded"));
+            Self::finish(
+                shared,
+                &self.counts,
+                pending,
+                Some("sample load path capacity exceeded"),
+            );
             return;
         }
         // Supersession precedes admission: canceled metadata must not consume
@@ -444,7 +508,7 @@ impl SampleLoads {
                 .expect("pending target index is exact");
             older.status.cancel();
             self.paths -= older.path.len();
-            Self::finish(shared, older, None);
+            Self::finish(shared, &self.counts, older, None);
         }
         let capacity = self
             .recipes
@@ -460,6 +524,7 @@ impl SampleLoads {
         {
             Self::finish(
                 shared,
+                &self.counts,
                 pending,
                 Some("sample load request capacity exceeded"),
             );
@@ -483,12 +548,13 @@ impl SampleLoads {
                             shared.find("sampleInfo file geometry unsupported", error);
                         }
                         self.committed.insert(pending.target, info);
-                        Self::finish(shared, pending, None);
+                        Self::finish(shared, &self.counts, pending, None);
                     } else if pending.status.cancelled() {
-                        Self::finish(shared, pending, None);
+                        Self::finish(shared, &self.counts, pending, None);
                     } else {
                         Self::finish(
                             shared,
+                            &self.counts,
                             pending,
                             Some(&format!("source commit {:?}", reply.result)),
                         );
@@ -512,7 +578,12 @@ impl SampleLoads {
                     Err(error) => {
                         self.paths -= pending.path.len();
                         let canceled = pending.status.cancelled();
-                        Self::finish(shared, pending, (!canceled).then_some(error.as_str()));
+                        Self::finish(
+                            shared,
+                            &self.counts,
+                            pending,
+                            (!canceled).then_some(error.as_str()),
+                        );
                     }
                 }
             }
@@ -520,7 +591,7 @@ impl SampleLoads {
         if let Some((pending, revision, info)) = self.ready.take() {
             if pending.status.cancelled() {
                 self.paths -= pending.path.len();
-                Self::finish(shared, pending, None);
+                Self::finish(shared, &self.counts, pending, None);
             } else if let Some(control) = self.control.as_mut() {
                 match control.submit(revision, pending.status.clone()) {
                     Ok(sequence) => {
@@ -533,6 +604,7 @@ impl SampleLoads {
                         self.paths -= pending.path.len();
                         Self::finish(
                             shared,
+                            &self.counts,
                             pending,
                             Some(&format!("source submission {error:?}")),
                         );
@@ -550,14 +622,14 @@ impl SampleLoads {
             self.pending_targets.remove(&pending.target);
             if pending.status.cancelled() {
                 self.paths -= pending.path.len();
-                Self::finish(shared, pending, None);
+                Self::finish(shared, &self.counts, pending, None);
                 continue;
             }
             let recipe = match &self.recipes[&pending.target] {
                 Ok(r) => *r,
                 Err(e) => {
                     self.paths -= pending.path.len();
-                    Self::finish(shared, pending, Some(e));
+                    Self::finish(shared, &self.counts, pending, Some(e));
                     continue;
                 }
             };
@@ -584,7 +656,12 @@ impl SampleLoads {
                 Ok(()) => self.active = Some(pending),
                 Err(_) => {
                     self.paths -= pending.path.len();
-                    Self::finish(shared, pending, Some("sample decode worker disconnected"));
+                    Self::finish(
+                        shared,
+                        &self.counts,
+                        pending,
+                        Some("sample decode worker disconnected"),
+                    );
                 }
             }
             break;

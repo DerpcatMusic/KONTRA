@@ -86,3 +86,29 @@ After a committed reply, `sampleInfo` reads current numeric file metadata with t
 - Eight metadata fixtures cover WAV/AIFF/FLAC loop laws, declared scopes, malformed/bounded inputs, foreign acid, explicit-over-unknown geometry, and a streamed reader that skips a 4 MiB audio payload while reading less than 256 metadata/header bytes.
 
 These are correctness and ownership receipts. The explicitly waited offline page test does not measure real-time disk deadline margin, cold OS cache, dense chords, or a DAW's static Auto-head policy. Native wavetable/granular replacement and private UVI sampler payloads remain unsupported.
+
+## Installed-bank source-service witness
+
+The opt-in `dynamic_source_witness` example uses ordinary promotion and script
+attachment, a real source worker/registry, core render commits, and bounded owner
+status requests. `SampleLoadStatus` separates requested, successful-after-ack,
+failed, canceled and still-pending tasks; pending is further split into metadata,
+worker, ready and submitted work. The synthetic 1,746-target fixtures assert this
+conservation before service binding and after all commits. This control query
+can wait for its owner and must never run on the audio callback.
+
+A bounded fresh-load witness of the originally diagnosed Augmented Orchestra
+Pizzicato 2 program completed with **zero dynamic requests**. All 6,984 authored
+targets resolved to 1,238 existing source identities, no identity changed, and
+the dynamic physical quota remained at zero. This is a negative initialization
+witness, not evidence that installed-bank `loadSample` requests succeeded. The
+numeric receipt is retained as `ao-production-dynamic-source-evidence.json` in
+the private asset-audit artifacts. Compilation overlapped this run; its duration
+is not a performance result. No script, image, sample or rendered audio was saved.
+
+Read-only structural call-site inspection places the two `loadSample` calls in
+`Layer:load`; the layer selection and saved-state loading paths reference layer
+loading. The example can discover authored control metadata and apply one
+explicit normal control edit. An unavailable or unidentified UI trigger must not
+be replaced by invoking an internal vendor Lua function. The fresh-load zero
+request receipt remains separate from any subsequent interaction witness.
