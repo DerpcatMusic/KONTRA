@@ -18,11 +18,12 @@ use std::{
 };
 
 mod async_data;
-mod modules;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
+mod modules;
 #[path = "parameters.rs"]
 pub(crate) mod parameters;
+mod profile;
 mod ui;
 pub use ui::{SavedValue, UiState, control_id};
 
@@ -115,9 +116,9 @@ impl Scripts {
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         self.images = Some(std::sync::Arc::new(move |path| {
             let mut cache = cache.lock().ok()?;
-            *cache.entry(path.to_owned()).or_insert_with(|| {
-                source(path).as_deref().and_then(crate::resources::png_size)
-            })
+            *cache
+                .entry(path.to_owned())
+                .or_insert_with(|| source(path).as_deref().and_then(crate::resources::png_size))
         }));
         self
     }
@@ -548,6 +549,7 @@ struct Waiting {
 }
 
 struct Shared {
+    profile: profile::Profile,
     #[cfg(feature = "scan")]
     progress: Option<std::sync::Arc<diagnostics::ScanProgress>>,
     #[cfg(feature = "scan")]
@@ -684,7 +686,8 @@ impl Shared {
         ApiTimer(
             self,
             name,
-            (self.audit_init && self.initializing.get()).then(Instant::now),
+            ((self.audit_init || self.profile.enabled()) && self.initializing.get())
+                .then(Instant::now),
         )
     }
 }
@@ -760,13 +763,21 @@ impl Shared {
     fn fold(&self, id: usize, name: &str, value: f64) -> bool {
         let kind = self.kinds.borrow().get(id).cloned().unwrap_or_default();
         let mut params = self.params.borrow_mut();
-        let Some(params) = params.get_mut(id) else { return false };
+        let Some(params) = params.get_mut(id) else {
+            return false;
+        };
         let retained = params.iter().any(|(k, _)| k == name);
         if !retained && !parameters::definitions(&kind).iter().any(|p| p.name == name) {
             return false;
         }
-        let Some(&(node, _)) = self.nodes.borrow().get(id) else { return false };
-        let text = if value.fract() == 0. && value.abs() < 1e15 { (value as i64).to_string() } else { value.to_string() };
+        let Some(&(node, _)) = self.nodes.borrow().get(id) else {
+            return false;
+        };
+        let text = if value.fract() == 0. && value.abs() < 1e15 {
+            (value as i64).to_string()
+        } else {
+            value.to_string()
+        };
         match params.iter_mut().find(|(k, _)| k == name) {
             Some((_, v)) => *v = text.clone(),
             None => params.push((name.to_owned(), text.clone())),
@@ -1038,7 +1049,12 @@ struct Tree {
 /// The Script Event Modulation command a promoted ConstantModulation's fields
 /// (Value, Style, and the `ScriptLive` id) stand for.
 fn constant_command(params: &[(String, String)], glide_ms: f64) -> Option<Command> {
-    let read = |n: &str| params.iter().find(|(k, _)| k == n).and_then(|(_, v)| v.parse::<f64>().ok());
+    let read = |n: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == n)
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+    };
     let id = read("ScriptLive")? as u16;
     let value = read("Value").unwrap_or(0.0).clamp(0.0, 1.0);
     let value = if read("Style") == Some(1.0) { f64::from(u8::from(value > 0.5)) } else { value };
@@ -1268,6 +1284,17 @@ impl ScriptHost {
         Self::create(xml, files, config, None, true)
     }
 
+    /// Explicit source-free load clocks and bounded VM safepoint attribution.
+    /// Normal plugin construction never enables this profiler.
+    pub fn new_profiled(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+        coverage: bool,
+    ) -> Result<Self, String> {
+        Self::create_profiled(xml, files, config, None, coverage, true)
+    }
+
     fn create(
         xml: &str,
         files: impl Files + 'static,
@@ -1275,15 +1302,30 @@ impl ScriptHost {
         state: Option<&UiState>,
         inspect: bool,
     ) -> Result<Self, String> {
+        Self::create_profiled(xml, files, config, state, inspect, false)
+    }
+
+    fn create_profiled(
+        xml: &str,
+        files: impl Files + 'static,
+        config: Config,
+        state: Option<&UiState>,
+        inspect: bool,
+        profiled: bool,
+    ) -> Result<Self, String> {
+        let profile = profile::Profile::new(profiled);
+        let _total = profile.span("host_create");
         let options = roxmltree::ParsingOptions {
             nodes_limit: 4_000_000,
             ..Default::default()
         };
         let doc = {
+            let _profile = profile.span("xml_parse");
             let _span = Span::new("uvi_lua_xml");
             roxmltree::Document::parse_with_options(xml, options).map_err(|e| e.to_string())?
         };
         let lua = {
+            let _profile = profile.span("vm_create");
             let _span = Span::new("uvi_lua_vm");
             Lua::new_with(
                 StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT,
@@ -1302,6 +1344,7 @@ impl ScriptHost {
         }
 
         let shared = Rc::new(Shared {
+            profile,
             #[cfg(feature = "scan")]
             progress: (config.audit_seed.is_some() && config.audit_progress)
                 .then(|| std::sync::Arc::new(diagnostics::ScanProgress::new(config.load_work))),
@@ -1390,7 +1433,31 @@ impl ScriptHost {
         Ok(host)
     }
 
+    pub fn initialization_profile(&self) -> serde_json::Value {
+        let mut report = self
+            .shared
+            .profile
+            .report(self.shared.inspection.borrow().is_some());
+        if report.is_null() {
+            return report;
+        }
+        #[cfg(feature = "scan")]
+        {
+            report["native_apis"]=serde_json::json!(self.shared.init_api.borrow().iter().map(|(phase,(calls,elapsed))|serde_json::json!({"phase":phase,"calls":calls,"elapsed_ms":elapsed.as_secs_f64()*1000.})).collect::<Vec<_>>());
+        }
+        report["work"] = serde_json::json!({"vm_checkpoints":self.shared.vm_checkpoints.get(),"graph_nodes":self.shared.graph_nodes.get(),"graph_depth":self.shared.graph_depth.get(),"script_bytes":self.shared.script_bytes.get(),"lua_memory_bytes":self.lua.used_memory()});
+        report
+    }
+
+    pub(crate) fn profile_span(&self, name: &'static str) -> profile::Span {
+        self.shared.profile.span(name)
+    }
+    pub(crate) fn profile_record(&self, name: &'static str, elapsed_ms: f64) {
+        self.shared.profile.record(name, elapsed_ms);
+    }
+
     fn build_program(&self, doc: &roxmltree::Document) -> mlua::Result<()> {
+        let _profile = self.shared.profile.span("program_object_graph");
         let _span = Span::new("uvi_lua_graph");
         let program = doc
             .descendants()
@@ -1465,6 +1532,7 @@ impl ScriptHost {
     }
 
     fn install(&self) -> mlua::Result<()> {
+        let _profile = self.shared.profile.span("host_globals_and_prelude");
         let _span = Span::new("uvi_lua_host_install");
         let lua = &self.lua;
         // Only table/string/math/coroutine are loaded (no io, os, debug,
@@ -1475,11 +1543,14 @@ impl ScriptHost {
 
         // Count Luau call/loop-backedge checkpoints, not elapsed scheduler time.
         let budget = shared.clone();
-        lua.set_interrupt(move |_| {
+        lua.set_interrupt(move |lua| {
             budget
                 .vm_checkpoints
                 .set(budget.vm_checkpoints.get().saturating_add(1));
             budget.consume_work()?;
+            if budget.initializing.get() {
+                budget.profile.sample(lua, budget.vm_checkpoints.get());
+            }
             Ok(VmState::Continue)
         });
 
@@ -1505,7 +1576,9 @@ impl ScriptHost {
                     _ => None,
                 };
                 let path = match args.get(1) {
-                    Some(Value::String(path)) => Some(script_relative(lua, path.to_str()?.to_owned())),
+                    Some(Value::String(path)) => {
+                        Some(script_relative(lua, path.to_str()?.to_owned()))
+                    }
                     _ => None,
                 };
                 let loaded = id
@@ -1651,7 +1724,13 @@ impl ScriptHost {
                     .get(id)
                     .and_then(|params| params.iter().find(|(key, _)| *key == name))
                     // A retained field has no declared type (see `element.setParameter`).
-                    .map(|(_, value)| if value.parse::<f64>().is_ok() { "any" } else { "string" });
+                    .map(|(_, value)| {
+                        if value.parse::<f64>().is_ok() {
+                            "any"
+                        } else {
+                            "string"
+                        }
+                    });
                 Ok((kind, None, None))
             })?,
         )?;
@@ -1660,6 +1739,24 @@ impl ScriptHost {
         let schemas = lua.create_table()?;
         let retained_fields = lua.create_table()?;
         let clone_table: Function = globals.raw_get::<Table>("table")?.raw_get("clone")?;
+        // Clone the private scalar schema in one VM entry, rather than crossing
+        // Rust/Lua once for every parameter. Public definitions remain fresh,
+        // mutable tables, with numeric and named entries sharing one identity.
+        let clone_schema: Function = lua
+            .load(r#"
+                local clone, create = ...
+                return function(schema)
+                    local definitions = create(#schema)
+                    for index = 1, #schema do
+                        local definition = clone(schema[index])
+                        definitions[index] = definition
+                        definitions[definition.name] = definition
+                    end
+                    return definitions
+                end
+            "#)
+            .set_name("@kontra/catalog-definitions")
+            .call((clone_table.clone(), globals.raw_get::<Table>("table")?.raw_get::<Function>("create")?))?;
         native.set(
             "definitions",
             lua.create_function(move |lua, id: usize| {
@@ -1712,15 +1809,7 @@ impl ScriptHost {
                         schema
                     }
                 };
-                let defs = lua.create_table()?;
-                for (p, template) in parameters::definitions(kind)
-                    .iter()
-                    .zip(schema.sequence_values::<Table>())
-                {
-                    let d: Table = clone_table.call(template?)?;
-                    defs.raw_set(p.name, d.clone())?;
-                    defs.raw_push(d)?;
-                }
+                let defs: Table = clone_schema.call(schema)?;
                 // The public numeric catalog omits string fields and some graph
                 // nodes. Retain their typed XML identity without fabricating native
                 // bounds or omitted defaults. Provenance distinguishes these facts.
@@ -2081,16 +2170,19 @@ impl ScriptHost {
         native.set(
             "source",
             lua.create_function(move |_, name: String| {
-                Ok(s.files.script(&name).or_else(|| {
-                    (name == "uvi.ChordRec").then(|| modules::CHORD_REC.to_owned())
-                }))
+                Ok(s.files
+                    .script(&name)
+                    .or_else(|| (name == "uvi.ChordRec").then(|| modules::CHORD_REC.to_owned())))
             })?,
         )?;
-        native.set("asyncUpdater", lua.create_function(|lua, ()| {
-            let factory = lua.create_userdata(modules::AsyncUpdaterFactory)?;
-            factory.set_user_value(lua.globals())?;
-            Ok(factory)
-        })?)?;
+        native.set(
+            "asyncUpdater",
+            lua.create_function(|lua, ()| {
+                let factory = lua.create_userdata(modules::AsyncUpdaterFactory)?;
+                factory.set_user_value(lua.globals())?;
+                Ok(factory)
+            })?,
+        )?;
         let s = shared.clone();
         native.set(
             "assigned",
@@ -2107,8 +2199,10 @@ impl ScriptHost {
         native.set(
             "compile",
             lua.create_function(move |lua, (source, name): (mlua::LuaString, String)| {
+                let _profile = s.profile.span("module_compile");
                 let _span = Span::new("uvi_lua_module_compile");
                 {
+                    let _profile = s.profile.span("module_name_inventory");
                     let _span = Span::new("uvi_lua_module_names");
                     s.note_assigned(&source.to_string_lossy());
                 }
@@ -2560,6 +2654,7 @@ impl ScriptHost {
         doc: &roxmltree::Document,
         state: Option<&UiState>,
     ) -> Result<(), String> {
+        let _profile = self.shared.profile.span("scripts_total");
         let _span = Span::new("uvi_lua_scripts");
         for script in doc.descendants().filter(|n| n.has_tag_name("script")) {
             if script.ancestors().any(|n| {
@@ -2577,6 +2672,7 @@ impl ScriptHost {
             self.shared
                 .arm(self.shared.config.load, self.shared.config.load_work);
             let function = {
+                let _profile = self.shared.profile.span("root_script_compile");
                 let _span = Span::new("uvi_lua_root_compile");
                 let id = crate::parity::script_id(script);
                 // Keep source names path-free: relative resources are resolved
@@ -2599,11 +2695,13 @@ impl ScriptHost {
             };
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             {
+                let _profile = self.shared.profile.span("script_body_and_require");
                 let _span = Span::new("uvi_lua_script_body");
                 resume(&self.shared, thread, MultiValue::new(), None);
                 self.cycle();
             }
             let restored = Span::new("uvi_lua_restore");
+            let restore_profile = self.shared.profile.span("saved_ui_restore");
             // Saved widget values and their `changed` callbacks run after the
             // script body and before onLoad and onInit.
             if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
@@ -2629,7 +2727,9 @@ impl ScriptHost {
                 })?;
             }
             drop(restored);
+            drop(restore_profile);
             let _span = Span::new("uvi_lua_on_init");
+            let _profile = self.shared.profile.span("on_init_and_deferred_callbacks");
             self.call("onInit", None);
         }
         Ok(())
@@ -3136,6 +3236,35 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn explicit_init_profile_preserves_ordinary_state_without_retaining_script_text() {
+        let xml = r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+local private_source_marker='PROFILE_PRIVATE_AUTHORED_LITERAL'
+function onInit()
+  local k=Knob('Fixture',0,0,10)
+  k:setValue(7)
+  initialized=private_source_marker
+end
+]]></script></ScriptProcessor></EventProcessors></Program>"#;
+        let ordinary = super::ScriptHost::new(xml, (), super::Config::default()).unwrap();
+        let profiled = super::ScriptHost::new_profiled(xml, (), super::Config::default(), false).unwrap();
+        let covered = super::ScriptHost::new_profiled(xml, (), super::Config::default(), true).unwrap();
+        assert_eq!(ordinary.interface(), profiled.interface());
+        assert_eq!(ordinary.interface(), covered.interface());
+        assert_eq!(ordinary.global_text("initialized"), profiled.global_text("initialized"));
+        assert!(ordinary.initialization_profile().is_null());
+        assert!(profiled.coverage().is_empty());
+        assert!(!covered.coverage().is_empty());
+        let report=profiled.initialization_profile();
+        assert_eq!(report["coverage"], false);
+        let stages=report["stages"].as_array().unwrap();
+        for phase in ["host_create","xml_parse","root_script_compile","on_init_and_deferred_callbacks","ui_ir_export"] {
+            assert!(stages.iter().any(|s| s["phase"] == phase && s["calls"].as_u64().unwrap() > 0), "{phase}");
+        }
+        assert!(!report.to_string().contains("PROFILE_PRIVATE_AUTHORED_LITERAL"));
+        assert!(report["lua_samples"].as_array().unwrap().len()<=512);
+    }
+
+    #[test]
     fn image_resource_headers_are_cached_across_snapshots() {
         use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
         let reads = Arc::new(AtomicUsize::new(0));
@@ -3315,7 +3444,11 @@ mod tests {
              <SamplePlayer Name='o1'/></Oscillators></Keygroup></Keygroups></Layer></Layers>\
              </Program></UVI4>";
         let mut h = ScriptHost::new(xml, Convolvers, Config::default()).unwrap();
-        let impulses = |c: Vec<Command>| c.iter().filter(|c| matches!(c, Command::Impulse { .. })).count();
+        let impulses = |c: Vec<Command>| {
+            c.iter()
+                .filter(|c| matches!(c, Command::Impulse { .. }))
+                .count()
+        };
         assert_eq!(impulses(h.take_commands()), 1, "{:?}", h.findings());
         assert_eq!(impulses(h.take_commands()), 0);
     }

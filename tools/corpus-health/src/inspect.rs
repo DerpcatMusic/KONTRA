@@ -21,6 +21,7 @@ struct Options {
     summary: bool,
     render: bool,
     ui_only: bool,
+    profile_init: bool,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -41,6 +42,10 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
                 opts.ui_only = true;
                 opts.initialize = true;
             }
+            "--profile-init" => {
+                opts.profile_init = true;
+                opts.initialize = true;
+            }
             "--ephemeral-source" => opts.source = true,
             "--summary" => opts.summary = true,
             flag if flag.starts_with('-') => return Err("unknown inspector flag"),
@@ -55,6 +60,9 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
         return Err(
             "--ui-only skips source classification; omit --ephemeral-source or use a full inspection",
         );
+    }
+    if opts.profile_init && !matches!(opts.path.extension().and_then(|e| e.to_str()), Some("uvip" | "ufs")) {
+        return Err("--profile-init currently profiles UVI UVIP/UFS initialization only");
     }
     Ok(opts)
 }
@@ -168,7 +176,7 @@ fn base(opts: &Options, kind: &str) -> Value {
     json!({
         "format": "kontra-library-inspector", "schema": 1,
         "item": {"path": opts.path, "kind": kind, "program": opts.program},
-        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only},
+        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"lua_coverage":opts.initialize && !opts.ui_only},
         "status": "ok", "stages": [], "metadata": {}, "scripts": [],
         "converted": {"status": "not_run", "scope": "No product IR translation requested"},
         "ui": {"status": "not_evaluated", "scope": "Source frontends do not execute authored UI initialization", "interfaces": []},
@@ -206,6 +214,26 @@ fn source_program(
             "Program public parameters were rejected",
             "vendor/ni-file/src/kontakt/objects/program.rs",
         );
+    }
+    if let Some(chunk) = program.0.find_first(0x32) {
+        match ni_file::kontakt::objects::VoiceGroups::try_from(chunk) {
+            Ok(groups) => {
+                let limit = |v: &ni_file::kontakt::objects::VoiceLimit| json!({
+                    "max_voices":v.max_num_voices,"kill_mode":v.kill_mode,
+                    "prefer_released":v.prefer_released,"fade_ms":v.ms_fade_time,
+                    "exclusion_group":v.exclusion_group,
+                });
+                record["voice_policy"] = json!({
+                    "scope":"Saved native voice-group records; script and initialization changes are not applied",
+                    "program":limit(&groups.voice_limit),
+                    "overrides":groups.groups.iter().enumerate().filter_map(|(slot,group)|
+                        group.as_ref().map(|group|json!({"voice_group":slot,"limit":limit(&group.voice_limit)}))
+                    ).collect::<Vec<_>>(),
+                });
+            }
+            Err(_) => diagnostic(report,"parse","VoiceGroups","Typed saved voice policies were rejected",
+                "vendor/ni-file/src/kontakt/objects/voice_groups.rs"),
+        }
     }
     if let Some(chunk) = program.0.find_first(0x33) {
         match GroupList::try_from(chunk) {
@@ -372,10 +400,10 @@ fn interfaces(faces: &[sampler_ui_ir::Interface]) -> Value {
         "widgets":face.widgets.iter().enumerate().map(|(n,w)|{
             let interactive=matches!(w.kind,Kind::Knob{..}|Kind::Slider{..}|Kind::ValueEdit{..}|Kind::Button{..}|Kind::Switch|Kind::Menu{..}|Kind::Table{..}|Kind::Xy{..}|Kind::TextEdit|Kind::FileSelector{..}|Kind::MouseArea);
             let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
-            json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()})
+            json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()})
         }).collect::<Vec<_>>(),
         "assets":face.assets.iter().enumerate().map(|(n,a)|json!({"index":n,"path":a.path,"kind":format!("{:?}",a.kind)})).collect::<Vec<_>>(),
-        "styles":face.styles.iter().enumerate().map(|(n,s)|json!({"index":n,"font":format!("{:?}",s.font),"size":s.size,"align":format!("{:?}",s.align),"render_support":match s.font {sampler_ui_ir::Font::Named(_)=>"Kontra default-face fallback; authored named family is unresolved",sampler_ui_ir::Font::Default=>"Kontra default face",sampler_ui_ir::Font::Stock(_)=>"Kontra stock-font mapping; native glyph fidelity unverified",sampler_ui_ir::Font::File(_)=>"Authored font asset; see requested TrueTypeFont outcome",sampler_ui_ir::Font::Bitmap(_)=>"Authored bitmap glyph asset in bitmap presentation; vector uses the default face"}})).collect::<Vec<_>>(),
+        "styles":face.styles.iter().enumerate().map(|(n,s)|json!({"index":n,"font":format!("{:?}",s.font),"size":s.size,"colour":json!([s.color.r,s.color.g,s.color.b,s.color.a]),"align":format!("{:?}",s.align),"render_support":match s.font {sampler_ui_ir::Font::Named(_)=>"Kontra default-face fallback; authored named family is unresolved",sampler_ui_ir::Font::Default=>"Kontra default face",sampler_ui_ir::Font::Stock(_)=>"Kontra stock-font mapping; native glyph fidelity unverified",sampler_ui_ir::Font::File(_)=>"Authored font asset; see requested TrueTypeFont outcome",sampler_ui_ir::Font::Bitmap(_)=>"Authored bitmap glyph asset in bitmap presentation; vector uses the default face"}})).collect::<Vec<_>>(),
         "unsupported":face.unsupported.iter().map(|u|json!({"feature":u.feature,"widget":u.widget.map(|w|w.0),"detail":"UI projection does not model this source feature; authored value omitted"})).collect::<Vec<_>>()
     })).collect::<Vec<_>>())
 }
@@ -394,7 +422,7 @@ fn render_interface(
     }
     #[cfg(feature = "ui-render")]
     {
-        let started = Instant::now();
+        let started = begin_phase("ui_render");
         let program = report["item"]["program"].as_u64().unwrap_or(0) as u32;
         report["ui"]["interfaces"][index]["render"] =
             kontakto::offline_ui_preview(face, path, values, program, faces);
@@ -475,7 +503,16 @@ fn uvi_initialization(
     host: &sampler_uvi::script::ScriptHost,
     source_lines: &BTreeMap<String, Vec<usize>>,
 ) {
-    uvi_interface(report, &host.interface());
+    uvi_initialization_model(report, host, source_lines, &host.interface());
+}
+
+fn uvi_initialization_model(
+    report: &mut Value,
+    host: &sampler_uvi::script::ScriptHost,
+    source_lines: &BTreeMap<String, Vec<usize>>,
+    face: &sampler_ui_ir::Interface,
+) {
+    uvi_interface(report, face);
     let counts = host.fault_counts();
     let failed = counts.init.values().any(|count| *count != 0);
     let coverage = host.coverage();
@@ -1293,7 +1330,13 @@ fn uvi(opts: &Options, report: &mut Value) {
         } else {
             sampler_uvi::ScriptedOrigin::Loose(&opts.path)
         };
-        match sampler_uvi::inspect_decoded_scripted_program(xml, files, origin) {
+        match sampler_uvi::inspect_decoded_scripted_program_with_options(
+            xml,
+            files,
+            origin,
+            !opts.ui_only,
+            opts.profile_init,
+        ) {
             Ok((ir, host)) => {
                 timing(report, "translate_and_initialize", started);
                 instrument(
@@ -1308,12 +1351,20 @@ fn uvi(opts: &Options, report: &mut Value) {
                     "Converted the initialized XML hierarchy and admitted processor/control graph",
                     "crates/sampler-uvi/src/lib.rs",
                 );
-                uvi_initialization(report, &host, &source_lines);
+                let model_started = begin_phase("ui_model_export");
+                let face = host.interface();
+                timing(report, "ui_model_export", model_started);
+                uvi_initialization_model(report, &host, &source_lines, &face);
+                report["evidence"]["initialization"]["coverage"] = json!(!opts.ui_only);
+                if opts.ui_only {
+                    report["evidence"]["initialization"]["scope"] = json!(
+                        "Ordinary production Luau script-body/restore/onInit constructor without line-coverage instructions; no musical or gesture callbacks"
+                    );
+                }
                 let path = program
                     .as_deref()
                     .map(|program| opts.path.join(program))
                     .unwrap_or_else(|| opts.path.clone());
-                let face = host.interface();
                 render_interface(
                     report,
                     opts,
@@ -1323,6 +1374,9 @@ fn uvi(opts: &Options, report: &mut Value) {
                     &[],
                     std::slice::from_ref(&face),
                 );
+                if opts.profile_init {
+                    report["performance"]["initialization_profile"] = host.initialization_profile();
+                }
             }
             Err(sampler_uvi::ScriptedTranslationFailure::Initialize(error)) => {
                 fail(
@@ -2215,6 +2269,43 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
     }
 
     #[test]
+    fn saved_voice_policy_is_exposed_without_guessing_rejected_records() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        let inline = |voices: i32, exclusion: i32| {
+            let mut bytes = vec![0, 0x60, 0];
+            bytes.extend(0u32.to_le_bytes()); // Empty UTF-16 name.
+            bytes.extend(1i16.to_le_bytes());
+            bytes.push(1);
+            bytes.extend(voices.to_le_bytes());
+            bytes.extend(10i32.to_le_bytes());
+            bytes.extend(exclusion.to_le_bytes());
+            bytes
+        };
+        let mut valid = inline(1024, -1);
+        let mut mask = [0; 16]; mask[15] = 128;
+        valid.extend(mask); valid.extend(inline(3, 16));
+        for rejected in [false, true] {
+            let mut data = valid.clone();
+            if rejected { data.pop(); }
+            let program = Program(StructuredObject { version: 0xaf, public_data: vec![0; 70],
+                private_data: vec![], children: vec![Chunk { id: 0x32, data }] });
+            let opts = Options { path: "Authored.nki".into(), ..Default::default() };
+            let mut report = base(&opts, "kontakt");
+            let record = source_program(&mut report, &opts.path, &program, 0, None, &opts);
+            if rejected {
+                assert!(record.get("voice_policy").is_none(), "malformed policy must not manufacture defaults");
+                assert!(report["diagnostics"].as_array().unwrap().iter().any(|d| d["category"] == "VoiceGroups"));
+            } else {
+                assert_eq!(record["voice_policy"]["program"]["max_voices"], 1024);
+                assert_eq!(record["voice_policy"]["program"]["exclusion_group"], -1);
+                assert_eq!(record["voice_policy"]["overrides"].as_array().unwrap().len(), 1);
+                assert_eq!(record["voice_policy"]["overrides"][0]["voice_group"], 127);
+                assert_eq!(record["voice_policy"]["overrides"][0]["limit"]["exclusion_group"], 16);
+            }
+        }
+    }
+
+    #[test]
     fn physical_empty_and_bypassed_slots_have_unique_multi_coordinates() {
         use ni_file::kontakt::{Chunk, StructuredObject};
         let temp = Temp::new();
@@ -2318,6 +2409,9 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         let focused = options(&strings(&["a.nki", "--ui-only", "--ephemeral-render"])).unwrap();
         assert!(focused.initialize && focused.ui_only && focused.render);
         assert!(options(&strings(&["a.nki", "--ui-only", "--ephemeral-source"])).is_err());
+        assert!(options(&strings(&["a.nki", "--profile-init"])).is_err());
+        let profiled = options(&strings(&["a.uvip", "--ui-only", "--profile-init"])).unwrap();
+        assert!(profiled.initialize && profiled.profile_init && profiled.ui_only);
     }
 
     #[test]
@@ -2340,6 +2434,8 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
             "skipped"
         );
         assert_eq!(report["evidence"]["initialization"]["status"], "ok");
+        assert_eq!(report["evidence"]["initialization"]["coverage"], false);
+        assert!(report["evidence"]["initialization"]["line_observations"].as_array().unwrap().is_empty());
         assert!(
             !report["ui"]["interfaces"][0]["widgets"]
                 .as_array()

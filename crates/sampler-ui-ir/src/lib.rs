@@ -168,6 +168,10 @@ pub struct Widget {
     pub mapper: Option<String>,
     /// MultiStateButton advances on click; Menu opens a choice list.
     pub menu_cycle: bool,
+    /// Show the stock right-hand menu arrow; authored skins may hide it.
+    pub menu_arrow: bool,
+    /// Explicit authored value-popup policy. Unset retains the source default.
+    pub popup_display: Option<bool>,
     /// Even coordinate index of the manually selected XY cursor.
     pub active_index: Option<i32>,
     /// Current source value for typed widgets; numeric controls use their service.
@@ -215,6 +219,8 @@ impl Widget {
             viewport: None,
             mapper: None,
             menu_cycle: false,
+            menu_arrow: true,
+            popup_display: None,
             active_index: None,
             value: None,
             waveform: None,
@@ -330,6 +336,9 @@ pub struct Colors {
     pub on: Option<Rgba>,
     pub off: Option<Rgba>,
     pub bar: Option<Rgba>,
+    /// Authored menu border and right-hand arrow ink.
+    pub outline: Option<Rgba>,
+    pub arrow: Option<Rgba>,
     pub peak: Option<Rgba>,
     pub overload: Option<Rgba>,
     pub zero_line: Option<Rgba>,

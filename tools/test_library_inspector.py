@@ -39,6 +39,20 @@ class InspectorTests(unittest.TestCase):
                 inspector.inspect_command(Path("/bin/inspect"), "fixture.nki",
                     initialize=True, source=False, program=None, ram=Path("/dev/shm/owned"))
 
+    def test_profile_requires_the_same_read_only_initializer(self):
+        with patch.object(inspector.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "requires bubblewrap"):
+                inspector.inspect_command(Path("/bin/inspect"), "Authored.uvip",
+                    initialize=False, source=False, program=None,
+                    ram=Path("/dev/shm/owned"), profile_init=True)
+        with patch.object(inspector.shutil, "which", return_value="/usr/bin/bwrap"):
+            args = inspector.inspect_command(Path("/bin/inspect"), "Authored.uvip",
+                initialize=False, source=False, program=None,
+                ram=Path("/dev/shm/owned"), profile_init=True, ui_only=True)
+        self.assertIn("--initialize", args)
+        self.assertIn("--profile-init", args)
+        self.assertIn("--ui-only", args)
+
     def test_render_requires_sandbox_and_preserves_snapshot_base(self):
         with patch.object(inspector.shutil, "which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "requires bubblewrap"):
