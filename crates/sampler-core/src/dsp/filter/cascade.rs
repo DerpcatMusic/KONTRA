@@ -31,25 +31,34 @@ use super::super::Planar;
 
 /// Frames between control evaluations (the engine's native-knob clock).
 const QUANTUM: usize = 32;
-/// Cells of `[f64; 2]` owned per instance: 3 sections x (x1, x2, y1, y2) per channel, the
-/// cached knobs and the coefficients.
-pub(crate) const CELLS: usize = 12 + 2 + 9;
+/// Cells of `[f64; 2]` owned per instance: 3 sections x (x1, x2, y1, y2) per channel (or a
+/// stage law's 8 values), the knobs designed for, the coefficients, the clocked knobs.
+pub(crate) const CELLS: usize = 12 + 2 + 9 + 2 + 13;
 const KNOBS: usize = 12;
 const COEFS: usize = 14;
+/// The clocked knobs and the started flag.
+const CLOCK: usize = 23;
 
 /// The native legacy classes (saved type in the comment).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Legacy {
-    Lp1, // 2
-    Hp1, // 3
-    Bp2, // 4
-    Lp2, // 6
-    Hp2, // 7
-    Lp4, // 8
-    Hp4, // 9
-    Bp4, // 10
-    Br4, // 11
-    Lp6, // 12
+    Lp1,    // 2
+    Hp1,    // 3
+    Bp2,    // 4
+    Lp2,    // 6
+    Hp2,    // 7
+    Lp4,    // 8
+    Hp4,    // 9
+    Bp4,    // 10
+    Br4,    // 11
+    Lp6,    // 12
+    VowelA, // 14
+    VowelB, // 15
+    Pro52,  // 16
+    Ladder, // 17
+    Versatile(sampler_ir::fx::filter::Versatile), // 19
+    Sv(Sv),                                       // 50..=65
+    Uvi(Uvi),
 }
 
 impl Legacy {
@@ -65,6 +74,10 @@ impl Legacy {
             10 => Self::Bp4,
             11 => Self::Br4,
             12 => Self::Lp6,
+            14 => Self::VowelA,
+            15 => Self::VowelB,
+            16 => Self::Pro52,
+            17 => Self::Ladder,
             _ => return None,
         })
     }
@@ -378,6 +391,30 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             d.count = 2;
             d.parallel = true;
         }
+        Legacy::VowelA | Legacy::VowelB => {
+            // FUN_14095dd00 / FUN_14095e250: no exp series; two formant sections in parallel,
+            // A warped low (unit DC gain), B mirrored high (unit Nyquist gain), both x `level`.
+            let a_kind = class == Legacy::VowelA;
+            let (k8, mb, bb) = if a_kind { (0.18, 0.068, 0.071_24) } else { (0.22, 0.083, 0.052) };
+            let r1 = (f64::from(r) * k8 + 0.85) as f32;
+            let r2 = if a_kind { (f64::from(r * 0.5) + 0.2) as f32 } else { (f64::from(r) * 0.4 + 0.2) as f32 };
+            let level = f64::from((1.0 - r2) * 0.68 + 0.32);
+            let u = clamp01((clamp01(cutoff) + 0.002) * rate_factor);
+            let t = f64::from((f64::from(u) * std::f64::consts::FRAC_PI_2) as f32);
+            let wa = if a_kind { (0.035_62 - t * 0.011_33) as f32 } else { (t * 0.0101 + 0.018_37) as f32 };
+            let wb = (t * mb + bb) as f32;
+            let x = warp(bits(P4_0), 0.647, 6.294, r1, lp_pole(wa));
+            let y = warp(bits(P4_1), 0.3, 0.796, r2, hp_pole(wb)).mirror();
+            let dx = ((1.0 - f64::from(x.c2 + x.c1)) / f64::from((x.b1 + x.b0) + x.b2)) * level;
+            let dy = ((1.0 - f64::from(y.c2 - y.c1)) / f64::from((y.b0 - y.b1) + y.b2)) * level;
+            *s = [x.scale(dx), y.scale(dy), Section::default()];
+            d.count = 2;
+            d.parallel = true;
+        }
+        Legacy::Uvi(Uvi::Biquad { mode, hertz, q }) => s[0] = uvi_biquad(mode, hertz, q, rate),
+        Legacy::Pro52 | Legacy::Ladder | Legacy::Versatile(_) | Legacy::Sv(_) | Legacy::Uvi(_) => {
+            unreachable!("not a section class")
+        }
         Legacy::Lp6 => {
             let a = lp_pole(angle(v, 0.99));
             let n = f64::from(q * 0.55 + 0.45);
@@ -409,6 +446,577 @@ fn substitute_wide(b0: f64, b1: f64, b2: f64, c1: f64, c2: f64, a: f64) -> [f64;
     ]
 }
 
+// ----------------------------------------------------------------- explicit stages
+
+/// One explicit (Chamberlin) state-variable stage: `hp = soft(b) + (k x - (b d + l))`,
+/// `b += hp g`, `l += b g + eps`; its output `x + (mode - x) wet` with
+/// `mode = wl l + wb b + wh hp`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Stage {
+    pub g: f32,
+    pub d: f32,
+    /// Input scale.
+    pub k: f32,
+    pub eps: f32,
+    /// Soft clip of the band state added to the high pass ([`soft`] coefficients).
+    pub shaper: (f32, f32),
+    /// Low, band and high pass weights.
+    pub weights: [f32; 3],
+    pub wet: f32,
+}
+
+/// Up to three stages in series, a soft-clipped feedback of the last low pass subtracted from
+/// the input, and an output gain smoothed toward `gain` by `smooth` per frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Chamberlin {
+    pub stages: [Stage; 3],
+    pub count: usize,
+    pub feedback: (f32, f32),
+    pub gain: f32,
+    pub smooth: f32,
+}
+
+/// `(a - c |s|) s` with `s` the input clamped to +-4 (Pro-53 feedback `NL`, Versatile shaper).
+#[inline(always)]
+fn soft(v: f32, (a, c): (f32, f32)) -> f32 {
+    let s = v.clamp(-4.0, 4.0);
+    (a - s.abs() * c) * s
+}
+
+/// The 2401-entry table `2^(i/60 - 20)` at the MIDI-note index `((x 100 + 20) 5) + 1381.88`
+/// (`FUN_14095d940` / `FUN_14095d630`): 25.96 Hz at 0, 8372 Hz at 1.
+fn note_hertz(cutoff: f32) -> f32 {
+    super::ladder_kernel::exponential((clamp01(cutoff) * 100.0 + 20.0) * 5.0 + 1381.881_6)
+}
+
+/// Pro-53 (`FUN_14095d940` setter, `FUN_1409099a0` process): two stages, the second fed the
+/// first's low pass scaled by its damping, `NL(l2)` fed back.
+fn pro52(cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
+    let r = clamp01(resonance);
+    let k = if r >= 0.5 { r * 0.48 + 0.46 } else { r * 1.16 + 0.12 };
+    let limit = (r * 0.293) * (r + 1.3075) + 0.7352;
+    let g = (note_hertz(cutoff) * (6.283 / rate)).clamp(0.0, limit);
+    let k2 = k * 0.8;
+    let d2 = 2.0 - (k2 + k2);
+    let low = |d, k, eps| Stage { g, d, k, eps, weights: [1.0, 0.0, 0.0], wet: 1.0, ..Stage::default() };
+    Chamberlin {
+        stages: [low(2.0 - (k + k), 1.0, 1e-7), low(d2, d2, 0.0), Stage::default()],
+        count: 2,
+        feedback: (0.133_35, 0.016_668_75),
+        gain: 1.0,
+        smooth: 1.0,
+    }
+}
+
+/// 3x2 Versatile (`FUN_14095db50` cutoff, `FUN_140966230`.. resonances, assignment
+/// `0x14096490b`, normaliser `FUN_14096f840`, process `FUN_140aef6e0`): three stages with the
+/// band-state shaper, morphing LP -> BP -> HP, each blended by its wet amount.
+fn versatile(v: &sampler_ir::fx::filter::Versatile, cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
+    let k = (1.0 / f64::from(rate) * 6.283) as f32;
+    let note = clamp01(cutoff) * 111.0 + 20.0;
+    let shift = v.shift.map(|x| clamp01(x) * 80.0);
+    let n1 = shift[0] + note;
+    let notes = [note, n1, n1 + shift[1]];
+    let res = [clamp01(resonance), clamp01(v.resonance[0]), clamp01(v.resonance[1])];
+    let wet = v.wet.map(clamp01);
+    let mut stages = [Stage::default(); 3];
+    let mut comp = [0f32; 3];
+    for i in 0..3 {
+        let r = res[i];
+        let q = if r > 0.5 { (f64::from(r - 0.5) * 0.66 + 0.65) as f32 } else { (f64::from(r) * 1.3) as f32 };
+        let limit = ((f64::from(q) + 1.3075) * f64::from(q) * 0.293 + 0.7352) as f32;
+        let arg = (notes[i] - 69.0) * 0.083_333_336;
+        let g = ((f64::from(arg).exp2() * 440.0) as f32 * k).min(limit);
+        let t = clamp01(v.types[i]);
+        let weights = if t < 0.5 {
+            let a = 0.5 - t;
+            [a + a, t + t, 0.0]
+        } else {
+            let a = 1.0 - t;
+            [0.0, a + a, ((t - 0.5) + t) - 0.5]
+        };
+        comp[i] = (f64::from(wet[i]) / (f64::from(1.0 - r) * 1.4 + 0.05) + f64::from(1.0 - wet[i])) as f32;
+        stages[i] = Stage { g, d: 2.0 - (q + q), k: 1.0, eps: 0.0, shaper: (0.06, 0.0075), weights, wet: wet[i] };
+    }
+    let [fa, fb, fc] = stages.map(|s| s.g);
+    let [a1, b1, c1] = comp.map(|c| c - 1.0);
+    let inv = 1.0 / fa;
+    let t1 = (a1 * b1) / ((fb * inv) * 6.0 - 5.0);
+    let t2 = (c1 * b1) / ((fc / fb) * 6.0 - 5.0);
+    let t3 = (c1 * a1) / ((fc * inv) * 6.0 - 5.0);
+    let norm = (3.0 / f64::from((((t1 + t2) + t3) + comp[1]) + (comp[2] + comp[0]))) as f32;
+    let gain = 10f64.powf(f64::from((clamp01(v.gain) - 0.5) * 3.0)) as f32;
+    Chamberlin { stages, count: 3, feedback: (0.0, 0.0), gain: gain * norm, smooth: (1.0 / f64::from(rate) * 20.0) as f32 }
+}
+
+impl Chamberlin {
+    /// One frame. `state = [b, l] x 3, feedback, smoothed gain`.
+    #[inline(always)]
+    fn tick(&self, state: &mut [f32; 8], input: f32) -> f32 {
+        let mut y = input - state[6];
+        let mut low = 0.0;
+        for (i, st) in self.stages[..self.count].iter().enumerate() {
+            let (b, l) = (state[2 * i], state[2 * i + 1]);
+            let hp = soft(b, st.shaper) + (y * st.k - (b * st.d + l));
+            let b = hp * st.g + b;
+            let l = (b * st.g + st.eps) + l;
+            state[2 * i] = b;
+            state[2 * i + 1] = l;
+            let mode = (b * st.weights[1] + hp * st.weights[2]) + l * st.weights[0];
+            y += (mode - y) * st.wet;
+            low = l;
+        }
+        state[6] = soft(low, self.feedback);
+        state[7] += (self.gain - state[7]) * self.smooth;
+        state[7] * y
+    }
+}
+
+/// Legacy Ladder (`FUN_14095d630` setter, `FUN_140aec760` / `FUN_140aef200` process): four
+/// one-pole stages with a zero at 0.3, a `v (1 - |v| / 100)` clip between stages and in the
+/// feedback, run twice per frame (linear midpoint, then the frame). Output: the last state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Ladder2x {
+    pub g: f32,
+    pub r4: f32,
+}
+
+fn legacy_ladder(cutoff: f32, resonance: f32, rate: f32) -> Ladder2x {
+    let g = (note_hertz(cutoff) * (6.283 / rate)).max(0.0).min(1.57);
+    Ladder2x { g: g * 0.5, r4: clamp01(resonance) * 4.0 }
+}
+
+impl Ladder2x {
+    /// One frame. `state = [x1, s1, s2, s3, s4, feedback]`.
+    #[inline(always)]
+    fn tick(&self, s: &mut [f32; 8], v: f32) -> f32 {
+        let clip = |v: f32| if v.abs() <= 50.0 { v * (1.0 - v.abs() * 0.01) } else { 25f32.copysign(v) };
+        let big_g = self.g * 0.769_230_8;
+        let k = self.g - 1.0;
+        // Each pass feeds the four stages and returns the last stage's output.
+        let pass = |s: &mut [f32; 8], u: f32| {
+            let mut t = u + s[1];
+            s[1] = ((u * 0.3) - t * k) + 1e-12;
+            for j in 2..5 {
+                let a = clip(t) * big_g;
+                t = a + s[j];
+                s[j] = ((a * 0.3) - t * k) + 1e-12;
+            }
+            t
+        };
+        let t = pass(s, (((v + s[0]) * 0.5) - s[5]) * big_g);
+        let t = pass(s, (v - (clip(t) * self.r4 + 1e-12)) * big_g);
+        s[5] = clip(t) * self.r4 + 1e-12;
+        s[0] = v;
+        s[4]
+    }
+}
+
+// ----------------------------------------------------------------- SV family
+
+/// Kontakt's SV filters (`NI::KONTAKTFX::FilterSV1/SV2/SV4/SV6/MultiSV`, saved types 50..=65):
+/// zero-delay state-variable stages whose high pass also sees the previous high pass, with
+/// band and low states saturated near self-oscillation, and coefficient-domain controls ramped
+/// per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sv {
+    /// One-pole TPT (vtable 0x144fcf968, set 0x140b05d80, process 0x140b02280): low or high.
+    One { high: bool },
+    /// One stage (0x144fcfa30, set 0x140b05ee0, process 0x140b02400); mode 0 LP, 1 BP, 2 HP.
+    Two { mode: u8 },
+    /// Two stages (0x144fcfaf8, set 0x140b05fa0, process 0x140b02790); mode 0 LP, 1 BP, 2 HP,
+    /// 3 notch.
+    Four { mode: u8 },
+    /// Three stages (0x144fcfbc0, set 0x140b06070, process 0x140b02cf0); modes as `Four`.
+    Six { mode: u8 },
+    /// Two stages a bandwidth apart (0x144fcf8a0, set 0x140b05d50, process 0x140b01d00):
+    /// mode 0 parallel LP/HP, 1 parallel BP/BP, 2 serial LP/HP; `bandwidth` normalized.
+    Multi { mode: u8, bandwidth: f32 },
+}
+
+/// `tan(pi f T)` by the truncated series of 0x140b04f60, in its order.
+fn sv_g(f: f32, t: f32) -> f32 {
+    let a = ((t * t) * 12.987_881) * (f * f) + 3.289_868_4;
+    let a = (a * f) * ((f * t) * t) + 1.0;
+    a * ((f * std::f32::consts::PI) * t)
+}
+
+fn sv_hertz(note: f32) -> f32 {
+    super::ladder_kernel::exponential(note * 5.0 + 1381.881_6).max(0.0)
+}
+
+/// `1 - (1 - v)^3`.
+fn sv_r(v: f32) -> f32 {
+    let q = 1.0 - v;
+    1.0 - (q * q) * q
+}
+
+impl Sv {
+    /// Ramp duration (seconds): 8 ms for SV4, else 2 ms.
+    fn ramp(self) -> f32 {
+        if matches!(self, Self::Four { .. }) { 0.008 } else { 0.002 }
+    }
+
+    /// The control targets the setters derive (slot layout per class in `tick`).
+    fn targets(self, u: f32, res: f32, t: f32) -> [f32; 8] {
+        let mut out = [0f32; 8];
+        match self {
+            Self::One { .. } => out[0] = sv_g(sv_hertz((u * 115.0 + 20.0).min(160.0)), t),
+            Self::Two { .. } => {
+                let note = (u * 115.0 + 20.0).min(160.0);
+                let r = sv_r(res);
+                let n = (note * 0.007_462_686_4).clamp(0.0, 1.0);
+                out[..5].copy_from_slice(&[
+                    1.0,
+                    sv_g(sv_hertz(note), t),
+                    r,
+                    600.0 - n * 576.0,
+                    1.0 - ((((r * r) * r) * r) * r) * 0.5,
+                ]);
+            }
+            Self::Four { mode } => {
+                let note = u * 115.0 + 20.0;
+                let n = note.min(134.0) * 0.007_462_686_4;
+                let r = sv_r(res);
+                let c = [0.77, 0.9334, 0.77, 0.88][usize::from(mode)];
+                out[..4].copy_from_slice(&[
+                    sv_g(sv_hertz(note), t),
+                    r,
+                    1.0 - r * c,
+                    1600.0 - (2346.0 - n.abs() * 782.0) * n,
+                ]);
+            }
+            Self::Six { mode } => {
+                let note = (u * 115.0 + 20.0).min(160.0);
+                let n = note.min(128.0) * 0.0078125;
+                let r = sv_r(res * 0.9);
+                let s = match mode {
+                    0 | 2 => (1.212_500_1 - r.abs() * 0.2425) * r,
+                    1 => ((2.0 - r) * r) * 0.991,
+                    _ => (1.482 - r.abs() * 0.494) * r,
+                };
+                out[..4].copy_from_slice(&[
+                    sv_g(sv_hertz(note), t),
+                    r,
+                    1.0 - s,
+                    1600.0 - ((2.0 - n) * n) * 1576.0,
+                ]);
+            }
+            Self::Multi { mode, bandwidth } => {
+                let centre = u * 180.0 - 20.0;
+                let spread = bandwidth * 31.5 + 0.5;
+                let notes = [(centre - spread).min(160.0), (spread + centre).min(160.0)];
+                let g = notes.map(|n| sv_g(sv_hertz(n).max(10.0), t));
+                let l = notes.map(|n| 400.0 - (n.clamp(0.0, 134.0) * 0.007_462_686_4) * 376.0);
+                let mut r = sv_r(res);
+                let gain = if mode == 2 {
+                    r = (((spread.clamp(0.0, 6.0) * 0.166_666_67) * 0.009_999_99) + 0.99) * r;
+                    let r5 = ((r * r) * r) * (r * r);
+                    let o = 1.0 - r5 * 0.5;
+                    o * o
+                } else {
+                    0.7 - (((r * r) * r) * (r * r)) * 0.49
+                };
+                out[..7].copy_from_slice(&[g[0], g[1], r, l[0], l[1], spread, gain]);
+            }
+        }
+        out
+    }
+}
+
+/// The SV control ramp (`Ramp` of the model): every 32-frame block, a changed target ramps
+/// linearly over `blocks` blocks; a step whose square is under 1e-15 snaps.
+#[derive(Clone, Copy, Debug, Default)]
+struct SvRamp {
+    cur: [f32; 8],
+    step: [f32; 8],
+    target: [f32; 8],
+    count: u32,
+    dirty: bool,
+}
+
+const RAMP: usize = 25;
+
+impl SvRamp {
+    fn load(cells: &[[f64; 2]]) -> Self {
+        let v = |i: usize| cells[RAMP + i / 2][i % 2] as f32;
+        Self {
+            cur: std::array::from_fn(|i| v(i)),
+            step: std::array::from_fn(|i| v(8 + i)),
+            target: std::array::from_fn(|i| v(16 + i)),
+            count: v(24) as u32,
+            dirty: v(25) != 0.0,
+        }
+    }
+
+    fn store(&self, cells: &mut [[f64; 2]]) {
+        let values = self.cur.iter().chain(&self.step).chain(&self.target).copied()
+            .chain([self.count as f32, if self.dirty { 1.0 } else { 0.0 }]);
+        for (i, v) in values.enumerate() {
+            cells[RAMP + i / 2][i % 2] = f64::from(v);
+        }
+    }
+
+    fn block(&mut self, blocks: u32, inverse: f32) {
+        if self.dirty {
+            self.dirty = false;
+            let mut moving = false;
+            for i in 0..8 {
+                let d = (self.target[i] - self.cur[i]) * inverse;
+                if f64::from(d * d) < 1e-15 {
+                    self.step[i] = 0.0;
+                    self.cur[i] = self.target[i];
+                } else {
+                    self.step[i] = d;
+                    moving = true;
+                }
+            }
+            if moving {
+                self.count = blocks;
+            }
+        } else if self.count != 0 {
+            self.count -= 1;
+            if self.count == 0 {
+                self.cur = self.target;
+                self.step = [0.0; 8];
+            }
+        }
+    }
+}
+
+/// `clamp(v, +-2L)` stored as `c (1 - |c| w)`.
+#[inline(always)]
+fn sv_sat(v: f32, l2: f32, w: impl Fn(f32) -> f32) -> f32 {
+    let c = v.clamp(-l2, l2);
+    (1.0 - w(c.abs())) * c
+}
+
+/// One zero-delay stage in the SV2/MultiSV order. `s = [h, b, l]`; returns (hp, bp, lp).
+#[inline(always)]
+fn sv_stage(s: &mut [f32], x: f32, g: f32, k: f32, l: f32) -> (f32, f32, f32) {
+    let (l2, inv) = (l + l, 1.0 / l);
+    let a = k + g;
+    let gk = a * g;
+    let [h, b, lo] = [s[0], s[1], s[2]];
+    let hp = (x - ((((a + g) * b) + lo) + gk * h)) / (gk + 1.0);
+    let bp = (h + hp) * g + b;
+    let lp = (bp + b) * g + lo;
+    s[0] = hp;
+    s[1] = sv_sat(bp, l2, |c| (c * 0.25) * inv);
+    s[2] = sv_sat(lp, l2, |c| (c * 0.25) * inv);
+    (hp, bp, lp)
+}
+
+impl Cascade {
+    /// The SV classes: their own ramp in place of the knob clock. State: cells `0..9` per
+    /// channel (`[h, b, l]` per stage), the ramp from `RAMP`.
+    fn sv(&self, sv: Sv, cells: &mut [[f64; 2]], block: &mut Planar, len: usize, knobs: impl Fn(usize) -> [f32; 2]) {
+        let t = 1.0 / self.rate;
+        let blocks = ((self.rate * sv.ramp() / 32.0 + 0.5) as u32).max(1);
+        let inverse = 1.0 / (blocks * 32) as f32;
+        let mut ramp = SvRamp::load(cells);
+        if cells[CLOCK + 1][0] == 0.0 {
+            let [u, r] = knobs(0);
+            ramp = SvRamp { target: sv.targets(u, r, t), ..SvRamp::default() };
+            ramp.cur = ramp.target;
+            ramp.dirty = true;
+            cells[CLOCK + 1][0] = 1.0;
+        }
+        let mut position = 0;
+        while position < len {
+            let frames = position..(position + QUANTUM).min(len);
+            let [u, r] = knobs(position);
+            let target = sv.targets(u, r, t);
+            if target != ramp.target {
+                ramp.target = target;
+                ramp.dirty = true;
+            }
+            ramp.block(blocks, inverse);
+            let start = ramp;
+            for ch in 0..2 {
+                ramp = start;
+                let mut s: [f32; 9] = std::array::from_fn(|i| cells[i][ch] as f32);
+                let mut last_r = -1.0;
+                let mut sections = [(0f32, 0f32, 0f32); 2];
+                for v in &mut block[ch][frames.clone()] {
+                    for i in 0..8 {
+                        ramp.cur[i] += ramp.step[i];
+                    }
+                    let c = ramp.cur;
+                    let x = *v as f32;
+                    let y = match sv {
+                        Sv::One { high } => {
+                            let g = c[0];
+                            let lp = ((s[0] + s[0]) + g * x) / (g + 1.0);
+                            let hp = x - lp;
+                            s[0] = hp * g + s[0];
+                            if high { hp } else { lp }
+                        }
+                        Sv::Two { mode } => {
+                            let [gin, g, r, l, gain] = [c[0], c[1], c[2], c[3], c[4]];
+                            let l = if l > 1e-20 { l } else { 9.999_999_7e-21 };
+                            let k = (1.0 - r) + (1.0 - r);
+                            let (hp, bp, lp) = sv_stage(&mut s[..3], x * gin, g, k, l);
+                            let y = match mode { 0 => lp, 1 => bp + bp, _ => hp };
+                            y * gain
+                        }
+                        Sv::Four { mode } | Sv::Six { mode } => {
+                            let [g, r, gain, l] = [c[0], c[1], c[2], c[3]];
+                            let (l2, w) = (l + l, 0.25 / l);
+                            let four = matches!(sv, Sv::Four { .. });
+                            let coefs = |k: f32| {
+                                let a = k + g;
+                                let gk = g * a;
+                                (g + a, gk, 1.0 / (gk + 1.0))
+                            };
+                            if four {
+                                // SV4 re-derives its sections only when R moves (and per block).
+                                if r != last_r {
+                                    let k2 = 1.0 - r * 0.666;
+                                    sections = [coefs((1.0 - r) + (1.0 - r)), coefs(k2 + k2)];
+                                    last_r = r;
+                                }
+                            } else {
+                                sections = [coefs((1.0 - r) + (1.0 - r)); 2];
+                            }
+                            let mut x = x;
+                            for j in 0..if four { 2 } else { 3 } {
+                                let (a2, gk, d) = sections[j.min(1)];
+                                let st = &mut s[3 * j..3 * j + 3];
+                                let [h, b, lo] = [st[0], st[1], st[2]];
+                                let hp = (x - (((b * a2) + lo) + h * gk)) * d;
+                                let bp = (hp + h) * g + b;
+                                let lp = (bp + b) * g + lo;
+                                st[0] = hp;
+                                st[1] = sv_sat(bp, l2, |c| c * w);
+                                st[2] = sv_sat(lp, l2, |c| c * w);
+                                x = match mode { 0 => lp, 1 => bp + bp, 2 => hp, _ => x - (bp + bp) };
+                            }
+                            x * gain
+                        }
+                        Sv::Multi { mode, .. } => {
+                            let [g1, g2, r, l1, l2, spread, gain] = [c[0], c[1], c[2], c[3], c[4], c[5], c[6]];
+                            let k = (1.0 - r) + (1.0 - r);
+                            let (hp, bp, lp) = sv_stage(&mut s[..3], x, g1, k, l1);
+                            let bb1 = bp + bp;
+                            let o1 = match mode { 0 => lp, 1 => bb1, _ => hp };
+                            // Serial: (o1 - x) * 1 + x, in f32 as the native mixes it.
+                            let x2 = if mode == 2 { (o1 - x) + x } else { x };
+                            let (hp2, bp2, lp2) = sv_stage(&mut s[3..6], x2, g2, k, l2);
+                            let bb2 = bp2 + bp2;
+                            let y = match mode {
+                                0 => {
+                                    let w = 0.5 - spread.min(3.0) * 0.166_666_67;
+                                    (bb2 + bb1) * w + (hp2 + o1)
+                                }
+                                1 => bb2 + o1,
+                                _ => lp2,
+                            };
+                            y * gain
+                        }
+                    };
+                    *v = f64::from(y);
+                }
+                for (i, v) in s.iter().enumerate() {
+                    cells[i][ch] = flushed(*v);
+                }
+            }
+            position = frames.end;
+        }
+        ramp.store(cells);
+    }
+}
+
+// ----------------------------------------------------------------- UVI laws
+
+/// UVI Workstation 4.0.9 filter elements whose controls are constants here (hertz already key
+/// tracked by the translator).
+pub use sampler_ir::fx::filter::Uvi;
+
+/// `BiquadFilter` coefficients (0x141102e30): RBJ cookbook in f32, Q scaled per mode
+/// (`alpha = sin w / (s Q + 1)`, s = 24 HP, 12 LP, 8 BP / notch), cutoff under `0.499 rate`.
+fn uvi_biquad(mode: u8, hertz: f32, q: f32, rate: f32) -> Section {
+    let fc = hertz.min(rate * 0.499);
+    let w = (fc / rate) * std::f32::consts::TAU;
+    let (sn, cs) = w.sin_cos();
+    let scale = [24.0, 12.0, 8.0, 8.0][usize::from(mode.min(3))];
+    let alpha = sn / (q * scale + 1.0);
+    let n = 1.0 / (alpha + 1.0);
+    let a1 = (cs * -2.0) * n;
+    let a2 = (1.0 - alpha) * n;
+    let (b0, b1, b2) = match mode {
+        0 => {
+            let b0 = ((cs + 1.0) * 0.5) * n;
+            (b0, -((cs + 1.0) * n), b0)
+        }
+        1 => {
+            let b1 = (1.0 - cs) * n;
+            (b1 * 0.5, b1, b1 * 0.5)
+        }
+        2 => (n * alpha, 0.0, -(n * alpha)),
+        _ => (n, a1, n),
+    };
+    Section { b0, b1, b2, c1: -a1, c2: -a2 }
+}
+
+/// `MoogFilter` (coefficients 0x1412a9810, process 0x1412aa220): four one-pole stages with a
+/// zero at -1 and global feedback, no saturation. `state = [x1, y1, y2, y3, y4]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Moog {
+    r: f32,
+    p: f32,
+    k: f32,
+}
+
+impl Moog {
+    fn new(hertz: f32, q: f32, rate: f32) -> Self {
+        let x = ((hertz + hertz) / rate).min(1.0);
+        let q1 = 1.0 - x;
+        let p = ((x * 0.8) * q1) + x;
+        let t = (((q1 * 5.6) * q1) + x) * q1 * 0.5;
+        Self { r: (t + 1.0) * q.min(0.9), p, k: (p + p) - 1.0 }
+    }
+
+    #[inline(always)]
+    fn tick(&self, s: &mut [f32; 8], v: f32) -> f32 {
+        let xi = v - s[4] * self.r;
+        let n1 = (xi + s[0]) * self.p - s[1] * self.k;
+        let n2 = (s[1] + n1) * self.p - s[2] * self.k;
+        let n3 = (s[2] + n2) * self.p - s[3] * self.k;
+        let n4 = (s[3] + n3) * self.p - s[4] * self.k;
+        s[..5].copy_from_slice(&[xi, n1, n2, n3, n4]);
+        n4
+    }
+}
+
+/// `Rez` (update 0x141100fd0, process 0x1411020e0): a Chamberlin state-variable filter in f64,
+/// input scaled by the damping `a = 0.49 - 0.41 Q`, output by `1 / a`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Rez {
+    f: f64,
+    a: f64,
+    mode: u8,
+}
+
+impl Rez {
+    fn new(mode: u8, hertz: f32, q: f32, rate: f32) -> Self {
+        let x = hertz / rate;
+        let x = if x >= 0.0 { x.min(0.5) } else { 0.0 };
+        let f = 2.0 * (f64::from(x) * std::f64::consts::PI).sin();
+        Self { f: f.clamp(0.0, 1.55), a: f64::from(f32::from_bits(0x3efa_e148) - q * f32::from_bits(0x3ed1_eb86)), mode }
+    }
+
+    /// `state = [lp, bp]`.
+    #[inline(always)]
+    fn tick(&self, s: &mut [f64; 2], v: f64) -> f64 {
+        s[0] += s[1] * self.f;
+        let hp = (self.a * v - s[0]) - s[1] * self.a;
+        s[1] += hp * self.f;
+        let y = match self.mode { 0 => s[0], 1 => hp, _ => s[1] };
+        f64::from((y * (1.0 / self.a)) as f32)
+    }
+}
+
 // ----------------------------------------------------------------- runtime
 
 /// Normalized cutoff and resonance (the native knobs).
@@ -429,6 +1037,7 @@ impl CascadeSettings {
     }
 
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Cascade {
+        super::ladder_kernel::prepare();
         Cascade {
             class: self.class,
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
@@ -448,8 +1057,18 @@ impl Cascade {
         [("cutoff", self.parameters[0]), ("resonance", self.parameters[1])]
     }
 
-    /// Filter `len` frames. `cells` holds the section states, the knobs last designed for and
-    /// the design; `modulation` adds to the knobs (native knob-domain modulation).
+    /// Filter `len` frames. `cells` holds the stage states, the clocked knobs, the knobs last
+    /// designed for and the design; `modulation` adds to the knobs (native knob-domain
+    /// modulation).
+    ///
+    /// The control clock (`0x140ae9f90`, types 2..=17): the first call snaps to the target;
+    /// after every 32-frame chunk the cutoff moves toward it by at most
+    /// `clamp(1 / (31 r + 4), 1/35, 1/4)` (`r` the resonance at the call's start; downward
+    /// moves snap while modulated) and the resonance by `0.015` of the distance when that is
+    /// over `1e-4`. Versatile's clock (`0x140aea690`) moves both by `0.015`.
+    // ponytail: "modulated" is a nonzero cutoff delta, not the native's modulation-buffer
+    // pointer; the clock's alternative branch (global 0x144fd4c54 = 1) and its offset slew
+    // (+0x1f4 -> +0x1f8) are taken as unused, both unwritten in the binary.
     pub(crate) fn process(
         &self,
         cells: &mut [[f64; 2]],
@@ -459,45 +1078,132 @@ impl Cascade {
         at: u64,
         modulation: [f64; 4],
     ) -> bool {
-        let mut position = 0;
-        while position < len {
-            let knobs: [f32; 2] = std::array::from_fn(|i| {
+        let target = |position: usize| -> [f32; 2] {
+            std::array::from_fn(|i| {
                 (self.parameters[i].value(parameters, at + position as u64, None) as f32
                     + modulation[i] as f32)
                     .clamp(0., 1.)
-            });
-            let design = self.cached(cells, knobs);
-            let run = QUANTUM.min(len - position);
-            for ch in 0..2 {
-                let mut state: [[f32; 4]; 3] =
-                    std::array::from_fn(|s| std::array::from_fn(|i| cells[s * 4 + i][ch] as f32));
-                for v in &mut block[ch][position..position + run] {
-                    *v = f64::from(tick(&design, &mut state, *v as f32));
+            })
+        };
+        if let Legacy::Sv(sv) = self.class {
+            self.sv(sv, cells, block, len, target);
+            return !cells[..KNOBS].iter().flatten().all(|v| v.is_finite());
+        }
+        let started = cells[CLOCK + 1][0] != 0.0;
+        let mut current = if started { cells[CLOCK].map(|v| v as f32) } else { target(0) };
+        let step = (1.0 / (31.0 * current[1] + 4.0)).clamp(0.028_571_429, 0.25);
+        let mut position = 0;
+        while position < len {
+            let goal = target(position);
+            let frames = position..position + QUANTUM.min(len - position);
+            match self.law(cells, current) {
+                Law::Sections(d) => {
+                    for ch in 0..2 {
+                        let mut state: [[f32; 4]; 3] = std::array::from_fn(|s| {
+                            std::array::from_fn(|i| cells[s * 4 + i][ch] as f32)
+                        });
+                        for v in &mut block[ch][frames.clone()] {
+                            *v = f64::from(tick(&d, &mut state, *v as f32));
+                        }
+                        for (s, section) in state.iter().enumerate() {
+                            for (i, v) in section.iter().enumerate() {
+                                cells[s * 4 + i][ch] = flushed(*v);
+                            }
+                        }
+                    }
                 }
-                for (s, section) in state.iter().enumerate() {
-                    for (i, v) in section.iter().enumerate() {
-                        cells[s * 4 + i][ch] = f64::from(super::super::flush(f64::from(*v)) as f32);
+                Law::Chamberlin(c) => {
+                    if !started && position == 0 {
+                        // Reset sets the smoothed output gain to its target.
+                        cells[7] = [f64::from(c.gain); 2];
+                    }
+                    run(cells, block, frames.clone(), |s, v| c.tick(s, v));
+                }
+                Law::Ladder(l) => run(cells, block, frames.clone(), |s, v| l.tick(s, v)),
+                Law::Moog(m) => run(cells, block, frames.clone(), |s, v| m.tick(s, v)),
+                Law::Rez(r) => {
+                    for ch in 0..2 {
+                        let mut s = [cells[0][ch], cells[1][ch]];
+                        for v in &mut block[ch][frames.clone()] {
+                            *v = r.tick(&mut s, f64::from(*v as f32));
+                        }
+                        cells[0][ch] = super::super::flush(s[0]);
+                        cells[1][ch] = super::super::flush(s[1]);
                     }
                 }
             }
-            position += run;
+            position = frames.end;
+            current = self.clock(current, goal, step, modulation[0] != 0.0);
         }
+        cells[CLOCK] = current.map(f64::from);
+        cells[CLOCK + 1][0] = 1.0;
         !cells[..KNOBS].iter().flatten().all(|v| v.is_finite())
     }
 
-    /// The design for `knobs`, from the cells when they were designed already.
-    fn cached(&self, cells: &mut [[f64; 2]], knobs: [f32; 2]) -> Design {
+    /// One control tick toward `goal`.
+    fn clock(&self, [cut, res]: [f32; 2], goal: [f32; 2], step: f32, modulated: bool) -> [f32; 2] {
+        if matches!(self.class, Legacy::Versatile(_)) {
+            return [cut + (goal[0] - cut) * 0.015, res + (goal[1] - res) * 0.015];
+        }
+        let delta = goal[0] - cut;
+        let cut = if modulated && delta < 0.0 { goal[0] } else { cut + delta.clamp(-step, step) };
+        let res = if (goal[1] - res).abs() > 1e-4 { res + (goal[1] - res) * 0.015 } else { res };
+        [cut, res]
+    }
+
+    /// The law for `knobs`; section designs come from the cells when designed already.
+    fn law(&self, cells: &mut [[f64; 2]], knobs: [f32; 2]) -> Law {
+        match self.class {
+            Legacy::Pro52 => return Law::Chamberlin(pro52(knobs[0], knobs[1], self.rate)),
+            Legacy::Versatile(v) => {
+                return Law::Chamberlin(versatile(&v, knobs[0], knobs[1], self.rate));
+            }
+            Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
+            Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
+            Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
+            _ => {}
+        }
         let seen = cells[KNOBS];
         let valid = cells[KNOBS + 1][0] != 0.0;
         if valid && seen == [f64::from(knobs[0]), f64::from(knobs[1])] {
-            return unpack(&cells[COEFS..]);
+            return Law::Sections(unpack(&cells[COEFS..]));
         }
         let design = design(self.class, knobs[0], knobs[1], self.rate);
         cells[KNOBS] = [f64::from(knobs[0]), f64::from(knobs[1])];
         cells[KNOBS + 1][0] = 1.0;
         pack(&design, &mut cells[COEFS..]);
-        design
+        Law::Sections(design)
     }
+}
+
+enum Law {
+    Sections(Design),
+    Chamberlin(Chamberlin),
+    Ladder(Ladder2x),
+    Moog(Moog),
+    Rez(Rez),
+}
+
+/// Run a stage law over `frames` of both channels; its state is cells `0..8`.
+fn run(
+    cells: &mut [[f64; 2]],
+    block: &mut Planar,
+    frames: std::ops::Range<usize>,
+    tick: impl Fn(&mut [f32; 8], f32) -> f32,
+) {
+    for ch in 0..2 {
+        let mut state: [f32; 8] = std::array::from_fn(|i| cells[i][ch] as f32);
+        for v in &mut block[ch][frames.clone()] {
+            *v = f64::from(tick(&mut state, *v as f32));
+        }
+        for (i, v) in state.iter().enumerate() {
+            cells[i][ch] = flushed(*v);
+        }
+    }
+}
+
+fn flushed(v: f32) -> f64 {
+    f64::from(super::super::flush(f64::from(v)) as f32)
 }
 
 fn pack(d: &Design, cells: &mut [[f64; 2]]) {
@@ -602,6 +1308,144 @@ mod tests {
                 .fold((0, 0f32), |m, (i, e)| if e > m.1 { (i, e) } else { m });
             if err >= 2e-5 {
                 failures.push(format!("{key}: frame {i} err {err}: {:?} vs {:?}", &ours[..4], &native[..4]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Pro-53, Legacy Ladder, Vowel A/B and Versatile: 64 frames of the extracted models (each
+    /// matched the native setters and process under kemu with error 0), impulse and +-4 square.
+    #[test]
+    fn stage_classes_match_the_native_models() {
+        super::super::ladder_kernel::prepare();
+        let vectors: std::collections::BTreeMap<String, Vec<f32>> =
+            serde_json::from_str(include_str!("cascade_stage_vectors.json")).unwrap();
+        let vers = |mixed: bool, res: f32| sampler_ir::fx::filter::Versatile {
+            shift: if mixed { [0.2, 0.1] } else { [0.0; 2] },
+            resonance: if mixed { [0.6, 0.4] } else { [res; 2] },
+            types: if mixed { [0.0, 0.5, 1.0] } else { [0.0; 3] },
+            wet: if mixed { [1.0, 0.7, 0.2] } else { [1.0; 3] },
+            gain: 0.5,
+        };
+        let mut failures = Vec::new();
+        for (key, native) in &vectors {
+            let mut words = key.split(' ');
+            let name = words.next().unwrap();
+            let cut: f32 = words.next().unwrap().parse().unwrap();
+            let res: f32 = words.next().unwrap().parse().unwrap();
+            let loud = words.next() == Some("loud");
+            let input: Vec<f32> = (0..native.len())
+                .map(|i| if loud { if (i / 20) % 2 == 0 { 4.0 } else { -4.0 } } else if i == 0 { 1.0 } else { 0.0 })
+                .collect();
+            let ours: Vec<f32> = match name {
+                "PRO52" | "VERS-lp" | "VERS-mixed" => {
+                    let c = match name {
+                        "PRO52" => pro52(cut, res, 48_000.0),
+                        n => versatile(&vers(n == "VERS-mixed", res), cut, res, 48_000.0),
+                    };
+                    let mut s = [0f32; 8];
+                    s[7] = c.gain;
+                    input.iter().map(|&x| c.tick(&mut s, x)).collect()
+                }
+                "LADDER" => {
+                    let l = legacy_ladder(cut, res, 48_000.0);
+                    let mut s = [0f32; 8];
+                    input.iter().map(|&x| l.tick(&mut s, x)).collect()
+                }
+                n => impulse_response(if n == "VOWELA" { Legacy::VowelA } else { Legacy::VowelB }, cut, res, &input),
+            };
+            let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+            let err = ours.iter().zip(native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
+            if !(err < 2e-5) {
+                failures.push(format!("{key}: err {err}: {:?} vs {:?}", &ours[..4], &native[..4]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The SV family against the native classes run under kemu (sv/vectors.py: setters,
+    /// 32-frame block update, process; 64 frames of an impulse and a +-4 square).
+    #[test]
+    fn sv_classes_match_the_native_vectors() {
+        super::super::ladder_kernel::prepare();
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("cascade_sv_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in &cases {
+            let set = &case["setting"];
+            let name = set["type"].as_str().unwrap();
+            let num = |k: &str| set[k].as_f64().unwrap_or(0.0);
+            let mode = |n: &str| ["LP", "BP", "HP", "NOTCH"].iter().position(|m| n.starts_with(m)).unwrap() as u8;
+            let sv = match case["class"].as_str().unwrap() {
+                "SV1" => Sv::One { high: name == "HP1" },
+                "SV2" => Sv::Two { mode: mode(name) },
+                "SV4" => Sv::Four { mode: mode(name) },
+                "SV6" => Sv::Six { mode: mode(name) },
+                _ => Sv::Multi {
+                    mode: ["PAR_LPHP", "PAR_BPBP", "SER_LPHP"].iter().position(|m| *m == name).unwrap() as u8,
+                    bandwidth: num("bandwidth") as f32,
+                },
+            };
+            let unit = CascadeSettings {
+                class: Legacy::Sv(sv),
+                cutoff: Parameter::Constant(num("cutoff")),
+                resonance: Parameter::Constant(num("res")),
+            }
+            .compile(48_000, &mut Vec::new());
+            for input in ["impulse", "square4_p40"] {
+                let native: Vec<f32> =
+                    case[input].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let mut cells = vec![[0f64; 2]; CELLS];
+                let mut block = [[0f64; super::super::super::BLOCK]; 2];
+                for (i, v) in block[0].iter_mut().enumerate() {
+                    *v = if input == "impulse" { if i == 0 { 1.0 } else { 0.0 } } else if (i % 40) < 20 { 4.0 } else { -4.0 };
+                }
+                unit.process(&mut cells, &[], &mut block, native.len(), 0, [0.0; 4]);
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = block[0].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                if !(err < 1e-6) {
+                    failures.push(format!("{} {set} {input}: err {err}: {:?} vs {:?}", case["class"], &block[0][..3], &native[..3]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI Workstation 4.0.9 BiquadFilter, MoogFilter and Rez run under kemu (uvifilt): a
+    /// 64-frame impulse response at 48 kHz per setting.
+    #[test]
+    fn uvi_laws_match_the_native_vectors() {
+        let vectors: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            serde_json::from_str(include_str!("cascade_uvi_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for (name, cases) in &vectors {
+            for case in cases {
+                let p = &case["params"];
+                let num = |k: &str| p[k].as_f64().unwrap_or(0.0) as f32;
+                let uvi = match name.as_str() {
+                    "BiquadFilter" => Uvi::Biquad { mode: num("Mode") as u8, hertz: num("Freq"), q: num("Q") },
+                    "MoogFilter" => Uvi::Moog { hertz: num("Freq"), q: num("Q") },
+                    _ => Uvi::Rez { mode: num("Mode") as u8, hertz: num("Freq"), q: num("Q") },
+                };
+                let unit = CascadeSettings {
+                    class: Legacy::Uvi(uvi),
+                    cutoff: Parameter::Constant(0.0),
+                    resonance: Parameter::Constant(0.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let native: Vec<f32> =
+                    case["out"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let mut cells = vec![[0f64; 2]; CELLS];
+                let mut block = [[0f64; super::super::super::BLOCK]; 2];
+                block[0][0] = 1.0;
+                unit.process(&mut cells, &[], &mut block, native.len(), 0, [0.0; 4]);
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = block[0].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                // BiquadFilter's coefficients come from the native fast sincosf (0x14199de20,
+                // ~1.6e-7 absolute); ours use libm.
+                if !(err < 3e-5) {
+                    failures.push(format!("{name} {p}: err {err}: {:?} vs {:?}", &block[0][..3], &native[..3]));
+                }
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));

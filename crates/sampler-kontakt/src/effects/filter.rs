@@ -11,7 +11,7 @@
 //! BFilterSimpleLP/HP/LPHP, BFilterDualSKF, BFilterBlueMonark, BFilterLadder_legacy,
 //! BFilterVowelA/B, BFilterVersatile.
 
-use sampler_ir::fx::filter::{Config, CutoffLaw, Fidelity, Gap, ResonanceLaw, Response, Topology};
+use sampler_ir::fx::filter::{Config, Fidelity, Gap, Response, Topology, Variant};
 
 /// How a saved type is realised.
 enum Build {
@@ -23,15 +23,14 @@ enum Build {
     Gap(&'static str),
 }
 
-const fn svf(response: Response, poles: u8) -> Config {
-    let mut c = Config::new(Topology::Svf, response, poles);
-    c.cutoff_law = CutoffLaw::Sv;
-    c.resonance_law = ResonanceLaw::Sv;
-    c
-}
-
 const fn cascade(response: Response, poles: u8) -> Config {
     Config::new(Topology::Cascade, response, poles)
+}
+
+const fn variant(response: Response, poles: u8, variant: Variant) -> Config {
+    let mut c = Config::new(Topology::Cascade, response, poles);
+    c.variant = variant;
+    c
 }
 
 const fn native(topology: Topology, response: Response, poles: u8) -> Config {
@@ -41,10 +40,10 @@ const fn native(topology: Topology, response: Response, poles: u8) -> Config {
 use Fidelity::{Exact, Partial};
 use Response::{BandPass as Bp, HighPass as Hp, LowPass as Lp, Notch as Nt, Peak as Pk};
 
-const SV_LP2: &str = "response measured against Kontakt 8 (cutoff, Q, -3 dB points); native recurrence, control clock and the -6 dB passband loss at full resonance are not reproduced (CORE-FILTERS-065..072)";
-const SV: &str = "cutoff 25*800^x and Q law measured on SV LP2 only; this member shares them unmeasured, cascaded sections share one Q, and the passband loss at high resonance is not reproduced";
-const SV_ONE: &str = "one-pole section with the SV LP2 cutoff law, unmeasured; Q is unused";
-const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; the knob-modulation update cadence (native smoothing between setter calls) is unproved, the core re-designs every 32 frames";
+const SV: &str = "FilterSV1/2/4/6 setters, 32-frame coefficient ramp and process (0x140b05d80.., 0x140b02280..) run by the cascade core match the native classes under kemu to 1e-6 and the Kontakt measurements (rows 1..56) at res <= .5; self-oscillating rows (res .9) are level-dependent and unmeasured here";
+const MULTI_SV: &str = "FilterMultiSV (0x140b05d50, 0x140b01d00) matches the native class under kemu to 1e-6; the bandwidth is the record's leading value (read into +0x24), its ENGINE_PAR id is unprobed";
+const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
+const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
@@ -64,11 +63,11 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         11 => ("Legacy BR4", C(cascade(Nt, 4), Exact, LEGACY)),
         12 => ("Legacy LP6", C(cascade(Lp, 6), Exact, LEGACY)),
         13 => ("Phaser", Elsewhere("Processor::Phaser arm")),
-        14 => ("Vowel A", Gap("BFilterVowelA core not extracted")),
-        15 => ("Vowel B", Gap("BFilterVowelB core not extracted")),
-        16 => ("Pro-53", Gap("BFilterPro52 core not extracted; passband +3.3 dB measured only")),
-        17 => ("Legacy Ladder", Gap("BFilterLadder_legacy core not extracted")),
-        19 => ("3x2 Versatile", Gap("Filter3x2 module and BFilterVersatile core not extracted")),
+        14 => ("Vowel A", C(variant(Bp, 4, Variant::VowelA), Exact, STAGES)),
+        15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
+        16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
+        17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
+        19 => ("3x2 Versatile", Gap("core extracted and run by the cascade core (Legacy::Versatile, kemu-exact), but the v0x95 serialized order of SHIFTB..FILTER_GAIN past resonance is not extracted (object offsets 0x38..0x60 only)")),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
@@ -84,22 +83,22 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         39 => ("Ladder BP4", C(native(Topology::Ladder, Bp, 4), Partial, LADDER)),
         40 => ("Ladder Peak", C(native(Topology::Ladder, Pk, 4), Partial, LADDER)),
         41 => ("Ladder Notch", C(native(Topology::Ladder, Nt, 4), Partial, LADDER)),
-        50 => ("SV LP1", C(svf(Lp, 1), Partial, SV_ONE)),
-        51 => ("SV HP1", C(svf(Hp, 1), Partial, SV_ONE)),
-        52 => ("SV LP2", C(svf(Lp, 2), Partial, SV_LP2)),
-        53 => ("SV BP2", C(svf(Bp, 2), Partial, SV)),
-        54 => ("SV HP2", C(svf(Hp, 2), Partial, SV)),
-        55 => ("SV LP4", C(svf(Lp, 4), Partial, SV)),
-        56 => ("SV BP4", C(svf(Bp, 4), Partial, SV)),
-        57 => ("SV HP4", C(svf(Hp, 4), Partial, SV)),
-        58 => ("SV Notch 4", C(svf(Nt, 4), Partial, SV)),
-        59 => ("SV LP6", C(svf(Lp, 6), Partial, SV)),
-        60 => ("SV BP6", C(svf(Bp, 6), Partial, SV)),
-        61 => ("SV HP6", C(svf(Hp, 6), Partial, SV)),
-        62 => ("SV Notch 6", C(svf(Nt, 6), Partial, SV)),
-        63 => ("SV Par LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
-        64 => ("SV Par BP/BP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
-        65 => ("SV Ser LP/HP", Gap("BFilterMultiSV topology and its extra controls not extracted")),
+        50 => ("SV LP1", C(variant(Lp, 1, Variant::Sv), Exact, SV)),
+        51 => ("SV HP1", C(variant(Hp, 1, Variant::Sv), Exact, SV)),
+        52 => ("SV LP2", C(variant(Lp, 2, Variant::Sv), Exact, SV)),
+        53 => ("SV BP2", C(variant(Bp, 2, Variant::Sv), Exact, SV)),
+        54 => ("SV HP2", C(variant(Hp, 2, Variant::Sv), Exact, SV)),
+        55 => ("SV LP4", C(variant(Lp, 4, Variant::Sv), Exact, SV)),
+        56 => ("SV BP4", C(variant(Bp, 4, Variant::Sv), Exact, SV)),
+        57 => ("SV HP4", C(variant(Hp, 4, Variant::Sv), Exact, SV)),
+        58 => ("SV Notch 4", C(variant(Nt, 4, Variant::Sv), Exact, SV)),
+        59 => ("SV LP6", C(variant(Lp, 6, Variant::Sv), Exact, SV)),
+        60 => ("SV BP6", C(variant(Bp, 6, Variant::Sv), Exact, SV)),
+        61 => ("SV HP6", C(variant(Hp, 6, Variant::Sv), Exact, SV)),
+        62 => ("SV Notch 6", C(variant(Nt, 6, Variant::Sv), Exact, SV)),
+        63 => ("SV Par LP/HP", C(variant(Lp, 4, Variant::MultiSv { mode: 0, bandwidth: 0.0 }), Exact, MULTI_SV)),
+        64 => ("SV Par BP/BP", C(variant(Bp, 4, Variant::MultiSv { mode: 1, bandwidth: 0.0 }), Exact, MULTI_SV)),
+        65 => ("SV Ser LP/HP", C(variant(Bp, 4, Variant::MultiSv { mode: 2, bandwidth: 0.0 }), Exact, MULTI_SV)),
         70 => ("Daft LP", C(native(Topology::Daft, Lp, 2), Partial, DAFT)),
         71 => ("Daft HP", C(native(Topology::Daft, Hp, 2), Partial, DAFT)),
         90 => ("Formant I", C(native(Topology::Formant, Lp, 0), Exact, "")),
@@ -156,19 +155,11 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> R
             config.cutoff = f64::from(cutoff);
             config.resonance = f64::from(resonance);
             config.extra = extra.map_or(0.0, f64::from);
+            if let Variant::MultiSv { bandwidth, .. } = &mut config.variant {
+                *bandwidth = extra.unwrap_or(0.0).clamp(0.0, 1.0);
+            }
             Ok(Mapped { config, fidelity, caveat })
         }
-    }
-}
-
-/// Octaves one unit of an addressed cutoff modulation moves, by the type's cutoff law.
-pub(crate) fn cutoff_octaves(id: i32) -> Option<f64> {
-    match build(id)? {
-        (_, Build::Config(c, ..)) => match c.cutoff_law {
-            CutoffLaw::Sv => Some(800f64.log2()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
@@ -191,19 +182,7 @@ pub(crate) fn coverage() -> Vec<(i32, &'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sampler_ir::{Filter, FilterKind, Processor};
-
-    #[test]
-    fn sv_lp2_keeps_its_measured_laws() {
-        let m = map(52, 0.293, 0.0, None).unwrap();
-        let [Processor::Filter(Filter { kind, .. })] = m.config.processors(None).unwrap()[..]
-        else {
-            panic!("one filter")
-        };
-        assert_eq!(kind, FilterKind::LowPass { poles: 2 });
-        assert_eq!(m.fidelity, Partial);
-        assert!((m.config.hertz(None).unwrap() - 25.0 * 800f64.powf(0.293f32 as f64)).abs() < 1e-6);
-    }
+    use sampler_ir::Processor;
 
     #[test]
     fn legacy_types_are_cascade_classes() {
@@ -215,7 +194,6 @@ mod tests {
             assert_eq!(m.fidelity, Exact, "{id}");
             assert_eq!((m.config.topology, m.config.response, m.config.poles), (Topology::Cascade, response, poles));
             assert!(matches!(m.config.processors(None).unwrap()[..], [Processor::FilterBank(_)]));
-            assert_eq!(cutoff_octaves(id), None, "native knob modulation");
         }
     }
 
@@ -246,11 +224,5 @@ mod tests {
             };
             assert_eq!(i32::from(a.mode), id - 100);
         }
-    }
-
-    #[test]
-    fn cutoff_octaves_follow_the_law() {
-        assert!((cutoff_octaves(55).unwrap() - 9.6439).abs() < 1e-3);
-        assert_eq!(cutoff_octaves(33), None);
     }
 }

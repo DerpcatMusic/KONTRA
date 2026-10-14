@@ -186,6 +186,22 @@ impl Check<'_> {
             Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
             Curve::Tube { drive } | Curve::Transistor { drive } => unit(drive, "distortion drive")?,
             Curve::Destructor { drive } => self.within(drive, 0.0..=1.0, "bit crusher drive")?,
+            Curve::Drive(d) => {
+                for (v, range, field) in [
+                    (d.input_gain, -30.0..=20.0, "drive input gain"),
+                    (d.overdrive, 0.0..=10.0, "overdrive"),
+                    (d.trash, 0.0..=1.0, "drive trash"),
+                    (d.mix, 0.0..=100.0, "drive mix"),
+                    (d.output_gain, -40.0..=10.0, "drive output gain"),
+                ] {
+                    self.within(f64::from(v), range, field)?;
+                }
+            }
+            Curve::Skreamer(knobs) => {
+                for knob in knobs {
+                    unit(knob, "skreamer control")?;
+                }
+            }
         }
         if let Some(tone) = c.tone {
             self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;
@@ -291,6 +307,12 @@ impl Check<'_> {
                 Processor::FilterBank(c) => {
                     for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
                         self.within(v, 0.0..=1.0, field)?;
+                    }
+                    if let crate::fx::filter::Variant::Versatile(v) = c.variant {
+                        let knobs = v.shift.iter().chain(&v.resonance).chain(&v.types).chain(&v.wet);
+                        for &knob in knobs.chain([&v.gain]) {
+                            self.within(f64::from(knob), 0.0..=1.0, "versatile control")?;
+                        }
                     }
                 }
                 Processor::TimeMod(config) => {

@@ -1,18 +1,18 @@
 //! UVI `filter` effects onto sampler_ir::fx::filter.
 //!
-//! Only OnePole has a checked native kernel (its coefficient is authored in the isolated byte
-//! checks; the public Freq to coefficient conversion is the one-pole `1 - exp(-2 pi f / fs)`
-//! stand-in, the multiplier is not proved). Every other UVI filter element is named here with
-//! the exact thing that is not proved, so the report says why it is dropped instead of calling
-//! it an unknown element.
+//! BiquadFilter, MoogFilter and Rez are native laws of the engine's cascade core (UVI
+//! Workstation 4.0.9, checked under kemu; see `sampler-core::dsp::filter::cascade`). OnePole is
+//! the SVF one-pole (its Freq to coefficient law is not proved). Every other UVI filter element
+//! is named here with the exact thing that is not proved, so the report says why it is dropped
+//! instead of calling it an unknown element. Key tracking is taken from the keygroup's middle
+//! key (the native uses the playing note) and reported.
 
 use roxmltree::Node;
-use sampler_ir::fx::filter::{Config, CutoffLaw, Gap, ResonanceLaw, Response, Topology};
+use sampler_ir::fx::filter::{Config, CutoffLaw, Gap, ResonanceLaw, Response, Topology, Uvi, Variant};
 use sampler_ir::Processor;
 
 /// The UVI filter elements and why each one without a mapping has none.
 const GAPS: &[(&str, &str)] = &[
-    ("BiquadFilter", "Mode numbering (0..3), the 0..1 Q law and the native biquad coefficients are not extracted"),
     ("BrickwallFilter", "Slope (0..2) steepness and the native brickwall design are not extracted"),
     ("CombFilter", "comb topology (Mode 0..1), the 0..1 Q-to-feedback law and delay length law are not extracted"),
     ("CrossOverFilter", "a three-way split feeds separate output buses; neither the crossover alignment nor the bus routing is modelled"),
@@ -20,18 +20,19 @@ const GAPS: &[(&str, &str)] = &[
     ("FxFilter", "legacy FX Filter low/high frequency and Q laws are not extracted"),
     ("HighpassFilterRL", "RL inductor model (Model 1..2, Inductor 2..3) and Drive law are not extracted"),
     ("IIRLFOFilter", "LFO-driven IIR design is not extracted"),
-    ("MoogFilter", "Moog ladder topology, 0..1 Q law and saturation are not extracted"),
     ("PhasorFilter", "allpass chain order law (1..12), CutoffMode and Spread are not extracted"),
-    ("Rez", "Mode (0..2) resonator topology is not extracted"),
     ("TalkBox", "vowel tables for VowelMode (0..4) and FilterMode are not extracted"),
     ("UviFilter", "MappingMode (0..2) cutoff mapping and the filter bank behind it are not extracted"),
     ("VowelFilter", "formant tables for the 11 FilterA/FilterB vowels and the Formant/Morph laws are not extracted"),
     ("XpanderFilter", "the 37 Xpander modes, Algorithm, DistortionType and Fat laws are not extracted"),
 ];
 
+/// The elements with a native law.
+const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez"];
+
 /// Whether `tag` is a UVI filter element this module owns.
 pub(crate) fn handles(tag: &str) -> bool {
-    tag == "OnePole" || GAPS.iter().any(|(name, _)| *name == tag)
+    NATIVE.contains(&tag) || GAPS.iter().any(|(name, _)| *name == tag)
 }
 
 /// What a UVI filter element becomes: processors plus the parts it could not take.
@@ -49,6 +50,27 @@ pub(crate) fn translate(
     number: impl Fn(&str, f64) -> Result<f64, String>,
 ) -> Result<Result<Translated, Gap>, String> {
     let tag = node.tag_name().name();
+    if tag != "OnePole" && NATIVE.contains(&tag) {
+        let tracking = number("KeyTracking", 0.0)?;
+        let key = f64::from(key.unwrap_or(60));
+        // Native 0x1419ef640 order: 2^(((note - 60) kt) / 12) times Freq, in f32.
+        let hertz = ((((key - 60.0) * tracking) as f32 * (1.0f32 / 12.0)).exp2()
+            * number("Freq", 1000.0)? as f32)
+            .clamp(20.0, 20_000.0);
+        let q = number("Q", 0.0)?.clamp(0.0, 1.0) as f32;
+        let mode = number("Mode", if tag == "BiquadFilter" { 1.0 } else { 0.0 })?.clamp(0.0, 3.0) as u8;
+        let uvi = match tag {
+            "BiquadFilter" => Uvi::Biquad { mode, hertz, q },
+            "MoogFilter" => Uvi::Moog { hertz, q },
+            _ => Uvi::Rez { mode: mode.min(2), hertz, q },
+        };
+        let mut config = Config::new(Topology::Cascade, Response::LowPass, 2);
+        config.variant = Variant::Uvi(uvi);
+        return Ok(Ok(Translated {
+            processors: config.processors(None).map_err(|gap| gap.reason.to_string())?,
+            unsupported: if tracking == 0.0 { Vec::new() } else { vec![("filter key tracking (keygroup middle key)", tracking)] },
+        }));
+    }
     if tag != "OnePole" {
         let reason = GAPS
             .iter()
@@ -118,6 +140,16 @@ mod tests {
         let [Processor::Filter(f)] = t.processors[..] else { panic!() };
         assert_eq!(f.cutoff, sampler_ir::Frequency::Hertz(20000.0));
         assert!(t.unsupported.is_empty());
+    }
+
+    #[test]
+    fn native_elements_are_cascade_laws() {
+        let t = run(r#"<MoogFilter Freq="5000" Q="0.9"/>"#, None).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert_eq!(c.variant, Variant::Uvi(Uvi::Moog { hertz: 5000.0, q: 0.9 }));
+        let t = run(r#"<BiquadFilter/>"#, None).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert_eq!(c.variant, Variant::Uvi(Uvi::Biquad { mode: 1, hertz: 1000.0, q: 0.0 }));
     }
 
     #[test]

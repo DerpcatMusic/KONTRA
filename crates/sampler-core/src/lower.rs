@@ -167,6 +167,8 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
+            fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
+            fx::Curve::Drive(d) => Curve::Drive(d),
         },
         damping: c.damping.map(|d| knob(P::Damping, d)),
         noise: c.noise.map(|n| NoiseSettings {
@@ -2327,7 +2329,7 @@ impl Lowering<'_> {
                     Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
                 }
                 ir::fx::filter::Topology::Cascade => {
-                    let class = cascade_class(c.response, c.poles)
+                    let class = cascade_class(&c)
                         .ok_or_else(|| unsupported(owner, Feature::Controls))?;
                     Processor::Filter(crate::FilterSettings::Cascade(crate::CascadeSettings {
                         class,
@@ -3039,10 +3041,37 @@ mod chain_sharing_tests {
 }
 
 /// The legacy BFilter class a cascade configuration names.
-fn cascade_class(response: ir::fx::filter::Response, poles: u8) -> Option<crate::LegacyFilter> {
+fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
     use crate::LegacyFilter as L;
-    use ir::fx::filter::Response as R;
-    Some(match (response, poles) {
+    use ir::fx::filter::{Response as R, Variant as V};
+    match c.variant {
+        V::Default => {}
+        V::VowelA => return Some(L::VowelA),
+        V::VowelB => return Some(L::VowelB),
+        V::Pro52 => return Some(L::Pro52),
+        V::Ladder => return Some(L::Ladder),
+        V::Versatile(v) => return Some(L::Versatile(v)),
+        V::Uvi(u) => return Some(L::Uvi(u)),
+        V::MultiSv { mode, bandwidth } => return Some(L::Sv(crate::SvFilter::Multi { mode, bandwidth })),
+        V::Sv => {
+            use crate::SvFilter as S;
+            let mode = match c.response {
+                R::LowPass => 0,
+                R::BandPass => 1,
+                R::HighPass => 2,
+                R::Notch => 3,
+                R::Peak => return None,
+            };
+            return Some(L::Sv(match (c.poles, mode) {
+                (1, 0 | 2) => S::One { high: mode == 2 },
+                (2, 0..=2) => S::Two { mode },
+                (4, _) => S::Four { mode },
+                (6, _) => S::Six { mode },
+                _ => return None,
+            }));
+        }
+    }
+    Some(match (c.response, c.poles) {
         (R::LowPass, 1) => L::Lp1,
         (R::HighPass, 1) => L::Hp1,
         (R::BandPass, 2) => L::Bp2,
