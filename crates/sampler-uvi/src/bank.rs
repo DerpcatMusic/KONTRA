@@ -383,9 +383,25 @@ impl Bank {
             .map_err(|e| access::failure_reason(&e))
     }
 
-    pub(crate) fn sample_resource(&self, program_path:&str,path:&str,geometry_override:bool) -> Result<crate::script::SampleResource,String> {
-        self.resource_origins(program_path,path).map_err(|e|access::failure_reason(&e))
-            .and_then(|parts|crate::stream::sample_resource(parts,geometry_override))
+    pub(crate) fn sample_resource(&self, program_path:&str,path:crate::script::SamplePath<'_>,geometry_override:bool) -> Result<crate::script::SampleResource,String> {
+        let started = std::time::Instant::now();
+        let resolve = |candidate: &str| {
+            // Dynamic paths have explicit lookup roots; a bare name must never
+            // select a different directory elsewhere in the bank. Both hits
+            // and misses use the admitted map, without rescanning every member.
+            dynamic_sample_index(&self.paths, candidate).map(|i| &self.directory.files[i])
+        };
+        let (members, candidates) = sample_members_counted(program_path, path, &self.ufs.header.bank_name, resolve)
+            .map_err(|e|access::failure_reason(&e))?;
+        let parts = members.into_iter().map(|member| {
+            let(offset,size,key)=self.ufs.locate(member,self.directory.metadata_key,self.content_key)?;
+            Ok(crate::stream::Origin::Member{ufs:self.ufs.clone(),offset,size,key})
+        }).collect::<Result<Vec<_>>>().map_err(|e|access::failure_reason(&e))?;
+        let lookup_ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut resource = crate::stream::sample_resource(parts, geometry_override)?;
+        resource.timings.path_candidates = candidates;
+        resource.timings.lookup_ns = lookup_ns;
+        Ok(resource)
     }
 
     fn resource_origins(&self,program_path:&str,path:&str)->Result<Vec<crate::stream::Origin>> {
@@ -510,6 +526,10 @@ fn normalize(path: &str) -> Result<String> {
 /// Some banks retain WAV references after replacing their members with FLAC.
 /// An alternate lossless format must have the same directory and sample stem.
 fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
+    resolve_at(directory, path, true)
+}
+
+fn resolve_at<'a>(directory: &'a Directory, path: &str, allow_bare_name: bool) -> Result<&'a Member> {
     let path = normalize(path)?;
     let exact: Vec<_> = directory
         .files
@@ -525,7 +545,7 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     }
     ensure!(exact.is_empty(), "Ambiguous UVI member path");
     let bare = !path.contains('/');
-    if bare {
+    if bare && allow_bare_name {
         let named: Vec<_> = directory
             .files
             .iter()
@@ -538,19 +558,86 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     }
     if let Some(stem) = audio_stem(&path) {
         let mut alternatives = directory.files.iter().filter(|member| {
-            let name = if bare {
+            let name = if bare && allow_bare_name {
                 Some(member.name.as_str())
             } else {
                 member.path.as_deref()
             };
-            name.and_then(audio_stem) == Some(stem)
+            name.and_then(audio_stem).is_some_and(|candidate|candidate.eq_ignore_ascii_case(stem))
         });
         if let Some(member) = alternatives.next() {
             ensure!(alternatives.next().is_none(), "Ambiguous UVI audio format");
             return Ok(member);
         }
     }
-    anyhow::bail!("UVI resource path is absent from this bank")
+    Err(MissingResource.into())
+}
+
+#[derive(Debug)]
+struct MissingResource;
+impl std::fmt::Display for MissingResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UVI resource path is absent from this bank")
+    }
+}
+impl std::error::Error for MissingResource {}
+
+fn dynamic_sample_index(paths: &HashMap<String, Option<usize>>, path: &str) -> Result<usize> {
+    let path = path.to_ascii_lowercase();
+    if let Some(index) = paths.get(&path) { return index.context("Ambiguous UVI member path"); }
+    if let Some(stem) = audio_stem(&path) {
+        let mut found = None;
+        for extension in ["wav", "aif", "aiff", "flac"] {
+            if let Some(index) = paths.get(&format!("{stem}.{extension}")) {
+                let index = index.context("Ambiguous UVI member path")?;
+                ensure!(found.replace(index).is_none(), "Ambiguous UVI audio format");
+            }
+        }
+        if let Some(index) = found { return Ok(index); }
+    }
+    Err(MissingResource.into())
+}
+
+/// The available native read contexts, in order, inside this bank only.
+/// Explicit roots and volumes never become a relative fallback search. Unknown
+/// multi/original-load contexts are not guessed from unrelated folders.
+fn sample_candidates(program: &str, request: crate::script::SamplePath<'_>, bank: &str) -> Result<Vec<String>> {
+    let path = request.path.replace('\\', "/");
+    ensure!(!path.is_empty() && path.len() <= 4096 && !path.contains(['\0', ':']), "Invalid UVI sample path");
+    if path.starts_with('$') {
+        let (_, path) = resource_base(program, &path, bank)?;
+        return Ok(vec![normalize(path)?]);
+    }
+    if path.starts_with('/') { return Ok(vec![normalize(&path)?]); }
+    let base = program.rsplit_once('/').map_or("", |(base, _)| base);
+    let mut out = Vec::new();
+    for root in [Some(""), request.script_directory, Some(base), Some("Samples")].into_iter().flatten() {
+        // A relative candidate can escape one context while still resolving
+        // inside another. No candidate can escape the admitted bank root.
+        if let Ok(candidate) = normalize(&format!("{root}/{path}")) {
+            ensure!(candidate.len() <= 4096, "UVI sample candidate exceeds path capacity");
+            if !out.contains(&candidate) { out.push(candidate); }
+        }
+    }
+    ensure!(!out.is_empty(), "UVI sample path ascends above all available roots");
+    Ok(out)
+}
+
+#[cfg(test)]
+fn sample_members<'a>(program: &str, request: crate::script::SamplePath<'_>, bank: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>) -> Result<Vec<&'a Member>> {
+    sample_members_counted(program,request,bank,resolve).map(|(members,_)|members)
+}
+fn sample_members_counted<'a>(program: &str, request: crate::script::SamplePath<'_>, bank: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>) -> Result<(Vec<&'a Member>,u32)> {
+    for (index,path) in sample_candidates(program, request, bank)?.into_iter().enumerate() {
+        match resources("", &format!("/{path}"), &resolve) {
+            Ok(members) => return Ok((members,index as u32+1)),
+            Err(e) if e.downcast_ref::<MissingResource>().is_some() => {},
+            Err(e) => return Err(e),
+        }
+    }
+    Err(MissingResource.into())
 }
 
 fn audio_stem(path: &str) -> Option<&str> {
@@ -1036,6 +1123,63 @@ mod tests {
         let (_, path) =
             resource_base("Presets/p.uvip", "$Authored.ufs/../escape.aif", "Authored").unwrap();
         assert!(normalize(path).is_err());
+    }
+
+    #[test]
+    fn sample_contexts_preserve_raw_relative_order_and_explicit_authority() {
+        use crate::script::SamplePath;
+        let request = |path| SamplePath { path, script_directory: Some("Scripts/Engine") };
+        assert_eq!(sample_candidates("Presets/Category/p.uvip", request("../Samples/音-C4.wav"), "Fixture").unwrap(),
+            ["Scripts/Samples/音-C4.wav", "Presets/Samples/音-C4.wav", "Samples/音-C4.wav"]);
+        assert_eq!(sample_candidates("Presets/p.uvip", request("tone.wav"), "Fixture").unwrap(),
+            ["tone.wav", "Scripts/Engine/tone.wav", "Presets/tone.wav", "Samples/tone.wav"]);
+        for path in ["/Samples/tone.wav", "$fIxTuRe.UFS/Samples/tone.wav", "$Fixture/Samples/tone.wav"] {
+            assert_eq!(sample_candidates("Presets/p.uvip", request(path), "Fixture").unwrap(), ["Samples/tone.wav"]);
+        }
+        for path in ["$Other.ufs/Samples/tone.wav", "$Fixture.ufs/../escape.wav", "/../escape.wav", "C:/tone.wav", "a\0b.wav", "../../../../escape.wav"] {
+            assert!(sample_candidates("Presets/p.uvip", request(path), "Fixture").is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn sample_context_fallback_advances_only_absence_and_never_mixes_channel_roots() {
+        use crate::script::SamplePath;
+        use std::cell::RefCell;
+        let member = Member { record_offset: 0, name: "tone.wav".into(), parent: None,
+            path: Some("Samples/tone.wav".into()), size: 0, offset: 0, mode: Protection::Clear, footer: Vec::new() };
+        let visited = RefCell::new(Vec::new());
+        let request = SamplePath { path: "tone.wav", script_directory: Some("Scripts") };
+        let result = sample_members("Presets/p.uvip", request, "Fixture", |path| {
+            visited.borrow_mut().push(path.to_owned());
+            if path=="Samples/tone.wav" { Ok(&member) } else { Err(MissingResource.into()) }
+        }).unwrap();
+        assert!(std::ptr::eq(result[0], &member));
+        assert_eq!(*visited.borrow(), ["tone.wav", "Scripts/tone.wav", "Presets/tone.wav", "Samples/tone.wav"]);
+        for error in ["Ambiguous UVI member path", "Permission denied", "corrupt source", "source identity changed"] {
+            visited.borrow_mut().clear();
+            let found = sample_members("Presets/p.uvip", request, "Fixture", |path| {
+                visited.borrow_mut().push(path.to_owned());
+                anyhow::bail!("{error}")
+            });
+            assert_eq!(found.unwrap_err().to_string(), error);
+            assert_eq!(visited.borrow().len(), 1);
+        }
+        let bundle = SamplePath { path: "./*left.wav*right.wav", script_directory: Some("Scripts") };
+        assert!(sample_members("Presets/p.uvip", bundle, "Fixture", |path| {
+            if path=="Scripts/left.wav" || path=="Samples/right.wav" { Ok(&member) } else { Err(MissingResource.into()) }
+        }).unwrap_err().downcast_ref::<MissingResource>().is_some());
+    }
+
+    #[test]
+    fn dynamic_sample_paths_do_not_use_bare_names_and_casefold_format_stems() {
+        let member = |path: &str| Member { record_offset: 0, name: path.rsplit('/').next().unwrap().into(), parent: None,
+            path: Some(path.into()), size: 0, offset: 0, mode: Protection::Clear, footer: Vec::new() };
+        let mut directory = Directory { files: vec![member("Samples/音-C4.flac"), member("Other/tone.wav")],
+            directories: Vec::new(), records: Vec::new(), warnings: Vec::new(), metadata_key: 0 };
+        assert!(resolve_at(&directory, "tone.wav", false).unwrap_err().downcast_ref::<MissingResource>().is_some());
+        assert_eq!(resolve_at(&directory, "samples/音-c4.WAV", false).unwrap().path.as_deref(), Some("Samples/音-C4.flac"));
+        directory.files.push(member("samples/音-c4.FLAC"));
+        assert!(resolve_at(&directory, "Samples/音-C4.wav", false).unwrap_err().to_string().contains("Ambiguous"));
     }
 
     #[test]

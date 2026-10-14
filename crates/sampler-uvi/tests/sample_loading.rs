@@ -14,7 +14,8 @@ impl Files for Sources {
         None
     }
     fn sample_source(&self) -> Option<SampleSource> {
-        Some(Arc::new(|path, _explicit| {
+        Some(Arc::new(|request, _explicit| {
+            let path = request.path;
             if path == "missing.wav" {
                 return Err("authored sample is missing".into());
             }
@@ -43,11 +44,15 @@ impl Files for Sources {
                 channels: 1,
                 bits: 16,
                 tempo: 0.,
+                timings: Default::default(),
             })
         }))
     }
 }
 fn host(script: &str) -> (ScriptHost, Runtime) {
+    host_with_files(script, Sources)
+}
+fn host_with_files(script: &str, files: impl Files + 'static) -> (ScriptHost, Runtime) {
     let xml = format!(
         "<UVI4><Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer BaseNote='60'/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"
     );
@@ -91,7 +96,7 @@ fn host(script: &str) -> (ScriptHost, Runtime) {
         .unwrap()
         .with_sample_updates(4)
         .unwrap();
-    let mut host = ScriptHost::new(&xml, Sources, Config::default()).unwrap();
+    let mut host = ScriptHost::new(&xml, files, Config::default()).unwrap();
     host.bind_sample_control(control).unwrap();
     (host, rt)
 }
@@ -200,4 +205,31 @@ fn no_callback_still_loads_and_missing_cancelled_tasks_never_replace_source() {
         "{:?}",
         host.fault_counts()
     );
+}
+
+#[test]
+fn nested_lua_module_keeps_raw_sample_path_and_exact_script_context_until_worker_resolution() {
+    struct ContextSources;
+    impl Files for ContextSources {
+        fn script(&self, name: &str) -> Option<String> {
+            (name=="loader").then(|| "function requestSample(osc) loadSample(osc,'./../Samples/tone.wav',function(t) assert(t.success); done=true end) end".into())
+        }
+        fn script_path(&self, _: &str) -> Option<String> { Some("Scripts/Engine/loader.lua".into()) }
+        fn sample_source(&self) -> Option<SampleSource> {
+            let base = Sources.sample_source().unwrap();
+            Some(Arc::new(move |request, explicit| {
+                assert_eq!(request.path, "./../Samples/tone.wav", "retain caller path for fallback contexts");
+                assert_eq!(request.script_directory, Some("Scripts/Engine"));
+                base(sampler_uvi::script::SamplePath { path:"first.wav", script_directory:None }, explicit)
+            }))
+        }
+    }
+    let (mut h, mut rt) = host_with_files("require('loader'); function onInit() requestSample(Program.layers[1].keygroups[1].oscillators[1]) end", ContextSources);
+    pump(&mut h, &mut rt, "done");
+    let status = h.sample_load_status();
+    assert_eq!((status.requested,status.successful,status.failed,status.pending), (1,1,0,0));
+    for stage in [status.timings.metadata_queue,status.timings.resolve_and_headers,status.timings.prepare_decode,status.timings.ready_submit,status.timings.commit_ack,status.timings.total] {
+        assert_eq!(stage.count,1);
+        assert_eq!(stage.histogram.iter().sum::<u64>(),1);
+    }
 }

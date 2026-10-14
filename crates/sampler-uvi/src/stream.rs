@@ -426,8 +426,11 @@ pub(crate) fn sample_resource(
     if parts.is_empty() || parts.len() > 12 {
         return Err("invalid sample channel bundle".into());
     }
+    let opened = std::time::Instant::now();
     let sample = Sample::new(parts).map_err(|e| e.to_string())?;
     let reader = sample.open().map_err(|e| e.to_string())?;
+    let reader_open_ns = opened.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    let headers = std::time::Instant::now();
     let mut metadata = None;
     for origin in &sample.parts {
         let mut bytes = origin.open(false).map_err(|e| e.to_string())?;
@@ -466,37 +469,68 @@ pub(crate) fn sample_resource(
         channels: if count > 1 { count as u16 } else { channels },
         bits,
         tempo: metadata.tempo,
+        timings: crate::script::SampleSourceTimings {
+            reader_open_ns,
+            metadata_ns: headers.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            ..Default::default()
+        },
     })
 }
 
 pub(crate) fn loose_sample_resource(
     dir: &std::path::Path,
-    path: &str,
+    request: crate::script::SamplePath<'_>,
     geometry_override: bool,
 ) -> Result<crate::script::SampleResource, String> {
-    if path.starts_with('$') || path.contains(".ufs/") {
+    let started = std::time::Instant::now();
+    let path = request.path.replace('\\', "/");
+    if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+        return Err("invalid sample path".into());
+    }
+    if path.starts_with('$') || path.to_ascii_lowercase().contains(".ufs/") {
         return Err("sample reference requires its authored bank authority".into());
     }
-    let path = path.replace('\\', "/");
-    let paths = if let Some((base, names)) = path.split_once('*') {
-        let names: Vec<_> = names.split('*').collect();
-        if names.is_empty()
-            || names.len() > 12
-            || names.iter().any(|n| n.is_empty() || n.contains('/'))
-        {
-            return Err("invalid sample channel bundle".into());
-        }
-        names
-            .into_iter()
-            .map(|name| dir.join(format!("{base}{name}")))
-            .collect::<Vec<_>>()
-    } else {
-        vec![dir.join(path)]
+    let split = |path: &str| -> Result<Vec<std::path::PathBuf>, String> {
+        if let Some((base, names)) = path.split_once('*') {
+            let names: Vec<_> = names.split('*').collect();
+            if !base.ends_with('/') || names.is_empty() || names.len() > 12
+                || names.iter().any(|n| n.is_empty() || n.contains('/')) {
+                return Err("invalid sample channel bundle".into());
+            }
+            Ok(names.into_iter().map(|name| format!("{base}{name}").into()).collect())
+        } else { Ok(vec![path.into()]) }
     };
-    sample_resource(
-        paths.into_iter().map(Origin::File).collect(),
-        geometry_override,
-    )
+    let files = split(&path)?;
+    let explicit = std::path::Path::new(&path).is_absolute();
+    // No host process CWD or unknown multi participates in this authority.
+    // An explicitly authored absolute path retains its exact old meaning.
+    let mut roots = Vec::new();
+    if explicit { roots.push(std::path::PathBuf::new()); }
+    else {
+        if let Some(script) = request.script_directory { roots.push(dir.join(script)); }
+        roots.push(dir.to_owned());
+    }
+    for (candidate, root) in roots.into_iter().enumerate() {
+        let paths: Vec<_> = files.iter().map(|p| root.join(p)).collect();
+        let mut missing = false;
+        for path in &paths {
+            match std::fs::metadata(path) {
+                Ok(m) if m.is_file() => {},
+                Ok(_) => return Err("sample source is not a regular file".into()),
+                Err(e) if e.kind()==io::ErrorKind::NotFound => { missing=true; break; },
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        if missing { continue; }
+        // Once a complete origin exists, corrupt headers, permissions and
+        // source-identity failures are final, never a different-file fallback.
+        let lookup_ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut resource = sample_resource(paths.into_iter().map(Origin::File).collect(), geometry_override)?;
+        resource.timings.path_candidates = candidate as u32 + 1;
+        resource.timings.lookup_ns = lookup_ns;
+        return Ok(resource);
+    }
+    Err("sample source is missing from the available script/program contexts".into())
 }
 
 /// The source of a loose file or bundle, checked by opening it once.
@@ -531,6 +565,30 @@ mod tests {
             out[4..8].copy_from_slice(&n.to_le_bytes());
         }
         out
+    }
+
+    #[test]
+    fn loose_sample_contexts_fallback_only_when_missing_and_keep_explicit_paths_exact() {
+        let dir=std::env::temp_dir().join(format!("uvi-source-context-{}",std::process::id()));
+        let module=dir.join("Scripts/Engine");
+        std::fs::create_dir_all(&module).unwrap();
+        let bytes=wav(64,1,false);
+        std::fs::write(dir.join("tone.wav"),&bytes).unwrap();
+        let request=crate::script::SamplePath {path:"tone.wav",script_directory:Some("Scripts/Engine")};
+        let resource=loose_sample_resource(&dir,request,false).unwrap();
+        assert_eq!(resource.timings.path_candidates,2);
+        assert_eq!(resource.reader.unwrap().frames(),64);
+        std::fs::write(module.join("tone.wav"),b"corrupt chosen sample").unwrap();
+        assert!(loose_sample_resource(&dir,request,false).is_err(),"corrupt module candidate cannot fall through to good program sample");
+        std::fs::remove_file(module.join("tone.wav")).unwrap();
+        std::fs::create_dir(module.join("tone.wav")).unwrap();
+        assert!(loose_sample_resource(&dir,request,false).err().unwrap().contains("regular file"));
+        let explicit=dir.join("tone.wav");
+        let explicit=explicit.to_str().unwrap();
+        let resource=loose_sample_resource(&dir,crate::script::SamplePath {path:explicit,script_directory:Some("nonexistent")},false).unwrap();
+        assert_eq!(resource.timings.path_candidates,1);
+        assert!(loose_sample_resource(&dir,crate::script::SamplePath {path:"$Other.ufs/tone.wav",script_directory:None},false).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
