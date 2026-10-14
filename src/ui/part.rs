@@ -266,8 +266,9 @@ impl Face {
         if self.native.is_some() && self.presentation == Presentation::Bitmap {
             return;
         }
-        self.assets.prepare(
+        self.assets.prepare_for_program(
             &self.path,
+            self.program,
             &self.face,
             self.page,
             self.presentation,
@@ -605,8 +606,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     drop(readback);
     if face.native.is_none() || mode == crate::library::ViewMode::Kontra {
-        face.assets.prepare(
+        face.assets.prepare_for_program(
             &face.path,
+            face.program,
             &face.face,
             face.page,
             face.presentation,

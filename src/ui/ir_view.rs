@@ -170,8 +170,22 @@ impl Assets {
         scale: f64,
         values: &Values,
     ) {
-        if self.preparation.as_ref().is_none_or(|p| p.path() != path) {
-            self.preparation = Some(super::picture_worker::Preparation::new(path));
+        self.prepare_owned(path, None, face, page, presentation, scale, values);
+    }
+    pub fn prepare_for_program(
+        &mut self, path: &std::path::Path, program: u32, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        self.prepare_owned(path, Some(program), face, page, presentation, scale, values);
+    }
+    fn prepare_owned(
+        &mut self, path: &std::path::Path, program: Option<u32>, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.program() != program) {
+            self.preparation = Some(program.map_or_else(
+                || super::picture_worker::Preparation::new(path),
+                |program| super::picture_worker::Preparation::new_for_program(path, program)));
         }
         let prepared =
             self.preparation
@@ -237,6 +251,14 @@ impl Assets {
         self.preparation
             .as_ref()
             .map_or(Default::default(), |p| p.scan)
+    }
+    #[cfg(feature = "shots")]
+    pub fn probes(&self) -> &[super::pictures::AssetProbe] {
+        self.preparation.as_ref().map_or(&[], |p| p.probes())
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.preparation.as_ref().map_or(0, |p| p.probe_dropped())
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {

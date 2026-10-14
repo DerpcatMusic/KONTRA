@@ -11,6 +11,11 @@ fn resource_result_distinguishes_absent_invalid_and_bounded_reads() {
     large.set_len((32 << 20) + 1).unwrap();
     std::fs::create_dir(root.join("directory.png")).unwrap();
     let resources = Resources::of(&root.join("preset.uvip"));
+    assert_eq!(resources.authority(), "uvi-loose");
+    assert_eq!(
+        resources.read_with_origin_result("small.png").unwrap(),
+        Some((b"authored resource".to_vec(), "uvi-loose"))
+    );
     assert_eq!(
         resources.read_result("small.png").unwrap(),
         Some(b"authored resource".to_vec())
@@ -60,6 +65,7 @@ fn failed_bank_admission_is_not_a_missing_loose_asset() {
     let bank = root.join("broken.ufs");
     std::fs::write(&bank, b"not an authored UFS header").unwrap();
     let resources = Resources::of(&bank.join("Presets/preset.uvip"));
+    assert_eq!(resources.authority(), "uvi-bank");
     assert_eq!(
         resources.read_result("image.png"),
         Err(ResourceError::Unavailable)
@@ -104,6 +110,14 @@ fn authored_host_font_identity_is_exact_and_loaded_only_on_request() {
         .unwrap()
         .expect("authored host font");
     assert_eq!(font.len(), 75500);
+    assert_eq!(
+        resources
+            .read_with_origin_result("Artwork/Assistant-Regular.ttf")
+            .unwrap()
+            .unwrap()
+            .1,
+        "uvi-host-font"
+    );
     assert_eq!(&font[..4], &[0, 1, 0, 0]);
     assert_eq!(
         resources
@@ -124,6 +138,14 @@ fn authored_host_font_identity_is_exact_and_loaded_only_on_request() {
         Err(ResourceError::InvalidPath)
     );
     std::fs::write(root.join("Assistant-Regular.ttf"), b"authored bank font").unwrap();
+    assert_eq!(
+        resources
+            .read_with_origin_result("Assistant-Regular.ttf")
+            .unwrap()
+            .unwrap()
+            .1,
+        "uvi-loose"
+    );
     assert_eq!(
         resources.read_result("Assistant-Regular.ttf").unwrap(),
         Some(b"authored bank font".to_vec())
