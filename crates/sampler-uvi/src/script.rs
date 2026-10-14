@@ -18,6 +18,7 @@ use std::{
 };
 
 mod async_data;
+mod catalog_copy;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
 mod modules;
@@ -1738,25 +1739,12 @@ impl ScriptHost {
         // v1 host.rs keeps inventories in Lua; retain one private scalar schema per kind.
         let schemas = lua.create_table()?;
         let retained_fields = lua.create_table()?;
-        let clone_table: Function = globals.raw_get::<Table>("table")?.raw_get("clone")?;
-        // Clone the private scalar schema in one VM entry, rather than crossing
-        // Rust/Lua once for every parameter. Public definitions remain fresh,
-        // mutable tables, with numeric and named entries sharing one identity.
-        let clone_schema: Function = lua
-            .load(r#"
-                local clone, create = ...
-                return function(schema)
-                    local definitions = create(#schema)
-                    for index = 1, #schema do
-                        local definition = clone(schema[index])
-                        definitions[index] = definition
-                        definitions[definition.name] = definition
-                    end
-                    return definitions
-                end
-            "#)
-            .set_name("@kontra/catalog-definitions")
-            .call((clone_table.clone(), globals.raw_get::<Table>("table")?.raw_get::<Function>("create")?))?;
+        // Clone the scalar schema and current retained-field templates in one
+        // VM entry, rather than crossing Rust/Lua once for every parameter.
+        // Retained templates are gathered anew for this element on every call.
+        // Public definitions remain fresh mutable tables, with numeric and named
+        // entries sharing one identity.
+        let clone_schema = catalog_copy::cloner(lua)?;
         native.set(
             "definitions",
             lua.create_function(move |lua, id: usize| {
@@ -1803,19 +1791,22 @@ impl ScriptHost {
                                     "Linear"
                                 },
                             )?;
+                            // Private, immutable name aliases avoid searching
+                            // the catalog for every current XML attribute.
+                            schema.raw_set(p.name, d.clone())?;
                             schema.raw_push(d)?;
                         }
                         schemas.raw_set(kind, schema.clone())?;
                         schema
                     }
                 };
-                let defs: Table = clone_schema.call(schema)?;
                 // The public numeric catalog omits string fields and some graph
                 // nodes. Retain their typed XML identity without fabricating native
                 // bounds or omitted defaults. Provenance distinguishes these facts.
+                let mut templates: Option<Table> = None;
                 if let Some(params) = s.params.borrow().get(id) {
                     for (name, value) in params {
-                        if !defs.raw_get::<Value>(name.as_str())?.is_nil() {
+                        if !schema.raw_get::<Value>(name.as_str())?.is_nil() {
                             continue;
                         }
                         let kind = if value.parse::<f64>().is_ok() {
@@ -1839,13 +1830,15 @@ impl ScriptHost {
                                 template
                             }
                         };
-                        let d: Table = clone_table.call(template)?;
-                        d.set("id", defs.raw_len() + 1)?;
-                        defs.raw_set(name.as_str(), d.clone())?;
-                        defs.raw_push(d)?;
+                        let list = match templates {
+                            Some(ref list) => list,
+                            None => templates
+                                .insert(lua.create_table_with_capacity(params.len(), 0)?),
+                        };
+                        list.raw_push(template)?;
                     }
                 }
-                Ok(defs)
+                clone_schema.call::<Table>((schema, templates))
             })?,
         )?;
         let s = shared.clone();
