@@ -526,6 +526,17 @@ fn dolce_init_getter_feedback_preserves_authored_envelope_lanes() {
 }
 
 #[test]
+fn analog_strings_prepares_with_its_live_lanes() {
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else {
+        return;
+    };
+    let options = sampler_kontakt::Options { keys: 60..=60, mpe: None, ..Default::default() };
+    if let Err(e) = sampler_kontakt::load_streamed(&path, &options, &Default::default(), |_| {}) {
+        panic!("ANALOG STRINGS prepare: {e:?}");
+    }
+}
+
+#[test]
 fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
     let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else {
         return;

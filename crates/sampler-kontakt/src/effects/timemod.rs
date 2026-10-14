@@ -268,6 +268,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             }
             // Reader FUN_140d01fa0; feedback .85 and phase .25 cycles at 0x140962c75.
             Config {
+                address: None,
                 line: None,
                 allpass: Some(Allpass { stages: 4, law: SweepLaw::Legacy { depth }, feedback: (f64::from(feedback) * 0.85) as f32 }),
                 order: Order::LineThenAllpass,
@@ -289,7 +290,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             // 0x140a74bf0 (counts below one read as one).
             let mut line = Line::single(DelayTime::Ms(f64::from(time)), 2900.);
             line.native = Native::LegacyDelay { time, unit, feedback, damping, pan };
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Chorus { depth, speed, phase, unit } => {
             if !(unit_interval(&[depth, phase]) && speed.is_finite() && speed >= 0.) {
@@ -316,7 +317,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 second_head: true,
                 smoothing: f32::from_bits(0x3f733333),
             };
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
         Unit::Twin(t) => {
             // Kernel 0x140ab07d0 (sampler_core dsp/timemod/twin.rs): the
@@ -351,7 +352,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 second_head: false,
                 smoothing: 0.,
             };
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
         Unit::Choral { fields: [amount, rate, delay, voices, width, feedback, mix], invert, scatter, mode } => {
             // Core 0x14193be50; saved fields bind 1:1 to core params p0-p5, p8 and the
@@ -363,7 +364,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             }
             let mut line = Line::single(DelayTime::Frames(1), 0.);
             line.native = Native::VoiceBank(choral([amount, rate, delay, voices, width, feedback, mix], invert, scatter, mode as usize));
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry: 0., wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry: 0., wet: 1. }
         }
     };
     match cfg.check() {
@@ -433,6 +434,32 @@ mod tests {
             sampler_ir::fx::timemod::Native::LegacyModDelay { base_ms: 2., excursion: 25., feedback: 0.5 * 0.95, second_head: false, smoothing: 0. }
         );
         assert!(notes.is_empty());
+    }
+
+    /// Script lanes hold the stored knobs; writing them back through the
+    /// setter rebuilds the decoded unit (Delay, Chorus, Flanger, Phaser).
+    #[test]
+    fn live_lanes_round_trip_through_the_setter() {
+        let address = sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 };
+        for (module, values, names) in [
+            (0x10, &[250f32, 0.4, 0.5, 0.25, -1.][..], &["ENGINE_PAR_DL_TIME", "ENGINE_PAR_DL_FEEDBACK", "ENGINE_PAR_DL_DAMPING", "ENGINE_PAR_DL_PAN"][..]),
+            (0x11, &[0.5, 2., 1., -1.], &["ENGINE_PAR_CH_DEPTH", "ENGINE_PAR_CH_SPEED", "ENGINE_PAR_CH_PHASE"]),
+            (0x12, &[0.5, 0.5, 1., 0.5, 2., -1.], &["ENGINE_PAR_FL_DEPTH", "ENGINE_PAR_FL_FEEDBACK", "ENGINE_PAR_FL_SPEED", "ENGINE_PAR_FL_PHASE", "ENGINE_PAR_FL_COLOR"]),
+            (0x14, &[0.5, 0.25, 1., 1., -1.], &["ENGINE_PAR_PH_DEPTH", "ENGINE_PAR_PH_FEEDBACK", "ENGINE_PAR_PH_SPEED", "ENGINE_PAR_PH_PHASE"]),
+        ] {
+            let (mut cfg, _) = config(module, values);
+            cfg.address = Some(address);
+            let lanes = cfg.lanes();
+            assert_eq!(lanes.iter().map(|l| l.name).collect::<Vec<_>>(), names);
+            let mut rebuilt = cfg;
+            for lane in &lanes {
+                rebuilt.set(lane.role, lane.value);
+            }
+            assert_eq!(format!("{rebuilt:?}"), format!("{cfg:?}"), "module {module:#x}");
+            // A write moves the unit: Delay feedback, Flanger colour (base delay), ...
+            rebuilt.set(lanes[0].role, 0.9 * lanes[0].value + 0.01);
+            assert_ne!(rebuilt, cfg, "module {module:#x}");
+        }
     }
 
     #[test]

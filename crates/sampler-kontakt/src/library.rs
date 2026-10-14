@@ -300,6 +300,7 @@ fn translate(
         eq_mod_slots: HashMap::new(),
         cutoff_octaves: HashMap::new(),
         route_intensity: HashMap::new(),
+        alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         send_taps: Vec::new(),
@@ -722,6 +723,8 @@ struct Translation {
     /// Each translated route's saved signed intensity and its depth value per
     /// unit intensity (for the ID25 intensity law's `unit`).
     route_intensity: HashMap<usize, (f64, f64)>,
+    /// `claim_alias`'s index of contested (parameter, address) script aliases.
+    alias_claims: HashMap<(String, ir::SlotAddress), usize>,
     /// Assignments whose destination is another modulator's `intensity`; applied
     /// to that modulator's routes once every route exists.
     intensity_scales: Vec<IntensityScale>,
@@ -2122,18 +2125,7 @@ impl Translation {
                     parameter,
                     ramp: ir::Time::ZERO,
                 });
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control,
-                        parameter: native,
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic: -1,
-                        },
-                    });
+                self.claim_alias(control, &native, [group as i32, slot as i32, -1], false);
             }
             *band += 1;
         }
@@ -2178,39 +2170,45 @@ impl Translation {
             return false;
         }
         let mut lane = |name: &str, generic: i32, max: f64, saved: f64| {
-            let default = self
-                .script_par(name, group as i32, slot as i32, generic)
-                .map_or(saved, |v| {
-                    if name == "ENGINE_PAR_INTMOD_BYPASS" {
+            let bypass = name == "ENGINE_PAR_INTMOD_BYPASS";
+            let script = |name| self.script_par(name, group as i32, slot as i32, generic);
+            // The legacy and MP intensities write the same depth on the signed
+            // cubic law (v1: INTMOD 1e6 at the target's generic is depth 1).
+            let cubic = ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+                .into_iter()
+                .find_map(|name| script(name))
+                .filter(|_| !bypass)
+                .map(|v| max * sampler_core::EngineParameterLaw::SignedCubic.decode(v));
+            let default = cubic.or_else(|| {
+                script(name).map(|v| {
+                    if bypass {
                         f64::from(v != 0)
                     } else {
                         max * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.
                     }
-                });
+                })
+            });
             let control = ir::ControlRef(self.ir.controls.len());
             self.ir.controls.push(ir::Control {
                 key: format!("kontakt/group/{group}/mod/{slot}/{generic}/{name}"),
                 label: name.into(),
                 value: ir::ControlValue::Continuous {
-                    min: 0.,
+                    // A depth may be negative (inverted) through the cubic writers.
+                    min: if bypass { 0. } else { -max },
                     max,
-                    default,
+                    default: default.unwrap_or(saved),
                     unit: ir::ControlUnit::Percent,
                 },
                 automation: ir::Automation::None,
             });
-            self.ir
-                .source_indices
-                .control_aliases
-                .push(ir::SourceControlAlias {
-                    control,
-                    parameter: name.into(),
-                    address: ir::SlotAddress {
-                        group: group as i32,
-                        slot: slot as i32,
-                        generic,
-                    },
-                });
+            let names: &[&str] = if bypass {
+                &["ENGINE_PAR_INTMOD_BYPASS"]
+            } else {
+                &["ENGINE_PAR_MOD_TARGET_INTENSITY", "ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+            };
+            for name in names {
+                self.claim_alias(control, name, [group as i32, slot as i32, generic], false);
+            }
             control
         };
         let bypass = *bypass.get_or_insert_with(|| {
@@ -2222,6 +2220,14 @@ impl Translation {
             unit,
             f64::from(target.intensity) * unit,
         );
+        // Generic -1 is the modulator's own intensity (ANALOG STRINGS writes its
+        // LFO amounts there); as for external modulators it reaches the first target.
+        // ponytail: -1 aliases target 0 only; multi-target -1 semantics unmeasured.
+        if ordinal == 0 {
+            for parameter in ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"] {
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, -1], false);
+            }
+        }
         self.ir
             .source_indices
             .route_controls
@@ -2237,6 +2243,27 @@ impl Translation {
     fn script_bus_volume(&self, bus: usize) -> Option<f32> {
         let v = self.script_par("ENGINE_PAR_VOLUME", -1, -1, 1000 + bus as i32)?;
         Some(sampler_core::BUS_VOLUME_LAW.decode(v) as f32)
+    }
+
+    /// Alias a script address to `control`. Internal and external modulators
+    /// number their slots apart, so both can claim one (group, slot, generic):
+    /// the measured loop/module depth (`evict`) wins over an internal route's.
+    // ponytail: KSP's find_mod index spans both lists; resolve it to drop this tie-break.
+    fn claim_alias(&mut self, control: ir::ControlRef, parameter: &str, [group, slot, generic]: [i32; 3], evict: bool) {
+        let address = ir::SlotAddress { group, slot, generic };
+        let aliases = &mut self.ir.source_indices.control_aliases;
+        let alias = ir::SourceControlAlias { control, parameter: parameter.into(), address };
+        match self.alias_claims.entry((parameter.into(), address)) {
+            std::collections::hash_map::Entry::Occupied(at) => {
+                if evict {
+                    aliases[*at.get()] = alias;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(aliases.len());
+                aliases.push(alias);
+            }
+        }
     }
 
     /// Port v1's Constant loop target aliases and signed cubic depth domain.
@@ -2284,18 +2311,7 @@ impl Translation {
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ] {
             for generic in generics.into_iter().flatten() {
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control: depth,
-                        parameter: parameter.into(),
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic,
-                        },
-                    });
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, generic], true);
             }
         }
         let bypass = ir::ControlRef(self.ir.controls.len());
@@ -2772,18 +2788,28 @@ impl Translation {
             // fade is only wired for the sine-only entry above), the pulse width
             // inside the builder's 0.05..0.95 clamp, and held noise needs a start
             // phase below one half.
+            // A legacy Multi's saved fade (unsynchronized, records[1] -1: v1's admitted
+            // fade clock) runs the native fade law over the mix; Digital fades keep the
+            // verified sine-only entry above.
+            // ponytail: free-running LFOs fade per voice from note start, as the fade
+            // lives in the per-voice modulator; not reference-rendered.
             (5 | 6, Some([sine, pulse, triangle, saw, noise]))
-                if fade_ms == 0.
+                if (fade_ms == 0. || (lfo.waveform == 5 && (0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1.))
                     && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
                     && (0.05..=0.95).contains(&width)
                     && (noise == 0. || (0. ..0.5).contains(&phase)) =>
             {
-                ir::LfoShape::Native(ir::NativeWave::Multi {
+                let wave = ir::NativeWave::Multi {
                     weights: [sine, saw, triangle, pulse, noise],
                     width: width as f32,
                     normalize: lfo.records[0].flag,
                     digital: lfo.waveform == 6,
-                })
+                };
+                if fade_ms == 0. {
+                    ir::LfoShape::Native(wave)
+                } else {
+                    ir::LfoShape::NativeFaded { wave, fade_ms: lfo.initial_values[0] }
+                }
             }
             // Native BLfo* processors (modulators.md): recovered tables, any pulse
             // width in 0..1, and held noise whose half-cycle grid counts from a
@@ -2825,7 +2851,7 @@ impl Translation {
             shape,
             rate,
             delay: ir::Time::ZERO,
-            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. }) {
+            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. } | ir::LfoShape::NativeFaded { .. }) {
                 ir::Time::ZERO
             } else {
                 ir::Time::Milliseconds(fade_ms.max(0.0))
@@ -4061,6 +4087,20 @@ mod modulation {
         assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
     }
 
+    #[test]
+    fn one_script_address_has_one_alias_and_the_measured_lane_wins() {
+        let mut t = translation();
+        let at = [0, 5, -1];
+        t.claim_alias(ir::ControlRef(1), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(2), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(3), "ENGINE_PAR_MOD_TARGET_MP_INTENSITY", at, false);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [1, 3]);
+        t.claim_alias(ir::ControlRef(4), "ENGINE_PAR_INTMOD_INTENSITY", at, true);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [4, 3]);
+    }
+
     fn translation() -> Translation {
         Translation {
             ir: ir::Instrument::default(),
@@ -4075,6 +4115,7 @@ mod modulation {
             eq_mod_slots: HashMap::new(),
             cutoff_octaves: HashMap::new(),
             route_intensity: HashMap::new(),
+            alias_claims: HashMap::new(),
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
             send_taps: Vec::new(),
@@ -4866,6 +4907,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,
@@ -4919,6 +4961,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,

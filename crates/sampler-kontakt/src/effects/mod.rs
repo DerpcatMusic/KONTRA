@@ -1002,13 +1002,20 @@ pub(crate) fn chain_with(
                 }
             }
             Some(Params::Eq { bands }) => {
-                let live =
-                    scope == Scope::Voice && (dynamic.is_some() || live_eq.contains(&fx.slot));
+                // Group (voice) EQs bind through `filter_slots` (library `eq_controls`, which
+                // also carries their modulation); every other scope through the band's lanes.
+                let voice = scope == Scope::Voice;
+                let live = dynamic.is_some() || (voice && live_eq.contains(&fx.slot));
+                let lanes = dynamic.filter(|_| !voice);
                 flush(&mut combined, &mut filters, &mut out);
                 // Kinds 22..24 (BEQ1/2/3Band): bands in series, each the one-band law (eq.rs).
-                for band in bands.iter() {
-                    if let Some(p) = eq::legacy_band(*band, live, &mut notes) {
-                        if live { out.filter_slots.push((fx.slot, out.processors.len())); }
+                for (n, band) in bands.iter().enumerate() {
+                    if let Some(mut p) = eq::legacy_band(*band, live, &mut notes) {
+                        if let (sampler_ir::Processor::Eq(c), Some((group, generic))) = (&mut p, lanes) {
+                            c.band = n as u8;
+                            c.address = Some(sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic });
+                        }
+                        if live && voice { out.filter_slots.push((fx.slot, out.processors.len())); }
                         out.processors.push(p);
                     } else if band[2] != 0. || live {
                         modelled = false;
@@ -1238,8 +1245,7 @@ pub(crate) fn chain_with(
                 pseudo,
             }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors
-                    .push(sampler_ir::Processor::Color(color::stereo_modeller(*spread, *pan, *pseudo)));
+                push_color(&mut out, fx.slot, dynamic, color::stereo_modeller(*spread, *pan, *pseudo));
                 combined = gain;
             }
             Some(p) => match matrix(p, &mut notes) {
@@ -1267,6 +1273,13 @@ pub(crate) fn chain_with(
         }
         if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
+            // Every family unit of a script-addressed slot takes the slot's live lanes.
+            let address = sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic };
+            for p in &mut out.processors[begin..] {
+                if scope != Scope::Voice || !matches!(p, sampler_ir::Processor::Eq(_)) {
+                    *p = p.at(address);
+                }
+            }
             // A modelled module that changes only its level still owns the slot's
             // Output and Bypass.
             if modelled && out.processors.len() == begin {

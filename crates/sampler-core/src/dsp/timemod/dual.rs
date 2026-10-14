@@ -164,7 +164,7 @@ mod tests {
     fn unit(d: DualDelay, mix: f64) -> Config {
         let mut line = Line::single(DelayTime::Ms(0.), 5000.);
         line.native = Native::UviDualDelay(d);
-        Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: (1. - mix).sqrt(), wet: mix.sqrt() }
+        Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: (1. - mix).sqrt(), wet: mix.sqrt() }
     }
 
     const PLAIN: DualDelay = DualDelay {

@@ -1491,6 +1491,11 @@ pub enum LfoShape {
     SampleAndHold,
     /// A new uniform value each cycle, reached linearly by the cycle's end.
     Random,
+    /// A native waveform under Kontakt's saved LFO fade-in (`fade_ms` > 0,
+    /// unsynchronized): the BLfo fade outside the waveform kernels (Multi
+    /// 0x140b07290 and Digital Multi 0x140b078d0 carry none), the law of
+    /// `sampler_core::KontaktLfoFade`. Replaces the linear `Lfo::fade_in`.
+    NativeFaded { wave: NativeWave, fade_ms: f32 },
 }
 
 /// A piecewise-linear transfer curve over 0..=1, as ascending `(input, output)`
@@ -1642,6 +1647,16 @@ pub enum ProcessorParameter {
     LoFiFrequency,
     LoFiNoise,
     LoFiColor,
+    /// Stored knobs of script-addressed Kontakt delay, modulation and reverb
+    /// units (the family's `set` applies the native setter).
+    Time,
+    Feedback,
+    Depth,
+    Speed,
+    Phase,
+    Size,
+    Colour,
+    Predelay,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1732,11 +1747,51 @@ pub enum Processor {
     },
 }
 
+impl Processor {
+    /// The same unit addressed by a script slot, so [`Processor::lanes`] are
+    /// live. A unit that already names its slot (an EQ band) keeps it.
+    pub fn at(self, address: SlotAddress) -> Self {
+        match self {
+            Self::Color(c) if c.address.is_none() => Self::Color(c.at(address)),
+            Self::Dynamics(c) if c.address.is_none() => Self::Dynamics(fx::dynamics::Config { address: Some(address), ..c }),
+            Self::Eq(c) if c.address.is_none() => Self::Eq(fx::eq::Config { address: Some(address), ..c }),
+            Self::TimeMod(c) => Self::TimeMod(fx::timemod::Config { address: Some(address), ..c }),
+            Self::Space(c) => Self::Space(fx::space::Config { address: Some(address), ..c }),
+            Self::Ar(a) => Self::Ar(Ar { address: Some(address), ..a }),
+            Self::Daft(d) => Self::Daft(Daft { address: Some(address), ..d }),
+            p => p,
+        }
+    }
+    /// The unit's script slot and its live knobs; no knobs without a slot.
+    pub fn lanes(&self) -> Option<(SlotAddress, Vec<fx::Lane>)> {
+        let (address, lanes) = match self {
+            Self::Color(c) => (c.address, c.lanes()),
+            Self::Dynamics(c) => (c.address, c.lanes()),
+            Self::Eq(c) => (c.address, c.lanes()),
+            Self::TimeMod(c) => (c.address, c.lanes()),
+            Self::Space(c) => (c.address, c.lanes()),
+            // BParFXFilter CUTOFF and RESONANCE store the write (filters_eq.tsv identity).
+            Self::Ar(Ar { address, cutoff, resonance, .. }) | Self::Daft(Daft { address, cutoff, resonance, .. }) => (
+                *address,
+                vec![
+                    fx::Lane::new("ENGINE_PAR_CUTOFF", ProcessorParameter::Cutoff, *cutoff, fx::Law::Identity),
+                    fx::Lane::new("ENGINE_PAR_RESONANCE", ProcessorParameter::Resonance, *resonance, fx::Law::Identity),
+                ],
+            ),
+            _ => return None,
+        };
+        Some((address?, lanes))
+    }
+}
+
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
 /// the native engine owns the gain, cutoff and resonance laws.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Daft {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub gain: f64,
     pub cutoff: f64,
     pub resonance: f64,
@@ -1749,6 +1804,9 @@ pub struct Daft {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ar {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub mode: u8,
     pub cutoff: f64,
     pub resonance: f64,

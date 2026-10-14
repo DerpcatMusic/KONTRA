@@ -173,7 +173,7 @@ pub(crate) fn process(
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
-            PreparedProcessor::Space(_) => {
+            PreparedProcessor::Space(..) => {
                 unreachable!("reverbs and convolutions are bus processors")
             }
         }
