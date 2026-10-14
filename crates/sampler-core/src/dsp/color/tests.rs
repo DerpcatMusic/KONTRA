@@ -410,3 +410,22 @@ fn uvi_formant_crusher_matches_the_native() {
         1e-6,
     );
 }
+
+#[test]
+fn uvi_diode_clipper_matches_the_native() {
+    uvi_unit(
+        "DiodeClipper",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let d = sampler_ir::fx::color::Diode {
+                drive: f("Drive", 0.0),
+                tone: f("Tone", 20_000.0),
+                high_pass: f("HighPass", 1.0),
+                asymmetry: f("Asymmetry", 0.0),
+                output_gain: f("OutputGain", 0.0),
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::Diode(d), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
+    );
+}

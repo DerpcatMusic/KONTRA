@@ -210,6 +210,17 @@ impl Translation {
                         number(node, "FilterB", 2.0)?.clamp(0.0, 10.0) as u8,
                     )));
                 }
+                "DiodeClipper" => {
+                    use ir::fx::color::{Config, Curve, Diode};
+                    let diode = Diode {
+                        drive: number(node, "Drive", 0.0)?.clamp(0.0, 30.0) as f32,
+                        tone: number(node, "Tone", 20_000.0)?.clamp(100.0, 20_000.0) as f32,
+                        high_pass: number(node, "HighPass", 1.0)?.clamp(1.0, 20_000.0) as f32,
+                        asymmetry: number(node, "Asymmetry", 0.0)?.clamp(0.0, 1.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Diode(diode), ..Config::IDENTITY }));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};

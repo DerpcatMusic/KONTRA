@@ -204,6 +204,8 @@ impl Check<'_> {
                     self.within(f64::from(v), range, field)?;
                 }
             }
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Diode(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;
