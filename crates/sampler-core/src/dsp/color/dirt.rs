@@ -76,15 +76,14 @@ pub(super) struct State {
     /// The routing feedback and the dry path, one or two core frames back.
     feedback: [Lanes; 2],
     dry: [Lanes; 2],
-    up: [EffektrigState; 2],
-    down: [EffektrigState; 2],
+    os: [EffektrigState; 2],
 }
 
 impl State {
     pub(super) fn finite(&self) -> bool {
         [self.shelf, self.lowpass, self.feedback, self.dry].iter().flatten().flatten().chain(&self.x).chain(&self.p930).all(|v| v.is_finite())
             && self.envelope.is_finite()
-            && self.up.iter().chain(&self.down).all(EffektrigState::finite)
+            && self.os.iter().all(EffektrigState::finite)
     }
 }
 
@@ -284,11 +283,11 @@ impl Engine {
         for i in 0..len {
             let (l, r) = (block[0][i] as f32, block[1][i] as f32);
             let (l, r) = if let Some(os) = &self.oversampler {
-                let (l0, l1) = os.up(&mut s.up[0], l);
-                let (r0, r1) = os.up(&mut s.up[1], r);
+                let (l0, l1) = os.up(&mut s.os[0], l);
+                let (r0, r1) = os.up(&mut s.os[1], r);
                 let a = self.tick(s, l0, r0, 2);
                 let b = self.tick(s, l1, r1, 2);
-                (os.down(&mut s.down[0], a.0, b.0), os.down(&mut s.down[1], a.1, b.1))
+                (os.down(&mut s.os[0], a.0, b.0), os.down(&mut s.os[1], a.1, b.1))
             } else {
                 self.tick(s, l, r, 1)
             };

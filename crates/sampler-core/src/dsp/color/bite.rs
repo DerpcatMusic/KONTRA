@@ -96,8 +96,7 @@ pub(super) struct State {
     jitter_seeds: [u32; 2],
     dither_seed: u32,
     cached: Option<f32>,
-    up: [EffektrigState; 2],
-    down: [EffektrigState; 2],
+    os: [EffektrigState; 2],
 }
 
 impl Default for State {
@@ -120,8 +119,7 @@ impl Default for State {
             jitter_seeds: [12_345; 2],
             dither_seed: 12_345,
             cached: None,
-            up: Default::default(),
-            down: Default::default(),
+            os: Default::default(),
         }
     }
 }
@@ -130,7 +128,7 @@ impl State {
     pub(super) fn finite(&self) -> bool {
         self.pre.iter().chain(&self.post).flatten().flatten().chain(&self.hp).chain(self.ring.iter().flatten()).all(|v| v.is_finite())
             && self.envelope.is_finite()
-            && self.up.iter().chain(&self.down).all(EffektrigState::finite)
+            && self.os.iter().all(EffektrigState::finite)
     }
 }
 
@@ -307,11 +305,11 @@ impl Engine {
         for i in 0..len {
             let x = [block[0][i] as f32, block[1][i] as f32];
             let y = if let Some(os) = &self.oversampler {
-                let (l0, l1) = os.up(&mut s.up[0], x[0]);
-                let (r0, r1) = os.up(&mut s.up[1], x[1]);
+                let (l0, l1) = os.up(&mut s.os[0], x[0]);
+                let (r0, r1) = os.up(&mut s.os[1], x[1]);
                 let a = self.tick(s, [l0, r0]);
                 let b = self.tick(s, [l1, r1]);
-                [os.down(&mut s.down[0], a[0], b[0]), os.down(&mut s.down[1], a[1], b[1])]
+                [os.down(&mut s.os[0], a[0], b[0]), os.down(&mut s.os[1], a[1], b[1])]
             } else {
                 self.tick(s, x)
             };
