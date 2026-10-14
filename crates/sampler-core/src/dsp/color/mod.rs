@@ -358,6 +358,8 @@ enum Shaper {
     Exciter(exciter::State),
     ToneStack(tonestack::State),
     Diode(diode::State),
+    /// A Kontakt KONTAKTFX filter stage's history: a filter stage runs no shaper.
+    KontaktFilter(super::filter::kontaktfx::State),
 }
 
 impl Shaper {
@@ -373,6 +375,7 @@ impl Shaper {
             Self::Exciter(s) => s.finite(),
             Self::ToneStack(s) => s.finite(),
             Self::Diode(s) => s.finite(),
+            Self::KontaktFilter(s) => s.finite(),
         }
     }
 }
@@ -407,6 +410,11 @@ pub(super) struct State {
 }
 
 impl State {
+    /// The Kontakt filter core's history in the shaper slot.
+    pub(in crate::dsp) fn kontakt_filter(&mut self) -> &mut super::filter::kontaktfx::State {
+        slot!(self, KontaktFilter)
+    }
+
     pub(super) fn finite(&self) -> bool {
         let f32s = [self.gain, self.hold.held[0], self.hold.held[1], self.hold.phase,
             self.noise.history[0], self.noise.history[1], self.stereo.width, self.stereo.pan];

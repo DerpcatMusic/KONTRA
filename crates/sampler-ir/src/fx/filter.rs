@@ -71,6 +71,21 @@ pub enum Variant {
     MultiSv { mode: u8, bandwidth: f32 },
     /// A UVI Workstation filter element with constant controls.
     Uvi(Uvi),
+    /// A Kontakt KONTAKTFX filter core (saved types 120, 130, 140..=143).
+    Kontakt(KontaktFx),
+}
+
+/// The Kontakt KONTAKTFX filter cores and their stored knobs (0..=1, native parameter order).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KontaktFx {
+    /// Simple LP/HP: the low-pass and high-pass cutoffs.
+    SimpleLpHp { lp: f32, hp: f32 },
+    /// Dual SKF: HP cutoff, HP resonance, LP cutoff, LP resonance, drive.
+    DualSkf([f32; 5]),
+    /// Monark: `mode` 0 LP4, 1 LP2, 2 LP1, 3 BP; `variant` 0 clean, 1 noisy drive, 2 drive;
+    /// cutoff, resonance, input gain, cutoff modulation, drive.
+    Monark { mode: u8, variant: u8, knobs: [f32; 5] },
 }
 
 /// UVI filter elements the engine runs natively; `hertz` is already key tracked.

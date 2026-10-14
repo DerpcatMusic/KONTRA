@@ -463,6 +463,30 @@ impl Slot {
                         });
                     }
                     r.skip_repeats(kind);
+                } else if matches!(kind, 120 | 130 | 140..=143) {
+                    // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
+                    // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
+                    // kind x3. Knobs go out in record order, Monark's variant last.
+                    let kinds = |r: &mut Reader, n: usize| (0..n).all(|_| r.i32() == Some(kind));
+                    let (knobs, variant) = match kind {
+                        120 => {
+                            r.flag()?;
+                            kinds(&mut r, 4).then_some(())?;
+                            (2, None)
+                        }
+                        130 => {
+                            kinds(&mut r, 2).then_some(())?;
+                            (5, None)
+                        }
+                        _ => {
+                            kinds(&mut r, 1).then_some(())?;
+                            (5, Some(r.i32()? as f32))
+                        }
+                    };
+                    let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
+                    let mut extra = values[2..].to_vec();
+                    extra.extend(variant);
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
                 } else if r.i32()? != kind {
                     return None;
                 }
@@ -1106,7 +1130,7 @@ pub(crate) fn chain_with(
                 extra,
             }) => match filter(*kind, *cutoff, *resonance, match kind {
                 63..=65 => &extra[..extra.len().min(1)],
-                19 => extra,
+                19 | 120 | 130 | 140..=143 => extra,
                 _ => &[],
             }) {
                 Ok((processors, mapped)) => {
@@ -1724,6 +1748,36 @@ mod tests {
         let mut fx = slot(0x18, public, 1.);
         fx.slot = 5;
         fx
+    }
+
+    /// The three KONTAKTFX record layouts decode to the core's knobs in native order.
+    #[test]
+    fn kontaktfx_filter_records_reach_their_cores() {
+        use sampler_ir::fx::filter::{KontaktFx, Variant};
+        let record = |kind: i32, head: &[u8], tail: usize, knobs: &[f32]| {
+            let mut public = head.to_vec();
+            public.extend(knobs.iter().flat_map(|v| v.to_le_bytes()));
+            public.extend((0..tail).flat_map(|_| kind.to_le_bytes()));
+            slot(0x18, public, 1.)
+        };
+        let k = |kind: i32, n: usize| (0..n).flat_map(|_| kind.to_le_bytes()).collect::<Vec<u8>>();
+        let simple = [k(120, 1), vec![1], k(120, 4)].concat();
+        let monark = [k(141, 2), 2i32.to_le_bytes().to_vec()].concat();
+        for (fx, expected) in [
+            (record(120, &simple, 0, &[0.7, 0.3]), KontaktFx::SimpleLpHp { lp: 0.7, hp: 0.3 }),
+            (record(130, &k(130, 3), 2, &[0.5, 0.25, 0.75, 0.125, 0.0]), KontaktFx::DualSkf([0.25, 0.125, 0.5, 0.75, 0.5])),
+            (
+                record(141, &monark, 3, &[0.5, 0.25, 2.5, 1.0, 0.0]),
+                KontaktFx::Monark { mode: 1, variant: 2, knobs: [0.5, 0.25, 0.5, 0.5, 1.0] },
+            ),
+        ] {
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            assert!(
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::FilterBank(c) if c.variant == Variant::Kontakt(expected))),
+                "{expected:?}: {:?}",
+                built.processors
+            );
+        }
     }
 
     #[test]
