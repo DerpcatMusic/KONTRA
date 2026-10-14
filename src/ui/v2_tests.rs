@@ -939,12 +939,13 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(4);
     let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
-    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0"] {
+    for id in ["perf-art-0", "perf-needs-0"] {
         assert!(there(&h, id), "{id}");
     }
     // Two header rows (bar, then views + performance), the old full-width
     // strip gone, and the preset picker directly under them.
     assert!(!there(&h, "perf-0"), "no separate CC7 row");
+    assert!(!there(&h, "perf-vol-0"), "CC7 is information on the gain control, not a row");
     let scene = h.ui.scene().unwrap();
     let one = scene.surface("header-0").unwrap().frame;
     let two = scene.surface("header2-0").unwrap().frame;
@@ -954,10 +955,9 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     for id in ["snapshot-next-0"] {
         assert!(there(&h, id), "{id}");
     }
-    let vol = scene.surface("perf-vol-0").unwrap().frame;
     assert!(
-        vol.y >= two.y && vol.y + vol.size.height <= two.y + two.size.height + 0.5,
-        "volume lives in row 2"
+        scene.surface("volume-0").unwrap().tip.as_deref().unwrap().contains("CC7 -6.0 dB"),
+        "instrument volume remains available on the main gain control"
     );
     assert_eq!(
         p.selection.read().unwrap().parts[0].dynamics,
@@ -1168,7 +1168,7 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     };
     assert_eq!(
         header_text(&h),
-        "Articulation Legato · C#0",
+        "Legato · C#0",
         "header uses the row's effective trigger after a swap"
     );
     for n in 3..5 {
@@ -1349,7 +1349,7 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
         h.idle(3);
         assert_eq!(
             header_text(&h),
-            format!("Articulation Legato · {label}"),
+            format!("Legato · {label}"),
             "header follows the effective input family"
         );
         assert_eq!(
