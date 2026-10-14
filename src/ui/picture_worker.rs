@@ -92,6 +92,10 @@ impl Drop for Preparation {
     }
 }
 impl Preparation {
+    #[cfg(test)]
+    pub(super) fn worker_identity(&self) -> usize {
+        Arc::as_ptr(&self.epoch) as usize
+    }
     pub fn new(path: &Path) -> Self {
         Self::new_owned(path, None)
     }

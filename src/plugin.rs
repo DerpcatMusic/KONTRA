@@ -582,7 +582,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 21],
+    problems: [AtomicU64; 23],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
@@ -877,6 +877,8 @@ impl PartShared {
             offline_failures,
             lua_faults,
             cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
@@ -898,6 +900,8 @@ impl PartShared {
             offline_failures,
             lua_faults,
             cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         }
     }
 
@@ -924,6 +928,8 @@ impl PartShared {
             p.offline_failures,
             p.lua_faults,
             p.cold_starts,
+            p.voice_pool_refusals,
+            p.waiting_voice_replacements,
         ];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
@@ -1029,6 +1035,7 @@ pub struct Shared {
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) resource_path: Option<PathBuf>,
+    pub(crate) resource_revision: Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
     pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
@@ -2491,10 +2498,17 @@ fn load_part_with(
             let _span = sampler_kontakt::audit::Span::new("mapping_index");
             let mapping_index = loaded.instrument.as_ref()
                 .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            let resource_revision = loaded.scripts.resource_path.as_deref()
+                .zip(loaded.scripts.resources.as_ref())
+                .and_then(|(owner, resources)| {
+                    crate::sound::resource_revision::ResourceRevision::capture(
+                        owner, part.program, resources,
+                    ).map(Arc::new)
+                });
             if canceled() {
                 return Err(CoreError::Canceled);
             }
-            Ok((loaded, mapping_index))
+            Ok((loaded, mapping_index, resource_revision))
         });
     let result = if canceled() {
         Err(CoreError::Canceled)
@@ -2514,7 +2528,7 @@ fn load_part_with(
         return false;
     }
     match result {
-        Ok((mut loaded, mapping_index)) => {
+        Ok((mut loaded, mapping_index, resource_revision)) => {
             // Commit ownership only after preparation and persistence succeed.
             // Serialize the fence with off-audio command producers.
             let generation = {
@@ -2573,6 +2587,7 @@ fn load_part_with(
             v.generation = generation;
             v.interfaces = loaded.interfaces.into();
             v.resource_path = loaded.scripts.resource_path.clone();
+            v.resource_revision = resource_revision;
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
                 v.effects =
@@ -3620,6 +3635,8 @@ pub(crate) mod tests {
             stream_errors: 4,
             offline_failures: 5,
             cold_starts: 126,
+            voice_pool_refusals: 127,
+            waiting_voice_replacements: 128,
             ..Default::default()
         };
         assert_eq!(

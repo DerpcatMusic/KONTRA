@@ -161,6 +161,10 @@ pub struct Assets {
 }
 
 impl Assets {
+    #[cfg(test)]
+    pub(super) fn worker_identity(&self) -> Option<usize> {
+        self.preparation.as_ref().map(|p| p.worker_identity())
+    }
     pub fn prepare(
         &mut self,
         path: &std::path::Path,

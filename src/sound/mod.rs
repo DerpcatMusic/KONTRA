@@ -29,6 +29,7 @@ pub mod event;
 pub mod mics;
 pub mod mix;
 pub mod report;
+pub(crate) mod resource_revision;
 pub mod tree;
 pub mod v2;
 pub(crate) mod waveform;
