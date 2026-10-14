@@ -2,7 +2,7 @@
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
 //! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve;
-//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper.
+//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper; ToneStack (26 models).
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
@@ -20,7 +20,7 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
         | "DoubleDrive" | "UviDrive" | "Buzz" | "Retro" | "Vinyl" => {
             "per-class kernel located but its saturation law, oversampling and filter stages are not transcribed; no Kontakt/UVI oracle to prove a transcription"
         }
-        "ToneStack" | "JCMAmp" | "BoxModeler" | "Cabinet" => {
+        "JCMAmp" | "BoxModeler" | "Cabinet" => {
             "amp, tone-stack or cabinet topology kernel located but not transcribed; cabinet impulse data is not in the executable"
         }
         "Widener" => "kernel 0x1412cff90 located; stereo widening law not transcribed",
