@@ -1327,11 +1327,7 @@ impl Runtime {
         if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
             return Err(Error::InvalidInput);
         }
-        if input.external_id.is_some()
-            && self.notes.slots.iter().enumerate().any(|(i, s)| {
-                s.value.is_some_and(|n| n.input == Some(input))
-                    && self.selections[i].performance == performance
-            })
+        if input.external_id.is_some() && self.owns_input(performance, input)
         {
             return Err(Error::DuplicateInput);
         }
@@ -1340,6 +1336,40 @@ impl Runtime {
             pitch,
             velocity,
         )
+    }
+
+    /// Retained terminal owners still reserve their identity. Traverse the
+    /// existing occupancy bitmap while sparse, and contiguous slots while
+    /// dense; pointer-chasing live notes is slower for a full arena.
+    fn owns_input(&self, performance: usize, input: Input) -> bool {
+        if self.notes.count() == 0 {
+            return false;
+        }
+        if self.notes.count() > self.notes.slots.len() / 2 {
+            return self.notes.slots.iter().enumerate().any(|(index, slot)| {
+                slot.value.is_some_and(|n| n.input == Some(input))
+                    && self.selections[index].performance == performance
+            });
+        }
+        for (word, &free) in self.notes.free.iter().enumerate() {
+            let valid = if (word + 1) * 64 > self.notes.slots.len() {
+                (1u64 << (self.notes.slots.len() % 64)) - 1
+            } else {
+                u64::MAX
+            };
+            let mut occupied = !free & valid;
+            while occupied != 0 {
+                let index = word * 64 + occupied.trailing_zeros() as usize;
+                let slot = &self.notes.slots[index];
+                if slot.value.is_some_and(|n| n.input == Some(input))
+                    && self.selections[index].performance == performance
+                {
+                    return true;
+                }
+                occupied &= occupied - 1;
+            }
+        }
+        false
     }
 
     /// Detached children do not release with their parent, but still retain its
