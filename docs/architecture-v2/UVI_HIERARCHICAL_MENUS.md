@@ -60,3 +60,51 @@ fixtures 23/23; shared production popup interaction/CPU-pixel fixtures 3/3;
 inspector tree-metadata fixture 1/1 in each of the binary and integration test
 targets. The popup edge fixture also verifies left-opening placement at the
 right viewport edge and keyboard selection of original item 3.
+
+## Installed Augmented Orchestra witness
+
+One current `ci` build (opt-level 3, no LTO) initialized and rendered
+`V Strings Pizzicato 2` with UI image authority and a read-only UFS directory
+cache hit. [The numeric receipt](receipts/ao-hierarchy-20261015.json) contains no
+vendor code or artwork. Its binary SHA-256 is
+`9fa1b7edc7276abd6654191dc6488f2fb69cbb7f93a080b0eae10a5cf8786344`.
+
+| Observation | Result |
+| --- | ---: |
+| Validated hierarchical menus | 53 |
+| Tree nodes / original-index leaves | 1,403 / 1,214 |
+| Maximum path depth | 5 |
+| Ambiguous paths / renderer-limit omissions | 0 |
+| Visible hierarchical menus in this initial page | 0 |
+| Widgets / visible widgets | 10,145 / 101 |
+| Remaining UI omissions | 28 |
+| Requested images / fonts found | 84 / 5 |
+| Missing / pending / dropped asset probes | 0 / 0 / 0 |
+
+The 53 hierarchy omissions in the previous same-member receipt are resolved
+through real tree consumers. Twenty visible meter omissions remain (eight
+element bindings, eight mono policies, four 0 dB colors); eight hidden Table
+fill-style omissions remain. All eight typed meter requests address Layers;
+the live tap service is absent and no unrelated output meter is substituted.
+
+Lua work stays at 14,053,215 checkpoints out of 33,554,432, leaving 19,501,213.
+Initialization completed without script faults, work exhaustion or expiry of
+the unchanged 20-second initializer threshold. The initializer recorded
+373,618,306 Lua bytes, and the later profile snapshot recorded 392,987,546;
+neither is process RSS or an allocation peak.
+
+Observed process wall time was 12,911 ms: container/program 833 ms,
+translation/initialization 10,317 ms, UI export 297 ms and UI render 514 ms.
+Nested host creation measured 5,743 ms, script body/require 4,592 ms and
+post-initialization overlay/translation 4,338 ms; these overlap and cannot be
+summed. The renderer's own 509 ms included 32 ms resource reads, 91 ms decoding
+and approximately 109 ms PNG encoding across both presentations. CPU raster
+time was 1.5 ms per image. Rendering and exporting are distinct from publishing
+an interactive plugin frame, which this preview does not measure.
+
+A compiler was present before and after this unpinned run, and the previous
+receipt used another build profile. These clocks establish where this run
+spent wall time; they establish no before/after startup speed ratio. The
+profile's native API clocks are inclusive wall time, and its opportunistic Lua
+stack counts are not exclusive CPU cost. Profiling-overhead and CPU attribution
+require their own controlled same-executable evidence.
