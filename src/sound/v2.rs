@@ -1834,7 +1834,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                     if let Some(script) = part.script.as_mut() {
                         let _ = script.note_off_note_velocity(&mut part.runtime, h.id, h.note.key, velocity);
                     }
-                    let _ = part.runtime.note_off(h.input, velocity);
+                    let _ = part.runtime.note_off_exact(h.id, velocity);
                 }
             }
         }
