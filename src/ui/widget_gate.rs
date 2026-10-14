@@ -119,6 +119,12 @@ struct Gate {
     preemptions: u64,
     progress_truncated: bool,
     phase: &'static str,
+    /// Script engine-parameter outcomes since the caller last cleared them.
+    engine_outcomes: Vec<sampler_core::EngineParameterOutcome>,
+    /// MIDI that returns a parity stimulus to rest.
+    rest: Vec<[u8; 3]>,
+    /// MIDI played right after each parity note-on.
+    during: Vec<[u8; 3]>,
 }
 impl Gate {
     fn load(selection: Selection) -> Self {
@@ -145,6 +151,9 @@ impl Gate {
             preemptions: 0,
             progress_truncated: false,
             phase: "load",
+            engine_outcomes: Vec::new(),
+            rest: Vec::new(),
+            during: Vec::new(),
         };
         gate.settle();
         gate
@@ -176,6 +185,9 @@ impl Gate {
                     "outcome": p.outcome.map(|outcome| format!("{outcome:?}"))}));
             });
             self.preemptions = total;
+            let outcomes = core.widget_gate_engine_outcomes(0);
+            let room = 4096usize.saturating_sub(self.engine_outcomes.len());
+            self.engine_outcomes.extend(outcomes.into_iter().take(room));
             for (program, outcome) in core.scan_runtime_faults(0) {
                 self.fault_events.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
                     "phase": self.phase, "sample": sample, "program": program,
