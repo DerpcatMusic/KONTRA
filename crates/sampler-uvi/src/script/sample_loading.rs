@@ -6,11 +6,11 @@ use mlua::{
     Variadic,
 };
 use sampler_core::{
-    Direction, Loop, LoopMode, LoopShape, Pcm, Playback, PreparedSampleRevision, SampleControl,
-    SampleTargetId, SampleTask,
+    Direction, HeadBudget, Loop, LoopMode, LoopShape, Pcm, Playback, PreparedSampleRevision,
+    SampleControl, SampleTargetId, SampleTask,
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     sync::{Arc, mpsc},
     thread::JoinHandle,
 };
@@ -73,7 +73,10 @@ impl UserData for Task {
         });
     }
 }
-const MAX_PENDING: usize = 65_536;
+const MAX_TARGETS: usize = 65_536;
+// The core permits 64 incoming and 64 returned transactions; one additional
+// worker/ready payload is independent. Metadata is not a 64-target work queue.
+const TRANSACTION_CREDITS: usize = 2 * 64 + 1;
 const MAX_PATH_BYTES: usize = 8 << 20;
 const MAX_RESIDENT: usize = 256 << 20;
 const HEAD: usize = 8192;
@@ -161,6 +164,7 @@ struct Request {
     recipe: Recipe,
     rate: u32,
     dynamic: Option<sampler_kontakt::DynamicSources>,
+    head_budget: HeadBudget,
 }
 struct Response {
     id: u64,
@@ -179,9 +183,10 @@ impl Worker {
         let thread = std::thread::Builder::new()
             .name("uvi-sample-load".into())
             .spawn(move || {
+                let mut page = vec![[0.; 2]; sampler_core::PAGE_FRAMES];
                 while let Ok(r) = requests.recv() {
                     let id = r.id;
-                    let result = prepare(r);
+                    let result = prepare(r, &mut page);
                     if replies.send(Response { id, result }).is_err() {
                         break;
                     }
@@ -202,7 +207,10 @@ impl Drop for Worker {
         self.thread.take();
     }
 }
-fn prepare(r: Request) -> Result<(PreparedSampleRevision, Info), String> {
+fn prepare(
+    r: Request,
+    page: &mut [sampler_core::Frame],
+) -> Result<(PreparedSampleRevision, Info), String> {
     if r.status.cancelled() {
         return Err("sample load cancelled".into());
     }
@@ -280,20 +288,42 @@ fn prepare(r: Request) -> Result<(PreparedSampleRevision, Info), String> {
                 merged.push(range);
             }
         }
-        let mut heads = Vec::new();
+        revision
+            .asset()
+            .bind_head_budget(&r.head_budget)
+            .map_err(|e| e.to_string())?;
+        let mut builder = revision.asset().head_preparer().builder();
         for range in merged {
-            if r.status.cancelled() {
-                return Err("sample load cancelled".into());
+            let mut position = range.start;
+            while position < range.end {
+                if r.status.cancelled() {
+                    return Err("sample load cancelled".into());
+                }
+                let frames = &mut page[..(range.end - position).min(sampler_core::PAGE_FRAMES)];
+                reader.read(position, frames).map_err(|e| e.to_string())?;
+                if r.status.cancelled() {
+                    return Err("sample load cancelled".into());
+                }
+                builder.push(position, frames).map_err(|e| {
+                    if e == sampler_core::Error::Capacity {
+                        let budget = r.head_budget.status();
+                        format!(
+                            "dynamic sample head budget exceeded: limit={} held={} bytes",
+                            budget.limit_bytes, budget.held_bytes
+                        )
+                    } else {
+                        e.to_string()
+                    }
+                })?;
+                position += frames.len();
             }
-            let mut out = vec![[0.; 2]; range.len()];
-            reader
-                .read(range.start, &mut out)
-                .map_err(|e| e.to_string())?;
-            heads.push((range.start, out.into_boxed_slice()));
+        }
+        if r.status.cancelled() {
+            return Err("sample load cancelled".into());
         }
         revision
             .asset()
-            .set_ranges(heads)
+            .publish_ranges(builder.finish())
             .map_err(|e| e.to_string())?;
         // Recompile the byte receipt after heads were published off audio.
         let pcm = revision.asset().clone();
@@ -318,7 +348,8 @@ pub(super) struct SampleLoads {
     control: Option<SampleControl>,
     dynamic: Option<sampler_kontakt::DynamicSources>,
     worker: Option<Worker>,
-    pending: VecDeque<Pending>,
+    pending: BTreeMap<u64, Pending>,
+    pending_targets: BTreeMap<u32, u64>,
     active: Option<Pending>,
     ready: Option<(Pending, PreparedSampleRevision, Info)>,
     submitted: BTreeMap<u64, (Pending, Info)>,
@@ -341,7 +372,8 @@ impl SampleLoads {
             control: None,
             dynamic: None,
             worker: None,
-            pending: VecDeque::new(),
+            pending: BTreeMap::new(),
+            pending_targets: BTreeMap::new(),
             active: None,
             ready: None,
             submitted: BTreeMap::new(),
@@ -395,12 +427,35 @@ impl SampleLoads {
             );
             return;
         }
+        if pending.path.len() > 4096 {
+            Self::finish(shared, pending, Some("sample load path capacity exceeded"));
+            return;
+        }
+        // Supersession precedes admission: canceled metadata must not consume
+        // an authored target's slot or path bytes. Every old Task still receives
+        // its callback, with the same canceled status and object identity.
+        if let Some(older) = self.latest.get(&pending.target) {
+            older.cancel();
+        }
+        if let Some(id) = self.pending_targets.remove(&pending.target) {
+            let older = self
+                .pending
+                .remove(&id)
+                .expect("pending target index is exact");
+            older.status.cancel();
+            self.paths -= older.path.len();
+            Self::finish(shared, older, None);
+        }
+        let capacity = self
+            .recipes
+            .len()
+            .min(MAX_TARGETS)
+            .saturating_add(TRANSACTION_CREDITS);
         if self.pending.len()
             + self.submitted.len()
             + usize::from(self.active.is_some())
             + usize::from(self.ready.is_some())
-            >= MAX_PENDING
-            || pending.path.len() > 4096
+            >= capacity
             || self.paths.saturating_add(pending.path.len()) > MAX_PATH_BYTES
         {
             Self::finish(
@@ -410,12 +465,10 @@ impl SampleLoads {
             );
             return;
         }
-        // A newer request cancels pending predecessors for this exact authored target.
-        if let Some(older) = self.latest.insert(pending.target, pending.status.clone()) {
-            older.cancel();
-        }
+        self.latest.insert(pending.target, pending.status.clone());
         self.paths += pending.path.len();
-        self.pending.push_back(pending);
+        self.pending_targets.insert(pending.target, pending.id);
+        self.pending.insert(pending.id, pending);
     }
     pub fn poll(&mut self, shared: &Shared) {
         if let Some(control) = self.control.as_mut() {
@@ -430,6 +483,8 @@ impl SampleLoads {
                             shared.find("sampleInfo file geometry unsupported", error);
                         }
                         self.committed.insert(pending.target, info);
+                        Self::finish(shared, pending, None);
+                    } else if pending.status.cancelled() {
                         Self::finish(shared, pending, None);
                     } else {
                         Self::finish(
@@ -456,7 +511,8 @@ impl SampleLoads {
                     Ok((revision, info)) => self.ready = Some((pending, revision, info)),
                     Err(error) => {
                         self.paths -= pending.path.len();
-                        Self::finish(shared, pending, Some(&error));
+                        let canceled = pending.status.cancelled();
+                        Self::finish(shared, pending, (!canceled).then_some(error.as_str()));
                     }
                 }
             }
@@ -490,7 +546,8 @@ impl SampleLoads {
             return;
         }
         // One worker receives one request; metadata/decode/registry I/O never runs on Lua.
-        while let Some(pending) = self.pending.pop_front() {
+        while let Some((_, pending)) = self.pending.pop_first() {
+            self.pending_targets.remove(&pending.target);
             if pending.status.cancelled() {
                 self.paths -= pending.path.len();
                 Self::finish(shared, pending, None);
@@ -513,6 +570,7 @@ impl SampleLoads {
                 recipe,
                 rate: self.rate,
                 dynamic: self.dynamic.clone(),
+                head_budget: self.control.as_ref().unwrap().head_budget(),
             };
             match self
                 .worker
@@ -563,7 +621,7 @@ impl Drop for SampleLoads {
     fn drop(&mut self) {
         for p in self
             .pending
-            .iter()
+            .values()
             .chain(self.active.iter())
             .chain(self.ready.iter().map(|r| &r.0))
             .chain(self.submitted.values().map(|r| &r.0))
@@ -621,4 +679,100 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
 }
 pub(super) fn poll(host: &ScriptHost) {
     host.shared.sample_loads.borrow_mut().poll(&host.shared);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Memory {
+        cancel: Option<Arc<SampleTask>>,
+    }
+    impl sampler_kontakt::AssetSource for Memory {
+        fn open(&self) -> std::io::Result<sampler_kontakt::SampleReader> {
+            let cancel = self.cancel.clone();
+            Ok(sampler_kontakt::SampleReader::custom(
+                48000,
+                16,
+                move |_, out| {
+                    out.fill([0.5; 2]);
+                    if let Some(task) = &cancel {
+                        task.cancel();
+                    }
+                    Ok(())
+                },
+            ))
+        }
+    }
+    fn request(budget: HeadBudget, cancel_after_read: bool) -> Request {
+        let status = Arc::new(SampleTask::default());
+        let source: Arc<dyn sampler_kontakt::AssetSource> = Arc::new(Memory {
+            cancel: cancel_after_read.then(|| status.clone()),
+        });
+        let authority: SampleSource = Arc::new(move |_, _| {
+            Ok(SampleResource {
+                source: source.clone(),
+                reader: None,
+                playback: Playback::default(),
+                base_note: 60,
+                fine_tune: 0.,
+                geometry_error: None,
+                format_code: 1,
+                channels: 2,
+                bits: 16,
+                tempo: 0.,
+            })
+        });
+        Request {
+            id: 1,
+            target: 7,
+            path: "memory.wav".into(),
+            status,
+            source: authority,
+            recipe: Recipe {
+                playback: None,
+                reverse: false,
+            },
+            rate: 48000,
+            dynamic: Some(Default::default()),
+            head_budget: budget,
+        }
+    }
+    #[test]
+    fn actual_source_worker_enforces_exact_physical_head_quota_before_publication() {
+        for (limit, success) in [(0, false), (31, false), (32, true)] {
+            let budget = HeadBudget::new(limit);
+            let result = prepare(
+                request(budget.clone(), false),
+                &mut [[0.; 2]; sampler_core::PAGE_FRAMES],
+            );
+            assert_eq!(result.is_ok(), success);
+            match result {
+                Ok((revision, _)) => {
+                    assert_eq!(revision.asset().head_bytes(), 32);
+                    assert!(revision.asset().resident_frames().is_none());
+                    assert_eq!(budget.status().held_bytes, 32);
+                    drop(revision);
+                }
+                Err(error) => assert!(
+                    error.contains("dynamic sample head budget exceeded"),
+                    "{error}"
+                ),
+            }
+            assert_eq!(budget.status().held_bytes, 0);
+            assert_eq!(budget.status().peak_bytes, if success { 32 } else { 0 });
+        }
+    }
+    #[test]
+    fn cancellation_after_worker_read_releases_staging_without_source_registration_or_success() {
+        let budget = HeadBudget::new(32);
+        let request = request(budget.clone(), true);
+        let task = request.status.clone();
+        let error = prepare(request, &mut [[0.; 2]; sampler_core::PAGE_FRAMES])
+            .err()
+            .unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(task.cancelled() && !task.success());
+        assert_eq!(budget.status().held_bytes, 0);
+        assert_eq!(budget.status().peak_bytes, 0);
+    }
 }
