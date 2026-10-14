@@ -5,6 +5,8 @@ use crate::{
     resample::{DECIMATION_REACH, Kernel, MAX_STEP, MIN_STEP},
 };
 
+pub(super) mod reuse;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
     #[default]
