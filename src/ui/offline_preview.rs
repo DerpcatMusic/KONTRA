@@ -13,6 +13,11 @@ const PAGE_LIMIT: usize = 16;
 const PREPARE_LIMIT: Duration = Duration::from_secs(30);
 const MAX_SIDE: f64 = 2048.;
 
+struct Painted {
+    png_hex: String,
+    timings: Value,
+}
+
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -32,10 +37,14 @@ fn paint(
     values: &mut ir_view::Values,
     width: u16,
     height: u16,
-) -> Result<String, &'static str> {
+) -> Result<Painted, &'static str> {
     let mut ui = theme::ui();
+    let (mut build_ms, mut layout_ms)=(0.,0.);
     for _ in 0..2 {
+        let started=Instant::now();
         let view = ir_view::view(&mut ui, face, page, assets, mode, scale, values);
+        build_ms+=started.elapsed().as_secs_f64()*1000.;
+        let started=Instant::now();
         ui.frame(
             view,
             Some(Size::new(width.into(), height.into())),
@@ -43,13 +52,21 @@ fn paint(
             1. / 60.,
         )
         .map_err(|_| "UI frame failed; authored payload omitted")?;
+        layout_ms+=started.elapsed().as_secs_f64()*1000.;
     }
-    encode_scene(&ui, width, height)
+    let mut painted=encode_scene(&ui, width, height)?;
+    painted.timings["view_build_ms"]=json!(build_ms);
+    painted.timings["frame_layout_ms"]=json!(layout_ms);
+    painted.timings["frames"]=json!(2);
+    Ok(painted)
 }
 
-fn encode_scene(ui: &Ui, width: u16, height: u16) -> Result<String, &'static str> {
+fn encode_scene(ui: &Ui, width: u16, height: u16) -> Result<Painted, &'static str> {
+    let started=Instant::now();
     let mut context = vello::vello_cpu::RenderContext::new(width, height);
     let mut resources = vello::vello_cpu::Resources::default();
+    let setup_ms=started.elapsed().as_secs_f64()*1000.;
+    let started=Instant::now();
     vello::paint(
         &mut vello::Cpu {
             ctx: &mut context,
@@ -60,14 +77,20 @@ fn encode_scene(ui: &Ui, width: u16, height: u16) -> Result<String, &'static str
         vello::kurbo::Affine::IDENTITY,
     )
     .map_err(|_| "CPU painting failed; authored payload omitted")?;
+    let commands_ms=started.elapsed().as_secs_f64()*1000.;
+    let started=Instant::now();
     context.flush();
     let mut pixels = vello::vello_cpu::Pixmap::new(width, height);
     context.render(&mut pixels, &mut resources);
+    let raster_ms=started.elapsed().as_secs_f64()*1000.;
+    let started=Instant::now();
     let rgba: Vec<u8> = pixels
         .take_unpremultiplied()
         .iter()
         .flat_map(|p| [p.r, p.g, p.b, p.a])
         .collect();
+    let extract_ms=started.elapsed().as_secs_f64()*1000.;
+    let started=Instant::now();
     let mut png_bytes = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png_bytes, u32::from(width), u32::from(height));
@@ -79,7 +102,10 @@ fn encode_scene(ui: &Ui, width: u16, height: u16) -> Result<String, &'static str
             .map_err(|_| "PNG encoding failed")?;
         writer.finish().map_err(|_| "PNG finalization failed")?;
     }
-    Ok(hex(&png_bytes))
+    let png_ms=started.elapsed().as_secs_f64()*1000.;
+    let started=Instant::now();
+    let png_hex=hex(&png_bytes);
+    Ok(Painted{png_hex,timings:json!({"renderer_setup_ms":setup_ms,"scene_commands_ms":commands_ms,"cpu_raster_ms":raster_ms,"rgba_extract_ms":extract_ms,"png_encode_ms":png_ms,"hex_encode_ms":started.elapsed().as_secs_f64()*1000.})})
 }
 
 /// Returns ephemeral PNG pixels and safe structured observations. The caller owns
@@ -101,6 +127,7 @@ pub fn render(
     let resolve_started = Instant::now();
     let face = ir_view::resolved(face);
     let resolve_ms = resolve_started.elapsed().as_secs_f64() * 1000.;
+    let observations_started=Instant::now();
     let widgets: Vec<_> = face.widgets.iter().enumerate().map(|(index, widget)| {
         let rect = face.page_rect(ir::WidgetRef(index));
         let page = &face.pages[widget.page.0];
@@ -109,6 +136,7 @@ pub fn render(
             "outside_page":rect.x<0. || rect.y<0. || rect.x+rect.width>page.size.width || rect.y+rect.height>page.size.height,
             "zero_size":(rect.width==0. || rect.height==0.) && !matches!(widget.kind,ir::Kind::Panel)})
     }).collect();
+    let geometry_ms=observations_started.elapsed().as_secs_f64()*1000.;
     let mut assets = ir_view::Assets::default();
     let mut shots = Vec::new();
     let mut passive_changes = Vec::new();
@@ -152,10 +180,10 @@ pub fn render(
                     height,
                 )
             }));
-            let (png_hex, error) = match result {
-                Ok(Ok(png)) => (Some(png), None),
-                Ok(Err(error)) => (None, Some(error)),
-                Err(_) => (None, Some("CPU renderer panic; authored payload omitted")),
+            let (png_hex, paint_timings, error) = match result {
+                Ok(Ok(png)) => (Some(png.png_hex), png.timings, None),
+                Ok(Err(error)) => (None, Value::Null, Some(error)),
+                Err(_) => (None, Value::Null, Some("CPU renderer panic; authored payload omitted")),
             };
             let paint_and_encode_ms = paint_started.elapsed().as_secs_f64() * 1000.;
             for (id, value) in &values {
@@ -170,6 +198,7 @@ pub fn render(
             shots.push(json!({"page":page,"presentation":format!("{mode:?}"),"width":width,"height":height,"scale":scale,
                 "pending_assets":pending,"asset_failures":assets.failures(),"prepared_bytes":assets.bytes(),
                 "preparation_ms":preparation_ms,"paint_and_encode_ms":paint_and_encode_ms,
+                "paint_timings":paint_timings,
                 "status":if error.is_some(){"failed"}else if pending!=0 || !assets.failures().is_empty(){"partial"}else{"ok"},
                 "error":error,"png_hex":png_hex}));
         }
@@ -200,7 +229,7 @@ pub fn render(
         "assets":assets.probes(),"asset_probe_dropped":assets.probe_dropped(),
         "asset_scope":"Bounded request history across the rendered pages and presentations, not an existence verdict for unrequested assets",
         "resource_program_ownership":"Explicit selected program through the production asset worker",
-        "timings":{"resolve_ms":resolve_ms,"total_ms":started.elapsed().as_secs_f64()*1000.,"resource_discovery_ms":scan.discovery_us as f64/1000.,"resource_read_ms":scan.read_us as f64/1000.,"resource_decode_ms":scan.decode_us as f64/1000.},
+        "timings":{"resolve_ms":resolve_ms,"geometry_observations_ms":geometry_ms,"total_ms":started.elapsed().as_secs_f64()*1000.,"resource_discovery_ms":scan.discovery_us as f64/1000.,"resource_read_ms":scan.read_us as f64/1000.,"resource_decode_ms":scan.decode_us as f64/1000.},
         "asset_summary":{"lookups":scan.lookups,"found":scan.lookup_ok,"missing":scan.lookup_missing,"ambiguous":scan.lookup_ambiguous,
             "invalid":scan.lookup_invalid,"corrupt":scan.lookup_corrupt,"read_failed":scan.lookup_read,"unavailable":scan.lookup_unavailable,"limit":scan.lookup_limit,
             "decodes":scan.decodes,"decode_ok":scan.decode_ok,"fonts":scan.fonts,"font_ok":scan.font_ok,"encoded_bytes":scan.encoded_bytes,
@@ -296,15 +325,17 @@ fn render_native(
             encode_scene(&ui, width, height)
         }))
     });
-    let (png_hex, error) = match png {
-        Some(Ok(Ok(png))) => (Some(png), None),
-        Some(Ok(Err(error))) => (None, Some(error)),
+    let (png_hex, paint_timings, error) = match png {
+        Some(Ok(Ok(png))) => (Some(png.png_hex), png.timings, None),
+        Some(Ok(Err(error))) => (None, Value::Null, Some(error)),
         Some(Err(_)) => (
             None,
+            Value::Null,
             Some("NativeUI CPU painting panic; authored payload omitted"),
         ),
         None => (
             None,
+            Value::Null,
             frame_error.or(Some(
                 "NativeUI did not reach an authored frame within the bounded preparation window",
             )),
@@ -325,7 +356,7 @@ fn render_native(
     };
     let shot = json!({"page":0,"presentation":"Bitmap","width":width,"height":height,"scale":scale,"status":status,"png_hex":png_hex,
         "pending_assets":pending,"asset_failures":failures,"prepared_bytes":native.bytes(),"preparation_ms":preparation_ms,
-        "paint_and_encode_ms":paint_and_encode_ms,"error":error});
+        "paint_and_encode_ms":paint_and_encode_ms,"paint_timings":paint_timings,"error":error});
     let mut vector = shot.clone();
     vector["presentation"] = json!("Vector");
     vector["presentation_scope"] = json!(

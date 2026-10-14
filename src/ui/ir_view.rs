@@ -896,6 +896,9 @@ pub fn view_state(
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) {
         layers.push(popup);
     }
+    if let Some(popup) = value_popup(ui, namespace, face, scale, values) {
+        layers.push(popup);
+    }
     stack(layers)
         .w(w)
         .h(h)
@@ -1222,7 +1225,11 @@ pub(super) fn widget_state(
         .unwrap_or(initial);
     // KSP responsive menu "on" is the open popup, not its selected value.
     // Port the state selection from v1 0cb7a8a0:src/ui/perf_view.rs.
-    let on = if matches!(wd.kind, Kind::Menu { .. }) { input.menu == Some(n) } else { v > 0.5 };
+    let on = if matches!(wd.kind, Kind::Menu { .. }) {
+        input.menu == Some(n)
+    } else if face.source == ir::Source::FalconLua && matches!(wd.kind, Kind::Button { momentary: true }) {
+        can_edit && held
+    } else { v > 0.5 };
     let state = usize::from(on)
         + if ui.get(id.as_str()).held {
             2
@@ -1243,7 +1250,7 @@ pub(super) fn widget_state(
     let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
-        Some(s) if (bitmap || !own_face) && s.color.a > 0 => Fill::from(colour(s.color)),
+        Some(s) if bitmap || !own_face => Fill::from(colour(s.color)),
         _ if !own_face && light_under(face, assets, n) => Fill::from(Color::srgb(0.1, 0.1, 0.1)),
         _ => Fill::from(Role::Ink),
     };
@@ -1490,7 +1497,14 @@ pub(super) fn widget_state(
                 .find(|i| f64::from(i.value) == v)
                 .map(|i| i.text.clone())
                 .unwrap_or_default();
-            match strip {
+            let content = |label| {
+                let mut parts = vec![words(label).flex(1).min_w(0)];
+                if wd.menu_arrow && !wd.menu_cycle {
+                    parts.push(glyph(Icon::Down, TIGHT * 2. * scale, wd.colors.arrow.map_or(secondary(), |c| Fill::from(colour(c)))));
+                }
+                row(parts).align(Align::Center).pad((TIGHT * scale, 0.))
+            };
+            let menu = match strip {
                 Some(p) => stack![
                     block(w, h).radius(0).fill(
                         picture(
@@ -1505,29 +1519,22 @@ pub(super) fn widget_state(
                         )
                         .unwrap_or(Fill::from(Role::Field))
                     ),
-                    row![words(label)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    content(label)
                         .w(w)
                         .h(h)
                 ],
-                // An authored Lua menu has its own backdrop (often a blank one over
-                // the page art): text only, never the generic tinted box and caret.
+                // Authored background images remain the menu's backdrop.
                 None if face.source == ir::Source::FalconLua
                     && wd.image(Use::Background).is_some() =>
                 {
-                    row![words(label).flex(1).min_w(0)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    content(label)
                 }
-                None => row![
-                    words(label).flex(1).min_w(0),
-                    glyph(Icon::Down, TIGHT * 2. * scale, secondary())
-                ]
-                .align(Align::Center)
-                .pad((TIGHT * scale, 0.))
-                .fill(Role::Ink.alpha(0.08)),
-            }
+                None => content(label).fill(Role::Ink.alpha(0.08)),
+            };
+            let menu = if let Some(ink) = wd.colors.outline {
+                menu.stroke(colour(ink)).stroke_width(scale)
+            } else { menu };
+            menu
             .focusable()
             .a11y(A11y::Button)
         }
@@ -2258,6 +2265,32 @@ pub(super) fn widget_state(
         }
         _ => el,
     }
+}
+
+/// Non-interactive value readout pinned to the active authored control. The
+/// source chooses whether it exists; it never replaces an authored tooltip.
+fn value_popup(ui: &Ui, namespace: &str, face: &Interface, scale: f64, values: &Values) -> Option<El> {
+    let (n, wd) = face.widgets.iter().enumerate().find_map(|(index, wd)| {
+        let n = WidgetRef(index);
+        if wd.popup_display != Some(true) || !wd.enabled || !face.visible(n)
+            || !matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. }) { return None; }
+        let response=ui.get(target(namespace,n));
+        (response.held || response.dragged || response.wheel != Vec2::ZERO || !ui.keys(target(namespace,n)).is_empty()).then_some((n,wd))
+    })?;
+    let Binding::Control(control) = wd.binding else { return None; };
+    let (range, display) = match &wd.kind {
+        Kind::Knob { range, display } => (range, display.clone()),
+        Kind::Slider { range, .. } => (range, ir::Display::default()),
+        _ => return None,
+    };
+    let value=values.get(&control).copied().unwrap_or(range.default);
+    let shown=wd.value_text.clone().unwrap_or_else(|| display.format_value(value,range.step==Some(1.),face.source));
+    Some(stack![caption(shown).fill(Role::Ink)]
+        .anchor(Align::Start,Align::Start)
+        .pad((SPACE*scale,TIGHT*scale))
+        .fill(Role::Raised).radius(4.)
+        .pin(Pin::to(target(namespace,n)).area(Area::BottomStart).gap(TIGHT*scale).fallback(Area::TopStart))
+        .id(format!("/{}-value-popup",target(namespace,n))))
 }
 
 #[allow(clippy::too_many_arguments)]

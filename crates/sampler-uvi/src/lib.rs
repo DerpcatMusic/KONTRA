@@ -10,8 +10,8 @@
 
 #[cfg(feature = "library-access")]
 mod access;
-pub mod arpeggiator;
 mod access_error;
+pub mod arpeggiator;
 mod audio;
 #[cfg(feature = "library-access")]
 mod bank;
@@ -1722,6 +1722,20 @@ pub fn inspect_decoded_scripted_program(
     files: script::Scripts,
     origin: ScriptedOrigin<'_>,
 ) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
+    inspect_decoded_scripted_program_with_options(text, files, origin, true, false)
+}
+
+/// Same source/resource authority, with explicit coverage and profiling choices.
+/// UI preview uses the ordinary non-coverage constructor; source audits retain
+/// line coverage. Profiling changes observations, never the initializer count.
+#[cfg(feature = "library-access")]
+pub fn inspect_decoded_scripted_program_with_options(
+    text: String,
+    files: script::Scripts,
+    origin: ScriptedOrigin<'_>,
+    coverage: bool,
+    profile: bool,
+) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
     let (source, path, files) = match origin {
         ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program), files),
         ScriptedOrigin::BankWithResources(bank, program) => (
@@ -1732,7 +1746,8 @@ pub fn inspect_decoded_scripted_program(
             (Source::Disk(dir.into()), path, bind_loose_script_images(files, dir))
         }
     };
-    let ((mut instrument, ..), host) = initialized_translation(text, files, source, path, true)?;
+    let ((mut instrument, ..), host) =
+        initialized_translation_profiled(text, files, source, path, coverage, profile)?;
     note_script(&host, &mut instrument);
     Ok((instrument, host))
 }
@@ -1745,19 +1760,45 @@ fn initialized_translation(
     path: &Path,
     inspected: bool,
 ) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    initialized_translation_profiled(text, files, source, path, inspected, false)
+}
+
+#[cfg(feature = "library-access")]
+fn initialized_translation_profiled(
+    text: String,
+    files: script::Scripts,
+    source: Source,
+    path: &Path,
+    inspected: bool,
+    profile: bool,
+) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
-    let host = if inspected {
+    let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
+    let host = if profile {
+        script::ScriptHost::new_profiled(&text, files.clone(), script::Config::default(), inspected)
+    } else if inspected {
         script::ScriptHost::new_inspected(&text, files.clone(), script::Config::default())
     } else {
         script::ScriptHost::new(&text, files.clone(), script::Config::default())
     }
     .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
+    if profile {
+        host.profile_record("script_promotion", promote_ms);
+    }
+    let _translation = host.profile_span("post_init_overlays_and_ir_translation");
+    let overlays = host.profile_span("parameter_overlay_export");
+    let insert_overrides = host.insert_overrides();
+    let folded_writes = host.folded_writes();
+    drop(overlays);
     let (mut instrument, locations, groups, inserts) =
-        translate_initialized(&text, source, &host.insert_overrides(), &host.folded_writes())
-            .map_err(|error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))))?;
+        translate_initialized(&text, source, &insert_overrides, &folded_writes).map_err(
+            |error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))),
+        )?;
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = files.sources();
     }
+    drop(_translation);
     Ok(((instrument, locations, groups, inserts), host))
 }
 

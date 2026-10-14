@@ -3088,7 +3088,7 @@ fn main() {
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
                  \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
-                 \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render]"
+                 \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render] [--profile-init]"
             );
             2
         }
