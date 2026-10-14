@@ -123,6 +123,8 @@ pub enum AmpModel {
     Cabinet,
     /// 0x58 Cry Wah: pedal, mono.
     CryWah,
+    /// 0x6f Big Fuzz: pedal (sustain, tone, bass, treble, mono).
+    BigFuzz,
     /// 0x6e Fuzz: pedal (amount, bass, treble, mono).
     Fuzz,
     /// 0x23 Twang (Fx4BB, apply 0x140adf660): volume, treble, mid, bass, bright, mono.
@@ -532,6 +534,7 @@ impl Config {
             Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
             Self { curve: Curve::Amp(Amp { model: AmpModel::CryWah, .. }), .. } => "Cry Wah",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::BigFuzz, .. }), .. } => "Big Fuzz",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Fuzz, .. }), .. } => "Fuzz",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Twang, .. }), .. } => "Twang",
             Self { curve: Curve::Amp(Amp { model: AmpModel::AcBox, .. }), .. } => "AC Box",
