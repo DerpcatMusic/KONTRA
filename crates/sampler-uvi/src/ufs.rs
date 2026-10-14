@@ -465,21 +465,33 @@ impl Ufs {
     pub fn decode_directory(&self, namespace: &[u8]) -> Result<Directory> {
         // The product cache is metadata-only and remains outside scanner runs.
         // Unit fixtures call cache load/store explicitly in their owned directory.
+        let read_only = std::env::var_os("KONTRA_UFS_CACHE_READ_ONLY").is_some();
         if !cfg!(test)
-            && let Some(root) = cache::root(std::env::var_os("KONTRA_SCAN_ACTIVE").is_some())
+            && let Some(root) =
+                cache::root(std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() && !read_only)
         {
-            return self.decode_directory_cached(namespace, &root);
+            return self.decode_directory_cached_policy(namespace, &root, !read_only);
         }
         self.decode_directory_window(namespace, HeaderWindow::configured_size())
     }
     fn decode_directory_cached(&self, namespace: &[u8], root: &Path) -> Result<Directory> {
+        self.decode_directory_cached_policy(namespace, root, true)
+    }
+    fn decode_directory_cached_policy(
+        &self,
+        namespace: &[u8],
+        root: &Path,
+        write: bool,
+    ) -> Result<Directory> {
         if let Some(stamp) = cache::stamp(self, namespace) {
             if let Some(directory) = cache::load(root, self, namespace, stamp) {
                 return Ok(directory);
             }
             let directory =
                 self.decode_directory_window(namespace, HeaderWindow::configured_size())?;
-            cache::store(root, self, namespace, stamp, &directory);
+            if write {
+                cache::store(root, self, namespace, stamp, &directory);
+            }
             return Ok(directory);
         }
         self.decode_directory_window(namespace, HeaderWindow::configured_size())

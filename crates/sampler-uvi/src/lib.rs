@@ -13,6 +13,7 @@ mod access;
 mod access_error;
 pub mod arpeggiator;
 mod audio;
+mod sample_metadata;
 #[cfg(feature = "library-access")]
 mod bank;
 #[cfg(feature = "scan")]

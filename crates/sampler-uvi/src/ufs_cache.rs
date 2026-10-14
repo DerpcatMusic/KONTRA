@@ -639,6 +639,34 @@ mod tests {
         assert!(root(true).is_none());
     }
     #[test]
+    fn explicit_read_only_cache_miss_parses_without_creating_cache_files() {
+        let f = Fixture::new();
+        let path = f.0.join("bank.ufs");
+        fixture_bank(&path);
+        let root = f.0.join("read-only");
+        let ufs = Ufs::open(&path).unwrap();
+        let namespace = b"cache namespace";
+        let direct = ufs.decode_directory_window(namespace, 0).unwrap();
+        let observed = ufs
+            .decode_directory_cached_policy(namespace, &root, false)
+            .unwrap();
+        assert!(direct == observed);
+        assert!(!root.exists());
+        let key = stamp(&ufs, namespace).unwrap();
+        store(&root, &ufs, namespace, key, &direct);
+        let file = entry(&root, key);
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert!(
+            ufs.decode_directory_cached_policy(namespace, &root, false)
+                .unwrap()
+                == direct
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            before
+        );
+    }
+    #[test]
     fn bounded_roundtrip_excludes_payloads_keys_and_rejects_invalid_cache_data() {
         let f = Fixture::new();
         let path = f.0.join("bank.ufs");
