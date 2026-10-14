@@ -237,7 +237,7 @@ fn picture_size_is_one_frame_of_the_png() {
 }
 
 #[test]
-fn vendor_control_pars_keep_their_names() {
+fn nks_metadata_keeps_symbolic_names_without_view_warnings() {
     let source = r#"on init
         declare ui_knob $K(0, 10, 1)
         set_control_par(get_ui_id($K), $CONTROL_PAR_NKS_TYPE, 1)
@@ -251,12 +251,17 @@ fn vendor_control_pars_keep_their_names() {
     };
     let script =
         sampler_ksp::compile_with(source, 48000, limits, &[], &Default::default()).unwrap();
-    let ui = script.ui(&|_| None).unwrap();
-    let features: Vec<_> = ui.unsupported.iter().map(|u| u.feature.as_str()).collect();
+    let widget = &script.model().interface.widgets[0];
     assert_eq!(
-        features,
-        ["$CONTROL_PAR_NKS_TYPE", "$CONTROL_PAR_NKS_STR_VALUES[]"]
+        widget.properties.get("$CONTROL_PAR_NKS_TYPE"),
+        Some(&sampler_ksp::model::Value::Int(1))
     );
+    assert_eq!(
+        widget.indexed_properties["$CONTROL_PAR_NKS_STR_VALUES"].get(&0),
+        Some(&sampler_ksp::model::Value::Text("a".into()))
+    );
+    let ui = script.ui(&|_| None).unwrap();
+    assert!(ui.unsupported.is_empty(), "hardware mapping has no view effect");
 }
 
 #[test]
