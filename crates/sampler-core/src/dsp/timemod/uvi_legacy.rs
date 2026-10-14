@@ -109,7 +109,7 @@ mod tests {
     fn unit(kind: UviLegacyKind, time: [f32; 2], feedback: f32, spread: f32) -> Config {
         let mut line = Line::single(DelayTime::Ms(0.), 10_000.);
         line.native = Native::UviLegacyDelay(UviLegacyDelay { kind, time, synced: false, feedback, cutoff: 0., spread });
-        Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. }
+        Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. }
     }
 
     /// `0x14124f060` Catmull-Rom vector: p = [0, 1, 0, 0] at t = 0.25 reads

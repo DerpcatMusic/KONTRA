@@ -324,13 +324,13 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             // effect's output is wet only; the slot's dry level mixes.
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
             line.native = Native::TwinDelay(t);
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Psyche(p) => {
             // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
             line.native = Native::PsycheDelay(p);
-            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Flanger { depth, feedback, speed, phase, color, unit } => {
             if !(unit_interval(&[depth, feedback, phase]) && speed.is_finite() && speed >= 0. && color.is_finite()) {
