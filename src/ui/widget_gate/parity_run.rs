@@ -533,8 +533,12 @@ fn parity_run() {
             continue;
         };
         gate.engine_outcomes.clear();
+        let first_fault = gate.fault_events.len();
+        gate.faults();
         let (sub_min, keys_min, low) = gate.sweep(at, false, key);
         let (sub_max, keys_max, high) = gate.sweep(at, true, key);
+        let faults = gate.faults();
+        let fault = gate.fault_events.get(first_fault).map(|f| format!("{} {}", f["callback"], f["outcome"]));
         let writes = Writes::of(&std::mem::take(&mut gate.engine_outcomes));
         let (audio_verdict, delta) = noise.verdict(&low, &high);
         let mut keys: Vec<String> = keys_min.into_iter().chain(keys_max).collect();
@@ -542,10 +546,11 @@ fn parity_run() {
         keys.dedup();
         let routes: Vec<String> = keys.iter().filter_map(|k| route_of(k)).collect();
         let verdict = if sub_min + sub_max == 0 { "ui-not-submitted" } else if keys.is_empty() { "engine-unchanged" }
+            else if faults > 0 && audio_verdict == "moves-but-silent-change" { "script-fault" }
             else { writes.verdict(audio_verdict, !routes.is_empty()) };
         let owners: Vec<String> = keys.iter().map(|k| owner_of(&gate, instrument.as_deref(), k)).collect();
         controls.push(json!({"id": id, "kind": kind, "verdict": verdict, "at": [at.x.round(), at.y.round()], "submitted": sub_min + sub_max,
-            "engine_keys": keys.len(), "owners": owners, "routes": routes, "engine_writes": writes.json(), "audio": delta}));
+            "engine_keys": keys.len(), "owners": owners, "routes": routes, "engine_writes": writes.json(), "faults": faults, "first_fault": fault, "audio": delta}));
     }
     // Host automation the instrument assigns.
     let mut host = Vec::new();
