@@ -327,9 +327,11 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
                 );
             }
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
+            eprintln!("stream policy: head_frames {} pool_bytes {} latency_p50_us {} latency_p95_us {} latency_p99_us {} horizon_frames {horizon}", report.head_frames, report.pool_bytes, report.latency_p50.as_micros(), report.latency_p95.as_micros(), report.latency_p99.as_micros());
             let mut rt = Runtime::new(plan, limits)
                 .map_err(fail)?
                 .with_stream_cache(cache);
+            rt.set_stream_horizon(horizon).map_err(fail)?;
             rt.set_cold_starts(true);
             if let Some(fuel) = std::env::var("PERF_BLOCK_FUEL")
                 .ok()
@@ -498,6 +500,9 @@ fn render(
             horizon,
         } => {
             if let Some(h) = horizon {
+                // Production V2 advances due/bootstrap callbacks before asking
+                // for pages, without advancing the sample clock or refilling fuel.
+                if rt.render(&mut []).is_err() { EVENT_ERRORS.set(EVENT_ERRORS.get() + 1); }
                 let t = Instant::now();
                 let r = rt.service_streaming(*h);
                 service = t.elapsed().as_nanos() as u64;
