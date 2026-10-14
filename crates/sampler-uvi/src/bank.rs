@@ -19,8 +19,8 @@ use std::{
 /// warm, 13 s cold), so every preset switch within a bank paid it again.
 struct Recent {
     ufs: Arc<Ufs>,
-    directory: Directory,
-    paths: HashMap<String, Option<usize>>,
+    directory: Arc<Directory>,
+    paths: Arc<HashMap<String, Option<usize>>>,
     content_key: Option<u64>,
 }
 static RECENT: Mutex<Vec<Recent>> = Mutex::new(Vec::new());
@@ -33,13 +33,14 @@ fn recent<T>(ufs: &Ufs, f: impl FnOnce(&mut Recent) -> T) -> Option<T> {
 }
 
 /// An open bank. Deliberately not Debug: it holds access values.
+#[derive(Clone)]
 pub struct Bank {
     ufs: Arc<Ufs>,
-    directory: Directory,
+    directory: Arc<Directory>,
     content_key: Option<u64>,
     program_namespace: Vec<u8>,
     /// Duplicate paths remain ambiguous, as in v1's ResourceIndex.
-    paths: HashMap<String, Option<usize>>,
+    paths: Arc<HashMap<String, Option<usize>>>,
 }
 
 /// Decode clear and protected programs through the native PasswordV2 path.
@@ -154,9 +155,9 @@ impl Bank {
         let span = sampler_kontakt::audit::Span::new("uvi_directory_namespace");
         let namespaces = Namespaces::native();
         let program_namespace = namespaces.program;
-        if let Some((ufs, directory, paths)) =
-            recent(&ufs, |r| (r.ufs.clone(), r.directory.clone(), r.paths.clone()))
-        {
+        if let Some((ufs, directory, paths)) = recent(&ufs, |r| {
+            (r.ufs.clone(), r.directory.clone(), r.paths.clone())
+        }) {
             return Ok(Self {
                 ufs,
                 directory,
@@ -178,6 +179,11 @@ impl Bank {
                     .or_insert(Some(index));
             }
         }
+        // Share the immutable namespace with all reopened readers. Cloning
+        // every member/footer/name and the lookup map made a cache hit O(bank
+        // size), and duplicated the namespace again on its first admission.
+        let directory = Arc::new(directory);
+        let paths = Arc::new(paths);
         let ufs = Arc::new(ufs);
         let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
         recent.retain(|r| !r.ufs.same_bank(&ufs));
@@ -231,6 +237,19 @@ impl Bank {
             }
         }
         scripts
+    }
+
+    /// The same selected-bank image authority used by playback and inspection.
+    /// Clones share immutable bank metadata; image dimension caching belongs
+    /// to this script host rather than a process-global source namespace.
+    pub(crate) fn bind_script_images(
+        &self,
+        program: &str,
+        files: crate::script::Scripts,
+    ) -> crate::script::Scripts {
+        let bank = self.clone();
+        let program = program.to_owned();
+        files.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten())
     }
 
     /// The bytes of the member at bank-root `path` (a script, say).
@@ -293,18 +312,10 @@ impl Bank {
         } else {
             let normalized = normalize(path).map_err(|_| E::InvalidPath)?;
             let suffix = format!("/{}", normalized.to_ascii_lowercase());
-            let mut matches = self.directory.files.iter().filter(|m| {
-                m.path
-                    .as_ref()
-                    .is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
-            });
-            let Some(first) = matches.next() else {
+            let Some(index) = ui_suffix_index(&self.paths, &suffix)? else {
                 return Ok(None);
             };
-            if matches.next().is_some() {
-                return Err(E::Ambiguous);
-            };
-            first
+            &self.directory.files[index]
         };
         if member.size > 32 << 20 {
             return Err(E::Limit);
@@ -389,6 +400,22 @@ impl Bank {
         }
         resolve(&self.directory, &path)
     }
+}
+
+/// Namespace keys are folded once when the bank is admitted. Missing-resource
+/// probes must not allocate a fresh lowercase string for every bank member.
+fn ui_suffix_index(
+    paths: &HashMap<String, Option<usize>>,
+    suffix: &str,
+) -> std::result::Result<Option<usize>, crate::ResourceError> {
+    let mut matches = paths.iter().filter(|(path, _)| path.ends_with(suffix));
+    let Some((_, index)) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(crate::ResourceError::Ambiguous);
+    }
+    index.map(Some).ok_or(crate::ResourceError::Ambiguous)
 }
 
 /// Preserve the actual module directory first, then search its package roots.
@@ -692,7 +719,7 @@ mod tests {
             bank.read(&bank.directory.files[1]).is_err(),
             "content access still requires a supplied key"
         );
-        bank.directory.files[0].mode = Protection::Content;
+        Arc::make_mut(&mut bank.directory).files[0].mode = Protection::Content;
         assert!(
             bank.program("preset.uvip").is_err(),
             "metadata census must refuse content-protected programs"
@@ -744,17 +771,100 @@ mod tests {
                 .as_nanos()
         ));
         let text = |bank: &Bank| bank.program("preset.uvip").unwrap().0;
-        let (first, first_xml) = clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"One\"/></UVI4>");
+        let (first, first_xml) =
+            clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"One\"/></UVI4>");
         std::fs::write(&path, first).unwrap();
-        assert_eq!(text(&Bank::open(&path).unwrap()).as_bytes(), first_xml);
+        let first = Bank::open(&path).unwrap();
+        assert_eq!(text(&first).as_bytes(), first_xml);
         let reopened = Bank::open(&path).unwrap();
-        assert!(recent(&reopened.ufs, |_| ()).is_some(), "reopen hits the recent bank");
+        assert!(
+            Arc::ptr_eq(&first.directory, &reopened.directory),
+            "warm readers share the whole immutable namespace"
+        );
+        assert!(
+            Arc::ptr_eq(&first.paths, &reopened.paths),
+            "warm readers share the immutable lookup map"
+        );
+        assert!(
+            recent(&reopened.ufs, |_| ()).is_some(),
+            "reopen hits the recent bank"
+        );
         assert_eq!(text(&reopened).as_bytes(), first_xml);
         let (second, second_xml) =
             clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"Second program\"/></UVI4>");
         std::fs::write(&path, second).unwrap();
-        assert_eq!(text(&Bank::open(&path).unwrap()).as_bytes(), second_xml);
+        let rewritten = Bank::open(&path).unwrap();
+        assert_eq!(text(&rewritten).as_bytes(), second_xml);
+        assert!(
+            !Arc::ptr_eq(&first.directory, &rewritten.directory),
+            "rewritten bank cannot reuse stale members"
+        );
+        assert!(
+            !Arc::ptr_eq(&first.paths, &rewritten.paths),
+            "rewritten bank cannot reuse stale paths"
+        );
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Numeric-only evidence for an installed bank; no program/sample payload
+    /// is decoded. The legacy column reconstructs the removed deep clones and
+    /// is not an archived pre-change executable measurement.
+    #[test]
+    #[ignore = "requires KONTRA_PROFILE_BANK, owned bank metadata and an uncontended timing window"]
+    fn owned_bank_metadata_cache_profile() {
+        let path = std::env::var_os("KONTRA_PROFILE_BANK").expect("owned bank path");
+        let path = Path::new(&path);
+        let cold_start = std::time::Instant::now();
+        let first = Bank::open_metadata(path).unwrap();
+        let cold_ms = cold_start.elapsed().as_secs_f64() * 1000.;
+        let mut warm_ms = Vec::new();
+        let mut legacy_clone_ms = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            let reopened = Bank::open_metadata(path).unwrap();
+            warm_ms.push(start.elapsed().as_secs_f64() * 1000.);
+            assert!(Arc::ptr_eq(&first.directory, &reopened.directory));
+            assert!(Arc::ptr_eq(&first.paths, &reopened.paths));
+            let start = std::time::Instant::now();
+            let directory = std::hint::black_box(reopened.directory.as_ref().clone());
+            let paths = std::hint::black_box(reopened.paths.as_ref().clone());
+            legacy_clone_ms.push(start.elapsed().as_secs_f64() * 1000.);
+            assert_eq!(directory.files.len(), first.directory.files.len());
+            assert_eq!(paths.len(), first.paths.len());
+        }
+        let mut ui_path_extensions = std::collections::BTreeMap::new();
+        for path in first.paths.keys() {
+            if let Some((_, extension)) = path.rsplit_once('.')
+                && matches!(
+                    extension,
+                    "png"
+                        | "jpg"
+                        | "jpeg"
+                        | "webp"
+                        | "svg"
+                        | "ttf"
+                        | "otf"
+                        | "bmp"
+                        | "gif"
+                        | "nui"
+                        | "lua"
+                        | "txt"
+                )
+            {
+                *ui_path_extensions.entry(extension).or_insert(0usize) += 1;
+            }
+        }
+        println!(
+            "BANK_METADATA_PROFILE {}",
+            serde_json::json!({
+                "schema":1, "scope":"metadata-only; elapsed wall time; legacy column is reconstructed deep-clone cost",
+                "file_bytes":std::fs::metadata(path).unwrap().len(),
+                "members":first.directory.files.len(), "records":first.directory.records.len(), "lookup_paths":first.paths.len(),
+                "cold_ms":cold_ms,"warm_ms":warm_ms,"legacy_clone_ms":legacy_clone_ms,
+                "ui_path_extensions":ui_path_extensions,
+                "namespace_shared":true,"lookup_map_shared":true,"decoded_payloads":0
+            })
+        );
     }
 
     #[test]
@@ -791,27 +901,27 @@ mod tests {
             Err(E::InvalidPath)
         );
         let index = bank.paths["preset.uvip"].unwrap();
-        bank.paths.insert("preset.uvip".into(), None);
+        Arc::make_mut(&mut bank.paths).insert("preset.uvip".into(), None);
         assert_eq!(
             bank.ui_resource_result("preset.uvip", "preset.uvip"),
             Err(E::Ambiguous)
         );
-        bank.paths.insert("preset.uvip".into(), Some(index));
-        let member = &mut bank.directory.files[index];
+        Arc::make_mut(&mut bank.paths).insert("preset.uvip".into(), Some(index));
+        let member = &mut Arc::make_mut(&mut bank.directory).files[index];
         let size = member.size;
         member.size = (32 << 20) + 1;
         assert_eq!(
             bank.ui_resource_result("preset.uvip", "preset.uvip"),
             Err(E::Limit)
         );
-        bank.directory.files[index].size = size;
+        Arc::make_mut(&mut bank.directory).files[index].size = size;
         let offset = bank.directory.files[index].offset;
-        bank.directory.files[index].offset = u64::MAX;
+        Arc::make_mut(&mut bank.directory).files[index].offset = u64::MAX;
         assert_eq!(
             bank.ui_resource_result("preset.uvip", "preset.uvip"),
             Err(E::Corrupt)
         );
-        bank.directory.files[index].offset = offset;
+        Arc::make_mut(&mut bank.directory).files[index].offset = offset;
         std::fs::remove_file(path).unwrap();
         assert_eq!(
             bank.ui_resource_result("preset.uvip", "preset.uvip"),
@@ -904,5 +1014,26 @@ mod tests {
             ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]
         );
         assert!(ui_candidates("Presets/p.uvip", "/Scripts/../../escape.png").is_err());
+    }
+    #[test]
+    fn folded_suffix_index_preserves_unique_paths_and_case_collisions() {
+        let mut paths: HashMap<String, Option<usize>> = [
+            ("one/resources/pic.png".into(), Some(0)),
+            ("two/resources/knob.png".into(), Some(1)),
+        ]
+        .into();
+        assert_eq!(ui_suffix_index(&paths, "/resources/pic.png"), Ok(Some(0)));
+        assert_eq!(ui_suffix_index(&paths, "/resources/absent.png"), Ok(None));
+        paths.insert("three/resources/pic.png".into(), Some(2));
+        assert_eq!(
+            ui_suffix_index(&paths, "/resources/pic.png"),
+            Err(crate::ResourceError::Ambiguous)
+        );
+        paths.remove("three/resources/pic.png");
+        paths.insert("one/resources/pic.png".into(), None);
+        assert_eq!(
+            ui_suffix_index(&paths, "/resources/pic.png"),
+            Err(crate::ResourceError::Ambiguous)
+        );
     }
 }
