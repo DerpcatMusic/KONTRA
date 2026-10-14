@@ -52,6 +52,18 @@ fn owner_audit_is_optional_and_preserves_callbacks_commands_full_interface_and_f
             assert!(calls(&audit, "events") > 0 && calls(&audit, "ui_requests") > 0);
             assert!(calls(&audit, "advance") > 0 && calls(&audit, "advance_sample_poll") > 0);
             assert!(calls(&audit, "ui_publish") > 0 && calls(&audit, "interface_export") > 0);
+            for stage in [
+                "export_registry",
+                "export_topology",
+                "export_widgets",
+                "export_page",
+                "export_validate",
+            ] {
+                assert!(
+                    calls(&audit, stage) > 0,
+                    "missing coarse export stage {stage}"
+                );
+            }
             assert!(calls(&audit, "face_equality") > 0 && calls(&audit, "findings_publish") > 0);
             assert_eq!(counter(&audit, "commands_pushed"), commands.len() as u64);
             assert!(counter(&audit, "coroutine_resumes") >= 2);

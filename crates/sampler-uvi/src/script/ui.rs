@@ -412,8 +412,17 @@ impl ScriptHost {
             return out;
         };
         out.performance = flag(&root, "performance", false);
-        let widgets = widgets(self);
-        let (parents, order) = match widget_tree(&widgets) {
+        let widgets = {
+            #[cfg(feature = "scan")]
+            let _owner_span = self.owner_span(super::diagnostics::OwnerStage::ExportRegistry);
+            widgets(self)
+        };
+        let topology = {
+            #[cfg(feature = "scan")]
+            let _owner_span = self.owner_span(super::diagnostics::OwnerStage::ExportTopology);
+            widget_tree(&widgets)
+        };
+        let (parents, order) = match topology {
             Ok(tree) => tree,
             Err(error) => {
                 self.shared.find("lua UI snapshot", error);
@@ -440,6 +449,8 @@ impl ScriptHost {
             });
             ui::AssetRef(index)
         };
+        #[cfg(feature = "scan")]
+        let widget_span = self.owner_span(super::diagnostics::OwnerStage::ExportWidgets);
         for (index, proxy) in widgets.iter().enumerate() {
             // Plain reads of the widget's data table: the proxy's __index is a Lua
             // call per property, and a snapshot reads ~70 per widget. Only a value
@@ -895,6 +906,10 @@ impl ScriptHost {
             }
             out.widgets.push(wd);
         }
+        #[cfg(feature = "scan")]
+        drop(widget_span);
+        #[cfg(feature = "scan")]
+        let page_span = self.owner_span(super::diagnostics::OwnerStage::ExportPage);
         let width = out
             .widgets
             .iter()
@@ -927,7 +942,14 @@ impl ScriptHost {
             },
             ..Default::default()
         });
-        if let Err(error) = out.validate() {
+        #[cfg(feature = "scan")]
+        drop(page_span);
+        let validation = {
+            #[cfg(feature = "scan")]
+            let _owner_span = self.owner_span(super::diagnostics::OwnerStage::ExportValidate);
+            out.validate()
+        };
+        if let Err(error) = validation {
             let error = format!("Invalid UVI UI snapshot: {error}");
             self.shared.find("lua UI snapshot", &error);
             return ui::Interface {

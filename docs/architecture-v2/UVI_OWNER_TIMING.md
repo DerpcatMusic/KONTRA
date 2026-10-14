@@ -8,7 +8,7 @@ scan path takes no phase-clock reads and performs no extra binding-graph scan.
 `UiBridge::owner_audit()` reads aggregate atomics directly. It never queues a
 request behind a busy Lua owner or acquires the interface mutex. It returns
 `None` when disabled. No script bodies, arguments, file names, task paths or UI
-strings enter this report. Storage is fixed at 24 stages and 13 counters; report
+strings enter this report. Storage is fixed at 29 stages and 13 counters; report
 construction allocates only on the caller outside audio/owner work.
 
 ## Timing boundaries
@@ -30,6 +30,7 @@ Nested groups must not be added to those outer totals:
 | Command backpressure | Existing full-queue retry, UI-request handling and 1 ms sleep; nested in command push |
 | Backpressure UI requests | Request handling inside that retry; nested again |
 | Seeded barrier events/advance | Barrier work nested in UI requests, separate from ordinary owner-turn stages |
+| Export registry/topology/widgets/page/validation | Five disjoint substages nested in interface export (or the initial snapshot) |
 
 Each completed interval records calls, total/max monotonic wall nanoseconds, a
 16-bin wall histogram and caller-thread CPU nanoseconds/samples. Histogram upper
