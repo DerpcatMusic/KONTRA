@@ -58,6 +58,7 @@ pub enum Legacy {
     Ladder, // 17
     Versatile(sampler_ir::fx::filter::Versatile), // 19
     Sv(Sv),                                       // 50..=65
+    Uvi(Uvi),
 }
 
 impl Legacy {
@@ -410,7 +411,8 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             d.count = 2;
             d.parallel = true;
         }
-        Legacy::Pro52 | Legacy::Ladder | Legacy::Versatile(_) | Legacy::Sv(_) => {
+        Legacy::Uvi(Uvi::Biquad { mode, hertz, q }) => s[0] = uvi_biquad(mode, hertz, q, rate),
+        Legacy::Pro52 | Legacy::Ladder | Legacy::Versatile(_) | Legacy::Sv(_) | Legacy::Uvi(_) => {
             unreachable!("not a section class")
         }
         Legacy::Lp6 => {
@@ -925,6 +927,96 @@ impl Cascade {
     }
 }
 
+// ----------------------------------------------------------------- UVI laws
+
+/// UVI Workstation 4.0.9 filter elements whose controls are constants here (hertz already key
+/// tracked by the translator).
+pub use sampler_ir::fx::filter::Uvi;
+
+/// `BiquadFilter` coefficients (0x141102e30): RBJ cookbook in f32, Q scaled per mode
+/// (`alpha = sin w / (s Q + 1)`, s = 24 HP, 12 LP, 8 BP / notch), cutoff under `0.499 rate`.
+fn uvi_biquad(mode: u8, hertz: f32, q: f32, rate: f32) -> Section {
+    let fc = hertz.min(rate * 0.499);
+    let w = (fc / rate) * std::f32::consts::TAU;
+    let (sn, cs) = w.sin_cos();
+    let scale = [24.0, 12.0, 8.0, 8.0][usize::from(mode.min(3))];
+    let alpha = sn / (q * scale + 1.0);
+    let n = 1.0 / (alpha + 1.0);
+    let a1 = (cs * -2.0) * n;
+    let a2 = (1.0 - alpha) * n;
+    let (b0, b1, b2) = match mode {
+        0 => {
+            let b0 = ((cs + 1.0) * 0.5) * n;
+            (b0, -((cs + 1.0) * n), b0)
+        }
+        1 => {
+            let b1 = (1.0 - cs) * n;
+            (b1 * 0.5, b1, b1 * 0.5)
+        }
+        2 => (n * alpha, 0.0, -(n * alpha)),
+        _ => (n, a1, n),
+    };
+    Section { b0, b1, b2, c1: -a1, c2: -a2 }
+}
+
+/// `MoogFilter` (coefficients 0x1412a9810, process 0x1412aa220): four one-pole stages with a
+/// zero at -1 and global feedback, no saturation. `state = [x1, y1, y2, y3, y4]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Moog {
+    r: f32,
+    p: f32,
+    k: f32,
+}
+
+impl Moog {
+    fn new(hertz: f32, q: f32, rate: f32) -> Self {
+        let x = ((hertz + hertz) / rate).min(1.0);
+        let q1 = 1.0 - x;
+        let p = ((x * 0.8) * q1) + x;
+        let t = (((q1 * 5.6) * q1) + x) * q1 * 0.5;
+        Self { r: (t + 1.0) * q.min(0.9), p, k: (p + p) - 1.0 }
+    }
+
+    #[inline(always)]
+    fn tick(&self, s: &mut [f32; 8], v: f32) -> f32 {
+        let xi = v - s[4] * self.r;
+        let n1 = (xi + s[0]) * self.p - s[1] * self.k;
+        let n2 = (s[1] + n1) * self.p - s[2] * self.k;
+        let n3 = (s[2] + n2) * self.p - s[3] * self.k;
+        let n4 = (s[3] + n3) * self.p - s[4] * self.k;
+        s[..5].copy_from_slice(&[xi, n1, n2, n3, n4]);
+        n4
+    }
+}
+
+/// `Rez` (update 0x141100fd0, process 0x1411020e0): a Chamberlin state-variable filter in f64,
+/// input scaled by the damping `a = 0.49 - 0.41 Q`, output by `1 / a`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Rez {
+    f: f64,
+    a: f64,
+    mode: u8,
+}
+
+impl Rez {
+    fn new(mode: u8, hertz: f32, q: f32, rate: f32) -> Self {
+        let x = hertz / rate;
+        let x = if x >= 0.0 { x.min(0.5) } else { 0.0 };
+        let f = 2.0 * (f64::from(x) * std::f64::consts::PI).sin();
+        Self { f: f.clamp(0.0, 1.55), a: f64::from(f32::from_bits(0x3efa_e148) - q * f32::from_bits(0x3ed1_eb86)), mode }
+    }
+
+    /// `state = [lp, bp]`.
+    #[inline(always)]
+    fn tick(&self, s: &mut [f64; 2], v: f64) -> f64 {
+        s[0] += s[1] * self.f;
+        let hp = (self.a * v - s[0]) - s[1] * self.a;
+        s[1] += hp * self.f;
+        let y = match self.mode { 0 => s[0], 1 => hp, _ => s[1] };
+        f64::from((y * (1.0 / self.a)) as f32)
+    }
+}
+
 // ----------------------------------------------------------------- runtime
 
 /// Normalized cutoff and resonance (the native knobs).
@@ -1028,6 +1120,17 @@ impl Cascade {
                     run(cells, block, frames.clone(), |s, v| c.tick(s, v));
                 }
                 Law::Ladder(l) => run(cells, block, frames.clone(), |s, v| l.tick(s, v)),
+                Law::Moog(m) => run(cells, block, frames.clone(), |s, v| m.tick(s, v)),
+                Law::Rez(r) => {
+                    for ch in 0..2 {
+                        let mut s = [cells[0][ch], cells[1][ch]];
+                        for v in &mut block[ch][frames.clone()] {
+                            *v = r.tick(&mut s, f64::from(*v as f32));
+                        }
+                        cells[0][ch] = super::super::flush(s[0]);
+                        cells[1][ch] = super::super::flush(s[1]);
+                    }
+                }
             }
             position = frames.end;
             current = self.clock(current, goal, step, modulation[0] != 0.0);
@@ -1056,6 +1159,8 @@ impl Cascade {
                 return Law::Chamberlin(versatile(&v, knobs[0], knobs[1], self.rate));
             }
             Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
+            Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
+            Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
             _ => {}
         }
         let seen = cells[KNOBS];
@@ -1075,6 +1180,8 @@ enum Law {
     Sections(Design),
     Chamberlin(Chamberlin),
     Ladder(Ladder2x),
+    Moog(Moog),
+    Rez(Rez),
 }
 
 /// Run a stage law over `frames` of both channels; its state is cells `0..8`.
@@ -1298,6 +1405,46 @@ mod tests {
                 let err = block[0].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
                 if !(err < 1e-6) {
                     failures.push(format!("{} {set} {input}: err {err}: {:?} vs {:?}", case["class"], &block[0][..3], &native[..3]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI Workstation 4.0.9 BiquadFilter, MoogFilter and Rez run under kemu (uvifilt): a
+    /// 64-frame impulse response at 48 kHz per setting.
+    #[test]
+    fn uvi_laws_match_the_native_vectors() {
+        let vectors: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            serde_json::from_str(include_str!("cascade_uvi_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for (name, cases) in &vectors {
+            for case in cases {
+                let p = &case["params"];
+                let num = |k: &str| p[k].as_f64().unwrap_or(0.0) as f32;
+                let uvi = match name.as_str() {
+                    "BiquadFilter" => Uvi::Biquad { mode: num("Mode") as u8, hertz: num("Freq"), q: num("Q") },
+                    "MoogFilter" => Uvi::Moog { hertz: num("Freq"), q: num("Q") },
+                    _ => Uvi::Rez { mode: num("Mode") as u8, hertz: num("Freq"), q: num("Q") },
+                };
+                let unit = CascadeSettings {
+                    class: Legacy::Uvi(uvi),
+                    cutoff: Parameter::Constant(0.0),
+                    resonance: Parameter::Constant(0.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let native: Vec<f32> =
+                    case["out"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let mut cells = vec![[0f64; 2]; CELLS];
+                let mut block = [[0f64; super::super::super::BLOCK]; 2];
+                block[0][0] = 1.0;
+                unit.process(&mut cells, &[], &mut block, native.len(), 0, [0.0; 4]);
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = block[0].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                // BiquadFilter's coefficients come from the native fast sincosf (0x14199de20,
+                // ~1.6e-7 absolute); ours use libm.
+                if !(err < 3e-5) {
+                    failures.push(format!("{name} {p}: err {err}: {:?} vs {:?}", &block[0][..3], &native[..3]));
                 }
             }
         }
