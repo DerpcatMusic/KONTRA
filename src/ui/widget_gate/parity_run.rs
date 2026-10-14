@@ -639,6 +639,9 @@ fn parity_run() {
     let mut engine = Vec::new();
     let audible: Vec<_> = bindings.iter().filter(|b| b.address.group < 0 || a.groups.contains(&(b.address.group as u32))).collect();
     let step = (audible.len() / max_engine.max(1)).max(1);
+    // State every row must leave behind: a row whose after-take differs leaks.
+    let reference = gate.take(key, 100);
+    let mut leaks = 0;
     for b in audible.into_iter().step_by(step).take(max_engine) {
         let id = sampler_ui_ir::ControlId(b.control.0);
         let (context, restore) = stimulus(&mut gate, &bindings, instrument.as_deref(), b);
@@ -655,7 +658,9 @@ fn parity_run() {
             gate.core.set_control(0, id, v);
         }
         let restored = before.is_some() && gate.core.control_value(0, id) == before;
-        for (control, v) in restore {
+        // Last saved first: a control saved twice (a bypass both unbypassed and
+        // heard through) ends at its first, true value.
+        for (control, v) in restore.into_iter().rev() {
             gate.core.set_control(0, control, v);
         }
         gate.during.clear();
@@ -663,11 +668,15 @@ fn parity_run() {
             gate.core.play(0, Event::midi1(s, d1, d2));
         }
         gate.set_dynamics();
+        gate.settle();
+        let (leaked, leak) = noise.changed(&reference, &gate.take(key, 100));
+        leaks += usize::from(leaked);
         let (audio, delta) = noise.verdict(&low, &high);
         let moved = lo_v != hi_v;
         engine.push(json!({"route": format!("{} group {} slot {} generic {}", sampler_core::engine_parameter_name(b.address.parameter).unwrap_or("?"), b.address.group, b.address.slot, b.address.generic),
-            "moved": moved, "restored": restored, "context": context, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
+            "moved": moved, "restored": restored, "leaked": leaked, "leak": leak, "context": context, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
     }
+    checks.push(check("engine-rows-restore-state", leaks == 0, json!({"leaked_rows": leaks})));
     for (name, rows) in [("controls-ui", &controls), ("controls-host", &host), ("controls-engine", &engine)] {
         let failed: Vec<&Value> = rows.iter().filter(|r| !matches!(r["verdict"].as_str(), Some("pass" | "masked-by-noise" | "inert-in-state"))).collect();
         checks.push(check(name, failed.is_empty(), json!({"failed": failed.len(), "total": rows.len()})));
