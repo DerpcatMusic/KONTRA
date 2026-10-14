@@ -95,7 +95,7 @@ impl Generic {
         let key = [hz, q, boost];
         if state.aux[3] == 0. || state.aux[..3] != key {
             state.aux[3] = 0.;
-            if let Some(svf) = design(self.rate, kind, self.band.poles, hz, q, boost) {
+            if let Some(svf) = design(self.rate, self.band.law, kind, self.band.poles, hz, q, boost) {
                 state.aux[..3].copy_from_slice(&key);
                 state.aux[3] = 1.;
                 state.aux[4..10].copy_from_slice(&svf.to_array());
@@ -109,10 +109,16 @@ impl Generic {
 }
 
 /// Design one band and realise it as the kernel's section.
-pub(super) fn design(rate: u32, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
+pub(super) fn design(rate: u32, law: Law, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
     let first = matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf)
         || (poles == 1 && matches!(kind, Kind::LowPass | Kind::HighPass));
-    let f = if first { kernel::first_order(kind, rate, hz, boost) } else { kernel::design(kind, rate, hz, q, boost) };
+    let f = if first {
+        kernel::first_order(kind, rate, hz, boost)
+    } else if law == Law::Cookbook {
+        kernel::cookbook(kind, rate, hz, q, boost)
+    } else {
+        kernel::design(kind, rate, hz, q, boost)
+    };
     kernel::Svf::from_biquad(&f?)
 }
 

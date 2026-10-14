@@ -806,6 +806,40 @@ fn digital_eq_slope_sets_the_pass_band_order() {
 }
 
 #[test]
+fn fx_preset_legacy_eqs_translate_under_the_cookbook_law() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><FXPreset><TwoBandEq LowGain="6" HighFreq="8000" HighGain="-3"/></FXPreset><ThreeBandEq MidQ="0.5" MidGain="4"/><ParametricEQ Enable1="1" Freq1="40" Q1="2" Enable3="1" Gain3="5"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    use ir::fx::eq::{Kind, Law};
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some(c.bands().to_vec()),
+            _ => None,
+        })
+        .flatten()
+        .map(|b| (b.kind, b.law, b.frequency, b.q, b.gain_db))
+        .collect();
+    let c = Law::Cookbook;
+    assert_eq!(
+        bands,
+        [
+            (Kind::LowShelf, c, 80., 0.5, 6.),
+            (Kind::HighShelf, c, 8000., 0.5, -3.),
+            (Kind::LowShelf, c, 80., 0.5, 0.),
+            (Kind::Peak, c, 2500., 2.5, 4.),
+            (Kind::HighShelf, c, 10000., 0.5, 0.),
+            (Kind::HighPass, c, 40., 2., 0.),
+            (Kind::Peak, c, 180., 0.7, 5.),
+        ]
+    );
+}
+
+#[test]
 fn initialized_controller_and_widget_cutoff_writes_change_production_pcm() {
     use sampler_core::{ControlValue, EngineParameterAddress, EngineParameterLaw};
     use sampler_uvi::{script::Config, scripted::HostInput};

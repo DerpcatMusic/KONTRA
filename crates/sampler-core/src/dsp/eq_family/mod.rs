@@ -8,6 +8,8 @@
 //! - [`Law::Solid`]: the native Solid G-EQ coefficient law (`solid.rs`), one stage per native
 //!   biquad (`poles` carries the biquad index), realised by the kernel.
 //! - [`Law::Rbj`]: physical Hertz/Q/dB (`generic.rs`), also the home of scripted UVI EQ inserts.
+//! - [`Law::Cookbook`]: Hertz/Q/dB through the bilinear RBJ cookbook (`kernel::cookbook`), the
+//!   native law of UVI's TwoBandEq/ThreeBandEq/ParametricEQ, realised by the kernel.
 //! A [`sampler_ir::fx::eq::Config`] is a serial cascade of bands, lowered here into one stage per
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the
 //! stage's `ProcessorState`, so nothing allocates while rendering.
@@ -68,7 +70,7 @@ impl EqBand {
         let common = live(self.reference_db) && live(self.enabled) && self.proportional_q.is_finite();
         common
             && match self.law {
-                Law::Rbj => live(self.frequency) && live(self.q) && live(self.gain_db),
+                Law::Rbj | Law::Cookbook => live(self.frequency) && live(self.q) && live(self.gain_db),
                 Law::KontaktLegacy => {
                     self.kind == Kind::Peak
                         && within(self.frequency, 0., 1.)
@@ -179,7 +181,7 @@ pub(crate) fn lower(config: &sampler_ir::fx::eq::Config) -> Vec<Processor> {
             b.kind,
             Kind::Peak | Kind::LowShelf | Kind::HighShelf | Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf
         );
-        if gainful && b.law == Law::Rbj && b.gain_db == 0. {
+        if gainful && matches!(b.law, Law::Rbj | Law::Cookbook) && b.gain_db == 0. {
             continue;
         }
         if let Law::Solid(section) = b.law {
