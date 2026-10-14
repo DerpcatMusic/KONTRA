@@ -1278,6 +1278,15 @@ impl V2Core {
             .map(<[_]>::to_vec)
             .unwrap_or_default()
     }
+    /// Same random draws and round-robin position for every parity take, so
+    /// two takes differ only by the control under test.
+    #[cfg(test)]
+    pub(crate) fn widget_gate_reseed(&mut self, part: usize) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.runtime.seed_random(1);
+            p.runtime.reset_native_cycles(1);
+        }
+    }
     /// Script `set_engine_par`/`get_engine_par` outcomes since the last call
     /// (parity harness: which writes reached a bound engine parameter).
     #[cfg(test)]
