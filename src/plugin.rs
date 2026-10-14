@@ -412,6 +412,8 @@ impl Selection {
 #[params(
     output_port_name = "port_name",
     output_port_names_revision = "port_names_revision",
+    presentation = "host_presentation",
+    presentation_revision = "host_presentation_revision",
     pre_save = "capture_ui_controls",
     post_load = "reload_ui_controls"
 )]
@@ -510,6 +512,14 @@ impl SamplerParams {
 
     fn port_names_revision(&self) -> u64 {
         self.shared.port_names_revision.load(Ordering::Acquire)
+    }
+
+    fn host_presentation(&self, id: u32) -> Option<moose::params::ParameterPresentation> {
+        self.host.presentation(id)
+    }
+
+    fn host_presentation_revision(&self) -> u64 {
+        self.host.revision()
     }
 
     /// Support context: call on an export worker, never paint or process.
@@ -1043,6 +1053,8 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// Host automation slots the loaded plan routes into its controls.
+    pub(crate) host_bindings: Arc<[crate::sound::HostBinding]>,
     /// Prepared with the immutable instrument on the load worker.
     pub(crate) mapping_index: Option<Arc<crate::ui::MappingIndex>>,
     /// The keys as the scripts colour and name them (128, or none).
@@ -1394,10 +1406,14 @@ fn route(params: &SamplerParams) {
         }
         routing::port_names(&current, &trees)
     };
+    let now = Instant::now();
     let mut ports = shared.port_names.lock_unpoisoned();
-    if ports.offer(names, Instant::now()) {
+    if ports.offer(names, now) {
         shared.port_names_revision.fetch_add(1, Ordering::Release);
     }
+    drop(ports);
+    let slots = automation::slots(&shared.view.lock_unpoisoned().parts);
+    params.host.offer(slots, now);
 }
 
 impl Shared {
@@ -2546,6 +2562,7 @@ fn load_part_with(
                 v.effects =
                     atoms.publish_effect_controls(generation, part, loaded.instrument.as_deref());
                 *atoms.engine_bindings.lock_unpoisoned() = part.engine_bindings.clone();
+                v.host_bindings = part.host_bindings.clone();
                 if !part.waveform_sources.is_empty()
                     && let Some(ingress) = &part.ui_controls
                 {

@@ -300,6 +300,9 @@ struct ClapPluginData<P: PluginExport> {
     needs_rescan: Arc<AtomicBool>,
     /// Last `Params::parameter_presentation_revision` the host saw.
     presentation_revision: AtomicU64,
+    /// Set by `process` when the presentation revision moved; drained on
+    /// the main thread, which rescans. One wake per change, not per block.
+    presentation_wake: AtomicBool,
     /// Shared transport slot: audio thread writes each block, editor reads.
     transport_slot: Arc<TransportSlot>,
     /// Host-reported GUI scale (via `clap_plugin_gui::set_scale`).
@@ -932,6 +935,7 @@ unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const 
         data.pending_state.collect_retired();
         // Runtime presentation metadata is re-read on RESCAN_INFO. A change
         // to the exposed list requests a restart and is published inactive.
+        data.presentation_wake.store(false, Ordering::Relaxed);
         let revision = data.params_arc.parameter_presentation_revision();
         let info_changed = data.presentation_revision.swap(revision, Ordering::Relaxed) != revision;
         let list_changed = info_changed && refresh_parameter_list(data);
@@ -2900,6 +2904,16 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         let names = data.params_arc.output_port_names_revision();
         if data.port_names_revision.swap(names, Ordering::Relaxed) != names
             && !data.port_names_dirty.swap(true, Ordering::Relaxed)
+            && !data.host.is_null()
+            && let Some(req_cb) = (*data.host).request_callback
+        {
+            req_cb(data.host);
+        }
+        // Presentation (names, visibility) is likewise read on the main
+        // thread; one atomic compare here wakes it.
+        if data.params_arc.parameter_presentation_revision()
+            != data.presentation_revision.load(Ordering::Relaxed)
+            && !data.presentation_wake.swap(true, Ordering::Relaxed)
             && !data.host.is_null()
             && let Some(req_cb) = (*data.host).request_callback
         {
@@ -5523,6 +5537,7 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
             render_mode: AtomicU8::new(ProcessMode::Realtime.as_u8()),
             needs_rescan: Arc::new(AtomicBool::new(false)),
             presentation_revision: AtomicU64::new(0),
+            presentation_wake: AtomicBool::new(false),
             transport_slot: TransportSlot::new(),
             host_scale: AtomicU64::new(0),
             window_scale: AtomicU64::new(0),
