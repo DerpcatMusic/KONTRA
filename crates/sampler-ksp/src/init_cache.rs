@@ -93,6 +93,7 @@ impl<'de> Deserialize<'de> for crate::model::PersistenceCompletion {
 /// Frontend/model metadata remains rate-independent; no programs or PCM are cached.
 #[derive(Serialize, Deserialize)]
 pub struct CachedInit {
+    source_digest: [u8; 32],
     groups: Vec<String>,
     folders: [String; 4],
     slot: u8,
@@ -220,6 +221,7 @@ impl Initialized {
             return None;
         }
         Some(CachedInit {
+            source_digest: self.source_digest,
             groups: self.environment.groups.clone(),
             folders: self.environment.folders.clone(),
             slot: self.environment.slot,
@@ -361,6 +363,17 @@ pub fn restore_initialized(
     if source.len() > limits.source_bytes {
         return Err(error("source byte budget exceeded"));
     }
+    match cached.model.snapshot_mode_write {
+        Some(write)
+            if write.mode != cached.model.snapshot_mode || write.offset as usize >= source.len() =>
+        {
+            return Err(error("invalid cached snapshot policy write"));
+        }
+        None if cached.model.snapshot_mode != crate::model::SnapshotMode::NativeWithInit => {
+            return Err(error("cached snapshot policy has no setter identity"));
+        }
+        _ => {}
+    }
     let frontend_begin = std::time::Instant::now();
     let mut syms = crate::lexer::Interner::default();
     let mut toks = crate::lexer::lex(source, &mut syms).map_err(|f| f.locate(source))?;
@@ -384,6 +397,11 @@ pub fn restore_initialized(
         );
     }
     let restore_begin = std::time::Instant::now();
+    // Preserve positioned source-admission diagnostics, then reject identity
+    // mismatch before any cached values or model state are applied.
+    if cached.source_digest != crate::setup::source_digest(source) {
+        return Err(error("cached source identity changed"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -459,6 +477,7 @@ pub fn restore_initialized(
         crate::scan::attempt("product-cache");
     }
     Ok(Initialized {
+        source_digest: cached.source_digest,
         hir,
         init,
         conditions,

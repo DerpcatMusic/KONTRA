@@ -242,6 +242,15 @@ impl SnapshotMode {
         matches!(self, Self::NativeWithInit | Self::NativeWithoutInit)
     }
 }
+
+/// Last executed setter in this slot's initialization, distinct from the
+/// default policy when no setter ran. The offset locates authored code only.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotModeWrite {
+    pub mode: SnapshotMode,
+    pub offset: u32,
+}
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvaluationFailure {
@@ -266,6 +275,8 @@ pub enum PersistenceCompletion {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
     pub snapshot_mode: SnapshotMode,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub snapshot_mode_write: Option<SnapshotModeWrite>,
     pub persistence_completion: PersistenceCompletion,
     pub interface: Interface,
     pub persistent: Vec<Persistent>,
