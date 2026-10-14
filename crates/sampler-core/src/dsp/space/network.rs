@@ -600,11 +600,14 @@ impl Network {
                 for c in (k..k + len).step_by(BLOCK) {
                     let e = (c + BLOCK).min(k + len);
                     let mut xs = [[0f32; 2]; BLOCK];
-                    self.input_block(&l[c..e], &r[c..e], self.w, &mut xs);
+                    let w0 = self.w;
+                    self.input_block(&l[c..e], &r[c..e], w0, &mut xs);
+                    let mut o = [[0f32; BLOCK]; 2];
                     for j in c..e {
                         let step = if M == 2 { (len - self.left + j - k) as f64 } else { 0.0 };
-                        [l[j], r[j]] = self.frame::<I, M, F>(l[j], r[j], xs[j - c], step);
+                        [o[0][j - c], o[1][j - c]] = self.frame::<I, M, F>(xs[j - c], step);
                     }
+                    self.finish(&mut o, &mut l[c..e], &mut r[c..e], w0);
                 }
             }
             if M == 2 {
@@ -718,7 +721,9 @@ impl Network {
     }
 
     #[inline(always)]
-    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, inl: f32, inr: f32, x: [f32; 2], step: f64) -> [f32; 2] {
+    /// One frame of the lines, matrix and taps: the mixed output before the
+    /// chain.
+    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, x: [f32; 2], step: f64) -> [f32; 2] {
         let n = self.n;
         let w = self.w;
         self.w = w.wrapping_add(1);
@@ -788,7 +793,7 @@ impl Network {
                 g = [g[0] + cl * e, g[1] + cr * e];
             }
         }
-        self.output(g, x, inl, inr, w)
+        self.mix_out(g, x)
     }
 
     /// Parallel lines, `l.len() ≤ BLOCK` frames, `step0` frames into the
@@ -845,37 +850,72 @@ impl Network {
         for j in 0..len {
             [o[0][j], o[1][j]] = self.mix_out([g[0][j], g[1][j]], xs[j]);
         }
+        // Allpass chains inline on the local array (measurably fewer
+        // instructions than through `finish`).
         let jezar = matches!(self.spec.chain, Chain::Jezar(_));
-        let per_frame = match &mut self.spec.chain {
-            Chain::Schroeder(c) | Chain::Jezar(c) => {
+        if let Chain::Schroeder(c) | Chain::Jezar(c) = &mut self.spec.chain {
+            for (o, c) in o.iter_mut().zip(c.iter_mut()) {
+                for a in c {
+                    for j in 0..len {
+                        let w = w0.wrapping_add(j);
+                        o[j] = if jezar { a.jezar(w, o[j]) } else { a.schroeder(w, o[j]) };
+                    }
+                }
+            }
+            for j in 0..len {
+                [l[j], r[j]] = self.post([o[0][j], o[1][j]], l[j], r[j]);
+            }
+            return;
+        }
+        self.finish(&mut o, l, r, w0);
+    }
+
+    /// The output chain and post stage over a block of mixed outputs `o`,
+    /// writing `l`/`r`. Every chain stage has private state, so the chain
+    /// runs a stage at a time.
+    #[inline(always)]
+    fn finish(&mut self, o: &mut [[f32; BLOCK]; 2], l: &mut [f32], r: &mut [f32], w0: usize) {
+        let len = l.len();
+        match &mut self.spec.chain {
+            Chain::None => {}
+            Chain::Schroeder(c) => {
                 for (o, c) in o.iter_mut().zip(c.iter_mut()) {
                     for a in c {
                         for j in 0..len {
-                            let w = w0.wrapping_add(j);
-                            o[j] = if jezar { a.jezar(w, o[j]) } else { a.schroeder(w, o[j]) };
+                            o[j] = a.schroeder(w0.wrapping_add(j), o[j]);
                         }
                     }
                 }
-                false
             }
-            Chain::None => false,
-            _ => true,
-        };
-        for j in 0..len {
-            let mut v = [o[0][j], o[1][j]];
-            if per_frame {
-                v = self.chain(v, w0.wrapping_add(j));
+            Chain::Jezar(c) => {
+                for (o, c) in o.iter_mut().zip(c.iter_mut()) {
+                    for a in c {
+                        for j in 0..len {
+                            o[j] = a.jezar(w0.wrapping_add(j), o[j]);
+                        }
+                    }
+                }
             }
-            [l[j], r[j]] = self.post(v, l[j], r[j]);
+            Chain::Units(c) => {
+                for (o, c) in o.iter_mut().zip(c.iter_mut()) {
+                    for u in c {
+                        for j in 0..len {
+                            o[j] = u.tick(w0.wrapping_add(j), o[j]);
+                        }
+                    }
+                }
+            }
+            Chain::Coupled(c) => {
+                for u in c {
+                    for j in 0..len {
+                        [o[0][j], o[1][j]] = u.tick(w0.wrapping_add(j), [o[0][j], o[1][j]]);
+                    }
+                }
+            }
         }
-    }
-
-    /// The output stage for one frame: tap groups `g`, input stage `x`.
-    #[inline(always)]
-    fn output(&mut self, g: [f32; 2], x: [f32; 2], inl: f32, inr: f32, w: usize) -> [f32; 2] {
-        let o = self.mix_out(g, x);
-        let o = self.chain(o, w);
-        self.post(o, inl, inr)
+        for j in 0..len {
+            [l[j], r[j]] = self.post([o[0][j], o[1][j]], l[j], r[j]);
+        }
     }
 
     /// The output groups' L/R mix and the direct input.
@@ -884,33 +924,6 @@ impl Network {
         let s = &self.spec;
         let o = [s.out[0][0] * g[0] + s.out[0][1] * g[1], s.out[1][0] * g[0] + s.out[1][1] * g[1]];
         if s.direct != 0.0 { [o[0] + s.direct * x[0], o[1] + s.direct * x[1]] } else { o }
-    }
-
-    /// The output chain for one frame.
-    #[inline(always)]
-    fn chain(&mut self, mut o: [f32; 2], w: usize) -> [f32; 2] {
-        match &mut self.spec.chain {
-            Chain::None => {}
-            Chain::Schroeder(c) => {
-                for ch in 0..2 {
-                    o[ch] = c[ch].iter_mut().fold(o[ch], |v, a| a.schroeder(w, v));
-                }
-            }
-            Chain::Jezar(c) => {
-                for ch in 0..2 {
-                    o[ch] = c[ch].iter_mut().fold(o[ch], |v, a| a.jezar(w, v));
-                }
-            }
-            Chain::Units(c) => {
-                for ch in 0..2 {
-                    o[ch] = c[ch].iter_mut().fold(o[ch], |v, u| u.tick(w, v));
-                }
-            }
-            Chain::Coupled(c) => {
-                o = c.iter_mut().fold(o, |v, u| u.tick(w, v));
-            }
-        }
-        o
     }
 
     /// Shelf, high cut, width and the dry/wet mix for one frame.
@@ -1212,13 +1225,13 @@ pub(super) fn apply(matrix: &Matrix, v: &[f32; MAX_LINES], n: usize, u: &mut [f3
             let mut t = [0f32; 32];
             let mut sum = 0.0;
             for j in 0..31 {
-                t[usize::from(col[j])] = v[j];
+                t[usize::from(col[j]) & 31] = v[j];
                 sum += v[j];
             }
             hadamard(&mut t);
             let m = mean * sum;
             for i in 0..31 {
-                u[i] = m + half * t[usize::from(row[i])];
+                u[i] = m + half * t[usize::from(row[i]) & 31];
             }
         }
         Matrix::Dense(m) => {
