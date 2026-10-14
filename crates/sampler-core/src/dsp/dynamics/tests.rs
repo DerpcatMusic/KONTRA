@@ -169,6 +169,27 @@ fn sine(amp: f64, hz: f64, frames: usize) -> Vec<[f64; 2]> {
         .collect()
 }
 
+/// The kemu native-vector stimulus (tools/re: dynemu): 1024-frame bursts.
+fn stimulus() -> Vec<[f64; 2]> {
+    (0..4096)
+        .map(|n| {
+            let env = if (n / 1024) % 2 == 0 { 1.2 } else { 0.05 };
+            let n = n as f64;
+            [env * (n * 0.0576).sin(), env * 0.5 * (n * 0.1305).cos()]
+        })
+        .collect()
+}
+
+/// `out` at the native core's sampled frames, to f32 precision.
+fn assert_native(out: &[[f64; 2]], native: &[(usize, f32, f32)]) {
+    for &(n, l, r) in native {
+        for (got, want) in out[n].iter().zip([l, r]) {
+            let tol = 1e-6 * f64::from(want.abs()).max(1e-3);
+            assert!((got - f64::from(want)).abs() <= tol, "{n}: {:?} vs {l} {r}", out[n]);
+        }
+    }
+}
+
 fn peak(out: &[[f64; 2]]) -> f64 {
     out.iter().map(|f| f[0].abs()).fold(0., f64::max)
 }
@@ -607,6 +628,29 @@ mod transient {
         assert!(tail([0.5, 0., 0.5]) < tail([0.5; 3]) * 0.9);
     }
 
+    /// Native Transient Master core (ctor 0x141a83550, reset 0x141aa0b80,
+    /// prepare 0x141aa27a0, setter 0x141ac87b0, process 0x141aaac90) under
+    /// tools/re/kemu.py, 48 kHz, controls .9 .2 .6, no clip; output scale
+    /// (+0x70) 1 and the runtime 2^(i/60-20) table seeded.
+    #[test]
+    fn matches_the_native_core() {
+        let law = Law::KontaktTransient { attack: 0.9, sustain: 0.2, gain: 0.6, clip: false };
+        let out = run_law(law, Link::Off, [0.; 4], &stimulus());
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 3.302320718765259),
+            (1, 0.3693881332874298, 3.176668167114258),
+            (10, 3.2479841709136963, 0.7567840218544006),
+            (100, -2.6673171520233154, 2.3343536853790283),
+            (1000, 3.002772569656372, 0.22991815209388733),
+            (1500, -0.11723051965236664, 0.009873159229755402),
+            (2047, -0.07166774570941925, -0.028402572497725487),
+            (2500, -0.9919859170913696, 0.9227460026741028),
+            (3000, -0.08136296272277832, -0.3886581361293793),
+            (4095, -0.008966117165982723, 0.02501962147653103),
+        ];
+        assert_native(&out, &native);
+    }
+
     #[test]
     fn table_matches_powf_inside_its_range() {
         for x in [0.001f32, 0.25, 1., 2.9] {
@@ -636,14 +680,7 @@ mod bus {
     #[test]
     fn matches_the_native_core() {
         let law = Law::KontaktBusComp { threshold: 0.2, makeup: 0.4, attack: 0.5, release: 0.5, ratio: 0.6, link: true };
-        let input: Vec<[f64; 2]> = (0..4096)
-            .map(|n| {
-                let env = if (n / 1024) % 2 == 0 { 1.2 } else { 0.05 };
-                let n = n as f64;
-                [env * (n * 0.0576).sin(), env * 0.5 * (n * 0.1305).cos()]
-            })
-            .collect();
-        let out = run_law(law, Link::Off, [0.; 4], &input);
+        let out = run_law(law, Link::Off, [0.; 4], &stimulus());
         let native: [(usize, f32, f32); 10] = [
             (0, 0.0, 1.0981236696243286),
             (1, 0.12437347322702408, 1.0710428953170776),
@@ -656,11 +693,7 @@ mod bus {
             (3000, -0.0012858589179813862, -0.018826641142368317),
             (4095, -0.001422968809492886, 0.0026967115700244904),
         ];
-        for (n, l, r) in native {
-            for (got, want) in out[n].iter().zip([l, r]) {
-                assert!((got - f64::from(want)).abs() <= 1e-6 * f64::from(want.abs()).max(1e-3), "{n}: {:?} vs {l} {r}", out[n]);
-            }
-        }
+        assert_native(&out, &native);
     }
 
     #[test]
