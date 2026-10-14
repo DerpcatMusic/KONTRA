@@ -3,6 +3,7 @@
 //! against kemu vectors of the native ctor, SR setup, control laws and kernel.
 mod cabinet;
 mod crywah;
+mod dstortion;
 
 use super::super::Planar;
 use sampler_ir::fx::color::{Amp, AmpModel};
@@ -10,6 +11,7 @@ use sampler_ir::fx::color::{Amp, AmpModel};
 pub(super) enum Engine {
     Cabinet(cabinet::Engine),
     CryWah(crywah::Engine),
+    DStortion(dstortion::Engine),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -18,6 +20,7 @@ pub(super) enum State {
     None,
     Cabinet(cabinet::State),
     CryWah(crywah::State),
+    DStortion(dstortion::State),
 }
 
 impl State {
@@ -26,6 +29,7 @@ impl State {
             Self::None => true,
             Self::Cabinet(s) => s.finite(),
             Self::CryWah(s) => s.finite(),
+            Self::DStortion(s) => s.finite(),
         }
     }
 }
@@ -47,6 +51,7 @@ impl Engine {
         match a.model {
             AmpModel::Cabinet => Self::Cabinet(cabinet::Engine::new(k[4], k[0], k[1], k[2], k[3], rate)),
             AmpModel::CryWah => Self::CryWah(crywah::Engine::new(k[0], k[1] != 0.0, rate)),
+            AmpModel::DStortion => Self::DStortion(dstortion::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5], k[6]], rate)),
         }
     }
 
@@ -54,6 +59,7 @@ impl Engine {
         match self {
             Self::Cabinet(e) => e.process(slot!(s, Cabinet), block, len, ring),
             Self::CryWah(e) => e.process(slot!(s, CryWah), block, len),
+            Self::DStortion(e) => e.process(slot!(s, DStortion), block, len),
         }
     }
 }
@@ -62,7 +68,7 @@ impl Engine {
 pub(super) fn frames(a: Amp, rate: u32) -> usize {
     match a.model {
         AmpModel::Cabinet => cabinet::frames(rate),
-        AmpModel::CryWah => 0,
+        AmpModel::CryWah | AmpModel::DStortion => 0,
     }
 }
 
