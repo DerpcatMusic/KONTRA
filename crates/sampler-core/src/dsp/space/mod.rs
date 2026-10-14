@@ -379,7 +379,7 @@ mod tests {
         let frames = 10 * RATE as usize;
         let only = std::env::var("CPU_ONLY").ok();
         for (name, net, parallel) in presets().into_iter().flat_map(|(n, net)| [(n, net.clone(), true), (n, net, false)]) {
-            if only.as_deref().is_some_and(|o| o != name) {
+            if only.as_deref().is_some_and(|o| o != name || !parallel) {
                 continue;
             }
             let mut net = Net::new(&net, RATE).unwrap();
