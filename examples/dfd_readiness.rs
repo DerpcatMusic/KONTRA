@@ -70,6 +70,7 @@ fn demand(core: &V2Core) -> Value {
     let complete = core.visit_stream_demand(0, 1, |d| {
         if rows.len() == 1024 { return false; }
         rows.push(json!({"voice":format!("{:?}",d.voice),"asset":format!("{:?}",d.key.asset),
+            "zone_source":d.source_zone,"script_source_offset_micros":d.source_offset_micros,"source_frame":d.source_frame,
             "page":d.key.index,"start":d.frames.start,"end":d.frames.end,"deadline":d.deadline,
             "starved":d.starved,"cold":d.cold,"resident":d.resident,"status":format!("{:?}",d.status)}));
         true

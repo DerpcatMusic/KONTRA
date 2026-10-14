@@ -41,9 +41,13 @@ pub(crate) fn thread_cpu_nanos() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
-        u64::try_from(t.tv_sec).ok()?.checked_mul(1_000_000_000)?
+        u64::try_from(t.tv_sec)
+            .ok()?
+            .checked_mul(1_000_000_000)?
             .checked_add(u64::try_from(t.tv_nsec).ok()?)
     }
     #[cfg(not(target_os = "linux"))]
-    { None }
+    {
+        None
+    }
 }
