@@ -1992,7 +1992,8 @@ public:
         uint64_t revision = (g_cb && ctx) ? g_cb->param_presentation_revision(ctx) : 0;
         if (revision != presentationRevision) {
             presentationRevision = revision;
-            pendingRestart.fetch_or(1 << 4, std::memory_order_release); // kParamTitlesChanged
+            // kParamTitlesChanged | kParamValuesChanged: value text follows the presentation.
+            pendingRestart.fetch_or((1 << 4) | (1 << 0), std::memory_order_release);
         }
         uint64_t names = (g_cb && ctx && g_cb->output_bus_names_revision)
             ? g_cb->output_bus_names_revision(ctx) : 0;

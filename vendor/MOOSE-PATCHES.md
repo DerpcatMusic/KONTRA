@@ -44,6 +44,25 @@ enumerated the ports; they are current whenever it asks again.
 
 Upstream: this is additive and default-off; worth offering to MOOSE as is.
 
+## Parameter presentation reaches CLAP hosts while processing
+
+`Params::parameter_presentation_revision` was compared only in
+`on_main_thread`, which nothing scheduled when the revision moved, so a CLAP
+host saw new parameter names only after some unrelated main-thread callback.
+`process` now compares it (one atomic load) and, once per change, calls
+`clap_host::request_callback`; `on_main_thread` rescans as before. KONTRA
+names its host automation slots after the controls they drive this way.
+Value text follows the presentation too: a presentation change adds
+`CLAP_PARAM_RESCAN_TEXT` to the rescan, and the VST3 shim raises
+`kParamValuesChanged` (1 << 0) with `kParamTitlesChanged`.
+
+`ParameterPresentation::stepped` marks a parameter whose static range holds
+only integer steps at runtime (KONTRA: a slot bound to a switch). CLAP may
+change `CLAP_PARAM_IS_STEPPED` only via `RESCAN_ALL` while deactivated, so it
+joins the exposed index list: a change while active requests a restart and
+is published in `deactivate`. VST3 keeps the static `stepCount`: changing it
+needs `kReloadComponent`, which hosts handle as a full reload.
+
 ## Native editor parent contracts
 
 VST3 attachment now rejects null parents, unsupported or null platform types,
