@@ -39,6 +39,46 @@ class InspectorTests(unittest.TestCase):
                 inspector.inspect_command(Path("/bin/inspect"), "fixture.nki",
                     initialize=True, source=False, program=None, ram=Path("/dev/shm/owned"))
 
+    def test_render_requires_sandbox_and_preserves_snapshot_base(self):
+        with patch.object(inspector.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "requires bubblewrap"):
+                inspector.inspect_command(Path("/bin/inspect"), "Authored.nksn",
+                    initialize=False, render=True, source=False, program=None,
+                    ram=Path("/dev/shm/owned"), base="Original.nki")
+        with patch.object(inspector.shutil, "which", return_value="/usr/bin/bwrap"):
+            args = inspector.inspect_command(Path("/bin/inspect"), "Authored.nksn",
+                initialize=False, render=True, source=False, program=None,
+                ram=Path("/dev/shm/owned"), base="Original.nki")
+        self.assertIn("--initialize", args)
+        self.assertIn("--ephemeral-render", args)
+        self.assertEqual(args[args.index("--base")+1], "Original.nki")
+
+    def test_native_pixels_have_only_private_memory_routes(self):
+        report = authored_report()
+        pixels = b"\x89PNG\r\n\x1a\nAUTHORED_TEST_PIXELS"
+        report["ui"] = {"interfaces": [{"render": {"shots": [{"png_hex": pixels.hex()}]}}]}
+        server, url = inspector.make_server([report])
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urlopen(url + "report") as response:
+                result = json.load(response)
+            shot = result[0]["ui"]["interfaces"][0]["render"]["shots"][0]
+            self.assertNotIn("png_hex", shot)
+            self.assertEqual(shot["image_url"], "image/0/0/0")
+            with urlopen(url + shot["image_url"]) as response:
+                self.assertEqual(response.headers["Content-Type"], "image/png")
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(response.read(), pixels)
+            with self.assertRaises(HTTPError) as failure:
+                urlopen(url + "image/0/0/../etc/passwd")
+            failure.exception.close()
+            self.assertIn("png_hex", report["ui"]["interfaces"][0]["render"]["shots"][0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_manifest_bank_member_is_preserved(self):
         with patch.object(inspector.shutil, "which", return_value=None):
             args = inspector.inspect_command(Path("/bin/inspect"), "fixture.ufs::Presets/Alto Flute.uvip",
@@ -51,6 +91,11 @@ class InspectorTests(unittest.TestCase):
             inspector.validate_reports({"load": {"ok": True}})
         with self.assertRaises(ValueError):
             inspector.validate_reports([authored_report(), {"format": "other"}])
+
+    def test_timeout_progress_never_repeats_raw_library_diagnostics(self):
+        stderr = b'PRIVATE_SOURCE_PAYLOAD\nINSPECT_PROGRESS {"phase":"container","elapsed_ms":2}\nINSPECT_PROGRESS {"phase":"source_frontend","status":"started"}\n'
+        self.assertEqual(inspector.last_progress(stderr), "source_frontend (started)")
+        self.assertIsNone(inspector.last_progress(b'PRIVATE_SOURCE_PAYLOAD\nINSPECT_PROGRESS {"phase":"<script>vendor text</script>"}\n'))
 
     def test_memory_server_does_not_embed_source_in_html_or_serve_files(self):
         report = authored_report()
