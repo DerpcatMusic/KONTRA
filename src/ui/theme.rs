@@ -716,6 +716,11 @@ pub fn scrollbar(ui: &mut Ui, id: &str, name: &str, y: f64, view_h: f64, content
     .id(id.to_owned())
 }
 
+/// Room a row in a native `.scroll()` list keeps clear at its right end: the
+/// overlay bar is drawn over the content (mui `BAR_MARGIN` 2 + `BAR_WIDE` 6), so a
+/// trailing count or range would sit under the thumb without it.
+pub const BAR_GUTTER: f64 = 8.;
+
 /// The grab margin around a resizable edge, each side.
 pub const EDGE_GRAB: f64 = 6.;
 
