@@ -14,6 +14,10 @@ pub use head_budget::{HeadBudget, HeadBudgetStatus};
 #[path = "head_ranges.rs"]
 mod head_ranges;
 pub use head_ranges::{HeadPreparer, HeadRangeBuilder, PreparedRanges, Ranges};
+#[path = "resident_data.rs"]
+mod resident_data;
+pub use resident_data::ResidentBuffer;
+use resident_data::ResidentData;
 use sampler_pool::{Snapshot, SnapshotRead};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 
@@ -33,7 +37,8 @@ type StoreEntry = ([i32; super::STORE_KEY], i64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Snapshot<Option<Box<[Frame]>>>,
+    frames: Snapshot<Option<ResidentData>>,
+    resident_budget: std::sync::OnceLock<HeadBudget>,
     full: bool,
     residency_owners: std::sync::atomic::AtomicUsize,
     residency_managed: AtomicBool,
@@ -59,6 +64,7 @@ pub type ResidencyRanges = Vec<(usize, Box<[Frame]>)>;
 enum ResidencyLoader {
     Raw(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>),
     Prepared(std::sync::Arc<dyn Fn() -> Result<PreparedRanges, Error> + Send + Sync>),
+    Resident(std::sync::Arc<dyn Fn() -> Result<ResidentBuffer, Error> + Send + Sync>),
 }
 impl std::fmt::Debug for ResidencyLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,11 +72,11 @@ impl std::fmt::Debug for ResidencyLoader {
     }
 }
 /// Borrowed full-resident PCM; retiring storage is reclaimed only on control.
-pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<Box<[Frame]>>>);
+pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<ResidentData>>);
 impl std::ops::Deref for ResidentFrames<'_> {
     type Target = [Frame];
     fn deref(&self) -> &[Frame] {
-        self.0.as_deref().expect("resident generation")
+        self.0.as_ref().expect("resident generation").frames()
     }
 }
 impl std::fmt::Debug for ResidentFrames<'_> {
@@ -125,7 +131,7 @@ impl Pcm {
         if rate == 0 || frames.is_empty() || frames.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::InvalidInput);
         }
-        Self::create(rate, frames.len(), Some(frames))
+        Self::create(rate, frames.len(), Some(ResidentData::unbudgeted(frames)))
     }
     /// `new` plus every octave level, built here (about +100% memory). Prefer
     /// `service_mipmaps`, which builds levels only for assets played an octave
@@ -306,7 +312,7 @@ impl Pcm {
     pub(crate) fn touch(&self, now: u64) {
         self.0.used.store(now, Relaxed);
     }
-    fn create(rate: u32, length: usize, frames: Option<Box<[Frame]>>) -> Result<Self, Error> {
+    fn create(rate: u32, length: usize, frames: Option<ResidentData>) -> Result<Self, Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
@@ -318,6 +324,7 @@ impl Pcm {
             rate,
             full: frames.is_some(),
             frames: Snapshot::new(frames),
+            resident_budget: std::sync::OnceLock::new(),
             residency_owners: std::sync::atomic::AtomicUsize::new(0),
             residency_managed: AtomicBool::new(false),
             residency_loader: std::sync::OnceLock::new(),
@@ -350,6 +357,8 @@ impl Pcm {
         &self,
         loader: impl Fn() -> Result<ResidencyRanges, Error> + Send + Sync + 'static,
     ) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if self.0.full && self.0.resident_budget.get().is_some() { return Err(Error::RevisionConflict); }
         self.0
             .residency_loader
             .set(ResidencyLoader::Raw(std::sync::Arc::new(loader)))
@@ -361,10 +370,35 @@ impl Pcm {
         &self,
         loader: impl Fn() -> Result<PreparedRanges, Error> + Send + Sync + 'static,
     ) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if self.0.full { return Err(Error::InvalidInput); }
         self.0
             .residency_loader
             .set(ResidencyLoader::Prepared(std::sync::Arc::new(loader)))
             .map_err(|_| Error::InvalidInput)
+    }
+    /// Control side: adopt existing full PCM into a physical quota without
+    /// copying. Caller-owned allocations made before admission are outside the
+    /// quota until this succeeds; use ResidentBuffer to reserve before decoding.
+    /// A raw whole-buffer reload callback is incompatible with this contract.
+    pub fn bind_resident_budget(&self, budget: &HeadBudget) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full { return Err(Error::InvalidInput); }
+        if let Some(old) = self.0.resident_budget.get() {
+            return if old.same(budget) {Ok(())} else {Err(Error::RevisionConflict)};
+        }
+        if matches!(self.0.residency_loader.get(), Some(ResidencyLoader::Raw(_))) { return Err(Error::RevisionConflict); }
+        self.0.frames.collect();
+        if self.0.frames.has_retired() { return Err(Error::InvalidInput); }
+        if let Some(data) = self.0.frames.read().as_ref() { data.charge(budget)?; }
+        self.0.resident_budget.set(budget.clone()).map_err(|_|Error::RevisionConflict)
+    }
+    /// Control side: full-resident reload with admission before decode
+    /// allocation. Capture metadata and budget, never this Pcm, in the closure.
+    pub fn set_budgeted_resident_loader(&self, loader: impl Fn() -> Result<ResidentBuffer, Error> + Send + Sync + 'static) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full || self.0.resident_budget.get().is_none() { return Err(Error::InvalidInput); }
+        self.0.residency_loader.set(ResidencyLoader::Resident(std::sync::Arc::new(loader))).map_err(|_|Error::InvalidInput)
     }
     pub(crate) fn residency_acquire(&self) {
         self.0
@@ -425,12 +459,21 @@ impl Pcm {
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
+        self.0.frames.collect();
         if (self.0.full && self.resident_frames().is_some())
             || (!self.0.full && self.head_frames() > 0)
         {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
+        if let ResidencyLoader::Resident(loader)=loader {
+            let (rate,data,budget)=loader()?.into_parts()?;
+            if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+            if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+            if !self.residency_permitted() {return Err(Error::NotReady);}
+            self.0.frames.replace(Some(data), |_|());
+            return Ok(());
+        }
         if let ResidencyLoader::Prepared(loader)=loader {
             let prepared=loader()?;
             if !self.residency_permitted() {return Err(Error::NotReady);}
@@ -450,7 +493,7 @@ impl Pcm {
             {
                 return Err(Error::InvalidInput);
             }
-            self.0.frames.replace(Some(ranges.pop().unwrap().1), |_| ());
+            self.0.frames.replace(Some(ResidentData::unbudgeted(ranges.pop().unwrap().1)), |_| ());
         } else {
             self.set_ranges_unlocked(ranges)?;
         }

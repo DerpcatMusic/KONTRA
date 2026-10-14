@@ -7,7 +7,7 @@ use mlua::{
 };
 use sampler_core::{
     Direction, HeadBudget, Loop, LoopMode, LoopShape, Pcm, Playback, PreparedSampleRevision,
-    SampleControl, SampleTargetId, SampleTask,
+    ResidentBuffer, SampleControl, SampleTargetId, SampleTask,
 };
 use std::{
     cell::Cell,
@@ -265,6 +265,8 @@ fn prepare(
     if r.recipe.reverse {
         playback.direction = Direction::Reverse;
     }
+    PreparedSampleRevision::validate_geometry(frames, rate, playback, r.rate)
+        .map_err(|e| e.to_string())?;
     let pcm = if r.dynamic.is_some() {
         Pcm::streamed(rate, frames).map_err(|e| e.to_string())?
     } else {
@@ -272,16 +274,20 @@ fn prepare(
         if bytes > MAX_RESIDENT {
             return Err("sample exceeds resident revision decode budget".into());
         }
-        let mut out = vec![[0.; 2]; frames];
-        for (index, block) in out.chunks_mut(HEAD).enumerate() {
+        let mut out =
+            ResidentBuffer::new(rate, frames, &r.head_budget).map_err(|e| e.to_string())?;
+        for (index, block) in out.frames_mut().chunks_mut(HEAD).enumerate() {
             if r.status.cancelled() {
                 return Err("sample load cancelled".into());
             }
             reader
                 .read(index * HEAD, block)
                 .map_err(|e| e.to_string())?;
+            if r.status.cancelled() {
+                return Err("sample load cancelled".into());
+            }
         }
-        Pcm::new(rate, out.into()).map_err(|e| e.to_string())?
+        out.finish().map_err(|e| e.to_string())?
     };
     let mut revision = PreparedSampleRevision::new(SampleTargetId(r.target), pcm, playback, r.rate)
         .map_err(|e| e.to_string())?;
@@ -763,14 +769,19 @@ mod tests {
     use super::*;
     struct Memory {
         cancel: Option<Arc<SampleTask>>,
+        fail: bool,
     }
     impl sampler_kontakt::AssetSource for Memory {
         fn open(&self) -> std::io::Result<sampler_kontakt::SampleReader> {
             let cancel = self.cancel.clone();
+            let fail = self.fail;
             Ok(sampler_kontakt::SampleReader::custom(
                 48000,
                 16,
                 move |_, out| {
+                    if fail {
+                        return Err(std::io::Error::other("authored fixture source failure"));
+                    }
                     out.fill([0.5; 2]);
                     if let Some(task) = &cancel {
                         task.cancel();
@@ -784,6 +795,7 @@ mod tests {
         let status = Arc::new(SampleTask::default());
         let source: Arc<dyn sampler_kontakt::AssetSource> = Arc::new(Memory {
             cancel: cancel_after_read.then(|| status.clone()),
+            fail: false,
         });
         let authority: SampleSource = Arc::new(move |_, _| {
             Ok(SampleResource {
@@ -851,5 +863,63 @@ mod tests {
         assert!(task.cancelled() && !task.success());
         assert_eq!(budget.status().held_bytes, 0);
         assert_eq!(budget.status().peak_bytes, 0);
+    }
+    #[test]
+    fn full_resident_worker_preflights_geometry_and_reserves_before_decode() {
+        for (limit, success) in [(0, false), (127, false), (128, true)] {
+            let budget = HeadBudget::new(limit);
+            let mut r = request(budget.clone(), false);
+            r.dynamic = None;
+            let result = prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]);
+            assert_eq!(result.is_ok(), success);
+            if let Ok((revision, _)) = result {
+                assert_eq!(
+                    &*revision.asset().resident_frames().unwrap(),
+                    &[[0.5; 2]; 16]
+                );
+                assert_eq!(budget.status().held_bytes, 128);
+                drop(revision);
+            }
+            assert_eq!(budget.status().held_bytes, 0);
+            assert_eq!(budget.status().peak_bytes, if success { 128 } else { 0 });
+        }
+        let budget = HeadBudget::new(128);
+        let mut r = request(budget.clone(), false);
+        r.dynamic = None;
+        r.recipe.playback = Some(Playback {
+            start: 17,
+            ..Default::default()
+        });
+        assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]).is_err());
+        assert_eq!(
+            budget.status().peak_bytes,
+            0,
+            "invalid geometry must fail before allocation"
+        );
+    }
+    #[test]
+    fn full_resident_source_error_and_cancel_release_the_actual_preallocated_buffer() {
+        for cancel in [false, true] {
+            let budget = HeadBudget::new(128);
+            let mut r = request(budget.clone(), cancel);
+            r.dynamic = None;
+            if !cancel {
+                let original = r.source.clone();
+                r.source = Arc::new(move |path, explicit| {
+                    let mut resource = original(path, explicit)?;
+                    resource.source = Arc::new(Memory {
+                        cancel: None,
+                        fail: true,
+                    });
+                    Ok(resource)
+                });
+            }
+            let task = r.status.clone();
+            assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]).is_err());
+            assert!(!task.success());
+            assert_eq!(task.cancelled(), cancel);
+            assert_eq!(budget.status().held_bytes, 0);
+            assert_eq!(budget.status().peak_bytes, 128);
+        }
     }
 }

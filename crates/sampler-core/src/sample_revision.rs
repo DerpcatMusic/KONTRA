@@ -44,6 +44,13 @@ impl std::fmt::Debug for PreparedSampleRevision {
     }
 }
 impl PreparedSampleRevision {
+    /// Control-side preflight before payload reservation or decoding.
+    pub fn validate_geometry(frames: usize, source_rate: u32, playback: Playback, output_rate: u32) -> Result<(), Error> {
+        if playback.transpose_semitones != 0. || playback.wavetable.is_some() {
+            return Err(Error::InvalidInput);
+        }
+        playback.cursor(frames, source_rate, output_rate).map(|_|())
+    }
     /// `playback` describes file/explicit oscillator playback geometry. Pitch
     /// remains the authored region's root/tune; no file root is substituted.
     pub fn new(
@@ -435,10 +442,12 @@ pub(crate) struct SampleQueues {
     wake: Arc<OnceLock<std::thread::Thread>>,
 }
 impl SampleControl {
-    /// Off audio: a separate physical quota for this client's dynamic streamed
-    /// heads, shared with staged/current/old-voice/retired-reply generations.
-    /// Initial static Streamer heads and full-resident revisions are separate.
-    pub fn head_budget(&self)->HeadBudget {self.head_budget.clone()}
+    /// Off audio: physical dynamic PCM quota, shared by packed heads and full
+    /// resident buffers through staging/current/old voices/retired replies.
+    /// Initial static Streamer storage is separate.
+    pub fn physical_budget(&self)->HeadBudget {self.head_budget.clone()}
+    /// Compatibility name; now also includes budgeted full-resident PCM.
+    pub fn head_budget(&self)->HeadBudget {self.physical_budget()}
     /// Off audio: wake the sole owner when a commit/failure receipt arrives.
     pub fn set_wake(&mut self, owner: std::thread::Thread) -> Result<(), Error> {
         self.wake.set(owner).map_err(|_| Error::InvalidInput)
@@ -452,12 +461,13 @@ impl SampleControl {
         revision: PreparedSampleRevision,
         task: Arc<SampleTask>,
     ) -> Result<u64, (Error, PreparedSampleRevision, Arc<SampleTask>)> {
-        if revision.pcm.resident_frames().is_none()
-            && !revision.pcm.0.head_budget.get().is_some_and(|budget|budget.same(&self.head_budget)) {
-            return Err((Error::RevisionConflict,revision,task));
-        }
         if revision.bytes > self.byte_limit {
             return Err((Error::InvalidInput, revision, task));
+        }
+        if revision.pcm.0.full {
+            if let Err(error)=revision.pcm.bind_resident_budget(&self.head_budget) {return Err((error,revision,task));}
+        } else if !revision.pcm.0.head_budget.get().is_some_and(|budget|budget.same(&self.head_budget)) {
+            return Err((Error::RevisionConflict,revision,task));
         }
         if self.pending.is_abandoned() {
             return Err((Error::NotReady, revision, task));
@@ -500,9 +510,12 @@ impl SampleControl {
     }
 }
 impl Runtime {
-    /// Bounded atomic accounting for dynamic streamed heads. This includes
-    /// worker staging and returned retired payloads, not only logical slots.
-    /// Full-resident revision frames have a separate admission contract.
+    /// Bounded atomic accounting for dynamic packed heads and full-resident
+    /// PCM. Includes staging and returned retired payloads, not only slots.
+    pub fn sample_physical_budget_status(&self)->Option<HeadBudgetStatus> {
+        self.sample_queues.as_ref().map(|q|q.head_budget.status())
+    }
+    /// Compatibility name; the same quota also covers full-resident PCM.
     pub fn sample_head_budget_status(&self)->Option<HeadBudgetStatus> {
         self.sample_queues.as_ref().map(|q|q.head_budget.status())
     }
