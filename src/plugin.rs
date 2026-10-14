@@ -2975,6 +2975,53 @@ pub struct Dsp {
     end_rejections: u64,
     playing: bool,
     master_gain: MasterGain,
+    #[cfg(test)]
+    callback_audit: Option<CallbackAudit>,
+}
+
+/// Diagnostic clock groups exist only in test builds. Publishing/serialization
+/// happens in the receipt fixture after process() has returned.
+#[cfg(test)]
+#[derive(Default)]
+struct CallbackAudit {
+    wall_ns: [u64; 10],
+    caller_cpu_ns: [u64; 10],
+    calls: [u64; 10],
+}
+
+#[cfg(test)]
+struct CallbackAuditStamp {
+    wall: Instant,
+    caller_cpu_ns: u64,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn callback_thread_nanos() -> u64 {
+    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: the test-only clock call receives a valid writable timespec.
+    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+fn callback_thread_nanos() -> u64 { 0 }
+
+#[cfg(test)]
+fn callback_audit_mark(
+    audit: &mut Option<CallbackAudit>,
+    stamp: &mut Option<CallbackAuditStamp>,
+    group: usize,
+) {
+    if let (Some(audit), Some(previous)) = (audit.as_mut(), stamp.as_mut()) {
+        let now = CallbackAuditStamp { wall: Instant::now(), caller_cpu_ns: callback_thread_nanos() };
+        audit.wall_ns[group] = audit.wall_ns[group].saturating_add(
+            now.wall.duration_since(previous.wall).as_nanos().min(u128::from(u64::MAX)) as u64,
+        );
+        audit.caller_cpu_ns[group] = audit.caller_cpu_ns[group]
+            .saturating_add(now.caller_cpu_ns.saturating_sub(previous.caller_cpu_ns));
+        audit.calls[group] = audit.calls[group].saturating_add(1);
+        *previous = now;
+    }
 }
 
 /// Keep sample-accurate smoothing while reusing the transform of an identical
@@ -3021,6 +3068,8 @@ impl Default for Dsp {
             end_rejections: 0,
             playing: false,
             master_gain: MasterGain::default(),
+            #[cfg(test)]
+            callback_audit: None,
         }
     }
 }
@@ -3101,6 +3150,11 @@ impl PluginLogic for Sampler {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let started = Instant::now();
+        #[cfg(test)]
+        let mut callback_stamp = s.callback_audit.as_ref().map(|_| CallbackAuditStamp {
+            wall: started,
+            caller_cpu_ns: callback_thread_nanos(),
+        });
         let shared = &p.shared;
         if !shared.discard.is_full()
             && let Some(mut growth) = shared.growth.pop()
@@ -3173,6 +3227,8 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 0);
         // Port v1 per-part engine defaults before any keyboard or host note starts.
         s.core.set_performance(
             p.attack.raw_target(),
@@ -3225,6 +3281,8 @@ impl PluginLogic for Sampler {
             s.audition[selected] = ((rate * 1.5) as usize, note);
         }
 
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 1);
         let channels = b.num_output_channels();
         let thru = shared.midi_thru.load(Ordering::Relaxed);
         let mut peak = [0f32; 2];
@@ -3255,6 +3313,8 @@ impl PluginLogic for Sampler {
                     },
                 }
             }
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 2);
             if at >= frames {
                 break;
             }
@@ -3271,9 +3331,13 @@ impl PluginLogic for Sampler {
                 }
             }
             s.master_gain.fill(&p.volume, &mut gains[..len]);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 3);
             let ports = s.core.bus_ports().map(usize::from);
             s.core.set_tap(scope.checked_sub(1));
             let Rendered { buses, live } = s.core.render(len);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 4);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
                 for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
@@ -3342,6 +3406,8 @@ impl PluginLogic for Sampler {
                 shared.scope.push(tapped);
             }
             at += len;
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 5);
         }
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
@@ -3371,11 +3437,15 @@ impl PluginLogic for Sampler {
                     .is_ok()
             });
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 6);
         let offset = frames.saturating_sub(1) as u32;
         let refused = s
             .core
             .end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 7);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -3410,6 +3480,8 @@ impl PluginLogic for Sampler {
             peaks.parts.fill([0.0; 2]);
             peaks.buses.fill([0.0; 2]);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 8);
         let voices = s.core.voices();
         shared.voices.store(voices.active as u64, Ordering::Relaxed);
         shared
@@ -3422,6 +3494,8 @@ impl PluginLogic for Sampler {
         shared
             .end_rejections
             .store(s.end_rejections, Ordering::Relaxed);
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 9);
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let busy = started.elapsed();

@@ -3,6 +3,40 @@
 use super::*;
 use sampler_core::{Envelope, Loop, LoopMode, LoopShape, Pcm, Playback, Prepared, Region, Runtime};
 
+impl CallbackAudit {
+    fn receipt(self, busy_ns: u64, callbacks: usize, block: usize) -> serde_json::Value {
+        let chunks = block.div_ceil(MAX_BLOCK) as u64;
+        let expected = [1, 1, chunks + 1, chunks, chunks, chunks, 1, 1, 1, 1];
+        for (calls, expected) in self.calls.iter().zip(expected) {
+            assert_eq!(*calls, expected * callbacks as u64);
+        }
+        let wall_sum = self.wall_ns.iter().sum::<u64>();
+        assert!(wall_sum <= busy_ns);
+        let names = [
+            "adoption_polling",
+            "begin_transport_controls_keyboard",
+            "host_events",
+            "audition_master_gain",
+            "core_render_inclusive",
+            "output_mix_scope",
+            "ui_effect_readback",
+            "end_block_retirement",
+            "meter_publication",
+            "voice_readback",
+        ];
+        serde_json::json!({
+            "scope":"test-only actual process groups; elapsed includes descheduling/probes; caller CPU excludes workers and outside observers; core group overlaps nested V2 stages",
+            "caller_cpu_available":cfg!(target_os="linux"),
+            "groups": names.into_iter().enumerate().map(|(i,name)| serde_json::json!({
+                "name":name,"calls":self.calls[i],"wall_ns":self.wall_ns[i],"caller_thread_cpu_ns":self.caller_cpu_ns[i],
+            })).collect::<Vec<_>>(),
+            "timed_disjoint_wall_sum_ns":wall_sum,
+            "caller_thread_cpu_sum_ns":self.caller_cpu_ns.iter().sum::<u64>(),
+            "callback_unattributed_wall_ns_including_final_probe":busy_ns-wall_sum,
+        })
+    }
+}
+
 #[test]
 #[ignore = "optimized CPU receipt: run with no competing builds or benchmarks"]
 fn whole_callback_300_voice_cpu_receipt() {
@@ -150,6 +184,12 @@ fn whole_callback_300_voice_cpu_receipt() {
             Sampler::process(dsp, &p, &mut buffer, events, &mut cx),
             ProcessStatus::Normal
         );
+        if !stage_audit {
+            assert!(
+                dsp.callback_audit.is_none(),
+                "disabled audit must remain absent"
+            );
+        }
         let mut energy = 0.;
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         for &sample in left.iter().chain(&right) {
@@ -159,6 +199,10 @@ fn whole_callback_300_voice_cpu_receipt() {
         }
         (energy, hash)
     };
+    if stage_audit {
+        let _ = callback_thread_nanos(); // Resolve the diagnostic clock before the heap guard.
+        dsp.callback_audit = Some(CallbackAudit::default());
+    }
     let start = Instant::now();
     let admission_busy_before = p.shared.busy_ns.load(Ordering::Relaxed);
     assert_eq!(
@@ -169,6 +213,12 @@ fn whole_callback_300_voice_cpu_receipt() {
     );
     let admission_wall_ns = start.elapsed().as_nanos();
     let admission_busy_ns = p.shared.busy_ns.load(Ordering::Relaxed) - admission_busy_before;
+    let admission_groups = dsp
+        .callback_audit
+        .take()
+        .map_or(serde_json::Value::Null, |a| {
+            a.receipt(admission_busy_ns, 1, block)
+        });
     assert_eq!(dsp.core.voices().active, VOICES);
     for _ in 0..512 {
         run(&empty, &mut dsp);
@@ -184,6 +234,7 @@ fn whole_callback_300_voice_cpu_receipt() {
         // Enable/reset existing test-only V2 stage clocks after setup/warmup.
         // JSON construction and state inspection occur outside process().
         let _ = dsp.core.onset_audit();
+        dsp.callback_audit = Some(CallbackAudit::default());
     }
     let before_busy = p.shared.busy_ns.load(Ordering::Relaxed);
     let before_span = p.shared.span_ns.load(Ordering::Relaxed);
@@ -200,6 +251,10 @@ fn whole_callback_300_voice_cpu_receipt() {
     }
     let busy = p.shared.busy_ns.load(Ordering::Relaxed) - before_busy;
     let span = p.shared.span_ns.load(Ordering::Relaxed) - before_span;
+    let callback_groups = dsp
+        .callback_audit
+        .take()
+        .map_or(serde_json::Value::Null, |a| a.receipt(busy, blocks, block));
     let stages = if stage_audit {
         let raw = dsp.core.onset_audit();
         let values = raw["stage_ns"].as_array().expect("audit was enabled");
@@ -227,13 +282,14 @@ fn whole_callback_300_voice_cpu_receipt() {
     assert!(energy > 0.);
     durations.sort_unstable();
     let budget = block as f64 * 1e9 / 48000.;
-    let receipt = serde_json::json!({
+    let mut receipt = serde_json::json!({
         "scope":"Sampler::process; owned resident PCM; no exported host, UI painter or authored scripts",
         "debug_assertions":cfg!(debug_assertions),"callback_heap_guards_passed":true,
         "block":block,"blocks":blocks,"voices":VOICES,"sources":count,"workload":workload,
         "initial_voice_capacity":limits.voices,"voice_ceiling":ceiling,"note_capacity":limits.notes,
         "runtime_bus_count":runtime_bus_count,"prepared_voice_state_bytes":voice_state_bytes,
         "frontend_max_render_frames":MAX_BLOCK,"stage_audit_enabled":stage_audit,"v2_stages":stages,
+        "admission_callback_groups":admission_groups,"steady_callback_groups":callback_groups,
         "admission_plus_observer_wall_ns":admission_wall_ns,
         "admission_callback_busy_ns":admission_busy_ns,
         "kontra_meter_unsmoothed_percent":100. * busy as f64 / span as f64,
@@ -242,15 +298,31 @@ fn whole_callback_300_voice_cpu_receipt() {
         "deadline_misses":durations.iter().filter(|&&d| d as f64 > budget).count(),
         "pcm_energy":energy,"pcm_hash":format!("{hash:016x}"),"problems":problems
     });
+    if stage_audit {
+        dsp.callback_audit = Some(CallbackAudit::default());
+    }
+    let release_busy_before = p.shared.busy_ns.load(Ordering::Relaxed);
+    let mut note_off_busy = 0;
     assert_eq!(
         tests::allocations(|| {
             run(&off, &mut dsp);
+            note_off_busy = p.shared.busy_ns.load(Ordering::Relaxed) - release_busy_before;
+            // Include tail completion and NOTE_END, not just the key-up callback.
+            for _ in 0..32 {
+                run(&empty, &mut dsp);
+            }
         }),
         0
     );
-    for _ in 0..32 {
-        run(&empty, &mut dsp);
-    }
+    let release_busy = p.shared.busy_ns.load(Ordering::Relaxed) - release_busy_before;
+    receipt["release_callback_groups"] = dsp
+        .callback_audit
+        .take()
+        .map_or(serde_json::Value::Null, |a| {
+            a.receipt(release_busy, 33, block)
+        });
+    receipt["note_off_callback_busy_ns"] = note_off_busy.into();
+    receipt["release_phase_callbacks"] = 33.into();
     assert_eq!(dsp.core.voices().active, 0, "all exact host IDs release");
     assert_eq!(dsp.core.problems(0), RuntimeProblems::default());
     println!("WHOLE_CALLBACK_CPU {receipt}");
