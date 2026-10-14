@@ -5524,6 +5524,33 @@ mod tests {
         assert!(!loud(&core.render(128), 3, 128), "muted node");
     }
 
+    /// Conflux's MW wheel: `on ui_control` forwards the knob with set_controller.
+    #[test]
+    fn a_widget_set_controller_reaches_the_performance_controller() {
+        let source = "on init declare ui_knob $mw(0, 127, 1) end on \
+                      on ui_control($mw) set_controller(1, $mw) set_controller($VCC_PITCH_BEND, -8192) end on";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mw = script.controls().iter().find(|c| c.variable.ends_with("$mw")).unwrap().definition.id.0;
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0,
+            gain: 1.0, envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan).0;
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap())));
+        assert!(core.set_control(0, sampler_ui_ir::ControlId(mw), 127.0));
+        core.render(16);
+        core.render(16);
+        let part = core.parts[0].as_mut().unwrap();
+        let performance = part.runtime.performance(0).unwrap();
+        assert_eq!(
+            (part.runtime.controller(performance, 1).unwrap(), part.runtime.controller(performance, 128).unwrap()),
+            (u32::MAX, 0)
+        );
+    }
+
     #[test]
     fn a_widget_edit_runs_the_scripts_ui_control_callback() {
         let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_knob $echo(0, 1000, 1)\nend on\n\
