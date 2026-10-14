@@ -123,6 +123,8 @@ pub enum AmpModel {
     Cabinet,
     /// 0x58 Cry Wah: pedal, mono.
     CryWah,
+    /// 0x23 Twang (Fx4BB, apply 0x140adf660): volume, treble, mid, bass, bright, mono.
+    Twang,
     /// 0x53 AC Box: normal volume, brilliant volume, bass, treble, tone cut, tremolo speed, tremolo depth, mono.
     AcBox,
     /// 0x55 Cat: volume, distortion, filter, bass, balls, treble, tone, mono.
@@ -528,6 +530,7 @@ impl Config {
             Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
             Self { curve: Curve::Amp(Amp { model: AmpModel::CryWah, .. }), .. } => "Cry Wah",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Twang, .. }), .. } => "Twang",
             Self { curve: Curve::Amp(Amp { model: AmpModel::AcBox, .. }), .. } => "AC Box",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cat, .. }), .. } => "Cat",
             Self { curve: Curve::Amp(Amp { model: AmpModel::DStortion, .. }), .. } => "DStortion",
