@@ -558,7 +558,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                             caption(label.clone()).lines(1).min_w(0).flex(1)
                         ]
                         .gap(TIGHT)
-                        .pad((0, SPACE))
+                        .pad(edges(SPACE, BAR_GUTTER, SPACE, 0.))
                         .h(20.)
                         .focusable()
                         .a11y(A11y::Toggle { on })
@@ -624,7 +624,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                         ]
                         .gap(TIGHT)
                         .h(CONTROL)
-                        .pad((0, TIGHT))
+                        .pad(edges(TIGHT, BAR_GUTTER, TIGHT, 0.))
                         .align(Align::Center)
                         .focusable()
                         .a11y(A11y::Toggle { on })
@@ -894,7 +894,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             ]
             .gap(TIGHT)
             .h(STACK_ROW)
-            .pad((0, TIGHT))
+            .pad(edges(TIGHT, BAR_GUTTER, TIGHT, 0.))
             .focusable()
             .a11y(A11y::Toggle { on })
             .named(label.clone())

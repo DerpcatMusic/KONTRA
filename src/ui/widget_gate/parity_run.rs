@@ -254,8 +254,18 @@ fn layout(ui: &Ui, w: f64, h: f64) -> Value {
     type R = [f64; 4]; // x0 y0 x1 y1
     let scene = ui.scene().unwrap();
     let rects: Vec<(String, R)> = scene.surfaces()
-        .filter(|s| !s.disabled && s.frame.size.width > 1. && s.frame.size.height > 1.)
-        .map(|s| (s.key.to_string(), [s.frame.x, s.frame.y, s.frame.x + s.frame.size.width, s.frame.y + s.frame.size.height]))
+        .filter(|s| !s.disabled)
+        .map(|s| {
+            let mut r = [s.frame.x, s.frame.y, s.frame.x + s.frame.size.width, s.frame.y + s.frame.size.height];
+            // Only the part a clipping ancestor (scroll viewport, panel) lets show:
+            // a row scrolled half out of its list is cut on purpose, not clipped.
+            // ponytail: nearest clip only; intersect `clip_path` too if nested clips disagree.
+            if let Some(c) = s.clip {
+                r = [r[0].max(c.x0), r[1].max(c.y0), r[2].min(c.x1), r[3].min(c.y1)];
+            }
+            (s.key.to_string(), r)
+        })
+        .filter(|(_, r)| r[2] - r[0] > 1. && r[3] - r[1] > 1.)
         .collect();
     let contains = |a: &R, b: &R| b[0] >= a[0] - 1. && b[1] >= a[1] - 1. && b[2] <= a[2] + 1. && b[3] <= a[3] + 1.;
     // Leaves only: containers (scroll areas, panels) legitimately extend and nest.
@@ -278,7 +288,9 @@ fn layout(ui: &Ui, w: f64, h: f64) -> Value {
             }
         }
     }
-    json!({"surfaces": rects.len(), "clipped": clipped.len(), "clipped_examples": clipped.iter().take(8).collect::<Vec<_>>(),
+    let bbox = |k: &String| json!([k, rects.iter().find(|(j, _)| j == k).map(|(_, r)| r.map(|v| v.round()))]);
+    let overlaps: Vec<Value> = overlaps.iter().map(|p: &Value| json!([bbox(&p[0].as_str().unwrap().to_string()), bbox(&p[1].as_str().unwrap().to_string())])).collect();
+    json!({"surfaces": rects.len(), "clipped": clipped.len(), "clipped_examples": clipped.iter().take(8).map(|k| bbox(k)).collect::<Vec<_>>(),
         "overlaps": overlaps.len(), "anonymous_overlaps": anonymous, "overlap_examples": overlaps.iter().take(8).collect::<Vec<_>>()})
 }
 
