@@ -1,10 +1,10 @@
 //! Bounded startup attack preparation. No initial PCM is published until every
 //! source has succeeded and exact packed capacity has been admitted.
 use super::{
-    AssetId, AssetSource, HeadBudgetExceeded, Pcm, Range, SampleReader, canceled_head,
+    AssetId, AssetSource, Pcm, Range, SampleReader, canceled_head,
     prepare_head_ranges,
 };
-use sampler_core::PreparedRanges;
+use sampler_core::{HeadBudget,PreparedRanges};
 use std::{
     collections::HashMap,
     io,
@@ -106,8 +106,7 @@ impl Drop for Audit {
 pub(super) fn prepare(
     selected: &[(&Pcm, &[Range<usize>])],
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
-    budget: usize,
-    base_bytes: usize,
+    budget: &HeadBudget,
     requested_workers: usize,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<(Vec<PreparedRanges>, usize)> {
@@ -116,14 +115,13 @@ pub(super) fn prepare(
         return if canceled() {
             Err(canceled_head())
         } else {
-            Ok((Vec::new(), base_bytes))
+            Ok((Vec::new(), budget.status().held_bytes))
         };
     }
     let workers = requested_workers.max(1).min(8).min(selected.len());
     let audit_enabled = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
     let batch_start = audit_enabled.then(Instant::now);
     let next = AtomicUsize::new(0);
-    let held = AtomicUsize::new(base_bytes);
     let stop = AtomicBool::new(false);
     let error = Mutex::new(None::<io::Error>);
     let fail = |failure: io::Error| {
@@ -141,11 +139,12 @@ pub(super) fn prepare(
         let mut handles = Vec::with_capacity(workers);
         for worker in 0..workers {
             let send = send.clone();
-            let (next, held, stop, fail) = (&next, &held, &stop, &fail);
+            let (next, stop, fail) = (&next, &stop, &fail);
             let handle = std::thread::Builder::new()
                 .name("sample-head-prepare".into())
                 .spawn_scoped(scope, move || {
                     let mut audit = audit_enabled.then(|| Audit::new(worker));
+                    let mut page=vec![[0.;2];sampler_core::PAGE_FRAMES];
                     loop {
                         if stop.load(Ordering::Acquire) || canceled() {
                             break;
@@ -175,28 +174,14 @@ pub(super) fn prepare(
                             let opened = source.open();
                             open_us = open_start.map_or(0, |t| t.elapsed().as_micros() as u64);
                             let mut reader: SampleReader = opened?;
-                            let prepared = prepare_head_ranges(
-                                pcm,
+                            prepare_head_ranges(
+                                &pcm.head_preparer(),
                                 &mut reader,
                                 ranges,
+                                &mut page,
                                 &|| stop.load(Ordering::Acquire) || canceled(),
                                 audit_enabled.then_some(&mut timing),
-                            )?;
-                            let bytes = prepared.bytes();
-                            if let Err(previous) =
-                                held.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                                    n.checked_add(bytes).filter(|n| *n <= budget)
-                                })
-                            {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::OutOfMemory,
-                                    HeadBudgetExceeded {
-                                        budget_bytes: budget,
-                                        required_at_least_bytes: previous.saturating_add(bytes),
-                                    },
-                                ));
-                            }
-                            Ok(prepared)
+                            )
                         })();
                         if let Some(audit) = &mut audit {
                             audit.record(
@@ -253,5 +238,5 @@ pub(super) fn prepare(
         .into_iter()
         .map(|p| p.ok_or_else(|| io::Error::other("incomplete sample head preparation")))
         .collect::<io::Result<Vec<_>>>()?;
-    Ok((ranges, held.load(Ordering::Acquire)))
+    Ok((ranges, budget.status().held_bytes))
 }

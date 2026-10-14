@@ -8,6 +8,12 @@ pub use sample_revision::{DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRe
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 use predicates::Matching;
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
+#[path = "head_budget.rs"]
+mod head_budget;
+pub use head_budget::{HeadBudget, HeadBudgetStatus};
+#[path = "head_ranges.rs"]
+mod head_ranges;
+pub use head_ranges::{HeadPreparer, HeadRangeBuilder, PreparedRanges, Ranges};
 use sampler_pool::{Snapshot, SnapshotRead};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 
@@ -43,13 +49,17 @@ struct PcmData {
     // A streamed asset's resident ranges (where voices start); empty when purged.
     /// Readers (every render thread) share it; only a control-side swap writes.
     head: Snapshot<Ranges>,
+    head_budget: std::sync::OnceLock<HeadBudget>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
     length: usize,
 }
 /// A control-installed decoder for this asset's authored resident ranges.
 pub type ResidencyRanges = Vec<(usize, Box<[Frame]>)>;
-struct ResidencyLoader(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>);
+enum ResidencyLoader {
+    Raw(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>),
+    Prepared(std::sync::Arc<dyn Fn() -> Result<PreparedRanges, Error> + Send + Sync>),
+}
 impl std::fmt::Debug for ResidencyLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ResidencyLoader")
@@ -83,21 +93,6 @@ impl AsRef<[Frame]> for ResidentFrames<'_> {
 }
 
 type LevelData = Box<[Box<[Frame]>]>;
-/// Resident ranges of a streamed asset: (first frame, frames), ascending and
-/// disjoint.
-pub type Ranges = Box<[(usize, crate::Packed)]>;
-
-/// Validated, losslessly packed resident ranges awaiting control-side
-/// publication. Bound to one immutable asset; decoding and packing happen once.
-pub struct PreparedRanges {
-    asset: AssetId,
-    ranges: Ranges,
-    bytes: usize,
-}
-impl PreparedRanges {
-    pub fn bytes(&self) -> usize { self.bytes }
-}
-
 /// Calls `f` with each part of `range` outside `ranges`, in order, until it
 /// returns false; returns whether every call returned true.
 pub(crate) fn uncovered(
@@ -188,40 +183,84 @@ impl Pcm {
         self.publish_ranges_unlocked(self.prepare_ranges(ranges)?)
     }
     /// Prepare exact packed residency without changing the published asset.
-    /// Call off audio; the returned byte count supports atomic budget admission.
+    /// Call off audio; a bound head budget is reserved before packed allocation.
+    /// The caller-owned decoded buffers are outside that packed-payload cap.
     pub fn prepare_ranges(&self, ranges: ResidencyRanges) -> Result<PreparedRanges, Error> {
         if !ranges.is_empty() && !self.residency_permitted() {
             return Err(Error::NotReady);
         }
-        let valid = !self.0.full
-            && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
-            && ranges.iter().all(|(start, frames)| {
-                !frames.is_empty()
-                    && start
-                        .checked_add(frames.len())
-                        .is_some_and(|end| end <= self.0.length)
-                    && frames.iter().flatten().all(|x| x.is_finite())
-            });
-        if !valid {
+        self.0.head.collect();
+        self.head_preparer().prepare(ranges)
+    }
+    /// Off audio: bind one shared packed-payload quota before initial head
+    /// publication. Existing current storage is admitted without copying;
+    /// unaccounted retired generations must first be reclaimed on control.
+    pub fn bind_head_budget(&self, budget: &HeadBudget) -> Result<(), Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = self.0.head_budget.get() {
+            return if old.same(budget) {
+                Ok(())
+            } else {
+                Err(Error::RevisionConflict)
+            };
+        }
+        self.0.head.collect();
+        if self.0.head.has_retired() {
             return Err(Error::InvalidInput);
         }
-        let ranges: Ranges = ranges
-            .into_iter()
-            .map(|(start, frames)| (start, crate::Packed::new(&frames)))
-            .collect();
-        let bytes = ranges.iter().try_fold(0usize, |n, (_, f)| n.checked_add(f.bytes()))
-            .ok_or(Error::Capacity)?;
-        Ok(PreparedRanges { asset: self.asset_id(), ranges, bytes })
+        self.0.head.read().charge(budget)?;
+        self.0
+            .head_budget
+            .set(budget.clone())
+            .map_err(|_| Error::RevisionConflict)
     }
-    /// Publish a previously prepared generation. Caller owns budget admission.
+    /// Immutable decoder recipe. It holds budget identity, not a Pcm reference,
+    /// so storing it in a residency loader cannot create an ownership cycle.
+    pub fn head_preparer(&self) -> HeadPreparer {
+        HeadPreparer::new(
+            self.asset_id(),
+            self.sample_rate(),
+            self.frame_count(),
+            !self.0.full,
+            self.0.head_budget.get().cloned(),
+        )
+    }
+    /// Publish a previously prepared generation. A bound asset requires the
+    /// exact same budget identity already carried by that generation.
     /// The old generation remains borrowed until control-side collection.
-    pub fn publish_ranges(&self, ranges: PreparedRanges) -> Result<SnapshotRead<'_, Ranges>, Error> {
-        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn publish_ranges(
+        &self,
+        ranges: PreparedRanges,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         self.publish_ranges_unlocked(ranges)
     }
-    fn publish_ranges_unlocked(&self, prepared: PreparedRanges) -> Result<SnapshotRead<'_, Ranges>, Error> {
-        if prepared.asset != self.asset_id() { return Err(Error::InvalidInput); }
-        if !prepared.ranges.is_empty() && !self.residency_permitted() { return Err(Error::NotReady); }
+    fn publish_ranges_unlocked(
+        &self,
+        prepared: PreparedRanges,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        if self.0.full || prepared.asset != self.asset_id() {
+            return Err(Error::InvalidInput);
+        }
+        if self
+            .0
+            .head_budget
+            .get()
+            .is_some_and(|budget| !prepared.charged_to(budget))
+        {
+            return Err(Error::RevisionConflict);
+        }
+        if !prepared.ranges.is_empty() && !self.residency_permitted() {
+            return Err(Error::NotReady);
+        }
         self.0.head.collect();
         Ok(self.0.head.swap(prepared.ranges))
     }
@@ -287,6 +326,7 @@ impl Pcm {
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
             head: Snapshot::default(),
+            head_budget: std::sync::OnceLock::new(),
             cold: AtomicBool::new(false),
             length,
         })))
@@ -312,7 +352,18 @@ impl Pcm {
     ) -> Result<(), Error> {
         self.0
             .residency_loader
-            .set(ResidencyLoader(std::sync::Arc::new(loader)))
+            .set(ResidencyLoader::Raw(std::sync::Arc::new(loader)))
+            .map_err(|_| Error::InvalidInput)
+    }
+    /// Page-bounded decoder/packer with generation-owned budget admission.
+    /// The closure should retain a HeadPreparer rather than this Pcm itself.
+    pub fn set_prepared_residency_loader(
+        &self,
+        loader: impl Fn() -> Result<PreparedRanges, Error> + Send + Sync + 'static,
+    ) -> Result<(), Error> {
+        self.0
+            .residency_loader
+            .set(ResidencyLoader::Prepared(std::sync::Arc::new(loader)))
             .map_err(|_| Error::InvalidInput)
     }
     pub(crate) fn residency_acquire(&self) {
@@ -352,7 +403,7 @@ impl Pcm {
                 self.0.frames.replace(None, |_| ());
             }
             if !self.0.head.read().is_empty() {
-                self.0.head.replace(Box::new([]), |_| ());
+                self.0.head.replace(Ranges::default(), |_| ());
             }
             if !self.0.levels.read().is_empty() {
                 self.0.levels.replace(Box::new([]), |_| ());
@@ -380,7 +431,14 @@ impl Pcm {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
-        let mut ranges = (loader.0)()?;
+        if let ResidencyLoader::Prepared(loader)=loader {
+            let prepared=loader()?;
+            if !self.residency_permitted() {return Err(Error::NotReady);}
+            self.publish_ranges_unlocked(prepared)?;
+            return Ok(());
+        }
+        let ResidencyLoader::Raw(loader)=loader else {unreachable!()};
+        let mut ranges = loader()?;
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -415,13 +473,19 @@ impl Pcm {
         let levels = self.0.levels.read();
         levels.iter().map(|l| l.len()).sum::<usize>() * size_of::<Frame>()
     }
-    /// Control side: bytes of resident frames, octave levels and any streamed head.
-    pub fn resident_bytes(&self) -> usize {
+    /// Control side: current full-resident PCM and octave bytes, excluding
+    /// packed heads. Shared streamed head quotas must be counted once through
+    /// HeadBudget::status, including staged and retired physical generations.
+    pub fn resident_non_head_bytes(&self) -> usize {
         self.0.frames.collect();
         self.resident_frames()
             .map_or(0, |f| f.len() * size_of::<Frame>())
-            + self.head_bytes()
             + self.level_bytes()
+    }
+    /// Control side: current full PCM, octave levels and streamed head bytes.
+    /// A shared head quota's held bytes additionally include retired/staged data.
+    pub fn resident_bytes(&self) -> usize {
+        self.resident_non_head_bytes() + self.head_bytes()
     }
 }
 
@@ -1988,6 +2052,60 @@ mod publication_tests {
         assert!(other.publish_ranges(wrong).is_err());
         assert_eq!(other.head_bytes(),0);
         assert!(pcm.resident_covers(16..24));
+    }
+
+    #[test]
+    fn explicit_residency_reload_obeys_retained_generation_budget_and_retries_after_collection() {
+        let budget=HeadBudget::new(32);
+        let pcm=Pcm::streamed(48000,64).unwrap();
+        pcm.bind_head_budget(&budget).unwrap();
+        let recipe=pcm.head_preparer();
+        pcm.set_prepared_residency_loader(move ||recipe.prepare(vec![(0,vec![[0.5;2];16].into_boxed_slice())])).unwrap();
+        pcm.residency_acquire();
+        pcm.residency_reload().unwrap();
+        let retained=pcm.set_ranges(Vec::new()).unwrap();
+        assert_eq!(budget.status().held_bytes,32);
+        assert_eq!(pcm.residency_reload(),Err(Error::Capacity));
+        assert_eq!(pcm.head_frames(),0);
+        assert_eq!(budget.status().held_bytes,32);
+        drop(retained);
+        assert_eq!(budget.status().held_bytes,32);
+        pcm.residency_reload().unwrap();
+        assert!(pcm.resident_covers(0..16));
+        assert_eq!(budget.status().held_bytes,32);
+        assert_eq!(budget.status().peak_bytes,32);
+        pcm.residency_release();
+        assert!(pcm.residency_collect());
+        assert_eq!(budget.status().held_bytes,0);
+    }
+
+    #[test]
+    fn purged_residency_transaction_cannot_publish_or_leak_its_staging_lease() {
+        let budget=HeadBudget::new(32);
+        let pcm=Pcm::streamed(48000,64).unwrap();
+        pcm.bind_head_budget(&budget).unwrap();
+        let recipe=pcm.head_preparer();
+        let (entered,received)=std::sync::mpsc::channel();
+        let (resume,resumed)=std::sync::mpsc::channel();
+        let resumed=std::sync::Mutex::new(resumed);
+        pcm.set_prepared_residency_loader(move || {
+            let prepared=recipe.prepare(vec![(0,vec![[0.5;2];16].into_boxed_slice())])?;
+            entered.send(()).unwrap();
+            resumed.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            Ok(prepared)
+        }).unwrap();
+        pcm.residency_acquire();
+        std::thread::scope(|scope| {
+            let loading=scope.spawn(||pcm.residency_reload());
+            received.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(budget.status().held_bytes,32);
+            pcm.residency_release();
+            resume.send(()).unwrap();
+            assert_eq!(loading.join().unwrap(),Err(Error::NotReady));
+        });
+        assert_eq!(pcm.head_frames(),0);
+        assert_eq!(budget.status().held_bytes,0);
+        assert_eq!(budget.status().peak_bytes,32);
     }
 
     #[test]
