@@ -1,6 +1,6 @@
 //! UVI `filter` effects onto sampler_ir::fx::filter.
 //!
-//! BiquadFilter, MoogFilter, Rez and XpanderFilter are native laws of the engine's cascade core (UVI
+//! BiquadFilter, MoogFilter, Rez, XpanderFilter, VowelFilter and CombFilter are native laws of the engine's cascade core (UVI
 //! Workstation 4.0.9, checked under kemu; see `sampler-core::dsp::filter::cascade`). OnePole is
 //! the SVF one-pole (its Freq to coefficient law is not proved). Every other UVI filter element
 //! is named here with the exact thing that is not proved, so the report says why it is dropped
@@ -14,7 +14,6 @@ use sampler_ir::Processor;
 /// The UVI filter elements and why each one without a mapping has none.
 const GAPS: &[(&str, &str)] = &[
     ("BrickwallFilter", "Slope (0..2) steepness and the native brickwall design are not extracted"),
-    ("CombFilter", "comb topology (Mode 0..1), the 0..1 Q-to-feedback law and delay length law are not extracted"),
     ("CrossOverFilter", "a three-way split feeds separate output buses; neither the crossover alignment nor the bus routing is modelled"),
     ("DigitalFilter", "Slope (0..7) and Spread (-48..48) semantics and the Q law are not extracted"),
     ("FxFilter", "legacy FX Filter low/high frequency and Q laws are not extracted"),
@@ -23,11 +22,10 @@ const GAPS: &[(&str, &str)] = &[
     ("PhasorFilter", "allpass chain order law (1..12), CutoffMode and Spread are not extracted"),
     ("TalkBox", "vowel tables for VowelMode (0..4) and FilterMode are not extracted"),
     ("UviFilter", "MappingMode (0..2) cutoff mapping and the filter bank behind it are not extracted"),
-    ("VowelFilter", "formant tables for the 11 FilterA/FilterB vowels and the Formant/Morph laws are not extracted"),
 ];
 
 /// The elements with a native law.
-const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez", "XpanderFilter"];
+const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez", "XpanderFilter", "VowelFilter", "CombFilter"];
 
 /// Whether `tag` is a UVI filter element this module owns.
 pub(crate) fn handles(tag: &str) -> bool {
@@ -72,6 +70,18 @@ pub(crate) fn translate(
                 algorithm: number("Algorithm", 0.0)?.clamp(0.0, 1.0) as u8,
                 oversampling: number("Oversampling", 1.0)? != 0.0,
             },
+            "VowelFilter" => Uvi::Vowel {
+                morph: number("Morph", 0.0)?.clamp(0.0, 1.0) as f32,
+                q: number("Q", 10.0)?.clamp(10.0, 20.0) as f32,
+                formant: number("Formant", 0.0)?.clamp(-1.0, 1.0) as f32,
+                a: number("FilterA", 0.0)?.clamp(0.0, 10.0) as u8,
+                b: number("FilterB", 2.0)?.clamp(0.0, 10.0) as u8,
+                mode: number("Mode", 1.0)?.clamp(0.0, 2.0) as u8,
+                count: number("NumFormants", 3.0)?.clamp(1.0, 4.0) as u8,
+            },
+            // ponytail: the native ring (0.05 s past the block) bounds the delay; tracked
+            // cutoffs under 20 Hz are held at 20 Hz instead of wrapping that ring.
+            "CombFilter" => Uvi::Comb { hertz, q, negative: mode == 1 },
             _ => Uvi::Rez { mode: mode.min(2), hertz, q },
         };
         let mut config = Config::new(Topology::Cascade, Response::LowPass, 2);
@@ -160,6 +170,12 @@ mod tests {
         let t = run(r#"<XpanderFilter Freq="500" Algorithm="1"/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert!(matches!(c.variant, Variant::Uvi(Uvi::Xpander { mode: 3, algorithm: 1, oversampling: true, .. })));
+        let t = run(r#"<VowelFilter/>"#, None).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert!(matches!(c.variant, Variant::Uvi(Uvi::Vowel { b: 2, mode: 1, count: 3, .. })));
+        let t = run(r#"<CombFilter Mode="1" Q="0.5"/>"#, None).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert_eq!(c.variant, Variant::Uvi(Uvi::Comb { hertz: 1000.0, q: 0.5, negative: true }));
         let t = run(r#"<BiquadFilter/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert_eq!(c.variant, Variant::Uvi(Uvi::Biquad { mode: 1, hertz: 1000.0, q: 0.0 }));

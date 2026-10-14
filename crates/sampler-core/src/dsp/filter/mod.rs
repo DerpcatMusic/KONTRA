@@ -77,16 +77,6 @@ impl Settings {
         true
     }
 
-    /// `[f64; 2]` state cells the prepared engine owns in the chain's delay storage.
-    pub(crate) fn cells(&self) -> usize {
-        match self {
-            Self::Cascade(s) => s.cells(),
-            Self::Ladder(_) => ladder::CELLS,
-            Self::Ar(_) => ar::CELLS,
-            Self::Daft(_) => 0,
-        }
-    }
-
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Engine {
         let core = match self {
             Self::Cascade(s) => Core::Cascade(s.compile(rate, bindings)),
@@ -113,6 +103,7 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
+    /// `[f64; 2]` state cells the prepared engine owns in the chain's delay storage.
     pub(crate) fn cells(&self) -> usize {
         match &self.core {
             Core::Cascade(c) => c.cells(),
