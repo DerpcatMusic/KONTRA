@@ -344,7 +344,22 @@ impl Check<'_> {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
                 }
                 Processor::FilterBank(c) => {
-                    for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
+                    // Legacy BFilter setters retain the raw cutoff but saturate its
+                    // coefficient input. Preserve that base for subsequent modulation;
+                    // clipping here would change a later negative modulation delta.
+                    use crate::fx::filter::{Response, Topology, Variant};
+                    let raw_legacy = c.topology == Topology::Cascade
+                        && c.variant == Variant::Default
+                        && matches!((c.response, c.poles),
+                            (Response::LowPass, 1 | 2 | 4 | 6)
+                            | (Response::HighPass, 1 | 2 | 4)
+                            | (Response::BandPass, 2 | 4)
+                            | (Response::Notch, 4));
+                    let cutoff_bounds = if raw_legacy {
+                        f64::from(f32::MIN)..=f64::from(f32::MAX)
+                    } else { 0.0..=1.0 };
+                    self.within(c.cutoff, cutoff_bounds, "filter cutoff")?;
+                    for (v, field) in [(c.resonance, "filter resonance"), (c.extra, "filter extra")] {
                         self.within(v, 0.0..=1.0, field)?;
                     }
                     if let crate::fx::filter::Variant::Versatile(v) = c.variant {
@@ -934,6 +949,38 @@ impl Instrument {
 #[cfg(test)]
 mod tests {
     use crate::*;
+
+    #[test]
+    fn legacy_filter_raw_cutoff_retains_its_native_saturating_domain() {
+        use fx::filter::{Config, Response, Topology, Variant};
+        for (response, poles) in [(Response::LowPass, 1), (Response::HighPass, 1),
+            (Response::BandPass, 2), (Response::LowPass, 2), (Response::HighPass, 2),
+            (Response::LowPass, 4), (Response::HighPass, 4), (Response::BandPass, 4),
+            (Response::Notch, 4), (Response::LowPass, 6)] {
+            let mut config = Config::new(Topology::Cascade, response, poles);
+            let check = |config| {
+                let mut ir = one_zone();
+                ir.chains.push(Chain { scope: Scope::Master,
+                    pre_amplitude: vec![Processor::FilterBank(config)], post_amplitude: vec![] });
+                ir.validate()
+            };
+            for cutoff in [-8.5, 8.5, 9.7, 10.0] {
+                config.cutoff = cutoff;
+                assert_eq!(check(config), Ok(()));
+            }
+            for cutoff in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+                config.cutoff = cutoff;
+                assert!(check(config).is_err());
+            }
+            config.cutoff = 8.5;
+            config.variant = Variant::Pro52;
+            assert!(check(config).is_err());
+            config.variant = Variant::Default;
+            config.cutoff = 0.5;
+            config.resonance = 8.5;
+            assert!(check(config).is_err());
+        }
+    }
 
     fn one_zone() -> Instrument {
         Instrument {

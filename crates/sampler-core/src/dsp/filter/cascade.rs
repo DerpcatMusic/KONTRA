@@ -1724,7 +1724,8 @@ impl Fixed {
 
 // ----------------------------------------------------------------- runtime
 
-/// Normalized cutoff and resonance (the native knobs).
+/// Native cutoff and resonance knobs. The original ten legacy classes retain raw
+/// finite-f32 cutoff bases; the audio clock saturates after adding modulation.
 #[derive(Clone, Copy, Debug)]
 pub struct CascadeSettings {
     pub class: Legacy,
@@ -1734,10 +1735,15 @@ pub struct CascadeSettings {
 
 impl CascadeSettings {
     pub(crate) fn valid(self) -> bool {
-        [self.cutoff, self.resonance].iter().all(|p| {
+        let raw_legacy = matches!(self.class,
+            Legacy::Lp1 | Legacy::Hp1 | Legacy::Bp2 | Legacy::Lp2 | Legacy::Hp2
+            | Legacy::Lp4 | Legacy::Hp4 | Legacy::Bp4 | Legacy::Br4 | Legacy::Lp6);
+        [self.cutoff, self.resonance].iter().enumerate().all(|(i, p)| {
             p.valid()
                 && !matches!(p, Parameter::Expression { .. })
-                && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
+                && p.bounds().iter().all(|v| if i == 0 && raw_legacy {
+                    (f64::from(f32::MIN)..=f64::from(f32::MAX)).contains(v)
+                } else { (0.0..=1.0).contains(v) })
         })
     }
 
@@ -1991,6 +1997,40 @@ fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_raw_cutoff_saturates_after_modulation_and_rejects_nonfinite() {
+        let classes = [Legacy::Lp1, Legacy::Hp1, Legacy::Bp2, Legacy::Lp2,
+            Legacy::Hp2, Legacy::Lp4, Legacy::Hp4, Legacy::Bp4, Legacy::Br4, Legacy::Lp6];
+        for class in classes {
+            let settings = |cutoff| CascadeSettings {
+                class, cutoff: Parameter::Constant(cutoff), resonance: Parameter::Constant(0.25),
+            };
+            let render = |cutoff, delta| {
+                let setting = settings(cutoff);
+                assert!(setting.valid());
+                let unit = setting.compile(48_000, &mut Vec::new());
+                let mut cells = vec![[0.0; 2]; CELLS];
+                let mut block = [[0.0; super::super::super::BLOCK]; 2];
+                block[0][0] = 1.0;
+                assert!(!unit.process(&mut cells, &[], &mut block, 64, 0, [delta, 0.0, 0.0, 0.0]));
+                block
+            };
+            assert_eq!(render(8.5, 0.0), render(1.0, 0.0), "{class:?}");
+            assert_eq!(render(-8.5, 0.0), render(0.0, 0.0), "{class:?}");
+            assert_eq!(render(8.5, -8.0), render(0.5, 0.0), "{class:?}");
+            assert_ne!(render(8.5, -8.0), render(1.0, -8.0), "base must not be clipped before modulation: {class:?}");
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+                assert!(!settings(invalid).valid());
+            }
+            let mut other = settings(8.5);
+            other.class = Legacy::Pro52;
+            assert!(!other.valid(), "unverified families retain their declared range");
+            other = settings(0.5);
+            other.resonance = Parameter::Constant(8.5);
+            assert!(!other.valid(), "resonance range is unchanged");
+        }
+    }
 
     fn impulse_response(class: Legacy, cutoff: f32, resonance: f32, input: &[f32]) -> Vec<f32> {
         let d = design(class, cutoff, resonance, 48_000.0);

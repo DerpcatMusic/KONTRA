@@ -2405,6 +2405,11 @@ impl Lowering<'_> {
                     return Err(unsupported(owner, Feature::Controls));
                 }
             }
+            if let Some((stage_index, stage)) = stages.iter().enumerate().find(|(_, stage)| !stage.valid()) {
+                return Err(core(if matches!(self.ir.chains[chain.0].scope, ir::Scope::Bus(_)) { Stage::Buses } else { Stage::VoiceChains },
+                    format!("{owner}, chain {}, processor {}, lowered stage {stage_index}: {stage:?}", chain.0, start + index)
+                )(Error::InvalidInput));
+            }
             processors.extend(stages);
         }
         starts.push(processors.len());
