@@ -16,6 +16,13 @@ fn whole_callback_300_voice_cpu_receipt() {
         .unwrap();
     let layout = std::env::var("KONTRA_CPU_RECEIPT_LAYOUT").unwrap_or("distinct".into());
     let workload = std::env::var("KONTRA_CPU_RECEIPT_WORKLOAD").unwrap_or("fractional".into());
+    // Companion attribution only: stage clocks perturb the callback. Keep the
+    // ordinary meter receipt uninstrumented unless explicitly requested.
+    let stage_audit = match std::env::var("KONTRA_CPU_RECEIPT_AUDIT").as_deref() {
+        Err(_) | Ok("0") => false,
+        Ok("1") => true,
+        _ => panic!("KONTRA_CPU_RECEIPT_AUDIT must be 0 or 1"),
+    };
     assert!([64, 256].contains(&block) && blocks >= 100);
     assert!(matches!(layout.as_str(), "shared" | "distinct"));
     assert!(matches!(
@@ -100,11 +107,14 @@ fn whole_callback_300_voice_cpu_receipt() {
     // Use the production pool budget, including its independent note/family
     // capacities. Generic core defaults only reserve 256 families.
     let (limits, ceiling) = crate::sound::v2::limits(&plan);
-    let part = CorePart::new(
-        Runtime::new(plan, limits).unwrap(),
-        MixTree::instrument("owned CPU receipt"),
-    )
-    .unwrap();
+    let voice_state_bytes = plan.voice_state_bytes();
+    let runtime = Runtime::new(plan, limits).unwrap();
+    let runtime_bus_count = runtime.bus_count();
+    assert_eq!(
+        runtime_bus_count, 0,
+        "this fixture installs no runtime bus graph"
+    );
+    let part = CorePart::new(runtime, MixTree::instrument("owned CPU receipt")).unwrap();
     let p = SamplerParams::new();
     p.shared.ensure_parts(1);
     let mut dsp = Dsp::default();
@@ -170,6 +180,11 @@ fn whole_callback_300_voice_cpu_receipt() {
         }),
         0
     );
+    if stage_audit {
+        // Enable/reset existing test-only V2 stage clocks after setup/warmup.
+        // JSON construction and state inspection occur outside process().
+        let _ = dsp.core.onset_audit();
+    }
     let before_busy = p.shared.busy_ns.load(Ordering::Relaxed);
     let before_span = p.shared.span_ns.load(Ordering::Relaxed);
     let mut durations = Vec::with_capacity(blocks);
@@ -185,6 +200,28 @@ fn whole_callback_300_voice_cpu_receipt() {
     }
     let busy = p.shared.busy_ns.load(Ordering::Relaxed) - before_busy;
     let span = p.shared.span_ns.load(Ordering::Relaxed) - before_span;
+    let stages = if stage_audit {
+        let raw = dsp.core.onset_audit();
+        let values = raw["stage_ns"].as_array().expect("audit was enabled");
+        let value = |i: usize| values[i].as_u64().unwrap();
+        // Index 4 is a counter, not elapsed nanoseconds. The other six
+        // intervals are disjoint inside V2::render_chunk; runtime_render_ns
+        // is inclusive of source/modulation/FX/sum and its own telemetry.
+        let timed = [0, 1, 2, 3, 5, 6].into_iter().map(value).sum::<u64>();
+        assert!(timed <= busy);
+        serde_json::json!({
+            "scope":"test-only instrumented companion; clocks perturb busy/span; runtime stage is inclusive",
+            "control_poll_ns":value(0), "script_controllers_ns":value(1),
+            "optional_stream_service_ns":value(2), "runtime_render_ns":value(3),
+            "stream_pending_observations":value(4), "persistence_ns":value(5),
+            "optional_pre_stream_empty_render_ns":value(6),
+            "timed_disjoint_sum_ns":timed,
+            "callback_unattributed_including_probe_overhead_ns":busy - timed,
+            "raw":raw,
+        })
+    } else {
+        serde_json::Value::Null
+    };
     let problems = dsp.core.problems(0);
     assert_eq!(problems, RuntimeProblems::default());
     assert!(energy > 0.);
@@ -195,6 +232,8 @@ fn whole_callback_300_voice_cpu_receipt() {
         "debug_assertions":cfg!(debug_assertions),"callback_heap_guards_passed":true,
         "block":block,"blocks":blocks,"voices":VOICES,"sources":count,"workload":workload,
         "initial_voice_capacity":limits.voices,"voice_ceiling":ceiling,"note_capacity":limits.notes,
+        "runtime_bus_count":runtime_bus_count,"prepared_voice_state_bytes":voice_state_bytes,
+        "frontend_max_render_frames":MAX_BLOCK,"stage_audit_enabled":stage_audit,"v2_stages":stages,
         "admission_plus_observer_wall_ns":admission_wall_ns,
         "admission_callback_busy_ns":admission_busy_ns,
         "kontra_meter_unsmoothed_percent":100. * busy as f64 / span as f64,
