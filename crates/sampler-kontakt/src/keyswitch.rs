@@ -382,6 +382,11 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
             (Err(why), false) => unmapped.push(why.clone()),
         }
     }
+    // An indexed range sized by saved state to one key is a one-articulation
+    // patch: nothing to switch, unlike a single-key toggle.
+    if keys.len() < 2 && primary.first().is_some_and(|&i| patterns[i].range && patterns[i].keys.is_ok()) {
+        return Detection::None;
+    }
     if keys.len() < 2 {
         return match (keys.first(), hints(&lines, &env)) {
             (Some(key), _) => {
@@ -961,6 +966,9 @@ end on
             if (in_range($EVENT_NOTE, $low, $low + $count - 1))\n $o := $EVENT_NOTE - $low\n end if\n\
             if (in_range($EVENT_NOTE, 24, 27))\n $ks := $EVENT_NOTE - 24\n end if\nend on";
         assert!(matches!(detect(empty, &[]), Detection::Found(f) if f.keys.len() == 4));
+        let one = "on init\n declare $low := 12\n declare $arts := 0\nend on\non note\n\
+            if (in_range($EVENT_NOTE, $low, $low + $arts))\n $art := $EVENT_NOTE - $low\n end if\nend on";
+        assert!(matches!(detect(one, &[]), Detection::None));
         let toggle = "on init\nend on\non note\n if ($EVENT_NOTE = 24)\n $legato := 1\n exit\n end if\nend on";
         assert!(
             matches!(detect(toggle, &[]), Detection::Unrecognized(why) if why.contains("single"))
