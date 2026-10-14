@@ -55,7 +55,7 @@ fn main() {
     assert!(matches!(residency.as_str(), "resident" | "pages"));
     assert!(matches!(sources.as_str(), "shared" | "distinct" | "phase"));
     assert!(voices <= 4096 && blocks > 1 && block > 0);
-    let (mut rt, _decoder) = fixture(
+    let (mut rt, _decoder, voice_state_bytes) = fixture(
         rate,
         &workload,
         residency == "pages",
@@ -131,6 +131,7 @@ fn main() {
         json!({
             "workload": workload, "residency": residency, "voices": voices,
             "sources": sources, "prepared_assets": if sources == "distinct" { voices.max(1) } else { 1 },
+            "prepared_voice_state_bytes": voice_state_bytes,
             "threads": threads, "parallel_chunks": rt.parallel_blocks(),
             "sample_rate": rate, "block": block, "blocks": blocks,
             "wall": metric(wall), "audio_thread_cpu": metric(caller_cpu),
@@ -153,7 +154,7 @@ fn fixture(
     capacity: usize,
     threads: usize,
     sources: &str,
-) -> (Runtime, StreamWorker) {
+) -> (Runtime, StreamWorker, usize) {
     let mut random = 0x1234_5678_u32;
     let data: Box<[Frame]> = (0..PAGE_FRAMES * 4)
         .map(|i| {
@@ -294,6 +295,7 @@ fn fixture(
             .with_voice_modulation(vec![program], vec![Some(0); region_count], vec![0; region_count])
             .unwrap();
     }
+    let voice_state_bytes = plan.voice_state_bytes();
     let mut rt = Runtime::new(
         plan,
         Limits {
@@ -318,5 +320,5 @@ fn fixture(
     }
     // Hold the decoder endpoint: disconnected-stream refusal is a different
     // workload. Every page is already resident, so no job is serviced in timing.
-    (rt, worker)
+    (rt, worker, voice_state_bytes)
 }
