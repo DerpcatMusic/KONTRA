@@ -258,7 +258,7 @@ mod tests {
         let t = UviTapeEcho { speed: 2.0, feedback: 0.0, mode: 1, bass_db: 0.0, treble_db: 0.0, delays: [0.165, 0.324, 0.487], synced: false, noise: 0.0, tape_stop: false };
         let mut line = Line::single(DelayTime::Ms(0.), 1000.);
         line.native = Native::UviTapeEcho(t);
-        let cfg = Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
+        let cfg = Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
         let (y, fault) = run(cfg, 48_000, 120., &impulse(12_000, [1., 1.]), 64);
         assert!(!fault);
         let peak = y.iter().enumerate().max_by(|a, b| a.1[0].abs().total_cmp(&b.1[0].abs())).unwrap().0;

@@ -238,7 +238,7 @@ mod tests {
     fn impulse_matches_native_frames() {
         let mut line = Line::single(DelayTime::Ms(0.), 2000.);
         line.native = Native::PsycheDelay(vector());
-        let cfg = Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
+        let cfg = Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
         let mut x = vec![[0.0; 2]; 1910];
         x[0][0] = 1.0;
         let (y, _) = super::super::tests::run(cfg, 48_000, 120., &x, 512);
