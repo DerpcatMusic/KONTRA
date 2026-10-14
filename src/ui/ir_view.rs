@@ -347,6 +347,8 @@ pub struct InputState {
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
     menu: Option<WidgetRef>,
+    menu_path: Vec<String>,
+    menu_hovered: Option<String>,
     typing: Option<(String, String)>,
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
@@ -1489,6 +1491,8 @@ pub(super) fn widget_state(
                 if wd.menu_cycle {
                     v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
                 } else {
+                    input.menu_path.clear();
+                    input.menu_hovered = None;
                     input.menu = if input.menu == Some(n) { None } else { Some(n) };
                 }
             }
@@ -2313,14 +2317,25 @@ pub(super) fn menu_popup(
     let wd = face.widgets.get(n.0)?;
     let Kind::Menu { items } = &wd.kind else {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     };
     let anchor = target(namespace, n);
     let popup = format!("{anchor}-popup");
     if !wd.enabled || !face.visible(n) || ui.dismissed(&[popup.as_str(), anchor.as_str()]) {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     }
+    if let Some(tree) = &wd.menu_hierarchy {
+        return menu_hierarchy::popup(
+            ui, namespace, face, n, tree, scale, values, input, width, height,
+        );
+    }
+    input.menu_path.clear();
+    input.menu_hovered = None;
     let mut rows = Vec::new();
     for (at, item) in items.iter().enumerate().filter(|(_, item)| item.visible) {
         let id = format!("{anchor}-item-{at}");
@@ -2388,6 +2403,9 @@ pub(super) fn menu_popup(
             .at(x, y),
     )
 }
+
+#[path = "menu_hierarchy.rs"]
+mod menu_hierarchy;
 
 /// Detect the owning target before validating a payload, so an invalid batch
 /// cannot fall through into a rack/instrument drop.

@@ -398,19 +398,29 @@ fn instrument(report: &mut Value, ir: &sampler_ir::Instrument, scope: &str) {
     }
 }
 
-fn interfaces(faces: &[sampler_ui_ir::Interface]) -> Value {
+fn menu_nodes(nodes: &[sampler_ui_ir::MenuNode]) -> Value {
+    json!(nodes.iter().map(|node| json!({
+        "label":node.label,"item_index":node.item_index,"children":menu_nodes(&node.children)
+    })).collect::<Vec<_>>())
+}
+
+fn widget_record(face: &sampler_ui_ir::Interface, n: usize, w: &sampler_ui_ir::Widget) -> Value {
     use sampler_ui_ir::{Binding, Kind, WidgetRef};
+    let interactive=matches!(w.kind,Kind::Knob{..}|Kind::Slider{..}|Kind::ValueEdit{..}|Kind::Button{..}|Kind::Switch|Kind::Menu{..}|Kind::Table{..}|Kind::Xy{..}|Kind::TextEdit|Kind::FileSelector{..}|Kind::MouseArea);
+    let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
+    let mut record = json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"uvi_meter_request":w.uvi_meter_request.map(|meter|json!({"element_id":meter.element_id,"element_node":meter.element_node,"scope":format!("{:?}",meter.scope),"bus_id":meter.bus_id,"use_output":meter.use_output,"display_as_mono":meter.display_as_mono})),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()});
+    record["menu_hierarchy"] = w.menu_hierarchy.as_deref().map_or(Value::Null, menu_nodes);
+    record
+}
+
+fn interfaces(faces: &[sampler_ui_ir::Interface]) -> Value {
     json!(faces.iter().enumerate().map(|(index, face)|json!({
         "index":index,"source":format!("{:?}",face.source),"performance":face.performance,
         "native_ui":face.native_ui.as_ref().map(|native|json!({"entry":native.entry})),
         "geometry_scope":"Authored IR coordinates; grid placement, stock sizing and image metadata are resolved by the optional production renderer",
         "validation_error":face.validate().err().map(|error|error.to_string()),
         "pages":face.pages.iter().enumerate().map(|(n,p)|json!({"index":n,"name":p.name,"width":p.size.width,"height":p.size.height,"height_rows":p.height_rows,"background_asset":p.background.image.map(|a|a.0),"background_offset_y":p.background.offset_y,"background_origin_y":p.background.origin_y,"background_frame":p.background.frame})).collect::<Vec<_>>(),
-        "widgets":face.widgets.iter().enumerate().map(|(n,w)|{
-            let interactive=matches!(w.kind,Kind::Knob{..}|Kind::Slider{..}|Kind::ValueEdit{..}|Kind::Button{..}|Kind::Switch|Kind::Menu{..}|Kind::Table{..}|Kind::Xy{..}|Kind::TextEdit|Kind::FileSelector{..}|Kind::MouseArea);
-            let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
-            json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"uvi_meter_request":w.uvi_meter_request.map(|meter|json!({"element_id":meter.element_id,"element_node":meter.element_node,"scope":format!("{:?}",meter.scope),"bus_id":meter.bus_id,"use_output":meter.use_output,"display_as_mono":meter.display_as_mono})),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()})
-        }).collect::<Vec<_>>(),
+        "widgets":face.widgets.iter().enumerate().map(|(n,w)|widget_record(face,n,w)).collect::<Vec<_>>(),
         "assets":face.assets.iter().enumerate().map(|(n,a)|json!({"index":n,"path":a.path,"kind":format!("{:?}",a.kind)})).collect::<Vec<_>>(),
         "styles":face.styles.iter().enumerate().map(|(n,s)|json!({"index":n,"font":format!("{:?}",s.font),"size":s.size,"colour":json!([s.color.r,s.color.g,s.color.b,s.color.a]),"align":format!("{:?}",s.align),"render_support":match s.font {sampler_ui_ir::Font::Named(_)=>"Kontra default-face fallback; authored named family is unresolved",sampler_ui_ir::Font::Default=>"Kontra default face",sampler_ui_ir::Font::Stock(_)=>"Kontra stock-font mapping; native glyph fidelity unverified",sampler_ui_ir::Font::File(_)=>"Authored font asset; see requested TrueTypeFont outcome",sampler_ui_ir::Font::Bitmap(_)=>"Authored bitmap glyph asset in bitmap presentation; vector uses the default face"}})).collect::<Vec<_>>(),
         "unsupported":face.unsupported.iter().map(|u|json!({"feature":u.feature,"widget":u.widget.map(|w|w.0),"detail":"UI projection does not model this source feature; authored value omitted"})).collect::<Vec<_>>()
@@ -1756,6 +1766,32 @@ pub(super) fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_tree_report_keeps_original_item_indices() {
+        use sampler_ui_ir::{MenuItem, menu_hierarchy};
+        let items = ["A/First", "B/Middle", "A/Last"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| MenuItem {
+                text: text.into(),
+                value: i as i32 + 1,
+                visible: true,
+            })
+            .collect::<Vec<_>>();
+        let mut widget = sampler_ui_ir::Widget::new(
+            "menu",
+            sampler_ui_ir::PageRef(0),
+            sampler_ui_ir::Rect::default(),
+            sampler_ui_ir::Kind::Menu { items: items.clone() },
+        );
+        widget.menu_hierarchy = Some(menu_hierarchy(&items).unwrap());
+        let record = widget_record(&sampler_ui_ir::Interface::default(), 0, &widget);
+        let report = &record["menu_hierarchy"];
+        assert_eq!(report[0]["label"], "A");
+        assert_eq!(report[0]["children"][1]["item_index"], 2);
+        assert_eq!(report[1]["children"][0]["item_index"], 1);
+    }
 
     struct Temp(PathBuf);
     impl Temp {

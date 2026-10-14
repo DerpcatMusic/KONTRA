@@ -170,6 +170,8 @@ pub struct Widget {
     pub menu_cycle: bool,
     /// Show the stock right-hand menu arrow; authored skins may hide it.
     pub menu_arrow: bool,
+    /// Validated slash-path menu tree; leaf indices refer to Kind::Menu items.
+    pub menu_hierarchy: Option<Vec<MenuNode>>,
     /// Explicit authored value-popup policy. Unset retains the source default.
     pub popup_display: Option<bool>,
     /// Even coordinate index of the manually selected XY cursor.
@@ -223,6 +225,7 @@ impl Widget {
             mapper: None,
             menu_cycle: false,
             menu_arrow: true,
+            menu_hierarchy: None,
             popup_display: None,
             active_index: None,
             value: None,
@@ -559,6 +562,99 @@ pub struct MenuItem {
     pub text: String,
     pub value: i32,
     pub visible: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuNode {
+    pub label: String,
+    pub item_index: Option<usize>,
+    pub children: Vec<MenuNode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuHierarchyError {
+    EmptySegment,
+    DuplicatePath,
+    LeafIsAlsoBranch,
+    RendererLimit,
+}
+
+/// Falcon's documented slash paths, preserving original item indices/order.
+/// Ambiguous native cases stay unmodeled rather than choosing a value silently.
+pub fn menu_hierarchy(items: &[MenuItem]) -> Result<Vec<MenuNode>, MenuHierarchyError> {
+    struct Node {
+        label: String,
+        item_index: Option<usize>,
+        children: Vec<usize>,
+    }
+    fn materialize(at: usize, nodes: &mut [Node]) -> MenuNode {
+        let label = std::mem::take(&mut nodes[at].label);
+        let item_index = nodes[at].item_index;
+        let children = std::mem::take(&mut nodes[at].children)
+            .into_iter()
+            .map(|child| materialize(child, nodes))
+            .collect();
+        MenuNode {
+            label,
+            item_index,
+            children,
+        }
+    }
+    let mut roots = Vec::new();
+    let mut nodes = Vec::<Node>::new();
+    let mut lookup = std::collections::HashMap::<(Option<usize>, &str), usize>::new();
+    for (item_index, item) in items.iter().enumerate().filter(|(_, item)| item.visible) {
+        let parts: Vec<_> = item.text.split('/').take(33).collect();
+        if parts.iter().any(|part| part.is_empty()) {
+            return Err(MenuHierarchyError::EmptySegment);
+        }
+        if parts.len() > 32 {
+            return Err(MenuHierarchyError::RendererLimit);
+        }
+        let mut parent = None;
+        for (depth, label) in parts.iter().enumerate() {
+            let at = match lookup.get(&(parent, *label)) {
+                Some(&at) => at,
+                None => {
+                    if nodes.len() >= 16_384 {
+                        return Err(MenuHierarchyError::RendererLimit);
+                    }
+                    let at = nodes.len();
+                    nodes.push(Node {
+                        label: (*label).into(),
+                        item_index: None,
+                        children: Vec::new(),
+                    });
+                    lookup.insert((parent, *label), at);
+                    if let Some(parent) = parent {
+                        nodes[parent].children.push(at);
+                    } else {
+                        roots.push(at);
+                    }
+                    at
+                }
+            };
+            let node = &mut nodes[at];
+            if depth + 1 == parts.len() {
+                if node.item_index.is_some() {
+                    return Err(MenuHierarchyError::DuplicatePath);
+                }
+                if !node.children.is_empty() {
+                    return Err(MenuHierarchyError::LeafIsAlsoBranch);
+                }
+                node.item_index = Some(item_index);
+                break;
+            }
+            if node.item_index.is_some() {
+                return Err(MenuHierarchyError::LeafIsAlsoBranch);
+            }
+            parent = Some(at);
+        }
+    }
+    Ok(roots
+        .into_iter()
+        .map(|at| materialize(at, &mut nodes))
+        .collect())
 }
 
 /// What a widget shows and edits.
