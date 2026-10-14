@@ -39,7 +39,9 @@ const BLOCK: usize = 64;
 #[derive(Clone)]
 pub(super) struct Ring {
     pub(super) buf: Vec<f32>,
-    mask: usize,
+    /// `buf.len() == 1 << bits`: slicing to `1 << bits` lets the masked
+    /// index skip its bounds check.
+    bits: u32,
     skew: usize,
 }
 
@@ -49,21 +51,21 @@ impl Ring {
         let n = min_len.next_power_of_two().max(2);
         // 17 cache lines (16 floats each) apart.
         let skew = NEXT.fetch_add(17 * 16, std::sync::atomic::Ordering::Relaxed);
-        Self { buf: vec![0.0; n], mask: n - 1, skew }
+        Self { buf: vec![0.0; n], bits: n.trailing_zeros(), skew }
     }
     #[inline(always)]
     pub(super) fn at(&self, w: usize, k: usize) -> f32 {
-        self.buf[w.wrapping_add(self.skew).wrapping_sub(k) & self.mask]
+        self.view_ref()[w.wrapping_add(self.skew).wrapping_sub(k) & ((1 << self.bits) - 1)]
     }
     #[inline(always)]
     pub(super) fn put(&mut self, w: usize, v: f32) {
-        let m = self.mask;
-        self.buf[w.wrapping_add(self.skew) & m] = v;
+        let n = 1 << self.bits;
+        self.buf[..n][w.wrapping_add(self.skew) & (n - 1)] = v;
     }
     #[inline(always)]
     fn add(&mut self, w: usize, v: f32) {
-        let m = self.mask;
-        self.buf[w.wrapping_add(self.skew) & m] += v;
+        let n = 1 << self.bits;
+        self.buf[..n][w.wrapping_add(self.skew) & (n - 1)] += v;
     }
     /// `(1-f)·x[w-i] + f·x[w-i-1]`, `d = i + f`.
     #[inline(always)]
@@ -708,7 +710,7 @@ impl Network {
         let mut rd = [0f32; MAX_LINES];
         for (i, ring) in self.rings.iter().enumerate() {
             let (j, f) = position::<M>(k, i, lfo, self.glide[i], step);
-            rd[i] = read::<I>(ring, w, j, f);
+            rd[i] = read::<I, _>(ring, w, j, f);
         }
         // Scalar per line: mixing vector and scalar passes over the same
         // arrays stalls on store forwarding.
@@ -788,22 +790,21 @@ impl Network {
         let (k, st) = (&*self.k, &mut *self.st);
         let s = &self.spec;
         let one = s.write_filter.unwrap_or(0.0);
-        for (i, ring) in self.rings.iter_mut().enumerate() {
-            let mut v = self.v[i];
-            for j in 0..len {
-                let w = w0.wrapping_add(j);
-                let (jj, f) = position::<M>(k, i, lfo[j], self.glide[i], (step0 + j) as f64);
-                let rd = read::<I>(ring, w, jj, f);
-                v = rd * k.a[i] + k.b[i] * v;
-                let u = v * k.g[i];
-                write::<F>(k, st, one, i, ring, w, w.wrapping_sub(s.inject_offset), u, xs[j]);
-                src[i][j] = match s.tap_from {
-                    TapFrom::Read => rd,
-                    TapFrom::Filtered => v,
-                    TapFrom::Mixed => u,
-                };
+        let line = Line { k, one, off: s.inject_offset, tap: s.tap_from, len, w0, step0, lfo: &lfo, xs: &xs };
+        // Four lines at a time: each line's filter is a serial recurrence,
+        // so four interleaved chains keep the core busy.
+        let mut i = 0;
+        for rings in self.rings.chunks_mut(4) {
+            let n = rings.len();
+            let (v, glide, src) = (&mut self.v[i..i + n], &self.glide[i..i + n], &mut src[i..i + n]);
+            match rings {
+                [a, b, c, d] => line.run::<I, M, F, 4>(i, [a, b, c, d], st, v, glide, src),
+                [a, b, c] => line.run::<I, M, F, 3>(i, [a, b, c], st, v, glide, src),
+                [a, b] => line.run::<I, M, F, 2>(i, [a, b], st, v, glide, src),
+                [a] => line.run::<I, M, F, 1>(i, [a], st, v, glide, src),
+                _ => unreachable!(),
             }
-            self.v[i] = v;
+            i += n;
         }
         self.w = w0.wrapping_add(len);
         for j in 0..len {
@@ -865,6 +866,110 @@ impl Network {
     }
 }
 
+/// One block of one parallel line. A function of its own so the ring, the
+/// state and the lanes arrive as non-aliasing references: the ring's fields
+/// then stay in registers across the buffer writes.
+struct Line<'a> {
+    k: &'a Lanes,
+    one: f32,
+    off: usize,
+    tap: TapFrom,
+    len: usize,
+    w0: usize,
+    step0: usize,
+    lfo: &'a [[f32; 4]; BLOCK],
+    xs: &'a [[f32; 2]; BLOCK],
+}
+
+impl Line<'_> {
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run<const I: u8, const M: u8, const F: bool, const N: usize>(&self, i0: usize, rings: [&mut Ring; N], st: &mut State, v: &mut [f32], glide: &[(f64, f64)], src: &mut [[f32; BLOCK]]) {
+        // A local copy: ring stores cannot alias it, so the lane constants
+        // stay in registers across the block.
+        let k = &*self.k;
+        let k = &Lanes { ..*k };
+        let mut y: [f32; N] = std::array::from_fn(|c| v[c]);
+        let mut rings = rings.map(Ring::view);
+        for j in 0..self.len {
+            let w = self.w0.wrapping_add(j);
+            for c in 0..N {
+                let i = i0 + c;
+                let (jj, f) = position::<M>(k, i, self.lfo[j], glide[c], (self.step0 + j) as f64);
+                let rd = read::<I, _>(&rings[c], w, jj, f);
+                y[c] = rd * k.a[i] + k.b[i] * y[c];
+                let u = y[c] * k.g[i];
+                write::<F>(k, st, self.one, i, &mut rings[c], w, w.wrapping_sub(self.off), u, self.xs[j]);
+                src[c][j] = match self.tap {
+                    TapFrom::Read => rd,
+                    TapFrom::Filtered => y[c],
+                    TapFrom::Mixed => u,
+                };
+            }
+        }
+        v[..N].copy_from_slice(&y);
+    }
+}
+
+/// A ring's buffer, mask and skew as plain locals: a store through `buf`
+/// cannot alias them, so the hot loop keeps them in registers.
+pub(super) struct View<'a> {
+    buf: &'a mut [f32],
+    bits: u32,
+    skew: usize,
+}
+
+impl Ring {
+    #[inline(always)]
+    fn view(&mut self) -> View<'_> {
+        View { bits: self.bits, skew: self.skew, buf: &mut self.buf[..1 << self.bits] }
+    }
+    #[inline(always)]
+    fn view_ref(&self) -> &[f32] {
+        &self.buf[..1 << self.bits]
+    }
+}
+
+/// Ring access shared by [`Ring`] and [`View`].
+pub(super) trait Tape {
+    fn at(&self, w: usize, k: usize) -> f32;
+    fn put(&mut self, w: usize, v: f32);
+    fn add(&mut self, w: usize, v: f32);
+}
+
+impl Tape for Ring {
+    #[inline(always)]
+    fn at(&self, w: usize, k: usize) -> f32 {
+        Ring::at(self, w, k)
+    }
+    #[inline(always)]
+    fn put(&mut self, w: usize, v: f32) {
+        Ring::put(self, w, v);
+    }
+    #[inline(always)]
+    fn add(&mut self, w: usize, v: f32) {
+        Ring::add(self, w, v);
+    }
+}
+
+impl Tape for View<'_> {
+    #[inline(always)]
+    fn at(&self, w: usize, k: usize) -> f32 {
+        let n = 1 << self.bits;
+        self.buf[..n][w.wrapping_add(self.skew).wrapping_sub(k) & (n - 1)]
+    }
+    #[inline(always)]
+    fn put(&mut self, w: usize, v: f32) {
+        let n = 1 << self.bits;
+        self.buf[..n][w.wrapping_add(self.skew) & (n - 1)] = v;
+    }
+    #[inline(always)]
+    fn add(&mut self, w: usize, v: f32) {
+        let n = 1 << self.bits;
+        self.buf[..n][w.wrapping_add(self.skew) & (n - 1)] += v;
+    }
+}
+
 /// Line `i`'s whole and fractional delay this frame.
 #[inline(always)]
 fn position<const M: u8>(k: &Lanes, i: usize, lfo: [f32; 4], glide: (f64, f64), step: f64) -> (usize, f32) {
@@ -890,7 +995,7 @@ fn position<const M: u8>(k: &Lanes, i: usize, lfo: [f32; 4], glide: (f64, f64), 
 
 /// Read `j + f` frames behind `w`.
 #[inline(always)]
-fn read<const I: u8>(ring: &Ring, w: usize, j: usize, f: f32) -> f32 {
+fn read<const I: u8, R: Tape>(ring: &R, w: usize, j: usize, f: f32) -> f32 {
     match I {
         0 => ring.at(w, j),
         1 => {
@@ -910,7 +1015,7 @@ fn read<const I: u8>(ring: &Ring, w: usize, j: usize, f: f32) -> f32 {
 /// injection at the head or at `at`.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn write<const F: bool>(k: &Lanes, st: &mut State, one: f32, i: usize, ring: &mut Ring, w: usize, at: usize, mut y: f32, x: [f32; 2]) {
+fn write<const F: bool>(k: &Lanes, st: &mut State, one: f32, i: usize, ring: &mut impl Tape, w: usize, at: usize, mut y: f32, x: [f32; 2]) {
     if F {
         let [b0, b1, b2, a1, a2] = &k.bq;
         let z = b0[i] * y + st.s0[i];
