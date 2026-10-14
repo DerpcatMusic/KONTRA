@@ -76,6 +76,51 @@ fn wav(rate: u32, frames: &[i16]) -> Vec<u8> {
 }
 
 #[test]
+fn empty_missing_and_failed_initial_samples_keep_complete_dormant_recipes() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-dormant-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bad.wav"), b"not audio").unwrap();
+    let xml = r#"<Program><Layers><Layer Name="Dynamic"><Keygroups>
+      <Keygroup Name="Region" LowKey="0" HighKey="127" Gain="0.5">
+       <ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" ReleaseTime="0.2"/><LFO Name="Vibrato" Freq="5"/></ControlSignalSources>
+       <Connections><SignalConnection Source="$Keygroup/Amp" Destination="Gain" Ratio="1"/><SignalConnection Source="$Keygroup/Vibrato" Destination="Pitch" Ratio="0.3"/></Connections>
+       <Inserts><OnePole Name="Tone" Freq="1000"/></Inserts>
+       <Oscillators><SamplePlayer Name="Empty" BaseNote="60" CoarseTune="-2"/>
+       <SamplePlayer Name="Missing" SamplePath="missing.wav" BaseNote="72"/>
+       <SamplePlayer Name="Unreadable" SamplePath="bad.wav" BaseNote="48"/></Oscillators>
+      </Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let path = dir.join("Dormant.uvip");
+    std::fs::write(&path, xml).unwrap();
+    let authored = sampler_uvi::translate(xml, &dir).unwrap().instrument;
+    authored.validate().unwrap();
+    assert_eq!((authored.zones.len(), authored.assets.len(), authored.source_indices.sample_targets.len()), (3, 1, 3));
+    let loaded = sampler_uvi::load(&path, 48_000).unwrap();
+    loaded.instrument.validate().unwrap();
+    assert_eq!((loaded.instrument.zones.len(), loaded.instrument.assets.len()), (3, 0));
+    assert_eq!(loaded.plan.region_count(), 3);
+    assert_eq!(loaded.plan.sample_count(), 0);
+    assert_eq!(loaded.plan.candidate_count(), 3 * 128);
+    for (zone, expected) in loaded.instrument.zones.iter().zip(&authored.zones) {
+        assert!(zone.asset.is_none());
+        assert_eq!((zone.pitch, zone.tune, zone.gain, zone.chain, zone.amplitude, &zone.routes),
+            (expected.pitch, expected.tune, expected.gain, expected.chain, expected.amplitude, &expected.routes));
+        assert_eq!((zone.keys.low, zone.keys.high), (0, 127));
+        assert!(zone.chain.is_some());
+        assert!(zone.amplitude.is_some());
+        assert_eq!(zone.routes.len(), 1);
+    }
+    let limits = Limits::for_plan(&loaded.plan, 4, 8);
+    let mut runtime = Runtime::new(loaded.plan, limits).unwrap();
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) };
+    runtime.trigger(input, 60, 1.).unwrap();
+    let mut pcm = [[1.; 2]; 64];
+    runtime.render(&mut pcm).unwrap();
+    assert_eq!(pcm, [[0.; 2]; 64]);
+    assert_eq!(runtime.voice_count(), 0, "no fabricated silent asset or source voice");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn authored_program_translates_loads_and_renders() {
     let dir = std::env::temp_dir().join(format!("sampler-uvi-fixture-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("samples")).unwrap();
@@ -94,8 +139,12 @@ fn authored_program_translates_loads_and_renders() {
     );
     assert_eq!(
         (ir.groups.len(), ir.zones.len(), ir.assets.len()),
-        (2, 1, 1), // the script may pick one of the keygroup's two oscillators
+        (3, 3, 1), // dormant and bypassed players keep their complete scripted identities
     );
+    assert_eq!(ir.source_indices.sample_targets.len(), 3);
+    assert!(ir.zones[1].asset.is_none());
+    assert!(ir.groups[ir.zones[2].group.unwrap().0].muted);
+    ir.validate().unwrap();
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
     assert_eq!(zone.pitch, ir::KeyTracking::Tracked { root: 60 });

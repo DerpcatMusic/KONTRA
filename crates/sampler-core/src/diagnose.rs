@@ -26,6 +26,8 @@ fn reason(r: Rejection) -> &'static str {
         Rejection::Velocity => "velocity range",
         Rejection::Group => "group selection (script)",
         Rejection::Take => "round-robin take",
+        Rejection::SourceUnavailable => "sample source unavailable",
+        Rejection::SourcePitch => "sample pitch/rate exceeds supported range",
     }
 }
 
@@ -37,16 +39,18 @@ pub struct SilentNote {
     /// The key's script suppressed the attack.
     pub suppressed: bool,
     /// Rejected regions per reason, in [`ORDER`].
-    pub counts: [u32; 6],
+    pub counts: [u32; 8],
 }
 
-const ORDER: [Rejection; 6] = [
+const ORDER: [Rejection; 8] = [
     Rejection::Group,
     Rejection::Velocity,
     Rejection::Articulation,
     Rejection::Condition,
     Rejection::Trigger,
     Rejection::Take,
+    Rejection::SourceUnavailable,
+    Rejection::SourcePitch,
 ];
 
 impl SilentNote {
@@ -76,7 +80,7 @@ impl SilentNote {
         [
             u64::from(self.key) | u64::from(self.suppressed) << 8,
             c(0) | c(1) << 16 | c(2) << 32 | c(3) << 48,
-            c(4) | c(5) << 16,
+            c(4) | c(5) << 16 | c(6) << 32 | c(7) << 48,
         ]
     }
 
@@ -92,6 +96,8 @@ impl SilentNote {
                 n(w[1], 3),
                 n(w[2], 0),
                 n(w[2], 1),
+                n(w[2], 2),
+                n(w[2], 3),
             ],
         }
     }
@@ -218,7 +224,7 @@ mod tests {
         let note = SilentNote {
             key: 60,
             suppressed: false,
-            counts: [1122, 3, 0, 0, 0, 7],
+            counts: [1122, 3, 0, 0, 0, 7, 0, 0],
         };
         assert_eq!(SilentNote::unpack(note.pack()), note);
         assert_eq!(

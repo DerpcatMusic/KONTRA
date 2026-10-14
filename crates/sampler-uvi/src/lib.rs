@@ -213,8 +213,8 @@ fn bank_volume_sample_reaches_the_bank_resource_resolver() {
     assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
     let disk = translate(xml, Path::new(".")).unwrap();
     assert!(
-        disk.instrument.zones.is_empty(),
-        "a loose file has no bank authority"
+        disk.instrument.zones.iter().all(|z| z.asset.is_none()) && disk.instrument.assets.is_empty(),
+        "a loose file has no bank authority; its target remains unbound"
     );
 }
 
@@ -761,7 +761,8 @@ impl Translation {
             .filter(|n| n.has_tag_name("SamplePlayer"))
             .enumerate()
         {
-            if number(player, "Bypass", 0.0)? != 0.0 {
+            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
+            if bypassed && self.split.is_none() {
                 continue;
             }
             let group = self.oscillator_group(
@@ -770,14 +771,12 @@ impl Translation {
                 keygroup.id().get_usize(),
                 player.id().get_usize(),
             );
+            if bypassed {
+                self.ir.groups[group.0].muted = true;
+            }
             let at = path(player);
-            let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
-                self.unsupported(&at, "sample player without a sample", "");
-                continue;
-            };
-            let Some(asset) = self.asset(&at, sample) else {
-                continue;
-            };
+            let asset = player.attribute("SamplePath").filter(|p| !p.is_empty())
+                .and_then(|sample| self.asset(&at, sample));
             let start = number(player, "SampleStart", 0.0)?;
             if start != 0.0 {
                 self.unsupported(&at, "SampleStart", start);
@@ -840,6 +839,9 @@ impl Translation {
                 self.ir.source_indices.zones[self.native_player_ids[&player.id()]] =
                     Some(ir::ZoneRef(self.ir.zones.len()));
             }
+            let zone = ir::ZoneRef(self.ir.zones.len());
+            let node = u32::try_from(player.id().get_usize()).map_err(|_| "sample player identity exceeds supported range".to_string())?;
+            self.ir.source_indices.sample_targets.push(ir::SourceSampleTarget { node, zones: vec![zone] });
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -869,7 +871,7 @@ impl Translation {
                 chain,
                 amplitude,
                 routes: modulation.routes,
-                ..ir::Zone::new(asset)
+                ..asset.map_or_else(ir::Zone::dormant, ir::Zone::new)
             });
         }
         Ok(())
@@ -1157,6 +1159,13 @@ impl Translated {
         {
             lua = bind_loose_script_images(lua, dir);
         }
+        let sample_source:Option<script::SampleSource>=match (&self.bank,&self.dir) {
+            (Some((bank,program)),_)=>{let(bank,program)=(std::sync::Arc::clone(bank),program.clone());
+                Some(std::sync::Arc::new(move|path,explicit|bank.sample_resource(&program,path,explicit)))},
+            (None,Some(dir))=>{let dir=dir.clone();Some(std::sync::Arc::new(move|path,explicit|stream::loose_sample_resource(&dir,path,explicit)))},
+            _=>None,
+        };
+        if let Some(source)=sample_source {lua=lua.with_samples(source);}
         let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
             match (&self.bank, &self.dir) {
                 (Some((bank, program)), _) => {
@@ -1547,7 +1556,22 @@ pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize
 
 type AssetSources = Vec<Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String>>;
 
-/// [`assemble`] for streamed samples: zones whose sample cannot be opened are dropped (reported).
+/// A failed initial file must not erase an authored dynamic target's mapping.
+/// The loader still reports the failed file; a later sample transaction can
+/// activate this same compiled region without replacing the whole plan.
+fn retain_failed_sample_targets(instrument: &mut ir::Instrument, usable: &[bool]) {
+    for target in &instrument.source_indices.sample_targets {
+        for zone in &target.zones {
+            let zone = &mut instrument.zones[zone.0];
+            if zone.asset.is_some_and(|a| !usable[a.0]) {
+                zone.asset = None;
+            }
+        }
+    }
+}
+
+/// [`assemble`] for streamed samples. Failed initial samples are reported;
+/// script-loadable players retain an unbound recipe, while other zones are removed.
 fn assemble_streamed(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
@@ -1559,7 +1583,7 @@ fn assemble_streamed(
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
                 location: location.clone(),
-                feature: "unreadable sample, zone dropped".into(),
+                feature: "unreadable initial sample".into(),
                 value: reason.clone(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -1573,7 +1597,8 @@ fn assemble_streamed(
         Ok((reader.rate(), frames))
     });
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
-    let kept = instrument.retain_zones(|z| usable[z.asset.0]);
+    retain_failed_sample_targets(&mut instrument, &usable);
+    let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
     let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
     let sources = kept
         .iter()
@@ -1658,7 +1683,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let lua = bank.scripts();
+    let lua = bank.bind_script_samples(&program_path, bank.scripts());
     let ((mut instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
@@ -1684,7 +1709,8 @@ pub fn load_program_scripted_with_options(
 /// Share the loose-program image service with playback and offline initialization.
 fn bind_loose_script_images(files: script::Scripts, dir: &Path) -> script::Scripts {
     let resources = resources::Resources::of(&dir.join("ui.uvip"));
-    files.with_images(move |path| resources.read(path))
+    let dir=dir.to_owned();
+    files.with_images(move |path| resources.read(path)).with_samples(std::sync::Arc::new(move |path,explicit|stream::loose_sample_resource(&dir,path,explicit)))
 }
 
 /// Which source authority to use when inspecting decoded XML after onLoad.
@@ -1957,7 +1983,7 @@ mod narrowed_impulse_tests {
         assert_eq!(reads, ["room.wav", "low.wav"]);
         assert_eq!(selected, ["low.wav"]);
         assert_eq!(decoded.len(), 1);
-        assert_eq!(instrument.zones[0].asset, ir::AssetRef(0));
+        assert_eq!(instrument.zones[0].asset, Some(ir::AssetRef(0)));
         assert_eq!(instrument.impulses[0].asset, None);
         assert_eq!(instrument.impulses[0].left, [0.5]);
         assert_eq!(instrument.impulses[0].right, [-0.5]);
@@ -2090,7 +2116,7 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let lua = bank.scripts();
+    let lua = bank.bind_script_samples(&program_path, bank.scripts());
     let ((instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
@@ -2158,8 +2184,8 @@ fn describe(path: &Path, e: Translate) -> Error {
     }
 }
 
-/// Drop zones whose sample could not be read (reported), then fit the rest to
-/// their decoded audio and lower. `decoded[i]` belongs to asset `i`.
+/// Report unreadable initial samples, retain unbound script-loadable recipes,
+/// then fit decoded zones to their audio and lower. `decoded[i]` belongs to asset `i`.
 fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
@@ -2170,7 +2196,7 @@ fn assemble(
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
                 location: location.clone(),
-                feature: "unreadable sample, zone dropped".into(),
+                feature: "unreadable initial sample".into(),
                 value: reason.clone(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -2180,7 +2206,9 @@ fn assemble(
         Ok(d) => Ok((d.rate, d.frames.clone())),
         Err(e) => Err(e.clone()),
     });
-    let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
+    let usable: Vec<bool> = decoded.iter().map(Result::is_ok).collect();
+    retain_failed_sample_targets(&mut instrument, &usable);
+    let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
     let mut pcm = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {

@@ -422,7 +422,8 @@ pub(crate) fn start_ranges(
 ) -> Vec<Vec<Range<usize>>> {
     let mut ranges = vec![Vec::new(); assets.len()];
     for zone in &instrument.zones {
-        let (asset, playback) = (zone.asset.0, &zone.playback);
+        let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
+        let playback = &zone.playback;
         let pcm = &assets[asset];
         if zone
             .group
@@ -524,10 +525,37 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
     Ok(pcm.head_bytes())
 }
 
+/// A bounded registry for sources published after initial plan compilation.
+/// Only decoder/control workers take its lock; audio carries numeric AssetIds.
+#[derive(Clone, Default)]
+pub struct DynamicSources(Arc<Mutex<HashMap<AssetId, Arc<dyn AssetSource>>>>);
+impl DynamicSources {
+    pub fn register(&self, pcm: &Pcm, source: Arc<dyn AssetSource>) -> io::Result<SourceRegistration> {
+        let mut entries = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.len() >= 65_600 || entries.contains_key(&pcm.asset_id()) {
+            return Err(io::Error::other("dynamic source registry capacity/identity conflict"));
+        }
+        entries.insert(pcm.asset_id(), source);
+        Ok(SourceRegistration { registry: self.clone(), asset: pcm.asset_id() })
+    }
+    fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&asset).cloned()
+    }
+}
+/// Keep inside an immutable revision. Drop only after its reply reaches control;
+/// removal cannot invalidate a decoder's independently owned open reader.
+pub struct SourceRegistration { registry: DynamicSources, asset: AssetId }
+impl Drop for SourceRegistration {
+    fn drop(&mut self) {
+        self.registry.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.asset);
+    }
+}
+
 /// Control side: where every streamed asset lives, its start ranges, and the
 /// decode thread. Purge and reload start ranges here; the runtime owns the
 /// page cache.
 pub struct Streamer {
+    dynamic: DynamicSources,
     pinned_wavetables: HashSet<AssetId>,
     sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
     ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
@@ -540,6 +568,7 @@ pub struct Streamer {
 }
 
 impl Streamer {
+    pub fn dynamic_sources(&self) -> DynamicSources { self.dynamic.clone() }
     /// Clone the existing source for bounded control-worker reads. Opening or
     /// decoding it belongs off the audio thread; this does not preload frames.
     pub fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
@@ -742,6 +771,7 @@ impl Streamer {
         // the pages queued behind it; they share the single worker endpoint.
         let worker = Arc::new(Mutex::new(worker));
         let mut streamer = Self {
+            dynamic: DynamicSources::default(),
             pinned_wavetables,
             sources,
             ranges: Arc::new(table),
@@ -756,8 +786,9 @@ impl Streamer {
                 .name("sampler-stream".into())
                 .spawn({
                     let (sources, stop) = (streamer.sources.clone(), streamer.stop.clone());
+                    let dynamic = streamer.dynamic.clone();
                     let worker = worker.clone();
-                    move || decode(&worker, &sources, &stop, READER_CACHE_BYTES / decoders.max(1))
+                    move || decode(&worker, &sources, &dynamic, &stop, READER_CACHE_BYTES / decoders.max(1))
                 })?;
             streamer.threads.push(thread);
         }
@@ -1025,6 +1056,7 @@ impl Drop for DecodeAudit {
 fn decode(
     worker: &Mutex<StreamWorker>,
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
+    dynamic: &DynamicSources,
     stop: &AtomicBool,
     reader_byte_limit: usize,
 ) {
@@ -1058,7 +1090,8 @@ fn decode(
             Some(i) => Some(i),
             None => {
                 opened = true;
-                sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|reader| readers.insert(asset, reader, tick))
+                sources.get(&asset).cloned().or_else(|| dynamic.source(asset))
+                    .and_then(|s| s.open_stream().ok()).map(|reader| readers.insert(asset, reader, tick))
             }
         };
         if let Some(audit) = &mut audit {
@@ -1158,7 +1191,7 @@ impl Streamed {
                 zone.group
                     .is_some_and(|g| loaded.instrument.groups[g.0].wavetable.is_some())
             })
-            .map(|zone| kept[zone.asset.0].asset_id())
+            .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
         let (streamer, bytes) = Streamer::start(
             sources,
@@ -1199,6 +1232,34 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
         let source = Source { size: std::fs::metadata(&path).unwrap().len(), path, offset: 0, key: None, handle: None, header: None };
         SampleReader::open(&source).unwrap()
+    }
+
+    #[test]
+    fn dynamic_registry_pages_use_exact_registered_source_and_retire_off_audio() {
+        struct Numeric(f32);
+        impl AssetSource for Numeric {
+            fn open(&self)->io::Result<SampleReader>{let offset=self.0;Ok(SampleReader::custom(48000,PAGE_FRAMES*3,move|start,out|{for(i,f)in out.iter_mut().enumerate(){*f=[offset+(start+i) as f32;2];}Ok(())}))}
+        }
+        let(mut cache,worker)=StreamCache::new(2).unwrap();
+        let(streamer,_)=Streamer::start(HashMap::new(),&[],vec![],worker,1,true,1<<20,HashSet::new()).unwrap();
+        let original=streamer.sources.clone();
+        let dynamic=streamer.dynamic_sources();
+        let old=Pcm::streamed(48000,PAGE_FRAMES*3).unwrap();
+        let new=Pcm::streamed(48000,PAGE_FRAMES*3).unwrap();
+        let old_registration=dynamic.register(&old,Arc::new(Numeric(1.))).unwrap();
+        let new_registration=dynamic.register(&new,Arc::new(Numeric(100.))).unwrap();
+        assert!(dynamic.register(&old,Arc::new(Numeric(999.))).is_err());
+        for (pcm,offset) in [(&old,1.),(&new,100.)] {
+            cache.begin_epoch().unwrap();cache.request(pcm,1,0).unwrap();
+            for t in &streamer.threads{t.thread().unpark();}
+            let until=Instant::now()+Duration::from_secs(2);
+            let key=sampler_core::PageKey{asset:pcm.asset_id(),index:1};
+            while cache.status(key)!=sampler_core::PageStatus::Ready {cache.poll();assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
+            assert_eq!(cache.frame(pcm.asset_id(),PAGE_FRAMES+17),Some([offset+(PAGE_FRAMES+17) as f32;2]));
+        }
+        assert!(Arc::ptr_eq(&original,&streamer.sources));assert!(original.is_empty());
+        drop(old_registration);assert!(dynamic.source(old.asset_id()).is_none());assert!(dynamic.source(new.asset_id()).is_some());
+        drop(new_registration);assert!(dynamic.0.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1276,6 +1337,7 @@ mod tests {
             .map(|_| Pcm::streamed(48000, 64).unwrap())
             .collect();
         let streamer = Streamer {
+            dynamic: DynamicSources::default(),
             pinned_wavetables: HashSet::new(),
             sources: Arc::new(
                 assets

@@ -1,6 +1,10 @@
 //! Control-thread compilation of immutable assets and native mappings.
 mod predicates;
 mod selection;
+#[path = "sample_revision.rs"]
+pub(crate) mod sample_revision;
+pub use sample_revision::{DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision,
+    SampleControl, SampleRevisionLimits, SampleTarget, SampleTargetId, SampleTask, SampleTransaction};
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 use predicates::Matching;
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
@@ -558,7 +562,7 @@ struct PreparedRegion {
     bus: Option<usize>,
     envelope: Envelope,
     fallback_envelope: bool,
-    cursor: super::source::CursorTemplate,
+    cursor: Option<super::source::CursorTemplate>,
     root_key: Option<u8>,
     transpose_semitones: f64,
     take: Option<super::Take>,
@@ -574,6 +578,8 @@ struct Candidate {
 }
 
 pub struct Prepared {
+    pub(super) sample_targets: Box<[SampleTarget]>,
+    pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
     pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
@@ -713,7 +719,7 @@ impl Prepared {
         let mut prepared_regions = Vec::new();
         let mut cursor_loops = Vec::new();
         for r in &regions {
-            if r.sample >= pcm.len()
+            if (r.sample != DORMANT_SAMPLE && r.sample >= pcm.len())
                 || r.key_low > r.key_high
                 || r.key_high >= 128
                 || r.root_key.is_some_and(|key| key >= 128)
@@ -737,11 +743,14 @@ impl Prepared {
                 playback.transpose_semitones +=
                     f64::from(r.key_low) - f64::from(root) + tuning.0[r.key_low as usize];
             }
-            let cursor = playback.cursor(
-                pcm[r.sample].frame_count(),
-                pcm[r.sample].sample_rate(),
-                rate,
-            )?;
+            let cursor = if r.sample == DORMANT_SAMPLE {
+                if playback.wavetable.is_some() || !playback.transpose_semitones.is_finite() {
+                    return Err(Error::InvalidInput);
+                }
+                None
+            } else {
+                Some(playback.cursor(pcm[r.sample].frame_count(), pcm[r.sample].sample_rate(), rate)?)
+            };
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;
@@ -765,7 +774,7 @@ impl Prepared {
                 bus: None,
                 envelope: r.envelope,
                 fallback_envelope: false,
-                cursor: super::source::CursorTemplate::new(cursor, &mut cursor_loops),
+                cursor: cursor.map(|c| super::source::CursorTemplate::new(c, &mut cursor_loops)),
                 root_key,
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
@@ -788,13 +797,16 @@ impl Prepared {
                         let mut playback = r.playback;
                         playback.transpose_semitones +=
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
-                        playback.step(pcm[r.sample].sample_rate(), rate)
+                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { pcm[r.sample].sample_rate() }, rate)
                     } else {
-                        prepared_regions[region].cursor.cursor(&cursor_loops).step()
+                        prepared_regions[region].cursor.map_or_else(
+                            || r.playback.step(rate, rate),
+                            |c| c.cursor(&cursor_loops).step(),
+                        )
                     };
-                    if r.playback.wavetable.is_none()
+                    if !step.is_finite() || step <= 0. || (r.sample != DORMANT_SAMPLE && r.playback.wavetable.is_none()
                         && !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step)
-                    {
+                    ) {
                         return Err(Error::InvalidInput);
                     }
                     candidates.push(Candidate { region, step });
@@ -814,6 +826,8 @@ impl Prepared {
             );
         }
         Ok(Self {
+            sample_targets: Box::new([]),
+            sample_limits: None,
             group_mutes: Box::new([]),
             residency: None,
             parameter_registry: Default::default(),
@@ -1014,10 +1028,8 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::LoopStart
                             | super::voice_mod::CompiledTarget::LoopLength
                     )
-                ) && !region
-                    .cursor
-                    .cursor(&self.cursor_loops)
-                    .supports_loop_control(self.pcm[region.sample].frame_count())
+                ) && region.cursor.is_some_and(|c| !c.cursor(&self.cursor_loops)
+                    .supports_loop_control(self.pcm[region.sample].frame_count()))
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -1237,10 +1249,10 @@ impl Prepared {
         match (pitch, r.root_key) {
             (NotePitch::Absolute(pitch), Some(root)) => {
                 let semitones = r.transpose_semitones + (pitch - f64::from(root));
-                if r.cursor.cursor(&self.cursor_loops).wavetable().is_some() {
+                if r.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()) {
                     440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones)
                 } else {
-                    f64::from(self.pcm[r.sample].sample_rate()) / f64::from(self.rate)
+                    self.pcm.get(r.sample).map_or(1., |pcm| f64::from(pcm.sample_rate()) / f64::from(self.rate))
                         * super::pitch::ratio(semitones)
                 }
             }
@@ -1339,7 +1351,7 @@ impl Prepared {
         for (region, trigger) in self.regions.iter_mut().zip(triggers) {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
-                && region.cursor.cursor(&self.cursor_loops).unbounded_loop()
+                && region.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).unbounded_loop())
                 && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
@@ -1596,13 +1608,15 @@ impl Prepared {
             });
             let mut matching = Matching::new(ranges);
             while let Some(candidate) = matching.next(self, state, velocity) {
+                // An unbound player has no source rate yet. Its dimensionless
+                // pitch cannot be tested against resampling limits until the
+                // actual immutable revision is prepared and admitted.
+                if self.regions[candidate.region].cursor.is_none() {
+                    continue;
+                }
                 range.apply_source(
                     self.step(candidate, pitch),
-                    self.regions[candidate.region]
-                        .cursor
-                        .cursor(&self.cursor_loops)
-                        .wavetable()
-                        .is_some(),
+                    self.regions[candidate.region].cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()),
                 )?;
             }
             from = until;

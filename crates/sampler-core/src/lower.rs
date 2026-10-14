@@ -601,11 +601,10 @@ pub fn lower_with(
     for (i, zone) in instrument.zones.iter().enumerate() {
         let (region, chain) = lowering.zone(i, zone)?;
         // Name the zone whose geometry the runtime would reject as a whole.
-        let source = &pcm[region.sample];
-        region
-            .playback
-            .cursor(source.frame_count(), source.sample_rate(), rate)
-            .map_err(core(Stage::Regions, format!("zone {i}")))?;
+        if let Some(source) = pcm.get(region.sample) {
+            region.playback.cursor(source.frame_count(), source.sample_rate(), rate)
+                .map_err(core(Stage::Regions, format!("zone {i}")))?;
+        }
         candidates += usize::from(zone.keys.high - zone.keys.low) + 1;
         regions.push(region);
         chain_of.push(chain.map(|chain| {
@@ -1014,6 +1013,17 @@ pub fn lower_with(
         .map_err(core(Stage::Controls, "authored source engine values"))?;
     plan = lowering.parameter_registry(plan)?;
     plan = lowering.modulation(plan)?;
+    if !instrument.source_indices.sample_targets.is_empty() {
+        let count = instrument.source_indices.sample_targets.len();
+        let slots = count.checked_add(64).ok_or_else(|| core(Stage::Regions, "sample revision slots")(Error::Capacity))?;
+        plan = plan.with_sample_targets(
+            instrument.source_indices.sample_targets.iter().map(|t| crate::SampleTarget {
+                id: crate::SampleTargetId(t.node),
+                regions: t.zones.iter().map(|z| z.0).collect(),
+            }).collect(),
+            crate::SampleRevisionLimits { slots, resident_bytes: 256 << 20 },
+        ).map_err(core(Stage::Regions, "sample targets"))?;
+    }
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -1146,7 +1156,7 @@ impl Lowering<'_> {
         let gain = zone.gain.linear() * group.map_or(1.0, |g| g.gain.linear());
         let tune = zone.tune.semitones() + group.map_or(0.0, |g| g.tune.semitones());
         let pan = zone.pan.position + group.map_or(0.0, |g| g.pan.position);
-        let asset_rate = f64::from(self.pcm[zone.asset.0].sample_rate());
+        let asset_rate = zone.asset.map_or(f64::from(self.rate), |a| f64::from(self.pcm[a.0].sample_rate()));
         let envelope = self.envelope(&owner, zone)?;
         let mut pre = Vec::new();
         let mut post = Vec::new();
@@ -1333,7 +1343,7 @@ impl Lowering<'_> {
             transpose_semitones: tune,
         };
         let region = Region {
-            sample: zone.asset.0,
+            sample: zone.asset.map_or(crate::DORMANT_SAMPLE, |a| a.0),
             key_low: zone.keys.low,
             key_high: zone.keys.high,
             root_key,

@@ -18,6 +18,8 @@ use std::{
 };
 
 mod async_data;
+mod sample_loading;
+pub use sample_loading::{SampleResource, SampleSource};
 mod catalog_copy;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -32,6 +34,7 @@ const PRELUDE: &str = include_str!("script_prelude.lua");
 const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget exceeded";
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
+    fn sample_source(&self) -> Option<SampleSource> { None }
     fn script(&self, module: &str) -> Option<String>;
     fn image_size(&self, _path: &str) -> Option<sampler_ui_ir::Size> {
         None
@@ -51,6 +54,7 @@ pub trait Files {
 }
 
 impl<T: Files> Files for std::rc::Rc<T> {
+    fn sample_source(&self) -> Option<SampleSource> { (**self).sample_source() }
     fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
         (**self).image_size(path)
     }
@@ -104,12 +108,14 @@ impl PartialEq for ImpulseUpload {
 pub struct Scripts {
     files: std::sync::Arc<Vec<(String, String)>>,
     impulses: Option<ImpulseSource>,
+    samples: Option<SampleSource>,
     images: Option<std::sync::Arc<dyn Fn(&str) -> Option<sampler_ui_ir::Size> + Send + Sync>>,
     /// Bus insert element (node id) to its convolution slot.
     convolvers: std::collections::HashMap<usize, usize>,
 }
 
 impl Scripts {
+    pub(crate) fn with_samples(mut self, source: SampleSource) -> Self { self.samples=Some(source); self }
     pub(crate) fn with_images(
         mut self,
         source: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
@@ -196,6 +202,7 @@ impl Scripts {
 }
 
 impl Files for Scripts {
+    fn sample_source(&self) -> Option<SampleSource> { self.samples.clone() }
     fn image_size(&self, path: &str) -> Option<sampler_ui_ir::Size> {
         self.images.as_ref()?(path)
     }
@@ -582,6 +589,7 @@ struct Shared {
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
     data_loads: RefCell<async_data::DataLoads>,
+    sample_loads: RefCell<sample_loading::SampleLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
@@ -1377,6 +1385,7 @@ impl ScriptHost {
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
             data_loads: RefCell::new(async_data::DataLoads::default()),
+            sample_loads: RefCell::new(sample_loading::SampleLoads::new(&doc, files.sample_source(), config.rate as u32)),
             params: RefCell::new(Vec::new()),
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
@@ -1598,29 +1607,12 @@ impl ScriptHost {
                 Ok(task)
             })?,
         )?;
-        for name in ["loadSample"] {
-            let s = shared.clone();
-            globals.raw_set(
-                name,
-                lua.create_function(move |lua, args: Variadic<Value>| {
-                    // Failed resource tasks still complete; do not invent a successful load.
-                    s.find(&format!("lua {name} resource task unavailable"), "");
-                    if let Some(Value::Function(callback)) =
-                        args.iter().find(|v| matches!(v, Value::Function(_)))
-                    {
-                        let task = async_data::completed_task(lua, s.next_id(), false)?;
-                        let thread = lua.create_thread(callback.clone())?;
-                        s.deferred.borrow_mut().push((
-                            thread,
-                            MultiValue::from_vec(vec![Value::UserData(task.clone())]),
-                            None,
-                        ));
-                        return Ok(Some(task));
-                    }
-                    Ok(None)
-                })?,
-            )?;
-        }
+        sample_loading::install(lua, shared)?;
+        let s=shared.clone();
+        native.set("sampleInfo", lua.create_function(move |lua, id: usize| {
+            let target=s.nodes.borrow().get(id).map(|n|n.0 as u32);
+            match target { Some(target)=>s.sample_loads.borrow().info(lua,target), None=>Ok(None) }
+        })?)?;
         let s = shared.clone();
         native.set(
             "setterMismatch",
@@ -2995,11 +2987,27 @@ impl ScriptHost {
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
         async_data::poll(self);
+        sample_loading::poll(self);
         self.cycle();
         #[cfg(feature = "scan")]
         if let Some(progress) = &self.shared.progress {
             progress.clock(self.shared.now.get());
         }
+    }
+
+    /// Install off audio on this Lua owner's dedicated source producer.
+    pub fn bind_sample_control(&mut self, control: sampler_core::SampleControl) -> Result<(), String> {
+        self.shared.sample_loads.borrow_mut().bind(control)
+    }
+    pub fn bind_sample_stream(&mut self, sources: sampler_kontakt::DynamicSources) -> Result<(), String> {
+        self.shared.sample_loads.borrow_mut().stream(sources)
+    }
+    pub(crate) fn sample_collection_timer(&self) -> Option<std::time::Duration> {
+        self.shared.sample_loads.borrow().collection_timer()
+    }
+    pub(crate) fn poll_sample_loads(&self) {
+        sample_loading::poll(self);
+        self.cycle();
     }
 
     /// Set the clock without resuming anything (a starting point).

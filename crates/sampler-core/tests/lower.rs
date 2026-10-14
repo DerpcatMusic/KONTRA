@@ -221,7 +221,7 @@ fn one_shot_envelope_bounds_a_looped_release_zone() {
     ir.zones[0].selection = None;
     ir.sequences.clear();
     let mut release = ir.zones[0].clone();
-    release.asset = ir::AssetRef(3);
+    release.asset = Some(ir::AssetRef(3));
     release.trigger = ir::Trigger::KeyRelease;
     release.playback.looping = ir::Looping::Continuous(ir::LoopRange {
         start: 0,
@@ -292,7 +292,7 @@ fn unexecutable_meaning_is_rejected_with_its_owner() {
         })
     ));
     let mut ir = instrument();
-    ir.zones[0].asset = ir::AssetRef(9);
+    ir.zones[0].asset = Some(ir::AssetRef(9));
     let error = rejected(&ir, pcm());
     assert_eq!(
         error.to_string(),

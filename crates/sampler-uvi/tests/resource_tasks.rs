@@ -39,7 +39,7 @@ fn unavailable_resource_callbacks_receive_the_returned_failed_task_once() {
     assert_eq!(h.global_text("resumed"), "true");
     assert_eq!(h.global_text("calls"), "1");
     assert!(h.fault_counts().runtime.is_empty(), "{:?}", h.fault_counts());
-    assert!(h.findings().iter().any(|f| f.feature.contains("resource task unavailable")));
+    assert!(h.findings().iter().any(|f| f.feature.contains("loadSample failed")));
 }
 
 #[test]
