@@ -15,6 +15,11 @@ pub enum LfoShape {
         level: f64,
         fade: crate::KontaktLfoFade,
     },
+    /// A native waveform with prepared native fade gains (as `DigitalSine`).
+    NativeFaded {
+        wave: NativeWave,
+        fade: crate::KontaktLfoFade,
+    },
     /// Signed bipolar peak, prepared in -1..=1.
     SineScaled(f64),
     /// Bipolar zero, including every phase, delay and fade state.
@@ -46,7 +51,8 @@ impl LfoShape {
     pub fn valid(&self) -> bool {
         match *self {
             Self::Native(NativeWave::Rectangle(w)) => w > 0.0 && w < 1.0,
-            Self::Native(NativeWave::Multi { weights, width, .. }) => {
+            Self::Native(NativeWave::Multi { weights, width, .. })
+            | Self::NativeFaded { wave: NativeWave::Multi { weights, width, .. }, .. } => {
                 width > 0.0 && width < 1.0 && weights.iter().all(|w| w.is_finite())
             }
             Self::Rectangle(w) => (0.0..=1.0).contains(&w),
@@ -392,7 +398,7 @@ pub(crate) fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
     let cycle = phase.floor();
     let t = phase - cycle;
     match shape {
-        LfoShape::Native(w) => native(w, t, seed, phase),
+        LfoShape::Native(w) | LfoShape::NativeFaded { wave: w, .. } => native(w, t, seed, phase),
         LfoShape::DigitalSine { level, .. } | LfoShape::SineScaled(level) => {
             f64::from((t * std::f64::consts::TAU).sin() as f32 * level as f32)
         }

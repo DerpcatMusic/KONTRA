@@ -501,6 +501,9 @@ pub enum Order {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
+    /// The script slot whose `ENGINE_PAR_*` writes reach [`Config::lanes`].
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<crate::SlotAddress>,
     pub line: Option<Line>,
     pub allpass: Option<Allpass>,
     pub order: Order,
@@ -517,7 +520,97 @@ impl Config {
         let mut line = Line::single(DelayTime::Frames(frames), 0.);
         line.interpolation = Interpolation::Nearest;
         line.feedback.matrix = feedback;
-        Self { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet }
+        Self { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet }
+    }
+
+    /// Live knobs of a script-addressed Kontakt legacy Delay, Chorus, Flanger
+    /// or Phaser, each holding its stored value (fx_legacy_delay_reverb_mod.tsv);
+    /// [`Config::set`] applies the native setter. A synced time or speed has
+    /// another law and no lane.
+    pub fn lanes(&self) -> Vec<super::Lane> {
+        use super::{Lane, Law, tables};
+        use crate::ProcessorParameter as P;
+        if self.address.is_none() {
+            return Vec::new();
+        }
+        let speed = match self.lfo.rate {
+            Rate::Hz(hz) => Some(f64::from(hz)),
+            _ => None,
+        };
+        let speed = |name| speed.map(|hz| Lane::new(name, P::Speed, hz, Law::Exp { a: 0.05, r: 160. }));
+        let phase = |name| Lane::new(name, P::Phase, f64::from(self.lfo.phase) * 4., Law::Identity);
+        let mut lanes = Vec::new();
+        match (self.line.map(|l| l.native), self.allpass) {
+            (Some(Native::LegacyDelay { time, unit, feedback, damping, pan }), _) => {
+                if unit <= f32::from_bits(0x3089705f) {
+                    lanes.push(Lane::new("ENGINE_PAR_DL_TIME", P::Time, f64::from(time), Law::Table(&tables::DL_TIME)));
+                }
+                lanes.push(Lane::new("ENGINE_PAR_DL_FEEDBACK", P::Feedback, f64::from(feedback), Law::Identity));
+                lanes.push(Lane::new("ENGINE_PAR_DL_DAMPING", P::Damping, f64::from(damping), Law::Identity));
+                lanes.push(Lane::new("ENGINE_PAR_DL_PAN", P::Pan, f64::from(pan), Law::Identity));
+            }
+            (Some(Native::LegacyModDelay { second_head: true, excursion, .. }), _) => {
+                lanes.push(Lane::new("ENGINE_PAR_CH_DEPTH", P::Depth, excursion / 75., Law::Identity));
+                lanes.extend(speed("ENGINE_PAR_CH_SPEED"));
+                lanes.push(phase("ENGINE_PAR_CH_PHASE"));
+            }
+            (Some(Native::LegacyModDelay { base_ms, excursion, feedback, .. }), _) => {
+                lanes.push(Lane::new("ENGINE_PAR_FL_DEPTH", P::Depth, excursion / 50., Law::Identity));
+                let stored = f64::from(feedback) / f64::from(f32::from_bits(0x3f733333));
+                lanes.push(Lane::new("ENGINE_PAR_FL_FEEDBACK", P::Feedback, stored, Law::Identity));
+                lanes.extend(speed("ENGINE_PAR_FL_SPEED"));
+                lanes.push(phase("ENGINE_PAR_FL_PHASE"));
+                lanes.push(Lane::new("ENGINE_PAR_FL_COLOR", P::Colour, f64::from(base_ms), Law::Linear { a: 0., b: 5. }));
+            }
+            (None, Some(Allpass { law: SweepLaw::Legacy { depth }, feedback, .. })) => {
+                lanes.push(Lane::new("ENGINE_PAR_PH_DEPTH", P::Depth, f64::from(depth), Law::Identity));
+                lanes.push(Lane::new("ENGINE_PAR_PH_FEEDBACK", P::Feedback, f64::from(feedback) / 0.85, Law::Identity));
+                lanes.extend(speed("ENGINE_PAR_PH_SPEED"));
+                lanes.push(phase("ENGINE_PAR_PH_PHASE"));
+            }
+            _ => {}
+        }
+        lanes
+    }
+
+    /// Write the stored value of lane `role` through the native setter
+    /// (Delay 0x1409645ae, Chorus 0x140963970, Flanger 0x1409637f0, Phaser
+    /// 0x140962c75: phase * 0.25 cycles, Flanger feedback * 0.95, Phaser * 0.85).
+    pub fn set(&mut self, role: crate::ProcessorParameter, stored: f64) {
+        use crate::ProcessorParameter as P;
+        let v = stored as f32;
+        match role {
+            P::Speed => self.lfo.rate = Rate::Hz(v),
+            // ponytail: takes effect at the next LFO reset; the native re-phases at once (0x140960040).
+            P::Phase => self.lfo.phase = v * 0.25,
+            _ => {}
+        }
+        if let Some(Allpass { law: SweepLaw::Legacy { depth }, feedback, .. }) = &mut self.allpass {
+            match role {
+                P::Depth => *depth = v,
+                P::Feedback => *feedback = (stored * 0.85) as f32,
+                _ => {}
+            }
+        }
+        let Some(line) = &mut self.line else { return };
+        match (&mut line.native, role) {
+            (Native::LegacyDelay { time, .. }, P::Time) => {
+                *time = v;
+                line.taps[0].time = DelayTime::Ms(stored);
+            }
+            (Native::LegacyDelay { feedback, .. }, P::Feedback) => *feedback = v,
+            (Native::LegacyDelay { damping, .. }, P::Damping) => *damping = v,
+            (Native::LegacyDelay { pan, .. }, P::Pan) => *pan = v,
+            (Native::LegacyModDelay { second_head, excursion, .. }, P::Depth) => {
+                *excursion = stored * if *second_head { 75. } else { 50. };
+            }
+            (Native::LegacyModDelay { feedback, .. }, P::Feedback) => *feedback = v * f32::from_bits(0x3f733333),
+            (Native::LegacyModDelay { base_ms, .. }, P::Colour) => {
+                *base_ms = v;
+                line.taps[0].time = DelayTime::Ms(stored);
+            }
+            _ => {}
+        }
     }
 
     /// Frames of line the host must keep ringing after the input ends, when

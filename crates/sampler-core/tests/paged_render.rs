@@ -821,6 +821,7 @@ fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_col
         sources: vec![ModSource::Velocity],
         routes: vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],
         shapes: vec![],
+        envelope_controls: vec![],
     };
     let plan = Prepared::new(
         48000,

@@ -348,6 +348,7 @@ impl TimeMod {
     /// the normalized cutoff and resonance, half dry, half wet.
     pub(crate) fn phaser_filter([cutoff, resonance]: [f32; 2]) -> Result<Self, Error> {
         let cfg = Config {
+            address: None,
             line: None,
             allpass: Some(Allpass {
                 stages: 4,
@@ -361,6 +362,17 @@ impl TimeMod {
         };
         // The rate only sizes unused LFO tables.
         Self::compile(cfg, 48_000)
+    }
+
+    pub(crate) fn config(&self) -> Config {
+        self.cfg
+    }
+
+    /// This unit with `cfg`'s knobs, keeping its layout: only stored knobs a
+    /// family's `set` writes may differ (legacy natives own fixed rings).
+    pub(crate) fn retuned(&self, cfg: Config) -> Self {
+        debug_assert!(self.bank.is_none());
+        Self { cfg, bank: None, ..*self }
     }
 
     /// Slab frames this stage needs.

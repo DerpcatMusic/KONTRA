@@ -89,7 +89,8 @@ pub enum EngineParameterLaw {
         low: f64,
         high: f64,
     },
-    /// Geometric native range, for frequency and time controls.
+    /// Geometric native range, for frequency and time controls. `high` below
+    /// `low` falls (Kontakt's compressor RATIO, 1 down to 0.04).
     Exponential {
         low: f64,
         high: f64,
@@ -109,9 +110,18 @@ pub enum EngineParameterLaw {
     },
     /// Kontakt signed modulation depth, ported from v1 CubicDepth::Loop.
     SignedCubic,
+    /// [`Self::SignedCubic`] in a route's depth units (12 per unit for pitch).
+    ScaledSignedCubic {
+        scale: f64,
+    },
     CubicGain {
         unity: f64,
     },
+    /// Measured stored values at evenly spaced writes over 0..=1e6, geometric
+    /// between positive points (kontakt-bindings curves_dense.tsv).
+    Table(&'static [f64]),
+    /// Legacy EQ FREQn: `20 * 1000^(v/1e6)` Hz into the band's native knob.
+    LegacyEqFrequency,
 }
 impl EngineParameterLaw {
     /// Shared authored/read/write conversion for native AHDSR stage values.
@@ -142,10 +152,13 @@ impl EngineParameterLaw {
     pub(crate) fn valid(self) -> bool {
         match self {
             Self::WavetableForm | Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
+            Self::ScaledSignedCubic { scale } => scale.is_finite() && scale > 0.,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
-                low.is_finite() && high.is_finite() && low > 0. && high >= low
+                low.is_finite() && high.is_finite() && low > 0. && high > 0.
             }
+            Self::Table(points) => points.len() >= 2 && points.iter().all(|p| p.is_finite() && *p >= 0.),
+            Self::LegacyEqFrequency => true,
             Self::ShiftedExponential { low, high, offset } => {
                 low.is_finite()
                     && high.is_finite()
@@ -213,6 +226,7 @@ impl EngineParameterLaw {
             Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
+            Self::ScaledSignedCubic { scale } => scale * Self::SignedCubic.decode(value),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => {
                 // Declared endpoints must not shrink or widen through log/exp roundoff.
@@ -240,6 +254,26 @@ impl EngineParameterLaw {
                 10f64.powf((low_db + (high_db - low_db) * v / 1e6) / 20.)
             }
             Self::CubicGain { unity } => (v / unity).powi(3),
+            Self::Table(points) => {
+                let x = v / 1e6 * (points.len() - 1) as f64;
+                let i = (x as usize).min(points.len() - 2);
+                let (a, b) = (points[i], points[i + 1]);
+                let t = x - i as f64;
+                // Measured points are exact (an authored 10 ms must stay inside the
+                // lane's domain); a segment from zero (RV_PREDELAY) is linear.
+                if t == 0. {
+                    a
+                } else if t == 1. {
+                    b
+                } else if a > 0. {
+                    (a.ln() + (b.ln() - a.ln()) * t).exp()
+                } else {
+                    a + (b - a) * t
+                }
+            }
+            Self::LegacyEqFrequency => f64::from(crate::KontaktLegacyEqSettings::frequency_knob(
+                (20. * 1000f64.powf(v / 1e6)) as f32,
+            )),
         }
     }
     /// Convert a finite native DSP value to the normalized service range.
@@ -255,6 +289,7 @@ impl EngineParameterLaw {
             Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
+            Self::ScaledSignedCubic { scale } => 500_000. * ((value / scale).cbrt() + 1.),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
@@ -267,8 +302,17 @@ impl EngineParameterLaw {
                 if low == high {
                     0.
                 } else {
-                    (value.max(low).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
+                    (value.clamp(low.min(high), low.max(high)).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
                 }
+            }
+            // Monotone measured curves: the write whose decode is nearest.
+            Self::Table(_) | Self::LegacyEqFrequency => {
+                let (mut lo, mut hi) = (0, 1_000_000);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if self.decode(mid) < value { lo = mid + 1 } else { hi = mid }
+                }
+                f64::from(lo)
             }
             Self::ShiftedExponential { low, high, offset } => {
                 ((value + offset).max(low) / low).ln() / (high / low).ln() * 1e6
@@ -513,6 +557,30 @@ fn slot_parameter(
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn measured_tables_decode_and_encode() {
+        // Evenly spaced measured points (curves_dense.tsv), geometric between them.
+        let law = EngineParameterLaw::Table(&[5., 10., 40.]);
+        assert!(law.valid());
+        assert!((law.decode(0) - 5.).abs() < 1e-9 && (law.decode(1_000_000) - 40.).abs() < 1e-9);
+        assert!((law.decode(250_000) - 50f64.sqrt()).abs() < 1e-9);
+        assert!((law.encode(20.) - 750_000).abs() <= 1);
+        // Endpoints are exact: ANALOG STRINGS' authored 10 ms limiter release sat
+        // 2e-15 below the lane's decoded minimum and failed the whole load.
+        let release = EngineParameterLaw::Table(&sampler_ir::fx::tables::LIM_RELEASE);
+        assert_eq!((release.decode(0), release.decode(1_000_000)), (10., 1000.));
+        // RV_PREDELAY starts at 0 ms: that segment is linear.
+        let law = EngineParameterLaw::Table(&[0., 2., 8.]);
+        assert!(law.valid() && (law.decode(250_000) - 1.).abs() < 1e-9);
+        // COMP RATIO falls from 1 to 0.04.
+        let ratio = EngineParameterLaw::Exponential { low: 1., high: 0.04 };
+        assert!(ratio.valid() && (ratio.decode(500_000) - 0.2).abs() < 1e-9);
+        // INTMOD on a 12-semitone pitch route (v1: 1e6 is depth 1, 750000 is 0.125).
+        let pitch = EngineParameterLaw::ScaledSignedCubic { scale: 12. };
+        assert_eq!((pitch.decode(1_000_000), pitch.decode(750_000), pitch.decode(0)), (12., 1.5, -12.));
+        assert_eq!(pitch.encode(1.5), 750_000);
+    }
+
     #[test]
     fn bus_volume_reaches_the_bus_mix_on_the_kontakt_volume_law() {
         let id = engine_parameter_id("ENGINE_PAR_VOLUME").unwrap();

@@ -495,6 +495,26 @@ impl Network {
         s
     }
 
+    /// Take `spec`'s coefficients (a live knob write). The delay contents and
+    /// filter states carry over when the line layout is unchanged; otherwise
+    /// the network starts silent.
+    // ponytail: rebuilds the Spec and rings (allocates) on the audio thread
+    // per changed block; preallocate per-topology coefficient updates if knob
+    // sweeps glitch.
+    pub(super) fn retune(&mut self, spec: Spec) {
+        let mut next = Network::new(spec);
+        let same = |a: &[Ring], b: &[Ring]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.buf.len() == b.buf.len());
+        if same(&next.rings, &self.rings) && same(&next.pre, &self.pre) {
+            next.rings = std::mem::take(&mut self.rings);
+            std::mem::swap(&mut next.pre, &mut self.pre);
+            next.st = self.st.clone();
+            (next.lp, next.df1, next.shelf, next.cut, next.w) = (self.lp, self.df1, self.shelf, self.cut, self.w);
+            (next.phasor, next.phasor2, next.count, next.lcg) = (self.phasor, self.phasor2, self.count, self.lcg);
+            (next.cur, next.glide, next.phase, next.left) = (self.cur, self.glide, self.phase, self.left);
+        }
+        *self = next;
+    }
+
     pub(super) fn clear(&mut self) {
         for r in self.rings.iter_mut().chain(&mut self.pre) {
             r.buf.fill(0.0);
