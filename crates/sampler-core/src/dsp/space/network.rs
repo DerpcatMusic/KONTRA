@@ -1181,7 +1181,8 @@ pub(super) fn apply(matrix: &Matrix, v: &[f32; MAX_LINES], n: usize, u: &mut [f3
             }
         }
         Matrix::Hadamard => {
-            u[..n].copy_from_slice(&v[..n]);
+            // Whole-array copy: a fixed size inlines (a `[..n]` copy calls memcpy).
+            *u = *v;
             hadamard(&mut u[..n]);
         }
         Matrix::Circulant { row, col, mean, half } => {
@@ -1205,9 +1206,30 @@ pub(super) fn apply(matrix: &Matrix, v: &[f32; MAX_LINES], n: usize, u: &mut [f3
     }
 }
 
+#[inline(always)]
+fn hadamard_n<const N: usize>(x: &mut [f32; N]) {
+    let mut h = 1;
+    while h < N {
+        for i in (0..N).step_by(2 * h) {
+            for j in i..i + h {
+                let (a, b) = (x[j], x[j + h]);
+                (x[j], x[j + h]) = (a + b, a - b);
+            }
+        }
+        h *= 2;
+    }
+}
+
 /// In-place unnormalised Walsh–Hadamard transform (power-of-two length).
 #[inline(always)]
 pub(super) fn hadamard(x: &mut [f32]) {
+    // Fixed sizes unroll into vector code.
+    match x.len() {
+        8 => return hadamard_n::<8>(x.try_into().expect("len 8")),
+        16 => return hadamard_n::<16>(x.try_into().expect("len 16")),
+        32 => return hadamard_n::<32>(x.try_into().expect("len 32")),
+        _ => {}
+    }
     let mut h = 1;
     while h < x.len() {
         for i in (0..x.len()).step_by(2 * h) {
