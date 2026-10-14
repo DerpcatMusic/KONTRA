@@ -202,7 +202,7 @@ impl Settings {
             CurveSettings::Rectifier(mode) => Curve::Rectifier(mode),
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
             CurveSettings::Skreamer(knobs) => Curve::Skreamer(skreamer::Skreamer::new(knobs, rate)),
-            CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d)),
+            CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -313,6 +313,7 @@ impl State {
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
             && self.skreamer.finite()
+            && self.drive.finite()
             && self.tone.finite()
     }
 }

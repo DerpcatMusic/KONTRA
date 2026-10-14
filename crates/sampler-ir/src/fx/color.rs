@@ -105,6 +105,8 @@ pub struct Drive {
     pub trash: f32,
     pub mix: f32,
     pub output_gain: f32,
+    /// 2^k oversampling (0..=4).
+    pub oversampling: u8,
 }
 
 /// Kontakt Lo-Fi noise: shared LCG, one-pole colored.

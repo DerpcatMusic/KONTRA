@@ -1,7 +1,7 @@
 //! UVI `color` effects onto `sampler_ir::fx::color`.
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
-//! SmoothOverdrive and StraightFuzz (Oversampling 0) as the color chain's drive curve.
+//! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve.
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
@@ -17,9 +17,6 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
         "Exciter" => "kernel [ref] runs an oversampled (up to 2^n) stage via [ref] with an FIR resampler; shaper laws not transcribed",
         "BigMuffTone" => {
             "tone filter at [ref] is a runtime-built biquad from unreferenced double constants at [ref]..[ref]; coefficients not transcribed"
-        }
-        "GarageFuzz" | "StraightFuzz" | "SmoothOverdrive" => {
-            "Oversampling > 0: the shared HIIR polyphase oversampler is not a color-chain stage yet"
         }
         "Drive" | "TSDrive" | "DiodeClipper"
         | "DoubleDrive" | "UviDrive" | "Buzz" | "Retro" | "Vinyl" => {
