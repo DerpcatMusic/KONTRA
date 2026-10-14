@@ -576,13 +576,13 @@ impl Stage for SixEnvelopes {
 /// the release toward a floor while two coupled one-poles (178.8 rad/s per
 /// sub-step) average it, and asks the curve for the gain. Cells `[A, D, E,
 /// G]` per detector, f64, zero from reset (native: no init but bypass).
-pub(super) struct FeedbackLoop<'a> {
+/// `STEPS` sub-steps per frame (2, or 4 in high quality).
+pub(super) struct FeedbackLoop<'a, const STEPS: usize> {
     pub curve: FeedbackCurve,
     pub attack: f32,
     pub release: f32,
     pub couple: f32,
     pub floor: f32,
-    pub steps: usize,
     pub linked: bool,
     pub bypass: bool,
     cells: &'a mut [[f64; 2]],
@@ -591,18 +591,17 @@ pub(super) struct FeedbackLoop<'a> {
 
 pub(super) const FEEDBACK_CELLS: usize = 4;
 
-impl<'a> FeedbackLoop<'a> {
+impl<'a, const STEPS: usize> FeedbackLoop<'a, STEPS> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         curve: FeedbackCurve,
         [attack, release, couple, floor]: [f32; 4],
-        steps: usize,
         linked: bool,
         bypass: bool,
         cells: &'a mut [[f64; 2]],
     ) -> Self {
         let s = std::array::from_fn(|ch| std::array::from_fn(|k| cells[k][ch]));
-        Self { curve, attack, release, couple, floor, steps, linked, bypass, cells, s }
+        Self { curve, attack, release, couple, floor, linked, bypass, cells, s }
     }
 
     /// One sub-step on detector state `[a, d, e, g]`.
@@ -623,18 +622,20 @@ impl<'a> FeedbackLoop<'a> {
     }
 }
 
-impl Stage for FeedbackLoop<'_> {
+impl<const STEPS: usize> Stage for FeedbackLoop<'_, STEPS> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let run = |this: &Self, mut st: [f64; 4], det: f64| {
-            for _ in 0..this.steps {
-                this.step(det, &mut st);
-            }
-            st
-        };
-        self.s[0] = run(self, self.s[0], f.level[0]);
+        let mut st = self.s[0];
+        for _ in 0..STEPS {
+            self.step(f.level[0], &mut st);
+        }
+        self.s[0] = st;
         if !self.linked {
-            self.s[1] = run(self, self.s[1], f.level[1]);
+            let mut st = self.s[1];
+            for _ in 0..STEPS {
+                self.step(f.level[1], &mut st);
+            }
+            self.s[1] = st;
         }
         if self.bypass {
             let floor = f64::from(self.floor);
