@@ -414,6 +414,7 @@ function element.setParameter(self, name, value)
   local class = actual
   if expected == 'int' or expected == 'float' then class = 'number'
   elseif expected == 'bool' then class = 'boolean'
+  elseif expected == 'string' then class = 'string'
   elseif expected == 'any' then class = (actual == 'boolean' or actual == 'number') and actual or 'number' end
   if actual ~= class then
     if actual == 'boolean' then actual = 'bool'

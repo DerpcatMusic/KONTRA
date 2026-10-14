@@ -25,6 +25,7 @@ fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
       Program.inserts[2].parameterDefinitions.Freq.min=originalMin+1
       assert(defs.Freq.min==originalMin)
       e:setParameter(defs.Freq.id,100); assert(e:getParameter(defs.Freq.id)==100)
+      e:setParameter(defs.Freq.id,250); assert(e:getParameter(defs.Freq.id)==250)
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let xml = xml.replace("<Program>", "<Program Custom='text'>");
     let mut h = ScriptHost::new(&xml, (), Config::default()).unwrap();
@@ -51,7 +52,8 @@ fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
         1_000_000,
         0,
         law.normalized_value(100.).unwrap(),
-        law.normalized_value(100.).unwrap(),
+        // The repeated write of 100 holds: a no-op, no command.
+        law.normalized_value(250.).unwrap(),
     ]) {
         assert!(
             matches!(command, Command::EngineParameter { address, value }
@@ -65,7 +67,7 @@ fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
     assert_eq!(overrides.len(), 1, "{overrides:?}");
     assert_eq!(
         (overrides[0].0, &*overrides[0].1, &*overrides[0].2),
-        (node, "Freq", "100")
+        (node, "Freq", "250")
     );
 }
 
@@ -94,7 +96,7 @@ fn unknown_parameter_names_and_ids_are_silently_ignored_on_cold_and_cached_eleme
 }
 
 #[test]
-fn unsupported_catalog_writes_leave_authored_readback_and_production_queue_unchanged() {
+fn initialization_writes_without_a_live_path_patch_the_translation_not_the_queue() {
     let xml = r#"<UVI4><Program TransposeSemiTones='2'><Inserts><OnePole Mode='1'/></Inserts><Layers><Layer Mute='1'><Keygroups><Keygroup LowKey='12'><Oscillators><SamplePlayer BaseNote='62'/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script>
       local cases={{Program,'TransposeSemiTones',2,3},
         {Program.layers[1],'Mute',true,false},
@@ -104,10 +106,12 @@ fn unsupported_catalog_writes_leave_authored_readback_and_production_queue_uncha
       for _,cached in ipairs({false,true}) do
         for _,c in ipairs(cases) do
           local e,name,before,after=c[1],c[2],c[3],c[4]
-          assert(e:hasParameter(name) and e:getParameter(name)==before)
+          local held=before
+          if cached then held=after end
+          assert(e:hasParameter(name) and e:getParameter(name)==held)
           if cached then name=e.parameterDefinitions[name].id end
           e:setParameter(name,after)
-          assert(e:getParameter(name)==before and rawget(e,'__set')==nil)
+          assert(e:getParameter(name)==after)
         end
       end
       completed=true
@@ -120,8 +124,12 @@ fn unsupported_catalog_writes_leave_authored_readback_and_production_queue_uncha
         host.fault_counts()
     );
     assert!(host.take_commands().is_empty());
-    assert!(host.insert_overrides().is_empty());
-    assert_eq!(host.findings().len(), 5);
+    // Folded into the program the scripts leave; the translation reports any it ignores.
+    let mut fields: Vec<_> = host.insert_overrides().into_iter().map(|(_, name, value)| (name, value)).collect();
+    fields.sort();
+    let expected = [("BaseNote", "63"), ("LowKey", "13"), ("Mode", "0"), ("Mute", "0"), ("TransposeSemiTones", "3")];
+    assert_eq!(fields, expected.map(|(n, v)| (n.to_owned(), v.to_owned())));
+    assert!(host.findings().is_empty(), "{:?}", host.findings());
 }
 
 #[test]
@@ -604,9 +612,54 @@ fn undocumented_fields_take_numbers_and_booleans_and_equal_writes_are_no_ops() {
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
     assert!(h.fault_counts().setter_type_mismatches.is_empty(), "{:?}", h.fault_counts());
+    assert!(h.findings().is_empty(), "{:?}", h.findings());
+    // Mode clamps to its documented maximum 1, an integer: a real write (folded
+    // into the translation, as an initialization write), not a mismatch.
+    let fields: Vec<_> = h.insert_overrides().into_iter().map(|(_, name, value)| (name, value)).collect();
+    assert!(fields.contains(&("Mode".to_owned(), "1".to_owned())), "{fields:?}");
+}
+
+#[test]
+fn delay_and_reverb_writes_land_on_their_family_lanes() {
+    use sampler_core::{EngineParameterLaw as Law, engine_parameter_id as id};
+    use sampler_uvi::script::Command;
+    let xml = r#"<UVI4><Program><Inserts><DualDelay Feedback='0.3' Mix='0.5'/><SparkVerb RoomSize='20'/></Inserts>
+      <EventProcessors><ScriptProcessor><script>
+      function onController(e)
+        Program.inserts[1]:setParameter('Feedback', 0.6)
+        Program.inserts[1]:setParameter('Mix', 0.25)
+        Program.inserts[2]:setParameter('RoomSize', 30)
+        Program.inserts[1]:setParameter('DelayRatio', 0.5)
+      end
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    // The translation addresses each unit at its element's lane slot.
+    let ir = sampler_uvi::translate(xml, std::path::Path::new(".")).unwrap().instrument;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let node = |tag| doc.descendants().find(|n| n.has_tag_name(tag)).unwrap().id().get_usize() as i32;
+    let slots: Vec<_> = ir.chains.iter().flat_map(|c| &c.pre_amplitude).filter_map(|p| p.lanes()).map(|(at, lanes)| (at.generic, at.slot, lanes.len())).collect();
+    assert_eq!(slots, [(node("DualDelay"), 1000, 6), (node("SparkVerb"), 1000, 8)]);
+
+    let mut h = ScriptHost::new(xml, (), Config::default()).unwrap();
+    h.take_commands();
+    h.controller(1, 64, 0);
+    let lane = |name, generic, law: Law, v: f64| Command::EngineParameter {
+        address: sampler_core::EngineParameterAddress { parameter: id(name).unwrap(), group: -1, slot: 1000, generic },
+        value: law.normalized_value(v).unwrap(),
+    };
+    let unit = Law::Linear { low: 0., high: 1. };
+    assert_eq!(
+        h.take_commands(),
+        [
+            lane("ENGINE_PAR_DL_FEEDBACK", node("DualDelay"), unit, f64::from(0.6f32)),
+            // DualDelay's equal-power mix: both gains move.
+            lane("ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN", node("DualDelay"), Law::Linear { low: 0., high: 2. }, 0.25f64.sqrt()),
+            lane("ENGINE_PAR_SEND_EFFECT_DRY_LEVEL", node("DualDelay"), unit, 0.75f64.sqrt()),
+            lane("ENGINE_PAR_RV_SIZE", node("SparkVerb"), Law::Linear { low: 0., high: 100. }, 30.),
+        ]
+    );
+    // DelayRatio has no lane: the write is reported, not approximated.
     let features: Vec<_> = h.findings().into_iter().map(|f| f.feature).collect();
-    // Mode clamps to its documented maximum 1, an integer: a real write, not a mismatch.
-    assert_eq!(features, ["lua setParameter CombFilter.Mode"], "{features:?}");
+    assert_eq!(features, ["lua setParameter DualDelay.DelayRatio"]);
 }
 
 #[test]
