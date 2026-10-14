@@ -249,6 +249,7 @@ pub(crate) mod color;
 pub(crate) mod dynamics;
 pub(crate) mod eq_family;
 pub(crate) mod filter;
+pub(crate) mod hiir;
 pub(crate) mod space;
 pub(crate) mod timemod;
 pub(super) mod control;
