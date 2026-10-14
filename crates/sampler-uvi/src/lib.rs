@@ -1035,6 +1035,7 @@ impl Translation {
         }
         self.ir.assets.push(ir::Asset {
             location: ir::AssetLocation::Path(resolved.clone()),
+            residency: Default::default(),
             encoding,
             root_key: None,
             loops: Vec::new(),
@@ -1970,6 +1971,7 @@ mod narrowed_impulse_tests {
                 .iter()
                 .map(|location| ir::Asset {
                     location: ir::AssetLocation::Path(location.clone()),
+                    residency: Default::default(),
                     encoding: ir::Encoding::Wav,
                     root_key: None,
                     loops: Vec::new(),

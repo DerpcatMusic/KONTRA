@@ -114,6 +114,8 @@ fn constant(value: f32) -> Pcm {
 fn asset(name: &str) -> ir::Asset {
     ir::Asset {
         location: ir::AssetLocation::Path(name.into()),
+        residency: Default::default(),
+        residency: Default::default(),
         encoding: ir::Encoding::Wav,
         root_key: None,
         loops: Vec::new(),

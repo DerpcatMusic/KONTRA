@@ -5124,6 +5124,7 @@ mod tests {
         };
         let asset = |i| ir::Asset {
             location: ir::AssetLocation::Path(format!("{i}.wav")),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),
@@ -5424,6 +5425,7 @@ mod tests {
         instrument.zones.push(zone);
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("generated.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],

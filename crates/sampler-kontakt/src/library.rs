@@ -2937,6 +2937,7 @@ impl Translation {
                 };
                 self.ir.assets.push(ir::Asset {
                     location: ir::AssetLocation::Path(location.to_string_lossy().into_owned()),
+                    residency: Default::default(),
                     encoding,
                     root_key: None,
                     loops: Vec::new(),
@@ -4829,6 +4830,7 @@ mod modulation {
         assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default, .. }
             if default == f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.))));
         t.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.chain = Some(ir::ChainRef(0));
