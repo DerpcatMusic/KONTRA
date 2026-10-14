@@ -18,7 +18,11 @@ fn reports_calls_parameters_and_highlighting_without_source() {
     let at = |name: &str| report.constructs.iter().find(|c| c.name == name).unwrap();
     assert_eq!(at("wait").status, Status::Implemented);
     assert_eq!(at("setParameter GainMatrix.Gain_3_1").status, Status::Stub);
-    assert_eq!(at("loadSample").status, Status::Unsupported);
+    let sample = at("loadSample");
+    assert_eq!(sample.status, Status::Approximate);
+    assert!(sample.detail.contains("exact source/target authority"));
+    assert!(sample.detail.contains("failure/cancellation"));
+    assert!(sample.owner.as_deref().is_some_and(|owner| owner.contains("script/sample_loading.rs")));
     assert_eq!(at("unknownApi").status, Status::Unsupported);
     assert_eq!(
         at("getParameter GainMatrix.Gain_1_1").kind,
