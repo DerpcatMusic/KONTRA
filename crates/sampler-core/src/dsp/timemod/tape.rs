@@ -13,6 +13,7 @@
 //!   between the old and new record positions with linear weights after the
 //!   erase head clears its span. `n₁, n₂`: MT19937 seed 42, canonical float.
 //! - wet EQ: bass shelf at 100 Hz and treble shelf at 5000 Hz in one biquad.
+//!
 //! Modes 5..=12 also feed a convolution reverb whose impulse response is
 //! embedded in the UVI binary; it is not reproduced (reported by the mapper).
 
@@ -82,9 +83,7 @@ impl TimeMod {
             for (h, d) in d.iter().enumerate() {
                 slab[HEADS + h][1] = f64::from(w - d.clamp(0.05, 0.5) * rate);
             }
-            for i in ERASE..TIMES {
-                slab[i][1] = 0.0;
-            }
+            slab[ERASE..TIMES].iter_mut().for_each(|f| f[1] = 0.0);
             slab[WRITE][1] = f64::from(w);
             slab[WRITE + 1][1] = f64::from(w.floor());
             slab[SPEED][1] = f64::from(t.speed);
@@ -209,8 +208,8 @@ impl TimeMod {
         }
         slab[624][1] = mt.i as f64;
         let put = |slab: &mut [[f64; 2]], i: usize, v: f32| slab[i][1] = f64::from(v);
-        for h in 0..3 {
-            put(slab, HEADS + h, heads[h]);
+        for (h, v) in heads.into_iter().enumerate() {
+            put(slab, HEADS + h, v);
         }
         put(slab, ERASE, erase);
         slab[ERASE + 1][1] = erased as f64;
@@ -219,8 +218,8 @@ impl TimeMod {
         put(slab, W, w);
         put(slab, W + 1, w_prev);
         put(slab, SPEED, s);
-        for i in 0..3 {
-            put(slab, LP + i, lp[i]);
+        for (i, v) in lp.into_iter().enumerate() {
+            put(slab, LP + i, v);
         }
         put(slab, DE, sd);
         put(slab, PRE, sp);
