@@ -58,6 +58,7 @@ fn network_valid(n: &Network) -> bool {
                 within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
             }))
         && (n.topology != Topology::Jezar || n.uvi_reverb.is_some_and(|u| within(f64::from(u.decay_time), 0.0, 100.0) && within(f64::from(u.cutoff), -1.0, 1.0)))
+        && (n.topology != Topology::Raum || n.raum.is_some_and(|p| p.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::KontaktPlate || n.kontakt_plate.is_some_and(|p| p.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::Galois || n.galois.is_some_and(|g| g.controls.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::SparkVerb
@@ -145,6 +146,7 @@ struct Net {
     pair: Option<resample::Pair>,
     early: Option<Early>,
     gate: Option<Gate>,
+    raum: Option<design::raum::Outer>,
     pos: usize,
 }
 
@@ -160,12 +162,13 @@ impl Net {
         let core = network::Network::new(design::spec(n, core_rate)?);
         let rate = rate as f32;
         // The native engines have no early taps; only Jezar (UVI) gates.
-        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar | Topology::KontaktPlate);
+        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar | Topology::KontaktPlate | Topology::Raum);
         Ok(Self {
             core,
             pair,
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
             gate: n.gate_seconds.filter(|_| n.topology == Topology::Jezar || !native).map(|g| Gate::new(g, rate)),
+            raum: n.raum.filter(|_| n.topology == Topology::Raum).map(|p| design::raum::Outer::new(&p, rate as u32)),
             pos: 0,
         })
     }
@@ -181,10 +184,16 @@ impl Net {
         if let Some(g) = &mut self.gate {
             (g.left, g.gain, g.down) = (0, 0.0, 0.0);
         }
+        if let Some(o) = &mut self.raum {
+            o.clear();
+        }
     }
 
     /// Replace `l`/`r` with the wet signal.
     fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if let Some(o) = &mut self.raum {
+            return o.process(l, r, |a, b| self.core.process(a, b));
+        }
         if let Some(p) = &mut self.pair {
             for (l, r) in l.chunks_mut(crate::dsp::BLOCK).zip(r.chunks_mut(crate::dsp::BLOCK)) {
                 p.process(l, r, |a, b| self.core.process(a, b));
@@ -329,6 +338,8 @@ mod tests {
             ("fdn", Network::DEFAULT),
             ("comb", Network { topology: Topology::CombAllpass, ..Network::DEFAULT }),
             ("plate", Network { topology: Topology::Plate, ..Network::DEFAULT }),
+            ("raum airy", Network { topology: Topology::Raum, raum: Some([0.5, 0.0, 0.0, 0.25, 0.0625, 0.0, 0.0, 1.0, 0.0, 0.5, 0.8, 0.5, 0.25, 0.25, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0]), ..Network::DEFAULT }),
+            ("raum grounded", Network { topology: Topology::Raum, raum: Some([0.5, 0.0, 0.0, 0.25, 0.0625, 0.0, 0.0, 1.0, 0.0, 0.0, 0.8, 0.5, 0.25, 0.25, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0]), ..Network::DEFAULT }),
             ("kontakt plate", Network { topology: Topology::KontaktPlate, kontakt_plate: Some([0.5, 0.5, 0.5, 0.0, 1.0]), ..Network::DEFAULT }),
             ("diffuser", Network { topology: Topology::Diffuser, ..Network::DEFAULT }),
             (
