@@ -204,6 +204,7 @@ impl Playback {
         }
         let mut cursor = Cursor {
             wavetable: self.wavetable,
+            wavetable_base: self.wavetable,
             start: self.start,
             end,
             direction: self.direction,
@@ -353,6 +354,7 @@ impl CursorTemplate {
         let wavetable = extra.and_then(|extra| extra.wavetable);
         let mut cursor = Cursor {
             wavetable,
+            wavetable_base: wavetable,
             start: self.start,
             end: self.end,
             direction: self.direction,
@@ -382,6 +384,7 @@ impl CursorTemplate {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cursor {
     wavetable: Option<crate::Wavetable>,
+    wavetable_base: Option<crate::Wavetable>,
     start: usize,
     end: usize,
     direction: Direction,
@@ -532,13 +535,21 @@ impl Cursor {
         &mut self,
         [position, form1, form2, form1_type, form2_type]: [f32; 5],
     ) {
-        if let Some(source) = &mut self.wavetable {
+        if let Some(source) = &mut self.wavetable_base {
             source.form1_type = form1_type as u8;
             source.form2_type = form2_type as u8;
             source.position = position;
             source.form1 = form1;
             source.form2 = form2;
         }
+    }
+    pub(super) fn set_wavetable_offsets(&mut self, [position, form1, form2]: [f32; 3]) {
+        self.wavetable = self.wavetable_base.map(|mut base| {
+            base.position = (base.position + position).clamp(0., 1.);
+            base.form1 = (base.form1 + form1).clamp(0., 1.);
+            base.form2 = (base.form2 + form2).clamp(0., 1.);
+            base
+        });
     }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward

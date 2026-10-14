@@ -2381,7 +2381,8 @@ impl Translation {
             ir::Target::LoopStart
             | ir::Target::LoopLength
             | ir::Target::SourceRate(_)
-            | ir::Target::SourcePhase(_) => true,
+            | ir::Target::SourcePhase(_)
+            | ir::Target::Wavetable(_) => true,
             ir::Target::Processor { parameter, .. } => !matches!(
                 parameter,
                 ir::ProcessorParameter::Gain
@@ -2716,6 +2717,19 @@ impl Translation {
                 )
             }
             "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
+            "wavetablePosition" | "warpFactor" | "warpFactor2"
+                if self.ir.source_indices.modulators.iter().find(|m| m.runtime == Some(source))
+                    .and_then(|m| self.ir.source_indices.groups.get(m.group).copied().flatten()
+                        .or_else(|| self.ir.source_indices.groups.is_empty().then_some(ir::GroupRef(m.group))))
+                    .and_then(|group| self.ir.groups.get(group.0))
+                    .is_some_and(|group| group.wavetable.is_some()) =>
+            {
+                (ir::Target::Wavetable(match target.param.as_str() {
+                    "wavetablePosition" => ir::WavetableParameter::Position,
+                    "warpFactor" => ir::WavetableParameter::Form1,
+                    _ => ir::WavetableParameter::Form2,
+                }), ir::Depth::Normalized(i))
+            }
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -4415,6 +4429,25 @@ mod modulation {
             out.ir.unsupported.last().unwrap().feature,
             "modulation of a module parameter"
         );
+    }
+
+    #[test]
+    fn wavetable_targets_bind_to_the_real_source_group_and_keep_normalized_depth() {
+        let mut out = translation();
+        out.ir.groups.push(ir::Group { wavetable: Some(ir::Wavetable::default()), ..Default::default() });
+        out.ir.source_indices.groups = vec![None; 8];
+        out.ir.source_indices.groups[7] = Some(ir::GroupRef(0));
+        out.ir.modulators.push(ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity });
+        out.source_modulator(7, 31, true, String::new(), &[], None);
+        out.ir.source_indices.modulators[0].runtime = Some(ir::ModulatorRef(0));
+        for (name, parameter) in [("wavetablePosition", ir::WavetableParameter::Position),
+            ("warpFactor", ir::WavetableParameter::Form1), ("warpFactor2", ir::WavetableParameter::Form2)] {
+            let route = out.route("source", ir::ModulatorRef(0), true, &target(name, 0.25), None).unwrap();
+            assert_eq!(out.ir.routes[route.0].target, ir::Target::Wavetable(parameter));
+            assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(0.25));
+        }
+        out.ir.groups[0].wavetable = None;
+        assert!(out.route("sample", ir::ModulatorRef(0), true, &target("wavetablePosition", 0.25), None).is_none());
     }
 
     #[test]

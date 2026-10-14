@@ -1600,9 +1600,19 @@ pub enum Target {
     /// on Kontakt's normalized frequency lane (law ID26, see sampler-core
     /// `CompiledTarget::SourceRate`). Depth is `Normalized`.
     SourceRate(ModulatorRef),
+    /// Per-voice normalized wavetable source lane, added to the saved/live base.
+    Wavetable(WavetableParameter),
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavetableParameter {
+    Position,
+    Form1,
+    Form2,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

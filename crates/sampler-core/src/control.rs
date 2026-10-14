@@ -312,23 +312,28 @@ impl Prepared {
 }
 
 impl crate::Generation {
-    pub(super) fn project_wavetable(&self, cursor: &mut crate::source::Cursor, group: Option<u32>) {
+    pub(super) fn project_wavetable(
+        &self,
+        cursor: &mut crate::source::Cursor,
+        group: Option<u32>,
+        voice: usize,
+    ) {
         if cursor.wavetable().is_none() {
             return;
         }
-        let Some(Some(lanes)) =
+        if let Some(Some(lanes)) =
             group.and_then(|g| self.prepared.wavetable_controls.get(g as usize))
-        else {
-            return;
-        };
-        cursor.set_wavetable_controls(lanes.map(|id| {
-            let ControlValue::Real(value) =
-                self.controls.values[self.prepared.control_index(id).unwrap()]
-            else {
-                unreachable!("wavetable lanes are real controls")
-            };
-            value as f32
-        }));
+        {
+            cursor.set_wavetable_controls(lanes.map(|id| {
+                let ControlValue::Real(value) =
+                    self.controls.values[self.prepared.control_index(id).unwrap()]
+                else {
+                    unreachable!("wavetable lanes are real controls")
+                };
+                value as f32
+            }));
+        }
+        cursor.set_wavetable_offsets(self.modulation.wavetable_offsets(voice));
     }
 }
 

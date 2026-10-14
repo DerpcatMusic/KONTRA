@@ -1724,6 +1724,16 @@ impl Lowering<'_> {
                     ModTarget::SourceRate(source_of(target, &mut program)? as u32),
                     d,
                 ),
+                (ir::Target::Wavetable(parameter), ir::Depth::Normalized(d)) => {
+                    if !zone.group.and_then(|group| self.ir.groups.get(group.0)).is_some_and(|group| group.wavetable.is_some()) {
+                        return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+                    }
+                    (match parameter {
+                        ir::WavetableParameter::Position => ModTarget::WavetablePosition,
+                        ir::WavetableParameter::Form1 => ModTarget::WavetableForm1,
+                        ir::WavetableParameter::Form2 => ModTarget::WavetableForm2,
+                    }, d)
+                }
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,

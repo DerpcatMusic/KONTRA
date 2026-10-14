@@ -148,6 +148,8 @@ pub(crate) enum CompiledTarget {
     /// set of FUN_140873040: `$out := $in + E * $intensity`) moves by
     /// depth·v each control cell; the LFO integrates the resulting rate.
     SourceRate(u32),
+    /// Offset of normalized position, first form amount, or second form amount.
+    Wavetable(u8),
     LoopStart,
     LoopLength,
 }
@@ -177,6 +179,9 @@ impl crate::ParameterAddress {
             (0, 12) => T::SampleStart,
             (i, 14) => T::SourcePhase(i),
             (i, 17) => T::SourceRate(i),
+            (0, 18) => T::Wavetable(0),
+            (0, 19) => T::Wavetable(1),
+            (0, 20) => T::Wavetable(2),
             (0, 15) => T::LoopStart,
             (0, 16) => T::LoopLength,
             _ => return None,
@@ -758,7 +763,7 @@ impl VoiceModulation {
                             | CompiledTarget::ProcessorResonance(_)
                             | CompiledTarget::ProcessorNativeCutoff(_)
                             | CompiledTarget::ProcessorNativeResonance(_)
-                            | CompiledTarget::ProcessorNativeGain(_))
+                            | CompiledTarget::ProcessorNativeGain(_) | CompiledTarget::Wavetable(_))
                     {
                         return None;
                     }
@@ -1107,6 +1112,7 @@ pub(crate) struct Outputs {
     pub filter: [f64; 2],
     /// Semitones below the tone filter's open cutoff; 0 bypasses it.
     pub tone: f64,
+    pub wavetable: [f64; 3],
 }
 
 impl Default for Outputs {
@@ -1116,6 +1122,7 @@ impl Default for Outputs {
             pitch: 0.0,
             filter: [1.0; 2],
             tone: 0.0,
+            wavetable: [0.; 3],
         }
     }
 }
@@ -1493,6 +1500,13 @@ impl VoiceModState {
         }
     }
 
+    pub(crate) fn wavetable_offsets(&self, voice: usize) -> [f32; 3] {
+        if self.program(voice).is_none() { return [0.; 3]; }
+        std::array::from_fn(|lane| {
+            ((self.previous[voice].wavetable[lane] + self.outputs[voice].wavetable[lane]) * 0.5) as f32
+        })
+    }
+
     /// The control ramp covering a segment starting at `clock.now`. Points
     /// sit on the absolute `CELL` grid (and the voice onset), so a segment
     /// entering a new cell evaluates its end once and segments inside a cell
@@ -1717,6 +1731,7 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
+                CompiledTarget::Wavetable(lane) => out.wavetable[usize::from(lane)] += d * v,
                 CompiledTarget::SampleStart
                 | CompiledTarget::SourcePhase(_)
                 | CompiledTarget::SourceRate(_) => {}
