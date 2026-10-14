@@ -54,6 +54,7 @@ struct Request {
     slot: usize,
     serial: u64,
     store: u64,
+    queued_at: Option<std::time::Instant>,
 }
 
 /// A worker-owned decode buffer. Fill every exposed frame, then complete or fail it.
@@ -70,6 +71,10 @@ impl DecodeJob {
     pub fn range(&self) -> Range<usize> {
         let start = self.request.key.index * PAGE_FRAMES;
         start..start + self.request.len
+    }
+    /// Present only when control enabled stream audit at cache construction.
+    pub fn queued_at(&self) -> Option<std::time::Instant> {
+        self.request.queued_at
     }
     pub fn deadline(&self) -> u64 {
         self.request.deadline
@@ -148,6 +153,7 @@ pub struct StreamCache {
     vacant: Vec<usize>,
     idle: PageList,
     active: PageList,
+    audit_requests: bool,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -191,7 +197,9 @@ impl StreamCache {
         // Reserve on the control thread; only touch sample pages when decoding.
         for _ in 0..pages {
             let mut frames = Vec::new();
-            frames.try_reserve_exact(PAGE_FRAMES).map_err(|_| Error::Capacity)?;
+            frames
+                .try_reserve_exact(PAGE_FRAMES)
+                .map_err(|_| Error::Capacity)?;
             free.push(frames);
         }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
@@ -220,6 +228,7 @@ impl StreamCache {
                 vacant: (0..pages).rev().collect(),
                 idle: PageList::default(),
                 active: PageList::default(),
+                audit_requests: std::env::var_os("KONTRA_STREAM_AUDIT").is_some(),
             },
             StreamWorker {
                 requests: incoming,
@@ -434,6 +443,7 @@ impl StreamCache {
             slot,
             serial,
             store: self.store,
+            queued_at: self.audit_requests.then(std::time::Instant::now),
         };
         // Single producer, and the consumer only frees space after the check.
         self.requests
@@ -504,6 +514,7 @@ impl StreamCache {
                         .ok_or(StreamError::SequenceExhausted)?;
                     entry.request.serial = self.serial;
                     entry.request.deadline = deadline;
+                    entry.request.queued_at = self.audit_requests.then(std::time::Instant::now);
                     self.requests
                         .push(entry.request)
                         .expect("reserved request capacity");
@@ -917,8 +928,12 @@ impl crate::Runtime {
                         .notes
                         .get(self.families.get(voice.family.0).unwrap().note.0)
                         .unwrap();
-                    let asset =
-                        self.plans.get(note.plan.0).unwrap().asset(voice.sample).asset_id();
+                    let asset = self
+                        .plans
+                        .get(note.plan.0)
+                        .unwrap()
+                        .asset(voice.sample)
+                        .asset_id();
                     let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
                         entry.request.key.asset == asset && matches!(entry.state,
                             State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)

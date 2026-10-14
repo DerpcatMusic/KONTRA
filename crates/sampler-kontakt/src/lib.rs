@@ -72,7 +72,7 @@ pub use snapshot::{
     snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
 pub use stream::{
-    AssetSource, DynamicSources, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+    AssetSource, DynamicSources, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
 };
 
 /// Increment when protected catalog metadata decoding changes, for cache invalidation.

@@ -170,13 +170,21 @@ impl SampleReader {
     fn cache_bytes(&self) -> Option<usize> {
         let bytes = |b: &Bytes| {
             let owned_handle = if b.source.handle.is_none() {
-                (std::mem::size_of::<File>() + 2 * std::mem::size_of::<usize>()).next_multiple_of(std::mem::align_of::<usize>().max(std::mem::align_of::<File>()))
-            } else { 0 };
+                (std::mem::size_of::<File>() + 2 * std::mem::size_of::<usize>()).next_multiple_of(
+                    std::mem::align_of::<usize>().max(std::mem::align_of::<File>()),
+                )
+            } else {
+                0
+            };
             b.buffer.capacity() + b.source.path.capacity() + owned_handle
         };
         let codec = match &self.codec {
             Codec::Wav(_) => self.bytes.as_ref().map_or(0, bytes),
-            Codec::Ncw(reader) => std::mem::size_of_val(&**reader) + reader.workspace_bytes() + bytes(reader.get_ref()),
+            Codec::Ncw(reader) => {
+                std::mem::size_of_val(&**reader)
+                    + reader.workspace_bytes()
+                    + bytes(reader.get_ref())
+            }
             Codec::Custom(_) => return None,
         };
         Some(self.scratch.capacity() + codec)
@@ -329,10 +337,44 @@ pub struct StreamReport {
     /// source frames): the measured latency budget.
     pub head_frames: usize,
     pub head_bytes: usize,
+    /// Authored onset/offset/reverse ranges, before any lazy publication. These
+    /// bounds describe all mapped starts, including currently muted groups.
+    pub head_assets: usize,
+    pub head_ranges: usize,
+    pub head_source_frames: u64,
+    /// Configured cap on packed resident starts; decoded staging is separate.
+    pub head_budget: usize,
     /// Bytes every asset would take fully decoded, as `load` holds them.
     pub full_bytes: u64,
     pub pool_pages: usize,
     pub pool_bytes: usize,
+}
+
+/// Control-side snapshot of exact authored start-range coverage. A page that
+/// is only in the evictable stream pool is not a permanently resident head.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeadReadiness {
+    pub assets: usize,
+    pub ranges: usize,
+    pub source_frames: u64,
+    pub covered_assets: usize,
+    pub covered_ranges: usize,
+    pub covered_source_frames: u64,
+    pub packed_bytes: usize,
+    pub budget_bytes: usize,
+}
+impl HeadReadiness {
+    pub fn complete(&self) -> bool {
+        self.ranges == self.covered_ranges
+    }
+    /// The narrowest supported lossless representation is mono 16-bit. This
+    /// lower bound can prove a budget insufficient without decoding payloads.
+    pub fn minimum_packed_bytes(&self) -> u64 {
+        self.source_frames.saturating_mul(2)
+    }
+    pub fn decoded_bytes(&self) -> u64 {
+        self.source_frames.saturating_mul(size_of::<Frame>() as u64)
+    }
 }
 
 /// How much to keep resident.
@@ -422,7 +464,9 @@ pub(crate) fn start_ranges(
 ) -> Vec<Vec<Range<usize>>> {
     let mut ranges = vec![Vec::new(); assets.len()];
     for zone in &instrument.zones {
-        let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
+        let Some(asset) = zone.asset.map(|a| a.0) else {
+            continue;
+        };
         let playback = &zone.playback;
         let pcm = &assets[asset];
         if zone
@@ -530,24 +574,47 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 #[derive(Clone, Default)]
 pub struct DynamicSources(Arc<Mutex<HashMap<AssetId, Arc<dyn AssetSource>>>>);
 impl DynamicSources {
-    pub fn register(&self, pcm: &Pcm, source: Arc<dyn AssetSource>) -> io::Result<SourceRegistration> {
-        let mut entries = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub fn register(
+        &self,
+        pcm: &Pcm,
+        source: Arc<dyn AssetSource>,
+    ) -> io::Result<SourceRegistration> {
+        let mut entries = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entries.len() >= 65_600 || entries.contains_key(&pcm.asset_id()) {
-            return Err(io::Error::other("dynamic source registry capacity/identity conflict"));
+            return Err(io::Error::other(
+                "dynamic source registry capacity/identity conflict",
+            ));
         }
         entries.insert(pcm.asset_id(), source);
-        Ok(SourceRegistration { registry: self.clone(), asset: pcm.asset_id() })
+        Ok(SourceRegistration {
+            registry: self.clone(),
+            asset: pcm.asset_id(),
+        })
     }
     fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&asset).cloned()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&asset)
+            .cloned()
     }
 }
 /// Keep inside an immutable revision. Drop only after its reply reaches control;
 /// removal cannot invalidate a decoder's independently owned open reader.
-pub struct SourceRegistration { registry: DynamicSources, asset: AssetId }
+pub struct SourceRegistration {
+    registry: DynamicSources,
+    asset: AssetId,
+}
 impl Drop for SourceRegistration {
     fn drop(&mut self) {
-        self.registry.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.asset);
+        self.registry
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.asset);
     }
 }
 
@@ -568,7 +635,51 @@ pub struct Streamer {
 }
 
 impl Streamer {
-    pub fn dynamic_sources(&self) -> DynamicSources { self.dynamic.clone() }
+    pub fn dynamic_sources(&self) -> DynamicSources {
+        self.dynamic.clone()
+    }
+    /// Exact, bounded metadata/residency scan. Call off audio. Dynamic revisions
+    /// own their own admitted heads and are not included in this initial plan.
+    pub fn head_readiness(&self, assets: &[Pcm]) -> HeadReadiness {
+        self.head_readiness_matching(assets, |_| true)
+    }
+    /// Coverage of every authored range belonging to the selected asset IDs.
+    /// This does not infer script/group/round-robin reachability.
+    pub fn head_readiness_matching(
+        &self,
+        assets: &[Pcm],
+        include: impl Fn(AssetId) -> bool,
+    ) -> HeadReadiness {
+        let mut state = HeadReadiness {
+            budget_bytes: self.head_budget,
+            ..Default::default()
+        };
+        for pcm in assets {
+            if !include(pcm.asset_id()) {
+                continue;
+            }
+            let Some(ranges) = self.ranges.get(&pcm.asset_id()).filter(|r| !r.is_empty()) else {
+                continue;
+            };
+            state.assets += 1;
+            state.packed_bytes = state.packed_bytes.saturating_add(pcm.head_bytes());
+            let mut covered = true;
+            for range in ranges {
+                state.ranges += 1;
+                state.source_frames = state.source_frames.saturating_add(range.len() as u64);
+                if pcm.resident_covers(range.clone()) {
+                    state.covered_ranges += 1;
+                    state.covered_source_frames = state
+                        .covered_source_frames
+                        .saturating_add(range.len() as u64);
+                } else {
+                    covered = false;
+                }
+            }
+            state.covered_assets += usize::from(covered);
+        }
+        state
+    }
     /// Clone the existing source for bounded control-worker reads. Opening or
     /// decoding it belongs off the audio thread; this does not preload frames.
     pub fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
@@ -685,6 +796,10 @@ impl Streamer {
             latency_p99: at(99),
             head_frames: head,
             head_bytes: 0,
+            head_assets: 0,
+            head_ranges: 0,
+            head_source_frames: 0,
+            head_budget: policy.head_budget,
             full_bytes: full,
             pool_pages: policy.voices * PAGES_PER_VOICE,
             pool_bytes: 0,
@@ -745,9 +860,10 @@ impl Streamer {
         // Explicit KSP reload returns staging ranges to the core's residency worker.
         for pcm in assets {
             // Assets without a stream source (fully resident) have nothing to reload.
-            let (Some(source), Some(ranges)) =
-                (sources.get(&pcm.asset_id()).cloned(), table.get(&pcm.asset_id()).cloned())
-            else {
+            let (Some(source), Some(ranges)) = (
+                sources.get(&pcm.asset_id()).cloned(),
+                table.get(&pcm.asset_id()).cloned(),
+            ) else {
                 continue;
             };
             pcm.set_residency_loader(move || {
@@ -788,7 +904,15 @@ impl Streamer {
                     let (sources, stop) = (streamer.sources.clone(), streamer.stop.clone());
                     let dynamic = streamer.dynamic.clone();
                     let worker = worker.clone();
-                    move || decode(&worker, &sources, &dynamic, &stop, READER_CACHE_BYTES / decoders.max(1))
+                    move || {
+                        decode(
+                            &worker,
+                            &sources,
+                            &dynamic,
+                            &stop,
+                            READER_CACHE_BYTES / decoders.max(1),
+                        )
+                    }
                 })?;
             streamer.threads.push(thread);
         }
@@ -968,24 +1092,48 @@ struct ReaderCache {
 }
 impl ReaderCache {
     fn new(byte_limit: usize) -> Self {
-        let entry_limit = MAX_CACHED_READERS.min(byte_limit / std::mem::size_of::<CachedReader>() / 2);
+        let entry_limit =
+            MAX_CACHED_READERS.min(byte_limit / std::mem::size_of::<CachedReader>() / 2);
         let entries = Vec::with_capacity(entry_limit);
         let storage_bytes = entries.capacity() * std::mem::size_of::<CachedReader>();
-        Self { entries, total_limit: byte_limit, byte_limit: byte_limit.saturating_sub(storage_bytes), bytes: 0, opaque: 0, evictions: 0, peak_retained_bytes: storage_bytes, storage_bytes, entry_limit }
+        Self {
+            entries,
+            total_limit: byte_limit,
+            byte_limit: byte_limit.saturating_sub(storage_bytes),
+            bytes: 0,
+            opaque: 0,
+            evictions: 0,
+            peak_retained_bytes: storage_bytes,
+            storage_bytes,
+            entry_limit,
+        }
     }
     fn remove(&mut self, index: usize) {
         let entry = self.entries.swap_remove(index);
-        match entry.bytes { Some(bytes) => self.bytes -= bytes, None => self.opaque -= 1 }
+        match entry.bytes {
+            Some(bytes) => self.bytes -= bytes,
+            None => self.opaque -= 1,
+        }
         self.evictions += 1;
     }
     fn insert(&mut self, asset: AssetId, reader: SampleReader, used: u64) -> usize {
         if self.entry_limit > 0 && self.entries.len() == self.entry_limit {
-            let oldest = (0..self.entries.len()).min_by_key(|&i| self.entries[i].used).unwrap();
+            let oldest = (0..self.entries.len())
+                .min_by_key(|&i| self.entries[i].used)
+                .unwrap();
             self.remove(oldest);
         }
         let bytes = reader.cache_bytes();
-        match bytes { Some(bytes) => self.bytes += bytes, None => self.opaque += 1 }
-        self.entries.push(CachedReader { asset, reader, used, bytes });
+        match bytes {
+            Some(bytes) => self.bytes += bytes,
+            None => self.opaque += 1,
+        }
+        self.entries.push(CachedReader {
+            asset,
+            reader,
+            used,
+            bytes,
+        });
         self.storage_bytes = self.entries.capacity() * std::mem::size_of::<CachedReader>();
         self.byte_limit = self.total_limit.saturating_sub(self.storage_bytes);
         self.entries.len() - 1
@@ -1002,7 +1150,10 @@ impl ReaderCache {
         }
         while self.bytes > self.byte_limit || self.opaque > OPEN_READERS {
             let known = self.bytes > self.byte_limit;
-            let oldest = (0..self.entries.len()).filter(|&i| self.entries[i].bytes.is_some() == known).min_by_key(|&i| self.entries[i].used).unwrap();
+            let oldest = (0..self.entries.len())
+                .filter(|&i| self.entries[i].bytes.is_some() == known)
+                .min_by_key(|&i| self.entries[i].used)
+                .unwrap();
             self.remove(oldest);
         }
         if self.entry_limit == 0 {
@@ -1015,12 +1166,14 @@ impl ReaderCache {
             self.storage_bytes = 0;
             self.byte_limit = self.total_limit;
         }
-        self.peak_retained_bytes = self.peak_retained_bytes.max(self.bytes + self.storage_bytes);
+        self.peak_retained_bytes = self
+            .peak_retained_bytes
+            .max(self.bytes + self.storage_bytes);
     }
 }
 
-/// Opt-in, worker-only aggregate instrumentation. No PCM/resource data leaves
-/// the decoder and no audio-thread clocks, allocations or logging are added.
+/// Opt-in bounded worker receipts. Audio adds a clock only when a new request
+/// is audited; it never allocates or logs. No PCM/resource content leaves RAM.
 #[derive(Default)]
 struct DecodeAudit {
     jobs: u64,
@@ -1035,21 +1188,43 @@ struct DecodeAudit {
     reader_budget_bytes: usize,
     peak_retained_reader_bytes: usize,
     retained_opaque_readers: usize,
+    reply_backpressure: u64,
+    queue_count: u64,
+    queue_total_us: u64,
+    queue_max_us: u64,
+    queue_us_log2: [u64; 32],
+    open_max_us: u64,
+    open_us_log2: [u64; 32],
+    read_max_us: u64,
+    read_us_log2: [u64; 32],
+    publish_attempts: u64,
+    publish_total_us: u64,
+    publish_max_us: u64,
+    page_probes: Vec<serde_json::Value>,
+    dropped_page_probes: u64,
 }
 impl Drop for DecodeAudit {
     fn drop(&mut self) {
-        eprintln!("stream_decode_audit {}", serde_json::json!({
-            "worker": format!("{:?}", std::thread::current().id()),
-            "jobs": self.jobs, "opens": self.opens, "reader_evictions": self.evictions,
-            "failures": self.failures, "open_total_us": self.open_nanos / 1000,
-            "decode_total_us": self.decode_nanos / 1000,
-            "first_128_job_total_us": self.first_128_job_nanos / 1000,
-            "max_job_us": self.max_job_nanos / 1000,
-            "job_us_log2_histogram": self.job_us_log2,
-            "reader_budget_bytes": self.reader_budget_bytes,
-            "peak_retained_reader_bytes": self.peak_retained_reader_bytes,
-            "retained_opaque_readers": self.retained_opaque_readers,
-        }));
+        eprintln!(
+            "stream_decode_audit {}",
+            serde_json::json!({
+                "worker": format!("{:?}", std::thread::current().id()),
+                "jobs": self.jobs, "opens": self.opens, "reader_evictions": self.evictions,
+                "failures": self.failures, "open_total_us": self.open_nanos / 1000,
+                "decode_total_us": self.decode_nanos / 1000,
+                "first_128_job_total_us": self.first_128_job_nanos / 1000,
+                "max_job_us": self.max_job_nanos / 1000,
+                "job_us_log2_histogram": self.job_us_log2,
+                "reader_budget_bytes": self.reader_budget_bytes,
+                "peak_retained_reader_bytes": self.peak_retained_reader_bytes,
+                "retained_opaque_readers": self.retained_opaque_readers,
+                "reply_backpressure": self.reply_backpressure,
+                "queue_count":self.queue_count,"queue_total_us":self.queue_total_us,"queue_max_us":self.queue_max_us,"queue_us_log2":self.queue_us_log2,
+                "open_max_us":self.open_max_us,"open_us_log2":self.open_us_log2,"seek_read_decode_max_us":self.read_max_us,"seek_read_decode_us_log2":self.read_us_log2,
+                "publish_attempts":self.publish_attempts,"publish_total_us":self.publish_total_us,"publish_max_us":self.publish_max_us,
+                "page_probes": self.page_probes, "dropped_page_probes": self.dropped_page_probes,
+            })
+        );
     }
 }
 
@@ -1059,6 +1234,31 @@ fn decode(
     dynamic: &DynamicSources,
     stop: &AtomicBool,
     reader_byte_limit: usize,
+) {
+    decode_with_publish(
+        worker,
+        sources,
+        dynamic,
+        stop,
+        reader_byte_limit,
+        |job, result| {
+            worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .complete(job, result)
+        },
+    );
+}
+fn decode_with_publish(
+    worker: &Mutex<StreamWorker>,
+    sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
+    dynamic: &DynamicSources,
+    stop: &AtomicBool,
+    reader_byte_limit: usize,
+    publish: impl Fn(
+        sampler_core::DecodeJob,
+        Result<(), DecodeFailure>,
+    ) -> Result<(), sampler_core::RejectedDecode>,
 ) {
     let mut audit = std::env::var_os("KONTRA_STREAM_AUDIT").map(|_| DecodeAudit::default());
     let worker = || {
@@ -1073,37 +1273,74 @@ fn decode(
         audit.peak_retained_reader_bytes = readers.peak_retained_bytes;
     }
     let mut tick = 0u64;
-    let mut held = None;
+    let mut held: Option<(sampler_core::DecodeJob, Result<(), DecodeFailure>)> = None;
     while !stop.load(Ordering::Relaxed) {
-        let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
+        if let Some((job, result)) = held.take() {
+            let publish_start = audit.as_ref().map(|_| Instant::now());
+            let result = publish(job, result);
+            if let Some(a) = &mut audit {
+                let us = publish_start.unwrap().elapsed().as_micros() as u64;
+                a.publish_attempts += 1;
+                a.publish_total_us += us;
+                a.publish_max_us = a.publish_max_us.max(us);
+            }
+            if let Err(rejected) = result {
+                if rejected.reason != sampler_core::StreamError::Capacity {
+                    return;
+                }
+                if let Some(audit) = &mut audit {
+                    audit.reply_backpressure += 1;
+                }
+                held = Some((rejected.job, rejected.result));
+                std::thread::sleep(Duration::from_micros(500));
+            }
+            continue;
+        }
+        let Some(mut job) = worker().next_job() else {
             // The runtime unparks decoders after queuing requests and Drop
             // unparks them to stop; an unpark before this park is not lost.
             std::thread::park();
             continue;
         };
         let job_start = audit.as_ref().map(|_| Instant::now());
+        let queue_us = job
+            .queued_at()
+            .zip(job_start)
+            .map(|(queued, start)| start.saturating_duration_since(queued).as_micros() as u64);
         tick += 1;
         let asset = job.key().asset;
         let open_start = audit.as_ref().map(|_| Instant::now());
         let mut opened = false;
-        let index = match readers.entries.iter().position(|entry| entry.asset == asset) {
+        let index = match readers
+            .entries
+            .iter()
+            .position(|entry| entry.asset == asset)
+        {
             Some(i) => Some(i),
             None => {
                 opened = true;
-                sources.get(&asset).cloned().or_else(|| dynamic.source(asset))
-                    .and_then(|s| s.open_stream().ok()).map(|reader| readers.insert(asset, reader, tick))
+                sources
+                    .get(&asset)
+                    .cloned()
+                    .or_else(|| dynamic.source(asset))
+                    .and_then(|s| s.open_stream().ok())
+                    .map(|reader| readers.insert(asset, reader, tick))
             }
         };
+        let open_us = open_start.map(|start| start.elapsed().as_micros() as u64);
         if let Some(audit) = &mut audit {
             audit.opens += u64::from(opened);
-            if opened { audit.open_nanos += open_start.unwrap().elapsed().as_nanos() as u64; }
+            if opened {
+                audit.open_nanos += open_start.unwrap().elapsed().as_nanos() as u64;
+            }
         }
         let decode_start = audit.as_ref().map(|_| Instant::now());
         let result = match index {
             Some(i) => {
                 readers.entries[i].used = tick;
                 let start = job.range().start;
-                readers.entries[i].reader
+                readers.entries[i]
+                    .reader
                     .read(start, job.frames_mut())
                     .map_err(|error| match error.kind() {
                         io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => {
@@ -1114,9 +1351,13 @@ fn decode(
             }
             None => Err(DecodeFailure::Unavailable),
         };
+        let read_us = decode_start.map(|s| s.elapsed().as_micros() as u64);
         if let Some(index) = index {
-            if result == Err(DecodeFailure::Unavailable) { readers.remove(index); }
-            else { readers.trim_after_read(index); }
+            if result == Err(DecodeFailure::Unavailable) {
+                readers.remove(index);
+            } else {
+                readers.trim_after_read(index);
+            }
         }
         if let Some(audit) = &mut audit {
             let nanos = job_start.unwrap().elapsed().as_nanos() as u64;
@@ -1124,21 +1365,58 @@ fn decode(
             audit.failures += u64::from(result.is_err());
             audit.decode_nanos += decode_start.unwrap().elapsed().as_nanos() as u64;
             audit.max_job_nanos = audit.max_job_nanos.max(nanos);
-            if audit.jobs <= 128 { audit.first_128_job_nanos += nanos; }
+            if audit.jobs <= 128 {
+                audit.first_128_job_nanos += nanos;
+            }
             let us = (nanos / 1000).max(1);
             audit.job_us_log2[(63 - us.leading_zeros() as usize).min(31)] += 1;
             audit.evictions = readers.evictions;
             audit.reader_budget_bytes = readers.byte_limit + readers.storage_bytes;
             audit.peak_retained_reader_bytes = readers.peak_retained_bytes;
             audit.retained_opaque_readers = readers.opaque;
+            let bucket = |us: u64| (63 - us.max(1).leading_zeros() as usize).min(31);
+            if let Some(us) = queue_us {
+                audit.queue_count += 1;
+                audit.queue_total_us = audit.queue_total_us.saturating_add(us);
+                audit.queue_max_us = audit.queue_max_us.max(us);
+                audit.queue_us_log2[bucket(us)] += 1;
+            }
+            if opened {
+                let us = open_us.unwrap();
+                audit.open_max_us = audit.open_max_us.max(us);
+                audit.open_us_log2[bucket(us)] += 1;
+            }
+            let us = read_us.unwrap();
+            audit.read_max_us = audit.read_max_us.max(us);
+            audit.read_us_log2[bucket(us)] += 1;
+            if audit.page_probes.len() < 512 {
+                audit.page_probes.push(serde_json::json!({
+                "asset":format!("{asset:?}"),"page":job.key().index,"frames":job.range().len(),
+                "deadline_engine_frame":job.deadline(),"queue_us":queue_us,"reader_cache_hit":!opened,
+                "open_us":if opened{open_us}else{Some(0)},"seek_read_decode_us":read_us,
+                "worker_total_us":nanos/1000,"success":result.is_ok()
+            }));
+            } else {
+                audit.dropped_page_probes += 1;
+            }
         }
-        let completed = worker().complete(job, result);
+        let publish_start = audit.as_ref().map(|_| Instant::now());
+        let completed = publish(job, result);
+        if let Some(a) = &mut audit {
+            let us = publish_start.unwrap().elapsed().as_micros() as u64;
+            a.publish_attempts += 1;
+            a.publish_total_us += us;
+            a.publish_max_us = a.publish_max_us.max(us);
+        }
         if let Err(rejected) = completed {
             if rejected.reason != sampler_core::StreamError::Capacity {
                 return;
             }
             // The audio side has not drained completions yet: retry later.
-            held = Some(rejected.job);
+            if let Some(audit) = &mut audit {
+                audit.reply_backpressure += 1;
+            }
+            held = Some((rejected.job, rejected.result));
             std::thread::sleep(Duration::from_micros(500));
         }
     }
@@ -1183,6 +1461,9 @@ impl Streamed {
         report.pool_bytes = cache.bytes();
         drop(pool_span);
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
+        report.head_assets = ranges.iter().filter(|r| !r.is_empty()).count();
+        report.head_ranges = ranges.iter().map(Vec::len).sum();
+        report.head_source_frames = ranges.iter().flatten().map(|r| r.len() as u64).sum();
         let pinned_wavetables = loaded
             .instrument
             .zones
@@ -1229,37 +1510,178 @@ mod tests {
     use super::*;
 
     fn cache_fixture_reader() -> SampleReader {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
-        let source = Source { size: std::fs::metadata(&path).unwrap().len(), path, offset: 0, key: None, handle: None, header: None };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
+        let source = Source {
+            size: std::fs::metadata(&path).unwrap().len(),
+            path,
+            offset: 0,
+            key: None,
+            handle: None,
+            header: None,
+        };
         SampleReader::open(&source).unwrap()
+    }
+
+    #[test]
+    fn completion_backpressure_retries_publication_without_reopening_or_decoding() {
+        for invalid in [false, true] {
+            struct Numeric {
+                opens: Arc<AtomicU64>,
+                reads: Arc<AtomicU64>,
+                invalid: bool,
+            }
+            impl AssetSource for Numeric {
+                fn open(&self) -> io::Result<SampleReader> {
+                    self.opens.fetch_add(1, Ordering::Relaxed);
+                    let reads = self.reads.clone();
+                    let invalid = self.invalid;
+                    Ok(SampleReader::custom(48000, PAGE_FRAMES, move |_, out| {
+                        reads.fetch_add(1, Ordering::Relaxed);
+                        if invalid {
+                            return Err(io::ErrorKind::InvalidData.into());
+                        }
+                        out.fill([0.125; 2]);
+                        Ok(())
+                    }))
+                }
+            }
+            let (pcm, opens, reads) = (
+                Pcm::streamed(48000, PAGE_FRAMES).unwrap(),
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(AtomicU64::new(0)),
+            );
+            let (mut cache, worker) = StreamCache::new(2).unwrap();
+            cache.request(&pcm, 0, 0).unwrap();
+            let worker = Mutex::new(worker);
+            let sources = HashMap::from([(
+                pcm.asset_id(),
+                Arc::new(Numeric {
+                    opens: opens.clone(),
+                    reads: reads.clone(),
+                    invalid,
+                }) as Arc<dyn AssetSource>,
+            )]);
+            let stop = AtomicBool::new(false);
+            let attempts = AtomicU64::new(0);
+            decode_with_publish(
+                &worker,
+                &sources,
+                &DynamicSources::default(),
+                &stop,
+                1 << 20,
+                |job, result| {
+                    if attempts.fetch_add(1, Ordering::Relaxed) < 3 {
+                        return Err(sampler_core::RejectedDecode {
+                            reason: sampler_core::StreamError::Capacity,
+                            job,
+                            result,
+                        });
+                    }
+                    assert_eq!(
+                        result,
+                        if invalid {
+                            Err(DecodeFailure::InvalidSamples)
+                        } else {
+                            Ok(())
+                        }
+                    );
+                    let result = worker.lock().unwrap().complete(job, result);
+                    stop.store(true, Ordering::Relaxed);
+                    result
+                },
+            );
+            assert_eq!(
+                (
+                    opens.load(Ordering::Relaxed),
+                    reads.load(Ordering::Relaxed),
+                    attempts.load(Ordering::Relaxed)
+                ),
+                (1, 1, 4)
+            );
+            assert!(cache.poll().is_some());
+            assert_eq!(
+                cache.status(sampler_core::PageKey {
+                    asset: pcm.asset_id(),
+                    index: 0
+                }),
+                if invalid {
+                    sampler_core::PageStatus::Failed(DecodeFailure::InvalidSamples)
+                } else {
+                    sampler_core::PageStatus::Ready
+                }
+            );
+            if !invalid {
+                assert_eq!(cache.frame(pcm.asset_id(), 17), Some([0.125; 2]));
+            }
+        }
     }
 
     #[test]
     fn dynamic_registry_pages_use_exact_registered_source_and_retire_off_audio() {
         struct Numeric(f32);
         impl AssetSource for Numeric {
-            fn open(&self)->io::Result<SampleReader>{let offset=self.0;Ok(SampleReader::custom(48000,PAGE_FRAMES*3,move|start,out|{for(i,f)in out.iter_mut().enumerate(){*f=[offset+(start+i) as f32;2];}Ok(())}))}
+            fn open(&self) -> io::Result<SampleReader> {
+                let offset = self.0;
+                Ok(SampleReader::custom(
+                    48000,
+                    PAGE_FRAMES * 3,
+                    move |start, out| {
+                        for (i, f) in out.iter_mut().enumerate() {
+                            *f = [offset + (start + i) as f32; 2];
+                        }
+                        Ok(())
+                    },
+                ))
+            }
         }
-        let(mut cache,worker)=StreamCache::new(2).unwrap();
-        let(streamer,_)=Streamer::start(HashMap::new(),&[],vec![],worker,1,true,1<<20,HashSet::new()).unwrap();
-        let original=streamer.sources.clone();
-        let dynamic=streamer.dynamic_sources();
-        let old=Pcm::streamed(48000,PAGE_FRAMES*3).unwrap();
-        let new=Pcm::streamed(48000,PAGE_FRAMES*3).unwrap();
-        let old_registration=dynamic.register(&old,Arc::new(Numeric(1.))).unwrap();
-        let new_registration=dynamic.register(&new,Arc::new(Numeric(100.))).unwrap();
-        assert!(dynamic.register(&old,Arc::new(Numeric(999.))).is_err());
-        for (pcm,offset) in [(&old,1.),(&new,100.)] {
-            cache.begin_epoch().unwrap();cache.request(pcm,1,0).unwrap();
-            for t in &streamer.threads{t.thread().unpark();}
-            let until=Instant::now()+Duration::from_secs(2);
-            let key=sampler_core::PageKey{asset:pcm.asset_id(),index:1};
-            while cache.status(key)!=sampler_core::PageStatus::Ready {cache.poll();assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
-            assert_eq!(cache.frame(pcm.asset_id(),PAGE_FRAMES+17),Some([offset+(PAGE_FRAMES+17) as f32;2]));
+        let (mut cache, worker) = StreamCache::new(2).unwrap();
+        let (streamer, _) = Streamer::start(
+            HashMap::new(),
+            &[],
+            vec![],
+            worker,
+            1,
+            true,
+            1 << 20,
+            HashSet::new(),
+        )
+        .unwrap();
+        let original = streamer.sources.clone();
+        let dynamic = streamer.dynamic_sources();
+        let old = Pcm::streamed(48000, PAGE_FRAMES * 3).unwrap();
+        let new = Pcm::streamed(48000, PAGE_FRAMES * 3).unwrap();
+        let old_registration = dynamic.register(&old, Arc::new(Numeric(1.))).unwrap();
+        let new_registration = dynamic.register(&new, Arc::new(Numeric(100.))).unwrap();
+        assert!(dynamic.register(&old, Arc::new(Numeric(999.))).is_err());
+        for (pcm, offset) in [(&old, 1.), (&new, 100.)] {
+            cache.begin_epoch().unwrap();
+            cache.request(pcm, 1, 0).unwrap();
+            for t in &streamer.threads {
+                t.thread().unpark();
+            }
+            let until = Instant::now() + Duration::from_secs(2);
+            let key = sampler_core::PageKey {
+                asset: pcm.asset_id(),
+                index: 1,
+            };
+            while cache.status(key) != sampler_core::PageStatus::Ready {
+                cache.poll();
+                assert!(Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(
+                cache.frame(pcm.asset_id(), PAGE_FRAMES + 17),
+                Some([offset + (PAGE_FRAMES + 17) as f32; 2])
+            );
         }
-        assert!(Arc::ptr_eq(&original,&streamer.sources));assert!(original.is_empty());
-        drop(old_registration);assert!(dynamic.source(old.asset_id()).is_none());assert!(dynamic.source(new.asset_id()).is_some());
-        drop(new_registration);assert!(dynamic.0.lock().unwrap().is_empty());
+        assert!(Arc::ptr_eq(&original, &streamer.sources));
+        assert!(original.is_empty());
+        drop(old_registration);
+        assert!(dynamic.source(old.asset_id()).is_none());
+        assert!(dynamic.source(new.asset_id()).is_some());
+        drop(new_registration);
+        assert!(dynamic.0.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1267,19 +1689,32 @@ mod tests {
         let mut cache = ReaderCache::new(2 << 20);
         let mut expected = [[0.; 2]; 64];
         cache_fixture_reader().read(0, &mut expected).unwrap();
-        let assets: Vec<_> = (0..40).map(|_| Pcm::streamed(48000, 1024).unwrap()).collect();
+        let assets: Vec<_> = (0..40)
+            .map(|_| Pcm::streamed(48000, 1024).unwrap())
+            .collect();
         for (tick, asset) in assets.iter().enumerate() {
             let index = cache.insert(asset.asset_id(), cache_fixture_reader(), tick as u64);
             let mut actual = [[0.; 2]; 64];
             cache.entries[index].reader.read(0, &mut actual).unwrap();
             cache.trim_after_read(index);
-            assert_eq!(actual.map(|f| f.map(f32::to_bits)), expected.map(|f| f.map(f32::to_bits)));
+            assert_eq!(
+                actual.map(|f| f.map(f32::to_bits)),
+                expected.map(|f| f.map(f32::to_bits))
+            );
         }
-        assert_eq!(cache.entries.len(), 40, "active small decoders must not churn after 16 assets");
+        assert_eq!(
+            cache.entries.len(),
+            40,
+            "active small decoders must not churn after 16 assets"
+        );
         assert_eq!(cache.evictions, 0);
         assert!(cache.bytes + cache.storage_bytes <= 2 << 20);
         for asset in &assets {
-            let index = cache.entries.iter().position(|e| e.asset == asset.asset_id()).unwrap();
+            let index = cache
+                .entries
+                .iter()
+                .position(|e| e.asset == asset.asset_id())
+                .unwrap();
             let mut actual = [[0.; 2]; 64];
             cache.entries[index].reader.read(0, &mut actual).unwrap();
             cache.trim_after_read(index);
@@ -1293,7 +1728,10 @@ mod tests {
         for tick in 0..10 {
             let asset = Pcm::streamed(48000, 1024).unwrap();
             let index = cache.insert(asset.asset_id(), cache_fixture_reader(), tick);
-            cache.entries[index].reader.read(0, &mut [[0.; 2]; 64]).unwrap();
+            cache.entries[index]
+                .reader
+                .read(0, &mut [[0.; 2]; 64])
+                .unwrap();
             cache.trim_after_read(index);
             assert!(cache.bytes + cache.storage_bytes <= 64 << 10);
         }
@@ -1307,14 +1745,27 @@ mod tests {
         let mut opaque = ReaderCache::new(2 << 20);
         for tick in 0..32 {
             let asset = Pcm::streamed(48000, 1024).unwrap();
-            let index = opaque.insert(asset.asset_id(), SampleReader::custom(48000, 1024, |_, out| { out.fill([0.1; 2]); Ok(()) }), tick);
+            let index = opaque.insert(
+                asset.asset_id(),
+                SampleReader::custom(48000, 1024, |_, out| {
+                    out.fill([0.1; 2]);
+                    Ok(())
+                }),
+                tick,
+            );
             opaque.trim_after_read(index);
         }
-        assert_eq!(opaque.opaque, OPEN_READERS, "opaque workspaces keep their legacy cap");
+        assert_eq!(
+            opaque.opaque, OPEN_READERS,
+            "opaque workspaces keep their legacy cap"
+        );
         for budget in [0, 1, std::mem::size_of::<CachedReader>()] {
             let mut tiny = ReaderCache::new(budget);
             let index = tiny.insert(asset.asset_id(), cache_fixture_reader(), 0);
-            tiny.entries[index].reader.read(0, &mut [[0.; 2]; 64]).unwrap();
+            tiny.entries[index]
+                .reader
+                .read(0, &mut [[0.; 2]; 64])
+                .unwrap();
             tiny.trim_after_read(index);
             assert!(tiny.entries.is_empty());
             assert!(tiny.bytes + tiny.storage_bytes <= budget);
@@ -1374,6 +1825,63 @@ mod tests {
         assert_eq!(streamer.reload(&assets).unwrap(), 2);
         assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), 128);
         assert_eq!(assets[2].head_frames(), 0);
+    }
+
+    #[test]
+    fn head_readiness_requires_exact_offset_and_reverse_range_coverage() {
+        let (mut streamer, assets) = reload_fixture(2, 128);
+        streamer.ranges = Arc::new(HashMap::from([
+            (assets[0].asset_id(), vec![8..16, 24..32]),
+            (assets[1].asset_id(), vec![0..8]),
+        ]));
+        let before = streamer.head_readiness(&assets);
+        assert_eq!(
+            (before.assets, before.ranges, before.source_frames),
+            (2, 3, 24)
+        );
+        assert_eq!(
+            (
+                before.minimum_packed_bytes(),
+                before.decoded_bytes(),
+                before.budget_bytes
+            ),
+            (48, 192, 128)
+        );
+        assert!(!before.complete());
+        // A head can be nonzero yet cover neither authored offset/reverse start.
+        assets[0]
+            .set_ranges(vec![(0, vec![[0.25; 2]; 8].into_boxed_slice())])
+            .unwrap();
+        assert_eq!(streamer.head_readiness(&assets).covered_ranges, 0);
+        assets[0]
+            .set_ranges(vec![
+                (8, vec![[0.25; 2]; 8].into_boxed_slice()),
+                (24, vec![[0.5; 2]; 8].into_boxed_slice()),
+            ])
+            .unwrap();
+        let partial = streamer.head_readiness(&assets);
+        assert_eq!(
+            (
+                partial.covered_assets,
+                partial.covered_ranges,
+                partial.covered_source_frames
+            ),
+            (1, 2, 16)
+        );
+        assert!(!partial.complete());
+        assets[1]
+            .set_ranges(vec![(0, vec![[0.25; 2]; 8].into_boxed_slice())])
+            .unwrap();
+        assert!(streamer.head_readiness(&assets).complete());
+        let selected = streamer.head_readiness_matching(&assets, |id| id == assets[0].asset_id());
+        assert_eq!(
+            (selected.assets, selected.ranges, selected.source_frames),
+            (1, 2, 16)
+        );
+        assert!(selected.complete());
+        assert!(!assets[0].resident_covers(0..8));
+        assert!(!assets[0].resident_covers(8..33));
+        assert!(!assets[0].resident_covers(8..8));
     }
 
     #[test]
@@ -1470,19 +1978,38 @@ mod tests {
     #[test]
     fn ksp_residency_purge_cannot_be_undone_by_an_in_flight_cold_reloader() {
         let (mut streamer, assets) = reload_fixture(1, 32 * 16);
-        assets[0].set_ranges(vec![(0, vec![[0.25; 2]; 32].into())]).unwrap();
+        assets[0]
+            .set_ranges(vec![(0, vec![[0.25; 2]; 32].into())])
+            .unwrap();
         let (entered, received) = std::sync::mpsc::channel();
         let (resume, resume_received) = std::sync::mpsc::channel();
         streamer.sources = Arc::new(HashMap::from([(
-            assets[0].asset_id(), Arc::new(PausedHead {
-                entered, resume: Mutex::new(resume_received), frame: [0.5; 2],
+            assets[0].asset_id(),
+            Arc::new(PausedHead {
+                entered,
+                resume: Mutex::new(resume_received),
+                frame: [0.5; 2],
             }) as Arc<dyn AssetSource>,
         )]));
-        let plan = sampler_core::Prepared::new(48000, assets.clone(), vec![sampler_core::Region {
-            sample: 0, key_low: 60, key_high: 60, root_key: None,
-            velocity_low: 0., velocity_high: 1., gain: 1.,
-            envelope: Default::default(), playback: Default::default(),
-        }], 1).unwrap().with_groups(1, vec![Some(0)]).unwrap();
+        let plan = sampler_core::Prepared::new(
+            48000,
+            assets.clone(),
+            vec![sampler_core::Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Default::default(),
+                playback: Default::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_groups(1, vec![Some(0)])
+        .unwrap();
         let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
         let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
         let plan = rt.active_plan();
@@ -1490,7 +2017,10 @@ mod tests {
         std::thread::scope(|scope| {
             let loading = scope.spawn(|| streamer.reload(&assets));
             let entered = received.recv_timeout(Duration::from_secs(3)).is_ok();
-            if entered { rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0)).unwrap(); }
+            if entered {
+                rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0))
+                    .unwrap();
+            }
             resume.send(()).unwrap();
             assert!(entered);
             assert_eq!(loading.join().unwrap().unwrap(), 1);
@@ -1512,29 +2042,64 @@ mod tests {
         struct Head;
         impl AssetSource for Head {
             fn open(&self) -> io::Result<SampleReader> {
-                Ok(SampleReader::custom(48000, 64, |_, out| { out.fill([0.25; 2]); Ok(()) }))
+                Ok(SampleReader::custom(48000, 64, |_, out| {
+                    out.fill([0.25; 2]);
+                    Ok(())
+                }))
             }
         }
         let pcm = Pcm::streamed(48000, 64).unwrap();
         let sources = HashMap::from([(pcm.asset_id(), Arc::new(Head) as Arc<dyn AssetSource>)]);
         let (cache, worker) = StreamCache::new(4).unwrap();
-        let (_streamer, bytes) = Streamer::start(sources, std::slice::from_ref(&pcm), vec![vec![8..24, 40..56]], worker, 1, false, 1024, HashSet::new()).unwrap();
+        let (_streamer, bytes) = Streamer::start(
+            sources,
+            std::slice::from_ref(&pcm),
+            vec![vec![8..24, 40..56]],
+            worker,
+            1,
+            false,
+            1024,
+            HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(bytes, 64);
-        let plan = sampler_core::Prepared::new(48000, vec![pcm.clone()], vec![sampler_core::Region {
-            sample: 0, key_low: 60, key_high: 60, root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
-            envelope: Default::default(), playback: sampler_core::Playback { start: 8, ..Default::default() },
-        }], 1).unwrap().with_groups(1, vec![Some(0)]).unwrap();
+        let plan = sampler_core::Prepared::new(
+            48000,
+            vec![pcm.clone()],
+            vec![sampler_core::Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Default::default(),
+                playback: sampler_core::Playback {
+                    start: 8,
+                    ..Default::default()
+                },
+            }],
+            1,
+        )
+        .unwrap()
+        .with_groups(1, vec![Some(0)])
+        .unwrap();
         let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
-        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+        let mut rt = sampler_core::Runtime::new(plan, limits)
+            .unwrap()
+            .with_stream_cache(cache);
         let plan = rt.active_plan();
-        rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0)).unwrap();
+        rt.request_group_residency(plan, 0, false, sampler_core::ScriptInstanceId(0))
+            .unwrap();
         let until = Instant::now() + Duration::from_secs(3);
         while pcm.head_bytes() != 0 {
             rt.render(&mut []).unwrap();
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(1));
         }
-        rt.request_group_residency(plan, 0, true, sampler_core::ScriptInstanceId(0)).unwrap();
+        rt.request_group_residency(plan, 0, true, sampler_core::ScriptInstanceId(0))
+            .unwrap();
         while !rt.group_resident(plan, 0).unwrap() {
             rt.render(&mut []).unwrap();
             assert!(Instant::now() < until);
@@ -1689,8 +2254,15 @@ mod tests {
                 )
             })
             .collect();
-        let opened =
-            Streamer::open(sources, 48000, &StreamPolicy::default(), 0, &|| false, &mut |_, _| ()).unwrap();
+        let opened = Streamer::open(
+            sources,
+            48000,
+            &StreamPolicy::default(),
+            0,
+            &|| false,
+            &mut |_, _| (),
+        )
+        .unwrap();
         assert_eq!(
             opened
                 .assets

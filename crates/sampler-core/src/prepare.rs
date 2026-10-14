@@ -206,6 +206,19 @@ impl Pcm {
         self.0.head.collect();
         self.0.head.read().iter().map(|(_, f)| f.bytes()).sum()
     }
+    /// Control-side readiness query for an exact source-frame range. A nonzero
+    /// head alone does not establish that an authored offset or reverse start
+    /// is resident. This takes one immutable residency snapshot and allocates
+    /// nothing; a later purge may still remove that generation.
+    pub fn resident_covers(&self, range: std::ops::Range<usize>) -> bool {
+        if range.start >= range.end || range.end > self.frame_count() {
+            return false;
+        }
+        if self.resident_frames().is_some() {
+            return true;
+        }
+        uncovered(&self.0.head.read(), range, |_| false)
+    }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
         self.0.cold.swap(false, Relaxed)
