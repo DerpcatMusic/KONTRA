@@ -444,6 +444,11 @@ fn parity_run() {
         let failed: Vec<&Value> = rows.iter().filter(|r| r["verdict"] != "pass" && r["verdict"] != "masked-by-noise").collect();
         checks.push(check(name, failed.is_empty(), json!({"failed": failed.len(), "total": rows.len()})));
     }
+    // Faults raised by the tab, note and control sweeps belong to them, not the first preset.
+    let from = gate.fault_cursor;
+    let faults = gate.faults();
+    checks.push(check("sweep-script-faults", faults == 0,
+        json!({"faults": faults, "events": gate.fault_events[from..].iter().take(4).collect::<Vec<_>>()})));
 
     // 3. Presets: the first N snapshots and the last.
     let all = snapshots(Path::new(&path));
@@ -469,12 +474,20 @@ fn parity_run() {
         let rgba = super::super::tests::pixels(&gate.editor.ui, 1500, 1100);
         let png = format!("preset-{n:02}.png");
         moose::core::screenshot::save_png(&out.join(&png), &rgba, 1500, 1100);
-        let faults = gate.faults();
         let take = gate.take(key, 100);
         let (audio, delta) = noise.changed(&previous, &take);
+        // Keys across the instrument's mapped range: a snapshot may narrow it
+        // (layer key ranges, transposition), which this shows, not fails.
+        let keys: Vec<Value> = spread.iter().map(|&k| {
+            let t = gate.take(k, 100);
+            json!({"key": k, "rms_db": round(t.rms_db), "groups": t.groups.len()})
+        }).collect();
+        let from = gate.fault_cursor;
+        let faults = gate.faults();
         let pass = failure == "none" && rebuilt && ink(&rgba) > 0.02 && audio && !take.silent() && faults == 0;
         presets.push(json!({"name": preset.file_stem().unwrap().to_string_lossy(), "png": png, "ms": round(ms), "failure": failure,
-            "ui_rebuilt": rebuilt, "ink": round(ink(&rgba)), "faults": faults, "audio_changed": audio, "audio": delta, "take": take.json(), "silent": take.silent(), "pass": pass}));
+            "ui_rebuilt": rebuilt, "ink": round(ink(&rgba)), "faults": faults, "fault_events": gate.fault_events[from..].iter().take(4).collect::<Vec<_>>(),
+            "audio_changed": audio, "audio": delta, "take": take.json(), "silent": take.silent(), "keys": keys, "pass": pass}));
         previous = take;
     }
     checks.push(check("presets", presets.iter().all(|p| p["pass"] == true),
