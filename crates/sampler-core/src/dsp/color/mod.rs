@@ -8,6 +8,7 @@
 //!
 //! Stages run over the whole block one after another, which equals the native
 //! per-frame order because no stage reads another stage's state.
+mod amp;
 mod distortion;
 mod drive;
 mod tubescreamer;
@@ -90,6 +91,8 @@ pub enum CurveSettings {
     Exciter(sampler_ir::fx::color::Exciter),
     ToneStack(sampler_ir::fx::color::ToneStack),
     Diode(sampler_ir::fx::color::Diode),
+    /// A Kontakt amp, cabinet or pedal model.
+    Amp(sampler_ir::fx::color::Amp),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -179,6 +182,7 @@ impl Settings {
                 CurveSettings::Tube(p) | CurveSettings::Transistor(p) => live_knob(p),
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
                 CurveSettings::Skreamer(k) => k.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Amp(a) => a.knobs.iter().all(|v| v.is_finite()),
                 CurveSettings::Diode(d) => [d.drive, d.tone, d.high_pass, d.asymmetry, d.output_gain].iter().all(|v| v.is_finite()),
                 CurveSettings::ToneStack(d) => [d.bass, d.mid, d.treble, d.gain].iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Exciter(d) => [d.input_gain, d.amount, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
@@ -211,12 +215,13 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
     pub(super) fn ring_frames(&self, rate: u32) -> usize {
-        let widener = self.widener.map_or(0, |w| widener::Engine::frames(w, rate));
+        let widener = self.widener.map_or(0, |w| widener::Engine::frames(w, rate))
+            .max(if let CurveSettings::Amp(a) = self.curve { amp::frames(a, rate) } else { 0 });
         if self.stereo.is_some_and(|s| s.pseudo) { 1024.max(widener) } else { widener }
     }
 
@@ -249,6 +254,7 @@ impl Settings {
             CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
             CurveSettings::ToneStack(d) => Curve::ToneStack(tonestack::Engine::new(d, rate)),
             CurveSettings::Diode(d) => Curve::Diode(diode::Engine::new(d, rate)),
+            CurveSettings::Amp(a) => Curve::Amp(amp::Engine::new(a, rate)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -323,6 +329,7 @@ enum Curve {
     Exciter(exciter::Engine),
     ToneStack(tonestack::Engine),
     Diode(diode::Engine),
+    Amp(amp::Engine),
 }
 enum Damping {
     Fixed(distortion::Damper),
@@ -364,6 +371,7 @@ enum Shaper {
     Exciter(exciter::State),
     ToneStack(tonestack::State),
     Diode(diode::State),
+    Amp(amp::State),
     /// A Kontakt KONTAKTFX filter stage's history: a filter stage runs no shaper.
     KontaktFilter(super::filter::kontaktfx::State),
 }
@@ -382,6 +390,7 @@ impl Shaper {
             Self::Exciter(s) => s.finite(),
             Self::ToneStack(s) => s.finite(),
             Self::Diode(s) => s.finite(),
+            Self::Amp(s) => s.finite(),
             Self::KontaktFilter(s) => s.finite(),
         }
     }
@@ -525,7 +534,7 @@ impl Color {
     }
 
     /// The memoryless curve over `len` frames (and the Distortion curves).
-    fn shape(&self, state: &mut State, parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64) {
+    fn shape(&self, state: &mut State, parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64, ring: &mut [[f64; 2]]) {
         match &self.curve {
             Curve::Identity => {}
             Curve::Rectifier(mode) => {
@@ -570,6 +579,7 @@ impl Color {
             Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
             Curve::ToneStack(d) => d.process(slot!(state, ToneStack), block, len),
             Curve::Diode(d) => d.process(slot!(state, Diode), block, len),
+            Curve::Amp(d) => d.process(slot!(state, Amp), block, len, ring),
         }
     }
 
@@ -627,7 +637,7 @@ impl Color {
             Some(Quantizer::Floor(bits)) => lofi::quantize_floor(*bits, block, len),
             None => {}
         }
-        self.shape(state, parameters, block, len, at);
+        self.shape(state, parameters, block, len, at, ring);
         if let Some(damping) = &self.damping {
             self.damper(damping, parameters, at).process(&mut state.damper, block, len);
         }
