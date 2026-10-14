@@ -41,20 +41,46 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
-/// 0x42 Tape Saturator: saved +8 gain, +0xc warmth, +0x10 roll-off (f32 clamped to 0..1),
-/// +0x14 quality (u8, nonzero = on), identity-bound to core indices 0..3 (setter 0x140ae1e10).
-pub(super) fn tape(fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
-    use ni_file::kontakt::objects::EffectValue::{Byte, Float};
-    match fields.iter().map(|f| &f.value).collect::<Vec<_>>()[..] {
-        [Float(gain), Float(warmth), Float(rolloff), Byte(quality)] => {
-            [gain, warmth, rolloff].iter().all(|v| v.is_finite()).then(|| {
-                Config::tape(sampler_ir::fx::color::Tape {
-                    gain: gain.clamp(0.0, 1.0),
-                    warmth: warmth.clamp(0.0, 1.0),
-                    rolloff: rolloff.clamp(0.0, 1.0),
-                    quality: *quality != 0,
-                })
-            })
+/// The modules whose saved fields `typed_core` maps.
+pub(super) const TYPED_CORES: [u16; 2] = [0x42, 0x66];
+
+/// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
+/// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
+fn core_value(v: &ni_file::kontakt::objects::EffectValue) -> Option<f32> {
+    use ni_file::kontakt::objects::EffectValue::{Byte, Float, Integer};
+    match *v {
+        Float(f) if f.is_finite() => Some(f.clamp(0.0, 1.0)),
+        Byte(b) => Some(if b != 0 { 1.0 } else { 0.0 }),
+        Integer(i @ 0..=2) => Some(i as f32 * 0.5),
+        _ => None,
+    }
+}
+
+/// Places saved fields at their core indices (`to[field] = index`) over `defaults`.
+fn scatter<const N: usize>(values: &[f32], to: &[usize], defaults: [f32; N]) -> Option<[f32; N]> {
+    (values.len() == to.len()).then(|| {
+        let mut knobs = defaults;
+        for (&v, &i) in values.iter().zip(to) {
+            knobs[i] = v;
+        }
+        knobs
+    })
+}
+
+/// Effektrig/KONTAKTFX cores from their typed records (per-type apply, kcolor/records.md).
+pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    let values: Vec<f32> = fields.iter().map(|f| core_value(&f.value)).collect::<Option<_>>()?;
+    match module {
+        // Tape Saturator: gain, warmth, roll-off, quality, identity (setter 0x140ae1e10).
+        0x42 => {
+            let [gain, warmth, rolloff, quality] = scatter(&values, &[0, 1, 2, 3], [0.0; 4])?;
+            Some(Config::tape(sampler_ir::fx::color::Tape { gain, warmth, rolloff, quality: quality >= 0.5 }))
+        }
+        // Bite (apply 0x140aba100): hpf, frequency, bits, jitter, crunch, dither, expand,
+        // saturate, prefilter, postfilter, mix, dcquant.
+        0x66 => {
+            let knobs = scatter(&values, &[10, 2, 5, 3, 4, 6, 8, 0, 1, 9, 11, 7], [0.0; 12])?;
+            Some(Config::bite(sampler_ir::fx::color::Bite { knobs }))
         }
         _ => None,
     }
@@ -83,7 +109,39 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
-        0x66 | 0x67 | 0x68 => "creative drive module: core not extracted",
+        0x67 | 0x68 => "creative drive module: core not extracted",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ni_file::kontakt::objects::{EffectField, EffectValue};
+
+    fn fields(values: Vec<EffectValue>) -> Vec<EffectField> {
+        values.into_iter().map(|value| EffectField { name: "param_n", value }).collect()
+    }
+
+    #[test]
+    fn bite_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(
+            [Integer(2)]
+                .into_iter()
+                .chain((1..=10).map(|i| Float(i as f32 / 10.0)))
+                .chain([Byte(0x5a)])
+                .collect(),
+        );
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Bite(b), .. }) = typed_core(0x66, &saved) else {
+            panic!("Bite not mapped");
+        };
+        // saturate .7, prefilter .8, frequency .1, jitter .3, crunch .4, bits .2, dither .5,
+        // dcquant 1, expand .6, postfilter .9, hpf 1 (i32 2), mix 1.
+        assert_eq!(b.knobs, [0.7, 0.8, 0.1, 0.3, 0.4, 0.2, 0.5, 1.0, 0.6, 0.9, 1.0, 1.0]);
+        // An out-of-range enum is a reader error, not a guess.
+        let mut bad = saved.clone();
+        bad[0].value = Integer(3);
+        assert!(typed_core(0x66, &bad).is_none());
+    }
 }

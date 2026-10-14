@@ -10,6 +10,7 @@
 //! per-frame order because no stage reads another stage's state.
 mod distortion;
 mod drive;
+mod bite;
 mod tape;
 mod exciter;
 mod tonestack;
@@ -78,6 +79,7 @@ pub enum CurveSettings {
     Skreamer([f32; 5]),
     /// A UVI drive engine.
     Drive(sampler_ir::fx::color::Drive),
+    Bite(sampler_ir::fx::color::Bite),
     Tape(sampler_ir::fx::color::Tape),
     Exciter(sampler_ir::fx::color::Exciter),
     ToneStack(sampler_ir::fx::color::ToneStack),
@@ -175,6 +177,7 @@ impl Settings {
                 CurveSettings::ToneStack(d) => [d.bass, d.mid, d.treble, d.gain].iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Exciter(d) => [d.input_gain, d.amount, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
                 CurveSettings::Tape(d) => [d.gain, d.warmth, d.rolloff].iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Bite(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Drive(d) => [d.input_gain, d.overdrive, d.trash, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
             }
             && self.damping.as_ref().is_none_or(live_knob)
@@ -199,7 +202,7 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -229,6 +232,7 @@ impl Settings {
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
             CurveSettings::Skreamer(knobs) => Curve::Skreamer(skreamer::Skreamer::new(knobs, rate)),
             CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
+            CurveSettings::Bite(d) => Curve::Bite(bite::Engine::new(d, rate)),
             CurveSettings::Tape(d) => Curve::Tape(tape::Engine::new(d, rate)),
             CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
             CurveSettings::ToneStack(d) => Curve::ToneStack(tonestack::Engine::new(d, rate)),
@@ -299,6 +303,7 @@ enum Curve {
     Destructor(lofi::Destructor),
     Skreamer(skreamer::Skreamer),
     Drive(drive::Engine),
+    Bite(bite::Engine),
     Tape(tape::Engine),
     Exciter(exciter::Engine),
     ToneStack(tonestack::Engine),
@@ -342,6 +347,7 @@ pub(super) struct State {
     saturator: saturator::State,
     skreamer: skreamer::State,
     drive: drive::State,
+    bite: bite::State,
     tape: tape::State,
     exciter: exciter::State,
     tonestack: tonestack::State,
@@ -362,6 +368,7 @@ impl State {
             && self.saturator.finite()
             && self.skreamer.finite()
             && self.drive.finite()
+            && self.bite.finite()
             && self.tape.finite()
             && self.exciter.finite()
             && self.tonestack.finite()
@@ -497,6 +504,7 @@ impl Color {
             Curve::Destructor(d) => d.process(block, len),
             Curve::Skreamer(s) => s.process(&mut state.skreamer, block, len),
             Curve::Drive(d) => d.process(&mut state.drive, block, len),
+            Curve::Bite(d) => d.process(&mut state.bite, block, len),
             Curve::Tape(d) => d.process(&mut state.tape, block, len),
             Curve::Exciter(d) => d.process(&mut state.exciter, block, len),
             Curve::ToneStack(d) => d.process(&mut state.tonestack, block, len),

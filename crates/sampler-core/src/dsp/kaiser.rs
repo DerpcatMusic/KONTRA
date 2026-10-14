@@ -39,6 +39,60 @@ fn tap(t: f32) -> f32 {
     ((w * (a.sin() / a)) / den) as f32
 }
 
+/// The effektrig x2 pair (generic resampler 0x141ee5da0 modes 5/6, process 0x141ee2160,
+/// kernel 0x141ee6e00): the same half-sample taps summed in four lanes (up) or in order
+/// (down), around the Bite and Dirt cores (model kcolor/os2x.py).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Effektrig {
+    h: [f32; 16],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct EffektrigState {
+    /// Newest last.
+    up: [f32; 16],
+    even: [f32; 9],
+    odd: [f32; 17],
+}
+
+impl EffektrigState {
+    pub(crate) fn finite(&self) -> bool {
+        self.up.iter().chain(&self.even).chain(&self.odd).all(|v| v.is_finite())
+    }
+}
+
+impl Effektrig {
+    pub(crate) fn new() -> Self {
+        Self { h: std::array::from_fn(|k| tap(0.5 + (k as f32 - 8.0))) }
+    }
+
+    /// One input to (even, odd) outputs.
+    #[inline(always)]
+    pub(crate) fn up(&self, s: &mut EffektrigState, x: f32) -> (f32, f32) {
+        s.up.copy_within(1.., 0);
+        s.up[15] = x;
+        let mut lanes = [0f32; 4];
+        for k in 0..16 {
+            lanes[k & 3] += self.h[k] * s.up[15 - k];
+        }
+        (s.up[7], ((lanes[3] + lanes[1]) + lanes[2]) + lanes[0])
+    }
+
+    /// (even, odd) inputs to one output.
+    #[inline(always)]
+    pub(crate) fn down(&self, s: &mut EffektrigState, even: f32, odd: f32) -> f32 {
+        s.even.copy_within(1.., 0);
+        s.even[8] = even;
+        s.odd.copy_within(1.., 0);
+        s.odd[16] = odd;
+        let mut acc = 0f32;
+        for k in 0..16 {
+            acc += self.h[k] * s.odd[15 - k];
+        }
+        0.5 * (s.even[0] + acc)
+    }
+}
+
 type Block = [f32; 16];
 
 /// One transposed 16-register block (0x140ae35d0 / 0x140ae2f50 lane pattern).
