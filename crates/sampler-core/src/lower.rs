@@ -13,7 +13,7 @@ use crate::{
     slot_control,
 };
 use sampler_ir as ir;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Retain native lookup identity independently of which DSP nodes were lowered.
@@ -540,6 +540,7 @@ pub fn switching(
         pcm: &[],
         mpe: None,
         amplitude_sources: HashMap::new(),
+        route_envelopes: Vec::new(),
     }
     .switching(switching)
 }
@@ -578,6 +579,7 @@ pub fn lower_with(
             .mpe
             .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
         amplitude_sources: amplitude_sources(instrument),
+        route_envelopes: route_envelopes(instrument),
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
@@ -1033,6 +1035,29 @@ struct Lowering<'a> {
     mpe: Option<MpeDefaults>,
     /// [`amplitude_sources`], built once rather than scanned per zone.
     amplitude_sources: HashMap<(ir::GroupRef, ir::ModulatorRef), &'a ir::SourceAhdsr>,
+    /// [`route_envelopes`], built once: per-modulator scans of routes were
+    /// modulators^2 x routes (minutes on ANALOG STRINGS in a debug build).
+    route_envelopes: Vec<(&'a ir::SourceModulator, ir::ModulatorRef)>,
+}
+
+/// Kontakt modulation envelopes (internal AHDSR modulators that drive
+/// routes) and the slot each was saved in, first saved slot first.
+fn route_envelopes(ir: &ir::Instrument) -> Vec<(&ir::SourceModulator, ir::ModulatorRef)> {
+    let indices = &ir.source_indices;
+    let ahdsrs: HashSet<_> = indices.ahdsrs.iter().map(|a| (a.group, a.slot)).collect();
+    let routed: HashSet<_> = ir.routes.iter().map(|r| r.source).collect();
+    indices
+        .modulators
+        .iter()
+        .filter_map(|source| {
+            let modulator = source.runtime?;
+            (matches!(ir.modulators[modulator.0].source, ir::ModulationSource::Envelope(_))
+                && !source.external
+                && ahdsrs.contains(&(source.group, source.slot))
+                && routed.contains(&modulator))
+                .then_some((source, modulator))
+        })
+        .collect()
 }
 
 /// The native AHDSR behind each (group, amplitude modulator): its one
@@ -1335,19 +1360,10 @@ impl Lowering<'_> {
         Ok(envelope)
     }
 
-    /// Kontakt modulation envelopes (internal AHDSR modulators that drive
-    /// routes) and the slot each was saved in.
-    fn route_envelopes(&self) -> impl Iterator<Item = (&ir::SourceModulator, ir::ModulatorRef, &ir::Envelope)> {
-        let indices = &self.ir.source_indices;
-        indices.modulators.iter().filter_map(move |source| {
-            let modulator = source.runtime?;
-            let ir::ModulationSource::Envelope(e) = &self.ir.modulators[modulator.0].source else {
-                return None;
-            };
-            (!source.external
-                && indices.ahdsrs.iter().any(|a| (a.group, a.slot) == (source.group, source.slot))
-                && self.ir.routes.iter().any(|r| r.source == modulator))
-                .then_some((source, modulator, e))
+    fn route_envelopes(&self) -> impl Iterator<Item = (&'a ir::SourceModulator, ir::ModulatorRef, &'a ir::Envelope)> + '_ {
+        self.route_envelopes.iter().filter_map(|&(source, modulator)| match &self.ir.modulators[modulator.0].source {
+            ir::ModulationSource::Envelope(e) => Some((source, modulator, e)),
+            _ => None,
         })
     }
 

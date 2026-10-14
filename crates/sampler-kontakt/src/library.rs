@@ -300,6 +300,7 @@ fn translate(
         eq_mod_slots: HashMap::new(),
         cutoff_octaves: HashMap::new(),
         route_intensity: HashMap::new(),
+        alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         send_taps: Vec::new(),
@@ -721,6 +722,8 @@ struct Translation {
     /// Each translated route's saved signed intensity and its depth value per
     /// unit intensity (for the ID25 intensity law's `unit`).
     route_intensity: HashMap<usize, (f64, f64)>,
+    /// `claim_alias`'s index of contested (parameter, address) script aliases.
+    alias_claims: HashMap<(String, ir::SlotAddress), usize>,
     /// Assignments whose destination is another modulator's `intensity`; applied
     /// to that modulator's routes once every route exists.
     intensity_scales: Vec<IntensityScale>,
@@ -2214,18 +2217,7 @@ impl Translation {
                 &["ENGINE_PAR_MOD_TARGET_INTENSITY", "ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
             };
             for name in names {
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control,
-                        parameter: (*name).into(),
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic,
-                        },
-                    });
+                self.claim_alias(control, name, [group as i32, slot as i32, generic], false);
             }
             control
         };
@@ -2243,11 +2235,7 @@ impl Translation {
         // ponytail: -1 aliases target 0 only; multi-target -1 semantics unmeasured.
         if ordinal == 0 {
             for parameter in ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"] {
-                self.ir.source_indices.control_aliases.push(ir::SourceControlAlias {
-                    control: depth,
-                    parameter: parameter.into(),
-                    address: ir::SlotAddress { group: group as i32, slot: slot as i32, generic: -1 },
-                });
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, -1], false);
             }
         }
         self.ir
@@ -2265,6 +2253,27 @@ impl Translation {
         let v = self.script_par("ENGINE_PAR_VOLUME", -1, -1, 1000 + bus as i32)?;
         let millibels = 18000.0 * f64::from(v.clamp(1, 1_000_000)).log2() - 346_768.234_247_835_1;
         Some(kontakt_db_gain(millibels / 1000.0) as f32)
+    }
+
+    /// Alias a script address to `control`. Internal and external modulators
+    /// number their slots apart, so both can claim one (group, slot, generic):
+    /// the measured loop/module depth (`evict`) wins over an internal route's.
+    // ponytail: KSP's find_mod index spans both lists; resolve it to drop this tie-break.
+    fn claim_alias(&mut self, control: ir::ControlRef, parameter: &str, [group, slot, generic]: [i32; 3], evict: bool) {
+        let address = ir::SlotAddress { group, slot, generic };
+        let aliases = &mut self.ir.source_indices.control_aliases;
+        let alias = ir::SourceControlAlias { control, parameter: parameter.into(), address };
+        match self.alias_claims.entry((parameter.into(), address)) {
+            std::collections::hash_map::Entry::Occupied(at) => {
+                if evict {
+                    aliases[*at.get()] = alias;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(aliases.len());
+                aliases.push(alias);
+            }
+        }
     }
 
     /// Port v1's Constant loop target aliases and signed cubic depth domain.
@@ -2312,18 +2321,7 @@ impl Translation {
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ] {
             for generic in generics.into_iter().flatten() {
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control: depth,
-                        parameter: parameter.into(),
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic,
-                        },
-                    });
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, generic], true);
             }
         }
         let bypass = ir::ControlRef(self.ir.controls.len());

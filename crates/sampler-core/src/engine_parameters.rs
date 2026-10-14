@@ -259,8 +259,17 @@ impl EngineParameterLaw {
                 let i = (x as usize).min(points.len() - 2);
                 let (a, b) = (points[i], points[i + 1]);
                 let t = x - i as f64;
-                // A segment from zero (RV_PREDELAY) is linear.
-                if a > 0. { (a.ln() + (b.ln() - a.ln()) * t).exp() } else { a + (b - a) * t }
+                // Measured points are exact (an authored 10 ms must stay inside the
+                // lane's domain); a segment from zero (RV_PREDELAY) is linear.
+                if t == 0. {
+                    a
+                } else if t == 1. {
+                    b
+                } else if a > 0. {
+                    (a.ln() + (b.ln() - a.ln()) * t).exp()
+                } else {
+                    a + (b - a) * t
+                }
             }
             Self::LegacyEqFrequency => f64::from(crate::KontaktLegacyEqSettings::frequency_knob(
                 (20. * 1000f64.powf(v / 1e6)) as f32,
@@ -552,6 +561,10 @@ mod law_tests {
         assert!((law.decode(0) - 5.).abs() < 1e-9 && (law.decode(1_000_000) - 40.).abs() < 1e-9);
         assert!((law.decode(250_000) - 50f64.sqrt()).abs() < 1e-9);
         assert!((law.encode(20.) - 750_000).abs() <= 1);
+        // Endpoints are exact: ANALOG STRINGS' authored 10 ms limiter release sat
+        // 2e-15 below the lane's decoded minimum and failed the whole load.
+        let release = EngineParameterLaw::Table(&sampler_ir::fx::tables::LIM_RELEASE);
+        assert_eq!((release.decode(0), release.decode(1_000_000)), (10., 1000.));
         // RV_PREDELAY starts at 0 ms: that segment is linear.
         let law = EngineParameterLaw::Table(&[0., 2., 8.]);
         assert!(law.valid() && (law.decode(250_000) - 1.).abs() < 1e-9);
