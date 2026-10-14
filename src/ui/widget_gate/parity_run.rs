@@ -173,6 +173,7 @@ impl Gate {
         self.core.release_all_notes();
         let mut tail = Vec::new();
         self.render(0.3, &mut tail);
+        self.core.widget_gate_reseed(0);
         let mut samples = Vec::new();
         self.core.play(0, Event::midi1(0x90, key, velocity));
         // A stimulus after note-on: scripts reset per-note values at note start.
