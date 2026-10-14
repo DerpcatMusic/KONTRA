@@ -111,6 +111,24 @@ pub enum Curve {
     ToneStack(ToneStack),
     /// UVI DiodeClipper (Newton-solved diode pair, DC blocker, output gain).
     Diode(Diode),
+    /// A Kontakt amp, cabinet or pedal model.
+    Amp(Amp),
+}
+
+/// The Kontakt amp, cabinet and pedal models.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmpModel {
+    /// 0x24 Cabinet: size, air, treble, bass (-1..1), type 0..=10.
+    Cabinet,
+}
+
+/// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Amp {
+    pub model: AmpModel,
+    pub knobs: [f32; 24],
 }
 
 /// The UVI drive engines' curves.
@@ -415,6 +433,11 @@ impl Config {
         Self { curve: Curve::Dirt(dirt), ..Self::IDENTITY }
     }
 
+    /// A Kontakt amp, cabinet or pedal model.
+    pub fn amp(amp: Amp) -> Self {
+        Self { curve: Curve::Amp(amp), ..Self::IDENTITY }
+    }
+
     /// Kontakt Freak.
     pub fn freak(freak: Freak) -> Self {
         Self { curve: Curve::Freak(freak), ..Self::IDENTITY }
@@ -495,6 +518,7 @@ impl Config {
             Self { curve: Curve::Tubescreamer(_), .. } => "Tubescreamer",
             Self { curve: Curve::Dirt(_), .. } => "Dirt",
             Self { curve: Curve::Freak(_), .. } => "Freak",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
