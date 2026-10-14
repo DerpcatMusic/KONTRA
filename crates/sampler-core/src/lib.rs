@@ -101,7 +101,7 @@ mod plan_programs;
 mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
-    EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
+    BUS_VOLUME_LAW, EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
     EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
     engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };

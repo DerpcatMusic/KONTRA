@@ -1676,6 +1676,42 @@ mod tests {
         }
     }
 
+    /// Output's double-buffered layer buses (ANALOG STRINGS `switch_bus`): a
+    /// bus saved at volume 0 sounds once the script writes its fader.
+    #[test]
+    fn script_bus_volume_writes_reach_the_dynamic_bus_fader() {
+        use sampler_ir as ir;
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.group = Some(ir::GroupRef(0));
+        zone.velocity = ir::VelocityResponse::None;
+        instrument.zones.push(zone);
+        let (notes, _) = super::instrument_buses(&mut instrument, &[],
+            &[super::BusPlan { index: 0, volume: 0., pan: 0., groups: vec![ir::GroupRef(0)] }],
+            true, &mut |_| Err("unused".into()));
+        assert!(notes.is_empty(), "{notes:?}");
+        let pcm = sampler_core::Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
+        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+        rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+        let mut out = [[0.0; 2]; 16];
+        rt.render(&mut out).unwrap();
+        assert_eq!(out[8], [0., 0.], "saved volume 0 mutes the bus");
+        let address = sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),
+            group: -1, slot: -1, generic: 1000,
+        };
+        rt.set_engine_parameter(address, 629_961).expect("bus fader write is bound");
+        assert_eq!(rt.engine_parameter(address).unwrap(), 629_961, "read back through the same law");
+        let mut ramp = vec![[0.0; 2]; 1024]; // past the slot's 10 ms ramp
+        rt.render(&mut ramp).unwrap();
+        assert!((ramp[1023][0] - 0.5).abs() < 1e-3, "0 dB fader passes the voice: {:?}", ramp[1023]);
+    }
+
     #[test]
     fn convolution_auto_gain_sums_energy_in_f32() {
         let recipe = super::Convolution {
