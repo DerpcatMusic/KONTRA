@@ -479,13 +479,33 @@ fn layer_encode(target: ModTarget, value: i64) -> i32 {
     .round()
     .clamp(0., 1e6) as i32
 }
-fn slot_parameter(name: &str) -> Option<SlotKind> {
+/// An instrument bus fader (`$ENGINE_PAR_VOLUME`, group and slot -1, generic
+/// the bus): 0 dB at 2^(346768.234/18000), cubic like the group volume.
+pub const BUS_VOLUME_LAW: EngineParameterLaw = EngineParameterLaw::CubicGain {
+    unity: 629_960.524_947_436_1,
+};
+/// The plan-owned slot control an engine parameter writes, and the gain law
+/// of a non-bypass value: insert/send slot Output, Dry and Bypass, and the
+/// instrument bus fader (the dynamic bus's volume Mix block).
+fn slot_parameter(
+    name: &str,
+    a: EngineParameterAddress,
+) -> Option<(SlotKind, ControlId, EngineParameterLaw)> {
+    let slot = |kind| {
+        let law = EngineParameterLaw::CubicGain { unity: 396851. };
+        Some((kind, crate::slot_control(kind, a.group, a.slot, a.generic), law))
+    };
     match name {
-        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => Some(SlotKind::Bypass),
+        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => slot(SlotKind::Bypass),
         "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
-            Some(SlotKind::Output)
+            slot(SlotKind::Output)
         }
-        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
+        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => slot(SlotKind::Dry),
+        "$ENGINE_PAR_VOLUME" if a.group == -1 && a.slot == -1 && a.generic >= 0 => Some((
+            SlotKind::Output,
+            crate::slot_control(SlotKind::Output, -1, crate::BUS_VOLUME_SLOT, a.generic),
+            BUS_VOLUME_LAW,
+        )),
         _ => None,
     }
 }
@@ -807,15 +827,12 @@ impl Runtime {
                 )
                 .map(|_| ());
         }
-        if let Some(kind) = slot_parameter(name) {
-            let id = crate::slot_control(kind, address.group, address.slot, address.generic);
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
             if self.control_definition(plan, id).is_ok() {
                 let value = if kind == SlotKind::Bypass {
                     f64::from(value != 0)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }
-                        .decode(value)
-                        .min(kind.max())
+                    law.decode(value).min(kind.max())
                 };
                 return self
                     .edit_controls_now(
@@ -861,15 +878,12 @@ impl Runtime {
                 return Ok(b.law.encode(v));
             }
         }
-        if let Some(kind) = slot_parameter(name) {
-            if let Ok(ControlValue::Real(v)) = self.control_value(
-                plan,
-                crate::slot_control(kind, address.group, address.slot, address.generic),
-            ) {
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
+            if let Ok(ControlValue::Real(v)) = self.control_value(plan, id) {
                 return Ok(if kind == SlotKind::Bypass {
                     i32::from(v != 0.)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }.encode(v)
+                    law.encode(v)
                 });
             }
         }
