@@ -63,6 +63,11 @@ pub enum Legacy {
 }
 
 impl Legacy {
+    fn retains_raw_cutoff(self) -> bool {
+        matches!(self, Self::Lp1 | Self::Hp1 | Self::Bp2 | Self::Lp2 | Self::Hp2
+            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6)
+    }
+
     pub fn from_saved(id: i32) -> Option<Self> {
         Some(match id {
             2 => Self::Lp1,
@@ -1735,9 +1740,7 @@ pub struct CascadeSettings {
 
 impl CascadeSettings {
     pub(crate) fn valid(self) -> bool {
-        let raw_legacy = matches!(self.class,
-            Legacy::Lp1 | Legacy::Hp1 | Legacy::Bp2 | Legacy::Lp2 | Legacy::Hp2
-            | Legacy::Lp4 | Legacy::Hp4 | Legacy::Bp4 | Legacy::Br4 | Legacy::Lp6);
+        let raw_legacy = self.class.retains_raw_cutoff();
         [self.cutoff, self.resonance].iter().enumerate().all(|(i, p)| {
             p.valid()
                 && !matches!(p, Parameter::Expression { .. })
@@ -1798,9 +1801,11 @@ impl Cascade {
     ) -> bool {
         let target = |position: usize| -> [f32; 2] {
             std::array::from_fn(|i| {
-                (self.parameters[i].value(parameters, at + position as u64, None) as f32
-                    + modulation[i] as f32)
-                    .clamp(0., 1.)
+                let value = self.parameters[i].value(parameters, at + position as u64, None) as f32
+                    + modulation[i] as f32;
+                // BFilter's wrapper slews the raw cutoff; its setter saturates
+                // only while deriving coefficients. Retain that clock state.
+                if i == 0 && self.class.retains_raw_cutoff() && value.is_finite() { value } else { value.clamp(0., 1.) }
             })
         };
         if let Some(f) = &self.fixed {
@@ -1997,6 +2002,32 @@ fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_cutoff_clock_keeps_raw_state_until_the_coefficient_setter() {
+        let unit = CascadeSettings {
+            class: Legacy::Lp1,
+            cutoff: Parameter::Control(ControlRange {
+                control: crate::ControlId(1), low: 0.5, high: 8.5, ramp_frames: 0,
+            }),
+            resonance: Parameter::Constant(0.25),
+        }.compile(48_000, &mut Vec::new());
+        let mut cells = vec![[0.0; 2]; CELLS];
+        let mut block = [[0.0; super::super::super::BLOCK]; 2];
+        let mut parameters = [ControlRamp::test_ramp(8.5, 8.5, 0, 0)];
+        for at in [0, 64] {
+            unit.process(&mut cells, &parameters, &mut block, 64, at, [0.0; 4]);
+        }
+        assert_eq!(cells[CLOCK][0], 8.5);
+        parameters[0] = ControlRamp::test_ramp(0.5, 0.5, 128, 0);
+        for at in [128, 192] {
+            unit.process(&mut cells, &parameters, &mut block, 64, at, [0.0; 4]);
+        }
+        // Four 32-frame updates: the first four native setter arguments from
+        // wrapper 0x140ae9f90 at res .25, rather than a clipped 1 -> .5 slew.
+        assert_eq!(cells[CLOCK][0], f64::from(8.15957260131836_f32));
+        assert_eq!(unit.clock([8.5, 0.25], [0.5, 0.25], 1.0 / 11.75, true)[0], 0.5);
+    }
 
     #[test]
     fn legacy_raw_cutoff_saturates_after_modulation_and_rejects_nonfinite() {
