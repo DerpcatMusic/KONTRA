@@ -107,7 +107,7 @@ pub(crate) fn encode(
     let mut w = Writer(out);
     w.u64(zones.len() as u64);
     for z in zones {
-        w.u64(z.asset.0 as u64);
+        w.u64(z.asset.map_or(u64::MAX, |a| a.0 as u64));
         w.u64(z.group.map_or(u64::MAX, |v| v.0 as u64));
         w.0.extend_from_slice(&[
             z.keys.low,
@@ -238,7 +238,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
     let len = r.len(64)?;
     let mut zones = Vec::with_capacity(len);
     for _ in 0..len {
-        let asset = ir::AssetRef(r.index()?);
+        let asset = optional(r.u64()?)?.map(ir::AssetRef);
         let group = optional(r.u64()?)?.map(ir::GroupRef);
         let fields = r.array::<8>()?;
         let tune = read_pitch(&mut r)?;

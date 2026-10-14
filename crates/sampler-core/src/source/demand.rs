@@ -79,7 +79,7 @@ impl Runtime {
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
-            asset: self.plans.get(note.plan.0).unwrap().prepared.pcm[v.sample].asset_id(),
+            asset: self.plans.get(note.plan.0).unwrap().asset(v.sample).asset_id(),
         }))
     }
 }

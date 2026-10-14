@@ -232,6 +232,10 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Authored sample-player identities, independent of asset renumbering.
+    /// An initially empty player retains complete dormant zone recipes.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub sample_targets: Vec<SourceSampleTarget>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -255,6 +259,13 @@ pub struct SourceIndices {
     #[cfg_attr(feature = "cache", serde(default))]
     pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSampleTarget {
+    pub node: u32,
+    pub zones: Vec<ZoneRef>,
 }
 
 /// What a Kontakt external route record says about its law: the native target
@@ -645,7 +656,9 @@ pub enum Kill {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
-    pub asset: AssetRef,
+    /// None is an authored, dormant sample player, not a missing decoded file.
+    /// Its complete mapping remains available for a future sample transaction.
+    pub asset: Option<AssetRef>,
     pub group: Option<GroupRef>,
     pub keys: KeyRange,
     pub velocities: VelocityRange,
@@ -848,9 +861,13 @@ impl Instrument {
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
+        for target in &mut self.source_indices.sample_targets {
+            target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();
+        }
+        self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
-            if let Some(used) = used.get_mut(zone.asset.0) {
+            if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {
                 *used = true;
             }
         }
@@ -865,22 +882,27 @@ impl Instrument {
             used[index - 1]
         });
         for zone in &mut self.zones {
-            zone.asset = AssetRef(
+            zone.asset = zone.asset.map(|asset| AssetRef(
                 renumbered
-                    .get(zone.asset.0)
+                    .get(asset.0)
                     .copied()
-                    .unwrap_or(zone.asset.0),
-            );
+                    .unwrap_or(asset.0),
+            ));
         }
         kept
     }
 }
 
 impl Zone {
+    /// An authored mapping with no sample bound yet. Requires an explicit
+    /// source sample-target identity before structural validation/lowering.
+    pub fn dormant() -> Self {
+        Self { asset: None, ..Self::new(AssetRef(0)) }
+    }
     /// Full key and velocity range, root key 60, no processing.
     pub fn new(asset: AssetRef) -> Self {
         Self {
-            asset,
+            asset: Some(asset),
             group: None,
             keys: KeyRange::FULL,
             velocities: VelocityRange::FULL,

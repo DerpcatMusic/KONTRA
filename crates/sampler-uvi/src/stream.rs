@@ -80,6 +80,7 @@ impl Origin {
             buf: Vec::new(),
             at: 0,
             riff: false,
+            repair_riff: true,
         })
     }
 }
@@ -122,6 +123,7 @@ struct Bytes {
     buf: Vec<u8>,
     at: u64,
     riff: bool,
+    repair_riff: bool,
 }
 
 impl Read for Bytes {
@@ -164,7 +166,7 @@ impl Read for Bytes {
                 self.riff = self.buf.starts_with(b"RIFF");
             }
             // Symphonia needs a consistent RIFF extent; banks do not always keep one.
-            if self.riff && start == 0 && self.buf.len() >= 8 {
+            if self.repair_riff && self.riff && start == 0 && self.buf.len() >= 8 {
                 self.buf[4..8].copy_from_slice(&((self.size - 8) as u32).to_le_bytes());
             }
         }
@@ -409,6 +411,37 @@ impl Sample {
             },
         ))
     }
+}
+
+pub(crate) fn sample_resource(parts: Vec<Origin>, geometry_override: bool) -> Result<crate::script::SampleResource,String> {
+    if parts.is_empty() || parts.len()>12 {return Err("invalid sample channel bundle".into());}
+    let sample=Sample{parts};
+    let reader=sample.open().map_err(|e|e.to_string())?;
+    let mut metadata=None;
+    for origin in &sample.parts {
+        let mut bytes=origin.open(false).map_err(|e|e.to_string())?;
+        bytes.repair_riff=false;
+        let found=crate::sample_metadata::parse_reader(&mut bytes,reader.frames(),geometry_override).map_err(|e|format!("sample file metadata {e:?}"))?;
+        if metadata.is_some_and(|old|old!=found) {return Err("channel bundle has inconsistent playback metadata".into());}
+        metadata=Some(found);
+    }
+    let metadata=metadata.unwrap();
+    let channels=metadata.channels.ok_or("sample channel metadata unavailable")?;
+    let bits=metadata.bits.ok_or("sample bit depth metadata unavailable")?;
+    if channels>2 || sample.parts.len()>2 {return Err("dynamic multi-channel source routing unsupported".into());}
+    let count=sample.parts.len();
+    Ok(crate::script::SampleResource{source:Arc::new(sample),reader:Some(reader),playback:metadata.playback(),base_note:metadata.base_note,fine_tune:metadata.fine_tune,geometry_error:metadata.geometry_error.map(|e|format!("{e:?}")),format_code:match metadata.format{crate::sample_metadata::Format::Wav=>0,crate::sample_metadata::Format::Aiff=>1,crate::sample_metadata::Format::Flac=>7},channels:if count>1{count as u16}else{channels},bits,tempo:metadata.tempo})
+}
+
+pub(crate) fn loose_sample_resource(dir:&std::path::Path,path:&str, geometry_override:bool)->Result<crate::script::SampleResource,String> {
+    if path.starts_with('$') || path.contains(".ufs/") {return Err("sample reference requires its authored bank authority".into());}
+    let path=path.replace('\\',"/");
+    let paths=if let Some((base,names))=path.split_once('*') {
+        let names:Vec<_>=names.split('*').collect();
+        if names.is_empty() || names.len()>12 || names.iter().any(|n|n.is_empty()||n.contains('/')) {return Err("invalid sample channel bundle".into());}
+        names.into_iter().map(|name|dir.join(format!("{base}{name}"))).collect::<Vec<_>>()
+    } else {vec![dir.join(path)]};
+    sample_resource(paths.into_iter().map(Origin::File).collect(),geometry_override)
 }
 
 /// The source of a loose file or bundle, checked by opening it once.

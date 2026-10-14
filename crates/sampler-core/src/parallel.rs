@@ -398,7 +398,7 @@ impl View<'_> {
         if prelude.is_none() {
             v.set_step(v.base_step * expression.rendered.ratio);
         }
-        let asset = &plan.prepared.pcm[v.sample];
+        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
@@ -515,7 +515,7 @@ impl View<'_> {
             plan.project_wavetable(&mut v.cursor, v.group, voices[k]);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = &plan.prepared.pcm[v.sample];
+            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
             let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[k] = v.cursor.starved();

@@ -342,6 +342,7 @@ local element = {}
 local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
   sends=true,modulations=true,eventProcessors=true,connections=true}
 element.__index = function(t, k)
+  if k == "sampleInfo" then return native.sampleInfo(rawget(t, "__id")) end
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then

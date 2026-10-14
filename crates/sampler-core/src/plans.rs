@@ -43,6 +43,7 @@ pub struct PlanTransfer {
     projections: super::note_event::NoteProjections,
     modulation: super::voice_mod::VoiceModState,
     script: super::script_params::EngineLayers,
+    samples: super::prepare::sample_revision::SampleState,
 }
 
 pub(super) struct Generation {
@@ -64,6 +65,13 @@ pub(super) struct Generation {
     pub projections: super::note_event::NoteProjections,
     pub modulation: super::voice_mod::VoiceModState,
     pub script: super::script_params::EngineLayers,
+    pub samples: super::prepare::sample_revision::SampleState,
+}
+
+impl Generation {
+    pub fn asset(&self,sample:usize)->&crate::Pcm {
+        self.samples.asset(&self.prepared,sample).expect("live voice pins its immutable source revision")
+    }
 }
 
 pub(super) struct PlanQueues {
@@ -272,6 +280,7 @@ impl PlanControl {
             .collect();
         let midi_object = prepared.midi_object.clone();
         let dims = super::grow::Dims::of(request, &prepared);
+        let samples = super::prepare::sample_revision::SampleState::new(&prepared);
         match self.pending.push(PlanTransfer {
             request,
             prepared,
@@ -286,6 +295,7 @@ impl PlanControl {
             projections,
             modulation,
             script,
+            samples,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -440,6 +450,7 @@ impl Runtime {
                 projections: generation.projections,
                 modulation: generation.modulation,
                 script: generation.script,
+                samples: generation.samples,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -462,6 +473,7 @@ impl Runtime {
                             projections: plan.projections,
                             modulation: plan.modulation,
                             script: plan.script,
+                            samples: plan.samples,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -521,6 +533,7 @@ impl Runtime {
                     projections: plan.projections,
                     modulation: plan.modulation,
                     script: plan.script,
+                    samples: plan.samples,
                     notes: 0,
                     callbacks: 0,
                 })

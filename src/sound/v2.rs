@@ -3550,7 +3550,7 @@ impl V2Loader {
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let Loaded {
-            part: (prepared, cache, script),
+            part: (prepared, cache, mut script),
             tree,
             mut report,
             interfaces,
@@ -3671,6 +3671,18 @@ impl V2Loader {
                 tree.nodes.len() - 1,
                 runtime.bus_count()
             )));
+        }
+        if instrument.as_ref().is_some_and(|i| !i.source_indices.sample_targets.is_empty())
+            && let Some(driver) = script.as_mut()
+        {
+            if let Some(stream) = &stream {
+                driver.bind_sample_stream(stream.streamer.dynamic_sources())
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+            }
+            let (updated, sample_control) = runtime.with_sample_updates(64).map_err(core)?;
+            driver.bind_sample_control(sample_control)
+                .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+            runtime = updated;
         }
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;

@@ -52,7 +52,7 @@ impl Residency {
         let mut groups: Vec<Vec<Pcm>> = vec![vec![]; plan.group_count as usize];
         let mut pinned = Vec::new();
         for region in 0..plan.region_count() {
-            let pcm = plan.region_asset(region).unwrap();
+            let Some(pcm) = plan.region_asset(region) else { continue; };
             let members = match plan.region_groups[region] {
                 Some(g) => &mut groups[g as usize],
                 None => &mut pinned,

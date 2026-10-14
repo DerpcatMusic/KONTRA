@@ -104,6 +104,7 @@ impl Runtime {
             .collect();
         let mut bytes = 0;
         for (i, plan) in plans.iter().enumerate() {
+            bytes += plan.samples.resident_bytes();
             for pcm in &plan.prepared.pcm {
                 // ponytail: quadratic dedupe, only paid while plans overlap.
                 let shared = plans[..i].iter().any(|p| {
@@ -199,6 +200,7 @@ impl Runtime {
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
+        let _ = self.poll_sample_update();
         self.start_plan_programs();
         self.service_residency()?;
         self.apply_growth();
@@ -439,7 +441,7 @@ impl Runtime {
             plan.project_wavetable(&mut v.cursor, v.group, i);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = &plan.prepared.pcm[v.sample];
+            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
             let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[lane] = v.cursor.starved();
@@ -732,7 +734,7 @@ impl Runtime {
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
         bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
-        let asset = &plan.prepared.pcm[v.sample];
+        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
         let bus = v.bus;
         let target = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())

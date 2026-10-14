@@ -395,7 +395,8 @@ fn finish_kept(
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
-        let audio = &pcm[zone.asset.0];
+        let Some(asset) = zone.asset else { continue; };
+        let audio = &pcm[asset.0];
         let group_tune = zone
             .group
             .map_or(0.0, |g| instrument.groups[g.0].tune.semitones());
@@ -418,7 +419,7 @@ fn finish_kept(
             ));
             playable[index] = false;
         }
-        let location = format!("zone {index} ({})", labels[zone.asset.0]);
+        let location = format!("zone {index} ({})", labels[asset.0]);
         instrument
             .unsupported
             .extend(report.into_iter().map(|(feature, value)| ir::Unsupported {

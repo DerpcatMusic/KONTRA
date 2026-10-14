@@ -918,7 +918,7 @@ impl crate::Runtime {
                         .get(self.families.get(voice.family.0).unwrap().note.0)
                         .unwrap();
                     let asset =
-                        self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample].asset_id();
+                        self.plans.get(note.plan.0).unwrap().asset(voice.sample).asset_id();
                     let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
                         entry.request.key.asset == asset && matches!(entry.state,
                             State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
@@ -967,7 +967,7 @@ impl crate::Runtime {
                 };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
-                let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
+                let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
                 if asset.resident_frames().is_some() {
                     continue;
                 }
