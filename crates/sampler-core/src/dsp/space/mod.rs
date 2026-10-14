@@ -154,7 +154,7 @@ impl Net {
         // whole divisions use the Kaiser pair; others (the native quintic
         // mode 1) run at the host rate.
         let factor = (rate as f32 * f32::from_bits(0x37be_37c6)) as u32;
-        let pair = (n.topology == Topology::Galois && rate > 48_000 && factor > 1 && rate % factor == 0).then(|| resample::Pair::new(factor as usize, crate::dsp::BLOCK));
+        let pair = (n.topology == Topology::Galois && rate > 48_000 && factor > 1 && rate.is_multiple_of(factor)).then(|| resample::Pair::new(factor as usize, crate::dsp::BLOCK));
         let core_rate = if pair.is_some() { rate / factor } else { rate };
         let core = network::Network::new(design::spec(n, core_rate)?);
         let rate = rate as f32;
