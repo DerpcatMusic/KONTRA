@@ -1467,6 +1467,10 @@ struct DecodeAudit {
     publish_max_us: u64,
     page_probes: Vec<serde_json::Value>,
     dropped_page_probes: u64,
+    cpu_clock_jobs: u64,
+    worker_cpu_nanos: u64,
+    read_cpu_nanos: u64,
+    open_cpu_nanos: u64,
 }
 impl Drop for DecodeAudit {
     fn drop(&mut self) {
@@ -1488,6 +1492,8 @@ impl Drop for DecodeAudit {
                 "open_max_us":self.open_max_us,"open_us_log2":self.open_us_log2,"seek_read_decode_max_us":self.read_max_us,"seek_read_decode_us_log2":self.read_us_log2,
                 "publish_attempts":self.publish_attempts,"publish_total_us":self.publish_total_us,"publish_max_us":self.publish_max_us,
                 "page_probes": self.page_probes, "dropped_page_probes": self.dropped_page_probes,
+                "cpu_clock_jobs":self.cpu_clock_jobs,"worker_cpu_us":self.worker_cpu_nanos/1000,
+                "read_cpu_us":self.read_cpu_nanos/1000,"open_cpu_us":self.open_cpu_nanos/1000,
             })
         );
     }
@@ -1568,6 +1574,7 @@ fn decode_with_publish(
             continue;
         };
         let job_start = audit.as_ref().map(|_| Instant::now());
+        let cpu_start = audit.as_ref().and_then(|_| crate::audit::thread_cpu_nanos());
         let queue_us = job
             .queued_at()
             .zip(job_start)
@@ -1592,6 +1599,8 @@ fn decode_with_publish(
                     .map(|reader| readers.insert(asset, reader, tick))
             }
         };
+        let cpu_after_open = cpu_start.and_then(|_| crate::audit::thread_cpu_nanos());
+        let open_cpu = cpu_start.zip(cpu_after_open).map(|(a,b)|b.saturating_sub(a));
         let open_us = open_start.map(|start| start.elapsed().as_micros() as u64);
         if let Some(audit) = &mut audit {
             audit.opens += u64::from(opened);
@@ -1600,6 +1609,7 @@ fn decode_with_publish(
             }
         }
         let decode_start = audit.as_ref().map(|_| Instant::now());
+        let read_cpu_start = cpu_start.and_then(|_| crate::audit::thread_cpu_nanos());
         let result = match index {
             Some(i) => {
                 readers.entries[i].used = tick;
@@ -1617,6 +1627,8 @@ fn decode_with_publish(
             None => Err(DecodeFailure::Unavailable),
         };
         let read_us = decode_start.map(|s| s.elapsed().as_micros() as u64);
+        let cpu_after_read = cpu_start.and_then(|_| crate::audit::thread_cpu_nanos());
+        let read_cpu = read_cpu_start.zip(cpu_after_read).map(|(a,b)|b.saturating_sub(a));
         if let Some(index) = index {
             if result == Err(DecodeFailure::Unavailable) {
                 readers.remove(index);
@@ -1624,9 +1636,17 @@ fn decode_with_publish(
                 readers.trim_after_read(index);
             }
         }
+        let worker_cpu = cpu_start.zip(cpu_start.and_then(|_| crate::audit::thread_cpu_nanos()))
+            .map(|(a,b)|b.saturating_sub(a));
         if let Some(audit) = &mut audit {
             let nanos = job_start.unwrap().elapsed().as_nanos() as u64;
             audit.jobs += 1;
+            if let Some(cpu) = worker_cpu {
+                audit.cpu_clock_jobs += 1;
+                audit.worker_cpu_nanos = audit.worker_cpu_nanos.saturating_add(cpu);
+                audit.read_cpu_nanos = audit.read_cpu_nanos.saturating_add(read_cpu.unwrap_or(0));
+                if opened {audit.open_cpu_nanos = audit.open_cpu_nanos.saturating_add(open_cpu.unwrap_or(0));}
+            }
             audit.failures += u64::from(result.is_err());
             audit.decode_nanos += decode_start.unwrap().elapsed().as_nanos() as u64;
             audit.max_job_nanos = audit.max_job_nanos.max(nanos);
@@ -1659,7 +1679,10 @@ fn decode_with_publish(
                 "asset":format!("{asset:?}"),"page":job.key().index,"frames":job.range().len(),
                 "deadline_engine_frame":job.deadline(),"queue_us":queue_us,"reader_cache_hit":!opened,
                 "open_us":if opened{open_us}else{Some(0)},"seek_read_decode_us":read_us,
-                "worker_total_us":nanos/1000,"success":result.is_ok()
+                "worker_total_us":nanos/1000,"success":result.is_ok(),
+                "worker_cpu_us":worker_cpu.map(|n|n/1000),
+                "seek_read_decode_cpu_us":read_cpu.map(|n|n/1000),
+                "open_cpu_us":if opened{open_cpu.map(|n|n/1000)}else{cpu_start.map(|_|0)}
             }));
             } else {
                 audit.dropped_page_probes += 1;

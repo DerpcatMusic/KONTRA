@@ -70,7 +70,7 @@ pub use diagnose::{ScriptFault, SilentNote, why_silent};
 mod stream;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
-    StreamCache, StreamError, StreamWorker,
+    StreamCache, StreamDemandSnapshot, StreamError, StreamWorker,
 };
 mod wavetable;
 pub use sampler_ir::Wavetable;

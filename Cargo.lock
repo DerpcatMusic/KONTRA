@@ -4193,6 +4193,7 @@ dependencies = [
  "dirs",
  "ncw",
  "ni-file",
+ "rustix",
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
