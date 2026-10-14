@@ -77,7 +77,7 @@ pub use sampler_ir::Wavetable;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
-pub use bus::{Bus, BusMix, BusSend, GroupFader};
+pub use bus::{Bus, BusMix, BusPeakTap, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
@@ -1252,6 +1252,29 @@ impl Runtime {
             for (bus, peak) in g.dsp.buses.peaks.iter_mut().enumerate() {
                 each(bus, std::mem::take(peak));
             }
+        }
+    }
+
+    /// Enable raw input peaks for a bus of the active plan at a block boundary.
+    /// No allocation or sample scan occurs for an unobserved input. Changing
+    /// interest clears its previous observation; old generations are untouched.
+    pub fn enable_bus_input_peak(&mut self, bus: usize, enabled: bool) -> Result<(), Error> {
+        self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?
+            .dsp.buses.enable_input_peak(bus, enabled)
+    }
+
+    /// Raw linear stereo peak of an exact runtime bus since last taken.
+    /// Input must have been enabled before rendering. This does not map native
+    /// element identities or approximate their meter display laws.
+    pub fn bus_peak(&self, bus: usize, tap: BusPeakTap) -> Result<[f32; 2], Error> {
+        self.plans.get(self.active_plan.0).ok_or(Error::StaleHandle)?
+            .dsp.buses.peak(bus, tap)
+    }
+
+    /// Take enabled input taps independently of the existing output taps.
+    pub fn take_bus_input_peaks(&mut self, each: impl FnMut(usize, [f32; 2])) {
+        if let Some(g) = self.plans.get_mut(self.active_plan.0) {
+            g.dsp.buses.take_input_peaks(each);
         }
     }
 
