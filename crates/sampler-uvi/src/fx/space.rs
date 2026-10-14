@@ -3,18 +3,16 @@
 //! The IR players (`Convolver`, `SampledReverb`) load a library impulse
 //! response whose controls are applied by `sampler_core::shape_impulse`
 //! (measured against the official processor by the frozen v1 engine).
-//! `SparkVerb` runs its native engine. The other algorithmic reverbs
-//! (`PlainReverb`, `GateReverb`, `FilteredReverb`, `DelayedReverb`, `Bloom`,
-//! `Diffusion`) have a catalog of
-//! parameter names and ranges but no recovered algorithm or control law, so
-//! each maps onto the generic network of the same kind and says so
+//! `SparkVerb`, `Diffusion` and the legacy `PlainReverb` / `GateReverb` /
+//! `FilteredReverb` / `DelayedReverb` node (`Topology::Jezar`) run their
+//! native laws. `Bloom` maps onto the generic network and says so
 //! (`Reason::UnknownLaw`). `IReverb`, `Opal`, `Simple Reverb` and
 //! `Predelay Verb` have no known parameters and stay unmapped.
 
 use super::super::{Translation, number};
 use roxmltree::Node;
 use sampler_ir as ir;
-use sampler_ir::fx::space::{Config, DecayBands, Network, SparkVerb, Topology};
+use sampler_ir::fx::space::{UviReverb, Config, DecayBands, Network, SparkVerb, Topology};
 
 /// The first attribute of `names` present on `node`. The factory XML
 /// prefixes some names with the element's own ("SampledReverbTime",
@@ -157,26 +155,35 @@ impl Translation {
         }
         match kind {
             "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" => {
-                network.topology = Topology::CombAllpass;
-                network.decay_seconds = pick(node, &["ReverbDecayTime", "DecayTime"], 2.0)?.max(0.01);
-                network.damping_hz = damping_hz(pick(node, &["ReverbHighDamp", "HighDamp"], 0.0)?);
-                network.modulation_seconds = 0.0;
-                network.diffusion = 0.5;
+                // One node, 0x141312050 (defaults Mix .5, HighDamp 0, PreDelay
+                // .05 s, GateTime .4 s, DecayTime 2); Plain has no predelay.
+                network.topology = Topology::Jezar;
+                let cutoff = if kind == "FilteredReverb" { pick(node, &["Cutoff", "ReverbFilter"], 0.0)? } else { 0.0 };
+                network.uvi_reverb = Some(UviReverb {
+                    decay_time: pick(node, &["ReverbDecayTime", "DecayTime"], 2.0)?.max(0.0) as f32,
+                    high_damp: pick(node, &["ReverbHighDamp", "HighDamp"], 0.0)?.clamp(0.0, 1.0) as f32,
+                    cutoff: cutoff.clamp(-1.0, 1.0) as f32,
+                });
+                // Tail length only: the longest comb (1640/44100 s) losing
+                // -log10(fb) decades per pass, fb = 0.7 + 0.28·√(0.1·t).
+                let fb = 0.7 + 0.28 * (0.1 * f64::from(network.uvi_reverb.unwrap().decay_time)).sqrt();
+                network.decay_seconds = (3.0 * 1640.0 / 44_100.0 / -fb.min(0.999).log10()).clamp(0.01, 60.0);
                 mix = pick(node, &["WetMix", "Mix"], 0.5)?;
-                if matches!(kind, "GateReverb" | "DelayedReverb") {
+                if kind != "PlainReverb" {
                     network.predelay_seconds = time(&["ReverbPreDelay", "PreDelay"], 0.05)?.clamp(0.0, 2.0);
                 }
                 if kind == "GateReverb" {
-                    network.gate_seconds = Some(time(&["ReverbGateTime", "GateTime"], 0.4)?.clamp(0.001, 10.0));
+                    network.gate_seconds = Some(time(&["ReverbGateTime", "GateTime"], 0.4)?.clamp(0.001, 1.0));
                 }
                 if kind == "DelayedReverb" {
                     network.echo_feedback = pick(node, &["Feedback"], 0.0)?.clamp(0.0, 0.95);
+                    if network.echo_feedback != 0.0 {
+                        self.unsupported(at, "DelayedReverb Feedback (no feedback in the native predelay 0x1413165f0; generic echo)", network.echo_feedback);
+                    }
                 }
-                if kind == "FilteredReverb" {
-                    for (name, why) in [("ReverbFilter", "tilt filter"), ("Cutoff", "tilt filter"), ("BuzzDelay", "buzz comb"), ("BuzzFeedback", "buzz comb")] {
-                        if let Some(v) = node.attribute(name) {
-                            self.unsupported(at, &format!("FilteredReverb {name} ({why})"), v);
-                        }
+                for name in ["BuzzDelay", "BuzzFeedback"] {
+                    if let Some(v) = node.attribute(name) {
+                        self.unsupported(at, &format!("{kind} {name}"), v);
                     }
                 }
                 if beats {
@@ -187,6 +194,7 @@ impl Translation {
                         reason: ir::Reason::UnknownLaw,
                     });
                 }
+                return Ok(Some(ir::Processor::Space(Config { network: Some(network), impulse: None, dry: 1.0 - mix, wet: mix })));
             }
             "Bloom" => {
                 network.topology = Topology::Fdn;

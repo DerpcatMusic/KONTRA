@@ -56,6 +56,7 @@ fn network_valid(n: &Network) -> bool {
             || n.freeverb.is_some_and(|f| {
                 within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
             }))
+        && (n.topology != Topology::Jezar || n.uvi_reverb.is_some_and(|u| within(f64::from(u.decay_time), 0.0, 100.0) && within(f64::from(u.cutoff), -1.0, 1.0)))
         && (n.topology != Topology::Galois || n.galois.is_some_and(|g| g.controls.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::SparkVerb
             || n.spark.is_some_and(|s| {
@@ -103,28 +104,35 @@ pub(crate) fn tail_frames(c: &Config, rate: u32, impulse: Option<&Impulse>) -> u
     net.max(conv).min(f64::from(u32::MAX)) as u32
 }
 
-/// Closes the wet signal a set time after the input falls silent.
+/// UVI GateReverb's gate (`0x141314290` / `0x1413143d0`): an input above
+/// 0.1 opens it, ramping the wet gain to 1 over `max(32, rate·1e-4)` frames
+/// (`0x141cfa970`); it holds `GateTime·rate` frames (at least 32,
+/// `0x141cfaba8`) after the last trigger, then falls to 0 in 32 steps of
+/// 1/32 of the gain it had (`0x141e82234`).
 struct Gate {
     hold: usize,
     left: usize,
+    up: f32,
+    down: f32,
     gain: f32,
-    coef: f32,
 }
 
 impl Gate {
     fn new(seconds: f64, rate: f32) -> Self {
-        Self { hold: (seconds * f64::from(rate)) as usize, left: 0, gain: 0.0, coef: design::one_pole(50.0, f64::from(rate)) }
+        Self { hold: ((seconds * f64::from(rate)) as usize).max(32), left: 0, up: 1.0 / (rate * 1e-4).max(32.0), down: 0.0, gain: 0.0 }
     }
     #[inline(always)]
     fn tick(&mut self, input_peak: f32) -> f32 {
-        // -60 dBFS opens the gate.
-        if input_peak > 1e-3 {
+        if input_peak > 0.1 {
             self.left = self.hold;
-        } else {
-            self.left = self.left.saturating_sub(1);
         }
-        let target = if self.left > 0 { 1.0 } else { 0.0 };
-        self.gain = crate::dsp::kernels::one_pole32(self.gain, target, self.coef);
+        if self.left > 0 {
+            self.left -= 1;
+            self.gain = (self.gain + self.up).min(1.0);
+            self.down = self.gain * 0.031_25;
+        } else {
+            self.gain = (self.gain - self.down).max(0.0);
+        }
         self.gain
     }
 }
@@ -140,12 +148,12 @@ impl Net {
     fn new(n: &Network, rate: u32) -> Result<Self, Error> {
         let core = network::Network::new(design::spec(n, rate)?);
         let rate = rate as f32;
-        // The Galois and SparkVerb engines have no early taps or gate.
-        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb);
+        // The native engines have no early taps; only Jezar (UVI) gates.
+        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar);
         Ok(Self {
             core,
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
-            gate: n.gate_seconds.filter(|_| !native).map(|g| Gate::new(g, rate)),
+            gate: n.gate_seconds.filter(|_| n.topology == Topology::Jezar || !native).map(|g| Gate::new(g, rate)),
             pos: 0,
         })
     }
@@ -156,7 +164,7 @@ impl Net {
             e.clear();
         }
         if let Some(g) = &mut self.gate {
-            (g.left, g.gain) = (0, 0.0);
+            (g.left, g.gain, g.down) = (0, 0.0, 0.0);
         }
     }
 
@@ -315,6 +323,14 @@ mod tests {
             ("galois hall", Network { topology: Topology::Galois, galois: Some(Galois { hall: true, controls: [0.5; 10] }), ..Network::DEFAULT }),
             ("spark q3", Network { topology: Topology::SparkVerb, spark: Some(spark(3)), ..Network::DEFAULT }),
             ("spark q5", Network { topology: Topology::SparkVerb, spark: Some(spark(5)), ..Network::DEFAULT }),
+            (
+                "uvi jezar",
+                Network {
+                    topology: Topology::Jezar,
+                    uvi_reverb: Some(sampler_ir::fx::space::UviReverb { decay_time: 2.0, high_damp: 0.5, cutoff: -0.5 }),
+                    ..Network::DEFAULT
+                },
+            ),
         ]
     }
 

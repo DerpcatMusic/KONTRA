@@ -45,6 +45,21 @@ pub enum Topology {
     /// filters, per-line cent-depth modulation, an optional input diffuser.
     /// It does its own predelay and width; the unit's dry/wet mixes it.
     SparkVerb,
+    /// The exact UVI Plain/Gate/Filtered/Delayed Reverb node (Jezar's
+    /// Freeverb), driven by [`Network::uvi_reverb`], `predelay_seconds` and
+    /// `gate_seconds`.
+    Jezar,
+}
+
+/// UVI's legacy reverb controls (node `0x141312050`) in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviReverb {
+    pub decay_time: f32,
+    pub high_damp: f32,
+    /// FilteredReverb's input filter, `-1..=1` (negative low-pass, positive
+    /// high-pass, 0 off).
+    pub cutoff: f32,
 }
 
 /// UVI SparkVerb's controls (Workstation 4.0.9, engine `0x1416799a0`) in
@@ -175,6 +190,8 @@ pub struct Network {
     pub galois: Option<Galois>,
     /// Controls for [`Topology::SparkVerb`]; ignored by other topologies.
     pub spark: Option<SparkVerb>,
+    /// Controls for [`Topology::Jezar`]; ignored by other topologies.
+    pub uvi_reverb: Option<UviReverb>,
 }
 
 impl Network {
@@ -199,6 +216,7 @@ impl Network {
         freeverb: None,
         galois: None,
         spark: None,
+        uvi_reverb: None,
     };
 }
 
@@ -236,6 +254,7 @@ impl Config {
             band && n.gate_seconds.is_none_or(f64::is_finite)
                 && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
                 && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
+                && n.uvi_reverb.is_none_or(|u| [u.decay_time, u.high_damp, u.cutoff].iter().all(|v| v.is_finite()))
                 && n.spark.is_none_or(|s| {
                     let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
                     [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]

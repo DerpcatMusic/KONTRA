@@ -186,7 +186,6 @@ impl Unit {
 pub(super) enum Chain {
     None,
     Schroeder([Vec<Allpass>; 2]),
-    #[allow(dead_code)] // UVI's legacy reverbs, next.
     Jezar([Vec<Allpass>; 2]),
     Units([Vec<Unit>; 2]),
 }
@@ -232,6 +231,8 @@ pub(super) struct Spec {
     pub(super) mix: f32,
     pub(super) gain: f32,
     pub(super) input_lp: Option<f32>,
+    /// Direct-form-I input biquad `b0 b1 b2 a1 a2`.
+    pub(super) input_bq: Option<[f32; 5]>,
     /// Predelay per channel in frames (fractional) and the ring length.
     pub(super) predelay: [f32; 2],
     pub(super) pre_cap: usize,
@@ -267,6 +268,7 @@ impl Spec {
             mix: 0.0,
             gain: 1.0,
             input_lp: None,
+            input_bq: None,
             predelay: [0.0; 2],
             pre_cap: 1,
             echo: 0.0,
@@ -335,6 +337,7 @@ pub(super) struct Network {
     rings: Vec<Ring>,
     pre: [Ring; 2],
     lp: [f32; 2],
+    df1: [[f32; 4]; 2],
     phasor: (f64, f64),
     rot: (f64, f64),
     /// Glide: current delay per line, and this block's start and step.
@@ -386,6 +389,7 @@ impl Network {
             rings: spec.lines.iter().map(|l| Ring::new(l.cap)).collect(),
             pre: [Ring::new(spec.pre_cap), Ring::new(spec.pre_cap)],
             lp: [0.0; 2],
+            df1: [[0.0; 4]; 2],
             phasor: (1.0, 0.0),
             rot,
             cur: [0.0; MAX_LINES],
@@ -423,7 +427,7 @@ impl Network {
             self.cur[i] = l.base;
             self.phase[i] = l.phase;
         }
-        (self.lp, self.v) = ([0.0; 2], ZERO);
+        (self.lp, self.v, self.df1) = ([0.0; 2], ZERO, [[0.0; 4]; 2]);
         *self.st = State { s0: ZERO, s1: ZERO, dc: ZERO };
         (self.phasor, self.left, self.shelf, self.cut) = ((1.0, 0.0), 0, [[0.0; 2]; 2], [0.0; 2]);
     }
@@ -518,6 +522,12 @@ impl Network {
         }
         for c in 0..2 {
             let mut v = x[c] * s.gain;
+            if let Some([b0, b1, b2, a1, a2]) = s.input_bq {
+                let [x1, x2, y1, y2] = self.df1[c];
+                let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                self.df1[c] = [v, x1, y, y1];
+                v = y;
+            }
             if let Some(k) = s.input_lp {
                 self.lp[c] += k * (v - self.lp[c]);
                 v = self.lp[c];
