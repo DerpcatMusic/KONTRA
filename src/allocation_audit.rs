@@ -3,7 +3,9 @@ use std::{
     cell::Cell,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-const MIN_BYTES: usize = 4096;
+/// Smallest allocation recorded; PROBE_ALLOCS_MIN raises it for loads with
+/// more large allocations than the trace holds.
+static MIN_BYTES: AtomicUsize = AtomicUsize::new(4096);
 const CAPACITY: usize = 65536;
 const DEPTH: usize = 48;
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -28,7 +30,7 @@ unsafe extern "C" {
     fn backtrace(buffer: *mut *mut libc::c_void, size: libc::c_int) -> libc::c_int;
 }
 pub(super) fn record(ptr: *mut u8, bytes: usize, freed: bool) {
-    if ptr.is_null() || bytes < MIN_BYTES || !ENABLED.load(Ordering::Relaxed) {
+    if ptr.is_null() || bytes < MIN_BYTES.load(Ordering::Relaxed) || !ENABLED.load(Ordering::Relaxed) {
         return;
     }
     RECORDING.with(|busy| {
@@ -68,6 +70,9 @@ pub(crate) fn start() {
     unsafe {
         backtrace(pcs.as_mut_ptr(), DEPTH as i32);
     }
+    if let Some(min) = std::env::var("PROBE_ALLOCS_MIN").ok().and_then(|v| v.parse().ok()) {
+        MIN_BYTES.store(min, Ordering::Relaxed);
+    }
     NEXT.store(0, Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
 }
@@ -80,7 +85,7 @@ pub(crate) fn finish(path: &std::path::Path) {
     assert!(count <= CAPACITY, "allocation trace overflow: {count}");
     use std::io::Write;
     let mut out = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
-    writeln!(out, "{}", serde_json::json!({"min_bytes":MIN_BYTES,"maps":std::fs::read_to_string("/proc/self/maps").unwrap(),"events":count})).unwrap();
+    writeln!(out, "{}", serde_json::json!({"min_bytes":MIN_BYTES.load(Ordering::Relaxed),"maps":std::fs::read_to_string("/proc/self/maps").unwrap(),"events":count})).unwrap();
     for entry in &ENTRIES[..count] {
         writeln!(out, "{}", serde_json::json!({"ptr":entry.ptr.load(Ordering::Relaxed),"bytes":entry.bytes.load(Ordering::Relaxed),"freed":entry.freed.load(Ordering::Relaxed),"pcs":entry.pcs.iter().map(|p|p.load(Ordering::Relaxed)).take_while(|p|*p!=0).collect::<Vec<_>>()})).unwrap();
     }

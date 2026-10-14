@@ -324,7 +324,7 @@ pub fn filter(
     }
     let mut groups: Vec<(String, Vec<El>)> = Vec::new();
     for (d, v) in &mut controls {
-        let id = format!("effect-control-{}", d.control.0);
+        let id = format!("effect-control-{}", { d.control.0 });
         let mut p = position(d, *v);
         let previous = p;
         let held = drive(
@@ -359,7 +359,7 @@ pub fn filter(
                 d.name
             ))
             .id(id);
-        let value_id = format!("effect-value-{}", d.control.0);
+        let value_id = format!("effect-value-{}", { d.control.0 });
         let value_tip = if matches!(model.kernel, FilterKernel::LadderLP4 { .. })
             && d.address == model.cutoff
         {
