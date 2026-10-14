@@ -62,14 +62,13 @@ pub(super) struct State {
     held: Lanes,
     drive: f32,
     odd: bool,
-    up: [kaiser::State; 2],
-    down: [kaiser::State; 2],
+    resampler: [kaiser::State; 2],
 }
 
 impl State {
     pub(super) fn finite(&self) -> bool {
         self.pre.iter().chain(&self.os).chain(&self.post).chain(&self.fin).flatten().all(|v| v.is_finite())
-            && self.up.iter().chain(&self.down).all(kaiser::State::finite)
+            && self.resampler.iter().all(kaiser::State::finite)
     }
 }
 
@@ -266,13 +265,13 @@ impl Engine {
                 self.oversampled(s, y[2], y[3])
             } else {
                 let mut up = [[0f32; kaiser::MAX]; 2];
-                self.resampler.up(&mut s.up[0], y[2], &mut up[0][..n]);
-                self.resampler.up(&mut s.up[1], y[3], &mut up[1][..n]);
+                self.resampler.up(&mut s.resampler[0], y[2], &mut up[0][..n]);
+                self.resampler.up(&mut s.resampler[1], y[3], &mut up[1][..n]);
                 let mut frame = [[0f32; kaiser::MAX]; 2];
                 for p in 0..n {
                     (frame[0][p], frame[1][p]) = self.oversampled(s, up[0][p], up[1][p]);
                 }
-                (self.resampler.down(&mut s.down[0], &frame[0][..n]), self.resampler.down(&mut s.down[1], &frame[1][..n]))
+                (self.resampler.down(&mut s.resampler[0], &frame[0][..n]), self.resampler.down(&mut s.resampler[1], &frame[1][..n]))
             };
             let c = &self.fin;
             let [x1, y1, z1, b1] = s.fin;

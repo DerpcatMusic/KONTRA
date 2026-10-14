@@ -169,15 +169,14 @@ pub(super) struct State {
     previous: f64,
     /// x, then the 8 node voltages.
     mna: [f64; 9],
-    up: [WrapperState; 2],
-    down: WrapperState,
+    os: [WrapperState; 2],
 }
 
 impl State {
     pub(super) fn finite(&self) -> bool {
         self.hi.iter().chain(&self.lo).all(|v| v.is_finite())
             && self.diode.iter().chain(&self.stack).chain(&self.mna).all(|v| v.is_finite())
-            && self.up.iter().chain([&self.down]).all(WrapperState::finite)
+            && self.os.iter().all(WrapperState::finite)
     }
 }
 
@@ -387,11 +386,11 @@ impl Engine {
         for i in 0..len {
             let mut up = [[0f32; kaiser::MAX]; 2];
             for c in 0..2 {
-                self.oversampler.up(&mut s.up[c], block[c][i] as f32, &mut up[c][..n]);
+                self.oversampler.up(&mut s.os[c], block[c][i] as f32, &mut up[c][..n]);
             }
             let frame: [f32; kaiser::MAX] = std::array::from_fn(|p| if p < n { self.tick(s, up[0][p], up[1][p]) } else { 0.0 });
             // Both channels carry the same signal; one decimator serves them.
-            let y = f64::from(self.oversampler.down(&mut s.down, &frame[..n]));
+            let y = f64::from(self.oversampler.down(&mut s.os[0], &frame[..n]));
             block[0][i] = y;
             block[1][i] = y;
         }

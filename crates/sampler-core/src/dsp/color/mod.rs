@@ -343,6 +343,51 @@ pub(crate) struct Color {
     widener: Option<widener::Engine>,
 }
 
+/// The prepared shaper's history. Only one shaper runs per unit, so the state is the
+/// largest shaper's, not their sum.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Shaper {
+    #[default]
+    None,
+    Skreamer(skreamer::State),
+    Drive(drive::State),
+    Tubescreamer(tubescreamer::State),
+    Dirt(dirt::State),
+    Bite(bite::State),
+    Tape(tape::State),
+    Exciter(exciter::State),
+    ToneStack(tonestack::State),
+    Diode(diode::State),
+}
+
+impl Shaper {
+    fn finite(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Skreamer(s) => s.finite(),
+            Self::Drive(s) => s.finite(),
+            Self::Tubescreamer(s) => s.finite(),
+            Self::Dirt(s) => s.finite(),
+            Self::Bite(s) => s.finite(),
+            Self::Tape(s) => s.finite(),
+            Self::Exciter(s) => s.finite(),
+            Self::ToneStack(s) => s.finite(),
+            Self::Diode(s) => s.finite(),
+        }
+    }
+}
+
+/// The shaper state for `variant`, reset when the unit's shaper differs.
+macro_rules! slot {
+    ($state:expr, $variant:ident) => {{
+        if !matches!($state.shaper, Shaper::$variant(_)) {
+            $state.shaper = Shaper::$variant(Default::default());
+        }
+        let Shaper::$variant(s) = &mut $state.shaper else { unreachable!() };
+        s
+    }};
+}
+
 /// Every stage's history; a stage the unit lacks leaves its field untouched.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct State {
@@ -355,15 +400,7 @@ pub(super) struct State {
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
-    skreamer: skreamer::State,
-    drive: drive::State,
-    tubescreamer: tubescreamer::State,
-    dirt: dirt::State,
-    bite: bite::State,
-    tape: tape::State,
-    exciter: exciter::State,
-    tonestack: tonestack::State,
-    diode: diode::State,
+    shaper: Shaper,
     tone: tone::ToneState,
     stereo: stereo::StereoState,
     widener: widener::State,
@@ -378,15 +415,7 @@ impl State {
             && self.biquad.iter().flatten().all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
-            && self.skreamer.finite()
-            && self.drive.finite()
-            && self.tubescreamer.finite()
-            && self.dirt.finite()
-            && self.bite.finite()
-            && self.tape.finite()
-            && self.exciter.finite()
-            && self.tonestack.finite()
-            && self.diode.finite()
+            && self.shaper.finite()
             && self.tone.finite()
             && self.widener.finite()
             && self.redux.finite()
@@ -516,15 +545,15 @@ impl Color {
                 curve(&shape, block, len);
             }
             Curve::Destructor(d) => d.process(block, len),
-            Curve::Skreamer(s) => s.process(&mut state.skreamer, block, len),
-            Curve::Drive(d) => d.process(&mut state.drive, block, len),
-            Curve::Tubescreamer(d) => d.process(&mut state.tubescreamer, block, len),
-            Curve::Dirt(d) => d.process(&mut state.dirt, block, len),
-            Curve::Bite(d) => d.process(&mut state.bite, block, len),
-            Curve::Tape(d) => d.process(&mut state.tape, block, len),
-            Curve::Exciter(d) => d.process(&mut state.exciter, block, len),
-            Curve::ToneStack(d) => d.process(&mut state.tonestack, block, len),
-            Curve::Diode(d) => d.process(&mut state.diode, block, len),
+            Curve::Skreamer(s) => s.process(slot!(state, Skreamer), block, len),
+            Curve::Drive(d) => d.process(slot!(state, Drive), block, len),
+            Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
+            Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),
+            Curve::Bite(d) => d.process(slot!(state, Bite), block, len),
+            Curve::Tape(d) => d.process(slot!(state, Tape), block, len),
+            Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
+            Curve::ToneStack(d) => d.process(slot!(state, ToneStack), block, len),
+            Curve::Diode(d) => d.process(slot!(state, Diode), block, len),
         }
     }
 
