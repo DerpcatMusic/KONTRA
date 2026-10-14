@@ -908,3 +908,36 @@ and whole plugin wall time have different denominators and cannot be added into
 a fabricated complete callback breakdown. [AMD's SIMD validation guidance](https://www.amd.com/en/blogs/2026/understanding-avx-512---validating-usage-on-amd-epyc-.html)
 also distinguishes ISA capability, emitted instructions and executed workload;
 its EPYC generation-specific events are not assigned to this Zen 4 Ryzen host.
+
+The next structural experiment is **test-only coefficient reuse**, checkpoint
+`1e9bb6d10`. Voices reading different PCM can still share the interpolation
+weights when their exact fractional phase, step, immutable kernel bank,
+fused/unfused arithmetic mode and output length match. The bounded primitive
+holds one 64-frame tile: 26 KiB of weight payload, at most 27 KiB including its
+tracked struct. Its allocation and initial page touch occur before timing;
+cohort detection and fresh row construction belong inside timing. Plain,
+unsupported-quality, short and unique-phase cases skip row construction.
+No PCM, cursor, envelope, processor state or asset lifetime is cached.
+
+Three optimized tests pass against the original `dot_four` arithmetic in both
+fused and unfused modes. They cover signed zero, subnormal fractions/inputs,
+hostile steps up to two, fresh phases, changed source contents, changed key
+fields, missing/stale views and two/four/eight-source cohorts. These are raw
+pre-envelope output tests, **not** full Cursor, looping, missing-page or Runtime
+oracles. The frozen executable is `coefficient-reuse-primitive`, SHA-256
+`156a8e3c27ec545e64decf2e9b69c2359857eae868d670799388a2c3dce9c41a`;
+its command/source manifest is `coefficient-reuse-primitive-freeze.json` and
+the passing log is `coefficient-reuse-final-correctness.log`. The ignored stage
+diagnostic is unrun at this checkpoint. No timing gain or production change is
+claimed.
+
+Any later runtime prototype must derive keys from the actual run after
+expression pitch and source projection, use the selected kernel/FMA mode,
+keep each source window and guard current, and preserve each cursor's phase
+recurrence, envelope and DSP continuation. It must avoid spending tile setup
+on lanes already served by resident source reuse. Native variable-step loops,
+reverse, mipmap transitions and short/partial runs need proven fallbacks or
+their own exact oracles. Preflight/miss costs, control-side scratch ownership,
+parallel workers and actual 300-voice callback shared/distinct/phase/dynamic
+cases are acceptance requirements. This experiment does not change the open
+300-voice, 1% meter result.
