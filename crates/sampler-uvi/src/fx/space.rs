@@ -80,11 +80,9 @@ impl Translation {
             rolloff_hz: n("Rolloff", 20_000.0)? as f32,
             predelay_seconds: (predelay_ms * 0.001).clamp(0.0, 0.1) as f32,
         };
-        // Tail (0x141321310): 2·RT60 of the slowest band plus the predelay.
-        let slowest = 1f64.max(if low_cut { 1.0 } else { low }).max(if high_cut { 1.0 } else { high });
         let network = Network {
             topology: Topology::SparkVerb,
-            decay_seconds: if freeze { 60.0 } else { (0.1 * room * decay * slowest).clamp(0.01, 60.0) },
+            decay_seconds: spark.tail_seconds(),
             predelay_seconds: (predelay_ms * 0.001).clamp(0.0, 0.1),
             width: f64::from(spark.width).clamp(0.0, 1.0),
             spark: Some(spark),
