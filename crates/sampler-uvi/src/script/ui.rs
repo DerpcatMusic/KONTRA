@@ -358,6 +358,7 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        let _profile = self.shared.profile.span("ui_ir_export");
         let _budget = self.shared.inspection_budget();
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
         let mut out = ui::Interface {
@@ -556,6 +557,17 @@ impl ScriptHost {
                     unit(w).map(|u| unit_text(value, flag(w, "integer", false), Some(u)));
             }
             wd.menu_cycle = kind == "MultiStateButton";
+            wd.menu_arrow = flag(w, "displayArrow", true);
+            if matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. }) {
+                wd.popup_display = match w.raw_get::<Value>("showPopupDisplay") {
+                    Ok(Value::Boolean(value)) => Some(value),
+                    _ => None,
+                };
+            }
+            if matches!(wd.kind, ui::Kind::Menu { .. }) {
+                wd.colors.outline = text(w, "outlineColour").and_then(|c| color(&c));
+                wd.colors.arrow = text(w, "arrowColour").and_then(|c| color(&c));
+            }
             wd.colors.background = text(w, "backgroundColour").and_then(|c| color(&c));
             wd.colors.on = text(w, "backgroundColourOn").and_then(|c| color(&c));
             wd.colors.off = text(w, "backgroundColourOff").and_then(|c| color(&c));
@@ -688,6 +700,23 @@ impl ScriptHost {
                     align: ui::Align::Center,
                 });
             }
+            if matches!(wd.kind, ui::Kind::Button { .. }) {
+                // State ink inherits the authored face, size and alignment.
+                // Missing on/off properties retain the general textColour style.
+                for (on, key) in [(false, "textColourOff"), (true, "textColourOn")] {
+                    if let Some(color) = text(w, key).and_then(|c| color(&c)) {
+                        let mut style = wd.style.and_then(|s| out.styles.get(s.0)).cloned().unwrap_or(ui::TextStyle {
+                            font: ui::Font::Default, size: None, color: ui::Rgba::rgb(0xffffff), align: ui::Align::Center,
+                        });
+                        style.color = color;
+                        let reference = ui::StyleRef(out.styles.len());
+                        out.styles.push(style);
+                        for state in [usize::from(on), 2 + usize::from(on), 4 + usize::from(on)] {
+                            wd.state_styles[state] = Some(reference);
+                        }
+                    }
+                }
+            }
             let modeled = [
                 "kind",
                 "name",
@@ -778,7 +807,14 @@ impl ScriptHost {
                         "cursorColour",
                         "gridColour",
                     ];
-                    if !modeled.contains(&key.as_str()) && documented.contains(&key.as_str()) {
+                    let consumed = match key.as_str() {
+                        "textColourOn" | "textColourOff" => matches!(wd.kind, ui::Kind::Button { .. }) && text(w,&key).and_then(|c| color(&c)).is_some(),
+                        "outlineColour" | "arrowColour" => matches!(wd.kind, ui::Kind::Menu { .. }) && text(w,&key).and_then(|c| color(&c)).is_some(),
+                        "displayArrow" => matches!(wd.kind, ui::Kind::Menu { .. }) && matches!(w.raw_get::<Value>("displayArrow"), Ok(Value::Boolean(_))),
+                        "showPopupDisplay" => matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. }) && wd.popup_display.is_some(),
+                        _ => false,
+                    };
+                    if !consumed && !modeled.contains(&key.as_str()) && documented.contains(&key.as_str()) {
                         out.unsupported.push(ui::Unsupported {
                             widget: Some(ui::WidgetRef(index)),
                             feature: format!("{kind}.{key}"),

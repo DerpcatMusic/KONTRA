@@ -1764,6 +1764,8 @@ mod loop_audit;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]
+mod authored_properties_tests;
+#[cfg(test)]
 pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
     tests::audit_frames(p)
 }

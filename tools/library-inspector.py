@@ -28,7 +28,7 @@ HEAVY = Path("/home/derpcat/.cache/kontakto-heavy")
 PROGRESS_PHASES = frozenset(("snapshot_or_container", "snapshot_base", "container",
     "program_metadata", "source_frontend", "translate_and_initialize", "ui_projection",
     "ui_render", "conversion_report_and_placeholder_plan", "bank_directory",
-    "container_program_and_scripts", "xml_parse_and_metadata", "translate"))
+    "container_program_and_scripts", "xml_parse_and_metadata", "translate", "ui_model_export"))
 
 
 def default_binary() -> Path:
@@ -42,8 +42,8 @@ def default_binary() -> Path:
 def inspect_command(binary: Path, path: str, *, initialize: bool,
                     source: bool, program: str | None, ram: Path,
                     render: bool = False, base: str | None = None,
-                    ui_only: bool = False) -> list[str]:
-    initialize = initialize or render or ui_only
+                    ui_only: bool = False, profile_init: bool = False) -> list[str]:
+    initialize = initialize or render or ui_only or profile_init
     if "::" in path:
         path, member = path.split("::", 1)
         if program is not None and program != member:
@@ -60,6 +60,8 @@ def inspect_command(binary: Path, path: str, *, initialize: bool,
         args.append("--ephemeral-render")
     if ui_only:
         args.append("--ui-only")
+    if profile_init:
+        args.append("--profile-init")
     if initialize:
         args.append("--initialize")
     sandbox = shutil.which("bwrap")
@@ -123,11 +125,11 @@ def validate_reports(value: object) -> list[dict]:
 def inspect_one(binary: Path, path: str, *, initialize: bool, source: bool,
                 program: str | None, ram: Path, timeout: int,
                 render: bool = False, base: str | None = None,
-                ui_only: bool = False) -> list[dict]:
-    initialize = initialize or render or ui_only
+                ui_only: bool = False, profile_init: bool = False) -> list[dict]:
+    initialize = initialize or render or ui_only or profile_init
     started = time.monotonic()
     command = inspect_command(binary, path, initialize=initialize,
-                              source=source, program=program, ram=ram, render=render, base=base, ui_only=ui_only)
+                              source=source, program=program, ram=ram, render=render, base=base, ui_only=ui_only, profile_init=profile_init)
     process = subprocess.Popen(command, cwd=ROOT,
                                env=inspect_environment(ram, initialize),
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -227,6 +229,7 @@ def main() -> int:
     parser.add_argument("--initialize", action="store_true", help="Run script initialization and conversion in a read-only sandbox; no musical callbacks or audio rendering")
     parser.add_argument("--render", action="store_true", help="Initialize once and render original UI through Kontra's production CPU painter; requires corpus-health --features ui-render. Pixels stay in memory")
     parser.add_argument("--ui-only", action="store_true", help="Initialize the production UI without the separate static source/lowering audit; use with --render for faster UI diagnosis")
+    parser.add_argument("--profile-init", action="store_true", help="Opt in to initialization phase clocks, native API timings and bounded Lua safepoint attribution; no source/arguments/heap capture")
     parser.add_argument("--source", action="store_true", help="Include original library code in this memory-only view")
     parser.add_argument("--program", help="Kontakt multi index or UVI bank program member")
     parser.add_argument("--base", help="Explicit original base NKI for an NKSN snapshot; must pass the shared production identity check")
@@ -255,7 +258,7 @@ def main() -> int:
                 reports.extend(inspect_one(args.binary.resolve(), path,
                                            initialize=args.initialize, source=args.source,
                                            program=args.program, ram=ram, timeout=args.timeout,
-                                           render=args.render, base=args.base, ui_only=args.ui_only))
+                                           render=args.render, base=args.base, ui_only=args.ui_only, profile_init=args.profile_init))
             server, url = make_server(reports, args.port)
             print(f"{url}\nReports are held in memory. Ctrl+C closes the inspector.", flush=True)
             if not args.no_open:

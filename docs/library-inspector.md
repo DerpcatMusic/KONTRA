@@ -39,8 +39,20 @@ python3 tools/library-inspector.py '/path/to/Preset.nksn' --render --ui-only
 `--ui-only` skips the separate static source inventory, parity classification and
 placeholder audio plan. It still runs the production parser and script initializer
 once, then shares that initialized model with the renderer. It cannot be combined
-with `--source`. Omit it for the complete source/conversion audit, including stage
+with `--source`. Falcon uses the ordinary constructor without line-coverage
+instructions; the complete initialization audit uses coverage. Omit it for the complete source/conversion audit, including stage
 timings that distinguish audit overhead from product initialization.
+
+For a UVI initialization profile, add `--profile-init`. The Load timings view
+separates compilation, object-graph construction, module execution, restore,
+`onInit`, parameter overlays, IR translation and UI export. It also shows selected
+native API wall clocks and bounded Lua safepoint stacks. Nested clocks overlap;
+sample counts are inclusive attribution, not exclusive CPU time. Stack sampling
+is limited to 500 Hz, four frames and 512 distinct frame records, and reports its
+measured overhead. Production constructors do not enable this collector.
+No script text, argument values, stack-memory bytes or heap contents are captured.
+Compare like modes and record OS-cache/workload conditions before claiming speed
+improvements; an inspected constructor is not a plugin-startup measurement.
 
 Snapshots use the same base-NKI resolver and identity check as playback. Saved
 snapshot state is applied before initialization; UI resources belong to the base
@@ -55,6 +67,20 @@ coordinates come from the production layout. An asset that was never requested i
 shown separately from a missing, ambiguous, failed-read or failed-decode request.
 Recorded requests span all rendered pages and both presentations; bounded traces
 retain aggregate counts when detailed records overflow.
+
+The shared Falcon model and painter consume button off/on caption colours,
+menu arrow visibility/colour and outlines, and the explicit knob/slider value
+popup policy. The policy uses Kontra's passive pinned readout during adjustment;
+Falcon's precise popup timing and pixel layout still need native comparison.
+Authored callbacks refresh these properties through the existing UI snapshot
+path. Malformed colour values and properties attached to an unsupported widget
+kind stay visible as findings. These contracts follow the official
+[Button](https://lua.uvi.net/class_button.html),
+[Menu](https://lua.uvi.net/class_menu.html),
+[Knob](https://lua.uvi.net/class_knob.html) and
+[Slider](https://lua.uvi.net/class_slider.html) references.
+Unmodeled meter ownership/channel behavior is retained as a diagnostic;
+an offline witness never synthesizes live meter activity.
 
 Legacy NativeUI requests use the actual production package, Session and view with
 the already-initialized control seeds. They retain the evaluated composition in
@@ -144,7 +170,7 @@ The `corpus-health` binary also exposes:
 ```text
 corpus-health inspect INPUT [--program INDEX|BANK_MEMBER]
     [--base ORIGINAL.nki] [--initialize] [--ephemeral-source] [--summary]
-    [--ui-only] [--ephemeral-render]
+    [--ui-only] [--ephemeral-render] [--profile-init]
 corpus-health inspect-list MANIFEST
 ```
 

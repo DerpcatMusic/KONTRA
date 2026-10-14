@@ -1262,6 +1262,12 @@
       const option = node("option", label); option.value = id; option.selected = state.uiFilter === id; filter.append(option);
     }
     const rows = node("div"), selected = node("div");
+    const geometryByIndex = new Map(asArray(native.widgets).map((widget) => [widget.index, widget]));
+    const records = asArray(face.widgets).map((widget) => {
+      const geometry = geometryByIndex.get(widget.index);
+      const record = {...widget, resolved: geometry, effectiveVisible: geometry?.visible ?? widget.visible ?? !widget.hidden};
+      return {record, search: json(record).toLowerCase()};
+    });
     selected.id = "widgetRecord";
     add(root, add(filters, query, filter), rows, selected);
     function update() {
@@ -1269,12 +1275,10 @@
       state.uiFilter = filter.value;
       rows.replaceChildren();
       selected.replaceChildren();
-      const found = asArray(face.widgets).map((widget) => {
-        const geometry = asArray(native.widgets).find((w) => w.index === widget.index);
-        return {...widget, resolved: geometry, effectiveVisible: geometry?.visible ?? widget.visible ?? !widget.hidden};
-      }).filter((w) => w.page === state.uiPage && json(w).toLowerCase().includes(query.value.toLowerCase()) &&
+      const q = query.value.toLowerCase();
+      const found = records.filter(({record: w, search}) => w.page === state.uiPage && search.includes(q) &&
         (filter.value === "all" || (filter.value === "visible" && w.effectiveVisible) || (filter.value === "hidden" && !w.effectiveVisible) ||
-          (filter.value === "unbound" && w.interactive && !w.binding_id) || (filter.value === "outside" && w.resolved?.outside_page)));
+          (filter.value === "unbound" && w.interactive && !w.binding_id) || (filter.value === "outside" && w.resolved?.outside_page))).map(({record}) => record);
       rows.append(node("p", `${found.length} widgets on this page${found.length > 500 ? " · first 500 shown; narrow the filter" : ""}`, "notice"));
       const table = node("table"), head = node("tr"), body = node("tbody");
       for (const title of ["Source widget", "State / binding", "Page rectangle"]) head.append(node("th", title));
@@ -1294,7 +1298,7 @@
       table.append(body);
       rows.append(add(node("div", undefined, "table-wrap"), table));
       const widget = asArray(face.widgets).find((w) => w.index === state.uiWidget);
-      if (widget) add(selected, node("h2", widget.name), node("pre", json({...widget, resolved: asArray(native.widgets).find((w) => w.index === widget.index)})));
+      if (widget) add(selected, node("h2", widget.name), node("pre", json({...widget, resolved: geometryByIndex.get(widget.index)})));
     }
     query.oninput = update;
     filter.onchange = update;
@@ -1339,8 +1343,32 @@
     for (const timing of asArray(performance.timings)) body.append(add(node("tr"), node("td", timing.phase), node("td", ms(timing.elapsed_ms), "numeric")));
     table.append(body);
     root.append(add(node("div", undefined, "table-wrap"), table));
+    const profile = performance.initialization_profile;
+    if (profile) {
+      root.append(node("h2", `Lua initialization profile · ${profile.coverage ? "with line coverage" : "ordinary constructor without line coverage"}`));
+      root.append(node("p", profile.timing_scope, "notice"));
+      root.append(properties({"collection window": ms(profile.collection_window_ms ?? profile.wall_ms), "VM safepoint observations": profile.sample_count, "measured stack-sampling overhead": ms(profile.sampling_overhead_ms), "dropped stack frames": profile.dropped_frames, ...profile.work}));
+      for (const [title, records] of [["Initialization phases", profile.stages], ["Native API calls during initialization", profile.native_apis]]) {
+        const table = node("table"), head = node("tr"), body = node("tbody");
+        add(head, node("th", "Inclusive phase"), node("th", "Calls"), node("th", "Wall time"));
+        table.append(add(node("thead"), head));
+        for (const record of asArray(records).toSorted((a, b) => b.elapsed_ms - a.elapsed_ms)) body.append(add(node("tr"), node("td", record.phase), node("td", Number(record.calls).toLocaleString(), "numeric"), node("td", ms(record.elapsed_ms), "numeric")));
+        table.append(body);
+        add(root, node("h2", title), add(node("div", undefined, "table-wrap"), table));
+      }
+      add(root, node("h2", "Lua safepoint attribution"), node("p", profile.sample_scope, "notice"));
+      const table = node("table"), head = node("tr"), body = node("tbody");
+      add(head, node("th", "Chunk / function"), node("th", "Inclusive observations"));
+      table.append(add(node("thead"), head));
+      for (const sample of asArray(profile.lua_samples).toSorted((a,b) => b.inclusive_samples-a.inclusive_samples)) body.append(add(node("tr"), add(node("td"), node("div", `${sample.source}:${sample.defined_line ?? "?"}`), node("small", sample.function || sample.kind)), node("td", Number(sample.inclusive_samples).toLocaleString(), "numeric")));
+      table.append(body);
+      root.append(add(node("div", undefined, "table-wrap"), table));
+    }
     for (const face of asArray(r.ui?.interfaces)) {
       if (face.render?.timings) add(root, node("h2", `Interface ${face.index} · production UI renderer`), properties(Object.fromEntries(Object.entries(face.render.timings).map(([key, value]) => [key, ms(value)]))));
+      for (const shot of asArray(face.render?.shots)) {
+        if (shot.paint_timings) add(root, node("h2", `Page ${shot.page} · ${shot.presentation} CPU paint`), properties(Object.fromEntries(Object.entries(shot.paint_timings).map(([key, value]) => [key, key === "frames" ? value : ms(value)]))));
+      }
     }
     root.append(node("p", "Asset preparation includes worker wait, discovery, encoded reads, decoding and cache admission. Paint + PNG measures CPU drawing and in-memory image encoding. These timings are not plugin first-frame, DAW latency or native host measurements.", "notice"));
   }
