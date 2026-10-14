@@ -57,6 +57,7 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ir::fx::color::LaneLaw::Unit => unit,
                 ir::fx::color::LaneLaw::Signed => Linear { low: -1., high: 1. },
                 ir::fx::color::LaneLaw::Cubic => crate::EngineParameterLaw::CubicGain { unity: 1e6 },
+                ir::fx::color::LaneLaw::OutputGain => crate::EngineParameterLaw::CubicGain { unity: 396851. },
             };
             (slot, c.lanes().into_iter().map(|l| (l.name, l.value, law(l.law))).collect())
         }
@@ -88,7 +89,8 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
             (
                 ControlDefinition {
                     id,
-                    domain: ControlDomain::Real { min: low, max: 1. },
+                    // The DSP value at the top of the native range (16 for an output gain).
+                    domain: ControlDomain::Real { min: low, max: law.decode(1_000_000).max(1.) },
                     default: ControlValue::Real(value),
                 },
                 crate::EngineParameterBinding {
@@ -143,7 +145,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
     };
     crate::ColorSettings {
         gainer: c.gainer.map(|g| crate::GainerSettings {
-            gain: Parameter::Constant(g.gain.linear()),
+            gain: knob(P::Gain, g.gain.linear() as f32),
             dry: g.dry,
         }),
         hold: c.hold.map(|h| match h {
@@ -879,16 +881,11 @@ pub fn lower_with(
     }
     let mut route_bound = vec![false; instrument.controls.len()];
     let mut zone_bound = vec![false; instrument.controls.len()];
-    let mut loop_bound = vec![false; instrument.controls.len()];
     for &(route, depth, bypass) in &instrument.source_indices.route_controls {
         for control in [depth, bypass] {
             route_bound[control.0] = true;
             zone_bound[control.0] |= zone_routes[route.0];
         }
-        loop_bound[depth.0] |= matches!(
-            instrument.routes[route.0].target,
-            ir::Target::LoopStart | ir::Target::LoopLength
-        );
     }
     for alias in &instrument.source_indices.control_aliases {
         if route_bound[alias.control.0] && !zone_bound[alias.control.0] {
@@ -908,7 +905,12 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if loop_bound[alias.control.0] {
+            // Kontakt's modulator intensity is signed cubic for every target:
+            // ANALOG STRINGS' phase table writes 500000*(cbrt(p)+1) for phase p.
+            law: if matches!(
+                alias.parameter.as_str(),
+                "ENGINE_PAR_INTMOD_INTENSITY" | "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"
+            ) {
                 crate::EngineParameterLaw::SignedCubic
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
@@ -2015,6 +2017,7 @@ impl Lowering<'_> {
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
+            (Processor::Eq(eq), Bandwidth) => eq.bandwidth = parameter,
             (Processor::Eq(eq), ReferenceDecibels) => eq.reference_db = parameter,
             (Processor::Eq(eq), Enabled) => eq.enabled = parameter,
             (Processor::Dynamics(c), Threshold) => c.threshold = parameter,
@@ -2045,6 +2048,7 @@ impl Lowering<'_> {
                     b.parameter,
                     P::Frequency
                         | P::Quality
+                        | P::Bandwidth
                         | P::GainDecibels
                         | P::ReferenceDecibels
                         | P::Enabled
@@ -2077,7 +2081,8 @@ impl Lowering<'_> {
         use ir::fx::eq::Kind as S;
         match *p {
             ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
-            ir::Processor::Eq(c) if c.count == 1 => {
+            // A UviDigital band is several sections: `processors` lowers it and binds each.
+            ir::Processor::Eq(c) if c.count == 1 && c.bands[0].law != ir::fx::eq::Law::UviDigital => {
                 Some(Processor::Eq(crate::dsp::eq_family::live_band(&c.bands[0])))
             }
             ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([

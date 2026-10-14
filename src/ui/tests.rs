@@ -526,9 +526,11 @@ fn expanded_header_has_a_preset_picker_for_ordinary_instrument_files() {
         let scene = h.ui.scene().unwrap();
         let continuation = scene.surface("header2-0").unwrap().frame;
         let picker = scene.surface("preset-picker-0").unwrap().frame;
-        assert!(continuation.size.height <= CONTROL + 5.);
-        assert!(picker.y >= continuation.y + continuation.size.height - 0.5);
-        h.press("preset-picker-next-0");
+        let one = scene.surface("header-0").unwrap().frame;
+        // Two rows of one height; the picker sits in row 1, beside the name.
+        assert!((continuation.size.height - one.size.height).abs() < 0.5);
+        assert!(picker.y >= one.y && picker.y + picker.size.height <= one.y + one.size.height + 0.5);
+        h.press("preset-next-0");
         assert!(p.selection.read().unwrap().parts[0].path.ends_with("C.nki"));
         h.press("preset-picker-0");
         h.press("menu-item-0");
@@ -536,7 +538,7 @@ fn expanded_header_has_a_preset_picker_for_ordinary_instrument_files() {
         h.press("collapse-0");
         h.idle(30);
         assert!(h.ui.scene().unwrap().surface("header2-0").is_none());
-        assert!(h.ui.scene().unwrap().surface("preset-picker-0").is_none());
+        assert!(h.ui.scene().unwrap().surface("preset-picker-0").is_some(), "folded, row 1 keeps its picker");
     }
 }
 

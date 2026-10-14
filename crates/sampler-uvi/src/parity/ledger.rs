@@ -332,7 +332,6 @@ pub(super) fn parameter(
             {
                 placed
             } else {
-                // Bandwidth writes through the Q lane, and GainScale through OverallGain.
                 let (effective, _) = crate::engine_parameters::effective(kind, name, 0., |_| None);
                 ir.controls
                     .iter()

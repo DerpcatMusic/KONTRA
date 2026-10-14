@@ -7,7 +7,7 @@ use super::super::{
     Planar, ProcessorState, flush,
     control::{ControlRamp, PreparedParameter},
 };
-use super::{EqBand, Kind, Law, kernel, solid};
+use super::{EqBand, Kind, Law, digital, kernel, solid};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Generic {
@@ -18,6 +18,7 @@ pub(crate) struct Generic {
     pub(super) gain: PreparedParameter,
     pub(super) reference: PreparedParameter,
     pub(super) enabled: PreparedParameter,
+    pub(super) bandwidth: PreparedParameter,
 }
 
 impl Generic {
@@ -28,6 +29,7 @@ impl Generic {
             ("gain_db", self.gain),
             ("reference_db", self.reference),
             ("enabled", self.enabled),
+            ("bandwidth", self.bandwidth),
         ]
     }
 
@@ -74,6 +76,21 @@ impl Generic {
             run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[4 + i])), state, block, len);
             return;
         }
+        if self.band.law == Law::UviDigital {
+            // aux: hertz, q, gain, octaves, valid flag, then the six TPT coefficients.
+            let read = |p: PreparedParameter| p.value(parameters, at, None);
+            let key = [read(self.frequency), read(self.q), read(self.gain) - read(self.reference), read(self.bandwidth)];
+            if state.aux[4] == 0. || state.aux[..4] != key {
+                let rate = f64::from(self.rate);
+                let section = digital::section(kind, self.band.poles, key[0] / rate, key[2], key[1], key[3], usize::from(self.band.section));
+                let svf = section.and_then(|b| kernel::Svf::from_biquad(&b)).unwrap_or(kernel::Svf::PASS);
+                state.aux[..4].copy_from_slice(&key);
+                state.aux[4] = 1.;
+                state.aux[5..11].copy_from_slice(&svf.to_array());
+            }
+            run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[5 + i])), state, block, len);
+            return;
+        }
         let (hz, q, boost) = self.targets(parameters, at);
         if kind == Kind::Level {
             if boost.abs() > 1e-9 {
@@ -95,7 +112,7 @@ impl Generic {
         let key = [hz, q, boost];
         if state.aux[3] == 0. || state.aux[..3] != key {
             state.aux[3] = 0.;
-            if let Some(svf) = design(self.rate, kind, self.band.poles, hz, q, boost) {
+            if let Some(svf) = design(self.rate, self.band.law, kind, self.band.poles, hz, q, boost) {
                 state.aux[..3].copy_from_slice(&key);
                 state.aux[3] = 1.;
                 state.aux[4..10].copy_from_slice(&svf.to_array());
@@ -109,10 +126,16 @@ impl Generic {
 }
 
 /// Design one band and realise it as the kernel's section.
-pub(super) fn design(rate: u32, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
+pub(super) fn design(rate: u32, law: Law, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
     let first = matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf)
         || (poles == 1 && matches!(kind, Kind::LowPass | Kind::HighPass));
-    let f = if first { kernel::first_order(kind, rate, hz, boost) } else { kernel::design(kind, rate, hz, q, boost) };
+    let f = if first {
+        kernel::first_order(kind, rate, hz, boost)
+    } else if law == Law::Cookbook {
+        kernel::cookbook(kind, rate, hz, q, boost)
+    } else {
+        kernel::design(kind, rate, hz, q, boost)
+    };
     kernel::Svf::from_biquad(&f?)
 }
 
