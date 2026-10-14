@@ -86,3 +86,21 @@ work exhaustion or wall expiry. The observed model counts, resource outcomes and
 receipt does not establish full pixel or widget-state hash equivalence. The
 separate native meter laws, unresolved
 element tap bindings and Table fill-style gaps remain diagnosed.
+
+## Bounded top-frame metadata
+
+After the frozen on/off receipt, the opt-in profiler gained `self_samples` per
+frame. This counts the topmost observed Lua/C stack frame alongside the existing
+inclusive visits. The same 512-frame, 240-character source-name and 120-character
+function-name bounds remain. Dropped top frames and unavailable top frames have
+separate counters; retained self visits plus those two counters equal the number
+of sampling observations. No function body, original script string or stack
+memory is retained. Ordinary constructors keep the profiler disabled.
+
+An authored nested-function/loop/menu fixture passes: ordinary and profiled
+interfaces and computed values agree, coverage stays disabled, every observation
+is accounted for, and the private body literal is absent from the report.
+Top-frame visits are still safepoint-biased sample counts rather than exclusive
+CPU time. The profiler's stack-gather clock includes the new counter updates;
+the preceding frozen receipt predates this extension and measures its earlier
+instrumentation only.
