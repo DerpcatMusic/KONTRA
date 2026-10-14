@@ -43,6 +43,9 @@ Snapshots read independent atomics concurrently; they are observations, not an
 atomic transaction or a completion barrier. A before/after subtraction gives
 cumulative sums, calls and histogram deltas; lifetime maxima cannot be
 subtracted into interval maxima. Park duration is waiting, not compute. The
+completed phase intervals may also straddle capture boundaries: their deltas
+must not be forced to equal the caller's gesture elapsed time. Retain both
+active-stage observations and the timing scope when interpreting them. The
 existing owner progress marker now identifies ordinary advance and park phases
 correctly; it remains a phase marker rather than a cost measurement.
 
