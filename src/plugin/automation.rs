@@ -142,7 +142,7 @@ pub(crate) fn slots(parts: &[super::PartView]) -> Slots {
             let widget = found.map(|(_, w)| w);
             let name = widget
                 .and_then(|w| {
-                    [w.automation.name.as_deref(), w.text.lines().next(), Some(&w.name)]
+                    [w.automation.name.as_deref(), w.text.lines().next(), Some(w.name.as_str())]
                         .into_iter()
                         .flatten()
                         .map(|n| n.trim().trim_start_matches(['$', '%', '~', '?', '@', '!']))
