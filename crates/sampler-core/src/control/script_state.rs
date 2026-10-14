@@ -165,7 +165,15 @@ mod merge_tests {
     /// Persistent arrays reach millions of entries; texts live in a side table.
     #[test]
     fn entries_stay_small() {
-        assert!(std::mem::size_of::<ScriptStateEntry>() <= 48);
+        use std::mem::size_of;
+        eprintln!(
+            "SIZES address={} entry={} instruction={}",
+            size_of::<ScriptStateAddress>(),
+            size_of::<ScriptStateEntry>(),
+            size_of::<crate::Instruction>()
+        );
+        assert!(size_of::<ScriptStateAddress>() <= 24);
+        assert!(size_of::<ScriptStateEntry>() <= 40);
     }
 }
 
