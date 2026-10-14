@@ -223,23 +223,30 @@ pub struct LoadReport {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StreamStartup {
     pub ranges: usize,
     pub covered_ranges: usize,
     pub packed_head_bytes: usize,
     pub head_budget_bytes: usize,
+    pub required_resident_assets: usize,
+    pub required_resident_bytes: usize,
+    pub physical_payload_bytes: usize,
     /// Exact typed capacity failure retained as readable support evidence.
     pub fallback: Option<String>,
 }
 
 impl StreamStartup {
-    pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm]) -> Self {
+    pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm], report: &sampler_kontakt::StreamReport) -> Self {
         let readiness = streamer.head_readiness(assets);
         Self {
             ranges: readiness.ranges,
             covered_ranges: readiness.covered_ranges,
             packed_head_bytes: readiness.packed_bytes,
             head_budget_bytes: readiness.budget_bytes,
+            required_resident_assets: report.required_resident_assets,
+            required_resident_bytes: report.required_resident_bytes,
+            physical_payload_bytes: streamer.physical_budget().status().held_bytes,
             fallback: streamer.head_fallback().map(|failure| failure.to_string()),
         }
     }
