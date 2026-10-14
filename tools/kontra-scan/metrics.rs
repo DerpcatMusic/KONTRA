@@ -229,7 +229,11 @@ mod tests {
         table.extend(0u32.to_le_bytes());
         table.extend(u32::MAX.to_le_bytes());
         table.extend(u32::MAX.to_le_bytes());
+        // The strict native reader requires a count even for an empty table.
+        assert_eq!(crate::ui::scan::strict_table(&table, 0x50).0, "malformed");
+        table.extend(0u32.to_le_bytes());
         assert_eq!(crate::ui::scan::strict_table(&table, 0x50).0, "absent");
+        table.truncate(table.len() - 4);
         table.extend(1u32.to_le_bytes());
         table.extend(2u32.to_le_bytes());
         table.extend(b"!x");

@@ -210,6 +210,7 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         });
     }
     let Some(l) = &v.report else { return r };
+    r.stream_warning = l.stream_startup.as_ref().and_then(|startup| startup.warning());
     let d = &l.decoded;
     let loaded = |area, summary: String| lr::Loaded { area, summary };
     r.loaded.push(loaded(

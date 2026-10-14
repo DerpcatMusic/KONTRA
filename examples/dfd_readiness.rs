@@ -63,6 +63,19 @@ fn stats(core: &V2Core) -> Value {
     let s = core.runtime_stats(0).unwrap();
     json!({"voices":s.voices,"cold_starts":s.cold_starts,"underruns":s.stream_underruns,"refused":s.refused_starts,"capacity_drops":s.voice_drops,"stream_capacity_refusals":s.stream_capacity_refusals})
 }
+fn demand(core: &V2Core) -> Value {
+    // One output frame identifies current interpolation reads. Bounded numeric
+    // snapshot runs outside the callback and is not a historical miss trace.
+    let mut rows = Vec::new();
+    let complete = core.visit_stream_demand(0, 1, |d| {
+        if rows.len() == 1024 { return false; }
+        rows.push(json!({"voice":format!("{:?}",d.voice),"asset":format!("{:?}",d.key.asset),
+            "page":d.key.index,"start":d.frames.start,"end":d.frames.end,"deadline":d.deadline,
+            "starved":d.starved,"cold":d.cold,"resident":d.resident,"status":format!("{:?}",d.status)}));
+        true
+    }).unwrap().unwrap();
+    json!({"complete":complete,"horizon":1,"rows":rows})
+}
 fn phase(core: &mut V2Core, stream: &kontakto::sound::Stream, block: usize, round: i32) -> Value {
     let n = 120usize;
     let mut rows = Vec::new();
@@ -75,6 +88,7 @@ fn phase(core: &mut V2Core, stream: &kontakto::sound::Stream, block: usize, roun
     let before_io = io();
     let before_stats = stats(core);
     let before_heads = heads(stream);
+    let mut prior_underruns = core.runtime_stats(0).unwrap().stream_underruns;
     let start = Instant::now();
     for index in 0..n {
         ACTIVE.set(true);
@@ -122,9 +136,11 @@ fn phase(core: &mut V2Core, stream: &kontakto::sound::Stream, block: usize, roun
         if block_peak > 1e-8 && first_signal.is_none() {
             first_signal = Some(index * block);
         }
-        if [0, 1, 2, 4, 8, 16, 32, 64, 119].contains(&index) {
-            rows.push(json!({"block":index,"engine_offset":index*block,"callback_us":ns as f64/1000.,"peak":block_peak,"runtime":stats(core),"heads":heads(stream)}));
+        let underruns = core.runtime_stats(0).unwrap().stream_underruns;
+        if [0, 1, 2, 4, 8, 16, 32, 64, 119].contains(&index) || underruns != prior_underruns {
+            rows.push(json!({"block":index,"engine_offset":index*block,"callback_us":ns as f64/1000.,"peak":block_peak,"runtime":stats(core),"heads":heads(stream),"current_demand_after_callback":demand(core)}));
         }
+        prior_underruns = underruns;
         let due = start + Duration::from_secs_f64((index + 1) as f64 * block as f64 / 48000.);
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
@@ -177,7 +193,7 @@ fn main() {
     };
     let enabled = candidate_assets(false);
     let chord = candidate_assets(true);
-    let source = json!({"load_ms":load_ms,"head_frames":stream.report.head_frames,"head_bytes_reported_at_load":stream.report.head_bytes,"pool_bytes":stream.report.pool_bytes,"full_bytes":stream.report.full_bytes,"read_latency_samples":stream.report.latency_samples,"read_latency_p95_us":stream.report.latency_p95.as_micros(),"heads_after_prepare":heads(&stream),"exact_head_coverage":readiness(&stream, |_|true),"saved_unmuted_asset_coverage":readiness(&stream, |id|enabled.contains(&id)),"static_first_chord_asset_candidates":readiness(&stream, |id|chord.contains(&id)),"candidate_scope":"saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability","io_after_prepare":io()});
+    let source = json!({"load_ms":load_ms,"stream_startup":loaded.report.stream_startup,"head_frames":stream.report.head_frames,"head_bytes_reported_at_load":stream.report.head_bytes,"pool_bytes":stream.report.pool_bytes,"full_bytes":stream.report.full_bytes,"read_latency_samples":stream.report.latency_samples,"read_latency_p95_us":stream.report.latency_p95.as_micros(),"heads_after_prepare":heads(&stream),"exact_head_coverage":readiness(&stream, |_|true),"saved_unmuted_asset_coverage":readiness(&stream, |id|enabled.contains(&id)),"static_first_chord_asset_candidates":readiness(&stream, |id|chord.contains(&id)),"candidate_scope":"saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability","io_after_prepare":io()});
     let mut core = V2Core::with_parts(1, 48000.);
     core.install(0, loaded.part);
     let first = phase(&mut core, &stream, block, 1);
