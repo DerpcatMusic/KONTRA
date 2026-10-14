@@ -88,6 +88,9 @@ fn bloom_room_size_scales_the_network() {
 fn diffusion_is_a_diffuser_with_full_wet_default() {
     let c = one("<Diffusion Diffusion='1' DiffusionStart='10'/>");
     assert_eq!(c.network.unwrap().topology, Topology::Diffuser);
-    close(c.network.unwrap().diffusion, 0.75);
+    // g = Diffusion and the start length (0x14130fc60); equal-power mix.
+    close(c.network.unwrap().diffusion, 1.0);
+    close(c.network.unwrap().diffusion_start_ms, 10.0);
     close(c.wet, 1.0);
+    close(c.dry, 0.0);
 }
