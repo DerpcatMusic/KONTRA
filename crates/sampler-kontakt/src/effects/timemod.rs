@@ -4,13 +4,14 @@
 //! audio 0x140aa1130) and Legacy Flanger (0x12, audio 0x140aa2350). Chorus
 //! (0x11, audio 0x140aa0510) stays generic: its setter (0x140963970) reads a
 //! base delay from saved-struct +8, which neither the reader (0x140d00760) nor
-//! the constructor writes, so the value is unknown. The modern effects stay
-//! unsupported with the reasons in [`unproved`].
+//! the constructor writes, so the value is unknown. Twin Delay (0x6B, kernel
+//! 0x140ab07d0) is native; the other modern effects stay unsupported with
+//! the reasons in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
+        Allpass, Config, DelayTime, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, TwinDelay,
     },
 };
 
@@ -21,6 +22,37 @@ pub(crate) enum Unit {
     Delay { time: f32, feedback: f32, pan: f32, damping: f32, unit: f32 },
     Chorus { depth: f32, speed: f32, phase: f32, unit: f32 },
     Flanger { depth: f32, feedback: f32, speed: f32, phase: f32, color: f32, unit: f32 },
+    Twin(TwinDelay),
+}
+
+/// Twin Delay v0x10 (reader `0x140ac6280`): four time sub-objects (predelay
+/// L/R, time L/R; each a sync factor, two floats and a flag), then predelay,
+/// time, feedback and level for L, the same for R, cross and width.
+pub(super) fn read_twin(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x10 {
+        return None;
+    }
+    let mut units = [0f32; 4];
+    for u in &mut units {
+        *u = r.f32()?;
+        r.f32()?;
+        r.f32()?;
+        r.flag()?;
+    }
+    let mut v = [0f32; 10];
+    for x in &mut v {
+        *x = r.f32()?;
+    }
+    Some(Unit::Twin(TwinDelay {
+        time: [v[1], v[5]],
+        predelay: [v[0], v[4]],
+        time_unit: [units[2], units[3]],
+        predelay_unit: [units[0], units[1]],
+        feedback: [v[2], v[6]],
+        level: [v[3], v[7]],
+        cross: v[8],
+        width: v[9],
+    }))
 }
 
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
@@ -122,6 +154,13 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             line.interpolation = Interpolation::Hermite;
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
         }
+        Unit::Twin(t) => {
+            // Kernel 0x140ab07d0 (sampler_core dsp/timemod/twin.rs): the
+            // effect's output is wet only; the slot's dry level mixes.
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::TwinDelay(t);
+            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+        }
         Unit::Flanger { depth, feedback, speed, phase, color, unit } => {
             if !(unit_interval(&[depth, feedback, phase]) && speed.is_finite() && speed >= 0. && color.is_finite()) {
                 notes.push(("parameters".into(), format!("{depth}/{feedback}/{speed}/{phase}/{color}/{unit}"), Reason::InvalidValue));
@@ -207,5 +246,25 @@ mod tests {
             assert!(built.processors.is_empty());
             assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
         }
+    }
+
+    /// Reader 0x140ac6280: four sync groups, then ten floats.
+    #[test]
+    fn twin_delay_reads_its_stream_and_runs_native() {
+        let mut public = Vec::new();
+        for _ in 0..4 {
+            for f in [-1f32, 0.5, 0.] {
+                public.extend(f.to_le_bytes());
+            }
+            public.push(0);
+        }
+        for f in [0.001f32, 0.0001, 0.6, 0.9, 0.0013, 0.00021, 0.5, 0.7, 0.3, 0.8] {
+            public.extend(f.to_le_bytes());
+        }
+        let built = chain(&[Slot { public, ..slot(0x6b, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::TwinDelay(t) = config.line.unwrap().native else { panic!() };
+        assert_eq!((t.time, t.predelay, t.feedback, t.level, t.cross, t.width), ([0.0001, 0.00021], [0.001, 0.0013], [0.6, 0.5], [0.9, 0.7], 0.3, 0.8));
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 }
