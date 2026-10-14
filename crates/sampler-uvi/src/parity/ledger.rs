@@ -161,7 +161,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
             let (file, anchor, supported) = match module {
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer" | "AuxEffect" | "ScriptProcessor" => ("script.rs", "fn build_program", true),
                 "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb"
-                | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho"
+                | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho" | "DiffuseDelay"
                 | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser"
                 | "Phasor" | "PhasorFilter" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" => ("inserts.rs", "fn inserts", true),
                 "ConstantModulation" | "ScriptEventModulation" | "DAHDSR" | "AHD" | "LFO" | "MultiLFO" | "StepEnvelope" => ("modulation.rs", "fn signal", true),
