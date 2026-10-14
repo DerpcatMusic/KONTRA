@@ -8,6 +8,13 @@ modulated and EQ workloads are substantially more expensive. Do not present
 the integer-rate result, a low-voice library run, or a core-only timing as proof
 of the requested target.
 
+The later actual `Sampler::process` witness with 300 distinct owned PCM sources
+measures 1.886% integer-rate, 18.205% fractional and 39.007% 3EQ+Stereo mean
+busy/span at 48 kHz/256 frames. It reports zero faults and deadline misses in
+that unpaced interval, with large tails retained. The exported DAW adapter,
+authored scripts, disk decoding and UI painter remain outside that witness.
+See [whole callback evidence](WHOLE_CALLBACK_CPU_EVIDENCE.md).
+
 ## Metric and reproduction conditions
 
 KONTRA's meter accumulates entire `Plugin::process` elapsed wall nanoseconds in
@@ -584,18 +591,69 @@ Post-envelope or nonlinear per-voice FX also remain; factoring them over a
 group sum changes control/history and floating-point association. No blanket
 FX factoring, lossy pitch table or asynchronous result substitution is accepted.
 
+The opt-in whole-callback stage companion uses
+`KONTRA_CPU_RECEIPT_AUDIT=1`, after warmup, to enable existing V2 stage clocks.
+The default remains uninstrumented. It reports the actual zero runtime buses,
+128-frame frontend render limit and prepared per-voice bytes; a 256-frame host
+callback therefore makes two frontend render calls. The direct core fixture
+renders 256 frames at once when no chain/modulation/bus needs segmentation, so
+subtracting its plain cost from the plugin result would confound cadence and
+workload. No runtime bus graph is added by `CorePart::new` in this fixture.
+
+`whole-callback-stage-paired.json` contains two alternating same-binary rounds
+for plain, fractional and EQ playback at 256 frames, with 300 distinct sources,
+512 warmup and 1,000 measured callbacks. All six mode pairs have exact hash/energy,
+runtime counters and heap guards pass, and the frozen binary stays unchanged.
+There are zero compiler observations, but the monitor captures an unrelated
+`pure_va_dispers` workload in 92 busy-process intervals. The 33 wall deadline
+misses across these instrumented and uninstrumented runs remain in the receipt.
+This is contended attribution, not a replacement for the earlier absolute
+release witness or a clean measurement of instrumentation overhead.
+
+| Workload | Inclusive runtime elapsed us/callback, two rounds | Unattributed callback elapsed us/callback, including probe overhead |
+| --- | ---: | ---: |
+| Plain | 138.940 / 131.663 | 7.815 / 7.136 |
+| Fractional | 1,314.194 / 1,215.144 | 9.159 / 8.390 |
+| 3EQ+Stereo | 2,567.831 / 2,346.570 | 9.547 / 8.535 |
+
+The other disjoint timed intervals cover control polling, script/controllers,
+optional stream service/empty render and persistence. Index 4 of the existing
+raw array is a pending-stream **counter**, never a duration. All six elapsed
+intervals lie inside the callback; their sum and the measured remainder are
+reported explicitly. Runtime elapsed is inclusive of source, modulation, DSP,
+sum and core telemetry. Descheduling inside it is also included. These wall
+fractions cannot be substituted for exclusive CPU compute shares, and the
+remainder does not identify individual output/meter/lifecycle costs.
+
+Separate uninstrumented own-child `cycles:u` leaf profiles use the same frozen
+companion, retain zero lost samples, and include setup, warmup, steady render,
+release and the fixture's outside-callback observers. Plain leaves include
+`render_voice` 41.62%, source mixing 16.68%, unresolved libc code 11.27%,
+`audible_voice_count` 5.53% and `prepare_voice` 4.70%. The audible count is also
+called by fixture assertions outside `Sampler::process`, so its entire share
+cannot be assigned to KONTRA's meter. Fractional interpolation leaves account
+for 75.85% plus 6.08% in its polyphase sample helper. EQ leaves include fused
+interpolation 35.86% plus 1.97%, native EQ lanes 16.98% plus 2.29% in its
+adapter, color lanes 9.31%, render-run work 8.49%, finish 2.91%, envelope levels
+2.27% and active finite validation 1.50%. These are sampled leaves, not inclusive
+call graphs or clean hardware throughput limits. The direct-span interpolation
+symbol name mentions `PagedFrames` even in this resident fixture; the name
+does not establish streaming reads. Raw profiles, logs and metadata are
+`whole-callback-{plain,fractional,eq-stereo}-leaf.*` and
+`whole-callback-leaf.json`.
+
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
-| Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners and phase-specific faults | Named helper-level release/admission cycle attribution and authored script events |
+| Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners, fixed mass key-up faults, [isolated admission lookup attribution](ADMISSION_CPU_EVIDENCE.md) | Authored script events and layered host-end ownership cost |
 | Script/controllers | Real Afflatus MIDI/script path, error/fuel/service counters; offline UI initialization profiles in companion evidence | Separate sustained audio-script/controller stage CPU under a verified 300-source authored patch |
 | Source/interpolation | Leaf cycle shares, 100/300 plain versus pitched controls, exact seam and four-output stage pairs; bit-exact shared/distinct-asset/phase whole-render matrix | Authored 300-source and entire plugin-process source-stage attribution under live pitch changes |
 | Native modulation/filter | Separate sounding filtered/modulated workloads with wall/caller/worker tails | Inclusive cycle stacks or bounded direct stage clocks for individual envelope/LFO/filter components |
 | EQ/color FX | Cycle shares, exact recurrence/state tests, sounding 192/300 scalar/batch/parallel comparisons, rejected wider kernel | Moving/script EQ batching and other authored effects under real 300-source load |
-| Summation/lifecycle/state guards | Render/finish cycle shares and parent same-binary validation witness | Summation alone versus cache/ownership work; parent exact-ID release receipt |
+| Summation/lifecycle/state guards | Render/finish cycle shares, parent same-binary validation witness and exact-ID release receipt | Summation alone versus cache/ownership work; layered host-end ownership cost |
 | Master gain | [Isolated parent evidence](MASTER_GAIN_EVIDENCE.md), exact smoothing/automation parity | Whole plugin-process measured gain contribution; isolated stage is only about 0.003% at 128 frames |
 | Decoder/cache/storage | Job/open/eviction/capacity totals, first-128 job latency, phase underrun deltas | Cold production-policy 300-distinct-source demand, storage queue/wait and onset-deadline proof |
 | Worker scheduling | 1/2/4-thread wall versus caller/total CPU, bad-tail receipts retained | Isolated host/worker wake-to-run latency and adaptive policy validated against real deadlines |
-| Outer plugin/UI/host | Actual meter formula traced; companion offline UI/resource stage profiles | A measured 300-voice entire plugin callback with a representative host and UI refresh enabled |
+| Outer plugin/UI/host | Actual meter formula and complete 300-distinct-source Sampler::process busy/span receipt; companion offline UI/resource profiles | Exported live host with authored scripts/streaming and UI refresh; exclusive callback stage attribution |
 
 This coverage table deliberately distinguishes completed counters from unresolved
 stage attribution. Flat sampled shares, isolated stage timers, paced process CPU
