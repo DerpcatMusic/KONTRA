@@ -110,6 +110,10 @@ pub enum EngineParameterLaw {
     },
     /// Kontakt signed modulation depth, ported from v1 CubicDepth::Loop.
     SignedCubic,
+    /// [`Self::SignedCubic`] in a route's depth units (12 per unit for pitch).
+    ScaledSignedCubic {
+        scale: f64,
+    },
     CubicGain {
         unity: f64,
     },
@@ -148,6 +152,7 @@ impl EngineParameterLaw {
     pub(crate) fn valid(self) -> bool {
         match self {
             Self::WavetableForm | Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
+            Self::ScaledSignedCubic { scale } => scale.is_finite() && scale > 0.,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high > 0.
@@ -221,6 +226,7 @@ impl EngineParameterLaw {
             Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
+            Self::ScaledSignedCubic { scale } => scale * Self::SignedCubic.decode(value),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => {
                 // Declared endpoints must not shrink or widen through log/exp roundoff.
@@ -274,6 +280,7 @@ impl EngineParameterLaw {
             Self::WavetableForm | Self::SignedNormalized => unreachable!(),
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
+            Self::ScaledSignedCubic { scale } => 500_000. * ((value / scale).cbrt() + 1.),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
@@ -551,6 +558,10 @@ mod law_tests {
         // COMP RATIO falls from 1 to 0.04.
         let ratio = EngineParameterLaw::Exponential { low: 1., high: 0.04 };
         assert!(ratio.valid() && (ratio.decode(500_000) - 0.2).abs() < 1e-9);
+        // INTMOD on a 12-semitone pitch route (v1: 1e6 is depth 1, 750000 is 0.125).
+        let pitch = EngineParameterLaw::ScaledSignedCubic { scale: 12. };
+        assert_eq!((pitch.decode(1_000_000), pitch.decode(750_000), pitch.decode(0)), (12., 1.5, -12.));
+        assert_eq!(pitch.encode(1.5), 750_000);
     }
 
     #[test]
