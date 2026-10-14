@@ -65,6 +65,8 @@ not the entire process or combined rack memory.
 * A UVI UI source previously also discovered Kontakt resources that it could
   never use. That second authority is no longer constructed. Selected Kontakt
   NativeUI construction also avoids the duplicate preliminary `Source::of` walk.
+  Kontakt container discovery now streams a child directory and retains only
+  NKR/NICNT paths, avoiding a temporary sorted copy of every sample filename.
 * UVI's recent-bank cache previously deep-cloned every directory member/footer/name
   and the entire lookup map into each reader, and duplicated both during first
   admission. Readers now share immutable `Arc` storage. Rewritten bank identity
@@ -77,13 +79,100 @@ not the entire process or combined rack memory.
   discovery now reports a fixed limit/read failure for unresolved requests;
   already indexed files remain readable. Length/NUL validation applies directly
   at the provider boundary as well as the UI boundary.
+* Sparse strip preparation previously used a linear value fraction even when
+  the painter used authored UVI exponential/power mappers. Preparation now calls
+  the same mapper and frame helpers; fixed authored frame overrides retain
+  precedence. Kontakt six-state buttons prepare all normal, held and hovered
+  on/off frames because transient pointer state is absent from parameter values.
+* Unix UFS reads now use exact positioned reads instead of a separate seek/read
+  pair; other targets retain their prior path. Header traversal uses a fixed
+  twelve-byte stack buffer instead of allocating one small vector per record.
+  The [Rust FileExt contract](https://doc.rust-lang.org/std/os/unix/fs/trait.FileExt.html#method.read_exact_at)
+  specifies exact offset reads, unchanged cursor, interrupted-read handling and
+  early EOF. The fixture checks bytes, cursor and EOF explicitly.
+
+## Metadata cache and measured storage bottleneck
+
+The UVI process cache and persisted cache have different scopes. Recent readers
+share immutable directory/index Arcs; a same-process reopen does not deserialize
+metadata. A later process can load `kontra/v2-ufs-directories` from the ordinary
+platform cache directory. This product cache stores typed record/member/folder
+descriptors, names, paths, links, warnings and their bounded metadata suffixes
+(at most twelve bytes for a member and four for a folder). It stores no resource
+body, script, sample, image, font or derived metadata/content access key.
+
+Its signature includes namespace digest, format/schema version, automatic
+parser/cache/codec source digest, source path, captured identity, size, nanosecond
+mtime and bounded first/last 4096-byte digests. Unix adds device/inode and ctime;
+other targets require an available captured creation generation. The bounded
+fingerprint is not a full-file content hash or protection against adversarial
+middle edits preserving every stamp. Entry checksum and source identity checks
+run before acceptance and again before publication. Invalid, stale, wrong-key,
+unreadable or oversized entries fall back to the source parser.
+
+Cache entries are limited to 64 MiB; the binary decoder checks lengths and counts
+before allocation with a 128 MiB aggregate allocation budget. Validation checks
+the contiguous record chain, resource ranges/protection, metadata tags/suffix
+lengths, child/parent links and paths rebuilt from those links. The local cache
+budget is 256 MiB. Private same-directory temporary files publish by atomic rename;
+partial temporary files are never read as entries. These operations occur on the
+existing loading worker. `KONTRA_SCAN_ACTIVE` bypasses both lookup and store;
+scans do not discover the product cache directory. First-ever indexing still
+requires the source scan.
+
+The owned Augmented Orchestra bank is 18,443,085,298 bytes, with 140,136 records,
+68,299 members and 596 folders on an `ntfs3` mount. The initial process-cold
+metadata receipt was 19,335 ms; same-process Arc reopens were 0.014–0.022 ms.
+Reconstructed prior deep clones took 5.59–18.48 ms; this is an isolated clone
+mechanism comparison, not an archived executable baseline.
+
+An opt-in stage receipt attributed 63,260 ms of a 65,472 ms directory decode to
+140,136 twelve-byte record-header reads. Name transforms totaled about 15 ms;
+casefold index construction was 11.6 ms. Visible retained vector/string capacity
+was 36,020,220 bytes, excluding allocator overhead and peak temporary maps.
+Performance-event sampling was unavailable in this session; phase clocks and
+Linux process read counters provide the attribution. Clocks are elapsed time,
+include waits and nesting, and must not be added as independent CPU work.
+
+| Header experiment | Header reads | Requested header/adjacent bytes | Interpretation |
+| --- | ---: | ---: | --- |
+| Exact direct ranges | 140,136 | 1,681,632 | Default; no lookahead amplification |
+| Full aligned 512-byte window | 111,955 | 57,320,946 | Exact directory parity; later OS-warm run |
+| Full aligned 4096-byte window | 74,996 | 307,181,042 | Exact parity; excessive byte amplification |
+| Prior-short-record gated 4096-byte window | 137,489 | 278,942,726 | Failed locality hypothesis: short metadata interleaves with long records |
+
+No buffered window is enabled by default. `KONTRA_UFS_HEADER_WINDOW_BYTES` is a
+bounded diagnostic experiment, not a measured cold-start recommendation. Standard
+[Rust buffering documentation](https://doc.rust-lang.org/std/io/struct.BufReader.html)
+motivates amortizing repeated small reads; real record ordering and bytes decide
+whether that approach is useful for this container. An isolated same-process
+alternating warm header test read identical 1,681,632-byte ranges each time:
+seek/read took 128.1–135.7 ms; positioned reads took 84.8–86.9 ms. This establishes
+the syscall-mechanism improvement, not a cold-storage throughput claim.
+
+The final persisted-cache fixture compared every directory field against the
+source parser, including metadata suffixes and warnings. Population source scan
+took 8667.8 ms; validated store took 109.0 ms; five fresh-owner cache loads took
+104.0–109.5 ms. A separate fresh-process load-only receipt took 105.1 ms and
+performed no record-chain scan. The typed entry was 17,794,273 bytes. An earlier
+population run took 45,219.7 ms with 443,502,592 Linux physical read bytes; its
+cache loads took 93.4–110.5 ms. Process-cold, OS-warm, NTFS storage latency,
+instrumentation and concurrent build activity are distinct; no OS cache was
+flushed, so these population times are not controlled before/after speedups.
+
+Numeric receipts are retained under
+`/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-asset-audit-20261014`.
+The explicit owned-bank test cache stays in dev-drive scratch and is not part of
+the retained evidence or repository.
 
 ## Diagnostic scope
 
 With `shots` enabled, `AssetProbe` records a bounded history of actual requests:
 asset index where known, capped local path, kind, authority, outcome, codec,
 selected frame/count, target, window, encoded/prepared bytes, prepared dimensions,
-read/decode/total elapsed milliseconds, and strip-cache hit. Source and worker
+read/decode/total elapsed milliseconds, and strip-cache hit. Actual worker
+requests also report queue and decode-permit wait separately; direct/native
+requests leave these unmeasured fields null. Source and worker
 histories are capped at 512 records with explicit dropped counts. NativeUI's
 font and image history uses the same bound. Production builds without `shots`
 have no per-request trace storage or timing clocks.
@@ -105,8 +194,8 @@ fidelity are different claims.
 ## Installed hierarchy observation
 
 The fresh filesystem-only inventory found all eleven local Kontakt libraries,
-835 NKI/NKM files and 21 resource containers. Ten libraries expose their artwork
-through containers. Morphology Evolved also has loose resources: 103 PNGs,
+835 NKI/NKM files and 21 resource containers. Ten libraries have resource
+containers and no loose `Resources` tree. Morphology Evolved also has loose resources: 103 PNGs,
 58 TXT sidecars and 30 WAV files. This demonstrates why a general loader must
 keep both archive and loose-file paths; it does not establish all member outcomes.
 
@@ -134,8 +223,20 @@ timing receipts. This review does not claim that replacement is implemented.
 
 ## Validation receipts
 
-The exact whole-strip memory/fallback pixel fixture and request-outcome/cache-hit
-fixture pass. Broader asset/resolver checks and the owned metadata timing fixture
-are being recorded before this slice is marked complete. The ignored metadata
-profile decodes no program/sample payloads and labels reconstructed legacy clone
-costs separately from current cold/warm measurements.
+Focused production UI asset checks: 18 passed, one explicit installed-inventory
+ignore. Kontakt resource units: 5 passed. Kontakt integration with the actual
+installed library root: 3 passed, two explicit Conflux fixture ignores; Afflatus
+NICNT and encrypted Solo NKR image payloads ran in memory and passed. UVI bank
+units: 9 passed, one metadata profile ignore. UFS/cache units: 9 passed, four
+explicit numeric-corpus/profile ignores. Owned AO window and full-directory
+persisted parity profiles passed; the fresh-process cache-hit receipt passed.
+
+Gold fixtures cover preallocation budget/fallback pixels, premultiplied alpha,
+nonlinear/fixed strip frames, six button states, selected-owner failure
+settlement, missing/unsupported/decode/geometry/font outcomes and cache hits.
+Cache fixtures cover bounded roundtrip, every truncation boundary, excessive
+counts, checksummed invalid ranges/paths/parents, corruption, oversized entries,
+wrong namespace, replacement/rename, bounded fingerprint changes, partial
+unpublished files, exact source fallback and scanner bypass. Their temporary
+files remain in dev-drive scratch. These checks certify their scopes; they do
+not certify every installed program or native gesture/audio parity.
