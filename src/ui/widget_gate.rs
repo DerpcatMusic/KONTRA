@@ -969,5 +969,16 @@ fn tab_layout_shots() {
             moose::core::screenshot::save_png(&output.join(format!("{view}-{w}.png")),
                 &super::tests::pixels(&gate.editor.ui, w, h), w.into(), h.into());
         }
+        // Folded to the header alone, then unfolded for the next size.
+        gate.editor.press("collapse-0");
+        for _ in 0..30 {
+            gate.settle();
+        }
+        moose::core::screenshot::save_png(&output.join(format!("Collapsed-{w}.png")),
+            &super::tests::pixels(&gate.editor.ui, w, h), w.into(), h.into());
+        gate.editor.press("collapse-0");
+        for _ in 0..30 {
+            gate.settle();
+        }
     }
 }
