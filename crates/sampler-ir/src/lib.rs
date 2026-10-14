@@ -1485,6 +1485,11 @@ pub enum LfoShape {
     SampleAndHold,
     /// A new uniform value each cycle, reached linearly by the cycle's end.
     Random,
+    /// A native waveform under Kontakt's saved LFO fade-in (`fade_ms` > 0,
+    /// unsynchronized): the BLfo fade outside the waveform kernels (Multi
+    /// 0x140b07290 and Digital Multi 0x140b078d0 carry none), the law of
+    /// `sampler_core::KontaktLfoFade`. Replaces the linear `Lfo::fade_in`.
+    NativeFaded { wave: NativeWave, fade_ms: f32 },
 }
 
 /// A piecewise-linear transfer curve over 0..=1, as ascending `(input, output)`

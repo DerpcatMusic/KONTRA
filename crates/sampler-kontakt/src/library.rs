@@ -2800,18 +2800,25 @@ impl Translation {
             // fade is only wired for the sine-only entry above), the pulse width
             // inside the builder's 0.05..0.95 clamp, and held noise needs a start
             // phase below one half.
+            // A saved fade (unsynchronized, records[1] -1, v1's admitted fade clock)
+            // runs the native fade law over the mix.
             (5 | 6, Some([sine, pulse, triangle, saw, noise]))
-                if fade_ms == 0.
+                if (fade_ms == 0. || ((0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1. && lfo.additional_flag != Some(true)))
                     && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
                     && (0.05..=0.95).contains(&width)
                     && (noise == 0. || (0. ..0.5).contains(&phase)) =>
             {
-                ir::LfoShape::Native(ir::NativeWave::Multi {
+                let wave = ir::NativeWave::Multi {
                     weights: [sine, saw, triangle, pulse, noise],
                     width: width as f32,
                     normalize: lfo.records[0].flag,
                     digital: lfo.waveform == 6,
-                })
+                };
+                if fade_ms == 0. {
+                    ir::LfoShape::Native(wave)
+                } else {
+                    ir::LfoShape::NativeFaded { wave, fade_ms: lfo.initial_values[0] }
+                }
             }
             // Native BLfo* processors (modulators.md): recovered tables, any pulse
             // width in 0..1, and held noise whose half-cycle grid counts from a
@@ -2853,7 +2860,7 @@ impl Translation {
             shape,
             rate,
             delay: ir::Time::ZERO,
-            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. }) {
+            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. } | ir::LfoShape::NativeFaded { .. }) {
                 ir::Time::ZERO
             } else {
                 ir::Time::Milliseconds(fade_ms.max(0.0))

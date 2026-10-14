@@ -2003,6 +2003,11 @@ impl Lowering<'_> {
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
                     ir::LfoShape::Native(wave) => LfoShape::Native(wave),
+                    ir::LfoShape::NativeFaded { wave, fade_ms } => LfoShape::NativeFaded {
+                        wave,
+                        fade: crate::KontaktLfoFade::from_saved(fade_ms, self.rate as f32)
+                            .map_err(core(Stage::Modulation, owner))?,
+                    },
                     ir::LfoShape::Rectangle(width) => LfoShape::Rectangle(width),
                     ir::LfoShape::Multi { weights, width, normalize } => {
                         LfoShape::Multi { weights, width, normalize }

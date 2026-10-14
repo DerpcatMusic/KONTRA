@@ -2794,6 +2794,62 @@ fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
     assert!((authored / held).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
 }
 
+/// A native Multi LFO with a saved fade starts silent and reaches full depth
+/// on the native fade law (ANALOG STRINGS LFO_P2, 98.8 ms).
+#[test]
+fn native_multi_lfo_fade_runs_the_saved_fade_law() {
+    let wave = ir::NativeWave::Multi { weights: [1., 0., 0., 0., 0.], width: 0.5, normalize: true, digital: false };
+    let level = |shape: ir::LfoShape| {
+        let ir = ir::Instrument {
+            assets: vec![asset("multi-fade")],
+            groups: vec![ir::Group::default()],
+            zones: vec![ir::Zone {
+                group: Some(ir::GroupRef(0)),
+                routes: vec![ir::RouteRef(0)],
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            modulators: vec![ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Lfo(ir::Lfo {
+                    shape,
+                    rate: ir::Frequency::Hertz(0.01),
+                    delay: ir::Time::ZERO,
+                    fade_in: ir::Time::ZERO,
+                    phase: 0.25,
+                    retrigger: true,
+                }),
+            }],
+            routes: vec![ir::Route {
+                source: ir::ModulatorRef(0),
+                target: ir::Target::Amplitude,
+                depth: ir::Depth::Gain(ir::Gain::Decibels(-20.)),
+                invert: false,
+                shape: None,
+                smoothing: ir::Time::ZERO,
+                scale: None,
+            }],
+            ..Default::default()
+        };
+        let pcm = Pcm::new(48000, vec![[1.; 2]; 12000].into_boxed_slice()).unwrap();
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![pcm], no_behaviors).unwrap(), limits()).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = vec![[0.; 2]; 9600];
+        for block in out.chunks_mut(128) {
+            rt.render(block).unwrap();
+        }
+        // Depth in dB away from the unmodulated level.
+        let db = |x: f32| (20. * x.log10()).abs();
+        (db(out[64][0]), db(out[9599][0]))
+    };
+    let (plain_start, plain_end) = level(ir::LfoShape::Native(wave));
+    let (faded_start, faded_end) = level(ir::LfoShape::NativeFaded { wave, fade_ms: 100. });
+    assert!(plain_start > 19. && (plain_start - plain_end).abs() < 0.1, "{plain_start} {plain_end}");
+    assert!(faded_start < 1., "the fade starts at no depth: {faded_start} dB");
+    assert!((faded_end - plain_end).abs() < 0.2, "full depth by 200 ms: {faded_end} vs {plain_end}");
+}
+
 fn native_primary_fixture() -> ir::Instrument {
     let mut ir = ir::Instrument {
         assets: vec![asset("native-primary")],
