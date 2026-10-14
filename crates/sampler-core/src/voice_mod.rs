@@ -606,7 +606,6 @@ impl VoiceModulation {
                     if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
                         || route.lag != 0
                         || route.scale.is_some()
-                        || program.controls.iter().any(|b| b.0 == index)
                     {
                         return Err(Error::InvalidInput);
                     }
@@ -1529,7 +1528,7 @@ impl VoiceModState {
                 let mut phase = 0.0;
                 for &r in &p.phase_routes[i] {
                     let route = &p.routes[r];
-                    phase += route.depth
+                    phase += p.base_depth(r, inputs)
                         * p.transform(route, values[route.source], p.bipolar[route.source]);
                 }
                 phases[i] = phase;
