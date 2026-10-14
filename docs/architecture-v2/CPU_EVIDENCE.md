@@ -1,0 +1,306 @@
+# CPU and stream deadline evidence, 2026-10-14
+
+The requested target is **300 sounding physical voices at 1% on KONTRA's meter**.
+It is not achieved by this work. A 300-voice integer-rate, effect-free synthetic
+core case reaches a 0.90% median at 256 frames, but it neither exercises a real
+authored instrument nor measures the entire plugin callback. Pitched, filtered,
+modulated and EQ workloads are substantially more expensive. Do not present
+the integer-rate result, a low-voice library run, or a core-only timing as proof
+of the requested target.
+
+## Metric and reproduction conditions
+
+KONTRA's meter accumulates entire `Plugin::process` elapsed wall nanoseconds in
+`busy_ns`, and callback audio duration in `span_ns`. The UI samples the delta
+ratio every 100 ms, eases it by averaging with the previous displayed value,
+zeros values below 0.005, then rounds the percent. The meter includes host-event
+handling, core work, mixing and output work. None of those rules was changed.
+
+The core witnesses report these separately:
+
+- callback wall time / audio deadline: the closest component of the KONTRA
+  metric; wall samples above 100% are actual callback deadline misses;
+- caller thread CPU time / deadline: excludes time the caller is descheduled;
+- process CPU time / deadline: includes render workers, and, in the paced real
+  harness, decoder workers. More than 100% can represent concurrent cores rather
+  than a wall deadline miss. The `deadline_misses` field inside a CPU-clock
+  summary means CPU budget exceedances; only the wall field identifies deadlines;
+- paced whole-phase process CPU: also includes the harness's hashing, probing,
+  event and decoder overhead. It is explicitly not a plugin or OS-system meter.
+
+Hardware: AMD Ryzen 7 7800X3D, eight cores / 16 logical CPUs, boost enabled,
+x86-64 Linux `7.3.0-rc6-2-cachyos-rc`. Compiler: rustc 1.99.0
+`b940084d7`, LLVM 23.1.1. Audio: stereo, 48,000 Hz, 64 and 256 frames
+(1,333.33 and 5,333.33 us deadlines). Builds use `--profile corpus`: release
+optimization, ThinLTO, unwind panics, retained symbols; no custom target CPU,
+fast-math, reassociation, quality reduction or disabled authored effects.
+Runtime SIMD dispatch selects the supported hardware implementation. The
+shared cargo target configuration is used without overrides.
+
+All raw receipts and frozen executables are under
+`/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261014/`.
+Binary and library payloads are not committed. The machine also runs a VM,
+Bitwig and filesystem/background jobs; they were not stopped. Timing windows
+exclude builds/probes from this team when stated, but are not an isolated host.
+Keep the recorded long tails and adverse paired runs. Some paired tests pin
+the caller to CPU 5; most matrix tests are unpinned.
+
+## Sounding synthetic reference and conservative DSP improvement
+
+`sampler-core/examples/voice_cpu.rs` starts independent physical note owners,
+verifies their active count and nonzero PCM energy, and reports a PCM hash,
+nonfinite frames, voice drops and stream underruns. Its PCM contains stereo
+sine plus noise, and each note has a different gain. Above 256 voices the gain
+spacing remains distinct instead of clamping velocities to unity. It warms
+512 blocks. Resident and paged cells use the same real PCM; paged cells preload
+four actual pages and retain the worker endpoint. Cache admission is sized for
+the per-voice reservation contract, even though pages are shared. These paged
+cells measure page access overhead, not asynchronous disk/decode service.
+
+Plain means exact integer-rate playback. Fractional means 3.17-semitone upward
+transposition through the existing realtime sinc bank. Filtered adds a 3 kHz,
+Q=0.7 SVF. Modulated adds native envelope/LFO pitch, pan, cutoff and attenuation
+work. EQ uses three KontaktLegacy bands (gains +6, -4, +3 dB) and non-pseudo
+Stereo width/pan. They are not equivalent workloads.
+
+The before executable predates `dafce4c7c`; the after executable includes it.
+That commit interleaves independent left/right EQ recurrences while retaining
+each channel's floating-point operation association. Stereo reuses constant
+targets only after the original recurrence reaches an exact fixed point,
+including signed-zero checks; moving controls and pseudo delay clocks retain
+their original behavior. No effect is bypassed.
+
+100 voices, 256 frames, resident, one thread; median core wall/deadline percent:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| plain | 0.30 | 0.31 |
+| fractional | 5.33 | 5.37 |
+| filtered | 9.22 | 9.10 |
+| modulated | 13.41 | 13.44 |
+| three EQ plus Stereo | 22.20 | 17.18 |
+
+The 64-frame EQ median changes 22.28% to 17.18%; paged 256-frame EQ changes
+22.52% to 17.96%. All 62 before/after matrix PCM hashes match bit for bit.
+Raw: `synthetic-before.json`, `synthetic-after.json`. The first plain/fractional
+after cells overlapped a small asset-agent test finishing and are marked as
+contended, rather than clean acceptance. EQ cells had no team build active.
+
+Adverse repeats are retained: unpinned caller-CPU EQ medians were before
+1,189.2/1,185.4/1,175.6 us and after 1,294.9/933.2/919.1 us. The first candidate
+is approximately 9% worse. CPU-5 alternating repeats give before
+1,172.2/1,167.2/1,339.9/1,493.8 us and after 905.7/910.0/915.1/920.5 us.
+All hashes still match. Raw: `eq-stereo-paired.json` and
+`eq-stereo-paired-affinity.json`. Approximately 22% at comparable typical
+clocks is a defensible stage-workload improvement, not a universal latency bound.
+
+Idle medians are 0.10 us at 64 frames and 0.20 us at 256 frames. CPU probe
+overhead is visible (approximately 0.42 us caller CPU); it is not silently
+subtracted. The idle capacity is 100, with zero active voices.
+
+## 300-voice matrix
+
+Frozen `voice_cpu-300-before-seam` includes `dafce4c7c` and the distinct-velocity
+change, built from the `b45321fa0` ancestry before the virtual seam experiment.
+`synthetic-300-before-seam.json` has 25 cells, 1,500 measured blocks per cell,
+512 warmup blocks, 300 verified physical voices, no nonfinite frames, voice
+drops or stream underruns. No team build/probe was active in this matrix window.
+Wall misses below are retained; page preloading makes them compute/scheduling
+deadline faults rather than decoder starvation.
+
+256-frame results (p99.9/max in us; total means all-worker mean core percent):
+
+| Residency | Workload | Threads | Wall p50 % | Wall p99 % | p99.9 us | Max us | Wall misses | Total % |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| resident | plain | 1 | 0.90 | 1.34 | 124.1 | 137.7 | 0 | 0.95 |
+| resident | plain | 4 | 3.57 | 4.74 | 316.2 | 664.3 | 0 | 9.77 |
+| resident | fractional | 1 | 16.24 | 47.67 | 2901.8 | 2953.6 | 0 | 17.74 |
+| resident | fractional | 4 | 7.51 | 15.26 | 1057.5 | 1071.8 | 0 | 25.62 |
+| resident | filtered | 1 | 28.45 | 57.98 | 5234.0 | 5513.2 | 1 | 30.36 |
+| resident | filtered | 4 | 9.89 | 18.49 | 1123.5 | 1126.9 | 0 | 33.75 |
+| resident | modulated | 1 | 39.99 | 69.62 | 4208.1 | 5465.7 | 1 | 41.38 |
+| resident | modulated | 4 | 17.65 | 25.52 | 1572.1 | 1635.1 | 0 | 46.93 |
+| resident | EQ/Stereo | 1 | 54.71 | 84.95 | 4998.3 | 6279.4 | 1 | 56.57 |
+| resident | EQ/Stereo | 4 | 16.84 | 26.57 | 1618.5 | 1941.6 | 0 | 60.76 |
+| pages | plain | 1 | 1.15 | 2.13 | 140.4 | 153.2 | 0 | 1.21 |
+| pages | fractional | 1 | 16.49 | 67.58 | 4041.3 | 4359.1 | 0 | 17.96 |
+| pages | filtered | 1 | 29.06 | 80.54 | 6086.7 | 7523.2 | 2 | 31.00 |
+| pages | modulated | 1 | 42.86 | 94.81 | 6236.0 | 8111.8 | 7 | 45.31 |
+| pages | EQ/Stereo | 1 | 56.10 | 108.68 | 6218.5 | 6297.4 | 26 | 58.28 |
+
+At 64 frames the one-thread resident medians are 2.50/19.89/28.03/39.88/54.13%
+for plain/fractional/filtered/modulated/EQ respectively. Smaller deadlines
+increase fixed overhead and scheduler vulnerability. Four threads help the
+heavy 300-voice workloads but substantially hurt the cheap plain workload and
+consume more total core time. There is no evidence supporting a blanket
+increase of worker count, voice cap or cache size.
+
+## Stage attribution and counters
+
+Leaf cycle sampling is separate from unprofiled timing. The earlier 100-voice
+before profile has 79,286 samples, zero lost: EQ stage 44.32%, sinc source run
+21.99%, Stereo 7.52%, chain render 3.15%, voice render 2.78%, state-finite guard
+2.34%, chain finish 2.16%, plus roughly 6% in other inactive color-history
+finite scans. It overlapped an optimized build, so its elapsed timings are not
+acceptance. Raw: `eq-before.perf.data`, `eq-before.perf.txt`.
+
+The 300-voice optimized after-DSP leaf profile has 21,200 samples, zero lost,
+no team build active: native EQ 38.67%, sinc run 28.15%, prepared chain render
+4.00%, state-finite guard 3.39%, voice render 3.32%, decimator-history finite
+scan 2.27%, chain finish 2.18%, Stereo 1.99%, additional state scans 1.68%.
+These are sampled cycle shares, not additive direct stage timers. They point
+to EQ, source kernels and generic state validation rather than parameter reads
+alone. Raw: `300-eq-before-seam.perf.data` and `.perf.txt`.
+
+The same workload's independent `perf stat` records 50,249,500,676 cycles,
+151,511,053,004 instructions (IPC 3.015), 14,629,677,717 branches,
+6,757,306 branch misses (0.0462%), 3,367,260,883 generic cache references and
+255,008,903 generic cache misses (7.57%). Events were multiplexed at about
+66.6%; scope includes startup, warmup and measurement. AMD generic event
+counts are not Intel top-down categories or proof of DRAM bandwidth saturation.
+Raw: `300-eq-before-seam.stat`, `300-eq-before-seam-counter.json`.
+
+Permitted transport is launching one's own child:
+`perf record -F 1999 -e cycles:u -- <frozen witness> ...`.
+No host permissions or sysctl were changed. Attach/cpu-clock stack attempts in
+the UI investigation were denied; do not imply those unavailable stacks were
+collected. User-only call chains need explicit user-callchain filtering on
+this host; no raw DWARF memory-stack dump is published.
+
+## Real streaming, policy differences and reader churn
+
+The real Afflatus Chapter II Brass `4 Horns KS.nki` sustain harness plays eight
+distinct keys through Kontakt loading, MIDI ingress and scripts and verifies
+128 physical voices throughout held playback. Before DSP, one-thread held
+wall p50/p99 is 29.88/36.83%; two threads gives 21.72/26.01% while process core
+use rises. These are 128-voice core measurements, not 300-voice meter proof.
+
+The original harness failed to set runtime stream horizon and did not bootstrap
+the render/service order like the frontend. Its receipt with 142 cumulative
+underruns is retained as a deficient harness result. Correcting these produces
+261 underruns, all in the attack; held/release/post-release phase deltas are
+zero. Attack max wall is 3.14 ms, below the 5.33 ms deadline. This distinguishes
+stream starvation from missed compute deadlines, but is not proof of a
+production frontend fault: that harness uses max-step 4, eager unlimited heads,
+2,048 capacity and 256 frames. Production V2 uses max-step 16, lazy Auto heads
+with an 8 MiB budget, 1,024 maximum voices and 128-frame render fragments.
+Measured head latency and resulting head size vary between loads. The after-DSP
+diagnostic has an 828-frame head, zero underruns and held p50/p99 25.84/30.27%.
+All comparable held/release PCM hashes match (`c8fc34eff59b8554` and
+`45250bdc83ec967b`). Onset hashes with starvation are not expected to match.
+
+Raw receipts: `afflatus-256-8-1-before.json`, `afflatus-256-8-2-before.json`,
+`afflatus-256-8-1-warm-before.json`, `afflatus-256-8-1-corrected-before.json`,
+`afflatus-256-8-1-dsp-after-diag.json` and corresponding `.log` files.
+
+Opt-in `KONTRA_STREAM_AUDIT` counters operate only on decoder workers and print
+aggregate numbers, without source names, scripts, PCM or resource payloads.
+The original 16-reader worker cache reopens 3,767 of 3,828 page jobs (98.4%),
+with 3,703 evictions. Individual jobs reach 23.6 ms, longer than the 17.25 ms
+authored head. The first 128 jobs per worker consume 71/52/111/79 ms. Decode
+burst latency, reopening churn and shared storage need measuring separately
+from core rendering.
+
+The new cache limits known WAV/NCW retained owned userspace capacity to 8 MiB
+across workers and 128 entries per worker. It charges vector storage, reader
+boxes, paths, byte buffers, all NCW channel/offset-table capacities, scratch
+growth and new File Arc headers. Existing shared handles/keys are not deep
+charged again. Allocator/kernel FD overhead and transient current decode
+workspaces are separate from that retained-capacity limit. Oversized readers
+serve their current worker job and are then released; tiny budgets retain
+neither readers nor vector capacity. Unknown custom closure heaps retain the
+legacy 16-entry cap and are explicitly outside the expanded known-capacity
+claim. LRU lookup remains bounded and all operations remain off the audio thread.
+
+Focused tests preserve NCW PCM, reuse 40 small readers without the 16-entry
+churn, evict grown/oversized workspaces, enforce zero/tiny budgets, and preserve
+the opaque entry cap. The vendor NCW workspace test checks actual capacities
+after a partial final block. The real after-cache receipt records 859 opens
+for the same 3,828 page jobs (22.44%), with 531 evictions. Summed measured
+open time falls from 39,893 to 15,649 us and decode time from 410,129 to
+327,197 us; these aggregate diagnostic times are not clean paired acceptance
+because a separate external `process_lab` build appeared during the window.
+Each worker's observed peak charged retention is 2,083,506 bytes, totaling
+8,334,024 bytes below 8 MiB. Held/release hashes remain exact, but 32 onset
+underruns remain (zero held/release deltas), and head size differs 828 to 817
+frames. No zero-dropout production improvement is claimed. Raw:
+`afflatus-256-8-1-reader-after.json` and `.log`.
+
+The actual production-policy `V2Loader`/`V2Core` example's earlier Brass
+`strings` schedule peaks at only 12 voices, mean 0.78, with 192 steals and three
+silent notes. This is a **rejected high-polyphony witness**, retained in
+`v2-afflatus-256-before-reader.json`. Native scripts, articulation keys and
+choke policies must remain enabled. A held playable chord and an exact typed
+CLAP-ID schedule are added to obtain measurable real high-polyphony cases;
+requested IDs do not substitute for actual physical or audible voice counts.
+The exact-ID owned five-second stereo WAV receipt requests 300 owners but
+sustains 128 voices, with 172 capacity drops and nonzero PCM energy; it is also
+rejected (`v2-owned-300-seam-after.json`). The parent traced this to the separate
+fixed 128-entry host/MPE note transport capacity, rather than the runtime's
+voice maximum. The authored Dolce sustained chord is completely silent with
+zero active voices and 44 missing features (`v2-dolce-held-reader-seam-after.json`);
+it is a compatibility finding, not an idle-performance success.
+
+## Validation and next hypotheses
+
+EQ recurrence tests compare state and output bits over 12,000 moving-coefficient
+frames, edge/zero/denormal inputs and block partitions. Stereo tests retain
+signed-zero, moving-ramp, state and pseudo-ring behavior. DSP, multicore exact
+output and zero-heap, realtime, source, paged-render and resample regressions
+pass. The parent reports the core unit suite passing 441 tests before the new
+seam tests. The seam prototype additionally tests exact scalar PCM/phase/
+envelope/release across reverse, wrap, ping-pong, both crossfade laws, seven
+rates and both quality modes, plus missing-page atomicity and ready prefixes.
+It excludes wavetable, multiple loop slots and active mipmap source paths.
+It must pass optimized paired timing before becoming a promoted optimization.
+
+The first whole-stage seam receipt failed against the preexisting scalar path;
+those failed receipts are kept as `seam-cpu-receipt.log` and
+`seam-partition-test.log`. Investigation found an existing sound bug: the scalar
+sampler inferred a contiguous reverse window from its endpoint indices alone.
+With a 64-frame wrap and a 16-frame kernel radius, a seam window happens to
+have a 32-frame reverse endpoint difference, but its interior actually wraps.
+It read a different physical waveform. A traversal-span proof now prevents
+that alias, and an independent virtual-tap oracle covers forward/reverse wrap
+and reflection in both qualities. The corrected previous production run/scalar
+path and gather agree bit for bit across successive blocks. The deliberate
+correction of previously wrong seam sound is separate from optimization parity.
+
+Research guides hypotheses rather than overriding sound semantics:
+
+- [LLVM vectorizers](https://llvm.org/docs/Vectorizers.html) describe SLP of
+  independent operations and cost-model limits for gathers. Independent channel
+  or voice lanes are appropriate; serial recursive filter time steps are not
+  independent. Ordered floating-point reductions must not be reassociated just
+  to force SIMD. The existing source kernel already has polyphase coefficients,
+  stereo SIMD and hardware FMA dispatch; another approximate table is not
+  justified by these profiles.
+- A bounded virtual seam gather can amortize repeated loop/crossfade addressing
+  while keeping each interpolation's exact tap count and zero padding. Missing
+  pages must fail preflight before committing any cursor/envelope/output state.
+  Profile short loops and ordinary loops separately; gather cost can outweigh
+  saved work on a short or already contiguous span.
+- EQ is still excluded from the existing cross-voice lane-batch path. A later
+  exact independent-voice EQ kernel could target the 38.67% stage share. It
+  needs per-voice moving/held state, output ordering, masks and native/script
+  modulation parity; broad chain eligibility is not safe without that model.
+- Generic state-finite scans visit histories unrelated to an active processor.
+  A prepared stage-specific validation plan may remove this overhead only after
+  proving that all observable retained fault state remains checked.
+- Adaptive parallel work estimates could avoid the measured cheap-voice penalty
+  while reducing heavier callback tails. The current 32-voices-per-thread gate
+  also makes a 100-voice/four-thread request remain serial. Change thresholds
+  only with paired measured evidence, not a global assumption that more threads
+  improve latency.
+- [Linux perf security](https://docs.kernel.org/admin-guide/perf-security.html)
+  explains collection scope and access restrictions. Keep permission failures
+  and multiplexing in the methodology. Intel top-down guidance is not a measured
+  AMD PMU categorization.
+
+Remaining acceptance gap: a verified 300-source real instrument or owned real
+PCM fixture through production policy, complete plugin-process meter timing,
+zero starvation/nonfinite/drops/steals attributable to capacity, and stable
+deadline tails under host integration. A 1% whole-callback target implies only
+13.33 us at 64 frames or 53.33 us at 256 frames, shared by all 300 source/DSP
+voices and frontend work. The measured pitched/effected workloads exceed that
+budget by large factors; no universal promise follows from the completed gains.
