@@ -140,7 +140,7 @@ impl Engine {
         prepare();
         let [saturate, prefilter, frequency, jitter, crunch, bits, dither, dcquant, expand, postfilter, hpf, mix] =
             b.knobs;
-        let factor = if rate <= 50_000 { 2.0 } else { 1.0 };
+        let factor = if super::dirt::oversampled(rate) { 2.0 } else { 1.0 };
         let sr = rate as f32 * factor;
         let inv = 1.0 / sr;
         let pitch = frequency * 105.415_619 + 43.349_956_5;

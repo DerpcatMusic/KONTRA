@@ -42,7 +42,7 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 2] = [0x42, 0x66];
+pub(super) const TYPED_CORES: [u16; 3] = [0x42, 0x66, 0x67];
 
 /// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
 /// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
@@ -82,6 +82,14 @@ pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::Effec
             let knobs = scatter(&values, &[10, 2, 5, 3, 4, 6, 8, 0, 1, 9, 11, 7], [0.0; 12])?;
             Some(Config::bite(sampler_ir::fx::color::Bite { knobs }))
         }
+        // Dirt (apply 0x140aba420): f32 x10, comp A/B, type A/B, routing; the level (p15)
+        // stays at its default 0.75 (unity).
+        0x67 => {
+            const DEFAULTS: [f32; 16] =
+                [0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.5, 0.75];
+            let knobs = scatter(&values, &[0, 2, 6, 4, 1, 3, 7, 5, 13, 14, 10, 11, 8, 9, 12], DEFAULTS)?;
+            Some(Config::dirt(sampler_ir::fx::color::Dirt { knobs }))
+        }
         _ => None,
     }
 }
@@ -109,7 +117,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
-        0x67 | 0x68 => "creative drive module: core not extracted",
+        0x68 => "creative drive module: core not extracted",
         _ => return None,
     })
 }
@@ -143,5 +151,23 @@ mod tests {
         let mut bad = saved.clone();
         bad[0].value = Integer(3);
         assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn dirt_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(
+            (1..=10)
+                .map(|i| Float(i as f32 / 10.0))
+                .chain([Byte(1), Byte(0), Integer(1), Integer(2), Integer(0)])
+                .collect(),
+        );
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Dirt(d), .. }) = typed_core(0x67, &saved) else {
+            panic!("Dirt not mapped");
+        };
+        assert_eq!(
+            d.knobs,
+            [0.1, 0.5, 0.2, 0.6, 0.4, 0.8, 0.3, 0.7, 0.5, 1.0, 1.0, 0.0, 0.0, 0.9, 1.0, 0.75]
+        );
     }
 }
