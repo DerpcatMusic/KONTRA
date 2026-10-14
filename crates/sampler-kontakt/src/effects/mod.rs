@@ -498,6 +498,9 @@ impl Slot {
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
                     return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
+                } else if (22..=24).contains(&kind) && self.version >= 0x93 {
+                    // Later records repeat the EQ kind (v0x95: five times) before the bands.
+                    r.skip_repeats(kind);
                 } else if r.i32()? != kind {
                     return None;
                 }
@@ -1833,6 +1836,18 @@ mod tests {
         let mut fx = slot(0x18, public, 1.);
         fx.slot = 5;
         fx
+    }
+
+    /// Filter record v0x95 repeats the EQ kind five times before the bands.
+    #[test]
+    fn later_eq_records_repeat_the_kind() {
+        let mut public = [23i32.to_le_bytes(); 5].concat();
+        for value in [632f32, 0.5, 3., 2000., 1., -2.] {
+            public.extend(value.to_le_bytes());
+        }
+        let mut fx = slot(0x18, public, 1.);
+        fx.version = 0x95;
+        assert!(matches!(fx.params(), Some(Params::Eq { bands }) if bands == vec![[632., 0.5, 3.], [2000., 1., -2.]]));
     }
 
     /// The three KONTAKTFX record layouts decode to the core's knobs in native order.
