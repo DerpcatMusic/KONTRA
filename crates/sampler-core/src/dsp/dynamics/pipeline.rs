@@ -214,13 +214,19 @@ pub(super) fn high_pass_1(rate: u32, w: f32) -> [f32; 3] {
     [b, -b, (t - 1.) * b]
 }
 
+/// `[f(a0), f(a1)]`, always inlined (`array::map` is not).
+#[inline(always)]
+pub(super) fn each<T: Copy, U>(a: [T; 2], f: impl Fn(T) -> U) -> [U; 2] {
+    [f(a[0]), f(a[1])]
+}
+
 /// Input stage: the core reads f32 audio.
 pub(super) struct Quantize;
 
 impl Stage for Quantize {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(v as f32));
+        f.audio = each(f.x, |v| f64::from(v as f32));
     }
 }
 
@@ -230,7 +236,7 @@ pub(super) struct Scale(pub f32);
 impl Stage for Scale {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(v as f32 * self.0));
+        f.audio = each(f.x, |v| f64::from(v as f32 * self.0));
     }
 }
 
@@ -243,6 +249,6 @@ pub(super) struct Drive {
 impl Stage for Drive {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(self.gain * v as f32 + self.offset));
+        f.audio = each(f.x, |v| f64::from(self.gain * v as f32 + self.offset));
     }
 }

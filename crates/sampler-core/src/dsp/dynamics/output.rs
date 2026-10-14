@@ -2,7 +2,7 @@
 //! audio, post-filters, make-up, wet/dry, clip).
 
 use super::detector::EPS_18;
-use super::pipeline::{Frame, Shared, Stage};
+use super::pipeline::{each, Frame, Shared, Stage};
 use super::ProcessorState;
 
 /// Kontakt Classic: `1 - (1 - g) * b`, f32.
@@ -11,7 +11,7 @@ pub(super) struct Reach(pub f64);
 impl Stage for Reach {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.gain = f.level.map(|b| f64::from((1. - self.0 * b) as f32));
+        f.gain = each(f.level, |b| f64::from((1. - self.0 * b) as f32));
     }
 }
 
@@ -21,7 +21,7 @@ pub(super) struct Reciprocal;
 impl Stage for Reciprocal {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.gain = f.level.map(|h| f64::from(1. / (h as f32 + 1.)));
+        f.gain = each(f.level, |h| f64::from(1. / (h as f32 + 1.)));
     }
 }
 
@@ -95,7 +95,7 @@ impl Stage for ProMix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, gain) = (self.0, f.gain[0] as f32);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             if s.mix == 1. { f64::from(gain * d as f32) * s.makeup } else { d * s.factor(f64::from(gain)) }
         });
     }
@@ -109,7 +109,7 @@ impl Stage for LimiterOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, gain) = (self.0, f.gain[0] as f32);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let limited = f64::from((gain * d as f32).clamp(-1., 1.));
             if s.mix == 1. { limited * s.makeup } else { d + s.mix * (limited * s.makeup - d) }
         });
@@ -127,7 +127,7 @@ impl Stage for CeilingOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (s, scale) = (self.shared, f.gain[0] as f32 * self.ceiling);
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let wet = f64::from(scale * d as f32) * s.makeup;
             if s.mix == 1. { wet } else { d + s.mix * (wet - d) }
         });
@@ -145,7 +145,7 @@ impl Stage for ClipOut {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let g = f.gain[0] as f32;
-        f.out = f.heard.map(|d| {
+        f.out = each(f.heard, |d| {
             let y = d as f32 * g;
             f64::from(if self.hard { y.clamp(-self.ceiling, self.ceiling) } else { y })
         });

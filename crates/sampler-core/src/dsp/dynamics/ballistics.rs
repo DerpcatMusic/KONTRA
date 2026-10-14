@@ -462,31 +462,36 @@ impl BusEnvelope {
     }
 }
 
+impl BusEnvelope {
+    /// One channel; called with constant `ch` so the frame stays in registers.
+    #[inline(always)]
+    fn channel(&mut self, d: f64, ch: usize) -> f64 {
+        let env = self.env[ch];
+        let next = match self.auto {
+            None => {
+                let c = if d <= env { self.release } else { self.attack };
+                (1. - c) * d + env * c
+            }
+            Some([up, down]) => {
+                let c = if d <= self.slow[ch] { down } else { up };
+                let slow = (1. - c) * d + c * self.slow[ch];
+                self.slow[ch] = slow;
+                if d > env {
+                    (1. - self.attack) * d + env * self.attack
+                } else {
+                    (1. - self.release) * d.max(slow) + env * self.release
+                }
+            }
+        };
+        self.env[ch] = next;
+        (next * -32.).clamp(-32., 0.).exp2()
+    }
+}
+
 impl Stage for BusEnvelope {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        for ch in 0..2 {
-            let d = f.level[ch];
-            let env = self.env[ch];
-            let next = match self.auto {
-                None => {
-                    let c = if d <= env { self.release } else { self.attack };
-                    (1. - c) * d + env * c
-                }
-                Some([up, down]) => {
-                    let c = if d <= self.slow[ch] { down } else { up };
-                    let slow = (1. - c) * d + c * self.slow[ch];
-                    self.slow[ch] = slow;
-                    if d > env {
-                        (1. - self.attack) * d + env * self.attack
-                    } else {
-                        (1. - self.release) * d.max(slow) + env * self.release
-                    }
-                }
-            };
-            self.env[ch] = next;
-            f.gain[ch] = (next * -32.).clamp(-32., 0.).exp2();
-        }
+        f.gain = [self.channel(f.level[0], 0), self.channel(f.level[1], 1)];
     }
 
     #[inline(always)]
