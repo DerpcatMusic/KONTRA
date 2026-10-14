@@ -84,3 +84,71 @@ off/on oracle when authored initialization is random. Keep deterministic authore
 off/on checks and seeded single-thread inspector oracles separate until an
 explicit diagnostic real-clock/seed contract is introduced. Do not report an
 overhead percentage or speed improvement from unmatched scheduling or UI seeds.
+
+## Actual normal-owner observation
+
+The [numeric 2026-10-15 receipt](receipts/ao-owner-phases-20261015.json) pins helper
+SHA `ec30d253dfdc4e2cbc00b417455abdbca78d7ed1b27a9120e6b492bbb9e45d83`
+and source revision `cfaea34fb0130c2f4d364145293fdb617c972752`. A fresh unseeded
+Augmented Orchestra Pizzicato 2 owner accepted the actual visible LayerNext
+control through its normal callback. The run used production translation,
+attachment, streaming, source transactions and silent core commits; it loaded
+no plugin binary, DAW or audio device.
+
+The before/after owner window was 25,307.429 ms. These are measured completed
+interval deltas, not a causal before/after speed comparison:
+
+| Disjoint owner group | Calls | Wall ms | Owner CPU ms |
+| --- | ---: | ---: | ---: |
+| UI publication | 104 | 24,019.444 | 23,733.579 |
+| Park | 2,026 | 1,229.484 | 7.844 |
+| Advance | 2,027 | 41.065 | 39.372 |
+| Events | 2,026 | 3.342 | 2.271 |
+| UI requests | 2,026 | 3.326 | 2.260 |
+| Scan snapshot | 2,027 | 2.484 | 1.372 |
+| Command collection | 2,027 | 2.197 | 1.171 |
+| Command push | 2,027 | 2.085 | 1.061 |
+| Findings publication | 0 | 0 | unavailable |
+
+Within those 104 UI publications:
+
+| Nested group | Wall ms | Owner CPU ms |
+| --- | ---: | ---: |
+| Complete `Interface` export | 23,851.482 | 23,567.815 |
+| Face replacement/retirement | 133.463 | 131.547 |
+| Control-value mirror | 28.148 | 27.754 |
+| Face equality | 1.927 | 1.833 |
+| Face mutex wait | 0.126 | 0.051 |
+
+Export covered 1,055,080 widgets: 104 complete graphs of 10,145 widgets, including
+hidden widgets. There were 578,136 exported bindings, 103 changed faces, 1,746
+deferred resumes, 201 scheduled resumes and 1,948 total coroutine resumes.
+The gesture admitted one control event; 110 UI requests include the witness's
+status observations. Exactly one command was collected/pushed in this window,
+with zero queue-full retries or command-backpressure intervals. The reported
+backlog high-water of 83 is lifetime state, not an interval-delta maximum.
+The 1,746 source transactions use their dedicated producer/reply channel; they
+are not counted as commands in that script-to-audio command ring.
+
+Sample polling itself took 16.235 ms wall / 14.756 ms owner CPU. Worker delivery
+wait totaled 22,926.051 ms across 1,746 responses (maximum 287.031 ms), while
+source resolution/headers totaled 593.669 ms and preparation/decode 299.581 ms.
+These are overlapping task-clock aggregates, not phases to add to the owner
+window. They are consistent with completed worker responses waiting while the
+owner exports UI, but no alternate scheduling implementation was tested here.
+
+All 1,746 tasks succeeded after owner acknowledgments, with no failed, pending
+or canceled task. Independent reads compared 4,656 windows / 1,191,936 frames
+across 1,746 changed assets with zero registry/header/frame mismatch and matching
+aggregate fingerprints. Eight meter requests resolved to exact owners; native
+display laws remain unavailable. No voice sounded, and no script/core error or
+stream underrun was observed. These facts do not establish native sound/pixels,
+all-sample equality or note-on deadline margin.
+
+The complete process took 33.145 s, including setup and independent PCM checking.
+Monitoring observed 65 compiler samples and up to 98.2% compiler CPU. Cache state
+was uncontrolled. There is no isolated latency claim or opt-in overhead estimate.
+The timed owner CPU establishes full export as this run's dominant measured
+consumer; it does not identify which export substage is expensive. The
+[incremental export plan](UVI_UI_EXPORT_PLAN.md) therefore measures those parts
+before introducing a cache or changing publication policy.
