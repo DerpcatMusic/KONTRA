@@ -391,12 +391,16 @@ thread_local! {
     static READS: std::cell::RefCell<Option<HashSet<(usize, String)>>> = const { std::cell::RefCell::new(None) };
 }
 
-fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
+fn record_read(node: Node, name: &str) {
     READS.with(|r| {
         if let Some(reads) = r.borrow_mut().as_mut() {
             reads.insert((node.id().get_usize(), name.to_owned()));
         }
     });
+}
+
+fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
+    record_read(node, name);
     match node.attribute(name) {
         None => Ok(default),
         Some(text) => text

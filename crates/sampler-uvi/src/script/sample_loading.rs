@@ -225,6 +225,7 @@ struct Request {
 }
 struct Response {
     id: u64,
+    completed_at: Instant,
     timings: WorkerTimings,
     result: Result<(PreparedSampleRevision, Info), String>,
 }
@@ -248,7 +249,7 @@ impl Worker {
                     let start = Instant::now();
                     let result = prepare(r, &mut page, &mut timings);
                     timings.prepare_ns = elapsed(start).saturating_sub(timings.resolve_ns);
-                    if replies.send(Response { id, result, timings }).is_err() {
+                    if replies.send(Response { id, result, timings, completed_at: Instant::now() }).is_err() {
                         break;
                     }
                     owner.unpark();
@@ -464,6 +465,18 @@ impl SampleLoads {
             counts: Counts::default(),
         }
     }
+    pub fn refresh_initial(&mut self, doc: &roxmltree::Document<'_>) -> Result<(),String> {
+        if self.control.is_some() || self.worker.is_some() || self.active.is_some() || self.ready.is_some() || !self.submitted.is_empty() {
+            return Err("initial sample recipes cannot change after service binding".into());
+        }
+        let recipes: BTreeMap<_,_> = doc.descendants().filter(|n|n.has_tag_name("SamplePlayer"))
+            .map(|n|(n.id().get_usize() as u32,recipe(n))).collect();
+        if !self.recipes.keys().eq(recipes.keys()) {
+            return Err("initial sample target identities changed".into());
+        }
+        self.recipes=recipes;
+        Ok(())
+    }
     pub fn bind(&mut self, mut control: SampleControl) -> Result<(), String> {
         if self.control.is_some() {
             return Err("sample control already bound".into());
@@ -632,6 +645,7 @@ impl SampleLoads {
                     .expect("one active bounded sample decode");
                 debug_assert_eq!(pending.id, response.id);
                 let mut timings = self.counts.timings.get();
+                timings.worker_delivery.add(elapsed(response.completed_at));
                 timings.worker(response.timings);
                 self.counts.timings.set(timings);
                 pending.prepared_at = Some(Instant::now());
@@ -784,7 +798,7 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
                 Some(Value::Table(t)) => t.raw_get::<Option<usize>>("__id")?,
                 _ => None,
             };
-            let target = id.and_then(|id| s.nodes.borrow().get(id).map(|n| n.0 as u32));
+            let target = id.and_then(|id| s.nodes.borrow().get(id).and_then(|n| n.0).and_then(|n|u32::try_from(n).ok()));
             let path = match args.get(1) {
                 Some(Value::String(p)) => p.to_str()?.to_owned(),
                 _ => String::new(),

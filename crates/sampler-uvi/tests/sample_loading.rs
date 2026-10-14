@@ -228,7 +228,7 @@ fn nested_lua_module_keeps_raw_sample_path_and_exact_script_context_until_worker
     pump(&mut h, &mut rt, "done");
     let status = h.sample_load_status();
     assert_eq!((status.requested,status.successful,status.failed,status.pending), (1,1,0,0));
-    for stage in [status.timings.metadata_queue,status.timings.resolve_and_headers,status.timings.prepare_decode,status.timings.ready_submit,status.timings.commit_ack,status.timings.total] {
+    for stage in [status.timings.metadata_queue,status.timings.resolve_and_headers,status.timings.prepare_decode,status.timings.worker_delivery,status.timings.ready_submit,status.timings.commit_ack,status.timings.total] {
         assert_eq!(stage.count,1);
         assert_eq!(stage.histogram.iter().sum::<u64>(),1);
     }

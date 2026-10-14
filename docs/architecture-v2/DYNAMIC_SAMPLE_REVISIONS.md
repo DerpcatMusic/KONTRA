@@ -78,6 +78,19 @@ storage; `required_resident_assets/bytes` reports full bodies separately.
 
 The same policy parser controls dynamic requests even when a stream service is
 bound. Required full bodies remain resident; ordinary requests keep streamed tails.
+Accepted initialization writes to Program Streaming or SamplePlayer AllowStreaming
+refresh the worker recipes from the final bounded initialization XML before any
+source/control service binds. Existing queued tasks retain their identity, order
+and cancellation state. Attribute consumers participate in the initialization
+read ledger, so an actually consumed residency write is not mislabeled unbound.
+Five real dynamic-load cases cover both directions of each flag and a remaining
+oscillator veto, including an earlier canceled request and independent PCM values.
+
+The host's synthetic Part and its placeholder connections carry no admitted XML
+identity. They cannot fold edits into a same-numbered node of a wrapped or
+unwrapped program, nor supply impulse/sample/meter ownership. Part Streaming
+writes are explicitly reported unavailable; unsupported changed live Program and
+oscillator residency flags retain committed readback and emit diagnostics.
 Program/oscillator **live parameter writes** and Part inheritance still need their
 own verified transactions and remain reported unsupported. The native manual says
 that a Sample oscillator can require memory playback despite Program Streaming;

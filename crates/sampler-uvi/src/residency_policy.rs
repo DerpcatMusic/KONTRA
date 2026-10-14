@@ -4,6 +4,7 @@ use roxmltree::Node;
 use sampler_ir::AssetResidency;
 
 fn flag(node: Node<'_, '_>, name: &str) -> Result<bool, String> {
+    crate::record_read(node, name);
     let Some(value) = node.attribute(name) else {
         return Ok(true);
     };
