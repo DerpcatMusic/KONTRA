@@ -1,5 +1,7 @@
 //! Numeric-only observations; reading a busy owner never locks or waits on Lua.
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+mod owner;
+pub use owner::{OwnerAudit, OwnerAuditSnapshot, OwnerCounter, OwnerSpan, OwnerStage};
 
 #[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
 #[repr(u8)]

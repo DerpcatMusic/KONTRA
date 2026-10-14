@@ -561,6 +561,8 @@ struct Shared {
     #[cfg(feature = "scan")]
     progress: Option<std::sync::Arc<diagnostics::ScanProgress>>,
     #[cfg(feature = "scan")]
+    owner_audit: std::cell::OnceCell<std::sync::Arc<diagnostics::OwnerAudit>>,
+    #[cfg(feature = "scan")]
     init_api: RefCell<BTreeMap<&'static str, (u64, Duration)>>,
     #[cfg(feature = "scan")]
     audit_init: bool,
@@ -1361,6 +1363,8 @@ impl ScriptHost {
             #[cfg(feature = "scan")]
             progress: (config.audit_seed.is_some() && config.audit_progress)
                 .then(|| std::sync::Arc::new(diagnostics::ScanProgress::new(config.load_work))),
+            #[cfg(feature = "scan")]
+            owner_audit: std::cell::OnceCell::new(),
             #[cfg(feature = "scan")]
             init_api: RefCell::new(BTreeMap::new()),
             #[cfg(feature = "scan")]
@@ -2758,12 +2762,16 @@ impl ScriptHost {
 
     /// Start spawned threads until none remain.
     fn cycle(&self) {
+        #[cfg(feature = "scan")]
+        let _owner_span = self.owner_span(diagnostics::OwnerStage::DeferredCycle);
         loop {
             let batch = std::mem::take(&mut *self.shared.deferred.borrow_mut());
             if batch.is_empty() {
                 break;
             }
             for (thread, args, note) in batch {
+                #[cfg(feature = "scan")]
+                self.owner_count(diagnostics::OwnerCounter::DeferredResumes, 1);
                 if self.shared.consume_work().is_err() {
                     self.shared.deferred.borrow_mut().clear();
                     self.shared.find("lua error", "work budget exceeded");
@@ -2997,6 +3005,8 @@ impl ScriptHost {
     /// Move the clock to `now_ms`, resuming every thread whose wait ends by
     /// then, in time order. Commands carry the time they were issued.
     pub fn advance(&mut self, now_ms: f64) {
+        #[cfg(feature = "scan")]
+        let scheduled_span = self.owner_span(diagnostics::OwnerStage::AdvanceScheduled);
         self.shared.arm(
             self.shared.config.callback,
             self.shared.config.callback_work,
@@ -3013,6 +3023,8 @@ impl ScriptHost {
                 index.map(|i| waiting.swap_remove(i))
             };
             let Some(w) = next else { break };
+            #[cfg(feature = "scan")]
+            self.owner_count(diagnostics::OwnerCounter::ScheduledResumes, 1);
             self.shared.now.set(w.due.max(self.shared.now.get()));
             if self.shared.consume_work().is_err() {
                 self.shared.find("lua error", "work budget exceeded");
@@ -3022,8 +3034,18 @@ impl ScriptHost {
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
-        async_data::poll(self);
-        sample_loading::poll(self);
+        #[cfg(feature = "scan")]
+        drop(scheduled_span);
+        {
+            #[cfg(feature = "scan")]
+            let _owner_span = self.owner_span(diagnostics::OwnerStage::AdvanceData);
+            async_data::poll(self);
+        }
+        {
+            #[cfg(feature = "scan")]
+            let _owner_span = self.owner_span(diagnostics::OwnerStage::AdvanceSamples);
+            sample_loading::poll(self);
+        }
         self.cycle();
         #[cfg(feature = "scan")]
         if let Some(progress) = &self.shared.progress {
@@ -3177,12 +3199,31 @@ impl ScriptHost {
         }
     }
 
+    #[cfg(feature = "scan")]
+    pub(crate) fn install_owner_audit(&self, audit: Option<std::sync::Arc<diagnostics::OwnerAudit>>) {
+        if let Some(audit) = audit { let _ = self.shared.owner_audit.set(audit); }
+    }
+    #[cfg(feature = "scan")]
+    pub(crate) fn owner_audit(&self) -> Option<std::sync::Arc<diagnostics::OwnerAudit>> {
+        self.shared.owner_audit.get().cloned()
+    }
+    #[cfg(feature = "scan")]
+    pub(crate) fn owner_span(&self, stage: diagnostics::OwnerStage) -> Option<diagnostics::OwnerSpan<'_>> {
+        self.shared.owner_audit.get().map(|audit| audit.span(stage))
+    }
+    #[cfg(feature = "scan")]
+    pub(crate) fn owner_count(&self, counter: diagnostics::OwnerCounter, n: usize) {
+        if let Some(audit) = self.shared.owner_audit.get() { audit.add(counter, n); }
+    }
+
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
     }
 }
 
 fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u64>) {
+    #[cfg(feature = "scan")]
+    if let Some(audit) = shared.owner_audit.get() { audit.add(diagnostics::OwnerCounter::CoroutineResumes, 1); }
     #[cfg(feature = "scan")]
     if let Some(progress) = &shared.progress {
         progress.resume(shared.now.get());
