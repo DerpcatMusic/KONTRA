@@ -6533,6 +6533,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
                 cutoff: 0.5,
                 resonance: 0.2,
                 highpass: true,
+                address: None,
             }),
         ),
     ] {
