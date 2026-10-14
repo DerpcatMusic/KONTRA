@@ -2931,9 +2931,10 @@ impl Gen<'_, '_> {
             }
             _ => {
                 let why = match builtin {
-                    AllowGroup | DisallowGroup | IgnoreEvent | GetEventPar => {
+                    AllowGroup | DisallowGroup | IgnoreEvent => {
                         "needs the originating note event; ignored"
                     }
+                    GetEventPar => "this event parameter is not implemented; result 0",
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
@@ -3803,13 +3804,14 @@ impl Gen<'_, '_> {
         self.cover(Builtin::PlayNote, Coverage::Native);
         match self.const_int(args, 3) {
             Some(0) => return self.emit(play(DurationValue::Fixed(Duration::UntilSilent))),
-            Some(-1) if self.note_context() => {
-                return self.emit(play(DurationValue::Fixed(Duration::Gate)));
-            }
-            Some(-1) => {
-                self.warn("play_note duration -1 needs a note callback; faults at runtime");
-                self.set(frames, -1)?;
-                return self.emit(play(DurationValue::Frames(frames)));
+            Some(value) if value < 0 => {
+                // Native command 0x50 retains a negative duration only when
+                // the note callback supplies an originating note owner.
+                return self.emit(play(DurationValue::Fixed(if self.ctx == Context::Note {
+                    Duration::Gate
+                } else {
+                    Duration::UntilSilent
+                })));
             }
             Some(_) => {
                 self.arg(args, 3, frames)?;
@@ -3821,21 +3823,18 @@ impl Gen<'_, '_> {
         // Runtime-selected sentinels.
         self.arg(args, 3, frames)?;
         let mut exits = Vec::new();
-        for (value, duration) in [(0, Duration::UntilSilent), (-1, Duration::Gate)] {
-            self.set(scratch, value)?;
+        for (comparison, duration) in [
+            (Cmp::Equal, Duration::UntilSilent),
+            (Cmp::Greater, if self.ctx == Context::Note { Duration::Gate } else { Duration::UntilSilent }),
+        ] {
+            self.set(scratch, 0)?;
             self.emit(I::CompareLocal {
                 lhs: scratch,
                 rhs: frames,
-                comparison: Cmp::Equal,
+                comparison,
             })?;
             let miss = self.jump_if_zero(scratch)?;
-            self.emit(play(if value == -1 && !self.note_context() {
-                // A parent-gate sentinel has no meaning without a note; the
-                // positive-frame check faults before publishing anything.
-                DurationValue::Frames(frames)
-            } else {
-                DurationValue::Fixed(duration)
-            }))?;
+            self.emit(play(DurationValue::Fixed(duration)))?;
             exits.push(self.jump()?);
             self.land(miss);
         }

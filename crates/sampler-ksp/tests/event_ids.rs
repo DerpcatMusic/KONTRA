@@ -529,12 +529,15 @@ fn nested_release_dispatch_preserves_side_effect_order_and_wait_resume_boundarie
     support::without_heap(|| {
         let n = rt.trigger(input(60), 60, 1.).unwrap();
         rt.key_up(n, None).unwrap();
-        assert_eq!(rt.voice_count(), 0);
+        assert_eq!(rt.voice_count(), 1);
         rt.flush_behaviors(|_, _, outcome| {
-            // Kontakt ignores a gate-linked note played on an ended gate.
+            // A release callback has no negative-duration gate owner: native
+            // play_note uses ordinary sample completion, even after note_off.
             assert_eq!(outcome, Outcome::Finished);
             true
         });
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        assert_eq!(rt.voice_count(), 0);
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
@@ -587,6 +590,69 @@ fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
         },
         channels: 1,
     }
+}
+
+#[test]
+fn negative_note_duration_uses_only_the_note_callbacks_originating_gate() {
+    for context in ["note", "release", "controller", "poly_at", "ui_control($button)"] {
+        for negative in [-1, -7] {
+            for dynamic in [false, true] {
+                let duration = if dynamic { "$duration".to_owned() } else { negative.to_string() };
+                let source = format!(
+                    "on init declare $child declare $duration := {negative} declare ui_button $button end on
+                     on note ignore_event($EVENT_ID) {} end on
+                     {}",
+                    if context == "note" { format!("$child := play_note(61,127,0,{duration})") } else { String::new() },
+                    if context == "note" { String::new() } else if context == "release" { format!("on release if ($EVENT_NOTE = 60) $child := play_note(61,127,0,{duration}) end if end on") } else { format!("on {context} $child := play_note(61,127,0,{duration}) end on") },
+                );
+                let script = compile_bound(&source, &[("$button", ControlId(7))]).unwrap();
+                assert!(!script.warnings().iter().any(|w| w.message.contains("duration")), "{context} {dynamic}");
+                let mut rt = runtime_script(script);
+                support::without_heap(|| {
+                    let host = rt.trigger(input(60),60,1.).unwrap();
+                    let performance = rt.performance(0).unwrap();
+                    match context {
+                        "note" | "release" => {},
+                        "controller" => { rt.dispatch_controller(performance,input(60).channel_address(),1,1,u32::MAX).unwrap(); },
+                        "poly_at" => { rt.dispatch_poly_pressure(performance,input(60).channel_address(),60,u32::MAX).unwrap(); },
+                        _ => { rt.invoke_control(control_context(&rt),rt.active_plan(),None,ControlWrite {id:ControlId(7),value:ControlValue::Integer(1)}).unwrap(); },
+                    }
+                    rt.key_up(host,None).unwrap();
+                    let mut audio=[[0.;2];32];
+                    rt.render(&mut audio).unwrap();
+                    assert_eq!(audio.iter().any(|f| f[0]!=0.),context!="note","{context} negative={negative} dynamic={dynamic}");
+                    rt.flush_behaviors(|_,_,outcome| {assert_eq!(outcome,Outcome::Finished);true});
+                    rt.flush_ended(|_|true);
+                    assert_eq!((rt.note_count(),rt.voice_count(),rt.pending_commands()),(0,0,0));
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn unsupported_play_position_reports_the_parameter_gap_in_a_valid_note_context() {
+    let script=compile("on init declare $position end on on note $position := get_event_par($EVENT_ID,$EVENT_PAR_PLAY_POS) end on").unwrap();
+    assert!(script.warnings().iter().any(|w| w.message.contains("event parameter is not implemented")));
+    assert!(!script.warnings().iter().any(|w| w.message.contains("originating note")));
+}
+
+#[test]
+fn unowned_negative_duration_preserves_midi_argument_rejection() {
+    let script=compile_bound(
+        "on init declare $a declare $b declare $c declare $duration := -7 declare ui_button $button end on
+         on ui_control($button)
+            $a := play_note(-1,127,0,$duration)
+            $b := play_note(60,0,0,$duration)
+            $c := play_note(128,127,0,-1)
+         end on", &[("$button",ControlId(7))]).unwrap();
+    let mut rt=runtime_script(script);
+    support::without_heap(|| {
+        rt.invoke_control(control_context(&rt),rt.active_plan(),None,ControlWrite {id:ControlId(7),value:ControlValue::Integer(1)}).unwrap();
+        for cell in 0..3 { assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),cell),Ok(-1)); }
+        rt.flush_behaviors(|_,_,outcome|{assert_eq!(outcome,Outcome::Finished);true});
+        assert_eq!((rt.note_count(),rt.voice_count(),rt.pending_commands()),(0,0,0));
+    });
 }
 
 #[test]
