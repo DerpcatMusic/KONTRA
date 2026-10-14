@@ -104,6 +104,26 @@ pub enum Native {
     /// UVI DiffuseDelay (Workstation 4.0.9 core `0x141657890`); the unit's
     /// dry/wet is the equal-power mix.
     UviDiffuseDelay(UviDiffuseDelay),
+    /// UVI TapeEcho (Workstation 4.0.9 core `0x141663e40`) without its
+    /// reverb; the unit's dry/wet is the equal-power mix.
+    UviTapeEcho(UviTapeEcho),
+}
+
+/// UVI TapeEcho controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviTapeEcho {
+    pub speed: f32,
+    pub feedback: f32,
+    /// 1..=12: which heads play (5..=12 also feed the reverb).
+    pub mode: u8,
+    pub bass_db: f32,
+    pub treble_db: f32,
+    /// Head delays in seconds, or quarter-note beats when synced.
+    pub delays: [f32; 3],
+    pub synced: bool,
+    pub noise: f32,
+    pub tape_stop: bool,
 }
 
 /// UVI DiffuseDelay controls in native units.
@@ -371,6 +391,19 @@ impl Config {
                 let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
                 if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
                     return Err("uvi legacy delay");
+                }
+            }
+            if let Native::UviTapeEcho(t) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(t.speed, 1., 3.)
+                    && ok(t.feedback, 0., 2.)
+                    && (1..=12).contains(&t.mode)
+                    && ok(t.bass_db, -10., 10.)
+                    && ok(t.treble_db, -10., 10.)
+                    && t.delays.iter().all(|&d| ok(d, 0., 128.))
+                    && ok(t.noise, 0., 0.001))
+                {
+                    return Err("uvi tape echo");
                 }
             }
             if let Native::UviDiffuseDelay(d) = l.native {

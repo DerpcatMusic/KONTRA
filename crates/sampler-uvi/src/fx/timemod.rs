@@ -12,7 +12,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap, UviDiffuseDelay, UviLegacyDelay, UviLegacyKind,
+        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, UviDiffuseDelay, UviLegacyDelay, UviTapeEcho, UviLegacyKind,
     },
 };
 
@@ -141,6 +141,29 @@ impl Translation {
         if tag == "DualDelay" || tag == "DualDelayX" {
             return self.dual_delay(node, at, tag, synced).map(Some);
         }
+        if tag == "TapeEcho" {
+            // Native laws: `sampler_core` `dsp/timemod/tape.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mode = number(node, "Mode", 1.)?.clamp(1., 12.) as u8;
+            let hi = if synced { 128. } else { 0.5 };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviTapeEcho(UviTapeEcho {
+                speed: n("Speed", 2., 1., 3.)?,
+                feedback: n("Feedback", 0.5, 0., 2.)?,
+                mode,
+                bass_db: n("Bass", 0., -10., 10.)?,
+                treble_db: n("Treble", 0., -10., 10.)?,
+                delays: [n("Delay1", 0.165, 0.05, hi)?, n("Delay2", 0.324, 0.05, hi)?, n("Delay3", 0.487, 0.05, hi)?],
+                synced,
+                noise: n("NoiseLevel", 0.0001, 0., 0.001)?,
+                tape_stop: number(node, "TapeStop", 0.)? != 0.,
+            });
+            if mode >= 5 {
+                self.unsupported(at, "TapeEcho reverb (modes 5-12: an impulse response embedded in the UVI binary, not shipped)", mode);
+            }
+            let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
+            return Ok(Some(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) }));
+        }
         if tag == "DiffuseDelay" {
             // Native laws: `sampler_core` `dsp/timemod/diffuse.rs`.
             let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
@@ -199,18 +222,6 @@ impl Translation {
                 if tag == "FxDelay" {
                     self.not_modeled(at, node, tag, &[("BypassDrive", 0.)])?;
                 }
-                delay_config(line, mix)
-            }
-            "TapeEcho" => {
-                let mut line = Line::single(DelayTime::Ms(165.), 500.);
-                for (i, (name, default)) in [("Delay1", 0.165), ("Delay2", 0.324), ("Delay3", 0.487)].into_iter().enumerate() {
-                    line.taps[i] = Tap::at(DelayTime::Ms(number(node, name, default)?.clamp(0.05, 0.5) * 1000.));
-                    line.taps[i].level = 1. / 3.;
-                }
-                line.tap_count = 3;
-                // Feedback runs to 2 on the real unit; the loop is bounded here.
-                feedback(&mut line, number(node, "Feedback", 0.5)?);
-                self.not_modeled(at, node, tag, &[("Mode", 1.), ("Speed", 2.), ("Bass", 0.), ("Treble", 0.), ("NoiseLevel", 0.), ("TapeStop", 0.), ("ReverbGain", 1.)])?;
                 delay_config(line, mix)
             }
             "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" => {
