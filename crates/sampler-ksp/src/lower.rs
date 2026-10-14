@@ -1287,6 +1287,27 @@ impl Gen<'_, '_> {
                     }
                 }
             }
+            ExprKind::Builtin(Builtin::OutputChannelName, args) => {
+                // As at init (eval.rs): the plugin's output channels are "Output N";
+                // an index beyond them names nothing.
+                self.cover(Builtin::OutputChannelName, Coverage::Native);
+                let name = |i: i32| format!("Output {}", i + 1);
+                if let Some(index) = self.const_int(args, 0) {
+                    let text = if (0..b::NUM_OUTPUT_CHANNELS).contains(&index) { name(index) } else { String::new() };
+                    TextPart::Constant(self.constant(&text))
+                } else {
+                    self.arg(args, 0, free)?;
+                    let base = self.texts.len() as u16;
+                    for i in 0..b::NUM_OUTPUT_CHANNELS {
+                        self.texts.push(name(i));
+                    }
+                    TextPart::Table {
+                        base,
+                        count: b::NUM_OUTPUT_CHANNELS as u16,
+                        index: free,
+                    }
+                }
+            }
             ExprKind::Builtin(Builtin::GetFolder, args) => {
                 // NI load/save get_folder; FUN_14078d910 case 9 reads host paths, unknown selectors are empty.
                 self.cover(Builtin::GetFolder, Coverage::Native);
