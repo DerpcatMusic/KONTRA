@@ -38,8 +38,11 @@ pub enum OwnerStage {
     ExportWidgets,
     ExportPage,
     ExportValidate,
+    ExportWidgetSample,
+    ExportValueSample,
+    ExportInventorySample,
 }
-const STAGES: [OwnerStage; 29] = [
+const STAGES: [OwnerStage; 32] = [
     OwnerStage::Loading,
     OwnerStage::InitialSnapshot,
     OwnerStage::Events,
@@ -69,6 +72,9 @@ const STAGES: [OwnerStage; 29] = [
     OwnerStage::ExportWidgets,
     OwnerStage::ExportPage,
     OwnerStage::ExportValidate,
+    OwnerStage::ExportWidgetSample,
+    OwnerStage::ExportValueSample,
+    OwnerStage::ExportInventorySample,
 ];
 impl OwnerStage {
     fn name(self) -> &'static str {
@@ -102,6 +108,9 @@ impl OwnerStage {
             Self::ExportWidgets => "export_widgets",
             Self::ExportPage => "export_page",
             Self::ExportValidate => "export_validate",
+            Self::ExportWidgetSample => "export_widget_sample",
+            Self::ExportValueSample => "export_value_sample",
+            Self::ExportInventorySample => "export_inventory_sample",
         }
     }
     fn scope(self) -> &'static str {
@@ -129,6 +138,12 @@ impl OwnerStage {
             | Self::ExportValidate => {
                 "nested in interface_export or initial_snapshot; five export substages are disjoint"
             }
+            Self::ExportWidgetSample => {
+                "1/128 rotating widget sample; nested in export_widgets; includes value and inventory samples"
+            }
+            Self::ExportValueSample | Self::ExportInventorySample => {
+                "nested in export_widget_sample; sampled value and inventory intervals are disjoint"
+            }
             _ => "owner turn; disjoint except explicitly nested stages",
         }
     }
@@ -150,8 +165,11 @@ pub enum OwnerCounter {
     DeferredResumes,
     CoroutineResumes,
     BacklogHighWater,
+    ExportSamplePasses,
+    ExportBoundValues,
+    ExportSampledBoundValues,
 }
-const COUNTERS: [OwnerCounter; 13] = [
+const COUNTERS: [OwnerCounter; 16] = [
     OwnerCounter::Turns,
     OwnerCounter::Events,
     OwnerCounter::UiRequests,
@@ -165,6 +183,9 @@ const COUNTERS: [OwnerCounter; 13] = [
     OwnerCounter::DeferredResumes,
     OwnerCounter::CoroutineResumes,
     OwnerCounter::BacklogHighWater,
+    OwnerCounter::ExportSamplePasses,
+    OwnerCounter::ExportBoundValues,
+    OwnerCounter::ExportSampledBoundValues,
 ];
 impl OwnerCounter {
     fn name(self) -> &'static str {
@@ -182,6 +203,9 @@ impl OwnerCounter {
             Self::DeferredResumes => "deferred_resumes",
             Self::CoroutineResumes => "coroutine_resumes",
             Self::BacklogHighWater => "backlog_high_water",
+            Self::ExportSamplePasses => "export_sample_passes",
+            Self::ExportBoundValues => "export_bound_value_reads",
+            Self::ExportSampledBoundValues => "export_sampled_bound_value_reads",
         }
     }
 }
@@ -236,6 +260,12 @@ impl Default for OwnerAudit {
     }
 }
 impl OwnerAudit {
+    /// Rotate the selected declaration-index residue between exports. The
+    /// sampling stride is fixed; callbacks and getter order remain unchanged.
+    pub(crate) fn export_sample_offset(&self) -> usize {
+        (self.counters[OwnerCounter::ExportSamplePasses as usize].fetch_add(1, Ordering::Relaxed)
+            & 127) as usize
+    }
     /// Scan builds only. Ordinary plugin builds contain neither this option nor clocks.
     pub fn from_env() -> Result<Option<Arc<Self>>, String> {
         match std::env::var("KONTRA_UVI_OWNER_AUDIT").as_deref() {
