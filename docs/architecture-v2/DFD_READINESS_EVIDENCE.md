@@ -82,11 +82,23 @@ infer on-note Lua mutations or identify the exact native first-burst selection.
 Using only the observed 64 assets as a startup preload recipe would be a
 preset/chord-specific omission and is not implemented.
 
-The required policy decision remains explicit: budget-checked eager coverage
+The required Auto policy decision remains explicit: budget-checked eager coverage
 of the prepared playable mapping, or truthful partial/cold readiness with a
 defined insufficient-budget response. Blindly turning off `lazy` is unsafe:
-the existing eager loader did not enforce the general head cap, only mandatory
-wavetable residency. Increasing a global cache alone does not resolve that law.
+the eager loader at the time of the first receipt did not enforce the general
+head cap, only mandatory wavetable residency. Increasing a global cache alone
+does not resolve that law.
+
+The eager loader now validates checked frame/byte bounds, rejects an impossible
+mono-16 minimum before reading, then prepares and packs each source's complete
+ranges off audio. It checks the exact packed total against the cap before any
+initial head publication. An upper decoded-size bound never rejects a losslessly
+packed head that fits. Over-cap, short/changed metadata and cancellation discard
+the staged batch; a typed `HeadBudgetExceeded` identifies capacity separately
+from source errors. Reads check cancellation between source-page chunks.
+`PreparedRanges` retains validated packed data, avoiding a second packing pass.
+An in-flight cold reload superseded by KSP purge discards its prepared head and
+preserves the original no-publication contract.
 
 ## Worker ownership and source changes
 
@@ -115,7 +127,11 @@ scanning the entire encoded sample to construct a supposedly bounded header.
 
 Focused verification passed: exact offset/reverse readiness 1/1, injected
 completion pressure 1/1 (success and failure subcases), and UVI streamed identity
-and decoder parity 4/4. The optimized production readiness example compiled.
+and decoder parity 4/4. The whole Kontakt stream suite passed 20 tests (one
+pre-existing ignored stress test), including zero/exact/over-cap, multiple ranges,
+short source, cancellation before/during reads and the unchanged in-flight KSP
+purge fixture. Core packed-publication tests passed 2/2. The optimized production
+readiness example compiled before the subsequent budget change.
 
 Numeric receipts are retained privately under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-asset-audit-20261014/dfd-auto`.

@@ -345,7 +345,7 @@ pub fn load_read_streamed_cancelable(
         .map(|&a| locations[a].display().to_string())
         .collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options, initialized)?;
-    crate::Streamed::new(loaded, opened, kept)
+    crate::Streamed::new(loaded, opened, kept, canceled)
 }
 
 /// Stream an instrument translated by another loader: `sources[i]` and
@@ -369,7 +369,7 @@ pub fn stream_instrument(
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
-    crate::Streamed::new(loaded, opened, kept)
+    crate::Streamed::new(loaded, opened, kept, &||false)
 }
 
 /// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to
