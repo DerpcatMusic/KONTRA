@@ -353,10 +353,10 @@ and probes and is explicitly labeled. Four-second whole-phase process averages
 (12.06/11.25%) include two seconds held and a silent/release phase; they must
 not be substituted for the sustained 300-voice meter target.
 
-Read-only release trace: the V2 host handler already captures exact `Held.id`,
-but calls FIFO `Runtime::note_off(input, velocity)`, which scans all allocated
-4,096 note slots for each of 300 IDs. The parent is implementing an exact-ID
-physical key-up API retaining input-key bookkeeping, pedal policy, velocity,
+Pre-fix release trace: the V2 host handler already captured exact `Held.id`,
+but called FIFO `Runtime::note_off(input, velocity)`, which scanned all allocated
+4,096 note slots for each of 300 IDs. The exact-ID physical key-up API retains
+input-key bookkeeping, pedal policy, velocity,
 generation and release callbacks. `release()` would bypass pedals and is not
 a sound-preserving substitute. The API was committed as `13eb6624f` and checked
 against FIFO behavior, pedals, stale generations, callbacks and heap guards.
@@ -441,6 +441,67 @@ build and an external synth build after its start snapshot. It is retained as
 caller time are excluded from quiet timing proof. This is why the clean repeat
 records compilation activity throughout its window.
 
+## Four-output sinc: the wrapper matters
+
+The existing sinc already uses packed stereo accumulation, 64 phase rows, eight
+stretches per octave and hardware-selected FMA. The new path interleaves four
+independent output recurrences, preserving every output's tap-chunk order,
+coefficient interpolation, stereo reduction, cursor phase adds/truncations,
+envelope advancement and mix association. It uses the existing contiguous-span
+preflight; incomplete groups use the established scalar frame loop. Only the
+measured AVX2/FMA bank path changes. Baseline targets retain the original run;
+High quality, cubic interpolation, seam fallback and octave-level policy stay
+as before. No tap count, phase density or effect is reduced.
+
+The first four-output layout loses 6–13% at the isolated stage. Assembly reveals
+an out-of-line row-array helper and redundant range machinery. Explicit chunk
+row initialization removes that helper and improves a clean, same-binary,
+CPU5-pinned one-million-call stage from 39.4–40.3 ms to 30.7–31.2 ms (21–23%).
+That is **not sufficient**: the first source wrapper still loses roughly 8–10%
+in full fractional render, because its separate four-window array builder also
+stays out of line. That wrapper is rejected. Explicit inline window construction
+removes the second helper and is the accepted implementation. This follows the
+compiler's documented [interleaving/register-pressure tradeoff](https://clang.llvm.org/docs/LanguageExtensions.html#extensions-for-loop-hint-optimizations)
+and avoids [floating-point reduction reassociation](https://llvm.org/docs/Vectorizers.html#reductions).
+
+The full matrix uses two alternating pairs per cell, 300 sounding physical
+voices, 48 kHz/256 frames, one caller pinned to CPU5, 512 warmup and 400 measured
+blocks. All 24 output hashes and energy sums match exactly, with zero compiler
+observations throughout. Distinct assets are 300 separately allocated PCM
+bodies containing different audio; distinct cursors use 300 different pitch
+steps on one asset. Native envelopes, three EQs and stereo processing remain
+independent per voice.
+
+| Workload | Source layout | Before caller p50 us, two rounds | After caller p50 us, two rounds |
+| --- | --- | --- | --- |
+| Fractional | Shared | 823.6 / 814.3 | 790.9 / 789.0 |
+| Three EQ + stereo | Shared | 1,984.6 / 1,970.2 | 1,896.8 / 1,899.2 |
+| Fractional | 300 distinct assets | 849.6 / 852.1 | **1,280.6** / 801.5 |
+| Three EQ + stereo | 300 distinct assets | 2,010.7 / 2,017.1 | 1,923.2 / 1,954.0 |
+| Fractional | 300 distinct cursors | 855.1 / 851.6 | 797.2 / 796.9 |
+| Three EQ + stereo | 300 distinct cursors | 2,059.2 / 2,067.3 | 1,988.3 / 1,984.9 |
+
+Typical whole-render savings are 3–7%, not the primitive's 21–23%. The bold
+distinct-asset candidate is a retained 51% CPU regression, with an unresolved
+cause; wall and caller CPU both increase, so simple descheduling alone does not
+explain it. A separate compiler-free, alternating distinct-asset repeat gives
+855.2/862.8→796.1/797.3 us, exact audio, and one candidate wall deadline miss.
+The full matrix has three before misses and one after miss. These receipts
+support a typical gain and do not establish stable deadline tails or a 1% meter.
+
+The primitive checks every bank and phase row, fused/unfused arithmetic, phase
+edges, signed zero, denormals and finite extreme inputs. Cursor tests compare
+PCM, phase/position, last sample and subsequent envelope values for every length
+0–65. Source, paging, realtime heap guards, resampling, multicore, EQ-lane and
+source-revision integration suites also pass. Raw artifacts:
+`resample-four-stage-receipt-clean.log` (rejected first layout),
+`resample-four-refined-stage-clean.log`,
+`resample-four-refined-stage-clean-monitor.json`,
+`resample-four-runtime-rejected-wrapper.json`,
+`resample-four-inline-runtime-paired.json`,
+`resample-four-inline-distinct-repeat.json`,
+`resample-four-final-bits.log`, `resample-four-final-integrations.log`.
+
 Remaining acceptance gap: a verified 300-source real instrument or owned real
 PCM fixture through production policy has now been obtained for owned WAV
 sources; an authored 300-source instrument and complete plugin-process meter timing,
@@ -456,7 +517,7 @@ budget by large factors; no universal promise follows from the completed gains.
 | --- | --- | --- |
 | Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners and phase-specific faults | Named helper-level release/admission cycle attribution and authored script events |
 | Script/controllers | Real Afflatus MIDI/script path, error/fuel/service counters; offline UI initialization profiles in companion evidence | Separate sustained audio-script/controller stage CPU under a verified 300-source authored patch |
-| Source/interpolation | Leaf cycle shares, 100/300 plain versus pitched controls, exact seam stage pairs | Direct four-frame kernel experiment and broad distinct-asset/phase matrix |
+| Source/interpolation | Leaf cycle shares, 100/300 plain versus pitched controls, exact seam and four-output stage pairs; bit-exact shared/distinct-asset/phase whole-render matrix | Authored 300-source and entire plugin-process source-stage attribution under live pitch changes |
 | Native modulation/filter | Separate sounding filtered/modulated workloads with wall/caller/worker tails | Inclusive cycle stacks or bounded direct stage clocks for individual envelope/LFO/filter components |
 | EQ/color FX | Cycle shares, exact recurrence/state tests, sounding 192/300 scalar/batch/parallel comparisons, rejected wider kernel | Moving/script EQ batching and other authored effects under real 300-source load |
 | Summation/lifecycle/state guards | Render/finish cycle shares and parent same-binary validation witness | Summation alone versus cache/ownership work; parent exact-ID release receipt |
