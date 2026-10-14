@@ -74,6 +74,8 @@ pub use snapshot::{
 pub use stream::{
     AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
 };
+mod source_identity;
+pub use source_identity::{FileIdentity, SourceChanged};
 
 /// Increment when protected catalog metadata decoding changes, for cache invalidation.
 pub const LIBRARY_ACCESS_REVISION: u32 = 1;

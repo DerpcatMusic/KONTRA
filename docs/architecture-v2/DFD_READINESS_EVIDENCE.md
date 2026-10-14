@@ -108,7 +108,8 @@ or decode that page again. A fixture injects three publication rejections for
 both valid PCM and invalid-source failure, then verifies one open, one decode,
 four publication attempts, and the exact final result/bytes.
 
-UVI loose sources now freeze identity at admission. On Unix the stamp includes
+Kontakt loose/monolith sources and UVI loose sources now share a frozen
+`FileIdentity` admission stamp. On Unix the stamp includes
 device, inode, high-resolution change/modify times and length. Every reopened
 reader checks the **opened handle**, and physical refill checks it again before
 decrypting/using those bytes. Replacing a path after reader eviction cannot
@@ -116,9 +117,14 @@ silently bind new bytes to an old sample revision. Same-size rewrites with
 restored mtime, inode replacement, removal, truncation and change after open are
 covered. A still-open old handle may supply its unchanged original bytes or
 fail explicitly; it cannot publish replacement bytes as the old revision.
-The non-Unix creation/modify/length fallback has weaker rewrite detection;
-equivalent Windows by-handle identity/change-time validation is not verified.
-Kontakt source admission still needs the same general stamp law at this point.
+Kontakt shares one stamp per physical archive, validates before and after
+directory parsing, and checks retained archive handles as well as reopened loose
+files. No additional file descriptor is retained per sample. Header-cache hits
+still bind the current admitted file identity. Out-of-file/overflowing member
+ranges fail before decoding. The non-Unix creation/modify/length fallback has
+weaker rewrite detection; equivalent Windows by-handle identity/change-time
+validation is not verified. Strong mtime-restored rewrite fixtures are explicitly
+Unix fixtures and are not presented as Windows verification.
 
 UVI streaming also rejects an undeclared total frame count instead of silently
 scanning the entire encoded sample to construct a supposedly bounded header.
@@ -130,7 +136,8 @@ completion pressure 1/1 (success and failure subcases), and UVI streamed identit
 and decoder parity 4/4. The whole Kontakt stream suite passed 20 tests (one
 pre-existing ignored stress test), including zero/exact/over-cap, multiple ranges,
 short source, cancellation before/during reads and the unchanged in-flight KSP
-purge fixture. Core packed-publication tests passed 2/2. The optimized production
+purge fixture. After sharing source identity, Kontakt stream tests passed 21
+(one ignored), file-identity tests 2/2, and UVI stream tests 4/4. Core packed-publication tests passed 2/2. The optimized production
 readiness example compiled before the subsequent budget change.
 
 Numeric receipts are retained privately under

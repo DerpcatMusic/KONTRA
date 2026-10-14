@@ -3,7 +3,7 @@
 //! read, never written out) is decoded a window at a time through the same
 //! decoder a full load uses, so a streamed frame equals the loaded frame.
 
-use sampler_kontakt::{AssetSource, SampleReader};
+use sampler_kontakt::{AssetSource, FileIdentity, SampleReader};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -51,7 +51,7 @@ impl Origin {
                     0,
                     meta.len(),
                     None,
-                    Guard::Loose(LooseStamp::capture(&meta)?),
+                    Guard::Loose(FileIdentity::capture(&meta)?),
                 )
             }
             #[cfg(feature = "library-access")]
@@ -85,51 +85,14 @@ impl Origin {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct LooseStamp {
-    len: u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(unix)]
-    changed: (i64, i64),
-    #[cfg(not(unix))]
-    created: std::time::SystemTime,
-}
-impl LooseStamp {
-    fn capture(meta: &std::fs::Metadata) -> io::Result<Self> {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Ok(Self {
-            len: meta.len(),
-            modified: meta.modified()?,
-            #[cfg(unix)]
-            dev: meta.dev(),
-            #[cfg(unix)]
-            inode: meta.ino(),
-            #[cfg(unix)]
-            changed: (meta.ctime(), meta.ctime_nsec()),
-            #[cfg(not(unix))]
-            created: meta.created()?,
-        })
-    }
-    fn check(&self, file: &File) -> io::Result<()> {
-        if *self != Self::capture(&file.metadata()?)? {
-            return Err(invalid("sample source changed since admission"));
-        }
-        Ok(())
-    }
-}
 struct FrozenOrigin {
     origin: Origin,
-    loose: Option<LooseStamp>,
+    loose: Option<FileIdentity>,
 }
 impl FrozenOrigin {
     fn admit(origin: Origin) -> io::Result<Self> {
         let loose = match &origin {
-            Origin::File(path) => Some(LooseStamp::capture(&std::fs::metadata(path)?)?),
+            Origin::File(path) => Some(FileIdentity::capture(&std::fs::metadata(path)?)?),
             #[cfg(feature = "library-access")]
             Origin::Member { .. } => None,
         };
@@ -147,8 +110,8 @@ impl FrozenOrigin {
 
 /// What a read re-checks, so a library changed under a stream fails cleanly.
 enum Guard {
-    /// Length and modification time of a loose file when it was opened.
-    Loose(LooseStamp),
+    /// Shared immutable file identity captured when the source was admitted.
+    Loose(FileIdentity),
     #[cfg(feature = "library-access")]
     Bank(Arc<crate::ufs::Ufs>),
 }
@@ -664,6 +627,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
+    #[cfg(unix)]
     fn admitted_loose_identity_survives_reader_eviction_without_rebinding_to_new_file() {
         let dir = std::env::temp_dir().join(format!("uvi-source-identity-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
