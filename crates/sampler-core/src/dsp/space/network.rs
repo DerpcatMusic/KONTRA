@@ -555,7 +555,9 @@ impl Network {
             let keep = 1.0 - s.mix;
             x = x.map(|v| s.mix * mean + keep * v);
         }
-        for c in 0..2 {
+        // A fully mono input runs the stage once.
+        let chans = if s.mix == 1.0 { 1 } else { 2 };
+        for c in 0..chans {
             let mut v = x[c] * s.gain;
             for (q, [b0, b1, b2, a1, a2]) in s.input_bq.iter().enumerate() {
                 let [x1, x2, y1, y2] = self.df1[q][c];
@@ -577,6 +579,9 @@ impl Network {
                 v = a.lattice(w, v);
             }
             x[c] = v;
+        }
+        if chans == 1 {
+            x[1] = x[0];
         }
         x
     }
