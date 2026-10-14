@@ -1321,6 +1321,407 @@ impl Xpander {
     }
 }
 
+// ----------------------------------------------------------------- UVI section banks + comb
+
+/// Sections a [`Bank`] holds: DigitalFilter's 16th-order band shapes give 16 plus one.
+const BANK: usize = 17;
+/// Cells: 2 transposed-direct-form-II states per section, then the first-order state.
+const BANK_FIRST: usize = 2 * BANK;
+const _: () = assert!(BANK_FIRST < CELLS);
+
+/// Fixed sections in transposed direct form II, chained or summed, per channel. `wide` runs
+/// DigitalFilter's f64 sections with an f32 store after each (0x141646fb0) and its f32
+/// first-order stage (0x141648c00); otherwise the coefficients and states are f32
+/// (0x141646fa0) and the sections are summed in order and scaled (VowelFilter 0x141345ef0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Bank {
+    sections: [[[f64; 5]; BANK]; 2],
+    count: usize,
+    first: [Option<[f32; 3]>; 2],
+    wide: bool,
+    sum: Option<f32>,
+}
+
+/// `VowelFilter` formant table (0x141ea1f30): 11 vowels x 4 formants, Hz.
+const VOWELS: [[f64; 4]; 11] = [
+    [700.0, 1100.0, 2450.0, 2900.0],
+    [500.0, 1350.0, 1700.0, 2900.0],
+    [250.0, 1700.0, 2500.0, 2700.0],
+    [570.0, 840.0, 2400.0, 3500.0],
+    [300.0, 870.0, 2240.0, 2650.0],
+    [440.0, 1020.0, 2240.0, 2900.0],
+    [520.0, 1190.0, 2390.0, 2900.0],
+    [660.0, 1720.0, 2410.0, 2900.0],
+    [530.0, 1840.0, 2480.0, 2900.0],
+    [390.0, 1990.0, 2550.0, 2900.0],
+    [270.0, 2290.0, 3010.0, 3500.0],
+];
+
+/// RBJ sections at sample rate 1 in f64 (0x14163fd30 LP, 0x14163ff50 BP at 0 dB peak,
+/// 0x14163fe30 HP); above Nyquist LP and BP pass and HP is silent.
+fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
+    if fn_ > 0.5 {
+        return [if mode == 2 { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0, 0.0];
+    }
+    let (sn, cs) = (fn_ * std::f64::consts::TAU).sin_cos();
+    let al = sn * (0.5 / q);
+    let a0 = al + 1.0;
+    let (a1, a2) = ((cs * -2.0) / a0, (1.0 - al) / a0);
+    match mode {
+        0 => {
+            let t = 1.0 - cs;
+            let b0 = (t * 0.5) / a0;
+            [b0, t / a0, b0, a1, a2]
+        }
+        1 => [al / a0, 0.0 / a0, -(al / a0), a1, a2],
+        _ => {
+            let b0 = ((cs + 1.0) * 0.5) / a0;
+            [b0, (-1.0 - cs) / a0, b0, a1, a2]
+        }
+    }
+}
+
+/// `(re, im)` square root, C99 `csqrt` branch cuts (the sign of a zero imaginary part kept).
+fn csqrt((x, y): (f64, f64)) -> (f64, f64) {
+    if x == 0.0 && y == 0.0 {
+        return (0.0, y);
+    }
+    let t = ((x.abs() + x.hypot(y)) * 0.5).sqrt();
+    if x >= 0.0 { (t, y / (t + t)) } else { (y.abs() / (t + t), t.copysign(y)) }
+}
+
+/// 0x141643f60: analog `(p2 s^2 + p3 s + p4) / (s^2 + p5 s + p6)` through the bilinear map.
+fn bilinear(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, w: f64) -> [f64; 5] {
+    let k = 1.0 / (w * 0.5).tan();
+    let k2 = k * k;
+    let n2 = k2 * p2;
+    let n = 1.0 / (k * p5 + p6 + k2);
+    [
+        (k * p3 + p4 + n2) * n,
+        ((p4 - n2) + (p4 - n2)) * n,
+        ((p4 - k * p3) + n2) * n,
+        ((p6 - k2) + (p6 - k2)) * n,
+        ((p6 - k * p5) + k2) * n,
+    ]
+}
+
+/// 0x1416440a0: analog `(p2 s^2 + p3 s + p4) / (p5 s^2 + p6 s + p7)`.
+fn bilinear2(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, p7: f64, w: f64) -> [f64; 5] {
+    let k = 1.0 / (w * 0.5).tan();
+    let p5 = k * k * p5;
+    let p2 = k * k * p2;
+    let n = 1.0 / (k * p6 + p5 + p7);
+    [(k * p3 + p2 + p4) * n, ((p4 - p2) + (p4 - p2)) * n, ((p2 - k * p3) + p4) * n, ((p7 - p5) + (p7 - p5)) * n, ((p5 - k * p6) + p7) * n]
+}
+
+/// 0x1412881a0: the four roots of `s^2 + B s + C` under the band transform.
+fn band_roots(b: f64, c: f64) -> [(f64, f64); 4] {
+    let d4 = (b * b - c * 4.0) + 8.0;
+    let (sre, sim) = csqrt((d4, 0.0));
+    let (q8, q10) = (sre * 0.25, sim * 0.25);
+    let d3 = sre * -b * 0.5;
+    let d2 = sim * -b * 0.5;
+    let d7 = (b * b * 0.5 - c) - 2.0;
+    let w1 = csqrt((d7 - d3, -d2));
+    let pb = b * -0.25;
+    let w2 = csqrt((d3 + d7, d2));
+    let z0 = ((-q8 - w1.0 * 0.5) + pb, -q10 - w1.1 * 0.5);
+    let za = ((-q8 + w1.0 * 0.5) + pb, w1.1 * 0.5 + -q10);
+    let zb = ((q8 - w2.0 * 0.5) + pb, q10 - w2.1 * 0.5);
+    let z3 = (w2.0 * 0.5 + q8 + pb, w2.1 * 0.5 + q10);
+    if d4 <= 0.0 { [z0, zb, za, z3] } else { [z0, za, zb, z3] }
+}
+
+fn re_mul(a: (f64, f64), b: (f64, f64)) -> f64 {
+    a.0 * b.0 - a.1 * b.1
+}
+
+/// `DigitalFilter` design (0x1412840f0): kind 0 LP, 1 HP, 2 BP, 3 notch, 4 low shelf, 5 high
+/// shelf, 6 peak; order `n`, `fn_ = fc / rate`. Sections plus the odd orders' first-order stage.
+fn digital_design(kind: u8, n: usize, fn_: f64, gain_db: f32, q: f64, bw: f64) -> (Vec<[f64; 5]>, Option<[f32; 3]>) {
+    use std::f64::consts::PI;
+    let nf = n as f64;
+    let w = fn_ * (2.0 * PI);
+    let r = 0.5 / q;
+    let mut phi = 0.0;
+    let mut k = 1.0;
+    if r >= 1.0 {
+        if r > 1.0 {
+            k = ((r * r - 1.0).sqrt() + r).powf(1.0 / nf + 1.0 / nf);
+        }
+    } else if n / 2 > 0 {
+        phi = r.acos() / (n / 2) as f64;
+    }
+    let r2 = r * r;
+    let g = f64::from((gain_db * 0.115_129_25).exp());
+    let a = g.powf(1.0 / (nf + nf));
+    let a2 = a * a;
+    let d = 2f64.powf(bw * 0.5) - 2f64.powf(bw * -0.5);
+    let (kk, ikk) = (k * k, 1.0 / (k * k));
+    let (mut bs, mut cs) = ([0f64; 16], [0f64; 16]);
+    let pairs = match n % 4 {
+        2 => {
+            let last = n / 2 - 1;
+            let mut i = 0;
+            while i < last {
+                let th = (1.0 - (i + 2) as f64 * (1.0 / nf)) * PI;
+                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
+                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
+                i += 2;
+            }
+            cs[last] = 1.0;
+            bs[last] = if r >= 1.0 { 1.0 / k + k } else { (PI - phi).cos() * -2.0 };
+            n / 2
+        }
+        0 => {
+            let mut i = 0;
+            while i < n / 2 {
+                let th = (1.0 - (i + 1) as f64 * (1.0 / nf)) * PI;
+                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
+                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
+                i += 2;
+            }
+            n / 2
+        }
+        _ if n == 3 => {
+            let t = (r2 - 2.0) * r2;
+            let z1 = csqrt((t, 0.0));
+            let zb = csqrt(((r2 - z1.0) - 1.0, -z1.1));
+            let zc = csqrt(((r2 + z1.0) - 1.0, z1.1));
+            bs[0] = zb.0 + zc.0;
+            cs[0] = zb.0 * zc.0 - zb.1 * zc.1;
+            1
+        }
+        _ => n / 2,
+    };
+    let mut sections = Vec::with_capacity(BANK);
+    for j in 0..pairs {
+        let (b, c) = (bs[j], cs[j]);
+        match kind {
+            0 => sections.push(bilinear(0.0, 0.0, 1.0, b, c, w)),
+            1 => sections.push(bilinear(1.0, 0.0, 0.0, b, c, w)),
+            4 => sections.push(bilinear(c, b * a, a2, b / a, c / a2, w)),
+            5 => sections.push(bilinear(c * a2 * a2, b * a2 * a, a2, b * a, c * a2, w)),
+            2 | 3 => {
+                let z = band_roots(b * d, c * d * d + 2.0);
+                for (u, v) in [(z[0], z[1]), (z[2], z[3])] {
+                    let (p5, p6) = (-u.0 - v.0, re_mul(u, v));
+                    sections.push(if kind == 2 { bilinear(0.0, d, 0.0, p5, p6, w) } else { bilinear(1.0, 0.0, 1.0, p5, p6, w) });
+                }
+            }
+            _ => {
+                let ic = 1.0 / c;
+                let nz = band_roots(d * a * (b * ic), (d * ic) * (a2 * d) + 2.0);
+                let pz = band_roots((b / a) * d, d * d * (c / a2) + 2.0);
+                for (n0, n1, q0, q1) in [(nz[0], nz[1], pz[0], pz[1]), (nz[2], nz[3], pz[2], pz[3])] {
+                    sections.push(bilinear(1.0, -n0.0 - n1.0, re_mul(n0, n1), -q0.0 - q1.0, re_mul(q0, q1), w));
+                }
+            }
+        }
+    }
+    let mut first = None;
+    if n & 1 == 1 {
+        let k = 1.0 / (w * 0.5).tan();
+        let f3 = |v: [f64; 3]| Some(v.map(|v| v as f32));
+        match kind {
+            0 => {
+                let n = 1.0 / (k + 1.0);
+                first = f3([n, n, (1.0 - k) * n]);
+            }
+            1 => {
+                let n = 1.0 / (k + 1.0);
+                first = f3([k * n, -(k * n), (1.0 - k) * n]);
+            }
+            4 => {
+                let ia = 1.0 / a;
+                let n = 1.0 / (k + ia);
+                first = f3([(k + a) * n, (a - k) * n, (ia - k) * n]);
+            }
+            5 => {
+                let n = 1.0 / (k + a);
+                first = f3([(k * a2 + a) * n, (a - k * a2) * n, (a - k) * n]);
+            }
+            2 => sections.push(bilinear2(0.0, d, 0.0, 1.0, d, 1.0, w)),
+            3 => sections.push(bilinear2(1.0, 0.0, 1.0, 1.0, d, 1.0, w)),
+            _ => sections.push(bilinear2(1.0, d * a, 1.0, 1.0, d / a, 1.0, w)),
+        }
+    }
+    (sections, first)
+}
+
+impl Bank {
+    fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let mut bank = Self { sections: [[[0.0; 5]; BANK]; 2], count: 0, first: [None; 2], wide: false, sum: None };
+        match u {
+            Uvi::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } => {
+                bank.wide = true;
+                for ch in 0..2 {
+                    // 0x141287010: stereo spread is -/+ half the semitones per channel.
+                    let sign = if ch == 0 { -1.0 } else { 1.0 };
+                    let e = ((spread * (1.0 / 24.0)) * sign) + (track * (1.0 / 12.0));
+                    // ponytail: the clamp statics (0x14258bff0/4) are encrypted .data; the Freq
+                    // range 10..22000 stands in until a runtime dump.
+                    let fc = (e.exp2() * hertz).clamp(10.0, 22_000.0);
+                    let (sections, first) = digital_design(
+                        kind,
+                        usize::from(order),
+                        f64::from(fc / rate),
+                        gain,
+                        f64::from(q),
+                        f64::from(bandwidth),
+                    );
+                    bank.count = sections.len().min(BANK);
+                    bank.sections[ch][..bank.count].copy_from_slice(&sections[..bank.count]);
+                    bank.first[ch] = first;
+                }
+            }
+            Uvi::Vowel { morph, q, formant, a, b, mode, count } => {
+                let count = usize::from(count.clamp(1, 4));
+                let m = f64::from(morph);
+                for i in 0..count {
+                    let hz = m * VOWELS[usize::from(b.min(10))][i] + (1.0 - m) * VOWELS[usize::from(a.min(10))][i];
+                    let fn_ = (2f64.powf(f64::from(formant)) * hz) / f64::from(rate);
+                    let s = rbj(mode.min(2), fn_, f64::from(q)).map(|c| f64::from(c as f32));
+                    bank.sections[0][i] = s;
+                    bank.sections[1][i] = s;
+                }
+                bank.count = count;
+                bank.sum = Some(if mode == 1 { 1.0 } else { 1.0 / count as f32 });
+            }
+            _ => return None,
+        }
+        Some(bank)
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        for ch in 0..2 {
+            let sections = &self.sections[ch][..self.count];
+            let mut s: [[f64; 2]; BANK] = std::array::from_fn(|i| [cells[2 * i][ch], cells[2 * i + 1][ch]]);
+            let x = &mut block[ch][..len];
+            if self.wide {
+                for v in x.iter_mut() {
+                    let mut y = f64::from(*v as f32);
+                    for (c, s) in sections.iter().zip(&mut s) {
+                        let o = y * c[0] + s[0];
+                        s[0] = (y * c[1] + s[1]) - o * c[3];
+                        s[1] = y * c[2] - o * c[4];
+                        y = f64::from(o as f32);
+                    }
+                    *v = y;
+                }
+                if let Some([b0, b1, a1]) = self.first[ch] {
+                    let mut z = cells[BANK_FIRST][ch] as f32;
+                    for v in x.iter_mut() {
+                        let u = *v as f32;
+                        let y = (u * b0) + z;
+                        z = (u * b1) - (y * a1);
+                        *v = f64::from(y);
+                    }
+                    cells[BANK_FIRST][ch] = flushed(z);
+                }
+            } else {
+                let gain = self.sum.unwrap_or(1.0);
+                for v in x.iter_mut() {
+                    let u = *v as f32;
+                    let mut acc = 0f32;
+                    for (c, s) in sections.iter().zip(&mut s) {
+                        let [b0, b1, b2, a1, a2] = c.map(|c| c as f32);
+                        let y = (u * b0) + s[0] as f32;
+                        s[0] = f64::from(((u * b1) + s[1] as f32) - (y * a1));
+                        s[1] = f64::from((u * b2) - (y * a2));
+                        acc += y;
+                    }
+                    *v = f64::from(if gain == 1.0 { acc } else { acc * gain });
+                }
+            }
+            for (i, s) in s[..self.count].iter().enumerate() {
+                cells[2 * i][ch] = super::super::flush(s[0]);
+                cells[2 * i + 1][ch] = super::super::flush(s[1]);
+            }
+        }
+    }
+}
+
+/// `CombFilter` (delay 0x141105240, process 0x141106490): `y = x + g (d0 + (d1 - d0) frac)`
+/// with `d0 = y[n - D]`, `d1 = y[n - D - 1]`, the delay `rate / fc` split into integer and
+/// fraction, `g = Q` (Mode 0) or `-Q` (Mode 1). Cells: the write index, then a ring of
+/// `D + 2` outputs (the native ring is larger; only these taps are read).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Comb {
+    delay: usize,
+    frac: f32,
+    g: f32,
+}
+
+impl Comb {
+    fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let Uvi::Comb { hertz, q, negative } = u else { return None };
+        let half = rate * 0.5;
+        let fc = if hertz <= half { hertz } else { half };
+        let p = 1.0 / ((fc + fc) / rate);
+        let dl = (p + p).abs();
+        let delay = dl as usize;
+        Some(Self { delay, frac: dl - delay as f32, g: if negative { -q } else { q } })
+    }
+
+    fn cells(&self) -> usize {
+        1 + self.delay + 2
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        let size = self.delay + 2;
+        let start = cells[0][0] as usize % size;
+        let ring = &mut cells[1..1 + size];
+        for ch in 0..2 {
+            let mut w = start;
+            for v in &mut block[ch][..len] {
+                let i0 = (w + size - self.delay) % size;
+                let d0 = ring[i0][ch] as f32;
+                let d1 = ring[(i0 + size - 1) % size][ch] as f32;
+                let y = ((((d1 - d0) * self.frac) + d0) * self.g) + *v as f32;
+                ring[w][ch] = flushed(y);
+                *v = f64::from(y);
+                w = (w + 1) % size;
+            }
+        }
+        cells[0] = [((start + len) % size) as f64; 2];
+    }
+}
+
+/// The UVI laws designed once at prepare (their controls are constants).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fixed {
+    Xpander(Xpander),
+    Bank(Bank),
+    Comb(Comb),
+}
+
+impl Fixed {
+    fn new(class: Legacy, rate: f32) -> Option<Self> {
+        let Legacy::Uvi(u) = class else { return None };
+        Xpander::new(u, rate)
+            .map(Self::Xpander)
+            .or_else(|| Bank::new(u, rate).map(Self::Bank))
+            .or_else(|| Comb::new(u, rate).map(Self::Comb))
+    }
+
+    fn cells(&self) -> usize {
+        match self {
+            Self::Xpander(_) => XPANDER_CELLS,
+            Self::Bank(_) => CELLS,
+            Self::Comb(c) => c.cells(),
+        }
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        match self {
+            Self::Xpander(x) => x.process(cells, block, len),
+            Self::Bank(b) => b.process(cells, block, len),
+            Self::Comb(c) => c.process(cells, block, len),
+        }
+    }
+}
+
 // ----------------------------------------------------------------- runtime
 
 /// Normalized cutoff and resonance (the native knobs).
@@ -1340,21 +1741,13 @@ impl CascadeSettings {
         })
     }
 
-    /// `[f64; 2]` state cells this configuration owns.
-    pub(crate) fn cells(self) -> usize {
-        if matches!(self.class, Legacy::Uvi(Uvi::Xpander { .. })) { XPANDER_CELLS } else { CELLS }
-    }
-
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Cascade {
         super::ladder_kernel::prepare();
         Cascade {
             class: self.class,
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
             rate: rate as f32,
-            xpander: match self.class {
-                Legacy::Uvi(u) => Xpander::new(u, rate as f32),
-                _ => None,
-            },
+            fixed: Fixed::new(self.class, rate as f32),
         }
     }
 }
@@ -1363,12 +1756,13 @@ pub(crate) struct Cascade {
     class: Legacy,
     parameters: [PreparedParameter; 2],
     rate: f32,
-    xpander: Option<Xpander>,
+    /// UVI laws designed at prepare.
+    fixed: Option<Fixed>,
 }
 
 impl Cascade {
     pub(crate) fn cells(&self) -> usize {
-        if self.xpander.is_some() { XPANDER_CELLS } else { CELLS }
+        self.fixed.map_or(CELLS, |f| f.cells())
     }
 
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
@@ -1403,8 +1797,8 @@ impl Cascade {
                     .clamp(0., 1.)
             })
         };
-        if let Some(x) = &self.xpander {
-            x.process(cells, block, len);
+        if let Some(f) = &self.fixed {
+            f.process(cells, block, len);
             return !cells.iter().flatten().all(|v| v.is_finite());
         }
         if let Legacy::Sv(sv) = self.class {
@@ -1483,7 +1877,9 @@ impl Cascade {
             Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
             Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
             Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
-            Legacy::Uvi(Uvi::Xpander { .. }) => unreachable!("Xpander runs before the clocked laws"),
+            Legacy::Uvi(Uvi::Xpander { .. } | Uvi::Digital { .. } | Uvi::Vowel { .. } | Uvi::Comb { .. }) => {
+                unreachable!("fixed UVI laws run before the clocked laws")
+            }
             _ => {}
         }
         let seen = cells[KNOBS];
@@ -1796,12 +2192,12 @@ mod tests {
             let settings =
                 CascadeSettings { class: Legacy::Uvi(uvi), cutoff: Parameter::Constant(0.0), resonance: Parameter::Constant(0.0) };
             let unit = settings.compile(48_000, &mut Vec::new());
-            let x = unit.xpander.unwrap();
+            let Some(Fixed::Xpander(x)) = unit.fixed else { panic!() };
             let (r, g) = (case["R"].as_f64().unwrap() as f32, case["g"].as_f64().unwrap() as f32);
             if (x.r - r).abs() > 1e-6 || (x.g - g).abs() > 1e-6 {
                 failures.push(format!("{p}: R/g {} {} vs {r} {g}", x.r, x.g));
             }
-            let mut cells = vec![[0f64; 2]; settings.cells()];
+            let mut cells = vec![[0f64; 2]; unit.cells()];
             if !case["fresh"].as_bool().unwrap() {
                 cells[XP_PREVIOUS] = [f64::from(x.r); 2];
                 // Settled R and g only: the drive still glides from 1 on this first call.
@@ -1819,6 +2215,69 @@ mod tests {
                 // Mono alg-0 vectors differ from our stereo-kernel order by rounding.
                 if !(err < 2e-5) {
                     failures.push(format!("{p} fresh {} {key}: err {err}: {:?} vs {:?}", case["fresh"], &block[ch][..4], &native[..4]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI DigitalFilter (f64 TDF-II cascade + first-order stage, stereo spread), VowelFilter
+    /// (parallel f32 bank) and CombFilter (fractional feedback delay) under kemu.
+    #[test]
+    fn uvi_banks_and_comb_match_the_native_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("cascade_uvi_bank_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for name in ["DigitalFilter", "VowelFilter", "CombFilter"] {
+            for case in vectors[name].as_array().unwrap() {
+                let p = &case["params"];
+                let num = |k: &str| p[k].as_f64().unwrap() as f32;
+                let uvi = match name {
+                    "DigitalFilter" => Uvi::Digital {
+                        kind: num("Type") as u8,
+                        order: num("order") as u8,
+                        hertz: num("Freq"),
+                        track: 0.0,
+                        spread: num("Spread"),
+                        q: num("Q"),
+                        gain: num("Gain"),
+                        bandwidth: num("Bandwidth"),
+                    },
+                    "VowelFilter" => Uvi::Vowel {
+                        morph: num("Morph"),
+                        q: num("Q"),
+                        formant: num("Formant"),
+                        a: num("FilterA") as u8,
+                        b: num("FilterB") as u8,
+                        mode: num("Mode") as u8,
+                        count: num("NumFormants") as u8,
+                    },
+                    _ => Uvi::Comb { hertz: num("Freq"), q: num("Q"), negative: num("Mode") == 1.0 },
+                };
+                let unit = CascadeSettings {
+                    class: Legacy::Uvi(uvi),
+                    cutoff: Parameter::Constant(0.0),
+                    resonance: Parameter::Constant(0.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let mut cells = vec![[0f64; 2]; unit.cells()];
+                let mut block = [[0f64; super::super::super::BLOCK]; 2];
+                block[0][0] = 1.0;
+                block[1][0] = 1.0;
+                // Two calls of 32 frames: the comb ring and bank states carry across.
+                unit.process(&mut cells, &[], &mut block, 32, 0, [0.0; 4]);
+                let mut rest = [[0f64; super::super::super::BLOCK]; 2];
+                unit.process(&mut cells, &[], &mut rest, 32, 32, [0.0; 4]);
+                for ch in 0..2 {
+                    block[ch][32..64].copy_from_slice(&rest[ch][..32]);
+                }
+                for (ch, key) in ["out", "right"].into_iter().enumerate() {
+                    let Some(native) = case[key].as_array() else { continue };
+                    let native: Vec<f32> = native.iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                    let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                    let err = block[ch].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                    if !(err < 1e-5) {
+                        failures.push(format!("{name} {p} {key}: err {err}: {:?} vs {:?}", &block[ch][..3], &native[..3]));
+                    }
                 }
             }
         }
