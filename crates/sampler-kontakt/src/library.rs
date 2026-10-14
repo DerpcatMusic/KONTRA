@@ -450,6 +450,17 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_, _>>()
         .map_err(|e| decode("source group names", e))?;
+    let zone_data = &program.0.find_first(ZONE_LIST)
+        .ok_or_else(|| invalid("missing zone list"))?.data;
+    // Initializers may query/attach physical zones before effect/group DSP
+    // admission. Read only bounded serialized metadata here, never samples.
+    let span = crate::audit::Span::new("translate_zone_metadata_prepass");
+    let zone_metadata = if out.ir.behaviors.iter().any(|b| b.language == ir::Language::Ksp) {
+        source_zone_metadata(zone_data, group_names.len()).map_err(|reason| invalid(&reason))?
+    } else {
+        Default::default()
+    };
+    drop(span);
     if let Some(snapshot) = snapshot {
         out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
         for behavior in &mut out.ir.behaviors {
@@ -472,8 +483,9 @@ fn translate(
         }
     }
     let span = crate::audit::Span::new("translate_ksp_init");
-    let initialized =
-        crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
+    let mut initialized = crate::load::initialize_scripts_with_zones(
+        &mut out.ir, Some(&path), group_names, control_values, &zone_metadata,
+    );
     out.engine = initialized
         .states
         .iter()
@@ -570,11 +582,7 @@ fn translate(
     let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
-    let data = &program
-        .0
-        .find_first(ZONE_LIST)
-        .ok_or_else(|| invalid("missing zone list"))?
-        .data;
+    let data = zone_data;
     let mut r = Cursor::new(data.as_slice());
     let count = u32le(&mut r).map_err(|e| LoadError::io(&path, e))? as usize;
     if count > data.len() / 8 {
@@ -660,6 +668,7 @@ fn translate(
         objects.zones.shrink_to_fit();
     }
     drop(_span);
+    crate::load::admit_initialized_zone_sources(&mut out.ir, &mut initialized);
     let mut kontakt = Kontakt {
         instrument: out.ir,
         locations: out.locations,
@@ -3107,6 +3116,29 @@ struct RawZone {
     source: ir::kontakt::Zone,
 }
 
+/// Same one-based physical identities used by the later ZoneList admission
+/// pass. No dense group/zone ordinals, sample resolution or payload reads.
+fn source_zone_metadata(
+    data: &[u8],
+    groups: usize,
+) -> Result<std::collections::BTreeMap<u32, [i32; 3]>, String> {
+    let mut reader = Cursor::new(data);
+    let count = u32le(&mut reader).map_err(|e| e.to_string())?;
+    if count as usize > data.len() / 8 {
+        return Err("zone count exceeds the zone list".into());
+    }
+    let mut metadata = std::collections::BTreeMap::new();
+    for index in 0..count {
+        let zone = raw_zone(&mut reader).map_err(|reason| format!("zone {index}: {reason}"))?;
+        if zone.group >= groups {
+            return Err(format!("zone {index} refers to missing group {}", zone.group));
+        }
+        let group = i32::try_from(zone.group).map_err(|_| "source group index exceeds script range")?;
+        metadata.insert(index + 1, [group, i32::from(zone.source.low_key), i32::from(zone.source.high_key)]);
+    }
+    Ok(metadata)
+}
+
 /// A saved automation tag's script slot, widget ordinal and whether it names a `ui_switch`.
 fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
     let (switch, rest) = match tag.strip_prefix("pts_script_slider_") {
@@ -3119,6 +3151,33 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
+    fn zone_record(group: u32, low: i16, high: i16) -> Vec<u8> {
+        let mut public = vec![0; 48];
+        public[16..18].copy_from_slice(&low.to_le_bytes());
+        public[18..20].copy_from_slice(&high.to_le_bytes());
+        let mut record = group.to_le_bytes().to_vec();
+        record.extend([1, 0x9a, 0]);
+        record.extend(0u32.to_le_bytes());
+        record.extend(48u32.to_le_bytes());
+        record.extend(public);
+        record.extend(0u32.to_le_bytes());
+        record
+    }
+
+    #[test]
+    fn initializer_zone_prepass_uses_physical_order_and_needs_no_sample_resolver() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        data.extend(zone_record(2,60,61));
+        data.extend(zone_record(0,36,48));
+        data.extend(zone_record(1,80,90));
+        assert_eq!(super::source_zone_metadata(&data,3).unwrap(),
+            [(1,[2,60,61]),(2,[0,36,48]),(3,[1,80,90])].into());
+        assert!(super::source_zone_metadata(&data,2).is_err());
+        assert!(super::source_zone_metadata(&data[..data.len()-1],3).is_err());
+        data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(super::source_zone_metadata(&data,3).is_err());
+    }
+
     #[test]
     fn automation_tags_name_sliders_and_switches() {
         assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));

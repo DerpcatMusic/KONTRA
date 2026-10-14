@@ -66,8 +66,23 @@ holes after admission. Saved zone ID 748 is positive and later admitted, but the
 raw serialized zone at that identity has different group/key metadata from the
 cache's selected group/key. That observation is not permission to remap cached
 IDs by ordinal, name or nearest key. Native identity persistence needs independent
-validation. Empty initialization authority should be fixed while preserving this
-separate uncertainty and final source admission.
+validation.
+
+Initialization now reads the bounded serialized zone metadata before executing
+scripts. It uses the same one-based physical IDs as normal admission, without
+resolving samples or reading payloads. Final admission reconciles captured and
+restored initializer state against the surviving source map: missing or changed
+identities lose their attachment and properties with a diagnostic; no replacement
+identity is selected. The final script binder also checks its source authority
+against the prepared plan.
+
+The installed Solo Pads regression retains requested ID 748, mapping it to IR
+zone 747, asset 344, source group 24 and keys 69–70. All 806 physical source entries
+survive, and the earlier empty-authority attachment warning is absent. This is
+metadata/UI evidence; native persisted-ID equivalence remains unverified. Tests
+also cover missing/unbound sources, sparse and reordered admission, changed
+ownership, cached initializer restoration and reload. No vendor source or payload
+is retained in the fixture or report.
 
 A frozen existing inspector (`f537f96754463ec5c0f7b0f60a6533e4da992e14fd760666d67b8b15c44da909`)
 confirmed successful Pads initialization/UI projection with the original P5/P6
