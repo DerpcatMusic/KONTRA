@@ -628,7 +628,7 @@ remainder does not identify individual output/meter/lifecycle costs.
 Separate uninstrumented own-child `cycles:u` leaf profiles use the same frozen
 companion, retain zero lost samples, and include setup, warmup, steady render,
 release and the fixture's outside-callback observers. Plain leaves include
-`render_voice` 41.62%, source mixing 16.68%, unresolved libc code 11.27%,
+`render_voice` 41.62%, source mixing 16.68%, libc copying 11.27%,
 `audible_voice_count` 5.53% and `prepare_voice` 4.70%. The audible count is also
 called by fixture assertions outside `Sampler::process`, so its entire share
 cannot be assigned to KONTRA's meter. Fractional interpolation leaves account
@@ -662,6 +662,81 @@ for the sustained-voice target. These concurrent correctness runs are not
 performance acceptance. Diagnostic clock calls and adjacent group bookkeeping
 perturb the measurements, especially small groups; the original uninstrumented
 release executable remains frozen separately.
+
+The final same-binary group run is `whole-callback-groups-paired.json`, with
+per-process logs and `whole-callback-groups-summary.json` beside it. SHA-256 is
+`d906d7ab9351bd58fb7c2087e1d6c97459bd185c89d66a8b829212bdb88122b1`.
+Two alternating rounds use CPU 5, corpus optimizations, 48 kHz/256 frames,
+300 distinct resident PCM assets, 512 warmup and 1,000 measured callbacks.
+All six mode pairs have exact PCM hash/energy, 300 sustained audible owners,
+zero runtime faults, zero heap calls and complete release. The continuous
+250 ms monitor records no compiler observations. Of 67 busy-process records,
+64 are the measured children, two are the desktop renderer and one is Claude
+Desktop; ordinary VM/DAW/desktop activity remains. This is a compiler-free
+desktop run, not an isolated host or exported-plugin DAW test.
+
+| Workload | Uninstrumented mean meter %, two rounds | Diagnostic mean meter %, two rounds | Added elapsed us/callback, paired rounds |
+| --- | ---: | ---: | ---: |
+| Plain | 1.893 / 1.862 | 2.022 / 2.051 | 6.850 / 10.073 |
+| Fractional | 17.869 / 17.878 | 18.109 / 17.949 | 12.835 / 3.787 |
+| 3EQ+Stereo | 38.261 / 38.445 | 38.790 / 38.673 | 28.210 / 12.149 |
+
+No uninstrumented steady callback misses its 5,333.333 us deadline in these
+six runs. Both diagnostic EQ runs retain one miss: maxima 7,249.477 and
+7,305.678 us, versus uninstrumented maxima 3,403.284 and 3,131.429 us.
+The probes increase work and can alter scheduling; these misses are retained,
+not assigned to a particular scheduler or arithmetic cause. Aggregate caller
+CPU excludes descheduling but does not identify the cause of each individual
+tail. Uninstrumented plain p99 remains 134.672 / 150.223 us, fractional
+2,222.402 / 2,171.451 us and EQ 2,985.386 / 2,957.676 us. The 1% target is
+still unmet, including the cheapest distinct-source case.
+
+The following are diagnostic means over both rounds, **caller CPU / wall
+microseconds per actual sustained callback**. They include group clock and
+bookkeeping costs; they are not corrected estimates of uninstrumented stage
+cost. Inclusive core rendering overlaps the separately reported V2 timers.
+
+| Actual callback group | Plain CPU / wall us | Fractional CPU / wall us | 3EQ+Stereo CPU / wall us |
+| --- | ---: | ---: | ---: |
+| Adoption/polling | 0.491 / 0.513 | 0.500 / 0.512 | 0.524 / 0.546 |
+| Transport/controls/keyboard | 0.534 / 0.539 | 0.543 / 0.547 | 0.563 / 0.566 |
+| Host events | 1.475 / 1.514 | 1.476 / 1.503 | 1.490 / 1.514 |
+| Audition/master gain | 1.065 / 1.079 | 1.067 / 1.079 | 1.085 / 1.095 |
+| Core rendering, inclusive | 95.793 / 96.431 | 940.632 / 949.456 | 2,021.706 / 2,053.342 |
+| Output mix/scope | 1.596 / 1.798 | 1.609 / 1.808 | 1.655 / 1.860 |
+| UI/effect readback | 0.481 / 0.499 | 0.490 / 0.502 | 0.507 / 0.517 |
+| End-block retirement | 2.398 / 2.424 | 2.416 / 2.427 | 2.454 / 2.484 |
+| Meter publication | 0.601 / 0.639 | 0.608 / 0.609 | 0.626 / 0.635 |
+| Voice readback | 2.708 / 2.709 | 2.638 / 2.642 | 2.601 / 2.598 |
+
+The final probe/unattributed remainder is 0.455 / 0.457 / 0.513 us/callback
+for plain/fractional/EQ. Caller CPU can slightly exceed an individual tiny
+wall interval because the two clocks are read sequentially; no fabricated
+CPU-to-wall inequality is imposed. The core group accounts for the large
+workload-dependent growth. The voice-readback group now proves an actual
+inside-callback cost, bounded by its whole measured 2.6–2.7 us group including
+probes; it does not justify assigning the earlier whole-executable 5.53% leaf
+share entirely to the meter or removing voice telemetry.
+
+On the admission callback, host-event caller CPU averages 1,159 / 1,152 /
+1,267 us for plain/fractional/EQ; initial inclusive core CPU is 510 / 2,183 /
+2,991 us. Those are distinct from sustained playback. Across **all 33 release
+callbacks combined**, host-event caller CPU is 367 / 370 / 360 us, core CPU
+564 / 1,311 / 3,080 us, and retirement CPU 111 / 119 / 117 us. These totals
+include key-up and tail/NOTE_END work; dividing mostly silent release callbacks
+into a low average would misrepresent the sustained-voice target. The separate
+uninstrumented note-off callback takes 908–916 / 1,668–1,682 / 2,679–2,696 us.
+
+Read-only disassembly resolves the earlier libc IP to
+`__memcpy_avx512_unaligned_erms+0x13`, not `memset`. Its callers still need
+stack attribution before any copying optimization is proposed. The frozen
+`render_voice` assembly separately contains a 512-byte scratch `memset` even
+when the unmodulated path writes directly to its target, plus large prelude
+moves and generic state preparation. Static presence is not measured cost:
+the 11.27% copying leaf cannot be relabeled scratch clearing. A bounded
+own-child call-chain capture is the next attribution step, with fixture
+observers distinguished from `Sampler::process` callers. No new production
+fast path is accepted from these observations alone.
 
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
