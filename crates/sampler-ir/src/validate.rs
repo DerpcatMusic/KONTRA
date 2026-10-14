@@ -689,7 +689,8 @@ impl Instrument {
                 | Target::Pan
                 | Target::SampleStart
                 | Target::LoopStart
-                | Target::LoopLength => {}
+                | Target::LoopLength
+                | Target::Wavetable(_) => {}
             }
             if let Some(shape) = route.shape {
                 check.exists(Reference::Shape(shape.0))?;
@@ -745,6 +746,7 @@ impl Instrument {
             .map(|binding| binding.control)
             .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
             .collect();
+        let mut native_aliases = std::collections::HashSet::new();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
             check.owner = format!("source control alias {i}");
             check.exists(Reference::Control(alias.control.0))?;
@@ -761,6 +763,18 @@ impl Instrument {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "unbound native control alias",
+                    value: i as f64,
+                });
+            }
+            if !native_aliases.insert((
+                alias.parameter.trim_start_matches('$'),
+                alias.address.group,
+                alias.address.slot,
+                alias.address.generic,
+            )) {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "duplicate native control alias",
                     value: i as f64,
                 });
             }
