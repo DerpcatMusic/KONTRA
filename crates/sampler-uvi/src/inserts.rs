@@ -100,7 +100,10 @@ impl Translation {
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
             let mix = scripted && engine_parameters::bypassable(node);
             if bypassed && !mix {
+                // Exactly silent: nothing to translate (a script that enables it
+                // reports its write).
                 placed.push((id, slot, 0));
+                self.used.insert(node.id());
                 continue;
             }
             if mix {
