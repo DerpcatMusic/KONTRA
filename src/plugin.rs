@@ -2537,6 +2537,12 @@ fn load_part_with(
             for missing in &loaded.report.missing {
                 trace.missing(missing, loaded.instrument.as_deref());
             }
+            if let Some(startup) = &loaded.report.stream_startup {
+                trace.detail("stream_startup", serde_json::to_value(startup).unwrap_or_default());
+                if let Some(warning) = startup.warning() {
+                    trace.issue("prepare", "attack_preload_budget", warning);
+                }
+            }
             v.fault_inbox = loaded.part.as_ref().map(|p| p.fault_inbox.clone());
             let mut runtime_log = trace.runtime_log();
             if runtime_log.lua(&loaded.report.uvi_faults) {

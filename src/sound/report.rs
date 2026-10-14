@@ -217,6 +217,38 @@ pub struct LoadReport {
     /// Message-free typed UVI initial diagnostics. Live counts arrive in runtime.
     #[serde(default)]
     pub uvi_faults: sampler_uvi::script::FaultCounts,
+    /// Initial permanent attack coverage; excludes later dynamic sample revisions.
+    #[serde(default)]
+    pub stream_startup: Option<StreamStartup>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamStartup {
+    pub ranges: usize,
+    pub covered_ranges: usize,
+    pub packed_head_bytes: usize,
+    pub head_budget_bytes: usize,
+    /// Exact typed capacity failure retained as readable support evidence.
+    pub fallback: Option<String>,
+}
+
+impl StreamStartup {
+    pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm]) -> Self {
+        let readiness = streamer.head_readiness(assets);
+        Self {
+            ranges: readiness.ranges,
+            covered_ranges: readiness.covered_ranges,
+            packed_head_bytes: readiness.packed_bytes,
+            head_budget_bytes: readiness.budget_bytes,
+            fallback: streamer.head_fallback().map(|failure| failure.to_string()),
+        }
+    }
+
+    pub fn warning(&self) -> Option<String> {
+        self.fallback.as_ref().map(|why| format!(
+            "Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. First notes may wait for disk reads.",
+            self.covered_ranges, self.ranges))
+    }
 }
 
 impl From<&sampler_ir::Unsupported> for Missing {
@@ -281,6 +313,7 @@ impl LoadReport {
             why_silent: None,
             faults: Vec::new(),
             uvi_faults: Default::default(),
+            stream_startup: None,
         }
     }
 
@@ -300,6 +333,7 @@ impl LoadReport {
         .chain(self.missing.iter().map(|m| {
             format!("missing ({:?}): {} = {:?} at {}", m.reason, m.feature, m.value, m.location)
         }))
+        .chain(self.stream_startup.iter().filter_map(StreamStartup::warning))
     }
 }
 

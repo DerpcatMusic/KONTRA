@@ -1,0 +1,2289 @@
+{
+  "scope": "Actual V2 Auto immutable numeric observations; uncontrolled OS caches and adaptive geometry; contended, not an A/B speed claim. No audio or instrument content persisted.",
+  "binaries": {
+    "128": {
+      "name": "dfd-auto-eager-current",
+      "sha256": "4273ae95e29f6bdf8c938aaac83fd3db31a0f5ff010c4ba05d275d345aa018a0"
+    },
+    "256": {
+      "name": "dfd-auto-eager-256-current",
+      "sha256": "96daae8a1676082e6e08fac3dd50b21ad3014f06f98ce30f1bc6e6c872c193a4"
+    }
+  },
+  "rows": [
+    {
+      "initial_cap_mib": 128,
+      "block": 64,
+      "compiler_observations": 23,
+      "source": {
+        "candidate_scope": "saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability",
+        "exact_head_coverage": {
+          "assets": 15008,
+          "complete": false,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 0,
+          "covered_ranges": 0,
+          "covered_source_frames": 0,
+          "decoded_bytes": 244735304,
+          "minimum_packed_bytes": 61183826,
+          "packed_resident_bytes": 0,
+          "ranges": 17047,
+          "source_frames": 30591913
+        },
+        "full_bytes": 14499834880,
+        "head_bytes_reported_at_load": 0,
+        "head_frames": 1406,
+        "heads_after_prepare": {
+          "assets": 15008,
+          "assets_with_any_head": 0,
+          "head_bytes": 0,
+          "note": "any head is not proof every authored onset/loop window is ready",
+          "source_frames": 1812479360
+        },
+        "io_after_prepare": {
+          "rchar": 495434441,
+          "read_bytes": 434024448,
+          "syscr": 45675
+        },
+        "load_ms": 5441.2133349999995,
+        "pool_bytes": 100663296,
+        "read_latency_p95_us": 16614,
+        "read_latency_samples": 32,
+        "saved_unmuted_asset_coverage": {
+          "assets": 15008,
+          "complete": false,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 0,
+          "covered_ranges": 0,
+          "covered_source_frames": 0,
+          "decoded_bytes": 244735304,
+          "minimum_packed_bytes": 61183826,
+          "packed_resident_bytes": 0,
+          "ranges": 17047,
+          "source_frames": 30591913
+        },
+        "static_first_chord_asset_candidates": {
+          "assets": 532,
+          "complete": false,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 0,
+          "covered_ranges": 0,
+          "covered_source_frames": 0,
+          "decoded_bytes": 10990680,
+          "minimum_packed_bytes": 2747670,
+          "packed_resident_bytes": 0,
+          "ranges": 767,
+          "source_frames": 1373835
+        }
+      },
+      "bursts": [
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": false,
+            "configured_budget_bytes": 134217728,
+            "covered_assets": 64,
+            "covered_ranges": 139,
+            "covered_source_frames": 249543,
+            "decoded_bytes": 244735304,
+            "minimum_packed_bytes": 61183826,
+            "packed_resident_bytes": 1497258,
+            "ranges": 17047,
+            "source_frames": 30591913
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 64,
+            "head_bytes": 1497258,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 121,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 0,
+            "head_bytes": 0,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 1242.913,
+          "callback_p50_us": 488.809,
+          "callback_p99_us": 830.865,
+          "deadline_misses": 0,
+          "event_us": 574,
+          "first_nonzero_engine_offset_frames": 64,
+          "heap_calls": 0,
+          "peak": 1.526019811630249,
+          "round": 1,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 641.782,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 0,
+                "head_bytes": 0,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 16,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 16
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 1150.701,
+              "engine_offset": 64,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15,
+                "head_bytes": 325260,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0007803593762218952,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 59,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 64
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 1242.913,
+              "engine_offset": 128,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 28,
+                "head_bytes": 604656,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0021093524992465973,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 90,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 765.534,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 41,
+                "head_bytes": 1002942,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.06859990209341049,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 593.071,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.072702556848526,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 492.239,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.30293574929237366,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 592.241,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.543865442276001,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 572.73,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.9974857568740845,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 454.778,
+              "engine_offset": 7616,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.0523054599761963,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 121,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            }
+          ]
+        },
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": false,
+            "configured_budget_bytes": 134217728,
+            "covered_assets": 128,
+            "covered_ranges": 203,
+            "covered_source_frames": 364167,
+            "decoded_bytes": 244735304,
+            "minimum_packed_bytes": 61183826,
+            "packed_resident_bytes": 2185002,
+            "ranges": 17047,
+            "source_frames": 30591913
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 128,
+            "head_bytes": 2185002,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 249,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 64,
+            "head_bytes": 1497258,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 121,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 1647.3,
+          "callback_p50_us": 530.66,
+          "callback_p99_us": 1507.978,
+          "deadline_misses": 3,
+          "event_us": 555,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 0.9579159617424011,
+          "round": 2,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 679.023,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 64,
+                "head_bytes": 1497258,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.00011039448872907087,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 137,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 32
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 1061.279,
+              "engine_offset": 64,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 83,
+                "head_bytes": 1701432,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.02100430242717266,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 169,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 1215.123,
+              "engine_offset": 128,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 96,
+                "head_bytes": 1841130,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.03823953494429588,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 185,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 1560.928,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.12229254096746445,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 233,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 192
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 1007.769,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.12154463678598404,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 249,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 208
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 504.159,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.42828020453453064,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 249,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 519.319,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5774285793304443,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 249,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 517.36,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.6194329261779785,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 249,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 528.92,
+              "engine_offset": 7616,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 128,
+                "head_bytes": 2185002,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.6146592497825623,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 249,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            }
+          ]
+        }
+      ],
+      "worker_summary": {
+        "jobs": 476,
+        "failures": 0,
+        "reply_backpressure": 0,
+        "max_queue_us": 1296,
+        "max_read_wall_us": 356
+      }
+    },
+    {
+      "initial_cap_mib": 128,
+      "block": 256,
+      "compiler_observations": 10,
+      "source": {
+        "candidate_scope": "saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability",
+        "exact_head_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 15008,
+          "covered_ranges": 17059,
+          "covered_source_frames": 14509976,
+          "decoded_bytes": 116079808,
+          "minimum_packed_bytes": 29019952,
+          "packed_resident_bytes": 87059856,
+          "ranges": 17059,
+          "source_frames": 14509976
+        },
+        "full_bytes": 14499834880,
+        "head_bytes_reported_at_load": 87059856,
+        "head_frames": 614,
+        "heads_after_prepare": {
+          "assets": 15008,
+          "assets_with_any_head": 15008,
+          "head_bytes": 87059856,
+          "note": "any head is not proof every authored onset/loop window is ready",
+          "source_frames": 1812479360
+        },
+        "io_after_prepare": {
+          "rchar": 329948246,
+          "read_bytes": 31105024,
+          "syscr": 20399
+        },
+        "load_ms": 903.2325460000001,
+        "pool_bytes": 100663296,
+        "read_latency_p95_us": 115,
+        "read_latency_samples": 32,
+        "saved_unmuted_asset_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 15008,
+          "covered_ranges": 17059,
+          "covered_source_frames": 14509976,
+          "decoded_bytes": 116079808,
+          "minimum_packed_bytes": 29019952,
+          "packed_resident_bytes": 87059856,
+          "ranges": 17059,
+          "source_frames": 14509976
+        },
+        "static_first_chord_asset_candidates": {
+          "assets": 532,
+          "complete": true,
+          "configured_budget_bytes": 134217728,
+          "covered_assets": 532,
+          "covered_ranges": 767,
+          "covered_source_frames": 651549,
+          "decoded_bytes": 5212392,
+          "minimum_packed_bytes": 1303098,
+          "packed_resident_bytes": 3909294,
+          "ranges": 767,
+          "source_frames": 651549
+        }
+      },
+      "bursts": [
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 134217728,
+            "covered_assets": 15008,
+            "covered_ranges": 17059,
+            "covered_source_frames": 14509976,
+            "decoded_bytes": 116079808,
+            "minimum_packed_bytes": 29019952,
+            "packed_resident_bytes": 87059856,
+            "ranges": 17059,
+            "source_frames": 14509976
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 87059856,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 87059856,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 4739.777,
+          "callback_p50_us": 2045.018,
+          "callback_p99_us": 2222.891,
+          "deadline_misses": 0,
+          "event_us": 2108,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 3.278913736343384,
+          "round": 1,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 4739.777,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.05465962737798691,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 2357.183,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.14694294333457947,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 1826.133,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.14722710847854614,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 1978.446,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5050158500671387,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 2041.988,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.7432060241699219,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 2101.198,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.8824319839477539,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 2152.649,
+              "engine_offset": 8192,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.2685068845748901,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 2119.449,
+              "engine_offset": 16384,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.939492106437683,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 1657.51,
+              "engine_offset": 30464,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 3.278913736343384,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            }
+          ]
+        },
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 134217728,
+            "covered_assets": 15008,
+            "covered_ranges": 17059,
+            "covered_source_frames": 14509976,
+            "decoded_bytes": 116079808,
+            "minimum_packed_bytes": 29019952,
+            "packed_resident_bytes": 87059856,
+            "ranges": 17059,
+            "source_frames": 14509976
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 87059856,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 160,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 87059856,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 4983.442,
+          "callback_p50_us": 2421.525,
+          "callback_p99_us": 3426.923,
+          "deadline_misses": 0,
+          "event_us": 2153,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 2.282595157623291,
+          "round": 2,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 4983.442,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.04175053536891937,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 192
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 4627.505,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.11433592438697815,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 186
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 3426.923,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.1389327198266983,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 2394.474,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.33298930525779724,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 2060.658,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.6336129307746887,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 2329.393,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.6362980008125305,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 2289.642,
+              "engine_offset": 8192,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.7639625668525696,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 2358.683,
+              "engine_offset": 16384,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.7040526866912842,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 2318.503,
+              "engine_offset": 30464,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 87059856,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.9343019723892212,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            }
+          ]
+        }
+      ],
+      "worker_summary": {
+        "jobs": 951,
+        "failures": 0,
+        "reply_backpressure": 0,
+        "max_queue_us": 2642,
+        "max_read_wall_us": 20079
+      }
+    },
+    {
+      "initial_cap_mib": 256,
+      "block": 64,
+      "compiler_observations": 21,
+      "source": {
+        "candidate_scope": "saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability",
+        "exact_head_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 15008,
+          "covered_ranges": 17047,
+          "covered_source_frames": 34398522,
+          "decoded_bytes": 275188176,
+          "minimum_packed_bytes": 68797044,
+          "packed_resident_bytes": 206391132,
+          "ranges": 17047,
+          "source_frames": 34398522
+        },
+        "full_bytes": 14499834880,
+        "head_bytes_reported_at_load": 206391132,
+        "head_frames": 1594,
+        "heads_after_prepare": {
+          "assets": 15008,
+          "assets_with_any_head": 15008,
+          "head_bytes": 206391132,
+          "note": "any head is not proof every authored onset/loop window is ready",
+          "source_frames": 1812479360
+        },
+        "io_after_prepare": {
+          "rchar": 339500134,
+          "read_bytes": 460677120,
+          "syscr": 20982
+        },
+        "load_ms": 5626.731656999999,
+        "pool_bytes": 100663296,
+        "read_latency_p95_us": 20536,
+        "read_latency_samples": 32,
+        "saved_unmuted_asset_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 15008,
+          "covered_ranges": 17047,
+          "covered_source_frames": 34398522,
+          "decoded_bytes": 275188176,
+          "minimum_packed_bytes": 68797044,
+          "packed_resident_bytes": 206391132,
+          "ranges": 17047,
+          "source_frames": 34398522
+        },
+        "static_first_chord_asset_candidates": {
+          "assets": 532,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 532,
+          "covered_ranges": 767,
+          "covered_source_frames": 1544832,
+          "decoded_bytes": 12358656,
+          "minimum_packed_bytes": 3089664,
+          "packed_resident_bytes": 9268992,
+          "ranges": 767,
+          "source_frames": 1544832
+        },
+        "stream_startup": {
+          "covered_ranges": 17047,
+          "fallback": null,
+          "head_budget_bytes": 268435456,
+          "packed_head_bytes": 206391132,
+          "ranges": 17047
+        }
+      },
+      "bursts": [
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 268435456,
+            "covered_assets": 15008,
+            "covered_ranges": 17047,
+            "covered_source_frames": 34398522,
+            "decoded_bytes": 275188176,
+            "minimum_packed_bytes": 68797044,
+            "packed_resident_bytes": 206391132,
+            "ranges": 17047,
+            "source_frames": 34398522
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 206391132,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 206391132,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 1160.832,
+          "callback_p50_us": 518.41,
+          "callback_p99_us": 920.497,
+          "deadline_misses": 0,
+          "event_us": 552,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 1.8865331411361694,
+          "round": 1,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 795.585,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0008772514411248267,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 32
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 892.687,
+              "engine_offset": 64,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.00215798057615757,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 64
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 1096.1,
+              "engine_offset": 128,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.014658044092357159,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 112
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 617.111,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.043056827038526535,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 602.251,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.07869085669517517,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 473.769,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.41339728236198425,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 457.919,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.3318901062011719,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 456.869,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.1076576709747314,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 467.139,
+              "engine_offset": 7616,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.543355941772461,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            }
+          ]
+        },
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 268435456,
+            "covered_assets": 15008,
+            "covered_ranges": 17047,
+            "covered_source_frames": 34398522,
+            "decoded_bytes": 275188176,
+            "minimum_packed_bytes": 68797044,
+            "packed_resident_bytes": 206391132,
+            "ranges": 17047,
+            "source_frames": 34398522
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 206391132,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 128,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 3,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 206391132,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 1474.458,
+          "callback_p50_us": 525.759,
+          "callback_p99_us": 1413.206,
+          "deadline_misses": 3,
+          "event_us": 554,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 1.0594775676727295,
+          "round": 2,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 759.234,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.00011039448872907087,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 16,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 32
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 873.846,
+              "engine_offset": 64,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.001307055470533669,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 32,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 64
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 1100.381,
+              "engine_offset": 128,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.02459326758980751,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 64,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 1413.206,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0341617614030838,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 112,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 192
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 1126.421,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.1610749214887619,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 208
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 468.939,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.20910042524337769,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 630.411,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5550650358200073,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 3,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 515.519,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5074638724327087,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 3,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 513.659,
+              "engine_offset": 7616,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 206391132,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5719096660614014,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 128,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 3,
+                "voices": 96
+              }
+            }
+          ]
+        }
+      ],
+      "worker_summary": {
+        "jobs": 425,
+        "failures": 0,
+        "reply_backpressure": 0,
+        "max_queue_us": 29275,
+        "max_read_wall_us": 22776
+      }
+    },
+    {
+      "initial_cap_mib": 256,
+      "block": 256,
+      "compiler_observations": 8,
+      "source": {
+        "candidate_scope": "saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability",
+        "exact_head_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 15008,
+          "covered_ranges": 17059,
+          "covered_source_frames": 14476599,
+          "decoded_bytes": 115812792,
+          "minimum_packed_bytes": 28953198,
+          "packed_resident_bytes": 86859594,
+          "ranges": 17059,
+          "source_frames": 14476599
+        },
+        "full_bytes": 14499834880,
+        "head_bytes_reported_at_load": 86859594,
+        "head_frames": 613,
+        "heads_after_prepare": {
+          "assets": 15008,
+          "assets_with_any_head": 15008,
+          "head_bytes": 86859594,
+          "note": "any head is not proof every authored onset/loop window is ready",
+          "source_frames": 1812479360
+        },
+        "io_after_prepare": {
+          "rchar": 329948262,
+          "read_bytes": 0,
+          "syscr": 20399
+        },
+        "load_ms": 535.5159179999999,
+        "pool_bytes": 100663296,
+        "read_latency_p95_us": 100,
+        "read_latency_samples": 32,
+        "saved_unmuted_asset_coverage": {
+          "assets": 15008,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 15008,
+          "covered_ranges": 17059,
+          "covered_source_frames": 14476599,
+          "decoded_bytes": 115812792,
+          "minimum_packed_bytes": 28953198,
+          "packed_resident_bytes": 86859594,
+          "ranges": 17059,
+          "source_frames": 14476599
+        },
+        "static_first_chord_asset_candidates": {
+          "assets": 532,
+          "complete": true,
+          "configured_budget_bytes": 268435456,
+          "covered_assets": 532,
+          "covered_ranges": 767,
+          "covered_source_frames": 650031,
+          "decoded_bytes": 5200248,
+          "minimum_packed_bytes": 1300062,
+          "packed_resident_bytes": 3900186,
+          "ranges": 767,
+          "source_frames": 650031
+        },
+        "stream_startup": {
+          "covered_ranges": 17059,
+          "fallback": null,
+          "head_budget_bytes": 268435456,
+          "packed_head_bytes": 86859594,
+          "ranges": 17059
+        }
+      },
+      "bursts": [
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 268435456,
+            "covered_assets": 15008,
+            "covered_ranges": 17059,
+            "covered_source_frames": 14476599,
+            "decoded_bytes": 115812792,
+            "minimum_packed_bytes": 28953198,
+            "packed_resident_bytes": 86859594,
+            "ranges": 17059,
+            "source_frames": 14476599
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 86859594,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 24,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 86859594,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 0,
+            "voices": 0
+          },
+          "callback_max_us": 4573.795,
+          "callback_p50_us": 2006.068,
+          "callback_p99_us": 2475.377,
+          "deadline_misses": 0,
+          "event_us": 1939,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 3.278913736343384,
+          "round": 1,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 4573.795,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.05465962737798691,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 128
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 2310.303,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.14694294333457947,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 0,
+                "voices": 96
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 2986.076,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.14722710847854614,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 1781.243,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.5050158500671387,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 2006.068,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.7432060241699219,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 1893.585,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.8824319839477539,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 2046.708,
+              "engine_offset": 8192,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.2685068845748901,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 2059.488,
+              "engine_offset": 16384,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.939492106437683,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 1872.425,
+              "engine_offset": 30464,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 3.278913736343384,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 0,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            }
+          ]
+        },
+        {
+          "after_exact_head_coverage": {
+            "assets": 15008,
+            "complete": true,
+            "configured_budget_bytes": 268435456,
+            "covered_assets": 15008,
+            "covered_ranges": 17059,
+            "covered_source_frames": 14476599,
+            "decoded_bytes": 115812792,
+            "minimum_packed_bytes": 28953198,
+            "packed_resident_bytes": 86859594,
+            "ranges": 17059,
+            "source_frames": 14476599
+          },
+          "after_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 86859594,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "after_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 160,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 24,
+            "voices": 96
+          },
+          "before_heads": {
+            "assets": 15008,
+            "assets_with_any_head": 15008,
+            "head_bytes": 86859594,
+            "note": "any head is not proof every authored onset/loop window is ready",
+            "source_frames": 1812479360
+          },
+          "before_runtime": {
+            "capacity_drops": 0,
+            "cold_starts": 0,
+            "refused": 0,
+            "stream_capacity_refusals": 0,
+            "underruns": 24,
+            "voices": 0
+          },
+          "callback_max_us": 4840.43,
+          "callback_p50_us": 2276.222,
+          "callback_p99_us": 3092.587,
+          "deadline_misses": 0,
+          "event_us": 2154,
+          "first_nonzero_engine_offset_frames": 0,
+          "heap_calls": 0,
+          "peak": 2.5946974754333496,
+          "round": 2,
+          "rows": [
+            {
+              "block": 0,
+              "callback_us": 4587.865,
+              "engine_offset": 0,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.0017647473141551018,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 112,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 160
+              }
+            },
+            {
+              "block": 1,
+              "callback_us": 4840.43,
+              "engine_offset": 256,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.019018644466996193,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 160
+              }
+            },
+            {
+              "block": 2,
+              "callback_us": 2930.014,
+              "engine_offset": 512,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.06160622835159302,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 4,
+              "callback_us": 2313.473,
+              "engine_offset": 1024,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.15341591835021973,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 8,
+              "callback_us": 2183.431,
+              "engine_offset": 2048,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.24321426451206207,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 16,
+              "callback_us": 1858.124,
+              "engine_offset": 4096,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.26048561930656433,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 32,
+              "callback_us": 1955.466,
+              "engine_offset": 8192,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 0.3591112196445465,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 64,
+              "callback_us": 2299.992,
+              "engine_offset": 16384,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.1572564840316772,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            },
+            {
+              "block": 119,
+              "callback_us": 2375.575,
+              "engine_offset": 30464,
+              "heads": {
+                "assets": 15008,
+                "assets_with_any_head": 15008,
+                "head_bytes": 86859594,
+                "note": "any head is not proof every authored onset/loop window is ready",
+                "source_frames": 1812479360
+              },
+              "peak": 1.9022877216339111,
+              "runtime": {
+                "capacity_drops": 0,
+                "cold_starts": 160,
+                "refused": 0,
+                "stream_capacity_refusals": 0,
+                "underruns": 24,
+                "voices": 96
+              }
+            }
+          ]
+        }
+      ],
+      "worker_summary": {
+        "jobs": 856,
+        "failures": 0,
+        "reply_backpressure": 0,
+        "max_queue_us": 12386,
+        "max_read_wall_us": 24927
+      }
+    }
+  ]
+}

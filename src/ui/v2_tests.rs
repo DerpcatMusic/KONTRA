@@ -107,6 +107,7 @@ fn nested_mixer_strips_step_down_and_fold() {
 fn load_report_shot() {
     let r = lr::Report {
         instrument: "Vista - 3 Cellos".into(),
+        stream_warning: None,
         why_silent: Some("key 60: 1122 zones rejected by group selection (script)".into()),
         faults: vec!["InvalidInput in script 1 on note".into()],
         loaded: vec![
