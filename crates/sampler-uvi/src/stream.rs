@@ -13,7 +13,6 @@ use std::{
 use symphonia::core::{
     audio::SampleBuffer,
     codecs::{Decoder, DecoderOptions},
-    errors::Error as AudioError,
     formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
     io::{MediaSource, MediaSourceStream},
     meta::{Limit, MetadataOptions},
