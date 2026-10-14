@@ -1637,6 +1637,23 @@ impl Runtime {
         self.note_off_in(self.performance(0).unwrap(), input, velocity)
     }
 
+    /// Release the physical input owner captured at onset. Hosts with an exact
+    /// note identity need no FIFO search. Preserve the physical-key bookkeeping,
+    /// pedals, release callbacks and first-release record of [`Self::note_off`].
+    /// A generated owner, an already released input or a stale generation is
+    /// rejected without releasing another note with the same key.
+    pub fn note_off_exact(&mut self, id: NoteId, velocity: Option<f64>) -> Result<(), Error> {
+        release::validate_velocity(velocity)?;
+        self.apply_due();
+        let note = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+        let input = note.input.ok_or(Error::InvalidInput)?;
+        if !note.input_down {
+            return Err(Error::StaleHandle);
+        }
+        self.input_keys &= !(1 << (input.key & 127));
+        self.key_up_now(id, velocity)
+    }
+
     /// FIFO pairing within the exact physical input identity and musical domain.
     pub fn note_off_in(
         &mut self,
