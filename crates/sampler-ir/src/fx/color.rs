@@ -123,6 +123,8 @@ pub enum AmpModel {
     Cabinet,
     /// 0x58 Cry Wah: pedal, mono.
     CryWah,
+    /// 0x56 (reader 0x140d00a50, Fx6B): volume, tone, drive, bass, mid, treble, mono.
+    DStortion,
 }
 
 /// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
@@ -522,6 +524,7 @@ impl Config {
             Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
             Self { curve: Curve::Amp(Amp { model: AmpModel::CryWah, .. }), .. } => "Cry Wah",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::DStortion, .. }), .. } => "DStortion",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
