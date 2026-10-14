@@ -11,7 +11,7 @@
 //! BFilterSimpleLP/HP/LPHP, BFilterDualSKF, BFilterBlueMonark, BFilterLadder_legacy,
 //! BFilterVowelA/B, BFilterVersatile.
 
-use sampler_ir::fx::filter::{Config, CutoffLaw, Fidelity, Gap, ResonanceLaw, Response, Topology};
+use sampler_ir::fx::filter::{Config, CutoffLaw, Fidelity, Gap, ResonanceLaw, Response, Topology, Variant};
 
 /// How a saved type is realised.
 enum Build {
@@ -34,6 +34,12 @@ const fn cascade(response: Response, poles: u8) -> Config {
     Config::new(Topology::Cascade, response, poles)
 }
 
+const fn variant(response: Response, poles: u8, variant: Variant) -> Config {
+    let mut c = Config::new(Topology::Cascade, response, poles);
+    c.variant = variant;
+    c
+}
+
 const fn native(topology: Topology, response: Response, poles: u8) -> Config {
     Config::new(topology, response, poles)
 }
@@ -44,7 +50,8 @@ use Response::{BandPass as Bp, HighPass as Hp, LowPass as Lp, Notch as Nt, Peak 
 const SV_LP2: &str = "response measured against Kontakt 8 (cutoff, Q, -3 dB points); native recurrence, control clock and the -6 dB passband loss at full resonance are not reproduced (CORE-FILTERS-065..072)";
 const SV: &str = "cutoff 25*800^x and Q law measured on SV LP2 only; this member shares them unmeasured, cascaded sections share one Q, and the passband loss at high resonance is not reproduced";
 const SV_ONE: &str = "one-pole section with the SV LP2 cutoff law, unmeasured; Q is unused";
-const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; the knob-modulation update cadence (native smoothing between setter calls) is unproved, the core re-designs every 32 frames";
+const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
+const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
@@ -64,11 +71,11 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         11 => ("Legacy BR4", C(cascade(Nt, 4), Exact, LEGACY)),
         12 => ("Legacy LP6", C(cascade(Lp, 6), Exact, LEGACY)),
         13 => ("Phaser", Elsewhere("Processor::Phaser arm")),
-        14 => ("Vowel A", Gap("BFilterVowelA core not extracted")),
-        15 => ("Vowel B", Gap("BFilterVowelB core not extracted")),
-        16 => ("Pro-53", Gap("BFilterPro52 core not extracted; passband +3.3 dB measured only")),
-        17 => ("Legacy Ladder", Gap("BFilterLadder_legacy core not extracted")),
-        19 => ("3x2 Versatile", Gap("Filter3x2 module and BFilterVersatile core not extracted")),
+        14 => ("Vowel A", C(variant(Bp, 4, Variant::VowelA), Exact, STAGES)),
+        15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
+        16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
+        17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
+        19 => ("3x2 Versatile", Gap("core extracted and run by the cascade core (Legacy::Versatile, kemu-exact), but the v0x95 serialized order of SHIFTB..FILTER_GAIN past resonance is not extracted (object offsets 0x38..0x60 only)")),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
