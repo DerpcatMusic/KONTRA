@@ -2,7 +2,7 @@
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
 //! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve;
-//! FormantCrusher as its biquad + decimator.
+//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper.
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
@@ -16,7 +16,7 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
         "BigMuffTone" => {
             "tone filter at 0x141256270 is a runtime-built biquad from unreferenced double constants at 0x141e6e870..0x141e6e898; coefficients not transcribed"
         }
-        "Drive" | "TSDrive" | "DiodeClipper"
+        "Drive" | "TSDrive"
         | "DoubleDrive" | "UviDrive" | "Buzz" | "Retro" | "Vinyl" => {
             "per-class kernel located but its saturation law, oversampling and filter stages are not transcribed; no Kontakt/UVI oracle to prove a transcription"
         }
