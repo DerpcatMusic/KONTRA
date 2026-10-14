@@ -42,10 +42,10 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 11] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x78];
+pub(super) const TYPED_CORES: [u16; 12] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x78];
 
 /// The amp, cabinet and pedal modules `amp` maps.
-const AMPS: [u16; 6] = [0x23, 0x24, 0x53, 0x55, 0x56, 0x58];
+const AMPS: [u16; 7] = [0x23, 0x24, 0x53, 0x55, 0x56, 0x58, 0x6e];
 
 /// The record's fields as f32 (an i32 enum as its value), or None for any other kind.
 fn raw(fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Vec<f32>> {
@@ -82,6 +82,8 @@ fn amp(module: u16, fields: &[ni_file::kontakt::objects::EffectField]) -> Option
         (0x53, &[normal, brilliant, bass, treble, cut, speed, depth, mono]) => (AmpModel::AcBox, vec![normal, brilliant, bass, treble, cut, speed, depth].into_iter().map(|v| v.clamp(0.0, 1.0)).chain([f32::from(mono != 0.0)]).collect()),
         // Twang (Fx4BB, apply 0x140adf660): volume, treble, mid, bass, bright, mono.
         (0x23, &[vol, treble, mid, bass, bright, mono]) => (AmpModel::Twang, vec![vol, treble, mid, bass].into_iter().map(|v| v.clamp(0.0, 1.0)).chain([f32::from(bright != 0.0), f32::from(mono != 0.0)]).collect()),
+        // Fuzz (FFFB, apply 0x140abaa80): amount, bass, treble, mono.
+        (0x6e, &[amount, bass, treble, mono]) => (AmpModel::Fuzz, vec![amount, bass, treble].into_iter().map(|v| v.clamp(0.0, 1.0)).chain([f32::from(mono != 0.0)]).collect()),
         _ => return None,
     };
     let mut knobs = [0.0; 24];
@@ -178,7 +180,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
+        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x6f | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         _ => return None,
