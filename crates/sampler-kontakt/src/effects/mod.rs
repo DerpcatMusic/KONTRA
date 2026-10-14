@@ -11,6 +11,9 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
+#[cfg(test)]
+mod record_audit;
+
 
 pub(crate) const RACK: u16 = 0x3a;
 pub(crate) const BUS: u16 = 0x45;
