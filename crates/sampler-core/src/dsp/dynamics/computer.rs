@@ -256,10 +256,11 @@ pub(super) struct BusRatio {
     pub slope: f64,
 }
 
-impl Stage for BusRatio {
+impl BusRatio {
+    /// The 0..=1 reduction depth for a tap value (run by `BusEnvelope`).
     #[inline(always)]
-    fn tick(&mut self, f: &mut Frame) {
-        f.level = each(f.level, |v| ((self.threshold - v) * self.slope).clamp(0., 1.));
+    pub fn depth(&self, tap: f64) -> f64 {
+        ((self.threshold - super::detector::bus_level(tap.abs().min(1.))) * self.slope).clamp(0., 1.)
     }
 }
 

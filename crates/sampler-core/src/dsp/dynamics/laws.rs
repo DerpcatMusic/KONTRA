@@ -139,9 +139,17 @@ pub(super) fn process(
         Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link } => {
             let c = Bus::new([threshold, makeup, attack, release, ratio], rate);
             let curve = BusRatio { threshold: c.threshold, slope: c.slope };
-            let ballistics = BusEnvelope::new(c.attack, c.release, c.auto, state);
             let out = BusOut { link, makeup: c.makeup, wet: shared.mix.clamp(0., 1.) };
-            run((Quantize, BusTap::new(state), curve, ballistics, out), state, block, len);
+            match c.auto {
+                Some(auto) => {
+                    let ballistics = BusEnvelope::<true>::new(curve, c.attack, c.release, auto, state);
+                    run((Quantize, BusTap::new(state), ballistics, out), state, block, len);
+                }
+                None => {
+                    let ballistics = BusEnvelope::<false>::new(curve, c.attack, c.release, [0.; 2], state);
+                    run((Quantize, BusTap::new(state), ballistics, out), state, block, len);
+                }
+            }
         }
         Law::UviMaximizer(m) => {
             let m = Maximizer::from(&m);
