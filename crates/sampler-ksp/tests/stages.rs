@@ -408,7 +408,8 @@ fn parent_release_reaches_linked_children_before_the_creating_callback() {
 #[test]
 fn child_created_during_release_runs_its_note_route_before_its_release_route() {
     let plan = plan(&[
-        "on release play_note(64,127,0,-1) end on",
+        "on init declare $child end on
+        on release $child := play_note(64,127,0,-1) note_off($child) end on",
         "on init declare $notes declare $released declare $seen end on
         on note inc($notes) end on
         on release inc($released) $seen := $seen * 10 + $notes end on",
@@ -526,7 +527,8 @@ fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
 #[test]
 fn generated_note_fault_cannot_orphan_its_already_queued_parent_release() {
     let plan = plan(&[
-        "on release play_note(64,127,0,-1) end on",
+        "on init declare $child end on
+        on release $child := play_note(64,127,0,-1) note_off($child) end on",
         "on init declare $released end on
         on note if ($EVENT_NOTE = 64) while (1 = 1) end while end if end on
         on release inc($released) end on",
@@ -537,7 +539,7 @@ fn generated_note_fault_cannot_orphan_its_already_queued_parent_release() {
         rt.trigger(input(1), 60, 1.).unwrap();
         rt.note_off(input(1), None).unwrap();
         // v2: the queued releases run after the preempted runaway callback of
-        // their script, which ends after a second. The child's key-up came
+        // their script, which ends after a second. The explicit child's key-up came
         // before its fault, so its release runs as well as the parent's.
         for _ in 0..12 {
             rt.render(&mut [[0.; 2]; 4800]).unwrap();

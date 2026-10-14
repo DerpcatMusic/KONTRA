@@ -681,10 +681,9 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
     }
     assert!(compile("on note $CC_NUM end on").is_err());
     // v2: operations outside their event context compile like Kontakt, with
-    // a warning, and do nothing (or fault at runtime for play_note -1).
+    // a warning, and do nothing.
     for warned in [
         "on note ignore_controller end on",
-        "on controller play_note(60,127,0,-1) end on",
         "on controller ignore_event($EVENT_ID) end on",
     ] {
         assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
@@ -990,22 +989,12 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
                 };
                 let mut audio = [[0.; 2]; 32];
                 rt.render(&mut audio).unwrap();
-                if duration < 0 {
-                    assert_eq!(
-                        rt.behavior_outcome(callback),
-                        Ok(Some(Outcome::Fault(Error::InvalidInput)))
-                    );
-                    assert_eq!(audio, [[0.; 2]; 32]);
-                    assert_eq!(
-                        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
-                        Ok(0)
-                    );
-                } else {
-                    assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
-                    let length = if duration == 0 { 16 } else { 6 };
-                    assert!(audio[..length].iter().all(|f| *f == [1.; 2]));
-                    assert!(audio[length..].iter().all(|f| *f == [0.; 2]));
-                }
+                assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+                // Without a note owner native negative duration follows the
+                // ordinary whole-source law, just like duration zero.
+                let length = if duration <= 0 { 16 } else { 6 };
+                assert!(audio[..length].iter().all(|f| *f == [1.; 2]));
+                assert!(audio[length..].iter().all(|f| *f == [0.; 2]));
                 rt.flush_behaviors(|_, _, _| true);
                 rt.flush_ended(|_| panic!("generated source has no host note"));
                 assert_eq!(
@@ -1044,15 +1033,14 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
             true
         });
     });
-    // v2: a constant parent-gate duration outside a note callback warns at
-    // compile time and faults at runtime before publishing a note.
+    // A constant negative duration has the same supported owner law.
     let script = compile_bound(
         "on init declare ui_button $fire end on
         on ui_control($fire) play_note(60,127,0,-1) end on",
         &[("$fire", button)],
     )
     .unwrap();
-    assert!(!script.warnings().is_empty());
+    assert!(script.warnings().is_empty());
 }
 
 #[test]
