@@ -92,9 +92,8 @@ fn tone(s: &mut Spec, n: &Network, rate: f64) {
 ///   `L_0 − 49` behind the head.
 ///
 /// The core's filters assume 44.1 kHz (`π/44100`); line lengths are
-/// samples. Above 48 kHz the native core runs decimated by
-/// `trunc(rate / 44100)` behind a resampler pair (`0x141ee5da0`, not
-/// extracted); here it runs at the host rate. Parameter ramps
+/// samples. Above 48 kHz the core runs decimated by `trunc(rate / 44100)`
+/// behind the Kaiser resampler pair (`super::resample`). Parameter ramps
 /// (`0x141ae5fc0`) are not reproduced.
 pub(super) mod galois_law {
     pub(crate) const LINES: usize = 31;

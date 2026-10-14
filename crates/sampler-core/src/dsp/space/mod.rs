@@ -12,6 +12,7 @@ mod common;
 mod convolver;
 mod design;
 mod network;
+mod resample;
 mod shape;
 
 pub use convolver::{Impulse, MAX_IMPULSE_FRAMES};
@@ -139,6 +140,8 @@ impl Gate {
 
 struct Net {
     core: network::Network,
+    /// Galois above 48 kHz: the core runs decimated between a resampler pair.
+    pair: Option<resample::Pair>,
     early: Option<Early>,
     gate: Option<Gate>,
     pos: usize,
@@ -146,12 +149,20 @@ struct Net {
 
 impl Net {
     fn new(n: &Network, rate: u32) -> Result<Self, Error> {
-        let core = network::Network::new(design::spec(n, rate)?);
+        // Wrapper 0x141aa15c7: above 48 kHz (0x473b8000) the Galois core runs
+        // at rate / N, N = trunc(f32(rate·f32(1/44100))) (0x37be37c6). Only
+        // whole divisions use the Kaiser pair; others (the native quintic
+        // mode 1) run at the host rate.
+        let factor = (rate as f32 * f32::from_bits(0x37be_37c6)) as u32;
+        let pair = (n.topology == Topology::Galois && rate > 48_000 && factor > 1 && rate % factor == 0).then(|| resample::Pair::new(factor as usize, crate::dsp::BLOCK));
+        let core_rate = if pair.is_some() { rate / factor } else { rate };
+        let core = network::Network::new(design::spec(n, core_rate)?);
         let rate = rate as f32;
         // The native engines have no early taps; only Jezar (UVI) gates.
         let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar);
         Ok(Self {
             core,
+            pair,
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
             gate: n.gate_seconds.filter(|_| n.topology == Topology::Jezar || !native).map(|g| Gate::new(g, rate)),
             pos: 0,
@@ -160,6 +171,9 @@ impl Net {
 
     fn clear(&mut self) {
         self.core.clear();
+        if let Some(p) = &mut self.pair {
+            p.clear();
+        }
         if let Some(e) = &mut self.early {
             e.clear();
         }
@@ -170,6 +184,12 @@ impl Net {
 
     /// Replace `l`/`r` with the wet signal.
     fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if let Some(p) = &mut self.pair {
+            for (l, r) in l.chunks_mut(crate::dsp::BLOCK).zip(r.chunks_mut(crate::dsp::BLOCK)) {
+                p.process(l, r, |a, b| self.core.process(a, b));
+            }
+            return;
+        }
         if self.early.is_none() && self.gate.is_none() {
             return self.core.process(l, r);
         }
@@ -368,6 +388,32 @@ mod tests {
             }
             println!("cpu {name:12} {best:6.1} ns/frame{}", if parallel { "" } else { " (per-frame path)" });
         }
+    }
+
+    /// Galois above 48 kHz runs at rate / trunc(rate/44100) between the
+    /// resampler pair; the tail keeps the 48 kHz one's energy per band.
+    #[test]
+    fn galois_runs_decimated_above_48k() {
+        let galois = presets().into_iter().find(|p| p.0 == "galois hall").unwrap().1;
+        let energy = |rate: u32| {
+            let mut net = Net::new(&galois, rate).unwrap();
+            let mut e = 0f64;
+            for b in 0..rate as usize / 64 {
+                let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+                if b == 0 {
+                    (l[0], r[0]) = (1.0, 1.0);
+                }
+                net.process(&mut l, &mut r);
+                assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+                e += l.iter().chain(&r).map(|v| f64::from(v * v)).sum::<f64>();
+            }
+            (net.pair.is_some(), e)
+        };
+        let (p48, e48) = energy(48_000);
+        let (p96, e96) = energy(96_000);
+        assert!(!p48 && p96 && Net::new(&galois, 176_400).unwrap().pair.is_some());
+        // An impulse at twice the rate carries half the low-band energy.
+        assert!((e96 / e48 - 0.5).abs() < 0.1, "{e48} {e96}");
     }
 
     #[test]
