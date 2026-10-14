@@ -2891,6 +2891,7 @@ impl Core for V2Core {
             script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
+            cold_starts: stats.cold_starts,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
             stream_capacity: p.problems.stream_capacity + stats.stream_capacity_refusals,
             stream_disconnected: p.problems.stream_disconnected
