@@ -83,6 +83,8 @@ pub struct ScriptThread {
 }
 
 enum UiRequest {
+    SampleControl(sampler_core::SampleControl, mpsc::SyncSender<Result<(),String>>),
+    SampleStream(sampler_kontakt::DynamicSources, mpsc::SyncSender<Result<(),String>>),
     Edit(ControlId, f64),
     Save(mpsc::SyncSender<Result<UiState, String>>),
     #[cfg(feature = "scan")]
@@ -132,6 +134,8 @@ fn process_ui_requests(
 ) {
     while let Ok(request) = requests.try_recv() {
         match request {
+            UiRequest::SampleControl(control,reply)=>{let _=reply.send(host.bind_sample_control(control));}
+            UiRequest::SampleStream(sources,reply)=>{let _=reply.send(host.bind_sample_stream(sources));}
             UiRequest::Edit(id, value) => {
                 let _ = host.set_control(id, value);
             }
@@ -298,6 +302,8 @@ impl ScriptThread {
                         }
                         if host.next_due().is_some() {
                             std::thread::park_timeout(POLL);
+                        } else if let Some(timer)=host.sample_collection_timer() {
+                            std::thread::park_timeout(timer);
                         } else {
                             std::thread::park();
                         }
@@ -405,6 +411,16 @@ impl ScriptThread {
 }
 
 impl Script for ScriptThread {
+    fn bind_sample_control(&mut self, control: sampler_core::SampleControl) -> Result<(), String> {
+        let (send,reply)=mpsc::sync_channel(1);
+        self.ui.edits.try_send(UiRequest::SampleControl(control,send)).map_err(|_|"sample owner unavailable/capacity".to_string())?;
+        self.ui.owner.unpark();reply.recv_timeout(Duration::from_secs(2)).map_err(|_|"sample owner binding timeout".to_string())?
+    }
+    fn bind_sample_stream(&mut self, sources: sampler_kontakt::DynamicSources) -> Result<(), String> {
+        let (send,reply)=mpsc::sync_channel(1);
+        self.ui.edits.try_send(UiRequest::SampleStream(sources,send)).map_err(|_|"sample owner unavailable/capacity".to_string())?;
+        self.ui.owner.unpark();reply.recv_timeout(Duration::from_secs(2)).map_err(|_|"sample registry binding timeout".to_string())?
+    }
     fn handles_notes(&self) -> bool {
         self.handles_notes
     }

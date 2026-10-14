@@ -601,7 +601,7 @@ impl Runtime {
         }
         let engine = free.trailing_zeros();
         generation.dsp.stretch_busy |= 1 << engine;
-        let asset = &generation.prepared.pcm[voice.sample];
+        let asset = generation.samples.asset(&generation.prepared, voice.sample).expect("a live voice pins its immutable source");
         voice.stretch = Some(crate::StretchLink {
             engine: engine as u8,
             spec,
@@ -637,6 +637,8 @@ impl Runtime {
             .stop(id.0.index);
         self.stolen -= usize::from(v.stolen);
         self.stream_reserved -= v.stream_pages;
+        let generation = self.plans.get_mut(v.plan.0).unwrap();
+        generation.samples.unpin(&generation.prepared, v.sample);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;

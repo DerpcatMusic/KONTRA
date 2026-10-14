@@ -615,25 +615,13 @@ impl Runtime {
             while let Some(c) = candidate {
                 if prepared.regions[c.region].take == choice.map(|c| c.take) {
                     let r = prepared.regions[c.region];
-                    let step = pitch.apply_source(
-                        prepared.step(c, note_pitch),
-                        r.cursor
-                            .cursor(&prepared.cursor_loops)
-                            .wavetable()
-                            .is_some(),
-                    )?;
-                    let asset = &prepared.pcm[r.sample];
-                    let cursor = r
-                        .cursor
-                        .cursor(&prepared.cursor_loops)
-                        .with_offset(offset_micros, asset.sample_rate())
-                        .with_step(step);
-                    self.check_source_ready(
-                        asset,
-                        cursor,
-                        self.region_envelope(r.envelope, r.fallback_envelope),
-                    )?;
-                    count += 1;
+                    if let Some((sample,cursor))=generation.samples.source(prepared,c,note_pitch) {
+                        let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
+                        let asset=generation.asset(sample);
+                        let cursor=cursor.with_offset(offset_micros,asset.sample_rate()).with_step(step);
+                        self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
+                        count+=1;
+                    }
                 }
                 candidate = matching.next_in_groups(prepared, state, velocity, groups);
             }
@@ -723,7 +711,7 @@ impl Runtime {
             } else if group.is_some_and(|g| mask[g as usize / 64] & (1 << (g % 64)) == 0) {
                 Some(Rejection::Group)
             } else {
-                None
+                generation.samples.rejection(prepared,c,n.pitch)
             };
             each(index, group, verdict);
         }
@@ -922,7 +910,8 @@ impl Runtime {
                     .get(candidate.region)
                     .copied()
                     .flatten();
-                let step = prepared.step(candidate, note_pitch);
+                let Some((sample,source_cursor))=self.plans.get(plan.0).unwrap().samples.source(prepared,candidate,note_pitch) else {continue;};
+                let step=source_cursor.step();
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
                 let held = self.release_counter_frames(note).unwrap();
@@ -938,11 +927,11 @@ impl Runtime {
                 let start = prepared
                     .voice_modulation
                     .start_offset(candidate.region, &inputs, seed);
-                let cursor = r.cursor.cursor(&prepared.cursor_loops);
+                let cursor = source_cursor;
                 let cursor = if trigger == Trigger::Attack {
                     cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
-                        prepared.pcm[r.sample].sample_rate(),
+                        self.plans.get(plan.0).unwrap().asset(sample).sample_rate(),
                     )
                 } else {
                     cursor
@@ -966,7 +955,7 @@ impl Runtime {
                 );
                 let admitted = self.admit_voice(
                     family,
-                    r.sample,
+                    sample,
                     self.now,
                     r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                     envelope,

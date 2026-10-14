@@ -272,6 +272,11 @@ impl Bank {
         files.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten())
     }
 
+    pub(crate) fn bind_script_samples(&self, program:&str, files:crate::script::Scripts)->crate::script::Scripts {
+        let bank=self.clone();let program=program.to_owned();
+        files.with_samples(Arc::new(move|path,explicit|bank.sample_resource(&program,path,explicit)))
+    }
+
     /// The bytes of the member at bank-root `path` (a script, say).
     pub fn file(&self, path: &str) -> Result<Vec<u8>, String> {
         let read = || self.read(resolve(&self.directory, path)?);
@@ -378,27 +383,26 @@ impl Bank {
             .map_err(|e| access::failure_reason(&e))
     }
 
+    pub(crate) fn sample_resource(&self, program_path:&str,path:&str,geometry_override:bool) -> Result<crate::script::SampleResource,String> {
+        self.resource_origins(program_path,path).map_err(|e|access::failure_reason(&e))
+            .and_then(|parts|crate::stream::sample_resource(parts,geometry_override))
+    }
+
+    fn resource_origins(&self,program_path:&str,path:&str)->Result<Vec<crate::stream::Origin>> {
+        let path=path.replace('\\',"/");
+        let(program_path,path)=resource_base(program_path,&path,&self.ufs.header.bank_name)?;
+        resources(program_path,path,|path|self.resolve(path))?.into_iter().map(|member|{
+            let(offset,size,key)=self.ufs.locate(member,self.directory.metadata_key,self.content_key)?;
+            Ok(crate::stream::Origin::Member{ufs:self.ufs.clone(),offset,size,key})
+        }).collect()
+    }
+
     fn stream_inner(
         &self,
         program_path: &str,
         path: &str,
     ) -> Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>> {
-        let path = path.replace('\\', "/");
-        let (program_path, path) = resource_base(program_path, &path, &self.ufs.header.bank_name)?;
-        let parts = resources(program_path, path, |path| self.resolve(path))?
-            .into_iter()
-            .map(|member| {
-                let (offset, size, key) =
-                    self.ufs
-                        .locate(member, self.directory.metadata_key, self.content_key)?;
-                Ok(crate::stream::Origin::Member {
-                    ufs: self.ufs.clone(),
-                    offset,
-                    size,
-                    key,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let parts=self.resource_origins(program_path,path)?;
         crate::stream::source(parts).map_err(anyhow::Error::msg)
     }
 

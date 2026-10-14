@@ -150,6 +150,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
+    DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision, SampleControl,
+    SampleRevisionLimits, SampleTarget, SampleTargetId, SampleTask, SampleTransaction,
     ResidencyRanges, ResidentFrames,
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
     Tuning, VelocityCurve, ZoneFades, service_mipmaps,
@@ -249,6 +251,10 @@ pub enum Rejection {
     Group,
     /// Another round-robin take of the sequence was chosen.
     Take,
+    /// An authored dormant player has no committed source yet.
+    SourceUnavailable,
+    /// Actual source/output rate and authored pitch exceed the supported step range.
+    SourcePitch,
 }
 
 /// One mapped region's outcome in a selection; `rejected` is `None` if it sounded.
@@ -821,6 +827,7 @@ pub struct Runtime {
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
     control_queues: Option<control::ControlQueues>,
+    sample_queues: Option<prepare::sample_revision::SampleQueues>,
     notes: Arena<Note>,
     release_times: Box<[release::ReleaseTimes]>,
     note_events: Box<[note_event::NoteEvent]>,
@@ -1021,6 +1028,7 @@ impl Runtime {
                 projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
                 modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
                 script: script_params::EngineLayers::new(&plan),
+                samples: prepare::sample_revision::SampleState::new(&plan),
                 prepared: Box::new(plan),
                 notes: 0,
                 callbacks: 0,
@@ -1042,6 +1050,7 @@ impl Runtime {
             active_plan,
             plan_queues: None,
             control_queues: None,
+            sample_queues: None,
             notes: Arena::new(id, limits.notes),
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
@@ -1766,7 +1775,7 @@ impl Runtime {
             .apply_source(base_step, cursor.wavetable().is_some())?;
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
-        let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        let asset = self.plans.get(note.plan.0).unwrap().asset(sample);
         if !asset.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -1853,6 +1862,9 @@ impl Runtime {
             source_zone: 0,
             quiet: 0,
         })?);
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        generation.samples.pin(&generation.prepared, sample)
+            .expect("an admitted voice pins its validated live revision");
         self.link_allocation(id, 0, 0);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
