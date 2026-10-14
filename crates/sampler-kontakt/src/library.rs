@@ -303,6 +303,7 @@ fn translate(
         alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
+        dormant_modulators: Default::default(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -731,8 +732,46 @@ struct Translation {
     /// Module slot -> processor index of the current group's script-addressed
     /// effect modules (distortion, saturation, formant, lo-fi).
     lane_slots: Vec<(usize, usize)>,
+    /// (group, internal slot) of saved-bypassed modulators nothing can wake.
+    dormant_modulators: std::collections::HashSet<(usize, usize)>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
+}
+
+/// The internal modulator's single route is the primary amplitude at full depth.
+fn primary_volume(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    matches!(params.targets.as_slice(), [t]
+        if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
+            && t.slot.is_none() && t.lag_ms == 0
+            && !t.shaper.as_ref().is_some_and(|s| s.enabled))
+}
+
+/// A saved-bypassed internal modulator that nothing can wake is not
+/// instantiated, so routes into it (phase, rate) are inert, as natively.
+/// The primary amplitude/Flex admission is unchanged; only connected outgoing
+/// AHDSR/LFO routes can carry a live bypass.
+fn dormant(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    params.unknown_flags[1] != 0 && !wakeable(params)
+}
+
+/// Whether the modulator's outgoing routes carry a live bypass lane.
+fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    use ni_file::kontakt::objects::Modulator;
+    let retrigger = params.unknown_flags[2] != 0;
+    (matches!(&params.modulator, Modulator::Lfo(_))
+        || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !primary_volume(params))
+        && params.targets.iter().all(|t| {
+            // Module targets (filter, effect and formant knobs) carry the
+            // same live depth lane as volume/pitch/pan; a route whose depth
+            // cannot be bound is dropped and reported below. Phase, rate,
+            // intensity and sample-position targets have their own paths.
+            !matches!(
+                t.param.as_str(),
+                "startPhase" | "frequency" | "intensity" | "playPos" | "loopStart" | "loopLength"
+            ) && t.unknown_flags & 2 == 0
+                && !t.shaper.as_ref().is_some_and(|s| s.enabled)
+                && (0. ..=1.).contains(&t.intensity)
+        })
 }
 
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
@@ -1049,6 +1088,9 @@ impl Translation {
                             }
                         }
                         let settings = crate::modulation_objects::internal(modulator.0.version, &params);
+                        if dormant(&params) {
+                            self.dormant_modulators.insert((index, slot));
+                        }
                         names.push((slot, params.name, params.targets, settings));
                     }
                     names
@@ -1556,27 +1598,9 @@ impl Translation {
                     continue;
                 }
                 let retrigger = params.unknown_flags[2] != 0;
-                let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
-                        && t.slot.is_none() && t.lag_ms == 0
-                        && !t.shaper.as_ref().is_some_and(|s| s.enabled));
-                // Keep the primary amplitude/Flex admission unchanged. Only connected
-                // outgoing AHDSR/LFO routes can carry a live bypass in this slice.
-                let live = (matches!(&params.modulator, Modulator::Lfo(_))
-                    || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !volume)
-                    && params.targets.iter().all(|t| {
-                        // Module targets (filter, effect and formant knobs) carry the
-                        // same live depth lane as volume/pitch/pan; a route whose depth
-                        // cannot be bound is dropped and reported below. Phase, rate,
-                        // intensity and sample-position targets have their own paths.
-                        !matches!(
-                            t.param.as_str(),
-                            "startPhase" | "frequency" | "intensity" | "playPos" | "loopStart" | "loopLength"
-                        ) && t.unknown_flags & 2 == 0
-                            && !t.shaper.as_ref().is_some_and(|s| s.enabled)
-                            && (0. ..=1.).contains(&t.intensity)
-                    });
-                if params.unknown_flags[1] != 0 && !live {
+                let volume = primary_volume(&params);
+                let live = wakeable(&params);
+                if dormant(&params) {
                     continue;
                 }
                 let source = match params.modulator {
@@ -2648,6 +2672,15 @@ impl Translation {
                 .any(|b| b.control == control && b.chain == chain)
                 .then_some((ir::Target::Control(control), ir::Depth::Normalized(i)))
         });
+        // Phase and rate of a dormant (saved-bypassed, unwakeable) modulator: inert natively.
+        if addressed.is_none()
+            && matches!(target.param.as_str(), "startPhase" | "frequency")
+            && let Some(slot) = target.slot
+            && let Some(group) = self.ir.source_indices.modulators.iter().find(|m| m.runtime == Some(source)).map(|m| m.group)
+            && self.dormant_modulators.contains(&(group, usize::from(slot)))
+        {
+            return None;
+        }
         if target.slot.is_some() && addressed.is_none() {
             return report(
                 self,
@@ -4122,6 +4155,7 @@ mod modulation {
             alias_claims: HashMap::new(),
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
+        dormant_modulators: Default::default(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
