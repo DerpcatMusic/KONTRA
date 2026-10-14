@@ -292,6 +292,12 @@ impl Check<'_> {
                     for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
                         self.within(v, 0.0..=1.0, field)?;
                     }
+                    if let crate::fx::filter::Variant::Versatile(v) = c.variant {
+                        let knobs = v.shift.iter().chain(&v.resonance).chain(&v.types).chain(&v.wet);
+                        for &knob in knobs.chain([&v.gain]) {
+                            self.within(f64::from(knob), 0.0..=1.0, "versatile control")?;
+                        }
+                    }
                 }
                 Processor::TimeMod(config) => {
                     config.check().map_err(|field| ValidationError::OutOfRange {

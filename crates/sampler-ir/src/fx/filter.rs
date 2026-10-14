@@ -44,8 +44,42 @@ pub enum Topology {
     FormantII,
     /// Kontakt's legacy BFilter classes (saved types 2..=4, 6..=12): first- and second-order
     /// direct-form sections whose native law the engine owns. `Response` and `poles` name the
-    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs.
+    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs. [`Variant`]
+    /// names the members response and poles do not (Vowel, Pro-53, Legacy Ladder, Versatile).
     Cascade,
+}
+
+/// The member of a native family that `Topology`, `Response` and `poles` do not name.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Variant {
+    /// Named by response and poles.
+    Default,
+    /// Kontakt Vowel A / Vowel B (saved types 14 / 15).
+    VowelA,
+    VowelB,
+    /// Kontakt Pro-53 (saved type 16).
+    Pro52,
+    /// Kontakt Legacy Ladder (saved type 17).
+    Ladder,
+    /// Kontakt 3x2 Versatile (saved type 19) and its stored knobs.
+    Versatile(Versatile),
+}
+
+/// The 3x2 Versatile knobs beyond cutoff and resonance, as stored (0..=1).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Versatile {
+    /// SHIFTB, SHIFTC.
+    pub shift: [f32; 2],
+    /// RESB, RESC.
+    pub resonance: [f32; 2],
+    /// FILTER_TYPEA/B/C: low -> band -> high morph.
+    pub types: [f32; 3],
+    /// BYPA/B/C: each filter's wet amount.
+    pub wet: [f32; 3],
+    /// FILTER_GAIN.
+    pub gain: f32,
 }
 
 /// How the stored cutoff knob becomes a frequency.
@@ -110,6 +144,7 @@ pub struct Config {
     pub key_tracking: f64,
     /// Topology-specific third knob (Formant Size).
     pub extra: f64,
+    pub variant: Variant,
     pub binding: Option<Binding>,
 }
 
@@ -134,6 +169,7 @@ impl Config {
             drive: 0.0,
             key_tracking: 0.0,
             extra: 0.0,
+            variant: Variant::Default,
             binding: None,
         }
     }
@@ -230,6 +266,7 @@ impl Config {
             ])]),
             Topology::FormantII => Ok(vec![Processor::FilterBank(*self)]),
             Topology::Cascade => match (self.response, self.poles) {
+                _ if self.variant != Variant::Default => Ok(vec![Processor::FilterBank(*self)]),
                 (Response::LowPass, 1 | 2 | 4 | 6)
                 | (Response::HighPass, 1 | 2 | 4)
                 | (Response::BandPass, 2 | 4)
