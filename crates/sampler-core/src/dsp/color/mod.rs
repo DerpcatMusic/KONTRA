@@ -12,6 +12,7 @@ mod distortion;
 mod lofi;
 mod saturator;
 mod shaping;
+mod skreamer;
 mod stereo;
 mod tone;
 
@@ -65,6 +66,8 @@ pub enum CurveSettings {
     Rectifier(Rectifier),
     /// UVI BitCrusher normalized Drive.
     Destructor(f64),
+    /// Kontakt Skreamer `[tone, drive, bass, bright, mix]`.
+    Skreamer([f32; 5]),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +151,7 @@ impl Settings {
                 CurveSettings::Classic(p) | CurveSettings::Enhanced(p) | CurveSettings::Drums(p) => shape(p),
                 CurveSettings::Tube(p) | CurveSettings::Transistor(p) => live_knob(p),
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
+                CurveSettings::Skreamer(k) => k.iter().all(|v| (0.0..=1.0).contains(v)),
             }
             && self.damping.as_ref().is_none_or(live_knob)
             && self.noise.is_none_or(|n| live_knob(&n.level) && live_knob(&n.color))
@@ -166,7 +170,7 @@ impl Settings {
             && self.noise.is_none()
             && self.tone.is_none()
             && self.stereo.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_))
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -193,6 +197,7 @@ impl Settings {
             }
             CurveSettings::Rectifier(mode) => Curve::Rectifier(mode),
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
+            CurveSettings::Skreamer(knobs) => Curve::Skreamer(skreamer::Skreamer::new(knobs, rate)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -254,6 +259,7 @@ enum Curve {
     Driven { drive: PreparedParameter, transistor: bool },
     Rectifier(Rectifier),
     Destructor(lofi::Destructor),
+    Skreamer(skreamer::Skreamer),
 }
 enum Damping {
     Fixed(distortion::Damper),
@@ -286,6 +292,7 @@ pub(super) struct State {
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
+    skreamer: skreamer::State,
     tone: tone::ToneState,
     stereo: stereo::StereoState,
 }
@@ -298,6 +305,7 @@ impl State {
             && self.decimator.z.iter().flatten().chain(&self.decimator.delta).chain([&self.decimator.phase]).all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
+            && self.skreamer.finite()
             && self.tone.finite()
     }
 }
@@ -422,6 +430,7 @@ impl Color {
                 curve(&shape, block, len);
             }
             Curve::Destructor(d) => d.process(block, len),
+            Curve::Skreamer(s) => s.process(&mut state.skreamer, block, len),
         }
     }
 

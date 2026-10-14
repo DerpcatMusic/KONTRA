@@ -905,6 +905,27 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             }
+            Some(Params::Fields(fields)) if fx.module == 0x21 => {
+                flush(&mut combined, &mut filters, &mut out);
+                // Skreamer fields TONE, DRIVE, BASS, BRIGHT, MIX (identity, bindings TSV).
+                let knobs: Vec<f32> = fields
+                    .iter()
+                    .filter_map(|f| match f.value {
+                        ni_file::kontakt::objects::EffectValue::Float(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                match color::skreamer(&knobs) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::Color(config));
+                        combined = gain;
+                        if dynamic.is_some() {
+                            notes.push(("Skreamer live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                        }
+                    }
+                    None => modelled = false,
+                }
+            }
             Some(Params::LoFi { values, flag }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 if let Some(config) = color::lofi(values) {

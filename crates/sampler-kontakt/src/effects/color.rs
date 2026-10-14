@@ -35,6 +35,12 @@ pub(super) fn lofi(values: &[f32; 4]) -> Option<Config> {
         .then(|| Config::lofi(values[0], values[1], values[2], values[3]))
 }
 
+/// 0x21 Skreamer: TONE, DRIVE, BASS, BRIGHT, MIX (identity-bound, setter [ref]).
+pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
+    let knobs: [f32; 5] = knobs.try_into().ok()?;
+    knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
+}
+
 /// 0x13 Gainer (reader [ref]): `dry + out * g`, g slewing.
 pub(super) fn gainer(gain: f64, dry: f64) -> Config {
     Config::gainer(sampler_ir::Gain::Linear(gain), dry)
@@ -54,7 +60,6 @@ pub(super) fn stereo_modeller(spread: f32, pan: f32, pseudo: bool) -> Config {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner; speaker matrix and pan law not extracted",
-        0x21 => "Skreamer: stateful four-lane core [ref] with table lookups; saved-field to coefficient binding and the table contents are not extracted",
         0x22 => "Rotator: summed-input core [ref] with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
         0x42 => "Tape Saturator: NI::KONTAKTFX::Tape core [ref] with table interpolation; only the indexed setters [ref] are extracted, the saved-field binding and tables are not",
         0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {

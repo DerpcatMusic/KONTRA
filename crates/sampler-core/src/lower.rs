@@ -167,6 +167,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
+            fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
         },
         damping: c.damping.map(|d| knob(P::Damping, d)),
         noise: c.noise.map(|n| NoiseSettings {
