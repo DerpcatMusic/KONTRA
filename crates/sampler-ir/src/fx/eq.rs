@@ -99,6 +99,9 @@ impl Band {
             bandwidth: 1.,
         }
     }
+    // Preserve the established parameter bits; replacing Q with a mathematical
+    // constant changes the default when a caller later enables this band.
+    #[allow(clippy::approx_constant)]
     pub const OFF: Self = Self::new(Kind::Peak, 1000., 0.7071, 0.);
 }
 
