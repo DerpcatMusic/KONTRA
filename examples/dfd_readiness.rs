@@ -177,7 +177,7 @@ fn main() {
     };
     let enabled = candidate_assets(false);
     let chord = candidate_assets(true);
-    let source = json!({"load_ms":load_ms,"head_frames":stream.report.head_frames,"head_bytes_reported_at_load":stream.report.head_bytes,"pool_bytes":stream.report.pool_bytes,"full_bytes":stream.report.full_bytes,"read_latency_p95_us":stream.report.latency_p95.as_micros(),"heads_after_prepare":heads(&stream),"exact_head_coverage":readiness(&stream, |_|true),"saved_unmuted_asset_coverage":readiness(&stream, |id|enabled.contains(&id)),"static_first_chord_asset_candidates":readiness(&stream, |id|chord.contains(&id)),"candidate_scope":"saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability","io_after_prepare":io()});
+    let source = json!({"load_ms":load_ms,"head_frames":stream.report.head_frames,"head_bytes_reported_at_load":stream.report.head_bytes,"pool_bytes":stream.report.pool_bytes,"full_bytes":stream.report.full_bytes,"read_latency_samples":stream.report.latency_samples,"read_latency_p95_us":stream.report.latency_p95.as_micros(),"heads_after_prepare":heads(&stream),"exact_head_coverage":readiness(&stream, |_|true),"saved_unmuted_asset_coverage":readiness(&stream, |id|enabled.contains(&id)),"static_first_chord_asset_candidates":readiness(&stream, |id|chord.contains(&id)),"candidate_scope":"saved group mute plus authored key/velocity; includes RR/articulation/trigger/controller alternatives, does not infer Lua mutations or exact first-burst reachability","io_after_prepare":io()});
     let mut core = V2Core::with_parts(1, 48000.);
     core.install(0, loaded.part);
     let first = phase(&mut core, &stream, block, 1);
