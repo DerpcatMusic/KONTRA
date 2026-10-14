@@ -48,13 +48,17 @@ def run_one(exe, name, path, out, args):
     env = dict(os.environ, KONTRA_PARITY_PATH=path, KONTRA_PARITY_OUT=str(out),
                KONTRA_PARITY_PRESETS=str(args.presets), KONTRA_PARITY_CONTROLS=str(args.controls))
     t = time.time()
-    try:
-        p = subprocess.run([HEAVY, exe, '--ignored', '--exact', TEST, '--nocapture', '--test-threads=1'],
-                           cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                           timeout=args.timeout)
-        code, log = p.returncode, p.stdout
-    except subprocess.TimeoutExpired as e:
-        code, log = 'timeout', (e.stdout or b'').decode(errors='replace') if isinstance(e.stdout, bytes) else (e.stdout or '')
+    for _ in range(60):
+        try:
+            p = subprocess.run([HEAVY, exe, '--ignored', '--exact', TEST, '--nocapture', '--test-threads=1'],
+                               cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               timeout=args.timeout)
+            code, log = p.returncode, p.stdout
+        except subprocess.TimeoutExpired as e:
+            code, log = 'timeout', (e.stdout or b'').decode(errors='replace') if isinstance(e.stdout, bytes) else (e.stdout or '')
+        if code != 75:  # kontakto-heavy: low disk/slot refusal; wait and retry
+            break
+        time.sleep(30)
     # Keep only the tail; panics name harness lines, not library content.
     (out / 'test.log').write_text('\n'.join(log.splitlines()[-60:]))
     result = out / 'result.json'
