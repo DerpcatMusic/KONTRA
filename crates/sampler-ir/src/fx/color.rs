@@ -95,6 +95,8 @@ pub enum Curve {
     Skreamer([f32; 5]),
     /// A UVI drive engine (gain, curve, wet/dry, output gain).
     Drive(Drive),
+    /// Kontakt Bite (resampling log quantizer with its own filters, effektrig x2).
+    Bite(Bite),
     /// Kontakt Tape Saturator (oversampled table shaper with its own filters).
     Tape(Tape),
     /// UVI Exciter (Tape sine / Tube envelope cubic, HIIR oversampled).
@@ -154,6 +156,14 @@ pub struct Exciter {
     pub mix: f32,
     pub output_gain: f32,
     pub oversampling: u8,
+}
+
+/// Kontakt Bite core values (0..1, enums as i/2) by core index: saturate, prefilter,
+/// frequency, jitter, crunch, bits, dither, dcquant, expand, postfilter, hpf, mix.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bite {
+    pub knobs: [f32; 12],
 }
 
 /// Kontakt Tape Saturator controls (normalized 0..1): gain, warmth, HF roll-off, Quality.
@@ -366,6 +376,11 @@ impl Config {
         }
     }
 
+    /// Kontakt Bite.
+    pub fn bite(bite: Bite) -> Self {
+        Self { curve: Curve::Bite(bite), ..Self::IDENTITY }
+    }
+
     /// Kontakt Tape Saturator.
     pub fn tape(tape: Tape) -> Self {
         Self { curve: Curve::Tape(tape), ..Self::IDENTITY }
@@ -430,6 +445,7 @@ impl Config {
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
+            Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
             Self { curve: Curve::ToneStack(_), .. } => "Tone stack",
