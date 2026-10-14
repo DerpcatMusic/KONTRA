@@ -6,6 +6,8 @@ use crate::{
 };
 
 pub(super) mod reuse;
+#[cfg(test)]
+mod mix_experiment;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
