@@ -49,6 +49,11 @@ pub enum Topology {
     /// Freeverb), driven by [`Network::uvi_reverb`], `predelay_seconds` and
     /// `gate_seconds`.
     Jezar,
+    /// The exact Kontakt Plate Reverb (0x57) core, driven by
+    /// [`Network::kontakt_plate`]: 20 input allpasses and shelves, a tapped
+    /// input ring (early reflections and line injection), 16 lines through
+    /// per-line two-shelf biquads and a Hadamard matrix, four panned groups.
+    KontaktPlate,
 }
 
 /// UVI's legacy reverb controls (node `0x141312050`) in native units.
@@ -192,6 +197,9 @@ pub struct Network {
     pub spark: Option<SparkVerb>,
     /// Controls for [`Topology::Jezar`]; ignored by other topologies.
     pub uvi_reverb: Option<UviReverb>,
+    /// Kontakt Plate controls (decay, low shelf, high damp, predelay,
+    /// stereo; each `0..=1`) for [`Topology::KontaktPlate`].
+    pub kontakt_plate: Option<[f32; 5]>,
 }
 
 impl Network {
@@ -217,6 +225,7 @@ impl Network {
         galois: None,
         spark: None,
         uvi_reverb: None,
+        kontakt_plate: None,
     };
 }
 
@@ -255,6 +264,7 @@ impl Config {
                 && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
                 && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
                 && n.uvi_reverb.is_none_or(|u| [u.decay_time, u.high_damp, u.cutoff].iter().all(|v| v.is_finite()))
+                && n.kontakt_plate.is_none_or(|p| p.iter().all(|v| v.is_finite()))
                 && n.spark.is_none_or(|s| {
                     let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
                     [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]
