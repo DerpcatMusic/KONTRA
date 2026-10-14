@@ -325,6 +325,15 @@ impl ArrayFileCompletion {
     pub fn texts(&self) -> &[Text] {
         &self.payload.texts
     }
+    /// As [`Self::perform`] for a host that may only read (library data): a
+    /// save fails without touching disk, as at a read-only location.
+    pub fn perform_read_only(&mut self) -> Result<(), Error> {
+        if self.write {
+            self.success = false;
+            return Err(Error::InvalidInput);
+        }
+        self.perform()
+    }
     /// Worker/preparation thread only. Failures leave the destination unchanged.
     pub fn perform(&mut self) -> Result<(), Error> {
         self.success = false;

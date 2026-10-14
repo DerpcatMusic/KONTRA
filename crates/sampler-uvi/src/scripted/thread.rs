@@ -54,6 +54,8 @@ enum Message {
 /// What loading the scripts found, for the host's report and interface.
 pub struct Loaded {
     pub insert_overrides: Vec<(usize, String, String)>,
+    /// Initialization writes folded into the program (`ScriptHost::folded_writes`).
+    pub folded_writes: Vec<(usize, String, String)>,
     pub findings: Vec<Finding>,
     pub interface: sampler_ui_ir::Interface,
     pub ui: Arc<UiBridge>,
@@ -211,6 +213,7 @@ impl ScriptThread {
                     }
                     let report = Loaded {
                         insert_overrides: host.insert_overrides(),
+                        folded_writes: host.folded_writes(),
                         findings: host.findings(),
                         interface: ui.interface().as_ref().clone(),
                         ui: ui.clone(),

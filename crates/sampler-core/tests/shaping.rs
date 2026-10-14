@@ -21,6 +21,10 @@ fn limits() -> Limits {
     }
 }
 
+fn rectify(mode: Rectifier) -> Processor {
+    Processor::Color(ColorSettings::curve(CurveSettings::Rectifier(mode)))
+}
+
 const FRAMES: usize = 300;
 const RATE: u32 = 48000;
 
@@ -127,15 +131,18 @@ fn rectifiers_follow_their_branches() {
             .map(|f2| [f(f64::from(f2[0])), f(f64::from(f2[1]))])
             .collect()
     };
-    both_scopes(Processor::Rectify(Rectifier::Full), &wide(f64::abs));
-    both_scopes(Processor::Rectify(Rectifier::Half), &wide(|x| x.max(0.)));
+    both_scopes(rectify(Rectifier::Full), &wide(f64::abs));
+    both_scopes(rectify(Rectifier::Half), &wide(|x| x.max(0.)));
 }
 
 #[test]
 fn decimator_holds_and_ramps_at_a_fractional_period() {
-    let (period, blend) = (3.3f64, 0.7f64);
+    let hertz = f64::from(RATE) / 6.6;
+    let blend = 0.7f32;
+    let fs = f64::from(RATE as f32);
+    let period = 1.0 / f64::from((hertz / fs + hertz / fs) as f32);
     let mut phase = 0f64;
-    let (mut current, mut held, mut delta) = ([0f64; 2], [0f64; 2], [0f64; 2]);
+    let (mut current, mut held, mut delta) = ([0f32; 2], [0f32; 2], [0f32; 2]);
     let expected: Vec<[f64; 2]> = source()
         .iter()
         .map(|f| {
@@ -143,12 +150,12 @@ fn decimator_holds_and_ramps_at_a_fractional_period() {
             let mut out = [0.; 2];
             for c in 0..2 {
                 if reload {
-                    held[c] = f64::from(f[c]);
-                    delta[c] = (held[c] - current[c]) / period;
+                    held[c] = f[c];
+                    delta[c] = (held[c] - current[c]) / period as f32;
                 }
                 let old = current[c];
-                current[c] += delta[c];
-                out[c] = (held[c] - old) * blend + old;
+                current[c] = old + delta[c];
+                out[c] = f64::from((held[c] - old) * blend + old);
             }
             if reload {
                 phase += period;
@@ -157,14 +164,15 @@ fn decimator_holds_and_ramps_at_a_fractional_period() {
             out
         })
         .collect();
-    both_scopes(Processor::Decimate(Decimator { period, blend }), &expected);
+    let decimator = Decimator { hertz: [hertz; 2], blend };
+    both_scopes(Processor::Color(ColorSettings { decimator: Some(decimator), ..ColorSettings::IDENTITY }), &expected);
 }
 
 #[test]
 fn batched_voices_rectify_like_scalar_voices() {
     let prepared = plan()
         .with_voice_chains(
-            vec![VoiceChain::new(vec![Processor::Rectify(Rectifier::Full)], vec![], 0).unwrap()],
+            vec![VoiceChain::new(vec![rectify(Rectifier::Full)], vec![], 0).unwrap()],
             vec![Some(0)],
         )
         .unwrap();
@@ -213,7 +221,7 @@ fn rack_branches_sum_at_their_gains_with_nested_stages() {
             first: true,
             last: false,
         },
-        Processor::Rectify(Rectifier::Full),
+        rectify(Rectifier::Full),
         Processor::Gain(2.),
         Processor::Branch {
             count: 0,

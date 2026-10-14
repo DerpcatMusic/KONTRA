@@ -48,7 +48,7 @@ fn waveform_reset_missing_preseed_rejects_without_clearing_existing_table() {
     let mut rt=runtime(operation(Action::Attach,UI,91,11,0),r); let plan=rt.active_plan();
     support::without_heap(|| {
         rt.start_plan_behavior(plan,0).unwrap();
-        assert_eq!(rt.take_fault().map(|(_,e)|e),Some(Error::InvalidInput));
+        assert!(rt.take_fault().is_none());
         assert_eq!(rt.script_store(plan,ScriptInstanceId(0),attachment_key(UI)),Ok(Some(27)));
         assert_eq!(rt.script_store(plan,ScriptInstanceId(0),Property::Table.key(UI,3)),Ok(Some(77)));
         let mut effects=0; rt.drain_effects(|_| { effects+=1; true }); assert_eq!(effects,0);
@@ -100,9 +100,10 @@ fn waveform_wide_nonpositive_and_unattached_sources_reject_get_set_with_full_sto
             let mut rt = runtime(code, r); let plan = rt.active_plan();
             support::without_heap(|| {
                 let b = rt.start_plan_behavior(plan, 0).unwrap();
-                assert_eq!(rt.behavior_outcome(b), Ok(Some(Outcome::Fault(Error::InvalidInput))));
-                assert_eq!(rt.take_fault().map(|(_, e)| e), Some(Error::InvalidInput));
-                assert_eq!(rt.behavior_local(b, 4), Ok(12345));
+                // Rejected as the init evaluator rejects: reads 0, no fault.
+                assert_eq!(rt.behavior_outcome(b), Ok(Some(Outcome::Finished)));
+                assert!(rt.take_fault().is_none());
+                assert_eq!(rt.behavior_local(b, 4), Ok(0));
                 assert_store(&rt, plan, &before);
                 let mut effects = 0; rt.drain_effects(|_| { effects += 1; true });
                 assert_eq!(effects, 0);

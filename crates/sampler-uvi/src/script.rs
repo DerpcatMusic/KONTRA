@@ -583,6 +583,10 @@ struct Shared {
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
     kinds: RefCell<Vec<String>>,
+    /// Initialization writes with no live path, by (XML node, field): the
+    /// element kind and the written value. The translation that follows
+    /// initialization applies them (`ScriptHost::insert_overrides`).
+    folded: RefCell<BTreeMap<(usize, String), (String, String)>>,
     /// Per element: the catalog fields with a DSP lane.
     live: RefCell<Vec<Vec<&'static str>>>,
     /// Globals the scripts assign somewhere: reading one that is still unset
@@ -597,6 +601,10 @@ struct Shared {
     impulses: RefCell<std::collections::HashMap<usize, sampler_ir::Impulse>>,
     /// Uploads sent to the audio thread; dropped here once it has let go.
     retired: RefCell<Vec<ImpulseUpload>>,
+    /// Convolver elements whose impulse fields changed since commands were
+    /// last taken. A script sets fields one by one (Time, Damping, Width...)
+    /// and each rebuild costs a whole impulse, so they rebuild once per batch.
+    stale_impulses: RefCell<Vec<usize>>,
     files: Box<dyn Files>,
     config: Config,
     tempo: Cell<f64>,
@@ -746,6 +754,27 @@ impl Shared {
         }
     }
 
+    /// Fold an initialization write that has no live path into the program:
+    /// the translation after initialization reads it from the patched XML.
+    /// False when the element has no field `name` to carry it.
+    fn fold(&self, id: usize, name: &str, value: f64) -> bool {
+        let kind = self.kinds.borrow().get(id).cloned().unwrap_or_default();
+        let mut params = self.params.borrow_mut();
+        let Some(params) = params.get_mut(id) else { return false };
+        let retained = params.iter().any(|(k, _)| k == name);
+        if !retained && !parameters::definitions(&kind).iter().any(|p| p.name == name) {
+            return false;
+        }
+        let Some(&(node, _)) = self.nodes.borrow().get(id) else { return false };
+        let text = if value.fract() == 0. && value.abs() < 1e15 { (value as i64).to_string() } else { value.to_string() };
+        match params.iter_mut().find(|(k, _)| k == name) {
+            Some((_, v)) => *v = text.clone(),
+            None => params.push((name.to_owned(), text.clone())),
+        }
+        self.folded.borrow_mut().insert((node, name.to_owned()), (kind, text));
+        true
+    }
+
     fn setter_mismatch(&self, types: SetterTypes) {
         self.finding_revision
             .set(self.finding_revision.get().saturating_add(1));
@@ -801,6 +830,14 @@ impl Shared {
     fn next_id(&self) -> u64 {
         self.ids.set(self.ids.get() + 1);
         self.ids.get()
+    }
+
+    /// Rebuild the impulses whose fields changed, once each.
+    fn rebuild_stale_impulses(&self) {
+        let stale = std::mem::take(&mut *self.stale_impulses.borrow_mut());
+        for id in stale {
+            self.rebuild_impulse(id, None);
+        }
     }
 
     /// Rebuild element `id`'s bus convolver from its parameters and source
@@ -859,7 +896,7 @@ impl Shared {
             None => {}
         }
         let base = &impulses[&node];
-        let mut shape = crate::reverb::neutral();
+        let mut shape = sampler_core::neutral_impulse_shape();
         shape.normalize = read("NormalizePower") != 0.0;
         if kind == "SampledReverb" {
             shape.sampled_reverb = true;
@@ -869,7 +906,7 @@ impl Shared {
             shape.pre_delay_ms = read("PreDelay");
             shape.width = read("Width");
         }
-        let (left, right) = crate::reverb::shape(base.rate, &base.left, &base.right, &shape);
+        let (left, right) = sampler_core::shape_impulse(base.rate, &base.left, &base.right, &shape);
         let shaped = sampler_ir::Impulse { rate: base.rate, left, right, asset: None };
         drop(impulses);
         let Ok(upload) = sampler_core::ConvolutionUpload::from_ir(
@@ -1300,12 +1337,14 @@ impl ScriptHost {
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
             kinds: RefCell::new(Vec::new()),
+            folded: RefCell::new(BTreeMap::new()),
             live: RefCell::new(Vec::new()),
             assigned: RefCell::new(Default::default()),
             called: RefCell::new(Default::default()),
             saved: RefCell::new(BTreeMap::new()),
             impulses: RefCell::new(Default::default()),
             retired: RefCell::new(Vec::new()),
+            stale_impulses: RefCell::new(Vec::new()),
             files: Box::new(files),
             config,
             tempo: Cell::new(120.0),
@@ -1610,13 +1649,8 @@ impl ScriptHost {
                 let kind = params
                     .get(id)
                     .and_then(|params| params.iter().find(|(key, _)| *key == name))
-                    .map(|(_, value)| {
-                        if value.parse::<f64>().is_ok() {
-                            "float"
-                        } else {
-                            "string"
-                        }
-                    });
+                    // A retained field has no declared type (see `element.setParameter`).
+                    .map(|(_, value)| if value.parse::<f64>().is_ok() { "any" } else { "string" });
                 Ok((kind, None, None))
             })?,
         )?;
@@ -1745,12 +1779,46 @@ impl ScriptHost {
             lua.create_function(move |_, (id, name, value): (usize, String, Value)| {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_set_param");
+                let written = match &value {
+                    Value::Integer(n) => Some(*n as f64),
+                    Value::Number(n) => Some(*n),
+                    Value::Boolean(b) => Some(f64::from(*b)),
+                    _ => None,
+                };
+                let field = name.clone();
+                let applied = (|| -> mlua::Result<Option<bool>> {
                 // Retained XML fields have local model identity, not DSP acceptance.
                 let catalogued = parameters::definitions(
                     s.kinds.borrow().get(id).map_or("", String::as_str),
                 )
                 .iter()
                 .any(|p| p.name == name);
+                // A write of the value the engine already holds changes nothing:
+                // rejected writes are never retained, so the retained field is
+                // what plays (UVI fields are f32, so compare at f32).
+                let number = match &value {
+                    Value::Integer(n) => Some(*n as f64),
+                    Value::Number(n) => Some(*n),
+                    Value::Boolean(b) => Some(f64::from(*b)),
+                    _ => None,
+                };
+                if let Some(v) = number {
+                    let kind = s.kinds.borrow().get(id).cloned().unwrap_or_default();
+                    let current = s
+                        .params
+                        .borrow()
+                        .get(id)
+                        .and_then(|p| p.iter().find(|(k, _)| *k == name))
+                        .and_then(|(_, v)| match v.as_str() {
+                            "true" => Some(1.),
+                            "false" => Some(0.),
+                            v => v.parse::<f64>().ok(),
+                        })
+                        .or_else(|| parameters::definitions(&kind).iter().find(|p| p.name == name).map(|p| p.default));
+                    if current.is_some_and(|c| c as f32 == v as f32) {
+                        return Ok(Some(true));
+                    }
+                }
                 if !catalogued {
                     return Ok(s.params.borrow().get(id).and_then(|params| {
                         params.iter().any(|(key, _)| *key == name).then_some(false)
@@ -1777,7 +1845,12 @@ impl ScriptHost {
                             None => params.push((name.clone(), value.to_string())),
                         }
                     }
-                    return Ok(s.rebuild_impulse(id, None).then_some(true));
+                    // Rebuilt when commands are next taken, once for all fields.
+                    let mut stale = s.stale_impulses.borrow_mut();
+                    if !stale.contains(&id) {
+                        stale.push(id);
+                    }
+                    return Ok(Some(true));
                 }
                 let engine = |name: &str, value: f64| {
                     let (name, value) = {
@@ -1797,6 +1870,36 @@ impl ScriptHost {
                         value: binding.law.normalized_value(value).ok()?,
                     })
                 };
+                if name != "Bypass"
+                    && live.contains(&name.as_str())
+                    && crate::engine_parameters::lane_kind(&kind)
+                    && let Some(node) = node
+                {
+                    // A delay, modulation or reverb unit: its lanes, or nothing. One
+                    // left bypassed without a Mix of its own was never built: silent.
+                    let silent = !live.contains(&"Bypass")
+                        && s.params.borrow().get(id).is_some_and(|p| {
+                            p.iter().any(|(k, v)| k == "Bypass" && v.parse::<f64>().is_ok_and(|b| b != 0.))
+                        });
+                    let writes = if silent {
+                        Some(Vec::new())
+                    } else {
+                        s.params.borrow().get(id).and_then(|p| crate::engine_parameters::retune(node, &kind, p, &name, value))
+                    };
+                    let Some(writes) = writes else { return Ok(None) };
+                    for (address, value) in writes {
+                        if !s.command(Command::EngineParameter { address, value }) {
+                            return Ok(None);
+                        }
+                    }
+                    if let Some(params) = s.params.borrow_mut().get_mut(id) {
+                        match params.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => params.push((name.clone(), value.to_string())),
+                        }
+                    }
+                    return Ok(Some(true));
+                }
                 let command = if name == "Bypass" && live.contains(&"Bypass") {
                     // The insert's Mix: a core slot control.
                     sampler_core::engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").zip(node).map(
@@ -1852,7 +1955,16 @@ impl ScriptHost {
                     None
                 };
                 if live.contains(&name.as_str()) || command.is_some() {
-                    return Ok(command.and_then(|c| s.command(c).then_some(true)));
+                    let accepted = command.and_then(|c| s.command(c).then_some(true));
+                    if accepted.is_some()
+                        && let Some(params) = s.params.borrow_mut().get_mut(id)
+                    {
+                        match params.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => params.push((name.clone(), value.to_string())),
+                        }
+                    }
+                    return Ok(accepted);
                 }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
                     return Ok(None);
@@ -1891,6 +2003,19 @@ impl ScriptHost {
                     }
                 }
                 Ok(Some(true))
+                })()?;
+                // While initializing, a write with no live path is applied by the
+                // translation that follows (it reads the patched XML). A write a
+                // full queue refused stays refused.
+                if applied != Some(true)
+                    && s.initializing.get()
+                    && s.commands.borrow().len() < 1 << 16
+                    && let Some(v) = written
+                    && s.fold(id, &field, v)
+                {
+                    return Ok(Some(true));
+                }
+                Ok(applied)
             })?,
         )?;
         let s = shared.clone();
@@ -2810,7 +2935,13 @@ impl ScriptHost {
     /// attribute, value): the program's starting state, which the translator
     /// applies so the baked chains match what the scripts left them as.
     pub fn insert_overrides(&self) -> Vec<(usize, String, String)> {
-        let mut out = Vec::new();
+        let mut out: Vec<(usize, String, String)> = self
+            .shared
+            .folded
+            .borrow()
+            .iter()
+            .map(|((node, name), (_, value))| (*node, name.clone(), value.clone()))
+            .collect();
         let Ok(touched) = self.lua.globals().raw_get::<Table>("__touched") else {
             return out;
         };
@@ -2838,10 +2969,26 @@ impl ScriptHost {
                 out.push((node, name, value));
             }
         }
-        out
+        // One edit per field: the last write wins.
+        let mut seen = std::collections::HashSet::new();
+        let mut last: Vec<_> = out.into_iter().rev().filter(|(node, name, _)| seen.insert((*node, name.clone()))).collect();
+        last.reverse();
+        last
+    }
+
+    /// The initialization writes folded into the program (no live path):
+    /// (XML node, `Kind.Field`). A translation that never reads one reports it.
+    pub fn folded_writes(&self) -> Vec<(usize, String, String)> {
+        self.shared
+            .folded
+            .borrow()
+            .iter()
+            .map(|((node, name), (kind, _))| (*node, kind.clone(), name.clone()))
+            .collect()
     }
 
     pub fn take_commands(&mut self) -> Vec<Command> {
+        self.shared.rebuild_stale_impulses();
         std::mem::take(&mut *self.shared.commands.borrow_mut())
     }
 
@@ -3142,6 +3289,34 @@ mod tests {
              </ScriptProcessor></EventProcessors></Program></UVI4>"
         );
         ScriptHost::new(&xml, (), Config::default()).unwrap()
+    }
+
+    /// Every insert holds a convolver; impulses are a one-tap dirac.
+    struct Convolvers;
+    impl Files for Convolvers {
+        fn script(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn convolver_slot(&self, _: usize) -> Option<usize> {
+            Some(0)
+        }
+    }
+
+    #[test]
+    fn impulse_fields_set_together_rebuild_the_impulse_once() {
+        let xml = "<UVI4><Program Name='P'><Auxs><AuxEffect Name='Aux0'><Inserts>\
+             <Convolver Dry='0' Wet='1'/></Inserts></AuxEffect></Auxs>\
+             <EventProcessors><ScriptProcessor Name='S'><script><![CDATA[\
+             local c = Program.auxs[1].inserts[1]\n\
+             function onInit() c:setParameter('Wet', 0.5); c:setParameter('Dry', 0.25);\
+             c:setParameter('NormalizePower', true) end]]></script></ScriptProcessor></EventProcessors>\
+             <Layers><Layer Name='A'><Keygroups><Keygroup Name='K'><Oscillators>\
+             <SamplePlayer Name='o1'/></Oscillators></Keygroup></Keygroups></Layer></Layers>\
+             </Program></UVI4>";
+        let mut h = ScriptHost::new(xml, Convolvers, Config::default()).unwrap();
+        let impulses = |c: Vec<Command>| c.iter().filter(|c| matches!(c, Command::Impulse { .. })).count();
+        assert_eq!(impulses(h.take_commands()), 1, "{:?}", h.findings());
+        assert_eq!(impulses(h.take_commands()), 0);
     }
 
     #[test]

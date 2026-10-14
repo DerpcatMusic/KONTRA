@@ -426,10 +426,10 @@ pub(super) fn view(
             .map(|(r, s)| Script::new(r, s))
             .collect();
     }
-    let height = ui
-        .scene()
-        .and_then(|s| s.surface("rack-view"))
-        .map_or(460., |s| (s.frame.size.height - 100.).clamp(360., 640.));
+    // The rest of the part, less the tab's own inset; never so short that the
+    // source and the In → Out pane collide.
+    let room = super::part::room_height(ui, slot) - 2. * INSET;
+    let height = if room > 0. { room.max(420.) } else { 460. };
     draw(ui, state, &format!("scripts-{slot}")).h(height)
 }
 
@@ -1038,26 +1038,36 @@ fn inspector(ui: &mut Ui, state: &mut State, key: &str) -> El {
     col![
         section_bar("In → Out", vec![callback]),
         row![
-            col![section("Construct"), body(detail).text_size(TEXT).shrink(0)]
-                .gap(TIGHT)
+            // A scroll node hands its paragraphs no wrap width, so they measure
+            // one long line and paint their wrapped lines over the heading; a
+            // one-column grid gives them its width back.
+            col![
+                grid![1; section("Construct"), body(detail).text_size(TEXT)].line_gap(TIGHT)
+            ]
                 .pad(SPACE)
                 .align(Align::Stretch)
                 .flex(1)
                 .min_w(0)
+                .justify(Justify::Start)
+                .clip()
                 .scroll()
                 .captures_wheel()
                 .id(format!("{key}-detail")),
             vrule(),
             col![
-                body(out).font(mono()).text_size(TEXT).shrink(0),
-                section("Faults"),
-                body(faults).text_size(TEXT).shrink(0)
+                grid![1;
+                    body(out).font(mono()).text_size(TEXT),
+                    section("Faults"),
+                    body(faults).text_size(TEXT)
+                ]
+                .line_gap(SPACE)
             ]
-            .gap(SPACE)
             .pad(SPACE)
             .align(Align::Stretch)
             .flex(1)
             .min_w(0)
+            .justify(Justify::Start)
+            .clip()
             .scroll()
             .captures_wheel()
             .id(format!("{key}-output"))

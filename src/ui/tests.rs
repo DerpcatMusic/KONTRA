@@ -389,10 +389,10 @@ fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }
 
-/// Every header is the one compact line, open or folded, narrow or wide:
+/// The main header keeps its settings in one compact line at every width:
 /// the name shrinks before anything leaves the rack.
 #[test]
-fn a_header_is_one_line_at_any_width() {
+fn a_header_main_row_is_compact_at_any_width() {
     for width in [900., 1180., 1920.] {
         let p = Arc::new(SamplerParams::new());
         p.selection.write().unwrap().parts.push(Part {
@@ -504,6 +504,41 @@ fn a_header_is_one_line_at_any_width() {
             read(&p.selection).parts[0].path.is_empty(),
             "Remove remains reachable from the Part menu at {width}"
         );
+    }
+}
+
+#[test]
+fn expanded_header_has_a_preset_picker_for_ordinary_instrument_files() {
+    for (width, height) in [(900., 640.), (1180., 780.)] {
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts.push(Part {
+            path: "/virtual/Library/B.nki".into(),
+            ..Default::default()
+        });
+        {
+            let mut v = p.shared.view.lock().unwrap();
+            v.files = Arc::new(vec!["/virtual/Library/A.nki".into(), "/virtual/Library/B.nki".into(), "/virtual/Library/C.nki".into()]);
+            v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
+            v.parts[0].instrument = Some(Arc::new(sampler_ir::Instrument::default()));
+        }
+        let mut h = Harness::new(&p, width, height);
+        h.idle(30);
+        let scene = h.ui.scene().unwrap();
+        let continuation = scene.surface("header2-0").unwrap().frame;
+        let picker = scene.surface("preset-picker-0").unwrap().frame;
+        let one = scene.surface("header-0").unwrap().frame;
+        // Two rows of one height; the picker sits in row 1, beside the name.
+        assert!((continuation.size.height - one.size.height).abs() < 0.5);
+        assert!(picker.y >= one.y && picker.y + picker.size.height <= one.y + one.size.height + 0.5);
+        h.press("preset-next-0");
+        assert!(p.selection.read().unwrap().parts[0].path.ends_with("C.nki"));
+        h.press("preset-picker-0");
+        h.press("menu-item-0");
+        assert!(p.selection.read().unwrap().parts[0].path.ends_with("A.nki"));
+        h.press("collapse-0");
+        h.idle(30);
+        assert!(h.ui.scene().unwrap().surface("header2-0").is_none());
+        assert!(h.ui.scene().unwrap().surface("preset-picker-0").is_some(), "folded, row 1 keeps its picker");
     }
 }
 
@@ -880,6 +915,12 @@ fn rack_interactions() {
             .size
             .height
     };
+    // Unsized, a part is as tall as the rack: it pushes the next one below the fold and
+    // that part's docked header covers its foot. Size them so the feet are in the open.
+    for part in &mut write(&p.selection).parts {
+        part.height = 200.;
+    }
+    h.idle(30);
     let open = tall(&h);
     h.press("collapse-0");
     assert!(parts(&p)[0].collapsed, "the chevron folds a part");
@@ -907,10 +948,10 @@ fn rack_interactions() {
     // double-click on the foot unfolds it again.
     let edge = |h: &Harness| center(&h.ui, "resize-0");
     let at = edge(&h);
-    for dy in [0., -4., -400.] {
+    for dy in [0., -4., -open] {
         h.tick(pointer(Point::new(at.x, at.y + dy), true));
     }
-    h.tick(pointer(Point::new(at.x, at.y - 400.), false));
+    h.tick(pointer(Point::new(at.x, at.y - open), false));
     h.idle(30);
     assert!(
         parts(&p)[0].collapsed,
@@ -926,6 +967,8 @@ fn rack_interactions() {
         !part.collapsed && part.height == 0.,
         "a double-click unfolds it whole"
     );
+    // Whole, it is rack-tall and its foot is below the fold; size it again to drag the foot.
+    write(&p.selection).parts[0].height = 200.;
     // Dragged part way, it follows the pointer as it goes and stays there.
     h.idle(60); // not a double click
     let at = edge(&h);
@@ -2560,6 +2603,83 @@ fn editor_opens_while_parts_load() {
     assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
 }
 
+/// Numeric-only: editor frames (the host's GUI thread) while `PROBE_PATH`
+/// loads, and after. Prints `FRAMES {json}`: worst frame per progress band,
+/// time spent at >= 95%, and the first frames after publication.
+#[test]
+#[ignore]
+fn probe_load_frames() {
+    use crate::plugin::Load;
+    use moose::prelude::BackgroundTask;
+    let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+    let p = Arc::new(SamplerParams::new());
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
+    let mut h = Harness::new(&p, 1180., 760.);
+    p.selection.write().unwrap().parts = vec![Part {
+        path,
+        program: std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0),
+        ..Default::default()
+    }];
+    let t0 = Instant::now();
+    let loader = {
+        let p = p.clone();
+        std::thread::spawn(move || {
+            Load.run(&p);
+            t0.elapsed()
+        })
+    };
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let (mut bands, mut at95, mut first95) = ([0f64; 11], 0f64, None);
+    let (mut frames, mut sum, mut worst, mut worst_at) = (0, 0f64, 0f64, 0u32);
+    let mut last = Instant::now();
+    while !loader.is_finished() {
+        let t = Instant::now();
+        h.idle(1);
+        let frame = ms(t.elapsed());
+        let progress = p.shared.part(0).unwrap().load_progress.load(Ordering::Relaxed);
+        let band = (progress / 100).min(10) as usize;
+        bands[band] = bands[band].max(frame);
+        if progress >= 950 && progress < 1000 {
+            first95.get_or_insert(ms(t0.elapsed()));
+            at95 += ms(last.elapsed());
+        }
+        last = Instant::now();
+        (frames, sum) = (frames + 1, sum + frame);
+        if frame > worst {
+            (worst, worst_at) = (frame, progress);
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    let load_ms = ms(loader.join().unwrap());
+    // Publication: the frames that first show the loaded part.
+    // Each frame split into the editor's build and MUI's layout and scene.
+    let (mut after, mut split) = (Vec::new(), Vec::new());
+    let frames_after = std::env::var("PROBE_AFTER_FRAMES").ok().and_then(|n| n.parse().ok()).unwrap_or(8);
+    for _ in 0..frames_after {
+        let t = Instant::now();
+        let root = (h.build)(&mut h.ui, &mut h.bridge);
+        let built = ms(t.elapsed());
+        h.ui.frame(root, Some(h.size), Input::default(), 1. / 60.).unwrap();
+        after.push(ms(t.elapsed()));
+        split.push([built, ms(t.elapsed()) - built]);
+    }
+    let kb = |key: &str| {
+        std::fs::read_to_string("/proc/self/status").unwrap().lines()
+            .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let trace = p.shared.view.lock().unwrap().parts[0].trace.as_deref().map(|t| {
+        serde_json::json!({"elapsed_ms": t["elapsed_ms"], "stages_ms": t["stages_ms"], "status": t["status"]})
+    });
+    println!(
+        "FRAMES {}",
+        serde_json::json!({"load_ms": load_ms, "frames": frames, "mean_frame_ms": sum / f64::from(frames.max(1)),
+            "worst_frame_ms": worst, "worst_at_progress": worst_at, "worst_by_decile": bands,
+            "first_95_ms": first95, "ms_at_95": at95, "after_publish_ms": after, "after_build_frame_ms": split,
+            "hwm_mb": kb("VmHWM:") as f64 / 1024., "rss_mb": kb("VmRSS:") as f64 / 1024., "trace": trace})
+    );
+}
+
 fn key_spot(ui: &Ui, note: u8) -> Point {
     let r = ui
         .scene()
@@ -2820,8 +2940,12 @@ fn the_window_lets_go_of_a_glide_however_it_ends() {
 #[test]
 fn the_keys_play_the_selected_part_or_every_part() {
     let p = two_parts();
+    // A part is as tall as the rack by default; size both so each header shows.
+    for part in &mut p.selection.write().unwrap().parts {
+        part.height = 200.;
+    }
     let mut h = Harness::new(&p, 1180., 760.);
-    h.idle(3);
+    h.idle(30);
     let click = |h: &mut Harness, at: Point| {
         h.tick(pointer(at, true));
         h.tick(pointer(at, false));
@@ -2866,8 +2990,9 @@ fn the_keys_play_the_selected_part_or_every_part() {
     let name = center(&h.ui, "name-0");
     click(&mut h, name);
     assert_eq!(selected_slot(&p), 0);
-    let body = center(&h.ui, "body-1");
-    click(&mut h, body);
+    // The ground just under the part's header row (its body extends past its shown height).
+    let body = h.ui.scene().unwrap().surface("body-1").unwrap().frame;
+    click(&mut h, Point::new(body.x + body.size.width * 0.5, body.y + 2.));
     assert_eq!(
         selected_slot(&p),
         1,
@@ -2936,7 +3061,13 @@ fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
 #[test]
 fn the_cursor_follows_what_is_under_the_pointer() {
     let p = two_parts();
+    // A part is as tall as the rack by default, which docks the next part's header over
+    // its foot; size them so both feet are in the open.
+    for part in &mut p.selection.write().unwrap().parts {
+        part.height = 200.;
+    }
     let mut h = Harness::new(&p, 1180., 760.);
+    h.idle(30);
     let cursor_at = |h: &mut Harness, at: Point| {
         let root = (h.build)(&mut h.ui, &mut h.bridge);
         h.ui.frame(root, Some(h.size), pointer(at, false), 1. / 60.)

@@ -1,10 +1,14 @@
 //! Stable normalized host slots. Capacity comes from Kontakt 8.13.1 standalone;
 //! VST3's native published capacity has not been verified.
+use crate::support::MutexExt;
 use moose::params::{
-    FloatParam, ParamFlags, ParamInfo, ParamRange, ParamUnit, ParamValueKind, Params,
-    SmoothingStyle,
+    FloatParam, ParamFlags, ParamInfo, ParamRange, ParamUnit, ParamValueKind, ParameterPresentation,
+    Params, SmoothingStyle,
 };
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 pub(crate) use super::automation_ids::HOST_AUTOMATION_BASE as BASE;
 static INFOS: LazyLock<Vec<ParamInfo>> = LazyLock::new(|| {
@@ -25,8 +29,168 @@ static INFOS: LazyLock<Vec<ParamInfo>> = LazyLock::new(|| {
         .collect()
 });
 
+/// What a bound host slot shows: its control's name and value text.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Slot {
+    pub name: String,
+    pub group: String,
+    /// The normalized window and control the host value is mapped through.
+    pub low: f64,
+    pub high: f64,
+    pub domain: sampler_core::ControlDomain,
+    /// Menu entries by value.
+    pub labels: Vec<(i64, String)>,
+    pub display: Option<(sampler_ui_ir::Display, sampler_ui_ir::Source)>,
+}
+
+impl Slot {
+    /// Host values 0 and 1 are its only states: a switch or two-entry
+    /// control over the full window. Wider steps would need a plain range
+    /// other than 0..1, which would change what saved automation lanes mean.
+    fn two_state(&self) -> bool {
+        let full = (self.low, self.high) == (0., 1.) || (self.low, self.high) == (1., 0.);
+        full && match self.domain {
+            sampler_core::ControlDomain::Toggle => true,
+            sampler_core::ControlDomain::Integer { min, max } => max.checked_sub(min) == Some(1),
+            sampler_core::ControlDomain::Real { .. } => false,
+        }
+    }
+
+    /// The control's value for host value `v`, as the control reads it.
+    fn text(&self, v: f64) -> String {
+        use sampler_core::ControlDomain as D;
+        let p = self.low + (self.high - self.low) * v.clamp(0., 1.);
+        match self.domain {
+            D::Toggle => if p >= 0.5 { "On" } else { "Off" }.into(),
+            D::Integer { min, max } => {
+                let n = (min as f64 + (max as f64 - min as f64) * p).round() as i64;
+                match self.labels.iter().find(|(value, _)| *value == n) {
+                    Some((_, label)) => label.clone(),
+                    None => self.number(n as f64, true),
+                }
+            }
+            D::Real { min, max } => self.number(min + (max - min) * p, false),
+        }
+    }
+
+    fn number(&self, value: f64, integer: bool) -> String {
+        match &self.display {
+            Some((display, source)) => display.format_value(value, integer, *source),
+            None if integer => format!("{value:.0}"),
+            None => format!("{value:.2}"),
+        }
+    }
+
+    /// The host value whose text is `text`.
+    fn parse(&self, text: &str) -> Option<f64> {
+        use sampler_core::ControlDomain as D;
+        let text = text.trim();
+        let span = |x: f64, min: f64, max: f64| if max != min { (x - min) / (max - min) } else { 0. };
+        let p = match self.domain {
+            D::Toggle => match text.to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" => 1.,
+                "off" | "0" | "false" => 0.,
+                _ => return None,
+            },
+            D::Integer { min, max } => {
+                let n = self
+                    .labels
+                    .iter()
+                    .find(|(_, label)| label.eq_ignore_ascii_case(text))
+                    .map(|&(value, _)| value as f64)
+                    .or_else(|| self.raw(text))?;
+                span(n, min as f64, max as f64)
+            }
+            D::Real { min, max } => span(self.raw(text)?, min, max),
+        };
+        let v = span(p, self.low, self.high);
+        v.is_finite().then(|| v.clamp(0., 1.))
+    }
+
+    /// A typed number in display units back to the control's raw units.
+    // ponytail: KSP display ratio only; Falcon unit conversions (ms, kHz, dB gain) read as raw.
+    fn raw(&self, text: &str) -> Option<f64> {
+        let end = text
+            .find(|c: char| !(c.is_ascii_digit() || matches!(c, '+' | '-' | '.')))
+            .unwrap_or(text.len());
+        let shown: f64 = text[..end].parse().ok().filter(|x: &f64| x.is_finite())?;
+        Some(match &self.display {
+            Some((d, sampler_ui_ir::Source::Ksp { .. })) if d.ratio != 0. => shown * d.ratio,
+            _ => shown,
+        })
+    }
+}
+pub(crate) type Slots = BTreeMap<u16, Slot>;
+
+/// The bound slots across the rack, first part first: each part's plan
+/// routes (saved assignments, script-fixed and NCKP slots) named by the
+/// widget they drive.
+pub(crate) fn slots(parts: &[super::PartView]) -> Slots {
+    let mut slots = Slots::new();
+    for (index, part) in parts.iter().enumerate() {
+        for binding in part.host_bindings.iter() {
+            if slots.contains_key(&binding.address) {
+                continue; // ponytail: first part names a shared slot; join names if racks share slots often.
+            }
+            let found = part.interfaces.iter().find_map(|f| {
+                let w = f.widgets.iter().find(|w| {
+                    matches!(w.binding, sampler_ui_ir::Binding::Control(id)
+                        if id == binding.widget || id == binding.control)
+                })?;
+                Some((f.source, w))
+            });
+            let widget = found.map(|(_, w)| w);
+            let name = widget
+                .and_then(|w| {
+                    [w.automation.name.as_deref(), w.text.lines().next(), Some(w.name.as_str())]
+                        .into_iter()
+                        .flatten()
+                        .map(|n| n.trim().trim_start_matches(['$', '%', '~', '?', '@', '!']))
+                        .find(|n| !n.is_empty())
+                })
+                .map_or_else(|| format!("Automation {}", binding.address), str::to_owned);
+            let (labels, display) = match found.map(|(source, w)| (&w.kind, source)) {
+                Some((sampler_ui_ir::Kind::Menu { items }, _)) => (
+                    items
+                        .iter()
+                        .map(|i| (i64::from(i.value), i.text.clone()))
+                        .collect(),
+                    None,
+                ),
+                Some((
+                    sampler_ui_ir::Kind::Knob { display, .. }
+                    | sampler_ui_ir::Kind::ValueEdit { display, .. },
+                    source,
+                )) => (Vec::new(), Some((display.clone(), source))),
+                _ => (Vec::new(), None),
+            };
+            let group = if part.active.is_empty() {
+                format!("Part {}", index + 1)
+            } else {
+                part.active.clone()
+            };
+            slots.insert(
+                binding.address,
+                Slot {
+                    name,
+                    group,
+                    low: binding.low,
+                    high: binding.high,
+                    domain: binding.domain,
+                    labels,
+                    display,
+                },
+            );
+        }
+    }
+    slots
+}
+
 pub struct HostAutomation {
     values: Box<[FloatParam]>,
+    /// Bound slots as last told to the host, settling like port names.
+    slots: Mutex<crate::routing::Settled<Slots>>,
+    revision: AtomicU64,
 }
 impl HostAutomation {
     pub fn new() -> Self {
@@ -35,7 +199,37 @@ impl HostAutomation {
                 .iter()
                 .map(|info| FloatParam::new(info, SmoothingStyle::None))
                 .collect(),
+            slots: Mutex::new(crate::routing::Settled::new(Slots::new())),
+            revision: AtomicU64::new(0),
         }
+    }
+    /// Main thread: offer the rack's bound slots; the host hears once they settle.
+    pub(crate) fn offer(&self, slots: Slots, now: Instant) {
+        if self.slots.lock_unpoisoned().offer(slots, now) {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+    /// A bound slot shows its control's name; unbound slots are hidden.
+    pub(crate) fn presentation(&self, id: u32) -> Option<ParameterPresentation> {
+        let address = Self::address(id)?;
+        let slots = self.slots.lock_unpoisoned();
+        Some(match slots.published.get(&address) {
+            Some(slot) => ParameterPresentation {
+                name: slot.name.clone(),
+                group: slot.group.clone(),
+                stepped: slot.two_state(),
+                ..Default::default()
+            },
+            None => ParameterPresentation {
+                name: format!("Automation {address}"),
+                group: "Instrument automation".into(),
+                hidden: true,
+                ..Default::default()
+            },
+        })
     }
     pub fn offset_ids(&mut self, base: u32) {
         for value in &mut self.values {
@@ -81,10 +275,18 @@ impl Params for HostAutomation {
         }
     }
     fn format_value(&self, id: u32, value: f64) -> Option<String> {
-        self.value(id).map(|_| format!("{value:.3}"))
+        self.value(id)?;
+        let slots = self.slots.lock_unpoisoned();
+        Some(match slots.published.get(&Self::address(id)?) {
+            Some(slot) => slot.text(value),
+            None => format!("{value:.3}"),
+        })
     }
     fn parse_value(&self, id: u32, text: &str) -> Option<f64> {
         self.value(id)?;
+        if let Some(slot) = self.slots.lock_unpoisoned().published.get(&Self::address(id)?) {
+            return slot.parse(text);
+        }
         text.trim()
             .parse::<f64>()
             .ok()
@@ -125,6 +327,45 @@ mod tests {
         params.set_plain(BASE + 2048, f64::NAN);
         assert_eq!(params.get_normalized(BASE + 2048), Some(0.75));
         assert_eq!(params.parse_value(BASE, "inf"), None);
+    }
+
+    #[test]
+    fn bound_slots_name_and_read_their_control() {
+        use sampler_core::ControlDomain as D;
+        let host = HostAutomation::new();
+        let slot = |domain, labels: &[(i64, &str)], display| Slot {
+            name: "Cutoff".into(),
+            group: "Synth".into(),
+            low: 0.,
+            high: 1.,
+            domain,
+            labels: labels.iter().map(|&(v, t)| (v, t.into())).collect(),
+            display,
+        };
+        let ksp = sampler_ui_ir::Source::Ksp { slot: 0 };
+        let percent = sampler_ui_ir::Display { ratio: 10., unit: "%".into() };
+        let slots = Slots::from([
+            (3, slot(D::Integer { min: 0, max: 1000 }, &[], Some((percent, ksp)))),
+            (4, slot(D::Integer { min: 0, max: 2 }, &[(0, "Saw"), (1, "Square"), (2, "Sine")], None)),
+            (5, slot(D::Toggle, &[], None)),
+        ]);
+        let t = Instant::now();
+        host.offer(slots.clone(), t);
+        assert_eq!(host.revision(), 0, "settles first");
+        host.offer(slots, t + crate::routing::SETTLE);
+        assert_eq!(host.revision(), 1);
+        let p = host.presentation(BASE + 3).unwrap();
+        assert_eq!((p.name.as_str(), p.hidden), ("Cutoff", false));
+        assert!(host.presentation(BASE + 6).unwrap().hidden);
+        assert!(host.presentation(BASE + 5).unwrap().stepped);
+        assert!(!host.presentation(BASE + 4).unwrap().stepped, "three entries stay continuous");
+        assert_eq!(host.format_value(BASE + 3, 0.5).unwrap(), "50 %");
+        assert_eq!(host.parse_value(BASE + 3, "25 %"), Some(0.25));
+        assert_eq!(host.format_value(BASE + 4, 1.).unwrap(), "Sine");
+        assert_eq!(host.parse_value(BASE + 4, "square"), Some(0.5));
+        assert_eq!(host.format_value(BASE + 5, 0.7).unwrap(), "On");
+        assert_eq!(host.parse_value(BASE + 5, "off"), Some(0.));
+        assert_eq!(host.format_value(BASE + 6, 0.5).unwrap(), "0.500");
     }
 
     #[test]
