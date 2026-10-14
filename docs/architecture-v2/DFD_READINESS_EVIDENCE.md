@@ -252,17 +252,19 @@ sample data or bank payload is included.
 ## Default policy revision after the above measurements
 
 The product Auto policy now requests eager resident attack preparation with a
-256 MiB **per initial stream** packed-head cap, replacing lazy 8 MiB admission.
+256 MiB **per initial stream** physical-payload cap, replacing lazy 8 MiB admission.
+Packed heads and mandatory full-resident base PCM share that authority.
 It uses the existing bounded parallel loader workers; audio never reads files or
 waits for preloading. All authored alternatives remain in the head plan. This
 cap is not total process RAM: the page pool, metadata, worker scratch, dynamic
-sample revisions, full-resident data and other parts are separate allocations.
+sample revisions, octave levels, encoded readers and other parts are separate allocations.
 The initial source load must finish preloading before its part is published.
 
 If exact lossless packed heads exceed the cap, the typed capacity fallback
 releases the entire staged attack batch before retrying mandatory wavetable
 ranges over the same immutable sources/quota. Decode/storage/cancellation errors
-remain errors. Fallback is retained in the load report and support diagnostics,
+remain errors. Mandatory full-resident sources must also fit and cannot fall back
+to streaming. Fallback is retained in the load report and support diagnostics,
 and the report panel explicitly says sample attacks may wait for disk. Such a
 load is not claimed to have complete attack readiness. The startup report records
 planned/covered ranges and packed bytes/budget; it excludes later dynamic loads.
@@ -276,10 +278,13 @@ its audio guard release performs no allocation/deallocation.
 The 17-second cold head-open observation above is still a limitation. This policy
 revision is not a cold-load speed claim or an early GUI publication implementation.
 The UI inspector remains independently usable without loading the plugin binary.
-A new real-bank paced first-note receipt is needed before claiming SSD deadline
-acceptance for this default policy. Full-resident dynamic leases, aggregate
-multi-part admission, authored UVI residency flags and dense-tail deadline margins
-remain open work.
+The real-bank receipts below retain both attack successes and tail failures;
+they do not establish universal SSD deadline acceptance. Mandatory documented UVI
+Program.Streaming/AllowStreaming residency, shared startup full-PCM/head leases,
+and separate dynamic revision leases now have focused correctness checks. Live
+residency-flag writes, aggregate multi-part admission and dense-tail margins remain
+open. Startup diagnostics report required-resident assets/bytes, packed heads and
+combined physically held payload separately.
 
 The first real-bank trial of this revision used a 128 MiB ceiling. With 23
 compiler observations, a 16.614 ms read-probe p95 produced 1,406 base head
@@ -319,6 +324,43 @@ voice/page/deadline correlation remains necessary. The warm/cold and geometry
 differences preclude a speedup claim. This evidence explicitly fails a claim of
 universally safe SSD streaming.
 
-Immutable numeric artifacts: `dfd-auto-eager-256cap-evidence.json`, per-host JSON
+The [compact numeric receipt](receipts/dfd-auto-attacks-20261015.json) retains both ceilings.
+Immutable full artifacts: `dfd-auto-eager-256cap-evidence.json`, per-host JSON
 and decoder stderr under the shared diagnostic artifact directory. The older
 128 MiB failure and successful warmer receipt remain preserved separately.
+
+### Follow-up demand and worker CPU audit
+
+A later fixed-binary witness (`b4f584c4d59a43a01c33345cb33bf5230f4a12602dd78b4044b46cc34f781d5e`)
+adds a bounded current-voice/page snapshot after selected callbacks and opt-in
+Linux worker thread CPU clocks. The query never polls completions, advances
+voices or changes requests; it is a current-state query, not historical proof of
+an exact missed read. A separate fixture verifies pending-versus-head readiness,
+visitor bounds, no heap work, unchanged clock and exact continuation PCM.
+
+In this run the first burst had complete attack coverage, zero cold starts,
+ordinary underruns, heap calls and callback deadline misses. The prior 24-underrun
+failure remains valid and is not erased by this non-reproduction. Ten compiler
+observations were again present (an external `pure_va_dispersion_core` build).
+The second burst still counted 160 cold starts. Its first post-callback snapshot
+contained 114 cold voices with current source demand outside resident heads;
+these pages were pending. Thus unchanged static coverage coexists with actual
+uncovered starts; no blanket claim of complete dynamic onset coverage is made.
+
+The slowest retained page read took 19,607 us elapsed but 68 us thread CPU;
+worker total was 19,609 us elapsed and 70 us CPU. Other ~18.9 ms reads consumed
+33–52 us CPU. These stalls are predominantly off-CPU. This separates compute
+from waiting/descheduling, without distinguishing filesystem/device waits from
+scheduler delay. Maximum queue wait reached 53,951 us. All 792 jobs had CPU
+clocks, zero decode failures and no reply backpressure. Per-job probes and full
+numeric snapshots remain private diagnostic artifacts.
+
+A separate source audit found that static head planning omitted the explicitly
+authored `Playback.start_range` despite active SampleStart routes. Planning now
+covers the full admitted offset interval in both directions, with runtime-u32
+and source bounds and saturating arithmetic; unused ranges consume no extra
+head storage. An independent full-resident versus actual streamed fixture proves
+exact first-callback audio for modulated forward/reverse starts without waiting
+for tail pages. This closes a generalized known-bound omission. Arbitrary
+script `play_note` offsets still have no invented static bound. The real-bank
+cold-start cause remains unassigned until its script-offset identity is joined.

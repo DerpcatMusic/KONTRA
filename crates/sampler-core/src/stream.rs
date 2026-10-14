@@ -20,6 +20,10 @@ pub struct PageKey {
 #[derive(Clone, Debug)]
 pub struct StreamDemandSnapshot {
     pub voice: crate::VoiceId,
+    pub source_zone: u32,
+    /// Script-requested source-time offset, distinct from start modulation.
+    pub source_offset_micros: u32,
+    pub source_frame: u64,
     pub key: PageKey,
     pub frames: Range<usize>,
     pub deadline: u64,
@@ -813,7 +817,10 @@ impl crate::Runtime {
                         ..demand.frames.end.min((page + 1) * PAGE_FRAMES);
                     let key = PageKey { asset: demand.asset, index: page };
                     if !accept(StreamDemandSnapshot {
-                        voice: id, key, resident: asset.resident_covers(range.clone()),
+                        voice: id, key, source_zone:voice.source_zone,
+                        source_offset_micros:self.note_events[family.note.0.index].source_offset_micros,
+                        source_frame:voice.cursor.trace_position(),
+                        resident: asset.resident_covers(range.clone()),
                         frames: range, deadline: demand.deadline,
                         starved: voice.cursor.starved(), cold: voice.cursor.holding_onset(),
                         status: self.stream_cache.as_ref().map_or(PageStatus::Missing, |cache| cache.status(key)),

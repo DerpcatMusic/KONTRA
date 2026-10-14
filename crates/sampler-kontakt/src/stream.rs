@@ -509,14 +509,22 @@ pub(crate) fn start_ranges(
         let step = zone_step(zone, &instrument.groups, ratio, policy);
         // The resampling window reads this far either side of the position.
         let guard = sampler_core::read_radius(step) as u64 + 1;
-        let frames = (head as f64 * step).ceil() as u64 + 2 * guard;
+        // The first read can move throughout the authored sample-start
+        // modulation range. Cover that complete interval, not just offset zero.
+        // The runtime clamps this range to u32; arbitrary script offsets remain
+        // a separate cold-start case rather than an invented static bound.
+        let offset = if zone.routes.iter().any(|route| {
+            instrument.routes.get(route.0).is_some_and(|route| route.target == ir::Target::SampleStart)
+        }) { playback.start_range.min(u64::from(u32::MAX)) } else { 0 };
+        let frames = ((head as f64 * step).ceil() as u64)
+            .saturating_add(2 * guard).saturating_add(offset);
         let length = pcm.frame_count() as u64;
         let end = playback.end.unwrap_or(length).min(length);
         let (from, to) = if playback.reverse {
             (end.saturating_sub(frames), end)
         } else {
             let from = playback.start.min(length).saturating_sub(guard);
-            (from, (from + frames).min(length))
+            (from, from.saturating_add(frames).min(length))
         };
         if from < to {
             ranges[asset].push(from as usize..to as usize);
@@ -3279,3 +3287,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "stream_onset_tests.rs"]
+mod stream_onset_tests;
