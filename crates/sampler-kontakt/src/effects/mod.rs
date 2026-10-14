@@ -896,7 +896,16 @@ pub(crate) fn chain_with(
                 flush(&mut combined, &mut filters, &mut out);
                 let knobs = [*cutoff, *resonance];
                 if knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
-                    out.processors.push(sampler_ir::Processor::Phaser(knobs));
+                    // Script- or modulation-addressed: cutoff and resonance become lanes.
+                    if let Some((group, generic)) = dynamic {
+                        out.lane_slots.push((fx.slot, out.processors.len()));
+                        let address = sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic };
+                        out.processors.push(sampler_ir::Processor::TimeMod(
+                            sampler_ir::fx::timemod::Config::phaser_filter(knobs[0], knobs[1], Some(address)),
+                        ));
+                    } else {
+                        out.processors.push(sampler_ir::Processor::Phaser(knobs));
+                    }
                     combined = gain;
                 } else {
                     notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), sampler_ir::Reason::InvalidValue));
