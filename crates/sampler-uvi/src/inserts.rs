@@ -199,6 +199,26 @@ impl Translation {
                         mix,
                     )));
                 }
+                "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz"
+                    if number(node, "Oversampling", 0.0)? == 0.0 =>
+                {
+                    // Native drive engines (color chain Curve::Drive); oversampled units fall
+                    // through to the unproved report below.
+                    use ir::fx::color::{Config, Curve, Drive, DriveKind};
+                    let drive = Drive {
+                        kind: match node.tag_name().name() {
+                            "GarageFuzz" => DriveKind::Garage,
+                            "SmoothOverdrive" => DriveKind::Smooth,
+                            _ => DriveKind::Straight,
+                        },
+                        input_gain: number(node, "InputGain", 0.0)?.clamp(-30.0, 20.0) as f32,
+                        overdrive: number(node, "Overdrive", 0.0)?.clamp(0.0, 10.0) as f32,
+                        trash: number(node, "Trash", 0.0)?.clamp(0.0, 1.0) as f32,
+                        mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Drive(drive), ..Config::IDENTITY }));
+                }
                 k if crate::fx::dynamics::handles(k) => {
                     crate::fx::dynamics::translate(self, node, &at, &mut out)?;
                 }

@@ -76,6 +76,35 @@ pub enum Curve {
     Rectifier(Rectifier),
     /// UVI BitCrusher drive nonlinearity, normalized Drive 0..1.
     Destructor { drive: f64 },
+    /// Kontakt Skreamer's oversampled table shaper with its own filters:
+    /// `[tone, drive, bass, bright, mix]`, normalized.
+    Skreamer([f32; 5]),
+    /// A UVI drive engine (gain, curve, wet/dry, output gain).
+    Drive(Drive),
+}
+
+/// The UVI drive engines' curves.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    /// GarageFuzz: `tanh`.
+    Garage,
+    /// SmoothOverdrive: `s / (1 + |s|)`.
+    Smooth,
+    /// StraightFuzz: a stereo-linked square at `10^(-2.4 Trash)`.
+    Straight,
+}
+
+/// UVI GarageFuzz / SmoothOverdrive / StraightFuzz controls as stored (dB, 0..10, 0..1, %).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drive {
+    pub kind: DriveKind,
+    pub input_gain: f32,
+    pub overdrive: f32,
+    pub trash: f32,
+    pub mix: f32,
+    pub output_gain: f32,
 }
 
 /// Kontakt Lo-Fi noise (0x140aad8a2): shared LCG, one-pole colored.
@@ -196,6 +225,11 @@ impl Config {
         }
     }
 
+    /// Kontakt Skreamer.
+    pub fn skreamer(knobs: [f32; 5]) -> Self {
+        Self { curve: Curve::Skreamer(knobs), ..Self::IDENTITY }
+    }
+
     /// A memoryless rectifier.
     pub fn rectifier(mode: Rectifier) -> Self {
         Self { curve: Curve::Rectifier(mode), ..Self::IDENTITY }
@@ -248,6 +282,8 @@ impl Config {
             Self { curve: Curve::Tube { .. } | Curve::Transistor { .. }, .. } => "Distortion",
             Self { curve: Curve::Rectifier(_), .. } => "Rectify",
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
+            Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
+            Self { curve: Curve::Drive(_), .. } => "Drive",
             Self { decimator: Some(_), .. } => "Decimator",
             Self { gainer: Some(_), .. } => "Gainer",
             Self { stereo: Some(_), .. } => "Stereo Modeller",

@@ -472,8 +472,9 @@ impl Slot {
                         .collect::<Option<_>>()?;
                     Params::Eq { bands }
                 } else {
-                    // Daft (70, 71) stores a leading value first.
-                    let leading = if matches!(kind, 70 | 71 | 30..=41) {
+                    // Daft (70, 71) stores a leading value first; SV Par/Ser (63..=65) its
+                    // bandwidth (reader 0x140d00db0 into +0x24, before cutoff and resonance).
+                    let leading = if matches!(kind, 70 | 71 | 30..=41 | 63..=65) {
                         Some(r.f32()?)
                     } else {
                         None
@@ -602,7 +603,6 @@ pub(crate) enum Scope {
 }
 
 /// The Kontakt filter type table (names, laws, coverage) lives in `filter.rs`.
-pub(crate) use filter::cutoff_octaves;
 use sampler_ir::fx::filter::{Gap, Topology};
 
 /// Report a filter that is configured but not fully proved, so a stand-in never passes silently.
@@ -911,6 +911,27 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             }
+            Some(Params::Fields(fields)) if fx.module == 0x21 => {
+                flush(&mut combined, &mut filters, &mut out);
+                // Skreamer fields TONE, DRIVE, BASS, BRIGHT, MIX (identity, bindings TSV).
+                let knobs: Vec<f32> = fields
+                    .iter()
+                    .filter_map(|f| match f.value {
+                        ni_file::kontakt::objects::EffectValue::Float(v) => Some(v),
+                        _ => None,
+                    })
+                    .collect();
+                match color::skreamer(&knobs) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::Color(config));
+                        combined = gain;
+                        if dynamic.is_some() {
+                            notes.push(("Skreamer live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                        }
+                    }
+                    None => modelled = false,
+                }
+            }
             Some(Params::LoFi { values, flag }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 if let Some(config) = color::lofi(values) {
@@ -1069,8 +1090,8 @@ pub(crate) fn chain_with(
                 kind,
                 cutoff,
                 resonance,
-                ..
-            }) => match filter(*kind, *cutoff, *resonance, None) {
+                extra,
+            }) => match filter(*kind, *cutoff, *resonance, extra.first().copied().filter(|_| matches!(kind, 63..=65))) {
                 Ok((processors, mapped)) => {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
@@ -2201,21 +2222,16 @@ mod tests {
     }
 
     #[test]
-    fn sv_filters_follow_the_measured_laws() {
-        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
+    fn sv_filters_are_native_cascade_classes() {
+        use sampler_ir::fx::filter::{Topology, Variant};
+        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
             panic!()
         };
-        let sampler_ir::Frequency::Hertz(hz) = f.cutoff else {
+        assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
+        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, Some(0.3)).unwrap().0[0] else {
             panic!()
         };
-        assert!((hz / 25.0 / 800f64.powf(0.293) - 1.0).abs() < 1e-6);
-        let sampler_ir::Resonance::Q(q) = f.resonance else {
-            panic!()
-        };
-        assert!(
-            (q - 1.0 / 2.0).abs() < 1e-9,
-            "r = 0 is k = 1.987 + 0.013 = 2"
-        );
+        assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
         // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
         assert!(filter(8, 0.5, 0.5, None).is_ok());
         assert!(filter(1, 0.5, 0.5, None).is_err());
