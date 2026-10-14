@@ -206,6 +206,8 @@ impl Check<'_> {
             }
             // Translators clamp to the native ranges; the runtime checks finiteness.
             Curve::Diode(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::ToneStack(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;

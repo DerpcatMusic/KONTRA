@@ -95,6 +95,8 @@ pub enum Curve {
     Skreamer([f32; 5]),
     /// A UVI drive engine (gain, curve, wet/dry, output gain).
     Drive(Drive),
+    /// UVI ToneStack (Yeh/Smith passive stack, 26 models).
+    ToneStack(ToneStack),
     /// UVI DiodeClipper (Newton-solved diode pair, DC blocker, output gain).
     Diode(Diode),
 }
@@ -135,6 +137,17 @@ pub struct Diode {
     pub high_pass: f32,
     pub asymmetry: f32,
     pub output_gain: f32,
+}
+
+/// UVI ToneStack controls: Bass, Mid, Treble, Gain 0..1, Model 0..=25.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToneStack {
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
+    pub gain: f32,
+    pub model: u8,
 }
 
 /// Kontakt Lo-Fi noise (0x140aad8a2): shared LCG, one-pole colored.
@@ -337,6 +350,7 @@ impl Config {
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
+            Self { curve: Curve::ToneStack(_), .. } => "Tone stack",
             Self { curve: Curve::Diode(_), .. } => "Diode clipper",
             Self { decimator: Some(_), .. } => "Formant crusher",
             Self { gainer: Some(_), .. } => "Gainer",
