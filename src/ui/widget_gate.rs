@@ -29,17 +29,17 @@ pub(super) fn submitted_widget(widget: &ir::Widget, indices: &[u32]) {
     match &widget.binding {
         ir::Binding::Control(id) => submitted_control(*id),
         ir::Binding::Variable { script, name } => {
-            let id = sampler_ksp::derived_control_id(*script, name);
+            let id = sampler_ksp::derived_control_id(*script, name).0;
             SUBMITTED.with(|edits| {
                 let mut edits = edits.borrow_mut();
                 if matches!(widget.kind, ir::Kind::Table { .. } | ir::Kind::Xy { .. }) {
                     edits.extend(
                         indices
                             .iter()
-                            .map(|index| format!("typed-{}-{index}", id.0)),
+                            .map(|index| format!("typed-{}-{index}", id)),
                     );
                 } else {
-                    edits.insert(format!("typed-{}", id.0));
+                    edits.insert(format!("typed-{}", id));
                 }
             });
         }
