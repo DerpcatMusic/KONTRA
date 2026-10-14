@@ -175,6 +175,10 @@ impl Gate {
         self.render(0.3, &mut tail);
         let mut samples = Vec::new();
         self.core.play(0, Event::midi1(0x90, key, velocity));
+        // A stimulus after note-on: scripts reset per-note values at note start.
+        for [s, d1, d2] in self.during.clone() {
+            self.core.play(0, Event::midi1(s, d1, d2));
+        }
         self.render(0.1, &mut samples);
         let mut groups: Vec<u32> = self.core.voice_taps(0).iter().flatten().map(|t| t.group).collect();
         groups.sort();
@@ -350,20 +354,31 @@ fn stimulus(gate: &mut Gate, bindings: &[sampler_core::EngineParameterBinding], 
     let variant = |debug: String| debug.split(['(', ' ', '{']).next().unwrap_or_default().to_string();
     let route = instrument.and_then(|i| i.source_indices.route_controls.iter()
         .find(|(_, depth, _)| sampler_core::lower::ir_control_id(&i.controls[depth.0].key) == b.control)
-        .map(|(r, _, _)| (&i.routes[r.0], &i.modulators[i.routes[r.0].source.0].source)));
-    if let Some((route, source)) = route {
+        .map(|(r, _, bypass)| (&i.routes[r.0], &i.modulators[i.routes[r.0].source.0].source,
+            sampler_ui_ir::ControlId(sampler_core::lower::ir_control_id(&i.controls[bypass.0].key).0))));
+    if let Some((route, source, bypass)) = route {
         context["source"] = json!(variant(format!("{source:?}")));
         context["target"] = json!(variant(format!("{:?}", route.target)));
-        // Up for the takes, back to rest after (the caller resets dynamics CCs to 100).
+        // A bypassed modulation slot is silent at any depth: enable it for the test.
+        if let Some(old) = gate.core.control_value(0, bypass).filter(|v| *v >= 0.5) {
+            restore.push((bypass, old));
+            gate.core.set_control(0, bypass, 0.);
+            context["unbypassed"] = json!(true);
+        }
+        // Up during each take, back to rest after (the caller resets dynamics
+        // CCs to 100). ponytail: script sources are assumed aftertouch-driven,
+        // as Conflux's are (on controller: AT -> EVENT_PAR_MOD_VALUE_ID 0);
+        // map per library if another drives them from something else.
         let (up, rest) = match source {
             sampler_ir::ModulationSource::Controller(cc) => ([0xb0, *cc, 127], [0xb0, *cc, 0]),
             sampler_ir::ModulationSource::PitchBend => ([0xe0, 127, 127], [0xe0, 0, 64]),
-            sampler_ir::ModulationSource::ChannelPressure => ([0xd0, 127, 0], [0xd0, 0, 0]),
+            sampler_ir::ModulationSource::ChannelPressure | sampler_ir::ModulationSource::Script(_)
+            | sampler_ir::ModulationSource::ScriptBipolar(_) => ([0xd0, 127, 0], [0xd0, 0, 0]),
             _ => ([0; 3], [0; 3]),
         };
         if up[0] != 0 {
-            gate.core.play(0, Event::midi1(up[0], up[1], up[2]));
             context["stimulus"] = json!(format!("{up:?}"));
+            gate.during.push(up);
             gate.rest.push(rest);
         }
     }
@@ -573,6 +588,7 @@ fn parity_run() {
         for (control, v) in restore {
             gate.core.set_control(0, control, v);
         }
+        gate.during.clear();
         for [s, d1, d2] in std::mem::take(&mut gate.rest) {
             gate.core.play(0, Event::midi1(s, d1, d2));
         }
@@ -581,6 +597,22 @@ fn parity_run() {
         let moved = lo_v != hi_v;
         engine.push(json!({"route": format!("{} group {} slot {} generic {}", sampler_core::engine_parameter_name(b.address.parameter).unwrap_or("?"), b.address.group, b.address.slot, b.address.generic),
             "moved": moved, "context": context, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
+    }
+    // Performance inputs as MIDI, rest vs full, after note-on: tells a dead
+    // wheel knob (its script only forwards set_controller) from an instrument
+    // whose modulation slots ignore the wheel in this state.
+    let mut midi = Vec::new();
+    for (name, rest, up) in [("cc1", [0xb0, 1, 0], [0xb0, 1, 127]), ("pitch-bend", [0xe0, 0, 64], [0xe0, 0, 0]),
+        ("aftertouch", [0xd0, 0, 0], [0xd0, 127, 0])] {
+        gate.during = vec![rest];
+        let low = gate.take_as_is(key, 100);
+        gate.during = vec![up];
+        let high = gate.take_as_is(key, 100);
+        gate.during.clear();
+        gate.core.play(0, Event::midi1(rest[0], rest[1], rest[2]));
+        gate.set_dynamics();
+        let (verdict, delta) = noise.verdict(&low, &high);
+        midi.push(json!({"input": name, "verdict": verdict, "audio": delta}));
     }
     for (name, rows) in [("controls-ui", &controls), ("controls-host", &host), ("controls-engine", &engine)] {
         let failed: Vec<&Value> = rows.iter().filter(|r| !matches!(r["verdict"].as_str(), Some("pass" | "masked-by-noise" | "inert-in-state"))).collect();
@@ -623,7 +655,7 @@ fn parity_run() {
         json!({"failed": presets.iter().filter(|p| p["pass"] != true).count(), "total": presets.len(), "available": all.len()})));
 
     let result = json!({"parity_run_schema": 1, "path": path, "checks": checks, "load": load, "ui": ui, "notes": notes,
-        "baseline": baseline, "controls": {"ui": controls, "ui_targets_total": total_targets, "host": host, "host_assigned_total": host_total, "engine": engine, "engine_bindings_total": bindings.len()},
+        "baseline": baseline, "controls": {"ui": controls, "ui_targets_total": total_targets, "host": host, "host_assigned_total": host_total, "midi": midi, "engine": engine, "engine_bindings_total": bindings.len()},
         "presets": presets, "final_rss_mb": kb("VmRSS:") / 1024, "final_peak_rss_mb": kb("VmHWM:") / 1024});
     std::fs::write(out.join("result.json"), serde_json::to_string_pretty(&result).unwrap()).unwrap();
 }

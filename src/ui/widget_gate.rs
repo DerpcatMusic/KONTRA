@@ -123,6 +123,8 @@ struct Gate {
     engine_outcomes: Vec<sampler_core::EngineParameterOutcome>,
     /// MIDI that returns a parity stimulus to rest.
     rest: Vec<[u8; 3]>,
+    /// MIDI played right after each parity note-on.
+    during: Vec<[u8; 3]>,
 }
 impl Gate {
     fn load(selection: Selection) -> Self {
@@ -151,6 +153,7 @@ impl Gate {
             phase: "load",
             engine_outcomes: Vec::new(),
             rest: Vec::new(),
+            during: Vec::new(),
         };
         gate.settle();
         gate
