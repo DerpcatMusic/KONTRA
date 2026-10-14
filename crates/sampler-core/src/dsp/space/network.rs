@@ -383,11 +383,13 @@ struct Lanes {
     /// Modulated reads: `Σ lfo_k·dm_k + base` in f32 (one `dm_k` is nonzero).
     base: [f32; MAX_LINES],
     dm: [[f32; MAX_LINES]; 4],
-    /// Read filter, diagonal gain, injection per channel.
+    /// Read filter, diagonal gain, and the injection: one input channel
+    /// (`ch`) times `inj` (no `0·x` term for the other channel, as natively).
     a: [f32; MAX_LINES],
     b: [f32; MAX_LINES],
     g: [f32; MAX_LINES],
-    inj: [[f32; MAX_LINES]; 2],
+    inj: [f32; MAX_LINES],
+    ch: [u8; MAX_LINES],
     /// Write biquad.
     bq: [[f32; MAX_LINES]; 5],
 }
@@ -445,7 +447,7 @@ impl Network {
             Modulation::Dual { w, .. } => ((w[0].cos(), w[0].sin()), (w[1].cos(), w[1].sin())),
             _ => ((1.0, 0.0), (1.0, 0.0)),
         };
-        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dm: [ZERO; 4], a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5] };
+        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dm: [ZERO; 4], a: ZERO, b: ZERO, g: ZERO, inj: ZERO, ch: [0; MAX_LINES], bq: [ZERO; 5] };
         let gains = match &spec.matrix {
             Matrix::Permutation { g, .. } => *g,
             _ => [1.0; MAX_LINES],
@@ -456,7 +458,7 @@ impl Network {
             k.base[i] = l.base as f32;
             k.dm[usize::from(l.sel.min(3))][i] = l.depth as f32;
             (k.a[i], k.b[i], k.g[i]) = (l.a, l.b, gains[i]);
-            k.inj[usize::from(l.inject.0.min(1))][i] = l.inject.1;
+            (k.ch[i], k.inj[i]) = (l.inject.0.min(1), l.inject.1);
             for c in 0..5 {
                 k.bq[c][i] = l.bq[c];
             }
@@ -986,7 +988,7 @@ impl Line<'_> {
                 rings[c].read_block::<I>(self.w0, k.j[i0 + c], k.f[i0 + c], &mut rd[c][..len]);
             }
             let (a, b, g) = (std::array::from_fn::<f32, N, _>(|c| k.a[i0 + c]), std::array::from_fn::<f32, N, _>(|c| k.b[i0 + c]), std::array::from_fn::<f32, N, _>(|c| k.g[i0 + c]));
-            let inj: [[f32; N]; 2] = std::array::from_fn(|q| std::array::from_fn(|c| k.inj[q][i0 + c]));
+            let (ch, inj): ([usize; N], [f32; N]) = (std::array::from_fn(|c| usize::from(k.ch[i0 + c] & 1)), std::array::from_fn(|c| k.inj[i0 + c]));
             let mut out = [[0f32; BLOCK]; N];
             for j in 0..len {
                 let x = self.xs[j];
@@ -1004,7 +1006,7 @@ impl Line<'_> {
                         st.dc[i] += self.one * (q - st.dc[i]);
                         z = q - st.dc[i];
                     }
-                    out[c][j] = z + (x[0] * inj[0][c] + x[1] * inj[1][c]);
+                    out[c][j] = z + x[ch[c]] * inj[c];
                     src[c][j] = match self.tap {
                         TapFrom::Read => r,
                         TapFrom::Filtered => y[c],
@@ -1198,7 +1200,7 @@ fn write<const F: bool>(k: &Lanes, st: &mut State, one: f32, i: usize, ring: &mu
         st.dc[i] += one * (z - st.dc[i]);
         y = z - st.dc[i];
     }
-    let inj = x[0] * k.inj[0][i] + x[1] * k.inj[1][i];
+    let inj = x[usize::from(k.ch[i] & 1)] * k.inj[i];
     if at == w {
         ring.put(w, y + inj);
     } else {
