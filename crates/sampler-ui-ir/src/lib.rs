@@ -178,6 +178,9 @@ pub struct Widget {
     pub value: Option<Value>,
     pub waveform: Option<Waveform>,
     pub meter: Option<MeterAddress>,
+    /// Exact Falcon element request. It requires its own resolved tap and must
+    /// never fall back to an unrelated Kontakt/output meter address.
+    pub uvi_meter_request: Option<UviMeterRequest>,
     /// Source display endpoints, including an inverted meter scale.
     pub meter_range: Option<[i32; 2]>,
 }
@@ -225,6 +228,7 @@ impl Widget {
             value: None,
             waveform: None,
             meter: None,
+            uvi_meter_request: None,
             meter_range: None,
         }
     }
@@ -307,6 +311,28 @@ pub struct MeterAddress {
     pub slot: i32,
     pub channel: u8,
     pub bus: Option<i32>,
+}
+
+/// Authored Falcon element identity, independent of DSP packing or UI order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UviMeterScope {
+    Program,
+    Layer { ordinal: u32 },
+    Keygroup,
+    Oscillator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UviMeterRequest {
+    /// Canonical promoted-element ordinal exposed by Lua `__id`.
+    pub element_id: u32,
+    /// Actual XML NodeId from the same promoted element's retained source map.
+    pub element_node: u32,
+    pub scope: UviMeterScope,
+    pub bus_id: u32,
+    pub use_output: bool,
+    /// Authored mono-sum request; no channel averaging law is implied here.
+    pub display_as_mono: bool,
 }
 
 /// Attached source zone and waveform properties. Zone is the native ID, not

@@ -1636,6 +1636,11 @@ pub(super) fn widget_state(
         ),
         Kind::LevelMeter { orientation } => {
             let level = input.meters.get(&n).copied().unwrap_or_else(|| {
+                // A Falcon element/input/sum request needs an exact provider.
+                // An unavailable tap must not display the Program output.
+                if face.source == ir::Source::FalconLua {
+                    return 0.;
+                }
                 let (bus, channel) = match wd.binding {
                     Binding::Meter { bus, channel } => (bus, channel),
                     _ => (None, 0),
@@ -2864,6 +2869,9 @@ mod page_layout_tests {
     #[test]
     fn retained_photo_does_not_skip_knob_menu_or_live_meter_reads() {
         let (mut face, mut assets) = photo_face();
+        // This fixture exercises Kontakt's legacy output provider. Falcon
+        // element taps require their dedicated resolved request/readback path.
+        face.source = ir::Source::Ksp { slot: 0 };
         face.pages[0].size = ir::Size { width: 240.0, height: 140.0 };
         face.widgets.push(ir::Widget::new("menu", PageRef(0), ir::Rect::new(110, 10, 100, 24), Kind::Menu {
             items: vec![
