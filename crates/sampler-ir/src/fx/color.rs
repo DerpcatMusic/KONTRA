@@ -111,6 +111,38 @@ pub enum Curve {
     ToneStack(ToneStack),
     /// UVI DiodeClipper (Newton-solved diode pair, DC blocker, output gain).
     Diode(Diode),
+    /// A Kontakt amp, cabinet or pedal model.
+    Amp(Amp),
+}
+
+/// The Kontakt amp, cabinet and pedal models.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmpModel {
+    /// 0x24 Cabinet: size, air, treble, bass (-1..1), type 0..=10.
+    Cabinet,
+    /// 0x58 Cry Wah: pedal, mono.
+    CryWah,
+    /// 0x6f Big Fuzz: pedal (sustain, tone, bass, treble, mono).
+    BigFuzz,
+    /// 0x6e Fuzz: pedal (amount, bass, treble, mono).
+    Fuzz,
+    /// 0x23 Twang (Fx4BB, apply 0x140adf660): volume, treble, mid, bass, bright, mono.
+    Twang,
+    /// 0x53 AC Box: normal volume, brilliant volume, bass, treble, tone cut, tremolo speed, tremolo depth, mono.
+    AcBox,
+    /// 0x55 Cat: volume, distortion, filter, bass, balls, treble, tone, mono.
+    Cat,
+    /// 0x56 (reader 0x140d00a50, Fx6B): volume, tone, drive, bass, mid, treble, mono.
+    DStortion,
+}
+
+/// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Amp {
+    pub model: AmpModel,
+    pub knobs: [f32; 24],
 }
 
 /// The UVI drive engines' curves.
@@ -415,6 +447,11 @@ impl Config {
         Self { curve: Curve::Dirt(dirt), ..Self::IDENTITY }
     }
 
+    /// A Kontakt amp, cabinet or pedal model.
+    pub fn amp(amp: Amp) -> Self {
+        Self { curve: Curve::Amp(amp), ..Self::IDENTITY }
+    }
+
     /// Kontakt Freak.
     pub fn freak(freak: Freak) -> Self {
         Self { curve: Curve::Freak(freak), ..Self::IDENTITY }
@@ -495,6 +532,14 @@ impl Config {
             Self { curve: Curve::Tubescreamer(_), .. } => "Tubescreamer",
             Self { curve: Curve::Dirt(_), .. } => "Dirt",
             Self { curve: Curve::Freak(_), .. } => "Freak",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::CryWah, .. }), .. } => "Cry Wah",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::BigFuzz, .. }), .. } => "Big Fuzz",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Fuzz, .. }), .. } => "Fuzz",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Twang, .. }), .. } => "Twang",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::AcBox, .. }), .. } => "AC Box",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Cat, .. }), .. } => "Cat",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::DStortion, .. }), .. } => "DStortion",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
