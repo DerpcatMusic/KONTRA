@@ -22,6 +22,30 @@ fn color(settings: ColorSettings) -> Color {
 
 fn run(color: &Color, state: &mut State, block: &mut Planar, len: usize) {
     color.process(state, &[], block, len, 0, &mut []);
+    assert_eq!(color.finite_state(state), state.finite(), "reachable color history guard");
+}
+
+#[test]
+fn prepared_guards_check_owned_histories_even_before_first_processing() {
+    let probes: [(ColorSettings, fn(&mut State)); 7] = [
+        (ColorSettings::gainer(knob(0.5), 0.), |s| s.gain = f32::NAN),
+        (ColorSettings { hold: Some(HoldSettings::Rate(1000.)), ..ColorSettings::IDENTITY }, |s| s.hold.phase = f32::INFINITY),
+        (ColorSettings { noise: Some(NoiseSettings { level: knob(0.), color: knob(0.5) }), ..ColorSettings::IDENTITY }, |s| s.noise.history[1] = f32::NAN),
+        (ColorSettings::stereo(StereoSettings { width: knob(0.5), pan: knob(0.), pseudo: false }), |s| s.stereo.pan = f32::NAN),
+        (ColorSettings { damping: Some(knob(0.5)), ..ColorSettings::IDENTITY }, |s| s.damper[1][4] = f64::INFINITY),
+        (ColorSettings { filter: Some(sampler_ir::fx::color::Biquad { mode: 0, hertz: 1000., q: 0.7, post: false }), ..ColorSettings::IDENTITY }, |s| s.biquad[0][1] = f32::NAN),
+        (ColorSettings { hold: Some(HoldSettings::Rate(1000.)), ..ColorSettings::IDENTITY }, |s| s.hold.held[0] = f32::NAN),
+    ];
+    let inactive = color(ColorSettings::IDENTITY);
+    for (settings, poison) in probes {
+        let prepared = color(settings);
+        let mut state = State::default();
+        assert!(prepared.finite_state(&state));
+        poison(&mut state);
+        assert!(!state.finite());
+        assert!(!prepared.finite_state(&state), "owned history must remain guarded");
+        assert!(inactive.finite_state(&state), "identity cannot read or mutate these fields");
+    }
 }
 
 /// Output of `settings` over `blocks` consecutive blocks of `len` frames.
