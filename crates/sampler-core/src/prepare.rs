@@ -87,6 +87,17 @@ type LevelData = Box<[Box<[Frame]>]>;
 /// disjoint.
 pub type Ranges = Box<[(usize, crate::Packed)]>;
 
+/// Validated, losslessly packed resident ranges awaiting control-side
+/// publication. Bound to one immutable asset; decoding and packing happen once.
+pub struct PreparedRanges {
+    asset: AssetId,
+    ranges: Ranges,
+    bytes: usize,
+}
+impl PreparedRanges {
+    pub fn bytes(&self) -> usize { self.bytes }
+}
+
 /// Calls `f` with each part of `range` outside `ranges`, in order, until it
 /// returns false; returns whether every call returned true.
 pub(crate) fn uncovered(
@@ -174,6 +185,11 @@ impl Pcm {
         &self,
         ranges: Vec<(usize, Box<[Frame]>)>,
     ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        self.publish_ranges_unlocked(self.prepare_ranges(ranges)?)
+    }
+    /// Prepare exact packed residency without changing the published asset.
+    /// Call off audio; the returned byte count supports atomic budget admission.
+    pub fn prepare_ranges(&self, ranges: ResidencyRanges) -> Result<PreparedRanges, Error> {
         if !ranges.is_empty() && !self.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -189,12 +205,25 @@ impl Pcm {
         if !valid {
             return Err(Error::InvalidInput);
         }
-        let ranges = ranges
+        let ranges: Ranges = ranges
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
+        let bytes = ranges.iter().try_fold(0usize, |n, (_, f)| n.checked_add(f.bytes()))
+            .ok_or(Error::Capacity)?;
+        Ok(PreparedRanges { asset: self.asset_id(), ranges, bytes })
+    }
+    /// Publish a previously prepared generation. Caller owns budget admission.
+    /// The old generation remains borrowed until control-side collection.
+    pub fn publish_ranges(&self, ranges: PreparedRanges) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e| e.into_inner());
+        self.publish_ranges_unlocked(ranges)
+    }
+    fn publish_ranges_unlocked(&self, prepared: PreparedRanges) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        if prepared.asset != self.asset_id() { return Err(Error::InvalidInput); }
+        if !prepared.ranges.is_empty() && !self.residency_permitted() { return Err(Error::NotReady); }
         self.0.head.collect();
-        Ok(self.0.head.swap(ranges))
+        Ok(self.0.head.swap(prepared.ranges))
     }
     /// Control side: frames in resident ranges, collecting retired generations.
     pub fn head_frames(&self) -> usize {
@@ -1941,6 +1970,25 @@ impl Prepared {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn packed_head_preparation_is_inert_asset_bound_and_reuses_validated_ranges() {
+        let pcm = Pcm::headed(48000,64,&[[0.125;2];8]).unwrap();
+        let old = pcm.try_head().unwrap();
+        let prepared=pcm.prepare_ranges(vec![(16,vec![[0.5;2];8].into_boxed_slice())]).unwrap();
+        assert_eq!(prepared.bytes(),16);
+        assert!(pcm.resident_covers(0..8));
+        assert!(!pcm.resident_covers(16..24));
+        pcm.publish_ranges(prepared).unwrap();
+        assert_eq!(old[0].1.frame(0),[0.125;2]);
+        assert!(pcm.resident_covers(16..24));
+        assert!(!pcm.resident_covers(0..8));
+        let other=Pcm::streamed(48000,64).unwrap();
+        let wrong=pcm.prepare_ranges(vec![(0,vec![[0.5;2];8].into_boxed_slice())]).unwrap();
+        assert!(other.publish_ranges(wrong).is_err());
+        assert_eq!(other.head_bytes(),0);
+        assert!(pcm.resident_covers(16..24));
+    }
 
     #[test]
     fn publishing_residency_does_not_wait_for_an_audio_reader() {

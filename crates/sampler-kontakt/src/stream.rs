@@ -555,18 +555,111 @@ pub(crate) struct Opened {
 
 /// Read `ranges` of `pcm` from `reader` and make them resident; their bytes.
 fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) -> io::Result<usize> {
-    let mut resident = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        let mut frames = vec![[0.0; 2]; range.len()];
-        reader.read(range.start, &mut frames)?;
-        resident.push((range.start, frames.into_boxed_slice()));
-    }
+    let prepared = match prepare_head_ranges(pcm, reader, ranges, &|| false) {
+        Ok(prepared) => prepared,
+        // A concurrent KSP purge can remove the final residency owner while
+        // this worker reads. That transaction is obsolete, not a source fault.
+        Err(e) if e.get_ref().and_then(|e|e.downcast_ref::<sampler_core::Error>())==Some(&sampler_core::Error::NotReady) => return Ok(0),
+        Err(e) => return Err(e),
+    };
     if !pcm.residency_permitted() {
         return Ok(0);
     }
-    pcm.set_ranges(resident)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    Ok(pcm.head_bytes())
+    let bytes = prepared.bytes();
+    match pcm.publish_ranges(prepared) {
+        Ok(_) => Ok(bytes),
+        Err(sampler_core::Error::NotReady) => Ok(0),
+        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData,e)),
+    }
+}
+
+/// A startup capacity failure, distinct from unreadable/missing source bytes.
+#[derive(Debug)]
+pub struct HeadBudgetExceeded {
+    pub budget_bytes: usize,
+    pub required_at_least_bytes: usize,
+}
+impl std::fmt::Display for HeadBudgetExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "resident attack ranges require at least {} bytes, exceeding configured head budget {} bytes",
+            self.required_at_least_bytes, self.budget_bytes
+        )
+    }
+}
+impl std::error::Error for HeadBudgetExceeded {}
+fn head_budget_error(budget: usize, required: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        HeadBudgetExceeded {
+            budget_bytes: budget,
+            required_at_least_bytes: required,
+        },
+    )
+}
+fn canceled_head() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "sample head preparation canceled",
+    )
+}
+fn range_bounds(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<(usize, usize)> {
+    if ranges.windows(2).any(|r| r[0].end > r[1].start)
+        || ranges
+            .iter()
+            .any(|r| r.start >= r.end || r.end > pcm.frame_count())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid sample head ranges",
+        ));
+    }
+    let frames = ranges
+        .iter()
+        .try_fold(0usize, |n, r| n.checked_add(r.len()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "sample head size overflow"))?;
+    Ok((
+        frames
+            .checked_mul(2)
+            .ok_or_else(|| io::Error::other("minimum sample head size overflow"))?,
+        frames
+            .checked_mul(size_of::<Frame>())
+            .ok_or_else(|| io::Error::other("decoded sample head size overflow"))?,
+    ))
+}
+fn prepare_head_ranges(
+    pcm: &Pcm,
+    reader: &mut SampleReader,
+    ranges: &[Range<usize>],
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> io::Result<sampler_core::PreparedRanges> {
+    range_bounds(pcm, ranges)?;
+    if reader.rate() != pcm.sample_rate() || reader.frames() != pcm.frame_count() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sample metadata changed since admission",
+        ));
+    }
+    let mut resident = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if canceled() {
+            return Err(canceled_head());
+        }
+        let mut frames = vec![[0.0; 2]; range.len()];
+        for (page, out) in frames.chunks_mut(PAGE_FRAMES).enumerate() {
+            if canceled() {
+                return Err(canceled_head());
+            }
+            reader.read(range.start + page * PAGE_FRAMES, out)?;
+        }
+        resident.push((range.start, frames.into_boxed_slice()));
+    }
+    if canceled() {
+        return Err(canceled_head());
+    }
+    pcm.prepare_ranges(resident)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// A bounded registry for sources published after initial plan compilation.
@@ -816,6 +909,7 @@ impl Streamer {
 
     /// Read every asset's `ranges` and start `decoders` threads for `worker`.
     /// Returns the streamer and the resident bytes of those ranges.
+    #[cfg(test)]
     pub(crate) fn start(
         sources: HashMap<AssetId, Arc<dyn AssetSource>>,
         assets: &[Pcm],
@@ -826,35 +920,101 @@ impl Streamer {
         head_budget: usize,
         pinned_wavetables: HashSet<AssetId>,
     ) -> io::Result<(Self, usize)> {
+        Self::start_cancelable(
+            sources,
+            assets,
+            ranges,
+            worker,
+            decoders,
+            lazy,
+            head_budget,
+            pinned_wavetables,
+            &|| false,
+        )
+    }
+    fn start_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
+        if assets.len() != ranges.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sample head asset/range count mismatch",
+            ));
+        }
         let table: HashMap<_, _> = assets
             .iter()
             .zip(ranges)
             .map(|(pcm, ranges)| (pcm.asset_id(), ranges))
             .collect();
-        let mandatory = pinned_wavetables
-            .iter()
-            .try_fold(0usize, |sum, id| {
-                table.get(id)?.iter().try_fold(sum, |sum, range| {
-                    sum.checked_add(
-                        (range.end - range.start).checked_mul(size_of::<sampler_core::Frame>())?,
-                    )
-                })
-            })
-            .ok_or_else(|| io::Error::other("invalid wavetable residency size"))?;
-        if mandatory > head_budget {
-            return Err(io::Error::other(
-                "complete wavetable cycles exceed the resident head budget",
+        if pinned_wavetables.iter().any(|id| !table.contains_key(id)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown pinned wavetable asset",
             ));
         }
-        let mut bytes = 0;
+        if canceled() {
+            return Err(canceled_head());
+        }
         let mut read = HashSet::new();
-        for pcm in assets {
+        let mut selected = Vec::new();
+        let mut base_bytes = 0usize;
+        let mut minimum = 0usize;
+        for pcm in assets.iter().filter(|pcm| read.insert(pcm.asset_id())) {
             let id = pcm.asset_id();
             let ranges = &table[&id];
-            if (!lazy || pinned_wavetables.contains(&id)) && !ranges.is_empty() && read.insert(id) {
-                bytes += load_ranges(pcm, &mut sources[&id].open()?, ranges)?;
+            if (!lazy || pinned_wavetables.contains(&id)) && !ranges.is_empty() {
+                let (min, _) = range_bounds(pcm, ranges)?;
+                minimum = minimum
+                    .checked_add(min)
+                    .ok_or_else(|| io::Error::other("sample head size overflow"))?;
+                selected.push((pcm, ranges));
+            } else {
+                base_bytes = base_bytes
+                    .checked_add(pcm.head_bytes())
+                    .ok_or_else(|| io::Error::other("resident head size overflow"))?;
             }
+        }
+        let min_total = base_bytes
+            .checked_add(minimum)
+            .ok_or_else(|| io::Error::other("sample head size overflow"))?;
+        if min_total > head_budget {
+            return Err(head_budget_error(head_budget, min_total));
+        }
+        let mut bytes = base_bytes;
+        let mut staged = Vec::with_capacity(selected.len());
+        for (pcm, ranges) in selected {
+            if canceled() {
+                return Err(canceled_head());
+            }
+            let source = sources.get(&pcm.asset_id()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "missing sample head source")
+            })?;
+            let prepared = prepare_head_ranges(pcm, &mut source.open()?, ranges, canceled)?;
+            bytes = bytes
+                .checked_add(prepared.bytes())
+                .ok_or_else(|| io::Error::other("resident head size overflow"))?;
+            if bytes > head_budget {
+                return Err(head_budget_error(head_budget, bytes));
+            }
+            staged.push((pcm, prepared));
+        }
+        if canceled() {
+            return Err(canceled_head());
+        }
+        // No source I/O or packing remains. Only this private initial plan is
+        // published after exact lossless capacity admission of every head.
+        for (pcm, prepared) in staged {
+            pcm.publish_ranges(prepared)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         }
         // Each asset keeps source metadata, never a backup of sample buffers.
         // Explicit KSP reload returns staging ranges to the core's residency worker.
@@ -1442,6 +1602,7 @@ impl Streamed {
         loaded: crate::Loaded,
         opened: Opened,
         kept: Vec<Pcm>,
+        canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Self, LoadError> {
         let Opened {
             assets,
@@ -1474,7 +1635,7 @@ impl Streamed {
             })
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
-        let (streamer, bytes) = Streamer::start(
+        let (streamer, bytes) = Streamer::start_cancelable(
             sources,
             &kept,
             ranges,
@@ -1483,8 +1644,15 @@ impl Streamed {
             policy.lazy,
             policy.head_budget,
             pinned_wavetables,
+            canceled,
         )
-        .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| {
+            if canceled() {
+                LoadError::Canceled
+            } else {
+                invalid(e.to_string())
+            }
+        })?;
         report.head_bytes = bytes;
         cache.set_wake(
             streamer
@@ -1508,6 +1676,132 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct HeadFixture {
+        opens: Arc<AtomicU64>,
+        cancel: Option<Arc<AtomicBool>>,
+        frames: usize,
+        wide: bool,
+    }
+    impl AssetSource for HeadFixture {
+        fn open(&self) -> io::Result<SampleReader> {
+            self.opens.fetch_add(1, Ordering::Relaxed);
+            let (cancel, wide) = (self.cancel.clone(), self.wide);
+            Ok(SampleReader::custom(48000, self.frames, move |_, out| {
+                out.fill(if wide {
+                    [f32::from_bits(0x3f123457), f32::from_bits(0x3f234569)]
+                } else {
+                    [0.5; 2]
+                });
+                if let Some(c) = &cancel {
+                    c.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            }))
+        }
+    }
+
+    #[test]
+    fn eager_heads_enforce_exact_lossless_budget_without_partial_publication() {
+        for (wide, budget, ok, opens_expected) in [
+            (false, 0, false, 0),
+            (false, 63, false, 0),
+            (false, 64, true, 2),
+            (true, 255, false, 2),
+            (true, 256, true, 2),
+        ] {
+            let assets: Vec<_> = (0..2).map(|_| Pcm::streamed(48000, 64).unwrap()).collect();
+            let opens = Arc::new(AtomicU64::new(0));
+            let sources = assets
+                .iter()
+                .map(|p| {
+                    (
+                        p.asset_id(),
+                        Arc::new(HeadFixture {
+                            opens: opens.clone(),
+                            cancel: None,
+                            frames: 64,
+                            wide,
+                        }) as Arc<dyn AssetSource>,
+                    )
+                })
+                .collect();
+            let (_, worker) = StreamCache::new(1).unwrap();
+            let result = Streamer::start(
+                sources,
+                &assets,
+                vec![vec![8..16, 48..56]; 2],
+                worker,
+                1,
+                false,
+                budget,
+                HashSet::new(),
+            );
+            assert_eq!(result.is_ok(), ok, "wide={wide} budget={budget}");
+            assert_eq!(opens.load(Ordering::Relaxed), opens_expected);
+            if ok {
+                let (streamer, bytes) = result.unwrap();
+                assert_eq!(bytes, if wide { 256 } else { 64 });
+                assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), bytes);
+                assert!(streamer.head_readiness(&assets).complete());
+            } else {
+                let error = result.err().unwrap();
+                let budget_error = error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<HeadBudgetExceeded>()
+                    .unwrap();
+                assert_eq!(budget_error.budget_bytes, budget);
+                assert!(budget_error.required_at_least_bytes > budget);
+                assert!(
+                    assets.iter().all(|p| p.head_bytes() == 0),
+                    "failure cannot publish an earlier staged asset"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eager_heads_reject_short_source_and_cancel_before_publication() {
+        for action in ["short", "cancel_before", "cancel_during"] {
+            let pcm = Pcm::streamed(48000, 8192).unwrap();
+            let cancel = Arc::new(AtomicBool::new(action == "cancel_before"));
+            let opens = Arc::new(AtomicU64::new(0));
+            let source = HeadFixture {
+                opens: opens.clone(),
+                cancel: (action == "cancel_during").then(|| cancel.clone()),
+                frames: if action == "short" { 4096 } else { 8192 },
+                wide: false,
+            };
+            let sources =
+                HashMap::from([(pcm.asset_id(), Arc::new(source) as Arc<dyn AssetSource>)]);
+            let (_, worker) = StreamCache::new(1).unwrap();
+            let result = Streamer::start_cancelable(
+                sources,
+                std::slice::from_ref(&pcm),
+                vec![vec![0..8192]],
+                worker,
+                1,
+                false,
+                8192 * 2,
+                HashSet::new(),
+                &|| cancel.load(Ordering::Relaxed),
+            );
+            assert_eq!(
+                result.err().unwrap().kind(),
+                if action == "short" {
+                    io::ErrorKind::InvalidData
+                } else {
+                    io::ErrorKind::Interrupted
+                }
+            );
+            assert_eq!(
+                opens.load(Ordering::Relaxed),
+                u64::from(action != "cancel_before")
+            );
+            assert_eq!(pcm.head_bytes(), 0);
+        }
+    }
 
     fn cache_fixture_reader() -> SampleReader {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
