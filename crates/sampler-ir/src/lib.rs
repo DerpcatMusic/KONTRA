@@ -412,11 +412,35 @@ pub enum SourceFormat {
 
 // ---------------------------------------------------------------- assets
 
+/// Minimum storage required by an authored sample user. Shared immutable
+/// sources must retain the strongest requirement of all their users.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssetResidency {
+    /// The source may use resident attacks with disk-streamed tails.
+    #[default]
+    Streamable,
+    /// The complete base PCM must be resident before publishing the part.
+    Resident,
+}
+
+impl AssetResidency {
+    pub const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Resident, _) | (_, Self::Resident) => Self::Resident,
+            _ => Self::Streamable,
+        }
+    }
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub location: AssetLocation,
     pub encoding: Encoding,
+    /// A source-level minimum, independent of the host's preferred cache mode.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub residency: AssetResidency,
     /// Recorded pitch stored with the audio, if any.
     pub root_key: Option<u8>,
     /// Loops stored with the audio (e.g. a WAV `smpl` chunk).

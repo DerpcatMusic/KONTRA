@@ -5175,6 +5175,7 @@ fn mapping_view_preserves_zone_identity_and_ir() {
     };
     inst.assets.push(sir::Asset {
         location: sir::AssetLocation::Path("Samples/Cello_C3_rr1.wav".into()),
+        residency: Default::default(),
         encoding: sir::Encoding::Wav,
         root_key: Some(60),
         loops: vec![],
@@ -7271,6 +7272,7 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
     let mut inst = sir::Instrument::default();
     inst.assets.push(sir::Asset {
         location: sir::AssetLocation::Path("Samples/Selected_sample.wav".into()),
+        residency: Default::default(),
         encoding: sir::Encoding::Wav,
         root_key: Some(60),
         loops: vec![],

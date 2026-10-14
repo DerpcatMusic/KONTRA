@@ -47,6 +47,7 @@ fn runtime(stretch: Option<ir::TimeStretch>, tune: f64) -> Runtime {
         name: "stretch".into(),
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("a".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),
@@ -145,6 +146,7 @@ fn instrument_with(stretch: Option<ir::TimeStretch>) -> ir::Instrument {
         name: "stretch".into(),
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("a".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),

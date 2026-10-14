@@ -3105,6 +3105,7 @@ mod tests {
         let mut instrument = sampler_ir::Instrument {
             assets: vec![sampler_ir::Asset {
                 location: sampler_ir::AssetLocation::Path("authored.wav".into()),
+                residency: Default::default(),
                 encoding: sampler_ir::Encoding::Wav,
                 root_key: None,
                 loops: vec![],
@@ -3183,6 +3184,7 @@ mod tests {
         let instrument = sampler_ir::Instrument {
             assets: vec![sampler_ir::Asset {
                 location: sampler_ir::AssetLocation::Path("synthetic".into()),
+                residency: Default::default(),
                 encoding: Default::default(),
                 root_key: None,
                 loops: vec![],

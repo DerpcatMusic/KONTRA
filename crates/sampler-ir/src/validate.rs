@@ -986,6 +986,7 @@ mod tests {
         Instrument {
             assets: vec![Asset {
                 location: AssetLocation::Path("a.wav".into()),
+                residency: Default::default(),
                 encoding: Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),

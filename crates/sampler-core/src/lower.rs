@@ -3202,6 +3202,7 @@ mod chain_sharing_tests {
         let mut instrument = ir::Instrument {
             assets: vec![ir::Asset {
                 location: ir::AssetLocation::Path("synthetic.wav".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: vec![],

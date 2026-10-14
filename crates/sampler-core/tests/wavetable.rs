@@ -230,6 +230,7 @@ fn ir_lowering_reaches_the_oscillator_with_tune_and_ignores_saved_root_and_loops
     let instrument = ir::Instrument {
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -291,6 +292,7 @@ fn addressed_wave_plan(data: &[[f32; 2]], source: Wavetable, chain: bool) -> Pre
     let mut instrument = ir::Instrument {
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -347,6 +349,7 @@ fn source_lane_modulation_is_per_voice_additive_and_keeps_phase_under_live_write
             zone.routes = vec![ir::RouteRef(0)];
             let instrument = ir::Instrument {
                 assets: vec![ir::Asset { location: ir::AssetLocation::Path("synthetic.wav".into()),
+                    residency: Default::default(),
                     encoding: ir::Encoding::Wav, root_key: None, loops: vec![] }],
                 groups: vec![ir::Group { wavetable: Some(base), ..Default::default() }],
                 zones: vec![zone],
