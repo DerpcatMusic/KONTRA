@@ -1149,15 +1149,12 @@ impl Translated {
         let mut lua = self.lua.clone();
         #[cfg(feature = "library-access")]
         if let Some((bank, program)) = &self.bank {
-            let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
-            lua =
-                lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+            lua = bank.bind_script_images(program, lua);
         }
         if self.bank.is_none()
             && let Some(dir) = &self.dir
         {
-            let resources = resources::Resources::of(&dir.join("ui.uvip"));
-            lua = lua.with_images(move |path| resources.read(path));
+            lua = bind_loose_script_images(lua, dir);
         }
         let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
             match (&self.bank, &self.dir) {
@@ -1683,10 +1680,19 @@ pub fn load_program_scripted_with_options(
     })
 }
 
+/// Share the loose-program image service with playback and offline initialization.
+fn bind_loose_script_images(files: script::Scripts, dir: &Path) -> script::Scripts {
+    let resources = resources::Resources::of(&dir.join("ui.uvip"));
+    files.with_images(move |path| resources.read(path))
+}
+
 /// Which source authority to use when inspecting decoded XML after onLoad.
 #[cfg(feature = "library-access")]
 pub enum ScriptedOrigin<'a> {
+    /// A decoded member without a retained resource authority. Image services
+    /// are unavailable; callers that own the bank should use BankWithResources.
     Bank(&'a str),
+    BankWithResources(&'a Bank, &'a str),
     Loose(&'a Path),
 }
 
@@ -1716,12 +1722,15 @@ pub fn inspect_decoded_scripted_program(
     files: script::Scripts,
     origin: ScriptedOrigin<'_>,
 ) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
-    let (source, path) = match origin {
-        ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program)),
-        ScriptedOrigin::Loose(path) => (
-            Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
-            path,
+    let (source, path, files) = match origin {
+        ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program), files),
+        ScriptedOrigin::BankWithResources(bank, program) => (
+            Source::Bank, Path::new(program), bank.bind_script_images(program, files),
         ),
+        ScriptedOrigin::Loose(path) => {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            (Source::Disk(dir.into()), path, bind_loose_script_images(files, dir))
+        }
     };
     let ((mut instrument, ..), host) = initialized_translation(text, files, source, path, true)?;
     note_script(&host, &mut instrument);
@@ -1795,6 +1804,36 @@ function onInit() gain:setParameter('Volume',0.25) end]]></script></ScriptProces
         assert_eq!(gain(&product_ir), 0.25);
         assert_eq!(gain(&inspected_ir), gain(&product_ir));
         assert!(host.fault_counts().init.values().all(|count| *count == 0));
+    }
+
+    #[test]
+    fn loose_inspection_uses_playbacks_image_authority_for_intrinsic_widget_size() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let directory = Fixture(std::env::temp_dir().join(format!(
+            "kontra-inspected-images-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        )));
+        std::fs::create_dir_all(&directory.0).unwrap();
+        let path = directory.0.join("Authored.uvip");
+        let mut header = vec![0; 33];
+        header[..16].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        header[16..20].copy_from_slice(&720u32.to_be_bytes());
+        header[20..24].copy_from_slice(&18u32.to_be_bytes());
+        std::fs::write(directory.0.join("overlay.png"), header).unwrap();
+        let xml = r#"<Program><EventProcessors><ScriptProcessor><script>image=Image('overlay.png')</script></ScriptProcessor></EventProcessors></Program>"#;
+        let product = script::ScriptHost::new(xml,
+            bind_loose_script_images(script::Scripts::default(), &directory.0), Default::default()).unwrap();
+        let (_, inspected) = inspect_decoded_scripted_program(xml.into(), script::Scripts::default(),
+            ScriptedOrigin::Loose(&path)).unwrap();
+        for host in [&product, &inspected] {
+            let image = &host.interface().widgets[0];
+            assert_eq!((image.rect.width, image.rect.height), (720., 18.));
+            assert!(host.fault_counts().init.is_empty());
+        }
+        assert_eq!(product.interface(), inspected.interface());
     }
 }
 
