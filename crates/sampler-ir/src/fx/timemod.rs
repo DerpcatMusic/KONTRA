@@ -110,6 +110,27 @@ pub enum Native {
     /// Kontakt Twin Delay (0x6B; kernel `0x140ab07d0`): wet output only, the
     /// unit's dry is the slot's.
     TwinDelay(TwinDelay),
+    /// Kontakt Psyche Delay (0x63; kernel `0x140aadb50`): wet output only.
+    PsycheDelay(PsycheDelay),
+}
+
+/// Kontakt Psyche Delay saved controls (reader `0x140ac5bc0`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PsycheDelay {
+    /// Free: milliseconds (5..2000). Synced: the note count.
+    pub time: f32,
+    /// Sync unit factor (≤ 0: free).
+    pub unit: f32,
+    pub feedback: f32,
+    pub detune: f32,
+    pub pitch: f32,
+    /// Stereo offset: the right side's time is `time·(1 - offset/2)`.
+    pub offset: f32,
+    pub cross: f32,
+    pub reverse_stereo: bool,
+    pub detune_stereo: bool,
+    pub reverse: bool,
 }
 
 /// Kontakt Twin Delay saved controls (all normalized `0..=1` unless synced).
@@ -412,6 +433,12 @@ impl Config {
                 let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
                 if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
                     return Err("uvi legacy delay");
+                }
+            }
+            if let Native::PsycheDelay(p) = l.native {
+                let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !([p.feedback, p.detune, p.pitch, p.offset, p.cross].into_iter().all(unit) && p.unit.is_finite() && p.time.is_finite() && (0. ..=2000.).contains(&p.time)) {
+                    return Err("psyche delay");
                 }
             }
             if let Native::TwinDelay(t) = l.native {
