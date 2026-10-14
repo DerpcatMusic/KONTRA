@@ -2422,10 +2422,10 @@ impl Gen<'_, '_> {
                 true
             }
             PurgeGroup | GetPurgeState => {
-                self.arg(args, 0, t)?;
                 if builtin == PurgeGroup {
                     self.arg(args, 1, dst)?;
                 }
+                self.arg(args, 0, t)?;
                 self.emit(I::Op(Op::Purge {
                     group: t,
                     local: dst,
@@ -2434,10 +2434,11 @@ impl Gen<'_, '_> {
                 true
             }
             SetEnginePar | GetEnginePar => {
-                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
+                // Ascending registers: the value's evaluation uses those above it.
                 if builtin == SetEnginePar {
                     self.arg(args, 1, dst)?;
                 }
+                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
                 self.emit(I::Op(Op::EngineParameter {
                     address: dst + 1,
                     local: dst,
@@ -3887,11 +3888,12 @@ impl Gen<'_, '_> {
     }
 
     fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
-        self.arg(args, 0, dst + 1)?;
-        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
+        // Ascending registers: each evaluation uses those above its target.
         if write {
             self.arg(args, 2, dst)?;
         }
+        self.arg(args, 0, dst + 1)?;
+        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
         self.indexed_value_at(dst + 1, dst + 2, dst, dst + 3, write)
     }
 

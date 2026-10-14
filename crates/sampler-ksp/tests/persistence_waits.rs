@@ -65,6 +65,36 @@ fn runtime(script: sampler_ksp::Script) -> Runtime {
     Runtime::new(plan, limits).unwrap()
 }
 
+/// A computed value no longer overwrites the address registers above it
+/// (ANALOG STRINGS `switch_bus` routed its layer groups nowhere).
+#[test]
+fn set_engine_par_with_a_computed_value_keeps_its_address() {
+    let script = sampler_ksp::compile_with(
+        "on init declare $off := 2 end on
+         on persistence_changed wait(1)
+           set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, $NI_BUS_OFFSET + $off + 1, 3, -1, -1) end on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+        &Environment::default(),
+    )
+    .unwrap();
+    let mut rt = runtime(script);
+    for _ in 0..4 {
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+    }
+    let outcome = rt.take_engine_parameter_outcome().expect("the write ran");
+    assert_eq!(
+        outcome.address,
+        Some(sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_OUTPUT_CHANNEL").unwrap(),
+            group: 3,
+            slot: -1,
+            generic: -1,
+        })
+    );
+}
+
 #[test]
 fn persistence_waits_advance_the_clock_without_static_budget_warning_or_prefix_replay() {
     for source in [
