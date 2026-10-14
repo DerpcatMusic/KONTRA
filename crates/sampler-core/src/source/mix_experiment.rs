@@ -104,6 +104,11 @@ fn constant_mix_simd_stage_evidence() {
                 for mode in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
                     let mut output = [[0.; 2]; 128];
                     let mut envelope = EnvelopeState::new(shape);
+                    // Production gains vary per voice. Do not let the test-only
+                    // candidate specialize fixed gains while the production
+                    // baseline retains its general runtime arguments.
+                    let gain = black_box(0.731);
+                    let gains = black_box([0.7, -0.2]);
                     let start = Instant::now();
                     for _ in 0..iterations {
                         let source = black_box(&input[..len]);
