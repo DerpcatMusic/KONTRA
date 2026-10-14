@@ -246,6 +246,33 @@ impl Svf {
         }
         *states = std::array::from_fn(|c| [s1[c], s2[c]]);
     }
+
+    /// Independent channel/voice lanes. The recurrence and its expression
+    /// association are identical to run_stereo; masking rests completed voices.
+    #[inline(always)]
+    pub fn run_lanes<const N: usize, const MASK: bool>(
+        coefficients: &[Self; N],
+        states: &mut [[f64; N]; 2],
+        block: &mut [[f64; N]],
+        ends: &[usize; N],
+    ) {
+        let a: [[f64; N]; 3] = std::array::from_fn(|i| std::array::from_fn(|lane| coefficients[lane].a[i]));
+        let m: [[f64; N]; 3] = std::array::from_fn(|i| std::array::from_fn(|lane| coefficients[lane].m[i]));
+        let [mut s1, mut s2] = *states;
+        for (i, samples) in block.iter_mut().enumerate() {
+            let v3: [f64; N] = std::array::from_fn(|lane| samples[lane] - s2[lane]);
+            let v1: [f64; N] = std::array::from_fn(|lane| a[0][lane] * s1[lane] + a[1][lane] * v3[lane]);
+            let v2: [f64; N] = std::array::from_fn(|lane| s2[lane] + a[1][lane] * s1[lane] + a[2][lane] * v3[lane]);
+            for lane in 0..N {
+                if !MASK || i < ends[lane] {
+                    s1[lane] = 2. * v1[lane] - s1[lane];
+                    s2[lane] = 2. * v2[lane] - s2[lane];
+                    samples[lane] = m[0][lane] * samples[lane] + m[1][lane] * v1[lane] + m[2][lane] * v2[lane];
+                }
+            }
+        }
+        *states = [s1, s2];
+    }
 }
 
 #[cfg(test)]
