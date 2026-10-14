@@ -1598,6 +1598,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         builtin: Some("set_snapshot_type"),
                         message: "invalid snapshot mode".into(),
                     })?;
+                self.st.model.snapshot_mode_write = Some(model::SnapshotModeWrite {
+                    mode: self.st.model.snapshot_mode,
+                    offset: span.start,
+                });
                 V::I(0)
             }
             DisableLogging | WatchVar | WatchArrayIdx | ExposeControls | ShowLibraryTab
