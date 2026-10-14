@@ -2,6 +2,8 @@
 use std::{f64::consts::PI, sync::OnceLock};
 mod cubic_block;
 pub(super) use cubic_block::cubic_four;
+#[cfg(test)]
+mod coefficient_reuse;
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
