@@ -18,7 +18,16 @@ use sampler_ir::fx::timemod::{
 use std::f64::consts::{PI, TAU};
 
 mod voices;
+mod diffuse;
 mod dual;
+mod dual_x;
+mod mt;
+mod tape;
+mod buzz;
+mod psyche;
+mod velvet;
+mod twin;
+mod uvi_legacy;
 #[cfg(test)]
 mod tests;
 
@@ -296,7 +305,14 @@ impl TimeMod {
                     cap = law.frames();
                     bank = Some(Box::new(law));
                 }
-                Native::UviDualDelay(_) => cap = dual::ring(rate) + GUARD,
+                Native::UviDualDelay(d) => cap = dual::ring(rate) + GUARD + d.x.map_or(0, |_| dual_x::capacity(rate)),
+                Native::UviLegacyDelay(d) => cap = uvi_legacy::capacity(&d, rate),
+                Native::UviDiffuseDelay(_) => cap = diffuse::capacity(rate),
+                Native::UviTapeEcho(_) => cap = tape::capacity(rate),
+                Native::TwinDelay(_) => cap = twin::capacity(rate),
+                Native::PsycheDelay(_) => cap = psyche::capacity(rate),
+                Native::UviVelvetDelay(_) => cap = velvet::capacity(rate),
+                Native::UviBuzzDelay(_) => cap = buzz::capacity(rate),
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -434,6 +450,27 @@ impl TimeMod {
         }
         if let Some(&Native::UviDualDelay(d)) = cfg.line.as_ref().map(|l| &l.native) {
             return self.dual_delay(state, slab, block, len, tempo, d);
+        }
+        if let Some(&Native::UviVelvetDelay(v)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.uvi_velvet_delay(state, slab, block, len, tempo, v);
+        }
+        if let Some(&Native::UviBuzzDelay(b)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.uvi_buzz_delay(state, slab, block, len, tempo, b);
+        }
+        if let Some(&Native::PsycheDelay(p)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.psyche_delay(state, slab, block, len, tempo, p);
+        }
+        if let Some(&Native::TwinDelay(t)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.twin_delay(state, slab, block, len, tempo, t);
+        }
+        if let Some(&Native::UviTapeEcho(t)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.uvi_tape_echo(state, slab, block, len, tempo, t);
+        }
+        if let Some(&Native::UviDiffuseDelay(d)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.uvi_diffuse_delay(state, slab, block, len, tempo, d);
+        }
+        if let Some(&Native::UviLegacyDelay(d)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.uvi_legacy_delay(state, slab, block, len, tempo, d);
         }
         if let Some(&Native::LegacyModDelay { base_ms, excursion, feedback, second_head, smoothing }) = cfg.line.as_ref().map(|l| &l.native) {
             return self.legacy_mod_delay(state, slab, block, len, tempo, (base_ms, excursion, feedback, second_head, smoothing));

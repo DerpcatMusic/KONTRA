@@ -2,18 +2,18 @@
 //! `sampler_ir::fx::timemod`.
 //!
 //! Chorus, Flanger, Phaser, Cross Phaser and Phasor follow native laws read
-//! from UVI Workstation 4.0.9 ([`Translation::native_modulation`]); TrackDelay
-//! and DualDelay(X) run their native laws too. The other inserts here are
-//! documented-parameter, generic topologies: each reports `UnknownLaw` for the
-//! effect and `NotModeled` for each control it cannot honour, so the inspector
-//! shows "generic", never "exact".
+//! from UVI Workstation 4.0.9 ([`Translation::native_modulation`]); TrackDelay,
+//! DualDelay(X) and the legacy Simple/Stereo/PingPong delays run their native
+//! laws too. The other inserts here are documented-parameter, generic
+//! topologies: each reports `UnknownLaw` for the effect and `NotModeled` for
+//! each control it cannot honour, so the inspector shows "generic", never "exact".
 use crate::{Translation, number};
 use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
-        Tap, UviWave,
+        Allpass, Config, DelayTime, DualDelay, DualX, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
+        UviBuzzDelay, UviDiffuseDelay, UviLegacyDelay, UviLegacyKind, UviTapeEcho, UviVelvetDelay, UviWave,
     },
 };
 
@@ -65,22 +65,24 @@ impl Translation {
         if number(node, "Interpolation", 1.)? > 2. {
             self.unsupported(at, &format!("{tag} Interpolation"), number(node, "Interpolation", 1.)?);
         }
-        if x {
-            for (name, why) in [
-                ("Crusher", "crusher table 0x141f8f908 and quantizer unproved"),
-                ("Dispersion", "dispersion allpass 0x14164ccd0 unproved"),
-                ("Diffusion", "diffusion network 0x14165b160 unproved"),
-                ("TapeSaturation", "tape curve 0x1419f245c unproved"),
-                ("Reflection", "reflected rotation 0x14165df70 unproved"),
-            ] {
-                if number(node, name, 0.)? != 0. {
-                    self.unsupported(at, &format!("{tag} {name} ({why})"), 1);
-                }
-            }
+        let on = |name| -> Result<bool, String> { Ok(x && number(node, name, 0.)? != 0.) };
+        let stages = if x {
             if number(node, "DuckerBypass", 1.)? == 0. {
-                self.unsupported(at, &format!("{tag} Ducker (envelope 0x14165e350 unproved)"), 1);
+                self.unsupported(at, &format!("{tag} Ducker (level detector behind runtime-dispatched vector ops 0x141686cb0/ca0 unproved)"), 1);
             }
-        }
+            if on("TapeSaturation")? {
+                self.unsupported(at, &format!("{tag} TapeSaturation wet gain (constant 0x14259eeb0 is encrypted in the image; output not level-compensated)"), 1);
+            }
+            Some(DualX {
+                crusher: if on("Crusher")? { Some((number(node, "CrusherFreq", 9.)?.clamp(0., 9.) as u8, number(node, "CrusherBits", 16.)?.clamp(4., 16.) as u8)) } else { None },
+                dispersion: if on("Dispersion")? { Some((n("DispersionFreq", 200.)?.clamp(0., 20_000.), n("DispersionSpread", 20.)?.clamp(1., 100.))) } else { None },
+                diffusion: if on("Diffusion")? { Some((n("DiffusionAmount", 0.3)?.clamp(0., 1.), n("DiffusionSpread", 20.)?.clamp(1., 100.))) } else { None },
+                tape: if on("TapeSaturation")? { Some((n("TapeDrive", 0.)?.clamp(0., 1.), n("TapeWarmth", 0.5)?.clamp(0., 1.))) } else { None },
+                reflection: on("Reflection")?,
+            })
+        } else {
+            None
+        };
         let d = DualDelay {
             time: n("DelayTime", 0.125)?.clamp(0., 5.),
             synced,
@@ -96,6 +98,7 @@ impl Translation {
             mod_cents: if modulation { n("ModDepth", 0.)?.max(0.) } else { 0. },
             mod_hz: n("ModRate", 1.)?.max(0.01),
             mod_offset: n("ModChannelOffset", 1.)?,
+            x: stages,
         };
         let mut line = Line::single(DelayTime::Ms(0.), 5000.);
         line.native = Native::UviDualDelay(d);
@@ -145,46 +148,119 @@ impl Translation {
         if tag == "DualDelay" || tag == "DualDelayX" {
             return self.dual_delay(node, at, tag, synced).map(Some);
         }
+        if tag == "TapeEcho" {
+            // Native laws: `sampler_core` `dsp/timemod/tape.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mode = number(node, "Mode", 1.)?.clamp(1., 12.) as u8;
+            let hi = if synced { 128. } else { 0.5 };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviTapeEcho(UviTapeEcho {
+                speed: n("Speed", 2., 1., 3.)?,
+                feedback: n("Feedback", 0.5, 0., 2.)?,
+                mode,
+                bass_db: n("Bass", 0., -10., 10.)?,
+                treble_db: n("Treble", 0., -10., 10.)?,
+                delays: [n("Delay1", 0.165, 0.05, hi)?, n("Delay2", 0.324, 0.05, hi)?, n("Delay3", 0.487, 0.05, hi)?],
+                synced,
+                noise: n("NoiseLevel", 0.0001, 0., 0.001)?,
+                tape_stop: number(node, "TapeStop", 0.)? != 0.,
+            });
+            if mode >= 5 {
+                self.unsupported(at, "TapeEcho reverb (modes 5-12: an impulse response embedded in the UVI binary, not shipped)", mode);
+            }
+            let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
+            return Ok(Some(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) }));
+        }
+        if tag == "DiffuseDelayNested" {
+            // Native laws: `sampler_core` `dsp/timemod/velvet.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviVelvetDelay(UviVelvetDelay {
+                time: n("DelayTime", 0.05, 0.001, if synced { 128. } else { 1. })?,
+                synced,
+                spread: n("TimeSpread", 1., 0.1, 1.)?,
+                diffusion: n("Diffusion", 0.1, 0., 0.9)?,
+                seed: number(node, "Seed", 0.)?.clamp(0., 100.) as u32,
+                shape: number(node, "Shape", 0.)?.clamp(0., 6.) as u8,
+                curve: n("ShapeCurve", 0., -1., 1.)?,
+            });
+            return Ok(Some(delay_config(line, mix)));
+        }
+        if tag == "Buzz" {
+            // Native laws: `sampler_core` `dsp/timemod/buzz.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let ms = n("Delay", 200., if synced { 0. } else { 40. }, if synced { 128. } else { 2000. })?;
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::UviBuzzDelay(UviBuzzDelay {
+                time: if synced { ms } else { ms * 0.001 },
+                synced,
+                feedback: n("Feedback", 0.2, 0., 1.)?,
+                trash: n("Trash", 0.25, 0., 1.)?,
+                spread: n("Spread", 1., 0., 2.)?,
+                glide: n("InterpolationTime", 0.1, 0.01, 1.)?,
+                mode: number(node, "DistortionMode", 0.)?.clamp(0., 2.) as u8,
+            });
+            let (dry, wet) = (number(node, "Dry", 0.5)?.clamp(0., 1.), number(node, "Wet", 0.5)?.clamp(0., 1.));
+            return Ok(Some(Config { dry, wet, ..delay_config(line, wet) }));
+        }
+        if tag == "DiffuseDelay" {
+            // Native laws: `sampler_core` `dsp/timemod/diffuse.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviDiffuseDelay(UviDiffuseDelay {
+                time: n("DelayTime", 0.125, 0.01, if synced { 128. } else { 1. })?,
+                synced,
+                spread: n("TimeSpread", 1., 0., 1.)?,
+                diffusion: n("Diffusion", 0.5, 0., 1.)?,
+                feedback: n("Feedback", 0., 0., 1.)?,
+                damp: n("Damp", 0., 0., 1.)?,
+                crosstalk: n("CrossTalk", 0., -1., 1.)?,
+                randomness: n("Randomness", 0., 0., 0.5)?,
+                mod_rate: n("ModRate", 1., 0.1, 10.)?,
+                mod_depth: n("ModDepth", 0., 0., 20.)?,
+            });
+            let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
+            return Ok(Some(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) }));
+        }
+        if let Some(kind) = match tag {
+            "SimpleDelay" => Some(UviLegacyKind::Simple),
+            "StereoDelay" => Some(UviLegacyKind::Stereo),
+            "PingPongDelay" => Some(UviLegacyKind::PingPong),
+            _ => None,
+        } {
+            // Native laws: `sampler_core` `dsp/timemod/uvi_legacy.rs`.
+            let time = |name, default| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(0., if synced { 128. } else { 10. }) as f32) };
+            let time = if kind == UviLegacyKind::Stereo { [time("LeftDelayTime", 0.8)?, time("RightDelayTime", 0.1)?] } else { [time("DelayTime", 0.1)?; 2] };
+            let mut line = Line::single(DelayTime::Ms(0.), 10_000.);
+            line.native = Native::UviLegacyDelay(UviLegacyDelay {
+                kind,
+                time,
+                synced,
+                feedback: number(node, "Feedback", 0.)?.clamp(0., 1.) as f32,
+                cutoff: number(node, "Cutoff", 0.)?.clamp(-1., 1.) as f32,
+                spread: number(node, "Spread", -1.)?.clamp(-1., 1.) as f32,
+            });
+            if kind != UviLegacyKind::PingPong {
+                self.not_modeled(at, node, tag, &[("Spread", -1.)])?;
+            }
+            self.not_modeled(at, node, tag, &[("Diffusion", 1.)])?;
+            return Ok(Some(delay_config(line, mix)));
+        }
         if synced {
             self.unsupported(at, &format!("{tag} host sync"), "free time used");
         }
         let config = match tag {
-            "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" => {
-                let (left, right) = if tag == "StereoDelay" {
-                    (number(node, "LeftDelayTime", 0.8)?, number(node, "RightDelayTime", 0.1)?)
-                } else {
-                    let t = number(node, "DelayTime", 0.1)?;
-                    (t, t)
-                };
-                let (left, right) = (left.clamp(0.001, 10.), right.clamp(0.001, 10.));
-                let mut line = Line::single(DelayTime::Ms(left * 1000.), left.max(right) * 1000.);
-                line.right_scale = right / left;
+            "FxDelay" | "FatDelay" => {
+                // FxDelay 0x141249980 (in-loop drive, auto-pan) and FatDelay
+                // 0x141242d10 (four lines at d, (1+D)d, (2-D)d, 2d): their
+                // drive and mixing laws are unproved, so one generic line.
+                let t = number(node, "DelayTime", 0.1)?.clamp(0.001, 10.);
+                let mut line = Line::single(DelayTime::Ms(t * 1000.), t * 1000.);
                 feedback(&mut line, number(node, "Feedback", 0.)?);
-                if tag == "PingPongDelay" {
-                    // Spread picks the side of the first echo; width is not modelled.
-                    let fb = line.feedback.matrix[0][0];
-                    line.feedback.matrix = [[0., fb], [fb, 0.]];
-                    line.input = if number(node, "Spread", -1.)? < 0. { [[0.5, 0.5], [0., 0.]] } else { [[0., 0.], [0.5, 0.5]] };
-                }
                 self.not_modeled(at, node, tag, &[("Cutoff", 0.), ("Diffusion", 1.)])?;
-                if tag == "FatDelay" || tag == "FxDelay" {
-                    // The documented Speed / Diffusion / drive stages are not modelled.
-                    if tag == "FxDelay" {
-                        self.not_modeled(at, node, tag, &[("BypassDrive", 0.)])?;
-                    }
+                if tag == "FxDelay" {
+                    self.not_modeled(at, node, tag, &[("BypassDrive", 0.)])?;
                 }
-                delay_config(line, mix)
-            }
-            "TapeEcho" => {
-                let mut line = Line::single(DelayTime::Ms(165.), 500.);
-                for (i, (name, default)) in [("Delay1", 0.165), ("Delay2", 0.324), ("Delay3", 0.487)].into_iter().enumerate() {
-                    line.taps[i] = Tap::at(DelayTime::Ms(number(node, name, default)?.clamp(0.05, 0.5) * 1000.));
-                    line.taps[i].level = 1. / 3.;
-                }
-                line.tap_count = 3;
-                // Feedback runs to 2 on the real unit; the loop is bounded here.
-                feedback(&mut line, number(node, "Feedback", 0.5)?);
-                self.not_modeled(at, node, tag, &[("Mode", 1.), ("Speed", 2.), ("Bass", 0.), ("Treble", 0.), ("NoiseLevel", 0.), ("TapeStop", 0.), ("ReverbGain", 1.)])?;
                 delay_config(line, mix)
             }
             "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" => {

@@ -67,6 +67,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x68, "Freak"),
     (0x69, "Vibrato Chorus"),
     (0x6a, "Wow / Flutter"),
+    (0x6b, "Twin Delay"),
     (0x72, "Gater"),
     (0x74, "Reverse Grain"),
 ];
@@ -308,6 +309,9 @@ pub(crate) enum Params {
     LegacyReverb([f32; 5]),
     /// `BParFXPlateReverb`: decay, low shelf, high damp, predelay, stereo.
     Plate([f32; 5]),
+    /// `BParFXRaum` Grounded or Airy: the core controls (`sampler_ir`
+    /// `Network::raum`) and whether the predelay is tempo-synced.
+    Raum { core: [f32; 20], synced: bool },
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
     /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
@@ -350,6 +354,13 @@ impl Slot {
         let mut r = Reader(&self.public);
         let params = match self.module {
             0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
+            0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
+            0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
+            // Cosmic (type 2) keeps its decoded fields: its core is not built.
+            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
+                let (core, synced) = space::read_raum(&mut r)?;
+                Params::Raum { core, synced }
+            }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let bits = r.f32()?;
@@ -1175,12 +1186,13 @@ pub(crate) fn chain_with(
                     }
                 }
             }
-            Some(p @ (Params::Reverb(_) | Params::LegacyReverb(_) | Params::Plate(_))) if scope == Scope::Bus => {
+            Some(p @ (Params::Reverb(_) | Params::LegacyReverb(_) | Params::Plate(_) | Params::Raum { .. })) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors.push(sampler_ir::Processor::Space(match p {
                     Params::Reverb(v) => space::galois(v, &mut notes),
                     Params::LegacyReverb(v) => space::legacy(v, &mut notes),
                     Params::Plate(v) => space::plate(v, &mut notes),
+                    Params::Raum { core, synced } => space::raum(core, *synced, &mut notes),
                     _ => unreachable!(),
                 }));
                 combined = gain;
@@ -2424,6 +2436,25 @@ mod tests {
         bytes.extend([-0.5f32, -1., -2.].into_iter().flat_map(f32::to_le_bytes));
         bytes.push(0xff);
         bytes
+    }
+
+    /// Airy (type 1): fields land on core controls (apply `0x140abb190`);
+    /// a 40 ms predelay becomes `√((40·0.0125))/2`.
+    #[test]
+    fn raum_airy_maps_fields_to_core_controls() {
+        let mut bytes = 1i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([1, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 0.5);
+        assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
+        assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
     }
 
     #[test]

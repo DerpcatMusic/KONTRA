@@ -27,7 +27,9 @@ pub enum Topology {
     /// A figure-eight tank of two modulated allpass / delay / damping loops
     /// fed by an input diffuser, crossed over to two output taps.
     Plate,
-    /// Only the input allpass diffuser (no feedback tank): a smearing effect.
+    /// UVI Diffusion: only the input allpass diffuser (no feedback tank),
+    /// gain [`Network::diffusion`] (`0..=1`), lengths from
+    /// [`Network::diffusion_start_ms`].
     Diffuser,
     /// The exact Kontakt legacy Reverb (0x15) network, driven by
     /// [`Network::freeverb`] and `predelay_seconds`/`input_cutoff_hz`.
@@ -43,6 +45,31 @@ pub enum Topology {
     /// filters, per-line cent-depth modulation, an optional input diffuser.
     /// It does its own predelay and width; the unit's dry/wet mixes it.
     SparkVerb,
+    /// The exact UVI Plain/Gate/Filtered/Delayed Reverb node (Jezar's
+    /// Freeverb), driven by [`Network::uvi_reverb`], `predelay_seconds` and
+    /// `gate_seconds`.
+    Jezar,
+    /// The exact Kontakt Plate Reverb (0x57) core, driven by
+    /// [`Network::kontakt_plate`]: 20 input allpasses and shelves, a tapped
+    /// input ring (early reflections and line injection), 16 lines through
+    /// per-line two-shelf biquads and a Hadamard matrix, four panned groups.
+    KontaktPlate,
+    /// The exact Kontakt Raum (0x65) core, driven by [`Network::raum`]: a
+    /// predelay with a filtered feedback path, the 31-line
+    /// `GaloisReverbExtended` kernel (Grounded, Airy) or the Cosmic allpass
+    /// chain, then a low shelf, a high cut and Raum's own mix.
+    Raum,
+}
+
+/// UVI's legacy reverb controls (node `0x141312050`) in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviReverb {
+    pub decay_time: f32,
+    pub high_damp: f32,
+    /// FilteredReverb's input filter, `-1..=1` (negative low-pass, positive
+    /// high-pass, 0 off).
+    pub cutoff: f32,
 }
 
 /// UVI SparkVerb's controls (Workstation 4.0.9, engine `0x1416799a0`) in
@@ -149,8 +176,10 @@ pub struct Network {
     /// Rate of that modulation, Hz.
     pub modulation_hz: f64,
     /// Allpass coefficient of the input diffuser (and of the comb layout's
-    /// serial allpasses), `0..=0.75`.
+    /// serial allpasses), `0..=0.75` (`0..=1` for [`Topology::Diffuser`]).
     pub diffusion: f64,
+    /// [`Topology::Diffuser`]'s shortest allpass, ms.
+    pub diffusion_start_ms: f64,
     /// Input lowpass, Hz.
     pub input_cutoff_hz: f64,
     /// Linear level of the early-reflection taps added to the wet signal;
@@ -171,6 +200,17 @@ pub struct Network {
     pub galois: Option<Galois>,
     /// Controls for [`Topology::SparkVerb`]; ignored by other topologies.
     pub spark: Option<SparkVerb>,
+    /// Controls for [`Topology::Jezar`]; ignored by other topologies.
+    pub uvi_reverb: Option<UviReverb>,
+    /// Kontakt Plate controls (decay, low shelf, high damp, predelay,
+    /// stereo; each `0..=1`) for [`Topology::KontaktPlate`].
+    pub kontakt_plate: Option<[f32; 5]>,
+    /// Kontakt Raum core controls by core index (`0..=1` each) for
+    /// [`Topology::Raum`]: 0 mix, 1 predelay, 6 feedback, 7 high cut, 8 low
+    /// shelf, 9 type (`int(3x)`: Grounded, Airy, Cosmic), 10 decay, 11 size,
+    /// 12 damping, 13 modulation, 14 rate, 15 diffusion, 16 freeze, 17
+    /// reverb, 18 sparse, 19 input gain.
+    pub raum: Option<[f32; 20]>,
 }
 
 impl Network {
@@ -185,6 +225,7 @@ impl Network {
         modulation_seconds: 0.000_75,
         modulation_hz: 0.7,
         diffusion: 0.375,
+        diffusion_start_ms: 5.0,
         input_cutoff_hz: 20_000.0,
         early: 0.0,
         low_shelf_db: 0.0,
@@ -194,6 +235,9 @@ impl Network {
         freeverb: None,
         galois: None,
         spark: None,
+        uvi_reverb: None,
+        kontakt_plate: None,
+        raum: None,
     };
 }
 
@@ -231,13 +275,16 @@ impl Config {
             band && n.gate_seconds.is_none_or(f64::is_finite)
                 && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
                 && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
+                && n.uvi_reverb.is_none_or(|u| [u.decay_time, u.high_damp, u.cutoff].iter().all(|v| v.is_finite()))
+                && n.kontakt_plate.is_none_or(|p| p.iter().all(|v| v.is_finite()))
+                && n.raum.is_none_or(|p| p.iter().all(|v| v.is_finite()))
                 && n.spark.is_none_or(|s| {
                     let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
                     [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]
                         .iter()
                         .all(|v| v.is_finite())
                 })
-                && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
+                && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.diffusion_start_ms, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
                     .iter()
                     .all(|v| v.is_finite())
         });

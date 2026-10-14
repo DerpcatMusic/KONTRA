@@ -35,8 +35,10 @@ fn plain_and_prefixed_names_give_the_same_network() {
     let saved = one("<PlainReverb ReverbDecayTime='3' ReverbHighDamp='0.5' WetMix='0.25'/>");
     assert_eq!(plain, saved);
     let net = plain.network.unwrap();
-    assert_eq!(net.topology, Topology::CombAllpass);
-    close(net.decay_seconds, 3.0);
+    assert_eq!(net.topology, Topology::Jezar);
+    let u = net.uvi_reverb.unwrap();
+    assert_eq!((u.decay_time, u.high_damp, u.cutoff), (3.0, 0.5, 0.0));
+    close(net.predelay_seconds, 0.0);
     close(plain.dry, 0.75);
     close(plain.wet, 0.25);
 }
@@ -53,12 +55,14 @@ fn delayed_reverb_reads_feedback() {
     let net = one("<DelayedReverb Feedback='0.4' PreDelay='0.3'/>").network.unwrap();
     close(net.echo_feedback, 0.4);
     close(net.predelay_seconds, 0.3);
+    assert_eq!(net.gate_seconds, None);
 }
 
 #[test]
-fn filtered_reverb_is_a_comb_allpass_reverb() {
-    let c = one("<FilteredReverb ReverbDecayTime='1.5' WetMix='0.5'/>");
-    close(c.network.unwrap().decay_seconds, 1.5);
+fn filtered_reverb_reads_its_cutoff() {
+    let c = one("<FilteredReverb ReverbDecayTime='1.5' Cutoff='-0.5' WetMix='0.5'/>");
+    let u = c.network.unwrap().uvi_reverb.unwrap();
+    assert_eq!((u.decay_time, u.cutoff), (1.5, -0.5));
     close(c.wet, 0.5);
 }
 
@@ -88,6 +92,9 @@ fn bloom_room_size_scales_the_network() {
 fn diffusion_is_a_diffuser_with_full_wet_default() {
     let c = one("<Diffusion Diffusion='1' DiffusionStart='10'/>");
     assert_eq!(c.network.unwrap().topology, Topology::Diffuser);
-    close(c.network.unwrap().diffusion, 0.75);
+    // g = Diffusion and the start length (0x14130fc60); equal-power mix.
+    close(c.network.unwrap().diffusion, 1.0);
+    close(c.network.unwrap().diffusion_start_ms, 10.0);
     close(c.wet, 1.0);
+    close(c.dry, 0.0);
 }

@@ -10,14 +10,16 @@
 //!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
 //!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
 //!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
-//! - 0x57 Plate: framing and field order (decay, low shelf, high damp,
-//!   predelay, stereo; measured). Topology and laws unproved: generic plate.
+//! - 0x57 Plate: the native core (`sampler_core` `dsp/space/design/plate.rs`),
+//!   matched to the emulated core's impulse response.
 //! - 0x16 Convolution: Reverse, early/late filters and composition, the
 //!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
-//!   applied; IR size and decimation (unextracted resamplers) are reported
-//!   unmodeled.
-//! - 0x65 Raum, 0x7a Reverb Delight: field bindings measured, cores not
-//!   extracted; reported unmodeled with the reason in the slot's `effect` note.
+//!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
+//!   preparation at the inner rate untraced) are reported unmodeled.
+//! - 0x65 Raum: Grounded and Airy drive the native core ([`Topology::Raum`],
+//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic is reported unmodeled.
+//! - 0x7a Reverb Delight: field binding measured, cores not extracted;
+//!   reported unmodeled with the reason in the slot's `effect` note.
 
 use super::{Impulses, Notes};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
@@ -62,7 +64,7 @@ pub(super) fn convolution(
         notes.push((
             "IR size".into(),
             format!(
-                "early {} late {}: Kontakt resamples the response by the size (0x1419b3450) through a band-limited resampler whose kernel (0x1419be690) is not extracted",
+                "early {} late {}: Kontakt time-stretches the response by the size without changing its pitch (0x1419b3450 drives an STFT time-stretch engine, setup 0x1419be690, 0x1419baf70..); the engine is not extracted",
                 c.early[0], c.late[0]
             ),
             NotModeled,
@@ -71,48 +73,28 @@ pub(super) fn convolution(
     if c.decimation > 1.0 {
         notes.push((
             "IR sample-rate decimation".into(),
-            format!("{}: the wet path's down/up resampler pair (0x140a84580) is not extracted", c.decimation),
+            format!("{}: the wet path runs at (int)(rate/S.Rate) between a resampler pair (0x140a84580; the Kaiser law is in sampler-core space/resample.rs), but how the IR is prepared at that inner rate (the IR-rate rescale under flag +0x354) is not traced", c.decimation),
             NotModeled,
         ));
     }
-    let mut left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
-    let mut right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
-    if c.flags[0] {
-        left.reverse();
-        right.reverse();
-    }
+    let left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
+    let right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
     // Saved [1] is the low cut and [2] the high cut: the corpus's defaults
     // are 20 Hz and 20 kHz there.
-    let filtered = |x: &[f32], part: &[f32; 3]| {
-        let mut y = x.to_vec();
-        butterworth(&mut y, rate, part[2], false);
-        butterworth(&mut y, rate, part[1], true);
-        y
-    };
-    if c.early[1..] != c.late[1..] {
-        let len = left.len();
-        let at = (c.xpoint >= 0.0).then(|| crossover(len, c.xpoint, rate));
-        match at {
-            Some(x) => {
-                left = compose(&filtered(&left, &c.early), &filtered(&left, &c.late), x, rate);
-                right = compose(&filtered(&right, &c.early), &filtered(&right, &c.late), x, rate);
-            }
-            None => {
-                notes.push((
-                    "IR early/late crossover".into(),
-                    format!("crossover {} unset: the native default position is not read; late filters applied throughout", c.xpoint),
-                    NotModeled,
-                ));
-                left = filtered(&left, &c.late);
-                right = filtered(&right, &c.late);
-            }
-        }
-    } else {
-        left = filtered(&left, &c.late);
-        right = filtered(&right, &c.late);
+    let crossover = (c.xpoint >= 0.0).then_some(c.xpoint);
+    if c.early[1..] != c.late[1..] && crossover.is_none() {
+        notes.push((
+            "IR early/late crossover".into(),
+            format!("crossover {} unset: the native default position is not read; late filters applied throughout", c.xpoint),
+            NotModeled,
+        ));
     }
     let mut shape = sampler_core::neutral_impulse_shape();
+    shape.reverse = c.flags[0];
+    shape.filters = Some(sampler_ir::ImpulseFilters { early: [c.early[1], c.early[2]], late: [c.late[1], c.late[2]], crossover });
     shape.auto_gain = c.flags[1];
+    // Wrapper predelay `(int)((ps·ms)·0.001)`, after Auto Gain.
+    (shape.pre_delay_ms, shape.truncate_pre_delay) = (f64::from(c.predelay_ms), true);
     if c.flags[4] {
         if let (Ok(x), Ok(db)) = (
             <[f32; 8]>::try_from(c.curve_x.as_slice()),
@@ -123,65 +105,12 @@ pub(super) fn convolution(
             notes.push(("IR volume envelope".into(), "not eight knots".into(), NotModeled));
         }
     }
-    let (mut left, mut right) = sampler_core::shape_impulse(rate, &left, &right, &shape);
-    // Wrapper predelay `(int)((ps·ms)·0.001)`; Auto Gain's f32 energy sum
-    // (which includes these zeros) is unchanged by them.
-    let pre = ((rate as f32 * c.predelay_ms.max(0.0)) * 0.001) as usize;
-    for ch in [&mut left, &mut right] {
-        ch.splice(0..0, std::iter::repeat_n(0.0, pre));
-    }
+    let (left, right) = sampler_core::shape_impulse(rate, &left, &right, &shape);
     impulses.store.push(sampler_ir::Impulse { rate, left, right, asset: None });
     if let Some(recipes) = impulses.recipes.as_deref_mut() {
         recipes.push(c.clone());
     }
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
-}
-
-/// CConvolver's early/late filter (`0x1419b27a0`, coefficients `0x1419b7fb0`,
-/// tick `0x1419b77f0`): a bilinear 2nd-order Butterworth low-pass (bypassed
-/// above 0.45 of the rate) or high-pass (bypassed below 0.01), one causal pass.
-fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
-    let w = hz / rate as f32;
-    if (!high_pass && w > 0.45) || (high_pass && w < 0.01) || !w.is_finite() {
-        return;
-    }
-    const SQRT2: f32 = 1.414_213_5;
-    let k = (w * 3.141_592_7).tan();
-    let k2 = k * k;
-    let n = 1.0 / (SQRT2 * k + 1.0 + k2);
-    let b = if high_pass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
-    let a = [-(2.0 * (k2 - 1.0) * n), -((1.0 - SQRT2 * k + k2) * n)];
-    let (mut x1, mut x2, mut y1, mut y2) = (0f32, 0f32, 0f32, 0f32);
-    for v in x {
-        let y = b[0] * *v + b[1] * x1 + b[2] * x2 + 1e-24 + a[0] * y1 + a[1] * y2;
-        (x2, x1, y2, y1) = (x1, *v, y1, y);
-        *v = y;
-    }
-}
-
-/// The crossover sample (`0x1419b63d0`, then clamped by `0x1419b2870`), at
-/// unit decimation.
-fn crossover(len: usize, x: f32, rate: u32) -> usize {
-    let r = rate as f32;
-    ((((len as f32 * x) / r) * r + 0.5) as usize).min(len)
-}
-
-/// CConvolver's early/late composition (`0x1419b1e30`) at unit sizes: early
-/// up to the crossover, late after it, a cos² crossfade 50 ms wide.
-fn compose(early: &[f32], late: &[f32], x: usize, rate: u32) -> Vec<f32> {
-    let len = early.len();
-    let w = ((rate as f32 * 0.05 + 0.5) as i64) as f32;
-    let h = w / 2.0;
-    let start = (x as f32 - h + 0.5) as i64;
-    let end = ((x as f32 + h + 0.5) as i64).min(len as i64).max(0) as usize;
-    let first = start.max(0) as usize;
-    let mut out: Vec<f32> = early[..end].iter().chain(&late[end..]).copied().collect();
-    for (n, k) in (first..end).zip(first as i64 - start..) {
-        let c = (k as f32 * (std::f32::consts::FRAC_PI_2 / w)).cos();
-        let wgt = c * c;
-        out[n] = (1.0 - wgt) * late[n] + wgt * out[n];
-    }
-    out
 }
 
 /// Legacy Reverb 0x15: the stored values are predelay (milliseconds, 0 to 180),
@@ -219,23 +148,17 @@ pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
     })
 }
 
-/// Plate Reverb 0x57: decay, low shelf, high damp, predelay, stereo, each 0..1.
-pub(super) fn plate(v: &[f32; 5], notes: &mut Notes) -> Config {
-    let [decay, low_shelf, damping, predelay, stereo] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
-    notes.push((
-        "plate reverb algorithm".into(),
-        format!("normalized {v:?}: generic plate, topology and laws unproved"),
-        UnknownLaw,
-    ));
+/// Plate Reverb 0x57: decay, low shelf, high damp, predelay, stereo, each
+/// 0..1, drive the native core ([`Topology::KontaktPlate`], `sampler_core`
+/// `dsp/space/design/plate.rs`). The physical fields only describe it.
+pub(super) fn plate(v: &[f32; 5], _notes: &mut Notes) -> Config {
+    let c = v.map(|x| x.clamp(0.0, 1.0));
     Config::network(Network {
-        topology: Topology::Plate,
-        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(decay),
-        size: 1.0,
-        predelay_seconds: predelay * 0.25,
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: 0.0005,
-        low_shelf_db: -12.0 * low_shelf,
-        width: stereo,
+        topology: Topology::KontaktPlate,
+        decay_seconds: f64::from(2.993 * c[0] + 1.007),
+        predelay_seconds: f64::from(c[3]) * 0.25,
+        width: f64::from(c[4]),
+        kontakt_plate: Some(c),
         ..Network::DEFAULT
     })
 }
@@ -264,11 +187,61 @@ pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
     })
 }
 
+/// Raum v0x10 after its type enum (reader `0x140ac5cc0`): floats predelay
+/// (+8), feedback, low shelf, high cut, reverb, diffusion, decay, mod, size,
+/// damping, rate, mix (+0x34); bytes freeze, sparse; the predelay time
+/// object's unit (+0x60) and two floats; a byte. Returns the core controls
+/// (apply `0x140abb190`) and whether the predelay is tempo-synced.
+pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
+    let kind = r.i32()? as f32;
+    let mut f = [0f32; 12];
+    for x in &mut f {
+        *x = r.f32()?;
+    }
+    let (freeze, sparse) = (r.flag()?, r.flag()?);
+    let unit = r.f32()?;
+    r.f32()?;
+    r.f32()?;
+    r.flag()?;
+    let [predelay, feedback, low_shelf, high_cut, reverb, diffusion, decay, modulation, size, damping, rate, mix] = f;
+    // Field ms → core 1: raw up to 1, else `√(0.0125t)` below 80 ms or
+    // `√((t - 80)·0.00052083) + 1`, halved and capped at 1.
+    let t = predelay;
+    let pre = if t <= 1.0 {
+        t
+    } else {
+        let s = if t < 80.0 { (f32::from_bits(0x3c4c_cccd) * t).sqrt() } else { ((t - 80.0) * f32::from_bits(0x3a08_8889)).sqrt() + 1.0 };
+        (s / 2.0).min(1.0)
+    };
+    let b = |v: bool| if v { 1.0 } else { 0.0 };
+    let core = [mix, pre, 0.0, 0.25, 0.0625, 0.0, feedback, high_cut, low_shelf, kind * 0.5, decay, size, damping, modulation, rate, diffusion, b(freeze), reverb, b(sparse), 1.0];
+    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), unit > f32::from_bits(0x3089_705f)))
+}
+
+/// Raum (0x65) Grounded or Airy on the native core; its own mix law carries
+/// the dry path. Input gain (core 19) has no saved field and stays 1.
+pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config {
+    if synced {
+        notes.push(("predelay sync".into(), "Raum's tempo-synced predelay (core 2..5, `240·n/(f·m·bpm)`) is not bound; the saved time is read as milliseconds".into(), UnknownLaw));
+    }
+    if core[6] > 0.0 {
+        notes.push(("feedback limiter".into(), "Raum's feedback limiter (NI::DSP::Limiter `0x141ae3ba0`) is reduced to its ±2.5 clamp: its gain table is not extracted".into(), UnknownLaw));
+    }
+    let x = f64::from(core[1]);
+    Config::network(Network {
+        topology: Topology::Raum,
+        decay_seconds: 199.75 * f64::from(core[10]) / (75.0 * (1.0 - f64::from(core[10])) + 1.0) + 0.25,
+        predelay_seconds: if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 },
+        raum: Some(*core),
+        ..Network::DEFAULT
+    })
+}
+
 /// Why a reverb with a recovered reader but no recovered parameters is not
 /// translated; empty for every other module.
 pub(super) fn why_unbound(module: u16) -> &'static str {
     match module {
-        0x65 => ": Raum field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv); its modern reverb core is not extracted",
+        0x65 => ": Raum Cosmic: its eight-stage allpass core is not built (Grounded and Airy are)",
         0x7a => ": Reverb Delight field binding measured (MONO unproved: field 11 bytes unstable); its amp, tremolo and spring-reverb cores are not extracted",
         _ => "",
     }
@@ -288,29 +261,5 @@ mod tests {
         // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
         let f = n.freeverb.unwrap();
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
-    }
-
-    /// CConvolver's filter vectors (`0x1419b7fb0`/`0x1419b77f0`, 48 kHz, 4.8 kHz).
-    #[test]
-    fn early_late_filters_match_native_vectors() {
-        let run = |hp| {
-            let mut x = [1.0, 0.0, 0.0, 0.0];
-            butterworth(&mut x, 48_000, 4_800.0, hp);
-            x
-        };
-        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-6);
-        assert!(close(run(false), [0.067_455_28, 0.212_010_62, 0.281_933_64, 0.234_726_31]), "{:?}", run(false));
-        assert!(close(run(true), [0.638_945_5, -0.547_588_8, -0.250_695_56, -0.060_494_572]), "{:?}", run(true));
-        let mut x = [1.0, 0.5];
-        butterworth(&mut x, 44_100, 20_000.0, false);
-        butterworth(&mut x, 44_100, 20.0, true);
-        assert_eq!(x, [1.0, 0.5], "both bypass at their defaults");
-    }
-
-    /// `0x1419b1e30` vector: rate 40, ten samples, crossover 5.
-    #[test]
-    fn composition_crossfades_early_into_late() {
-        let out = compose(&[1.0; 10], &[0.0; 10], crossover(10, 0.5, 40), 40);
-        assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 1.0, 0.499_999_97, 0.0, 0.0, 0.0, 0.0]);
     }
 }

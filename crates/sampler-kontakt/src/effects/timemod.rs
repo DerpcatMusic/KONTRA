@@ -4,14 +4,15 @@
 //! audio 0x140aa1130), Legacy Chorus (0x11, audio 0x140aa0510) and Legacy
 //! Flanger (0x12, audio 0x140aa2350); the last two are one legacy modulated
 //! delay kernel. Choral (0x5d) configures the line's voice bank
-//! ([`choral`]). The other modern effects stay unsupported with the reasons
-//! in [`unproved`].
+//! ([`choral`]). Twin Delay (0x6B, kernel 0x140ab07d0) and Psyche Delay
+//! (0x63, kernel 0x140aadb50) are native. The other modern effects stay
+//! unsupported with the reasons in [`unproved`].
 use super::{Notes, Reader};
 use sampler_ir::{
     Reason,
     fx::timemod::{
-        Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw,
-        VoiceBank,
+        Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay,
+        SweepLaw, TwinDelay, VoiceBank,
     },
 };
 
@@ -25,6 +26,8 @@ pub(crate) enum Unit {
     /// Choral (0x5d, reader schema 7 f32, 2 flags, i32): amount, rate, delay,
     /// voices, width, feedback, mix, invert, scatter, mode.
     Choral { fields: [f32; 7], invert: bool, scatter: bool, mode: i32 },
+    Twin(TwinDelay),
+    Psyche(PsycheDelay),
 }
 
 /// Choral voice tables (0x14193cd70), f32 bits: G0 delay scale, G1 rate scale,
@@ -154,6 +157,55 @@ fn choral([amount, rate, delay, voices, width, feedback, mix]: [f32; 7], invert:
     }
 }
 
+/// Twin Delay v0x10 (reader `0x140ac6280`): four time sub-objects (predelay
+/// L/R, time L/R; each a sync factor, two floats and a flag), then predelay,
+/// time, feedback and level for L, the same for R, cross and width.
+pub(super) fn read_twin(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x10 {
+        return None;
+    }
+    let mut units = [0f32; 4];
+    for u in &mut units {
+        *u = r.f32()?;
+        r.f32()?;
+        r.f32()?;
+        r.flag()?;
+    }
+    let mut v = [0f32; 10];
+    for x in &mut v {
+        *x = r.f32()?;
+    }
+    Some(Unit::Twin(TwinDelay {
+        time: [v[1], v[5]],
+        predelay: [v[0], v[4]],
+        time_unit: [units[2], units[3]],
+        predelay_unit: [units[0], units[1]],
+        feedback: [v[2], v[6]],
+        level: [v[3], v[7]],
+        cross: v[8],
+        width: v[9],
+    }))
+}
+
+/// Psyche Delay v0x10 (reader `0x140ac5bc0`): time, feedback, detune, pitch,
+/// offset, cross; reverse-stereo, detune-stereo and reverse bytes; the time
+/// sub-object's unit factor and two unused floats, then a flag.
+pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x10 {
+        return None;
+    }
+    let mut v = [0f32; 6];
+    for x in &mut v {
+        *x = r.f32()?;
+    }
+    let [reverse_stereo, detune_stereo, reverse] = [r.flag()?, r.flag()?, r.flag()?];
+    let unit = r.f32()?;
+    r.f32()?;
+    r.f32()?;
+    r.flag()?;
+    Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
+}
+
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
 pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
     if module == 0x5d {
@@ -182,10 +234,9 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 /// Why a delay or modulation module without a mapping stays unsupported.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x5a => "Replika: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38) and its style kernels are not extracted",
+        0x5a => "Replika: core control laws known (setParam 0x141ac5980: time 8/9, type 28, gains 0/1, mix 4) but the saved-field to core-index binding (generic per-quantum streams at wrapper +0x14580/+0x145f0) and the line read/write recurrence (0x141ab7e00 / 0x141acd110, line filter, saturation 0x141aa44a0) are not extracted",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
-        0x63 => "Psyche Delay: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern wrapper core is not located",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
         0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, setter case 0xe 0x140962630) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the setter's parameter binding are not yet verified",
         _ => return None,
@@ -266,6 +317,19 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
                 smoothing: f32::from_bits(0x3f733333),
             };
             Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed, unit, phase * 0.25), dry, wet: 1. }
+        }
+        Unit::Twin(t) => {
+            // Kernel 0x140ab07d0 (sampler_core dsp/timemod/twin.rs): the
+            // effect's output is wet only; the slot's dry level mixes.
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::TwinDelay(t);
+            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+        }
+        Unit::Psyche(p) => {
+            // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::PsycheDelay(p);
+            Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
         Unit::Flanger { depth, feedback, speed, phase, color, unit } => {
             if !(unit_interval(&[depth, feedback, phase]) && speed.is_finite() && speed >= 0. && color.is_finite()) {
@@ -498,5 +562,45 @@ mod tests {
             assert!(built.processors.is_empty());
             assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
         }
+    }
+
+    /// Reader 0x140ac5bc0: six floats, three bytes, three floats, a byte.
+    #[test]
+    fn psyche_delay_reads_its_stream_and_runs_native() {
+        let mut public = Vec::new();
+        for f in [20f32, 0.5, 0.7, 0.75, 0.6, 0.25] {
+            public.extend(f.to_le_bytes());
+        }
+        public.extend([0, 1, 0]);
+        for f in [-1f32, 500., 0.] {
+            public.extend(f.to_le_bytes());
+        }
+        public.push(0);
+        let built = chain(&[Slot { public, ..slot(0x63, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::PsycheDelay(p) = config.line.unwrap().native else { panic!() };
+        assert_eq!((p.time, p.feedback, p.detune, p.pitch, p.offset, p.cross, p.unit), (20., 0.5, 0.7, 0.75, 0.6, 0.25, -1.));
+        assert!(!p.reverse_stereo && p.detune_stereo && !p.reverse);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    /// Reader 0x140ac6280: four sync groups, then ten floats.
+    #[test]
+    fn twin_delay_reads_its_stream_and_runs_native() {
+        let mut public = Vec::new();
+        for _ in 0..4 {
+            for f in [-1f32, 0.5, 0.] {
+                public.extend(f.to_le_bytes());
+            }
+            public.push(0);
+        }
+        for f in [0.001f32, 0.0001, 0.6, 0.9, 0.0013, 0.00021, 0.5, 0.7, 0.3, 0.8] {
+            public.extend(f.to_le_bytes());
+        }
+        let built = chain(&[Slot { public, ..slot(0x6b, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::TwinDelay(t) = config.line.unwrap().native else { panic!() };
+        assert_eq!((t.time, t.predelay, t.feedback, t.level, t.cross, t.width), ([0.0001, 0.00021], [0.001, 0.0013], [0.6, 0.5], [0.9, 0.7], 0.3, 0.8));
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 }

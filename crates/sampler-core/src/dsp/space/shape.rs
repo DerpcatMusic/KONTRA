@@ -26,6 +26,69 @@ pub fn neutral_impulse_shape() -> ImpulseShape {
         reverse: false,
         auto_gain: false,
         envelope: None,
+        filters: None,
+        truncate_pre_delay: false,
+    }
+}
+
+/// CConvolver's early/late filter (`0x1419b27a0`, coefficients `0x1419b7fb0`,
+/// tick `0x1419b77f0`): a bilinear 2nd-order Butterworth low-pass (bypassed
+/// above 0.45 of the rate) or high-pass (bypassed below 0.01), one causal pass.
+fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
+    let w = hz / rate as f32;
+    if (!high_pass && w > 0.45) || (high_pass && w < 0.01) || !w.is_finite() {
+        return;
+    }
+    const SQRT2: f32 = 1.414_213_5;
+    let k = (w * 3.141_592_7).tan();
+    let k2 = k * k;
+    let n = 1.0 / (SQRT2 * k + 1.0 + k2);
+    let b = if high_pass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
+    let a = [-(2.0 * (k2 - 1.0) * n), -((1.0 - SQRT2 * k + k2) * n)];
+    let (mut x1, mut x2, mut y1, mut y2) = (0f32, 0f32, 0f32, 0f32);
+    for v in x {
+        let y = b[0] * *v + b[1] * x1 + b[2] * x2 + 1e-24 + a[0] * y1 + a[1] * y2;
+        (x2, x1, y2, y1) = (x1, *v, y1, y);
+        *v = y;
+    }
+}
+
+/// The crossover sample (`0x1419b63d0`, then clamped by `0x1419b2870`), at
+/// unit decimation.
+fn crossover(len: usize, x: f32, rate: u32) -> usize {
+    let r = rate as f32;
+    ((((len as f32 * x) / r) * r + 0.5) as usize).min(len)
+}
+
+/// CConvolver's early/late composition (`0x1419b1e30`) at unit sizes: early
+/// up to the crossover, late after it, a cos² crossfade 50 ms wide.
+fn compose(early: &[f32], late: &[f32], x: usize, rate: u32) -> Vec<f32> {
+    let len = early.len();
+    let w = ((rate as f32 * 0.05 + 0.5) as i64) as f32;
+    let h = w / 2.0;
+    let start = (x as f32 - h + 0.5) as i64;
+    let end = ((x as f32 + h + 0.5) as i64).min(len as i64).max(0) as usize;
+    let first = start.max(0) as usize;
+    let mut out: Vec<f32> = early[..end].iter().chain(&late[end..]).copied().collect();
+    for (n, k) in (first..end).zip(first as i64 - start..) {
+        let c = (k as f32 * (std::f32::consts::FRAC_PI_2 / w)).cos();
+        let wgt = c * c;
+        out[n] = (1.0 - wgt) * late[n] + wgt * out[n];
+    }
+    out
+}
+
+/// One channel through the early/late filters.
+fn filter_channel(x: &[f32], rate: u32, f: &sampler_ir::ImpulseFilters) -> Vec<f32> {
+    let pass = |[low, high]: [f32; 2]| {
+        let mut y = x.to_vec();
+        butterworth(&mut y, rate, high, false);
+        butterworth(&mut y, rate, low, true);
+        y
+    };
+    match f.crossover {
+        Some(c) if f.early != f.late => compose(&pass(f.early), &pass(f.late), crossover(x.len(), c, rate), rate),
+        _ => pass(f.late),
     }
 }
 
@@ -107,6 +170,9 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
         l.reverse();
         r.reverse();
     }
+    if let Some(f) = &s.filters {
+        (l, r) = (filter_channel(&l, rate, f), filter_channel(&r, rate, f));
+    }
     let time = s.time.clamp(0.0, 1.0);
     if time < 1.0 {
         let keep = ((l.len() as f64 * time).floor() as usize).max(1).min(l.len());
@@ -166,7 +232,11 @@ pub fn shape_impulse(rate: u32, left: &[f32], right: &[f32], s: &ImpulseShape) -
     if gain != 1.0 {
         l.iter_mut().chain(&mut r).for_each(|v| *v = (f64::from(*v) * gain) as f32);
     }
-    let delay = (s.pre_delay_ms.max(0.0) * f64::from(rate) / 1000.0).round() as usize;
+    let delay = if s.truncate_pre_delay {
+        ((rate as f32 * s.pre_delay_ms.max(0.0) as f32) * 0.001) as usize
+    } else {
+        (s.pre_delay_ms.max(0.0) * f64::from(rate) / 1000.0).round() as usize
+    };
     if delay > 0 {
         l.splice(0..0, std::iter::repeat_n(0.0, delay));
         r.splice(0..0, std::iter::repeat_n(0.0, delay));
@@ -252,5 +322,29 @@ mod tests {
         let sum = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>();
         assert!(sum(&a) < sum(&l) || a != l);
         assert!(a.iter().all(|v| v.is_finite()));
+    }
+
+    /// `0x1419b7fb0` / `0x1419b77f0` impulse vectors at 48 kHz, 4.8 kHz.
+    #[test]
+    fn early_late_filters_match_native_vectors() {
+        let run = |hp| {
+            let mut x = [1.0, 0.0, 0.0, 0.0];
+            butterworth(&mut x, 48_000, 4_800.0, hp);
+            x
+        };
+        let close = |a: [f32; 4], b: [f32; 4]| a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-6);
+        assert!(close(run(false), [0.067_455_28, 0.212_010_62, 0.281_933_64, 0.234_726_31]), "{:?}", run(false));
+        assert!(close(run(true), [0.638_945_5, -0.547_588_8, -0.250_695_56, -0.060_494_572]), "{:?}", run(true));
+        let mut x = [1.0, 0.5];
+        butterworth(&mut x, 44_100, 20_000.0, false);
+        butterworth(&mut x, 44_100, 20.0, true);
+        assert_eq!(x, [1.0, 0.5], "both bypass at their defaults");
+    }
+
+    /// `0x1419b1e30` vector: rate 40, ten samples, crossover 5.
+    #[test]
+    fn composition_crossfades_early_into_late() {
+        let out = compose(&[1.0; 10], &[0.0; 10], crossover(10, 0.5, 40), 40);
+        assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 1.0, 0.499_999_97, 0.0, 0.0, 0.0, 0.0]);
     }
 }

@@ -1,28 +1,26 @@
 //! Universal `space` DSP (wave 4): every reverb and convolution effect is one
 //! [`Space`], configured by [`sampler_ir::fx::space::Config`].
 //!
-//! A unit runs an algorithmic network (FDN, comb/allpass, plate or diffuser,
-//! with predelay, early reflections, gate and tone), a zero-latency
-//! partitioned convolution, or both summed, then mixes with the dry input.
+//! A unit runs the one algorithmic network engine ([`network`], configured
+//! per reverb by [`design`]) with optional early reflections and gate, a
+//! zero-latency partitioned convolution, or both summed, then mixes with the
+//! dry input.
 //! Everything is allocated by [`Space::new`] on the control side; processing
 //! allocates nothing.
 
-mod comb;
 mod common;
 mod convolver;
-mod fdn;
-mod freeverb;
-mod galois;
-mod plate;
+mod design;
+mod network;
+mod resample;
 mod shape;
-mod sparkverb;
 
 pub use convolver::{Impulse, MAX_IMPULSE_FRAMES};
 pub use convolver::ConvolutionUpload;
 pub use shape::{neutral_impulse_shape, shape_impulse};
 
 use crate::Error;
-use common::{Early, Tone};
+use common::Early;
 use convolver::Conv;
 use sampler_ir::fx::space::{Config, Network, Topology};
 use std::sync::Arc;
@@ -47,7 +45,8 @@ fn network_valid(n: &Network) -> bool {
         && within(n.damping_hz, 20.0, 192_000.0)
         && within(n.modulation_seconds, 0.0, MAX_MODULATION_SECONDS)
         && within(n.modulation_hz, 0.01, 20.0)
-        && within(n.diffusion, 0.0, 0.75)
+        && within(n.diffusion, 0.0, if n.topology == Topology::Diffuser { 1.0 } else { 0.75 })
+        && within(n.diffusion_start_ms, 0.1, 50.0)
         && within(n.predelay_seconds, 0.0, MAX_PREDELAY_SECONDS)
         && within(n.input_cutoff_hz, 20.0, 192_000.0)
         && within(n.early, 0.0, 4.0)
@@ -58,6 +57,9 @@ fn network_valid(n: &Network) -> bool {
             || n.freeverb.is_some_and(|f| {
                 within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
             }))
+        && (n.topology != Topology::Jezar || n.uvi_reverb.is_some_and(|u| within(f64::from(u.decay_time), 0.0, 100.0) && within(f64::from(u.cutoff), -1.0, 1.0)))
+        && (n.topology != Topology::Raum || n.raum.is_some_and(|p| p.iter().all(|v| (0.0..=1.0).contains(v))))
+        && (n.topology != Topology::KontaktPlate || n.kontakt_plate.is_some_and(|p| p.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::Galois || n.galois.is_some_and(|g| g.controls.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::SparkVerb
             || n.spark.is_some_and(|s| {
@@ -105,121 +107,119 @@ pub(crate) fn tail_frames(c: &Config, rate: u32, impulse: Option<&Impulse>) -> u
     net.max(conv).min(f64::from(u32::MAX)) as u32
 }
 
-enum Core {
-    Fdn(fdn::Fdn),
-    Comb(comb::CombAllpass),
-    Plate(plate::Plate),
-    Diffuser(comb::Diffuser),
-    Freeverb(freeverb::Freeverb),
-    Galois(Box<galois::GaloisCore>),
-    Spark(sparkverb::Spark),
-}
-
-/// Closes the wet signal a set time after the input falls silent.
+/// UVI GateReverb's gate (`0x141314290` / `0x1413143d0`): an input above
+/// 0.1 opens it, ramping the wet gain to 1 over `max(32, rate·1e-4)` frames
+/// (`0x141cfa970`); it holds `GateTime·rate` frames (at least 32,
+/// `0x141cfaba8`) after the last trigger, then falls to 0 in 32 steps of
+/// 1/32 of the gain it had (`0x141e82234`).
 struct Gate {
     hold: usize,
     left: usize,
+    up: f32,
+    down: f32,
     gain: f32,
-    coef: f32,
 }
 
 impl Gate {
     fn new(seconds: f64, rate: f32) -> Self {
-        Self { hold: (seconds * f64::from(rate)) as usize, left: 0, gain: 0.0, coef: common::one_pole(50.0, rate) }
+        Self { hold: ((seconds * f64::from(rate)) as usize).max(32), left: 0, up: 1.0 / (rate * 1e-4).max(32.0), down: 0.0, gain: 0.0 }
     }
     #[inline(always)]
     fn tick(&mut self, input_peak: f32) -> f32 {
-        // -60 dBFS opens the gate.
-        if input_peak > 1e-3 {
+        if input_peak > 0.1 {
             self.left = self.hold;
-        } else {
-            self.left = self.left.saturating_sub(1);
         }
-        let target = if self.left > 0 { 1.0 } else { 0.0 };
-        self.gain = crate::dsp::kernels::one_pole32(self.gain, target, self.coef);
+        if self.left > 0 {
+            self.left -= 1;
+            self.gain = (self.gain + self.up).min(1.0);
+            self.down = self.gain * 0.031_25;
+        } else {
+            self.gain = (self.gain - self.down).max(0.0);
+        }
         self.gain
     }
 }
 
 struct Net {
-    core: Core,
-    tone: Tone,
+    core: network::Network,
+    /// Galois above 48 kHz: the core runs decimated between a resampler pair.
+    pair: Option<resample::Pair>,
     early: Option<Early>,
     gate: Option<Gate>,
+    raum: Option<design::raum::Outer>,
     pos: usize,
 }
 
 impl Net {
     fn new(n: &Network, rate: u32) -> Result<Self, Error> {
-        let core = match n.topology {
-            Topology::Fdn => Core::Fdn(fdn::Fdn::new(n, rate)?),
-            Topology::CombAllpass => Core::Comb(comb::CombAllpass::new(n, rate)?),
-            Topology::Plate => Core::Plate(plate::Plate::new(n, rate)?),
-            Topology::Diffuser => Core::Diffuser(comb::Diffuser::new(n, rate)?),
-            Topology::Freeverb => Core::Freeverb(freeverb::Freeverb::new(n, rate)?),
-            Topology::Galois => Core::Galois(Box::new(galois::GaloisCore::new(n, rate)?)),
-            Topology::SparkVerb => Core::Spark(sparkverb::Spark::new(n, rate)?),
-        };
+        // Wrapper 0x141aa15c7: above 48 kHz (0x473b8000) the Galois core runs
+        // at rate / N, N = trunc(f32(rate·f32(1/44100))) (0x37be37c6). Only
+        // whole divisions use the Kaiser pair; others (the native quintic
+        // mode 1) run at the host rate.
+        let factor = (rate as f32 * f32::from_bits(0x37be_37c6)) as u32;
+        let pair = (n.topology == Topology::Galois && rate > 48_000 && factor > 1 && rate.is_multiple_of(factor)).then(|| resample::Pair::new(factor as usize, crate::dsp::BLOCK));
+        let core_rate = if pair.is_some() { rate / factor } else { rate };
+        let core = network::Network::new(design::spec(n, core_rate)?);
         let rate = rate as f32;
-        // The Galois and SparkVerb cores do their own predelay, width and tone.
-        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb);
+        // The native engines have no early taps; only Jezar (UVI) gates.
+        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar | Topology::KontaktPlate | Topology::Raum);
         Ok(Self {
             core,
-            tone: if native { Tone::new(1.0, 0.0, rate) } else { Tone::new(n.width, n.low_shelf_db, rate) },
+            pair,
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
-            gate: n.gate_seconds.filter(|_| !native).map(|g| Gate::new(g, rate)),
+            gate: n.gate_seconds.filter(|_| n.topology == Topology::Jezar || !native).map(|g| Gate::new(g, rate)),
+            raum: n.raum.filter(|_| n.topology == Topology::Raum).map(|p| design::raum::Outer::new(&p, rate as u32)),
             pos: 0,
         })
     }
 
     fn clear(&mut self) {
-        match &mut self.core {
-            Core::Fdn(c) => c.clear(),
-            Core::Comb(c) => c.clear(),
-            Core::Plate(c) => c.clear(),
-            Core::Diffuser(c) => c.clear(),
-            Core::Freeverb(c) => c.clear(),
-            Core::Galois(c) => c.clear(),
-            Core::Spark(c) => c.clear(),
+        self.core.clear();
+        if let Some(p) = &mut self.pair {
+            p.clear();
         }
-        self.tone.clear();
         if let Some(e) = &mut self.early {
             e.clear();
         }
         if let Some(g) = &mut self.gate {
-            (g.left, g.gain) = (0, 0.0);
+            (g.left, g.gain, g.down) = (0, 0.0, 0.0);
+        }
+        if let Some(o) = &mut self.raum {
+            o.clear();
         }
     }
 
     /// Replace `l`/`r` with the wet signal.
     fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if let Some(o) = &mut self.raum {
+            return o.process(l, r, |a, b| self.core.process(a, b));
+        }
+        if let Some(p) = &mut self.pair {
+            for (l, r) in l.chunks_mut(crate::dsp::BLOCK).zip(r.chunks_mut(crate::dsp::BLOCK)) {
+                p.process(l, r, |a, b| self.core.process(a, b));
+            }
+            return;
+        }
+        if self.early.is_none() && self.gate.is_none() {
+            return self.core.process(l, r);
+        }
         // The early taps and the gate read the dry input.
         let mut input = [[0f32; crate::dsp::BLOCK]; 2];
         let n = l.len().min(crate::dsp::BLOCK);
         input[0][..n].copy_from_slice(&l[..n]);
         input[1][..n].copy_from_slice(&r[..n]);
-        match &mut self.core {
-            Core::Fdn(c) => c.process(l, r),
-            Core::Comb(c) => c.process(l, r),
-            Core::Plate(c) => c.process(l, r),
-            Core::Diffuser(c) => c.process(l, r),
-            Core::Freeverb(c) => c.process(l, r),
-            Core::Galois(c) => c.process(l, r),
-            Core::Spark(c) => c.process(l, r),
-        }
+        self.core.process(l, r);
         for i in 0..n {
             let pos = self.pos;
             self.pos = pos.wrapping_add(1);
-            let (mut a, mut b) = (l[i], r[i]);
             if let Some(e) = &mut self.early {
                 let [ea, eb] = e.tick(pos, 0.5 * (input[0][i] + input[1][i]));
-                (a, b) = (a + ea, b + eb);
+                (l[i], r[i]) = (l[i] + ea, r[i] + eb);
             }
             if let Some(g) = &mut self.gate {
                 let gain = g.tick(input[0][i].abs().max(input[1][i].abs()));
-                (a, b) = (a * gain, b * gain);
+                (l[i], r[i]) = (l[i] * gain, r[i] * gain);
             }
-            [l[i], r[i]] = self.tone.tick(a, b);
         }
     }
 }
@@ -338,6 +338,9 @@ mod tests {
             ("fdn", Network::DEFAULT),
             ("comb", Network { topology: Topology::CombAllpass, ..Network::DEFAULT }),
             ("plate", Network { topology: Topology::Plate, ..Network::DEFAULT }),
+            ("raum airy", Network { topology: Topology::Raum, raum: Some([0.5, 0.0, 0.0, 0.25, 0.0625, 0.0, 0.0, 1.0, 0.0, 0.5, 0.8, 0.5, 0.25, 0.25, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0]), ..Network::DEFAULT }),
+            ("raum grounded", Network { topology: Topology::Raum, raum: Some([0.5, 0.0, 0.0, 0.25, 0.0625, 0.0, 0.0, 1.0, 0.0, 0.0, 0.8, 0.5, 0.25, 0.25, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0]), ..Network::DEFAULT }),
+            ("kontakt plate", Network { topology: Topology::KontaktPlate, kontakt_plate: Some([0.5, 0.5, 0.5, 0.0, 1.0]), ..Network::DEFAULT }),
             ("diffuser", Network { topology: Topology::Diffuser, ..Network::DEFAULT }),
             (
                 "freeverb",
@@ -353,34 +356,81 @@ mod tests {
             ("galois hall", Network { topology: Topology::Galois, galois: Some(Galois { hall: true, controls: [0.5; 10] }), ..Network::DEFAULT }),
             ("spark q3", Network { topology: Topology::SparkVerb, spark: Some(spark(3)), ..Network::DEFAULT }),
             ("spark q5", Network { topology: Topology::SparkVerb, spark: Some(spark(5)), ..Network::DEFAULT }),
+            (
+                "uvi jezar",
+                Network {
+                    topology: Topology::Jezar,
+                    uvi_reverb: Some(sampler_ir::fx::space::UviReverb { decay_time: 2.0, high_damp: 0.5, cutoff: -0.5 }),
+                    ..Network::DEFAULT
+                },
+            ),
         ]
     }
 
-    /// CPU per instance: `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
+    /// CPU per instance:
+    /// `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
+    /// Before the one-network engine (same machine, ns/frame at 48 kHz):
+    /// fdn 46, comb 26, plate 29, diffuser 12, freeverb 28, Galois room 234 /
+    /// hall 218, SparkVerb q3 70 / q5 250.
     #[test]
     #[ignore]
     fn cpu_per_instance() {
         const RATE: u32 = 48_000;
-        let seconds = 20;
-        for (name, net) in presets() {
-            let mut s = Space::new(&Config::network(net), RATE, &[]).unwrap();
-            let mut l = vec![0f32; 64];
-            let mut r = vec![0f32; 64];
+        let frames = 10 * RATE as usize;
+        let only = std::env::var("CPU_ONLY").ok();
+        for (name, net, parallel) in presets().into_iter().flat_map(|(n, net)| [(n, net.clone(), true), (n, net, false)]) {
+            if only.as_deref().is_some_and(|o| o != name || !parallel) {
+                continue;
+            }
+            let mut net = Net::new(&net, RATE).unwrap();
+            if !parallel {
+                if !net.core.parallel {
+                    continue;
+                }
+                net.core.parallel = false;
+            }
             let mut best = f64::MAX;
-            for _ in 0..3 {
+            for _ in 0..5 {
+                let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
                 let t = std::time::Instant::now();
-                for b in 0..(seconds * RATE as usize / 64) {
-                    for (k, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
-                        let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 0.0 };
-                        (*a, *c) = (v, -v);
+                for b in 0..frames / 64 {
+                    for k in 0..64 {
+                        let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 1e-3 * ((b * 64 + k) as f32 * 0.01).sin() };
+                        (l[k], r[k]) = (v, -v);
                     }
-                    s.process([&mut l, &mut r]);
+                    net.process(&mut l, &mut r);
                 }
                 std::hint::black_box(&l);
-                best = best.min(t.elapsed().as_secs_f64());
+                best = best.min(t.elapsed().as_secs_f64() * 1e9 / frames as f64);
             }
-            println!("cpu {name:12} {:6.3} % of one core at 48 kHz ({:.1} ns/frame)", best / seconds as f64 * 100.0, best * 1e9 / (seconds as f64 * f64::from(RATE)));
+            println!("cpu {name:12} {best:6.1} ns/frame{}", if parallel { "" } else { " (per-frame path)" });
         }
+    }
+
+    /// Galois above 48 kHz runs at rate / trunc(rate/44100) between the
+    /// resampler pair; the tail keeps the 48 kHz one's energy per band.
+    #[test]
+    fn galois_runs_decimated_above_48k() {
+        let galois = presets().into_iter().find(|p| p.0 == "galois hall").unwrap().1;
+        let energy = |rate: u32| {
+            let mut net = Net::new(&galois, rate).unwrap();
+            let mut e = 0f64;
+            for b in 0..rate as usize / 64 {
+                let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+                if b == 0 {
+                    (l[0], r[0]) = (1.0, 1.0);
+                }
+                net.process(&mut l, &mut r);
+                assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+                e += l.iter().chain(&r).map(|v| f64::from(v * v)).sum::<f64>();
+            }
+            (net.pair.is_some(), e)
+        };
+        let (p48, e48) = energy(48_000);
+        let (p96, e96) = energy(96_000);
+        assert!(!p48 && p96 && Net::new(&galois, 176_400).unwrap().pair.is_some());
+        // An impulse at twice the rate carries half the low-band energy.
+        assert!((e96 / e48 - 0.5).abs() < 0.1, "{e48} {e96}");
     }
 
     #[test]
