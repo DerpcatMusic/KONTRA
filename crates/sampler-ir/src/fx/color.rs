@@ -99,6 +99,8 @@ pub enum Curve {
     Tubescreamer(Tubescreamer),
     /// Kontakt Dirt (two diode drive stages with routing, effektrig x2).
     Dirt(Dirt),
+    /// Kontakt Freak (quadrature/side-chain modulated feedback drive with fuzz).
+    Freak(Freak),
     /// Kontakt Bite (resampling log quantizer with its own filters, effektrig x2).
     Bite(Bite),
     /// Kontakt Tape Saturator (oversampled table shaper with its own filters).
@@ -168,6 +170,13 @@ pub struct Exciter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bite {
     pub knobs: [f32; 12],
+}
+
+/// Kontakt Freak core values (0..1, the mode enum as i/2) by core index p0..p18.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Freak {
+    pub knobs: [f32; 19],
 }
 
 /// Kontakt Dirt core values (0..1, enums as i/2) by core index: drive A/B, blend A/B, tone
@@ -406,6 +415,11 @@ impl Config {
         Self { curve: Curve::Dirt(dirt), ..Self::IDENTITY }
     }
 
+    /// Kontakt Freak.
+    pub fn freak(freak: Freak) -> Self {
+        Self { curve: Curve::Freak(freak), ..Self::IDENTITY }
+    }
+
     /// Kontakt Bite.
     pub fn bite(bite: Bite) -> Self {
         Self { curve: Curve::Bite(bite), ..Self::IDENTITY }
@@ -477,6 +491,7 @@ impl Config {
             Self { curve: Curve::Drive(_), .. } => "Drive",
             Self { curve: Curve::Tubescreamer(_), .. } => "Tubescreamer",
             Self { curve: Curve::Dirt(_), .. } => "Dirt",
+            Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",

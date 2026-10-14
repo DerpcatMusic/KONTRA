@@ -12,6 +12,7 @@ mod distortion;
 mod drive;
 mod tubescreamer;
 mod dirt;
+mod freak;
 mod bite;
 mod tape;
 mod exciter;
@@ -83,6 +84,7 @@ pub enum CurveSettings {
     Drive(sampler_ir::fx::color::Drive),
     Tubescreamer(sampler_ir::fx::color::Tubescreamer),
     Dirt(sampler_ir::fx::color::Dirt),
+    Freak(sampler_ir::fx::color::Freak),
     Bite(sampler_ir::fx::color::Bite),
     Tape(sampler_ir::fx::color::Tape),
     Exciter(sampler_ir::fx::color::Exciter),
@@ -183,6 +185,7 @@ impl Settings {
                 CurveSettings::Tape(d) => [d.gain, d.warmth, d.rolloff].iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Bite(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Dirt(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Freak(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Tubescreamer(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Drive(d) => [d.input_gain, d.overdrive, d.trash, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
             }
@@ -208,7 +211,7 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -240,6 +243,7 @@ impl Settings {
             CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
             CurveSettings::Tubescreamer(d) => Curve::Tubescreamer(tubescreamer::Engine::new(d, rate)),
             CurveSettings::Dirt(d) => Curve::Dirt(dirt::Engine::new(d, rate)),
+            CurveSettings::Freak(d) => Curve::Freak(freak::Engine::new(d, rate)),
             CurveSettings::Bite(d) => Curve::Bite(bite::Engine::new(d, rate)),
             CurveSettings::Tape(d) => Curve::Tape(tape::Engine::new(d, rate)),
             CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
@@ -313,6 +317,7 @@ enum Curve {
     Drive(drive::Engine),
     Tubescreamer(tubescreamer::Engine),
     Dirt(dirt::Engine),
+    Freak(freak::Engine),
     Bite(bite::Engine),
     Tape(tape::Engine),
     Exciter(exciter::Engine),
@@ -353,6 +358,7 @@ enum Shaper {
     Drive(drive::State),
     Tubescreamer(tubescreamer::State),
     Dirt(dirt::State),
+    Freak(freak::State),
     Bite(bite::State),
     Tape(tape::State),
     Exciter(exciter::State),
@@ -370,6 +376,7 @@ impl Shaper {
             Self::Drive(s) => s.finite(),
             Self::Tubescreamer(s) => s.finite(),
             Self::Dirt(s) => s.finite(),
+            Self::Freak(s) => s.finite(),
             Self::Bite(s) => s.finite(),
             Self::Tape(s) => s.finite(),
             Self::Exciter(s) => s.finite(),
@@ -557,6 +564,7 @@ impl Color {
             Curve::Drive(d) => d.process(slot!(state, Drive), block, len),
             Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
             Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),
+            Curve::Freak(d) => d.process(slot!(state, Freak), block, len),
             Curve::Bite(d) => d.process(slot!(state, Bite), block, len),
             Curve::Tape(d) => d.process(slot!(state, Tape), block, len),
             Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
