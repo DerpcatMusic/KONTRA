@@ -1,6 +1,6 @@
 //! Immutable source revisions in fixed generation-owned slots. Transactions
 //! carry all incoming/retired ownership back to control; audio never drops PCM.
-use super::{Candidate, Pcm, Prepared};
+use super::{Candidate, HeadBudget, HeadBudgetStatus, Pcm, Prepared};
 use crate::{Error, NotePitch, PlanId, Playback, Runtime};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::{
@@ -424,15 +424,21 @@ pub struct SampleControl {
     sequence: u64,
     queued_bytes: usize,
     byte_limit: usize,
+    head_budget: HeadBudget,
     wake: Arc<OnceLock<std::thread::Thread>>,
 }
 pub(crate) struct SampleQueues {
     pending: Consumer<SampleTransaction>,
     replies: Producer<SampleTransaction>,
     retained: Option<SampleTransaction>,
+    head_budget: HeadBudget,
     wake: Arc<OnceLock<std::thread::Thread>>,
 }
 impl SampleControl {
+    /// Off audio: a separate physical quota for this client's dynamic streamed
+    /// heads, shared with staged/current/old-voice/retired-reply generations.
+    /// Initial static Streamer heads and full-resident revisions are separate.
+    pub fn head_budget(&self)->HeadBudget {self.head_budget.clone()}
     /// Off audio: wake the sole owner when a commit/failure receipt arrives.
     pub fn set_wake(&mut self, owner: std::thread::Thread) -> Result<(), Error> {
         self.wake.set(owner).map_err(|_| Error::InvalidInput)
@@ -446,6 +452,10 @@ impl SampleControl {
         revision: PreparedSampleRevision,
         task: Arc<SampleTask>,
     ) -> Result<u64, (Error, PreparedSampleRevision, Arc<SampleTask>)> {
+        if revision.pcm.resident_frames().is_none()
+            && !revision.pcm.0.head_budget.get().is_some_and(|budget|budget.same(&self.head_budget)) {
+            return Err((Error::RevisionConflict,revision,task));
+        }
         if revision.bytes > self.byte_limit {
             return Err((Error::InvalidInput, revision, task));
         }
@@ -490,6 +500,12 @@ impl SampleControl {
     }
 }
 impl Runtime {
+    /// Bounded atomic accounting for dynamic streamed heads. This includes
+    /// worker staging and returned retired payloads, not only logical slots.
+    /// Full-resident revision frames have a separate admission contract.
+    pub fn sample_head_budget_status(&self)->Option<HeadBudgetStatus> {
+        self.sample_queues.as_ref().map(|q|q.head_budget.status())
+    }
     /// Control/readback borrow of the actual committed source, including an
     /// initially dormant target. Its lifetime cannot outlive this runtime borrow.
     pub fn sample_target_asset(&self, target: SampleTargetId) -> Result<&Pcm, Error> {
@@ -536,12 +552,6 @@ impl Runtime {
         let (pending, incoming) = RingBuffer::new(queued);
         let (replies, outgoing) = RingBuffer::new(queued);
         let wake = Arc::new(OnceLock::new());
-        self.sample_queues = Some(SampleQueues {
-            wake: wake.clone(),
-            pending: incoming,
-            replies,
-            retained: None,
-        });
         let plan = self.active_plan;
         let byte_limit = self
             .plans
@@ -551,6 +561,14 @@ impl Runtime {
             .sample_limits
             .unwrap()
             .resident_bytes;
+        let head_budget=HeadBudget::new(byte_limit);
+        self.sample_queues = Some(SampleQueues {
+            wake: wake.clone(),
+            pending: incoming,
+            replies,
+            retained: None,
+            head_budget: head_budget.clone(),
+        });
         Ok((
             self,
             SampleControl {
@@ -560,6 +578,7 @@ impl Runtime {
                 sequence: 0,
                 queued_bytes: 0,
                 byte_limit,
+                head_budget,
                 wake,
             },
         ))
