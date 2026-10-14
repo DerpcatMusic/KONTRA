@@ -15,6 +15,7 @@ use std::{
 
 type Values = BTreeMap<String, ir::Value>;
 thread_local! {
+mod parity_run;
     static SUBMITTED: std::cell::RefCell<BTreeSet<String>> = const { std::cell::RefCell::new(BTreeSet::new()) };
 }
 
