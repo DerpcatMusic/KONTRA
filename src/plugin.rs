@@ -4497,6 +4497,8 @@ mod effect_controls;
 #[cfg(test)]
 mod loop_audit;
 #[cfg(test)]
+mod cpu_receipt;
+#[cfg(test)]
 mod persistence_tests;
 #[cfg(test)]
 mod pressed_tests;

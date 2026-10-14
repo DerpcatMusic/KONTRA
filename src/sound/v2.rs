@@ -3097,7 +3097,7 @@ const VOICE_OVERHEAD: usize = 4096;
 /// the voice count the pool may grow to. Notes, families and decisions keep
 /// v1's event capacity independently of the streaming voice ceiling.
 #[cfg(test)]
-fn limits(plan: &Prepared) -> (Limits, usize) {
+pub(crate) fn limits(plan: &Prepared) -> (Limits, usize) {
     budgeted_limits(plan, None)
 }
 
