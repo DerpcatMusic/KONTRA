@@ -1,12 +1,16 @@
 # Catalog-copy semantics, timings and initialization work
 
-The scalar catalog copier in `sampler-uvi/src/script.rs` enters one private Lua
-function per `native.definitions` request. Previously Rust entered Lua once for
-each scalar definition. Both paths return fresh mutable definition tables: the
+The catalog copier in `sampler-uvi/src/script.rs` enters one private Lua function
+per `native.definitions` request, copying scalar declarations and current retained
+XML field templates. Previously Rust entered Lua once for each retained field;
+the earlier scalar change removed that boundary for scalar declarations.
+Both paths return fresh mutable definition tables: the
 numeric entry and its name alias identify the same table, while another element
 gets an independent copy. The private helper captures the original `table.clone`
 and `table.create` functions before authored scripts execute. Retained XML fields
-continue through the existing path and keep their provenance.
+keep their provenance, order, numeric IDs and name aliases. Current field lists,
+inferred field types and values are read again for every catalog request; no
+public descriptor or element inventory is shared by module kind.
 
 The `catalog_copies_keep_aliases_inventory_and_element_local_mutations` regression
 and the complete `host_parameters` suite passed 22/22. This covers mutations,
@@ -65,7 +69,7 @@ cache-read-only, ordinary-constructor profile below records the exact numeric
 `uvi_lua_work` ledger, final UI-property counts and asset/render outcomes.
 No budget has been raised or private-helper work exempted on this evidence.
 
-## Current Augmented Orchestra profile
+## Scalar-copy Augmented Orchestra profile
 
 One frozen optimized process inspected `V Strings Pizzicato 2.uvip` with
 `--ui-only --profile-init --ephemeral-render`, without line coverage, a plugin,
@@ -141,10 +145,11 @@ were moved.
 The checkpoint increase is consistent with two private-loop checkpoints per
 definition request and only 296 total scalar rows across those requests:
 `1 + 2 × 60,034 + 2 × 296 = 120,661`. This is an inference from the helper and
-wide-fixture delta, not an explicit scalar-row counter. The unchanged retained-XML
-field path still clones one template per field through Rust→Lua calls. It is the
-next concrete batching candidate; the wide scalar fixture alone cannot establish
-its cost or justify caching mutable public descriptors by module kind.
+wide-fixture delta, not an explicit scalar-row counter. At that frozen checkpoint,
+the retained-XML field path still cloned one template per field through Rust→Lua
+calls. The next measurements address that specific boundary; the wide scalar
+fixture alone cannot establish its cost or justify caching mutable public
+descriptors by module kind.
 
 If a real authored initializer approaches the allowance because of this private
 copying loop, the appropriate follow-up is scoped private-helper accounting:
@@ -153,3 +158,113 @@ restore accounting with an RAII guard on every success/error path. Authored
 callbacks must never execute inside such an exemption. That requires explicit
 work-budget/error-path regressions before implementation; increasing the global
 allowance would obscure the regression.
+
+## Retained XML field batching
+
+`script/catalog_copy.rs` now copies the scalar schema and a freshly gathered list
+of retained field templates in the same private Lua entry. Scalar-name aliases in
+the private schema avoid scanning the scalar catalog for each current attribute.
+Only fixed metadata templates are reused, keyed by field name and inferred type;
+they contain no current value, inferred bounds or fabricated default. The helper
+assigns IDs to the copies, never the private templates. It preserves numeric/name
+alias identity and suppresses duplicate scalar names as before.
+
+Five focused helper tests and all 22 `host_parameters` tests pass. They cover
+current field addition/removal/type changes, live reads and scalar defaults,
+independent element mutations, captured original cloning functions, numeric IDs
+and aliases, interrupt propagation and memory-allocation failure. A native-copy
+test exhausts the existing live host allowance, verifies that no partial public
+catalog was cached, then uses a new callback allowance to copy successfully.
+There is no private-helper exemption or global budget increase.
+
+The local authored `catalog-1000-retained.uvip` fixture has 1,000 `OnePole` inserts,
+each with four scalar fields and 32 retained fields of alternating numeric and
+string types. Every element checks the 36-entry inventory, aliases, types,
+provenance, live `Freq`/retained values and independent mutations. Its SHA-256 is
+`f87148fca881ea5de71892165be1557edd231f18f2ad126c51e459c3534a4968`.
+Three interleaved before/after pairs use fresh `dsp-dev` processes with ordinary
+initialization, no line coverage, the same explicit profiler and read-only mount
+sandbox. Each run reports 1,000 definition calls, 2,000 parameter reads, 1,005 graph
+nodes, successful initialization and no diagnostics. Team heavy work was held
+during this fixture window; external contention and OS caches were not controlled.
+
+The compact numeric receipt is
+`PluginArtifacts/kontra-diagnostic-fixes/catalog-retained-paired-evidence.json`.
+The before binary is the frozen scalar-copy binary above. The after binary is
+`74e9f596e65920ad70011c255ae46f6235b5777798a71d7073623d589b5bee8b`.
+
+| Measured scope | Before median (range), ms | After median (range), ms |
+| --- | ---: | ---: |
+| Definition API | 60.845 (59.347–63.266) | 34.057 (33.028–34.446) |
+| Host constructor | 88.038 (87.004–90.003) | 63.291 (61.497–63.432) |
+| Script body and requires | 67.776 (66.240–70.631) | 42.706 (41.665–43.244) |
+| Translation and initialization | 102.427 (101.264–103.526) | 76.231 (75.329–77.499) |
+| Inspector process | 114.491 (114.033–117.248) | 88.089 (86.774–88.435) |
+
+This fixture's definition API median decreased 44.0%, and inspector median
+23.1%. Work/checkpoints increased from 115,159 to 179,159: exactly 64,000 extra
+units for the 32,000 retained fields. All after runs kept 33,375,273 of 33,554,432
+units (99.47%); no deadline expired. Lua memory at the initializer ledger was
+23.1–23.2 MB before and 20.7–20.9 MB after, not peak memory. Sampling overhead was
+0.038–0.044 ms before and 0.032–0.037 ms after. Inclusive phases overlap.
+
+XML-heavy catalog requests benefit from fewer Rust→Lua entries. Tiny or
+scalar-only catalogs offer less batching work; the fresh retained-template list
+is an additional temporary allocation when retained fields exist. The allocation
+failure test protects that path, but the reported memory points do not establish
+peak allocation or every metadata workload. Very large field inventories can
+still exhaust the existing deterministic allowance; faster wall time does not
+remove that policy. Shared mutable descriptors, stale per-kind element snapshots
+and unbounded template inventories are not substitutes for these semantics.
+
+## Retained-copy Augmented Orchestra validation
+
+A final frozen after-binary inspection used the same Pizzicato 2 member and
+`--ui-only --profile-init --ephemeral-render`, read-only cache override, seeded
+dev-drive cache and owned dev-drive `TMPDIR`. Its compact receipt is
+`PluginArtifacts/kontra-diagnostic-fixes/catalog-retained-ao-evidence.json`.
+The first process completed but a summary-projection key error lost its numeric
+receipt; one repeat retained the evidence. Parent metadata-only `cargo check`
+could overlap the retained run. These are single real-bank observations, not a
+controlled before/after speed ratio. Source, authored stack labels and artwork
+were excluded from the persisted receipt.
+
+Initialization completed without faults, budget exhaustion or elapsed expiry.
+The exact ledger charged 14,053,219 units, leaving 19,501,213 (58.1%) of the
+unchanged 33,554,432 allowance. VM checkpoints were 14,053,215, an increase of
+960,208 from the scalar-copy receipt. That delta is consistent with two extra
+checkpoints per 480,104 copied retained rows; the row count is inferred from the
+loop and delta, not a separate manifest measurement. Graph size/depth stayed
+86,871/6. Lua memory was 381.0 MB at the ledger and 381.4 MB at profile readback;
+neither measures peak memory. There is no observed work-budget regression here.
+
+| Final measured phase | Inclusive wall time, ms |
+| --- | ---: |
+| Validated metadata cache lookup | 114.3 |
+| Container, program and scripts | 446.1 |
+| Host constructor (nested) | 2,891.3 |
+| Script body and requires (nested) | 2,192.4 |
+| Definition API, 60,034 calls (nested) | 640.0 |
+| Program object graph (nested) | 567.5 |
+| Post-init overlays and IR translation (nested) | 1,954.8 |
+| Translation and initialization | 4,988.8 |
+| UI model export | 284.3 |
+| Production UI render and witnesses | 625.7 |
+| Inspector process | 6,919.8 |
+
+Sampling retained 1,068 observations with 2.99 ms measured overhead and zero
+dropped frame records. Definition calls and parameter-read/write counts match the
+earlier scalar-copy receipt. The final model still has 10,145 widgets, 101 visible,
+541 declared assets, 4,282 styles and 81 unsupported properties, 20 visible; the
+property categories are unchanged from the table above. Both 720×480 witnesses
+completed, all 89 requested assets succeeded (84 image decodes and five fonts),
+and there were no pending assets, missing/decode failures, preparation limits,
+named-font fallbacks or dropped asset traces.
+
+Bitmap preparation took 446.3 ms. Each paint/encoding pass took about 80 ms,
+including 48.7–49.3 ms PNG encoding and 22.1–22.2 ms CPU rasterization. The cache
+lookup is nested in the container clock; helper/API clocks are nested in script
+initialization. This identifies remaining translation/export/preparation work,
+without attributing witness PNG encoding to the shipping UI. The frozen sample
+service still did not decode or bind dynamic samples; native parity, later
+gestures, audio-dependent callbacks and the KONTRA audio meter remain unverified.
