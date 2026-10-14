@@ -153,9 +153,9 @@ impl NativeEq {
             }
         }
         if batch.ends.iter().all(|&end| end == batch.len) {
-            kernel::Svf::run_lanes::<LANES, false>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+            kernel::Svf::run_lanes_dispatched::<LANES, false>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
         } else {
-            kernel::Svf::run_lanes::<LANES, true>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+            kernel::Svf::run_lanes_dispatched::<LANES, true>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
         }
         for v in 0..batch.count {
             if batch.ends[2*v] == 0 { continue; }
