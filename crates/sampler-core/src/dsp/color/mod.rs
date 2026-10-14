@@ -254,7 +254,7 @@ impl Settings {
             CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
             CurveSettings::ToneStack(d) => Curve::ToneStack(tonestack::Engine::new(d, rate)),
             CurveSettings::Diode(d) => Curve::Diode(diode::Engine::new(d, rate)),
-            CurveSettings::Amp(a) => amp::compile(a, rate),
+            CurveSettings::Amp(a) => Curve::Amp(amp::Engine::new(a, rate)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -329,7 +329,7 @@ enum Curve {
     Exciter(exciter::Engine),
     ToneStack(tonestack::Engine),
     Diode(diode::Engine),
-    Cabinet(amp::cabinet::Engine),
+    Amp(amp::Engine),
 }
 enum Damping {
     Fixed(distortion::Damper),
@@ -371,7 +371,7 @@ enum Shaper {
     Exciter(exciter::State),
     ToneStack(tonestack::State),
     Diode(diode::State),
-    Cabinet(amp::cabinet::State),
+    Amp(amp::State),
     /// A Kontakt KONTAKTFX filter stage's history: a filter stage runs no shaper.
     KontaktFilter(super::filter::kontaktfx::State),
 }
@@ -390,7 +390,7 @@ impl Shaper {
             Self::Exciter(s) => s.finite(),
             Self::ToneStack(s) => s.finite(),
             Self::Diode(s) => s.finite(),
-            Self::Cabinet(s) => s.finite(),
+            Self::Amp(s) => s.finite(),
             Self::KontaktFilter(s) => s.finite(),
         }
     }
@@ -579,7 +579,7 @@ impl Color {
             Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
             Curve::ToneStack(d) => d.process(slot!(state, ToneStack), block, len),
             Curve::Diode(d) => d.process(slot!(state, Diode), block, len),
-            Curve::Cabinet(d) => d.process(slot!(state, Cabinet), block, len, ring),
+            Curve::Amp(d) => d.process(slot!(state, Amp), block, len, ring),
         }
     }
 
