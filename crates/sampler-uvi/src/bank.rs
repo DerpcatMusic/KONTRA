@@ -258,15 +258,47 @@ impl Bank {
             .collect()
     }
 
-    /// Every Lua member of the bank, for a script's `require`.
+    /// Every Lua occurrence has an admission outcome, including unresolved
+    /// paths and failed reads. Only exact UTF-8 source is executable. Unused
+    /// failures remain optional; a requested failure reaches `require`.
     pub fn scripts(&self) -> crate::script::Scripts {
+        use crate::script::{ScriptOccurrence, ScriptReadError as E};
         let mut scripts = crate::script::Scripts::default();
-        for path in self.members() {
-            if path.to_ascii_lowercase().ends_with(".lua")
-                && let Ok(bytes) = self.file(&path)
+        for (member_index, member) in self.directory.files.iter().enumerate() {
+            if !member.name.to_ascii_lowercase().ends_with(".lua")
+                && !member.path.as_ref().is_some_and(|p| p.to_ascii_lowercase().ends_with(".lua"))
             {
-                scripts.insert(&path, String::from_utf8_lossy(&bytes).into_owned());
+                continue;
             }
+            let read = || {
+                let path = member.path.as_ref().ok_or(E::UnresolvedPath)?;
+                if self.paths.get(&path.to_ascii_lowercase()) == Some(&None) {
+                    return Err(E::Ambiguous);
+                }
+                match member.mode {
+                    Protection::Unknown(mode) => return Err(E::UnsupportedProtection(mode)),
+                    Protection::Content if self.content_key.is_none() => return Err(E::AccessRequired),
+                    _ => {},
+                }
+                // The existing UFS whole-resource limit also applies to Lua.
+                if member.size > crate::ufs::MAX_MEMBER_SIZE { return Err(E::Limit); }
+                if !member.offset.checked_add(member.size)
+                    .is_some_and(|end| end <= self.ufs.header.physical_size)
+                { return Err(E::InvalidRange); }
+                let bytes = self.read(member).map_err(|_| E::Read)?;
+                String::from_utf8(bytes).map_err(|e| E::InvalidUtf8 {
+                    valid_up_to: e.utf8_error().valid_up_to(),
+                    error_len: e.utf8_error().error_len(),
+                })
+            };
+            let result = read();
+            scripts.record(ScriptOccurrence {
+                member_index,
+                record_offset: member.record_offset,
+                path: member.path.clone(),
+                bytes: member.size,
+                outcome: result.as_ref().map(|_| ()).map_err(|e| *e),
+            }, result.ok());
         }
         scripts
     }
@@ -708,6 +740,61 @@ fn resources<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lua_inventory_retains_failed_occurrences_without_rewriting_source_or_requiring_unused_modules() {
+        use crate::script::{Files, ScriptReadError as E};
+        // Only authored bytes are read. The synthetic namespace deliberately
+        // includes duplicate, unlinked, protected, oversized and invalid entries.
+        let valid = "return 'é'\r\n";
+        let (bytes, _) = clear_bank_fixture_with_xml(valid.as_bytes());
+        let path = std::env::temp_dir().join(format!("kontra-lua-outcomes-{}.ufs", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let mut bank = Bank::open_metadata(&path).unwrap();
+        let template = bank.directory.files[0].clone();
+        let mut files = Vec::new();
+        for (index, (name, mode)) in [
+            ("good.lua", Protection::Clear), ("encoding.lua", Protection::Clear),
+            ("protected.lua", Protection::Content), ("unknown.lua", Protection::Unknown(7)),
+            ("unlinked.lua", Protection::Clear), ("duplicate.lua", Protection::Clear),
+            ("Duplicate.lua", Protection::Clear), ("large.lua", Protection::Clear),
+            ("range.lua", Protection::Clear),
+        ].into_iter().enumerate() {
+            let mut m = template.clone();
+            m.name = name.into(); m.path = Some(name.into()); m.mode = mode;
+            m.record_offset += index as u64;
+            if name == "encoding.lua" { m.offset += valid.find('é').unwrap() as u64 + 1; m.size = 1; }
+            if name == "unlinked.lua" { m.path = None; }
+            if name == "large.lua" { m.size = (512 << 20) + 1; }
+            if name == "range.lua" { m.offset = u64::MAX; }
+            files.push(m);
+        }
+        Arc::make_mut(&mut bank.directory).files = files;
+        bank.paths = Arc::new(bank.directory.files.iter().enumerate()
+            .filter_map(|(i, m)| Some((m.path.as_ref()?.to_ascii_lowercase(), Some(i)))).collect());
+        Arc::make_mut(&mut bank.paths).insert("duplicate.lua".into(), None);
+        let scripts = bank.scripts();
+        assert_eq!(scripts.occurrences().len(), 9);
+        assert_eq!(scripts.names(), ["good.lua"]);
+        assert_eq!(scripts.script_result("good").unwrap().unwrap().as_bytes(), valid.as_bytes());
+        let outcomes: Vec<_> = scripts.occurrences().iter().map(|o| o.outcome).collect();
+        assert_eq!(outcomes, [Ok(()), Err(E::InvalidUtf8 { valid_up_to: 0, error_len: Some(1) }),
+            Err(E::AccessRequired), Err(E::UnsupportedProtection(7)), Err(E::UnresolvedPath),
+            Err(E::Ambiguous), Err(E::Ambiguous), Err(E::Limit), Err(E::InvalidRange)]);
+        for occurrence in scripts.occurrences() {
+            assert_eq!(occurrence.record_offset, template.record_offset + occurrence.member_index as u64);
+        }
+        let xml = "<Program><EventProcessors><ScriptProcessor><script>assert(require('good')=='é')</script></ScriptProcessor></EventProcessors></Program>";
+        let host = crate::script::ScriptHost::new(xml, scripts.clone(), Default::default()).unwrap();
+        assert!(host.fault_counts().init.is_empty(), "unused unavailable members remain optional");
+        assert_eq!(scripts.script_result("encoding"), Err(E::InvalidUtf8 { valid_up_to: 0, error_len: Some(1) }));
+        let xml = "<Program><EventProcessors><ScriptProcessor><script>require('encoding')</script></ScriptProcessor></EventProcessors></Program>";
+        let host = crate::script::ScriptHost::new(xml, scripts, Default::default()).unwrap();
+        assert!(host.findings().iter().any(|f| f.value.contains("invalid UTF-8")), "{:?}", host.findings());
+        std::fs::write(&path, [0; 320]).unwrap();
+        assert_eq!(bank.scripts().occurrences()[0].outcome, Err(E::Read));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn standalone_passwordv2_program_text_uses_native_namespace() {

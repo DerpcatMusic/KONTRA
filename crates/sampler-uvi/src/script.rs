@@ -20,6 +20,8 @@ use std::{
 mod async_data;
 mod sample_loading;
 pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource, SamplePath, SampleLoadTimings, SampleSourceTimings};
+mod sources;
+pub use sources::{ScriptOccurrence, ScriptReadError};
 mod catalog_copy;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -36,6 +38,11 @@ const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget 
 pub trait Files {
     fn sample_source(&self) -> Option<SampleSource> { None }
     fn script(&self, module: &str) -> Option<String>;
+    /// A requested member that exists but cannot be admitted is distinct from
+    /// absence. Existing providers retain their optional lookup contract.
+    fn script_result(&self, module: &str) -> Result<Option<String>, ScriptReadError> {
+        Ok(self.script(module))
+    }
     fn image_size(&self, _path: &str) -> Option<sampler_ui_ir::Size> {
         None
     }
@@ -60,6 +67,9 @@ impl<T: Files> Files for std::rc::Rc<T> {
     }
     fn script(&self, module: &str) -> Option<String> {
         (**self).script(module)
+    }
+    fn script_result(&self, module: &str) -> Result<Option<String>, ScriptReadError> {
+        (**self).script_result(module)
     }
     fn script_path(&self, module: &str) -> Option<String> {
         (**self).script_path(module)
@@ -107,6 +117,7 @@ impl PartialEq for ImpulseUpload {
 #[derive(Clone, Default)]
 pub struct Scripts {
     files: std::sync::Arc<Vec<(String, String)>>,
+    occurrences: std::sync::Arc<Vec<ScriptOccurrence>>,
     impulses: Option<ImpulseSource>,
     samples: Option<SampleSource>,
     images: Option<std::sync::Arc<dyn Fn(&str) -> Option<sampler_ui_ir::Size> + Send + Sync>>,
@@ -131,6 +142,20 @@ impl Scripts {
     }
     pub fn sources(&self) -> std::sync::Arc<Vec<(String, String)>> {
         self.files.clone()
+    }
+
+    /// Bank inventory before successful-source filtering. Failed unused
+    /// members are optional; `require` reports their error only if requested.
+    pub fn occurrences(&self) -> &[ScriptOccurrence] {
+        &self.occurrences
+    }
+
+    pub(crate) fn record(&mut self, occurrence: ScriptOccurrence, source: Option<String>) {
+        if let (Some(path), Some(source)) = (&occurrence.path, source) {
+            debug_assert!(occurrence.outcome.is_ok());
+            self.insert(path, source);
+        }
+        std::sync::Arc::make_mut(&mut self.occurrences).push(occurrence);
     }
 
     pub fn from_sources(files: std::sync::Arc<Vec<(String, String)>>) -> Self {
@@ -208,7 +233,32 @@ impl Files for Scripts {
     }
     /// Exact bank members win; relative slash/dot aliases require identical source.
     fn script(&self, module: &str) -> Option<String> {
-        self.member(module).map(|(_, source)| source.clone())
+        self.script_result(module).ok().flatten()
+    }
+    fn script_result(&self, module: &str) -> Result<Option<String>, ScriptReadError> {
+        let module = module.to_lowercase().replace('\\', "/");
+        let wanted = format!("{module}.lua");
+        // Exact names retain priority, including a failed exact occurrence.
+        if let Some(occurrence) = self.occurrences.iter().find(|o|
+            o.path.as_ref().is_some_and(|p| p.to_lowercase().replace('\\', "/") == wanted))
+        {
+            occurrence.outcome?;
+        } else if !self.files.iter().any(|(path, _)| *path == wanted) {
+            let relative = module.replace('/', ".");
+            let suffix = format!(".{relative}");
+            // An unreadable alias cannot be proved identical to a readable
+            // one. Never silently resolve past it to a different occurrence.
+            for occurrence in self.occurrences.iter() {
+                if let Some(path) = &occurrence.path {
+                    let path = path.to_lowercase().replace('\\', "/");
+                    let name = path.strip_suffix(".lua").unwrap_or(&path).replace('/', ".");
+                    if name == relative || name.ends_with(&suffix) {
+                        occurrence.outcome?;
+                    }
+                }
+            }
+        }
+        Ok(self.member(&module).map(|(_, source)| source.clone()))
     }
     fn script_path(&self, module: &str) -> Option<String> {
         self.member(module).map(|(path, _)| path.clone())
@@ -2188,7 +2238,7 @@ impl ScriptHost {
             "source",
             lua.create_function(move |_, name: String| {
                 Ok(s.files
-                    .script(&name)
+                    .script_result(&name).map_err(mlua::Error::external)?
                     .or_else(|| (name == "uvi.ChordRec").then(|| modules::CHORD_REC.to_owned())))
             })?,
         )?;

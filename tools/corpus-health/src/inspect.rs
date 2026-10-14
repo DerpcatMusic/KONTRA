@@ -1339,6 +1339,22 @@ fn uvi(opts: &Options, report: &mut Value) {
     if opts.source && !opts.summary {
         report["metadata"]["xml"] = json!(xml);
     }
+    if bank.is_some() {
+        let occurrences = files.occurrences();
+        let mut outcomes = BTreeMap::<&str, usize>::new();
+        for occurrence in occurrences {
+            let category = occurrence.outcome.err().map_or("admitted_utf8", |e| e.category());
+            *outcomes.entry(category).or_default() += 1;
+        }
+        let unavailable = occurrences.iter().filter(|o| o.outcome.is_err()).count();
+        report["metadata"]["script_members"] = json!({
+            "occurrences": occurrences.len(), "unavailable": unavailable, "outcomes": outcomes,
+            "policy": "Unavailable unused members are optional; a requested unavailable member raises its admission error in require. No lossy source decoding.",
+        });
+        stage(report, "script_members", if unavailable == 0 { "ok" } else { "partial" },
+            "All bank Lua occurrences; admission is distinct from required-module execution",
+            "crates/sampler-uvi/src/bank.rs");
+    }
     timing(report, "xml_parse_and_metadata", started);
     let started = begin_phase("source_frontend");
     let mut syntax_ok = true;

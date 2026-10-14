@@ -1135,6 +1135,9 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Every bank Lua occurrence and its admission result. Unused unavailable
+    /// modules remain optional; these are collection outcomes, not executions.
+    pub script_members: Vec<script::ScriptOccurrence>,
     /// Typed initial findings; runtime findings are published through the driver UI bridge.
     pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
@@ -1145,6 +1148,12 @@ pub struct AttachedScript {
 }
 
 impl Translated {
+    /// Collection outcomes before script/source filtering. A failed unused
+    /// member does not reject this program; required failures reach Lua.
+    pub fn script_members(&self) -> &[script::ScriptOccurrence] {
+        self.lua.occurrences()
+    }
+
     /// Start the program's Lua scripts on their own thread and mark the
     /// instrument as scripted: what they replace is no longer reported, what
     /// they use that is not modeled is. `None` when the program has none.
@@ -1215,6 +1224,7 @@ impl Translated {
                 engine_parameters::convolver_slots(&self.instrument, &self.inserts),
             );
         }
+        let script_members = lua.occurrences().to_vec();
         let (thread, loaded) = scripted::ScriptThread::spawn_shared_with_ui_state(
             self.text.clone(),
             lua,
@@ -1235,12 +1245,16 @@ impl Translated {
                 (None, Some(dir)) => Source::Disk(dir.clone()),
                 _ => Source::Bank,
             };
-            if let Ok((mut instrument, locations, groups, inserts)) =
+            let (mut instrument, locations, groups, inserts) =
                 translate_initialized(&self.text, source, &loaded.insert_overrides, &loaded.folded_writes)
-            {
-                instrument.uvi_script_sources = self.instrument.uvi_script_sources.take();
-                (self.instrument, self.locations, self.groups, self.inserts) = (instrument, locations, groups, inserts);
-            }
+                    .map_err(|error| sampler_kontakt::LoadError::Invalid {
+                        path: "script initialization".into(),
+                        reason: error.to_string(),
+                    }.at(sampler_kontakt::Stage::Translate))?;
+            // Commit only a complete translation. On failure the new owner is
+            // dropped (stopped and joined) and the caller's previous IR stays intact.
+            instrument.uvi_script_sources = self.instrument.uvi_script_sources.take();
+            (self.instrument, self.locations, self.groups, self.inserts) = (instrument, locations, groups, inserts);
         }
         engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
@@ -1258,6 +1272,7 @@ impl Translated {
             meters::bindings(&self.text, &self.instrument, &self.inserts).into()
         } else { std::sync::Arc::default() };
         Ok(Some(AttachedScript {
+            script_members,
             findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
@@ -1906,6 +1921,64 @@ fn initialized_translation_configured(
 #[cfg(all(test, feature = "library-access"))]
 mod scripted_translation_tests {
     use super::*;
+
+    fn translated_fixture(xml: &str) -> Translated {
+        let (instrument, locations, groups, inserts) = translate_full(xml, Source::Bank).unwrap();
+        Translated {
+            instrument, locations, groups, inserts, bank: None, dir: None,
+            text: std::sync::Arc::from(xml), lua: Default::default(),
+        }
+    }
+
+    #[test]
+    fn failed_final_initialization_stops_the_new_owner_and_preserves_previous_translation() {
+        // Fault injection after the initial graph was translated: a fractional
+        // MIDI root is valid XML but invalid for translation. Both final and
+        // fallback translations must reject it; the old implementation silently
+        // kept the prior graph. No vendor occurrence of this failure is claimed.
+        let xml = r#"<Program Name="Before" Streaming="1"><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers>
+          <EventProcessors><ScriptProcessor><script>
+            Program:setParameter('Streaming', false)
+        </script></ScriptProcessor></EventProcessors></Program>"#;
+        let mut translated = translated_fixture(xml);
+        translated.text = std::sync::Arc::from(xml.replace("BaseNote=\"60\"", "BaseNote=\"60.5\""));
+        let before = translated.instrument.clone();
+        let locations = translated.locations.clone();
+        let retained = std::sync::Arc::new(());
+        let owner_ref = retained.clone();
+        translated.lua = translated.lua.with_images(move |_| { let _ = &owner_ref; None });
+        for _ in 0..2 {
+            let error = translated.attach_script(48000, Default::default()).err()
+                .expect("untranslatable initialized state must reject attachment");
+            assert_eq!(error.stage(), Some(sampler_kontakt::Stage::Translate));
+            assert_eq!(translated.instrument, before);
+            assert_eq!(translated.locations, locations);
+            assert_eq!(std::sync::Arc::strong_count(&retained), 2,
+                "failed attachment must stop and join its owner before returning");
+        }
+        assert!(matches!(inspect_decoded_scripted_program(
+            translated.text.to_string(), Default::default(), ScriptedOrigin::Bank("Authored.uvip")),
+            Err(ScriptedTranslationFailure::Translate(_))));
+        translated.text = std::sync::Arc::from(xml);
+        let attached = translated.attach_script(48000, Default::default()).unwrap().unwrap();
+        assert_eq!(translated.instrument.name, "Before");
+        drop(attached);
+        assert_eq!(std::sync::Arc::strong_count(&retained), 2);
+    }
+
+    #[test]
+    fn rejected_folded_value_keeps_the_documented_explicit_fallback() {
+        let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let doc = Document::parse(xml).unwrap();
+        let node = doc.descendants().find(|n| n.has_tag_name("SamplePlayer")).unwrap().id().get_usize();
+        let (before, ..) = translate_full(xml, Source::Bank).unwrap();
+        let (after, ..) = translate_initialized(xml, Source::Bank,
+            &[(node, "BaseNote".into(), "60.5".into())],
+            &[(node, "SamplePlayer".into(), "BaseNote".into())]).unwrap();
+        assert_eq!(after.zones, before.zones);
+        assert!(after.unsupported.iter().any(|u|
+            u.feature.contains("BaseNote") && u.value.contains("translation rejects")));
+    }
 
     #[test]
     fn bank_product_and_inspector_use_the_same_post_onload_gain() {
