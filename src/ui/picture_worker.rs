@@ -48,6 +48,8 @@ struct Result {
     bytes: usize,
     #[cfg(feature = "shots")]
     scan: super::pictures::Scan,
+    #[cfg(feature = "shots")]
+    probes: Vec<super::pictures::AssetProbe>,
 }
 struct Cached {
     picture: Option<Arc<Picture>>,
@@ -58,6 +60,7 @@ struct Cached {
 }
 pub(super) struct Preparation {
     path: PathBuf,
+    program: Option<u32>,
     jobs: SyncSender<Vec<Request>>,
     results: Receiver<Result>,
     epoch: Arc<AtomicU64>,
@@ -76,6 +79,10 @@ pub(super) struct Preparation {
     pub scan: super::pictures::Scan,
     #[cfg(feature = "shots")]
     decoded_bytes: HashMap<Key, usize>,
+    #[cfg(feature = "shots")]
+    probes: Vec<super::pictures::AssetProbe>,
+    #[cfg(feature = "shots")]
+    probe_dropped: usize,
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
@@ -84,6 +91,12 @@ impl Drop for Preparation {
 }
 impl Preparation {
     pub fn new(path: &Path) -> Self {
+        Self::new_owned(path, None)
+    }
+    pub fn new_for_program(path: &Path, program: u32) -> Self {
+        Self::new_owned(path, Some(program))
+    }
+    fn new_owned(path: &Path, program: Option<u32>) -> Self {
         let (jobs, requests) = mpsc::sync_channel::<Vec<Request>>(1);
         let (done, results) = mpsc::sync_channel(1);
         let epoch = Arc::new(AtomicU64::new(0));
@@ -93,7 +106,12 @@ impl Preparation {
             .name("authored-art".into())
             .spawn(move || {
                 // Discovery and all encoded reads happen here, never in Face::new.
-                let mut source = Source::of(&worker_path);
+                let mut source = program.map_or_else(
+                    || Source::of(&worker_path),
+                    |program| {
+                        Source::for_program(&worker_path, program).unwrap_or_else(Source::failed)
+                    },
+                );
                 while let Ok(batch) = requests.recv() {
                     for request in batch {
                         let canceled = || worker_epoch.load(Ordering::Acquire) != request.epoch;
@@ -132,6 +150,8 @@ impl Preparation {
                                 bytes,
                                 #[cfg(feature = "shots")]
                                 scan: source.scan,
+                                #[cfg(feature = "shots")]
+                                probes: source.take_probes(),
                             })
                             .is_err()
                         {
@@ -143,6 +163,7 @@ impl Preparation {
             });
         Self {
             path: path.into(),
+            program,
             jobs,
             results,
             epoch,
@@ -159,16 +180,31 @@ impl Preparation {
             scan: Default::default(),
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
+            #[cfg(feature = "shots")]
+            probe_dropped: 0,
         }
     }
     pub fn path(&self) -> &Path {
         &self.path
+    }
+    pub fn program(&self) -> Option<u32> {
+        self.program
     }
     pub fn bytes(&self) -> usize {
         self.bytes
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+    #[cfg(feature = "shots")]
+    pub fn probes(&self) -> &[super::pictures::AssetProbe] {
+        &self.probes
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.probe_dropped
     }
     /// Whether the last `prepare` found nothing new (it then returned nothing,
     /// and what the caller took from the one before still stands).
@@ -425,6 +461,18 @@ impl Preparation {
                 result.font = None;
                 result.bytes = 0;
             }
+            #[cfg(feature = "shots")]
+            for mut probe in result.probes {
+                probe.index = Some(result.key.asset);
+                if limited {
+                    probe.status = "preparation_limit";
+                }
+                if self.probes.len() < super::pictures::PROBE_LIMIT {
+                    self.probes.push(probe);
+                } else {
+                    self.probe_dropped += 1;
+                }
+            }
             self.bytes += result.bytes;
             self.cache.insert(
                 result.key,
@@ -507,6 +555,7 @@ mod tests {
         let (done, results) = mpsc::channel();
         let mut worker = Preparation {
             path: "synthetic.nki".into(),
+            program: None,
             jobs,
             results,
             epoch: Arc::new(AtomicU64::new(0)),
@@ -523,18 +572,28 @@ mod tests {
             scan: Default::default(),
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
+            #[cfg(feature = "shots")]
+            probe_dropped: 0,
         };
         let asset = ir::Asset {
             path: "synthetic.png".into(),
             kind: ir::AssetKind::Image(ir::ImageMeta {
-                size: Some(ir::Size { width: 1.0, height: 1.0 }),
+                size: Some(ir::Size {
+                    width: 1.0,
+                    height: 1.0,
+                }),
                 ..Default::default()
             }),
         };
         let mut face = ir::Interface {
             assets: vec![asset.clone()],
             pages: vec![ir::Page {
-                size: ir::Size { width: 1.0, height: 1.0 },
+                size: ir::Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
                 background: ir::Background {
                     image: Some(ir::AssetRef(0)),
                     ..Default::default()
@@ -547,7 +606,10 @@ mod tests {
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         let stale = requests.try_recv().unwrap().pop().unwrap();
         // An unrelated asset publication starts a new epoch with the same wanted key.
-        face.assets.push(ir::Asset { path: "unused.png".into(), ..asset });
+        face.assets.push(ir::Asset {
+            path: "unused.png".into(),
+            ..asset
+        });
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         let current = requests.try_recv().unwrap().pop().unwrap();
         assert_eq!(stale.key, current.key);
@@ -564,13 +626,27 @@ mod tests {
                 bytes: 4,
                 #[cfg(feature = "shots")]
                 scan: Default::default(),
-            }).unwrap();
+                #[cfg(feature = "shots")]
+                probes: Vec::new(),
+            })
+            .unwrap();
         };
         complete(stale);
-        assert!(worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values).is_empty());
-        assert_eq!(worker.pending(), 1, "old completion cannot cancel the current request");
+        assert!(
+            worker
+                .prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values)
+                .is_empty()
+        );
+        assert_eq!(
+            worker.pending(),
+            1,
+            "old completion cannot cancel the current request"
+        );
         assert_eq!(worker.bytes(), 0, "old pixels are never admitted");
-        assert!(requests.try_recv().is_err(), "current request must not decode twice");
+        assert!(
+            requests.try_recv().is_err(),
+            "current request must not decode twice"
+        );
         complete(current);
         let prepared = worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
         assert!(Arc::ptr_eq(prepared[0].1.as_ref().unwrap(), &picture));
@@ -618,6 +694,7 @@ mod tests {
         let (done, results) = mpsc::channel();
         let mut worker = Preparation {
             path: "synthetic.nki".into(),
+            program: None,
             jobs,
             results,
             epoch: Arc::new(AtomicU64::new(0)),
@@ -634,6 +711,10 @@ mod tests {
             scan: Default::default(),
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
+            #[cfg(feature = "shots")]
+            probe_dropped: 0,
         };
         let mut face = ir::Interface {
             pages: vec![ir::Page {
@@ -688,6 +769,8 @@ mod tests {
                     decode_ok: asset_index + 1,
                     ..Default::default()
                 },
+                #[cfg(feature = "shots")]
+                probes: Vec::new(),
             })
             .unwrap();
         }
@@ -747,6 +830,8 @@ mod tests {
                 font: None,
                 #[cfg(feature = "shots")]
                 scan: Default::default(),
+                #[cfg(feature = "shots")]
+                probes: Vec::new(),
             })
             .unwrap();
             worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
@@ -858,6 +943,7 @@ mod tests {
         let (done, results) = mpsc::sync_channel(1);
         let mut worker = Preparation {
             path: "synthetic.nki".into(),
+            program: None,
             jobs,
             results,
             epoch: Arc::new(AtomicU64::new(0)),
@@ -874,23 +960,43 @@ mod tests {
             scan: Default::default(),
             #[cfg(feature = "shots")]
             decoded_bytes: HashMap::new(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
+            #[cfg(feature = "shots")]
+            probe_dropped: 0,
         };
         let mut widget = ir::Widget::new(
             "$knob",
             ir::PageRef(0),
             ir::Rect::new(0, 0, 50, 50),
             ir::Kind::Slider {
-                range: ir::Range { min: 0., max: 127., step: Some(1.), ..Default::default() },
+                range: ir::Range {
+                    min: 0.,
+                    max: 127.,
+                    step: Some(1.),
+                    ..Default::default()
+                },
                 orientation: ir::Orientation::Vertical,
             },
         );
         widget.binding = ir::Binding::Control(ir::ControlId(1));
-        widget.images.push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Strip));
+        widget
+            .images
+            .push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Strip));
         let face = ir::Interface {
-            pages: vec![ir::Page { size: ir::Size { width: 50.0, height: 50.0 }, ..Default::default() }],
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 50.0,
+                    height: 50.0,
+                },
+                ..Default::default()
+            }],
             assets: vec![ir::Asset {
                 path: "strip.png".into(),
-                kind: ir::AssetKind::Image(ir::ImageMeta { frames: 128, ..Default::default() }),
+                kind: ir::AssetKind::Image(ir::ImageMeta {
+                    frames: 128,
+                    ..Default::default()
+                }),
             }],
             widgets: vec![widget],
             ..Default::default()
@@ -916,12 +1022,18 @@ mod tests {
             bytes: 4,
             #[cfg(feature = "shots")]
             scan: Default::default(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
         })
         .unwrap();
         assert_eq!(show(&mut worker, 0.).len(), 1);
         // The knob turns: its next frame is requested but not decoded yet.
         let turned = show(&mut worker, 60.);
         assert_eq!(requests.try_recv().unwrap()[0].key.frame, 60);
-        assert_eq!(turned.len(), 1, "the picture vanished while its next frame decoded");
+        assert_eq!(
+            turned.len(),
+            1,
+            "the picture vanished while its next frame decoded"
+        );
     }
 }
