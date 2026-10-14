@@ -693,6 +693,18 @@ pub(crate) fn script_environment(
     zones: &[ir::Zone],
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
+    script_environment_with_zones(behavior, index, groups, source, zones, performance_view, None)
+}
+
+fn script_environment_with_zones(
+    behavior: &ir::Behavior,
+    index: usize,
+    groups: Vec<String>,
+    source: &ir::SourceIndices,
+    zones: &[ir::Zone],
+    performance_view: sampler_ksp::model::PerformanceView,
+    metadata: Option<&std::collections::BTreeMap<u32, [i32; 3]>>,
+) -> sampler_ksp::Environment {
     let (persisted, persisted_arrays) = saved_values(&behavior.state);
     sampler_ksp::Environment {
         evaluation_budget: None,
@@ -715,7 +727,7 @@ pub(crate) fn script_environment(
             })
             .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
-        zones: source
+        zones: metadata.cloned().unwrap_or_else(|| source
             .zones
             .iter()
             .enumerate()
@@ -733,7 +745,7 @@ pub(crate) fn script_environment(
                     [group, i32::from(zone.keys.low), i32::from(zone.keys.high)],
                 ))
             })
-            .collect(),
+            .collect()),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted,
@@ -770,6 +782,43 @@ pub(crate) struct ScriptInit {
     pub resources: Option<Resources>,
 }
 
+/// Only final physical source identities, independent of dense IR ordering.
+/// Raw metadata preserves authored keys when playback admission narrows them.
+fn admitted_zone_metadata(instrument: &ir::Instrument) -> std::collections::BTreeMap<u32, [i32; 3]> {
+    instrument.source_indices.zones.iter().enumerate().filter_map(|(index, entry)| {
+        let zone = instrument.zones.get(entry.as_ref()?.0)?;
+        zone.asset?;
+        let values = if let Some(raw) = instrument.kontakt_objects.as_ref().and_then(|o| o.zones.get(index)) {
+            [i32::try_from(raw.group).ok()?, i32::from(raw.low_key), i32::from(raw.high_key)]
+        } else {
+            let group = zone.group.map_or(-1, |group| instrument.source_indices.groups.iter()
+                .position(|entry| *entry == Some(group)).map_or(group.0 as i32, |index| index as i32));
+            [group, i32::from(zone.keys.low), i32::from(zone.keys.high)]
+        };
+        Some((u32::try_from(index).ok()?.checked_add(1)?, values))
+    }).collect()
+}
+
+pub(crate) fn admit_initialized_zone_sources(instrument: &mut ir::Instrument, initialized: &mut ScriptInit) {
+    let metadata = admitted_zone_metadata(instrument);
+    for (index, state) in initialized.states.iter_mut().enumerate() {
+        let Some(Ok(state)) = state else { continue; };
+        for rejected in state.admit_source_zones(metadata.clone()) {
+            let slot = instrument.behaviors[index].slot.unwrap_or(index.min(u8::MAX.into()) as u8);
+            let feature = match rejected.reason {
+                sampler_ksp::WaveformSourceReason::Unavailable => "waveform source unavailable after admission",
+                sampler_ksp::WaveformSourceReason::IdentityChanged => "waveform source identity changed before admission",
+            };
+            instrument.unsupported.push(ir::Unsupported {
+                location: format!("script slot {slot} waveform {} source zone {}", rejected.ui, rejected.zone),
+                feature: feature.into(),
+                value: "Attachment and its properties omitted; no source identity was substituted".into(),
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+}
+
 /// A positioned KSP failure retained from the translated instrument's own initialization.
 #[derive(Clone, Debug)]
 pub struct ScriptInitFault {
@@ -783,6 +832,17 @@ pub(crate) fn initialize_scripts(
     library: Option<&Path>,
     groups: Vec<String>,
     control_values: &[(sampler_core::ControlId, i32)],
+) -> ScriptInit {
+    let metadata = admitted_zone_metadata(instrument);
+    initialize_scripts_with_zones(instrument, library, groups, control_values, &metadata)
+}
+
+pub(crate) fn initialize_scripts_with_zones(
+    instrument: &mut ir::Instrument,
+    library: Option<&Path>,
+    groups: Vec<String>,
+    control_values: &[(sampler_core::ControlId, i32)],
+    metadata: &std::collections::BTreeMap<u32, [i32; 3]>,
 ) -> ScriptInit {
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
@@ -818,13 +878,14 @@ pub(crate) fn initialize_scripts(
                     }),
                 }
             }
-            let mut environment = script_environment(
+            let mut environment = script_environment_with_zones(
                 behavior,
                 index,
                 groups.clone(),
                 &instrument.source_indices,
                 &instrument.zones,
                 performance_view,
+                Some(metadata),
             );
             environment.midi_object = midi_object.clone();
             environment.instrument_persisted =
@@ -925,19 +986,16 @@ fn compile_ui_initialized(
     let (rate, scripts) = (options.rate, options.scripts);
     // Reuse translated init only for the same host state; late callers may supply different overrides.
     let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    let mut initialized = initialized.unwrap_or_else(|| {
+        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
+        initialize_scripts(instrument, options.library.as_deref(), groups, &options.control_values)
+    });
+    admit_initialized_zone_sources(instrument, &mut initialized);
     let ScriptInit {
         mut states,
         resources,
         ..
-    } = initialized.unwrap_or_else(|| {
-        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
-        initialize_scripts(
-            instrument,
-            options.library.as_deref(),
-            groups,
-            &options.control_values,
-        )
-    });
+    } = initialized;
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
@@ -1694,3 +1752,7 @@ mod diagnostic_tests {
         assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 4" && w.value.contains("array index 9 out of bounds")), "{warnings:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "zone_init_tests.rs"]
+mod zone_init_tests;

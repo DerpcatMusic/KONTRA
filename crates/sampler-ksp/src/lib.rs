@@ -710,6 +710,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
         }
+        waveform::validate_prepared_sources(&plan, &script.resources.store)?;
         let instance =
             ScriptInstanceId(u16::try_from(index).map_err(|_| sampler_core::Error::Capacity)?);
         let base = programs.len();
@@ -987,7 +988,40 @@ pub struct Initialized {
     observation: scan::Checkpoint,
 }
 
+/// A captured waveform request whose physical source could not be retained.
+/// Source IDs are opaque to this operation: it never searches for a replacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaveformSourceRejection {
+    pub ui: i32,
+    pub zone: i32,
+    pub reason: WaveformSourceReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaveformSourceReason {
+    Unavailable,
+    IdentityChanged,
+}
+
 impl Initialized {
+    /// Reconcile initialization metadata with this plan's final admitted source
+    /// domain before compilation/publication. Removed or changed identities
+    /// cannot leave an accepted waveform attachment or stale property mirror.
+    /// This does not rerun initialization or translate persisted native IDs.
+    pub fn admit_source_zones(
+        &mut self,
+        zones: BTreeMap<u32, [i32; 3]>,
+    ) -> Vec<WaveformSourceRejection> {
+        let rejected = waveform::admit_sources(
+            &self.hir,
+            &mut self.init.model,
+            &self.environment.zones,
+            &zones,
+        );
+        self.environment.zones = zones;
+        rejected
+    }
+
     pub fn midi_object(&self) -> &sampler_core::MidiObject {
         &self.init.midi_object
     }
