@@ -88,9 +88,10 @@ impl State {
     }
 }
 
-/// `2^round(log2(2 * 44100 / rate)) >= 2`.
+/// Whether the wrapper (exponent 1) oversamples at `rate`.
+// ponytail: below ~31 kHz the native wrapper runs x4; these cores stay at x2 there.
 pub(super) fn oversampled(rate: u32) -> bool {
-    (88_200.0 / f64::from(rate)).log2().round() >= 1.0
+    super::super::kaiser::Wrapper::new(1, rate).factor() >= 2
 }
 
 impl Engine {
