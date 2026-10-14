@@ -573,8 +573,11 @@ fn mismatched_parameter_scalar_types_are_ignored_without_aborting_lua() {
     </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let h = ScriptHost::new(xml, (), Config::default()).unwrap();
     assert!(!h.findings().iter().any(|f| f.feature == "lua error"));
+    // Lua 5.1 has one number type: a fraction for an integer is not a type
+    // mismatch, but its conversion law is unmeasured, so it is reported and dropped.
+    assert!(h.findings().iter().any(|f| f.feature == "lua setParameter fraction to an integer parameter"));
     let findings = h.fault_counts().setter_type_mismatches;
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 2);
     assert!(findings.iter().all(|f| f.count == 1));
     assert!(
         h.findings()
@@ -582,6 +585,28 @@ fn mismatched_parameter_scalar_types_are_ignored_without_aborting_lua() {
             .filter(|f| f.setter_type_mismatch.is_some())
             .all(|f| f.value.is_empty())
     );
+}
+
+#[test]
+fn undocumented_fields_take_numbers_and_booleans_and_equal_writes_are_no_ops() {
+    // SignalConnection has no public parameter table; its retained fields are
+    // untyped. A write of the value already held changes nothing and is not reported.
+    let xml = r#"<UVI4><Program><Layers><Layer><Keygroups><Keygroup><Connections>
+      <SignalConnection Ratio='0.5' Bypass='0' Source='@MIDI CC 1' Destination='Gain'/></Connections>
+      <Inserts><CombFilter Mode='0' Freq='500'/></Inserts></Keygroup></Keygroups></Layer></Layers>
+      <EventProcessors><ScriptProcessor><script>
+      local kg=Program.layers[1].keygroups[1]
+      local c=kg.connections[1]
+      c:setParameter('Bypass', false)
+      c:setParameter('Ratio', 0.5)
+      kg.inserts[1]:setParameter('Freq', 500)
+      kg.inserts[1]:setParameter('Mode', 1008.5)
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let h = ScriptHost::new(xml, (), Config::default()).unwrap();
+    assert!(h.fault_counts().setter_type_mismatches.is_empty(), "{:?}", h.fault_counts());
+    let features: Vec<_> = h.findings().into_iter().map(|f| f.feature).collect();
+    // Mode clamps to its documented maximum 1, an integer: a real write, not a mismatch.
+    assert_eq!(features, ["lua setParameter CombFilter.Mode"], "{features:?}");
 }
 
 #[test]
