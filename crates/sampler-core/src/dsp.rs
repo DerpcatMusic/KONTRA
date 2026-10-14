@@ -254,7 +254,7 @@ pub(crate) mod timemod;
 pub(super) mod control;
 pub use ar::ArSettings;
 pub use filter::Settings as FilterSettings;
-pub use filter::cascade::{CascadeSettings, Legacy as LegacyFilter};
+pub use filter::cascade::{CascadeSettings, Legacy as LegacyFilter, Sv as SvFilter};
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;

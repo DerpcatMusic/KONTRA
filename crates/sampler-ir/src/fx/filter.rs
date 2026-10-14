@@ -44,8 +44,61 @@ pub enum Topology {
     FormantII,
     /// Kontakt's legacy BFilter classes (saved types 2..=4, 6..=12): first- and second-order
     /// direct-form sections whose native law the engine owns. `Response` and `poles` name the
-    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs.
+    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs. [`Variant`]
+    /// names the members response and poles do not (Vowel, Pro-53, Legacy Ladder, Versatile).
     Cascade,
+}
+
+/// The member of a native family that `Topology`, `Response` and `poles` do not name.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Variant {
+    /// Named by response and poles.
+    Default,
+    /// Kontakt Vowel A / Vowel B (saved types 14 / 15).
+    VowelA,
+    VowelB,
+    /// Kontakt Pro-53 (saved type 16).
+    Pro52,
+    /// Kontakt Legacy Ladder (saved type 17).
+    Ladder,
+    /// Kontakt 3x2 Versatile (saved type 19) and its stored knobs.
+    Versatile(Versatile),
+    /// Kontakt SV LP1..Notch 6 (saved types 50..=62), named by response and poles.
+    Sv,
+    /// Kontakt SV Par. LP/HP, Par. BP/BP, Ser. LP/HP (saved 63..=65: `mode` 0..=2) and the
+    /// stored bandwidth.
+    MultiSv { mode: u8, bandwidth: f32 },
+    /// A UVI Workstation filter element with constant controls.
+    Uvi(Uvi),
+}
+
+/// UVI filter elements the engine runs natively; `hertz` is already key tracked.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Uvi {
+    /// `BiquadFilter`: Mode 0 HP, 1 LP, 2 BP, 3 notch; Q 0..1.
+    Biquad { mode: u8, hertz: f32, q: f32 },
+    /// `MoogFilter`: Q 0..1.
+    Moog { hertz: f32, q: f32 },
+    /// `Rez`: Mode 0 LP, 1 HP, 2 BP; Q 0..1.
+    Rez { mode: u8, hertz: f32, q: f32 },
+}
+
+/// The 3x2 Versatile knobs beyond cutoff and resonance, as stored (0..=1).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Versatile {
+    /// SHIFTB, SHIFTC.
+    pub shift: [f32; 2],
+    /// RESB, RESC.
+    pub resonance: [f32; 2],
+    /// FILTER_TYPEA/B/C: low -> band -> high morph.
+    pub types: [f32; 3],
+    /// BYPA/B/C: each filter's wet amount.
+    pub wet: [f32; 3],
+    /// FILTER_GAIN.
+    pub gain: f32,
 }
 
 /// How the stored cutoff knob becomes a frequency.
@@ -54,8 +107,6 @@ pub enum Topology {
 pub enum CutoffLaw {
     /// The value is hertz already.
     Hertz,
-    /// Kontakt SV filters: `25 * 800^x` Hz.
-    Sv,
     /// The native kernel owns the law and takes the 0..=1 knob as stored.
     Native,
 }
@@ -66,8 +117,6 @@ pub enum CutoffLaw {
 pub enum ResonanceLaw {
     /// The value is Q already.
     Q,
-    /// Kontakt SV filters: `1/Q = 1.987 (1 - r)^3.1 + 0.013`.
-    Sv,
     /// The native kernel owns the law and takes the 0..=1 knob as stored.
     Native,
 }
@@ -110,6 +159,7 @@ pub struct Config {
     pub key_tracking: f64,
     /// Topology-specific third knob (Formant Size).
     pub extra: f64,
+    pub variant: Variant,
     pub binding: Option<Binding>,
 }
 
@@ -134,6 +184,7 @@ impl Config {
             drive: 0.0,
             key_tracking: 0.0,
             extra: 0.0,
+            variant: Variant::Default,
             binding: None,
         }
     }
@@ -142,7 +193,6 @@ impl Config {
     pub fn hertz(&self, key: Option<u8>) -> Option<f64> {
         let base = match self.cutoff_law {
             CutoffLaw::Hertz => self.cutoff,
-            CutoffLaw::Sv => sv_hertz(self.cutoff as f32),
             CutoffLaw::Native => return None,
         };
         let tracked = key.map_or(0.0, |k| (f64::from(k) - 60.0) / 12.0) * self.key_tracking;
@@ -153,7 +203,6 @@ impl Config {
     pub fn q(&self) -> Option<f64> {
         match self.resonance_law {
             ResonanceLaw::Q => Some(self.resonance),
-            ResonanceLaw::Sv => Some(sv_q(self.resonance as f32)),
             ResonanceLaw::Native => None,
         }
     }
@@ -230,6 +279,7 @@ impl Config {
             ])]),
             Topology::FormantII => Ok(vec![Processor::FilterBank(*self)]),
             Topology::Cascade => match (self.response, self.poles) {
+                _ if self.variant != Variant::Default => Ok(vec![Processor::FilterBank(*self)]),
                 (Response::LowPass, 1 | 2 | 4 | 6)
                 | (Response::HighPass, 1 | 2 | 4)
                 | (Response::BandPass, 2 | 4)
@@ -253,18 +303,6 @@ pub fn ladder_taps(response: Response, poles: u8) -> Option<u8> {
     })
 }
 
-/// Kontakt's SV filters: the knob is 25 Hz * 800^x (measured on SV LP2 against Kontakt 8).
-pub fn sv_hertz(x: f32) -> f64 {
-    25.0 * 800f64.powf(f64::from(x))
-}
-
-/// Kontakt's SV filters: resonance r gives `k = 1/Q = (2 - 0.013) (1 - r)^3.1 + 0.013`
-/// (measured on SV LP2). The measured passband loss at high resonance (-6 dB at r = 1) is
-/// not part of this law.
-pub fn sv_q(r: f32) -> f64 {
-    1.0 / ((2.0 - 0.013) * (1.0 - f64::from(r)).powf(3.1) + 0.013)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,20 +310,11 @@ mod tests {
     fn sv(response: Response, poles: u8, cutoff: f64, resonance: f64) -> Config {
         Config {
             cutoff,
-            cutoff_law: CutoffLaw::Sv,
+            cutoff_law: CutoffLaw::Hertz,
             resonance,
-            resonance_law: ResonanceLaw::Sv,
+            resonance_law: ResonanceLaw::Q,
             ..Config::new(Topology::Svf, response, poles)
         }
-    }
-
-    #[test]
-    fn sv_laws_match_the_measured_lp2() {
-        let c = sv(Response::LowPass, 2, 0.293, 0.0);
-        assert!((c.hertz(None).unwrap() - 25.0 * 800f64.powf(0.293f32 as f64)).abs() < 1e-9);
-        // Resonance 0 is Q = 0.5, the two cascaded one-poles of the measurement.
-        assert!((c.q().unwrap() - 0.5).abs() < 1e-3);
-        assert!(sv(Response::LowPass, 2, 0.5, 1.0).q().unwrap() > 50.0);
     }
 
     #[test]
