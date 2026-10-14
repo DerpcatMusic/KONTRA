@@ -366,6 +366,7 @@ impl RuntimeLog {
         for (reason, subject, count) in [
             ("CapacityDrops", "VoicePool", p.capacity_drops),
             ("Underruns", "Stream", p.underruns),
+            ("ColdStarts", "SampleStart", p.cold_starts),
             ("StreamCapacity", "PagePool", p.stream_capacity),
             ("StreamDisconnected", "Reader", p.stream_disconnected),
             ("StreamFailed", "Reader", p.stream_failed),
@@ -383,7 +384,9 @@ impl RuntimeLog {
             let delta = count.saturating_sub(*old);
             *old = count;
             if delta > 0 {
-                self.add("RuntimeCounter", reason, subject, None, delta, None);
+                let detail = (reason == "ColdStarts").then(||
+                    "Sample starts waited silently because their first source frames were not resident".into());
+                self.add("RuntimeCounter", reason, subject, None, delta, detail);
                 changed = true;
             }
         }
@@ -409,7 +412,7 @@ impl RuntimeLog {
             .add(key.clone(), location.clone(), Some(true), count)
         {
             super::event(
-                super::LogLevel::Error,
+                if reason == "ColdStarts" { super::LogLevel::Warning } else { super::LogLevel::Error },
                 "runtime",
                 "runtime_issue",
                 serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key),
@@ -518,10 +521,14 @@ mod tests {
         assert_eq!(log.collector.sidecar().len(), 40);
         let p = crate::sound::report::RuntimeProblems {
             capacity_drops: 2,
+            cold_starts: 3,
             ..Default::default()
         };
         assert!(log.counters(p));
         assert!(!log.counters(p));
+        assert!(log.collector.groups().iter().any(|group|
+            group.key.reason == "ColdStarts" && group.counts.enabled == 3));
+        assert!(!log.collector.groups().iter().any(|group| group.key.reason == "Underruns"));
         let mut lua = sampler_uvi::script::FaultCounts::default();
         lua.runtime
             .insert(sampler_uvi::script::FaultCategory::Lua, 3);

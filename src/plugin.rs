@@ -581,7 +581,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 20],
+    problems: [AtomicU64; 21],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
@@ -873,6 +873,7 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
         ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
@@ -893,6 +894,7 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
         }
     }
 
@@ -918,6 +920,7 @@ impl PartShared {
             p.stream_errors,
             p.offline_failures,
             p.lua_faults,
+            p.cold_starts,
         ];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
@@ -3523,6 +3526,7 @@ pub(crate) mod tests {
             stream_failed: 3,
             stream_errors: 4,
             offline_failures: 5,
+            cold_starts: 126,
             ..Default::default()
         };
         assert_eq!(

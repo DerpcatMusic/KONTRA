@@ -152,6 +152,10 @@ pub struct RuntimeProblems {
     pub capacity_drops: u64,
     /// Streamed audio not read in time and played silent.
     pub underruns: u64,
+    /// Voices admitted before their first source frames were resident. Separate
+    /// from gaps during playback: the start waits silently for worker data.
+    #[serde(default)]
+    pub cold_starts: u64,
     #[serde(default)]
     pub stream_capacity: u64,
     #[serde(default)]
