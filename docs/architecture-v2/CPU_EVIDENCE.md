@@ -642,6 +642,27 @@ does not establish streaming reads. Raw profiles, logs and metadata are
 `whole-callback-{plain,fractional,eq-stereo}-leaf.*` and
 `whole-callback-leaf.json`.
 
+The follow-up callback-group diagnostic puts ten clock groups inside the actual
+`Sampler::process`, separating adoption/polling, transport/controls/keyboard,
+host events, master gain, inclusive core rendering, output/scope, UI/effects,
+end-block retirement, meter publication and voice readback. It records elapsed
+wall time and Linux caller-thread CPU time; workers and outside observers are
+excluded from the caller clock. The inclusive core group overlaps the nested
+V2 stages and must not be added to them. All new objects, branches and clock
+calls are `cfg(test)` only. Disabled test mode leaves the audit absent.
+
+`whole-callback-groups-correctness.json` verifies all twelve cases: 64/256
+frames, plain/fractional/EQ and auditing off/on. Each mode pair has exact PCM
+hash and energy; all retain 300 sounding owners, zero runtime faults and zero
+heap calls through admission, steady render and the entire 33-callback release
+and tail/NOTE_END phase. Group invocation counts prove one frontend render per
+64-frame host block and two per 256-frame block. The off callback duration is
+also retained separately; a mostly silent release-phase average is never used
+for the sustained-voice target. These concurrent correctness runs are not
+performance acceptance. Diagnostic clock calls and adjacent group bookkeeping
+perturb the measurements, especially small groups; the original uninstrumented
+release executable remains frozen separately.
+
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
 | Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners, fixed mass key-up faults, [isolated admission lookup attribution](ADMISSION_CPU_EVIDENCE.md) | Authored script events and layered host-end ownership cost |
