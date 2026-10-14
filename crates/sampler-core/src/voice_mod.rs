@@ -710,9 +710,10 @@ impl VoiceModulation {
                 return Err(Error::InvalidInput);
             }
             let fades = sources.iter().map(|s| match s {
-                Prepared::Lfo(Lfo { shape: LfoShape::DigitalSine { fade, .. }, .. }) => {
-                    Some(fade.gains())
-                }
+                Prepared::Lfo(Lfo {
+                    shape: LfoShape::DigitalSine { fade, .. } | LfoShape::NativeFaded { fade, .. },
+                    ..
+                }) => Some(fade.gains()),
                 _ => None,
             }).collect();
             let native_program = native.next().flatten();
