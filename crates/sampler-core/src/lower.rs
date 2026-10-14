@@ -168,6 +168,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             }),
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
             fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
+            fx::Curve::Drive(d) => Curve::Drive(d),
         },
         damping: c.damping.map(|d| knob(P::Damping, d)),
         noise: c.noise.map(|n| NoiseSettings {
@@ -2973,6 +2974,7 @@ fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
         V::Pro52 => return Some(L::Pro52),
         V::Ladder => return Some(L::Ladder),
         V::Versatile(v) => return Some(L::Versatile(v)),
+        V::Uvi(u) => return Some(L::Uvi(u)),
         V::MultiSv { mode, bandwidth } => return Some(L::Sv(crate::SvFilter::Multi { mode, bandwidth })),
         V::Sv => {
             use crate::SvFilter as S;

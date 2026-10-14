@@ -1506,18 +1506,6 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
-                    for &(slot, processor) in &filter_slots {
-                        if let Some(octaves) = slots.iter().find(|s| s.slot == slot).and_then(|s| {
-                            match s.params() {
-                                Some(crate::effects::Params::Filter { kind, .. }) => {
-                                    crate::effects::cutoff_octaves(kind)
-                                }
-                                _ => None,
-                            }
-                        }) {
-                            self.cutoff_octaves.insert((chain.unwrap().0, processor), octaves);
-                        }
-                    }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps
                         .extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
