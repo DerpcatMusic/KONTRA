@@ -19,6 +19,7 @@
 mod heap;
 mod inspect;
 mod load_audit;
+mod preset_switch;
 
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
@@ -3038,6 +3039,7 @@ fn main() {
         [cmd, rest @ ..] if cmd == "inspect" => inspect::run(rest),
         [cmd, rest @ ..] if cmd == "inspect-list" => inspect::run_list(rest),
         [cmd, rest @ ..] if cmd == "load-audit" => load_audit::run(rest),
+        [cmd, rest @ ..] if cmd == "preset-switch" => preset_switch::run(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
             let mut it = rest.iter();
@@ -3087,6 +3089,7 @@ fn main() {
                 "usage: corpus-health run OUT.jsonl [--tier parse|full|quick] [--shard I/N] [--only GLOB]\n\
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
+                 \x20      | preset-switch PLAN.json (explicit full-swap runtime probe; ui-render helper)\n\
                  \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
                  \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render] [--profile-init]"
             );
