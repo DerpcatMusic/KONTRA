@@ -4215,6 +4215,7 @@ dependencies = [
  "sampler-ui-ir",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
