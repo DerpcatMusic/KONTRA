@@ -2624,7 +2624,9 @@ mod tests {
                 if module == 0x42 {
                     // Tape is modelled: any nonzero quality byte turns Quality on.
                     let tape = sampler_ir::fx::color::Tape { gain: 0.5, warmth: 0.25, rolloff: 0.75, quality: true };
-                    assert!(out.processors.contains(&sampler_ir::Processor::Color(sampler_ir::fx::color::Config::tape(tape))));
+                    // The unit carries its live slot address; the knobs are the decoded tape.
+                    assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Color(c)
+                        if *c == sampler_ir::fx::color::Config { address: c.address, ..sampler_ir::fx::color::Config::tape(tape) })));
                     continue;
                 }
                 assert!(out.processors.is_empty());
