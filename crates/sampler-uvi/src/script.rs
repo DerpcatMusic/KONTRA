@@ -592,7 +592,7 @@ struct Shared {
     sample_loads: RefCell<sample_loading::SampleLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
-    nodes: RefCell<Vec<(usize, bool)>>,
+    nodes: RefCell<Vec<(Option<usize>, bool)>>,
     kinds: RefCell<Vec<String>>,
     /// Initialization writes with no live path, by (XML node, field): the
     /// element kind and the written value. The translation that follows
@@ -779,7 +779,7 @@ impl Shared {
         if !retained && !parameters::definitions(&kind).iter().any(|p| p.name == name) {
             return false;
         }
-        let Some(&(node, _)) = self.nodes.borrow().get(id) else {
+        let Some(&(Some(node), _)) = self.nodes.borrow().get(id) else {
             return false;
         };
         let text = if value.fract() == 0. && value.abs() < 1e15 {
@@ -864,7 +864,7 @@ impl Shared {
     /// impulse (`path` replaces the source) and queue the swap. False when the
     /// element has no convolution slot or the impulse cannot be had.
     fn rebuild_impulse(&self, id: usize, path: Option<&str>) -> bool {
-        let Some(node) = self.nodes.borrow().get(id).map(|n| n.0) else {
+        let Some(node) = self.nodes.borrow().get(id).and_then(|n| n.0) else {
             return false;
         };
         let Some(slot) = self.files.convolver_slot(node) else {
@@ -1052,8 +1052,8 @@ fn lua_error(e: mlua::Error) -> String {
 struct Tree {
     params: Vec<Vec<(String, String)>>,
     scopes: Vec<Option<Scope>>,
-    /// Per element: its XML node and whether it is an insert.
-    nodes: Vec<(usize, bool)>,
+    /// Per element: admitted XML identity (None for host placeholders), and insert ownership.
+    nodes: Vec<(Option<usize>, bool)>,
     kinds: Vec<String>,
     live: Vec<Vec<&'static str>>,
     layers: u32,
@@ -1099,7 +1099,7 @@ fn element(
             .map(|a| (a.name().to_owned(), a.value().to_owned()))
             .collect(),
     );
-    tree.nodes.push((node.id().get_usize(), insert));
+    tree.nodes.push((Some(node.id().get_usize()), insert));
     tree.kinds.push(node.tag_name().name().to_owned());
     tree.live.push(crate::engine_parameters::live_names(node));
     if node.has_tag_name("ConstantModulation")
@@ -1443,6 +1443,16 @@ impl ScriptHost {
             return Err(INIT_BUDGET.into());
         }
         initialized?;
+        // Refresh only policy/recipe writes accepted during initialization.
+        // Pending task identities/order/cancellation remain unchanged; no
+        // worker/control service exists before the owner is returned.
+        let refresh = host.shared.folded.borrow().iter().any(|((_,field),(kind,_))|
+            kind=="Program" && field=="Streaming" || kind=="SamplePlayer" && matches!(field.as_str(),"AllowStreaming"|"Reverse"));
+        if refresh {
+            let final_xml = crate::apply_overrides(xml, &host.insert_overrides());
+            let final_doc = crate::parse_program_xml(&final_xml).map_err(|e|e.to_string())?;
+            host.shared.sample_loads.borrow_mut().refresh_initial(&final_doc)?;
+        }
         host.shared.initializing.set(false);
         Ok(host)
     }
@@ -1524,6 +1534,7 @@ impl ScriptHost {
             </Connections></Part>"#,
         )
         .map_err(mlua::Error::external)?;
+        let source_elements = tree.nodes.len();
         let part = element(
             &self.lua,
             &mut tree,
@@ -1535,6 +1546,9 @@ impl ScriptHost {
             &class,
             &list_class,
         )?;
+        // These host placeholders belong to a separate synthetic document.
+        // Its numeric NodeIds must never alias the admitted program XML.
+        for (node, _) in &mut tree.nodes[source_elements..] { *node = None; }
         root.raw_set("parent", part.clone())?;
         root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
@@ -1614,7 +1628,7 @@ impl ScriptHost {
         sample_loading::install(lua, shared)?;
         let s=shared.clone();
         native.set("sampleInfo", lua.create_function(move |lua, id: usize| {
-            let target=s.nodes.borrow().get(id).map(|n|n.0 as u32);
+            let target=s.nodes.borrow().get(id).and_then(|n|n.0).and_then(|n|u32::try_from(n).ok());
             match target { Some(target)=>s.sample_loads.borrow().info(lua,target), None=>Ok(None) }
         })?)?;
         let s = shared.clone();
@@ -1866,6 +1880,11 @@ impl ScriptHost {
                     _ => None,
                 };
                 let field = name.clone();
+                // Synthetic host Part settings have no admitted physical/XML
+                // owner yet, even when a catalog default equals the request.
+                if name=="Streaming" && s.kinds.borrow().get(id).is_some_and(|k|k=="Part") {
+                    return Ok(None);
+                }
                 let applied = (|| -> mlua::Result<Option<bool>> {
                 // Retained XML fields have local model identity, not DSP acceptance.
                 let catalogued = parameters::definitions(
@@ -1912,7 +1931,7 @@ impl ScriptHost {
                 };
                 // What the translator gave a DSP lane (`engine_parameters::live_names`).
                 let live = s.live.borrow().get(id).cloned().unwrap_or_default();
-                let node = s.nodes.borrow().get(id).map(|(node, _)| *node);
+                let node = s.nodes.borrow().get(id).and_then(|(node, _)| *node);
                 let kind = s.kinds.borrow().get(id).cloned().unwrap_or_default();
                 if matches!(kind.as_str(), "Convolver" | "SampledReverb")
                     && IMPULSE_FIELDS.contains(&name.as_str())
@@ -3069,7 +3088,7 @@ impl ScriptHost {
             let Ok(id) = element.raw_get::<usize>("__id") else {
                 continue;
             };
-            let Some(&(node, insert)) = nodes.get(id) else {
+            let Some(&(Some(node), insert)) = nodes.get(id) else {
                 continue;
             };
             if !insert && !self.shared.live.borrow().get(id).is_some_and(|l| !l.is_empty()) {
