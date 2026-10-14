@@ -2124,18 +2124,7 @@ impl Translation {
                     parameter,
                     ramp: ir::Time::ZERO,
                 });
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control,
-                        parameter: native,
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic: -1,
-                        },
-                    });
+                self.claim_alias(control, &native, [group as i32, slot as i32, -1], false);
             }
             *band += 1;
         }
@@ -4097,6 +4086,20 @@ mod modulation {
         assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
     }
 
+    #[test]
+    fn one_script_address_has_one_alias_and_the_measured_lane_wins() {
+        let mut t = translation();
+        let at = [0, 5, -1];
+        t.claim_alias(ir::ControlRef(1), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(2), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(3), "ENGINE_PAR_MOD_TARGET_MP_INTENSITY", at, false);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [1, 3]);
+        t.claim_alias(ir::ControlRef(4), "ENGINE_PAR_INTMOD_INTENSITY", at, true);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [4, 3]);
+    }
+
     fn translation() -> Translation {
         Translation {
             ir: ir::Instrument::default(),
@@ -4111,6 +4114,7 @@ mod modulation {
             eq_mod_slots: HashMap::new(),
             cutoff_octaves: HashMap::new(),
             route_intensity: HashMap::new(),
+            alias_claims: HashMap::new(),
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
             send_taps: Vec::new(),
