@@ -33,8 +33,13 @@ pub enum OwnerStage {
     BackpressureUiRequests,
     AuditBarrierEvents,
     AuditBarrierAdvance,
+    ExportRegistry,
+    ExportTopology,
+    ExportWidgets,
+    ExportPage,
+    ExportValidate,
 }
-const STAGES: [OwnerStage; 24] = [
+const STAGES: [OwnerStage; 29] = [
     OwnerStage::Loading,
     OwnerStage::InitialSnapshot,
     OwnerStage::Events,
@@ -59,6 +64,11 @@ const STAGES: [OwnerStage; 24] = [
     OwnerStage::BackpressureUiRequests,
     OwnerStage::AuditBarrierEvents,
     OwnerStage::AuditBarrierAdvance,
+    OwnerStage::ExportRegistry,
+    OwnerStage::ExportTopology,
+    OwnerStage::ExportWidgets,
+    OwnerStage::ExportPage,
+    OwnerStage::ExportValidate,
 ];
 impl OwnerStage {
     fn name(self) -> &'static str {
@@ -87,6 +97,11 @@ impl OwnerStage {
             Self::BackpressureUiRequests => "backpressure_ui_requests",
             Self::AuditBarrierEvents => "audit_barrier_events",
             Self::AuditBarrierAdvance => "audit_barrier_advance",
+            Self::ExportRegistry => "export_registry",
+            Self::ExportTopology => "export_topology",
+            Self::ExportWidgets => "export_widgets",
+            Self::ExportPage => "export_page",
+            Self::ExportValidate => "export_validate",
         }
     }
     fn scope(self) -> &'static str {
@@ -106,6 +121,13 @@ impl OwnerStage {
             Self::BackpressureUiRequests => "nested in command_backpressure",
             Self::AuditBarrierEvents | Self::AuditBarrierAdvance => {
                 "nested in ui_requests only in seeded audit-barrier mode"
+            }
+            Self::ExportRegistry
+            | Self::ExportTopology
+            | Self::ExportWidgets
+            | Self::ExportPage
+            | Self::ExportValidate => {
+                "nested in interface_export or initial_snapshot; five export substages are disjoint"
             }
             _ => "owner turn; disjoint except explicitly nested stages",
         }
