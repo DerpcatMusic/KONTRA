@@ -11,6 +11,8 @@
 //! Layout: every prepared program is flat arrays (sources, routes, shapes);
 //! runtime state is structure-of-arrays sized at runtime construction for the
 //! largest program, so rendering never allocates.
+pub mod laws;
+
 use crate::{Envelope, Error, blocks::envelope::EnvelopeState};
 pub use crate::blocks::envelope::{Breakpoint, Breakpoints};
 use crate::blocks::envelope::Segment;
@@ -204,6 +206,21 @@ pub struct ModRoute {
     /// Further intensity assignments to the same route, applied in order after
     /// `scale`: each template's `$in` is the previous result.
     pub more_scales: [Option<ModScale>; MORE_SCALES],
+    /// Native identity of a Kontakt external route; see [`ModNative`].
+    pub native: Option<ModNative>,
+}
+
+/// Native identity a Kontakt external route carries from its record: the
+/// serialized target name's native id, the target flag byte (bit 0x04 selects
+/// the ID25 combination) and the external source type (+0x544). With a proved
+/// identity the router prepares the source and combines it with
+/// [`laws`] (`prepare_source` / `combine`); otherwise the route keeps the
+/// generic path ([`laws::external_source_q`] names the reason).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModNative {
+    pub target: u16,
+    pub flags: u8,
+    pub source_type: u8,
 }
 
 /// Intensity assignments a route takes beyond its first.
@@ -269,6 +286,7 @@ impl ModRoute {
             live_gain: 1.,
             unipolar: false,
             more_scales: [None; MORE_SCALES],
+            native: None,
         }
     }
 
@@ -288,6 +306,10 @@ pub struct ModProgram {
     pub routes: Vec<ModRoute>,
     /// Piecewise-linear transfer curves over 0..=1 as ascending (x, y) points.
     pub shapes: Vec<Vec<(f64, f64)>>,
+    /// Envelope source index -> its stage controls (attack, hold, decay,
+    /// sustain, release, attack curve; KSP `ENGINE_PAR_ATTACK`.. on the
+    /// modulator's slot). Read when a voice starts, like the amplitude envelope.
+    pub envelope_controls: Vec<(usize, [Option<crate::ControlId>; 6])>,
 }
 
 #[derive(Clone, Copy)]
@@ -308,6 +330,15 @@ enum Prepared {
     PitchBend,
 }
 
+/// A route whose source preparation and combination follow `laws`.
+struct NativeLaw {
+    target: u16,
+    flags: u8,
+    /// Source-domain argument (bipolar source).
+    q: bool,
+    table: Option<laws::Table>,
+}
+
 struct Program {
     native: Option<crate::whole_voice::Program>,
     native_controls: Box<[Option<([usize; 2], f64)>]>,
@@ -316,8 +347,12 @@ struct Program {
     fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
+    /// Per envelope: control indices of its stages ([`ModProgram::envelope_controls`]).
+    envelope_controls: Box<[[Option<usize>; 6]]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
+    /// Per route: the native law when its identity and table are proved.
+    laws: Box<[Option<NativeLaw>]>,
     targets: Box<[CompiledTarget]>,
     controls: Box<[(usize, [usize; 2])]>,
     filter_indices: Box<[usize]>,
@@ -377,6 +412,9 @@ impl VoiceModulation {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
             }
+            for index in program.envelope_controls.iter().flatten().flatten() {
+                resolve(*index)?;
+            }
             if let Some((_,Some(indices))) = program.native_flex_control {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
@@ -388,6 +426,9 @@ impl VoiceModulation {
             }
             for (indices, _) in program.native_controls.iter_mut().flatten() {
                 *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            }
+            for index in program.envelope_controls.iter_mut().flatten().flatten() {
+                *index = resolve(*index)?;
             }
             if let Some((_,Some(indices))) = &mut program.native_flex_control {
                 *indices = [resolve(indices[0])?,resolve(indices[1])?];
@@ -577,7 +618,6 @@ impl VoiceModulation {
                     if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
                         || route.lag != 0
                         || route.scale.is_some()
-                        || program.controls.iter().any(|b| b.0 == index)
                     {
                         return Err(Error::InvalidInput);
                     }
@@ -634,6 +674,15 @@ impl VoiceModulation {
                 .collect();
             filter_indices.sort_unstable();
             filter_indices.dedup();
+            let mut envelope_controls = vec![[None; 6]; envelopes.len()];
+            for &(source, ids) in &program.envelope_controls {
+                let Some(Prepared::Envelope(e)) = sources.get(source) else {
+                    return Err(Error::InvalidInput);
+                };
+                for (slot, id) in envelope_controls[*e].iter_mut().zip(ids) {
+                    *slot = id.map(&control).transpose()?;
+                }
+            }
             let mut controls = program
                 .controls
                 .iter()
@@ -661,9 +710,10 @@ impl VoiceModulation {
                 return Err(Error::InvalidInput);
             }
             let fades = sources.iter().map(|s| match s {
-                Prepared::Lfo(Lfo { shape: LfoShape::DigitalSine { fade, .. }, .. }) => {
-                    Some(fade.gains())
-                }
+                Prepared::Lfo(Lfo {
+                    shape: LfoShape::DigitalSine { fade, .. } | LfoShape::NativeFaded { fade, .. },
+                    ..
+                }) => Some(fade.gains()),
                 _ => None,
             }).collect();
             let native_program = native.next().flatten();
@@ -683,7 +733,53 @@ impl VoiceModulation {
                 let route = native.routes.iter().position(|r| matches!(r,crate::whole_voice::Route::Flex))?;
                 Some((program.routes[route].depth,controls.iter().find(|(index,_)| *index == route).map(|(_,ids)| *ids)))
             });
+            let native_laws = program
+                .routes
+                .iter()
+                .map(|route| {
+                    let n = route.native?;
+                    let q = laws::external_source_q(n.source_type).ok()?;
+                    // The source must arrive in the domain the law prepares.
+                    if q != program.sources.get(route.source)?.bipolar() {
+                        return None;
+                    }
+                    let compiled = route.target.compiled()?;
+                    let attenuate = matches!(compiled, CompiledTarget::Attenuate);
+                    // Only targets whose native family the router applies exactly:
+                    // H as the gain product, everything else as plain addition.
+                    // Target scales (eq 0.5, 2/3) are proved only as emitted source
+                    // factors; the dB/Hz consumer is open, so those stay generic.
+                    if laws::target_scale(n.target, false) != 1.0
+                        || attenuate != laws::is_h(n.target, n.flags)
+                        || (!attenuate && !laws::is_add(n.target, n.flags))
+                        || !matches!(compiled, CompiledTarget::Attenuate | CompiledTarget::Pan
+                            | CompiledTarget::Pitch | CompiledTarget::Cutoff
+                            | CompiledTarget::Resonance | CompiledTarget::ProcessorCutoff(_)
+                            | CompiledTarget::ProcessorResonance(_)
+                            | CompiledTarget::ProcessorNativeCutoff(_)
+                            | CompiledTarget::ProcessorNativeResonance(_)
+                            | CompiledTarget::ProcessorNativeGain(_))
+                    {
+                        return None;
+                    }
+                    // A stored table is 128 samples (T[128] repeats T[127]);
+                    // curve shapers are open, so they stay on the generic path.
+                    let table = match route.shape {
+                        None => None,
+                        Some(shape) => {
+                            let shape = &shapes[shape];
+                            if !shape.table || shape.points.len() != 128 {
+                                return None;
+                            }
+                            let samples: [f32; 128] = std::array::from_fn(|k| shape.points[k].1);
+                            Some(laws::Table::from_curve_samples(&samples))
+                        }
+                    };
+                    Some(NativeLaw { target: n.target, flags: n.flags, q, table })
+                })
+                .collect::<Box<[_]>>();
             compiled.push(Program {
+                laws: native_laws,
                 controls: controls.into_boxed_slice(),
                 fades,
                 native: native_program,
@@ -716,6 +812,7 @@ impl VoiceModulation {
                 rate_routes: rate_routes.into_iter().map(Vec::into_boxed_slice).collect(),
                 rate_lane: rate_lane.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
+                envelope_controls: envelope_controls.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
@@ -871,6 +968,7 @@ impl Program {
     /// (inversion, shape, lag) and effective depth (second-source scale).
     fn route_point(
         &self,
+        index: usize,
         route: &ModRoute,
         values: &[f64],
         lagged: &mut f64,
@@ -879,10 +977,29 @@ impl Program {
         frames: u32,
         onset: bool,
     ) -> (f64, f64) {
-        let mut v = self.transform(route, values[route.source], self.bipolar[route.source]);
-        if route.unipolar {
-            v = unipolar(v, self.bipolar[route.source]);
-        }
+        let mut v = match &self.laws[index] {
+            // Prepared source E (Kontakt FUN_140873040): shaping, target
+            // scale, then conditional inversion, in binary32.
+            Some(law) => f64::from(laws::prepare_source(
+                &laws::Prep {
+                    target: law.target,
+                    q: law.q,
+                    table: law.table.as_ref(),
+                    external_type7: false,
+                    omit_range: false,
+                    special3: false,
+                    invert: route.invert,
+                },
+                values[route.source] as f32,
+            )),
+            None => {
+                let mut v = self.transform(route, values[route.source], self.bipolar[route.source]);
+                if route.unipolar {
+                    v = unipolar(v, self.bipolar[route.source]);
+                }
+                v
+            }
+        };
         if route.lag != 0 && !onset {
             // 99% of a step in `lag` frames: Kontakt's one-pole lag law.
             let alpha = 1.0
@@ -1294,8 +1411,18 @@ impl VoiceModState {
                 self.phase[voice * self.sources + i] = lfo.phase;
             }
         }
-        for (i, envelope) in p.envelopes.iter().enumerate() {
-            self.envelope[voice * self.envelopes + i] = EnvelopeState::new(*envelope);
+        for (i, (envelope, controls)) in p.envelopes.iter().zip(&p.envelope_controls).enumerate() {
+            // A stage moved off its authored value by a lane write (host or script).
+            let mut live = *envelope;
+            for (stage, index) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
+                if let Some(index) = index
+                    && let crate::ControlValue::Real(value) = inputs.controls[*index]
+                    && value != envelope.control_value(stage)
+                {
+                    live = live.with_control(stage, value);
+                }
+            }
+            self.envelope[voice * self.envelopes + i] = EnvelopeState::new(live);
         }
         for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
             *segment = Segment::default();
@@ -1434,7 +1561,7 @@ impl VoiceModState {
                 let mut phase = 0.0;
                 for &r in &p.phase_routes[i] {
                     let route = &p.routes[r];
-                    phase += route.depth
+                    phase += p.base_depth(r, inputs)
                         * p.transform(route, values[route.source], p.bipolar[route.source]);
                 }
                 phases[i] = phase;
@@ -1451,7 +1578,7 @@ impl VoiceModState {
                         let mut lane = p.rate_lane[i];
                         for &r in &p.rate_routes[i] {
                             let base = p.base_depth(r, inputs);
-                            let (v, d) = p.route_point(&p.routes[r], values, &mut lagged[r], &mut scale_lagged[r * SCALE_LAGS..][..SCALE_LAGS], base, frames, onset);
+                            let (v, d) = p.route_point(r, &p.routes[r], values, &mut lagged[r], &mut scale_lagged[r * SCALE_LAGS..][..SCALE_LAGS], base, frames, onset);
                             processor_values[r] = d * v;
                             if onset {
                                 previous_processor_values[r] = processor_values[r];
@@ -1564,13 +1691,26 @@ impl VoiceModState {
                 continue;
             }
             let bipolar = p.bipolar[route.source];
-            let (v, d) = p.route_point(route, values, lagged, scale_lagged, base, frames, onset);
+            let (v, d) = p.route_point(i, route, values, lagged, scale_lagged, base, frames, onset);
             processor_values[i] = d * v;
             if onset {
                 previous_processor_values[i] = processor_values[i];
             }
             match p.targets[i] {
-                CompiledTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
+                CompiledTarget::Attenuate => match &p.laws[i] {
+                    // Family H, ordinary: x * (1 - (1 - E) * i), E already unipolar.
+                    Some(law) => {
+                        let ctx = laws::CombineCtx {
+                            target: law.target,
+                            route_flags: law.flags,
+                            env_special: false,
+                            direct_special: false,
+                            cubic_inner: false,
+                        };
+                        gain = f64::from(laws::combine(&ctx, gain as f32, v as f32, d as f32));
+                    }
+                    None => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
+                },
                 CompiledTarget::Decibels => decibels += d * v,
                 CompiledTarget::Pan => pan += d * v,
                 CompiledTarget::Pitch => out.pitch += d * v,

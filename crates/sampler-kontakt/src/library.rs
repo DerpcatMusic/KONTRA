@@ -294,13 +294,16 @@ fn translate(
         start_criteria: Vec::new(),
         voice_groups: Vec::new(),
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
+        retained_snapshot: Default::default(),
         engine: Vec::new(),
         dynamic: false,
         eq_mod_slots: HashMap::new(),
         cutoff_octaves: HashMap::new(),
         route_intensity: HashMap::new(),
+        alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
+        dormant_modulators: Default::default(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -448,6 +451,7 @@ fn translate(
         .collect::<Result<_, _>>()
         .map_err(|e| decode("source group names", e))?;
     if let Some(snapshot) = snapshot {
+        out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
         for behavior in &mut out.ir.behaviors {
             if let Some(entries) = behavior
                 .slot
@@ -495,6 +499,7 @@ fn translate(
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
         out.ir.source_indices.groups.push(Some(runtime));
     }
+    out.flush_retained_snapshot_state();
     for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
         if let Some(slot) = behavior.slot {
             out.ir.source_indices.slots.resize(
@@ -706,6 +711,9 @@ struct Translation {
     voice_groups: Vec<Option<usize>>,
     /// A snapshot's saved state per group, applied over the program's.
     snapshot_groups: Vec<crate::GroupState>,
+    /// Retained-but-unproved snapshot group bytes -> the groups carrying them,
+    /// reported once per distinct value (see `flush_retained_snapshot_state`).
+    retained_snapshot: std::collections::BTreeMap<String, Vec<usize>>,
     /// What the scripts' `on init` wrote with `set_engine_par`.
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
@@ -716,14 +724,54 @@ struct Translation {
     /// Each translated route's saved signed intensity and its depth value per
     /// unit intensity (for the ID25 intensity law's `unit`).
     route_intensity: HashMap<usize, (f64, f64)>,
+    /// `claim_alias`'s index of contested (parameter, address) script aliases.
+    alias_claims: HashMap<(String, ir::SlotAddress), usize>,
     /// Assignments whose destination is another modulator's `intensity`; applied
     /// to that modulator's routes once every route exists.
     intensity_scales: Vec<IntensityScale>,
     /// Module slot -> processor index of the current group's script-addressed
     /// effect modules (distortion, saturation, formant, lo-fi).
     lane_slots: Vec<(usize, usize)>,
+    /// (group, internal slot) of saved-bypassed modulators nothing can wake.
+    dormant_modulators: std::collections::HashSet<(usize, usize)>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
+}
+
+/// The internal modulator's single route is the primary amplitude at full depth.
+fn primary_volume(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    matches!(params.targets.as_slice(), [t]
+        if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
+            && t.slot.is_none() && t.lag_ms == 0
+            && !t.shaper.as_ref().is_some_and(|s| s.enabled))
+}
+
+/// A saved-bypassed internal modulator that nothing can wake is not
+/// instantiated, so routes into it (phase, rate) are inert, as natively.
+/// The primary amplitude/Flex admission is unchanged; only connected outgoing
+/// AHDSR/LFO routes can carry a live bypass.
+fn dormant(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    params.unknown_flags[1] != 0 && !wakeable(params)
+}
+
+/// Whether the modulator's outgoing routes carry a live bypass lane.
+fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
+    use ni_file::kontakt::objects::Modulator;
+    let retrigger = params.unknown_flags[2] != 0;
+    (matches!(&params.modulator, Modulator::Lfo(_))
+        || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !primary_volume(params))
+        && params.targets.iter().all(|t| {
+            // Module targets (filter, effect and formant knobs) carry the
+            // same live depth lane as volume/pitch/pan; a route whose depth
+            // cannot be bound is dropped and reported below. Phase, rate,
+            // intensity and sample-position targets have their own paths.
+            !matches!(
+                t.param.as_str(),
+                "startPhase" | "frequency" | "intensity" | "playPos" | "loopStart" | "loopLength"
+            ) && t.unknown_flags & 2 == 0
+                && !t.shaper.as_ref().is_some_and(|s| s.enabled)
+                && (0. ..=1.).contains(&t.intensity)
+        })
 }
 
 fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
@@ -731,6 +779,8 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
         ("eqGain", ir::ProcessorParameter::Gain),
         ("eqFreq", ir::ProcessorParameter::Cutoff),
         ("eqBandwidth", ir::ProcessorParameter::Resonance),
+        // The registry name (FUN_140981410 id 41/44/47) spells it `eqBandWidth`.
+        ("eqBandWidth", ir::ProcessorParameter::Resonance),
     ] {
         if let Some(rest) = name.strip_prefix(prefix) {
             let band = rest.parse::<u8>().ok().filter(|b| (1..=3).contains(b))?;
@@ -1038,6 +1088,9 @@ impl Translation {
                             }
                         }
                         let settings = crate::modulation_objects::internal(modulator.0.version, &params);
+                        if dormant(&params) {
+                            self.dormant_modulators.insert((index, slot));
+                        }
                         names.push((slot, params.name, params.targets, settings));
                     }
                     names
@@ -1093,12 +1146,10 @@ impl Translation {
                 for (band, [hz, width, db]) in bands.iter().enumerate() {
                     for (name, value, low, high) in [
                         ("GAIN", f64::from(*db), -18., 18.),
-                        ("FREQ", if bands.len() == 1 {
-                            f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz))
-                        } else { (f64::from(*hz) / 20.).log10() / 3. }, 0., 1.),
+                        ("FREQ", f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(*hz)), 0., 1.),
                         (
                             "BW",
-                            sampler_core::PeakingEq::bandwidth_knob(f64::from(*width)),
+                            f64::from(sampler_core::KontaktLegacyEqSettings::bandwidth_knob(*width)),
                             0.,
                             1.,
                         ),
@@ -1270,6 +1321,19 @@ impl Translation {
         });
     }
 
+    /// One entry per distinct retained value with its group count, instead of
+    /// one per group (thousands on large instruments).
+    fn flush_retained_snapshot_state(&mut self) {
+        for (value, groups) in std::mem::take(&mut self.retained_snapshot) {
+            self.ir.unsupported.push(ir::Unsupported {
+                location: format!("snapshot groups ({} of them, first {})", groups.len(), groups[0]),
+                feature: "saved release/MIDI/voice state and v4 selection words".into(),
+                value,
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+
     /// A group's complete settings, including dormant saved-mute content.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -1288,7 +1352,14 @@ impl Translation {
         let saved = self.snapshot_groups.get(index).cloned();
         let overlaid;
         let group = if let Some(state) = &saved {
-            overlaid = crate::snapshot::overlay_modulation(group, &state.modulation);
+            overlaid = crate::snapshot::overlay_group(group, state)?;
+            self.retained_snapshot
+                .entry(format!(
+                    "compact bytes 14..24 {:02x?}, selection {}, v4 words {:02x?}",
+                    state.compact_state, state.selection, state.v4_words
+                ))
+                .or_default()
+                .push(index);
             &overlaid
         } else {
             group
@@ -1481,19 +1552,6 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
-                    for &(slot, processor) in &filter_slots {
-                        if slots.iter().find(|s| s.slot == slot).is_some_and(|s| {
-                            matches!(
-                                s.params(),
-                                Some(crate::effects::Params::Filter { kind: 2 | 3, .. })
-                            )
-                        }) {
-                            self.cutoff_octaves.insert(
-                                (chain.unwrap().0, processor),
-                                crate::effects::LEGACY_CUTOFF_OCTAVES,
-                            );
-                        }
-                    }
                     self.eq_controls(index, chain.unwrap(), &filter_slots);
                     self.send_taps
                         .extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
@@ -1505,6 +1563,20 @@ impl Translation {
                 error,
                 ir::Reason::Unknown,
             ),
+        }
+        // BParGroupDynamics (0x4A): 64 raw floats on the group (BGroup +0x680). No
+        // processing class, detector or gain law is recovered, so any nonzero
+        // value is reported; all-zero (every local preset) changes nothing.
+        if let Some(chunk) = group.0.find_first(0x4A)
+            && let Ok(dynamics) = ni_file::kontakt::objects::GroupDynamics::try_from(chunk)
+            && dynamics.values.iter().any(|&v| v != 0.0)
+        {
+            self.unsupported(
+                &at,
+                "group dynamics (0x4A)",
+                format!("{} of 64 values set", dynamics.values.iter().filter(|&&v| v != 0.0).count()),
+                ir::Reason::UnknownLaw,
+            );
         }
         let mut envelope = None;
         let mut flex_release = None;
@@ -1526,23 +1598,9 @@ impl Translation {
                     continue;
                 }
                 let retrigger = params.unknown_flags[2] != 0;
-                let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
-                        && t.slot.is_none() && t.lag_ms == 0
-                        && !t.shaper.as_ref().is_some_and(|s| s.enabled));
-                // Keep the primary amplitude/Flex admission unchanged. Only connected
-                // outgoing AHDSR/LFO routes can carry a live bypass in this slice.
-                let live = (matches!(&params.modulator, Modulator::Lfo(_))
-                    || matches!(&params.modulator, Modulator::Ahdsr(_)) && retrigger && !volume)
-                    && params.targets.iter().all(|t| {
-                        t.slot.is_none()
-                            && matches!(t.param.as_str(), "volume" | "pitch" | "pan")
-                            && t.unknown_flags & 2 == 0
-                            && t.lag_ms == 0
-                            && !t.shaper.as_ref().is_some_and(|s| s.enabled)
-                            && (0. ..=1.).contains(&t.intensity)
-                    });
-                if params.unknown_flags[1] != 0 && !live {
+                let volume = primary_volume(&params);
+                let live = wakeable(&params);
+                if dormant(&params) {
                     continue;
                 }
                 let source = match params.modulator {
@@ -1568,58 +1626,93 @@ impl Translation {
                         None => continue,
                     },
                     Modulator::Flex(flex) => {
-                        // Point times are deltas from the previous point and
-                        // levels linear gain (audits/MODULATION.md, medium).
-                        // Segment curve s (0..1, 0.5 linear), c = s - 0.5:
-                        // measured on Kontakt 8 flex envelopes, k = BOW_K * |c|
-                        // with positive c starting fast and negative slowly
-                        // (docs/architecture-v2/KONTAKT_REFERENCE.md s.10).
                         let sustain = flex.sustain as usize;
+                        // Levels reach the universal envelope as 0..1; the setter's
+                        // behaviour outside that range (0x140ae5a10 clamps only a
+                        // tiny neighbourhood) is not carried, so report, never clamp.
+                        if let Some(p) = flex.points.iter().find(|p| !(0.0..=1.0).contains(&p.level)) {
+                            self.unsupported(
+                                &at,
+                                "flex level outside 0..1",
+                                p.level,
+                                ir::Reason::NotModeled,
+                            );
+                            continue;
+                        }
                         if volume {
-                            // Held until the release segments end.
+                            // Held until the release segments end (an upper bound: the
+                            // native release scaling only shortens them).
                             let after: f32 = flex
                                 .points
                                 .iter()
                                 .skip(sustain + 1)
-                                .map(|p| p.time_ms.max(0.0))
+                                .map(|p| p.time_ms.max(1.0))
                                 .sum();
                             flex_release = Some(flex_release.unwrap_or(0.0f32).max(after));
                         }
-                        ir::ModulationSource::Breakpoints(ir::Breakpoints {
-                            points: flex
-                                .points
-                                .iter()
-                                .map(|p| ir::Breakpoint {
-                                    time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
-                                    level: f64::from(p.level.clamp(0.0, 1.0)),
-                                    shape: match f64::from(p.curve) - 0.5 {
-                                        c if c.abs() < 1e-4 => ir::Curve::Linear,
-                                        c => ir::Curve::Exponential(-BOW_K * c),
-                                    },
-                                })
-                                .collect(),
-                            sustain: Some(sustain),
-                        })
+                        // v0x12 tail bytes +0x194 (loop jump at the sustain row) and
+                        // +0x195 (release adjustment bypass), runtime +0x321/+0x322.
+                        // Their effect on the held envelope is not proved.
+                        if let Some(word) = flex.unknown_version_word() {
+                            if word & 0xff != 0 {
+                                self.unsupported(
+                                    &at,
+                                    "flex loop jump at the sustain row (+0x194)",
+                                    word & 0xff,
+                                    ir::Reason::UnknownLaw,
+                                );
+                            }
+                            if word >> 8 != 0 {
+                                self.unsupported(
+                                    &at,
+                                    "flex release adjustment bypass (+0x195)",
+                                    word >> 8,
+                                    ir::Reason::UnknownLaw,
+                                );
+                            }
+                        }
+                        ir::ModulationSource::Breakpoints(flex_breakpoints(&flex))
                     }
                     // Decoded, not executable: the five DBD floats, the glide
                     // fields and the follower coefficients have no proven
                     // stored-to-runtime constructor (modulators.md, 0x140ae5990,
                     // 0x140ceb090, 0x140ae3d80), so they stay diagnosed.
+                    // The runtime laws are blocks (`Breakpoints::dbd`, `GlideRamp`,
+                    // `AdaptiveFollower`, `StepTable`); what is not proved is the step
+                    // from the stored fields to their parameters:
+                    //  - DBD: the saved durations pass a resolver (helper slot +0x28,
+                    //    0x1409651b0) whose unit law, and the v0x10/0x11 legacy tail, are open.
+                    //  - Glide: no caller recovered for the note pitch and time to ramp
+                    //    start, step and gain (0x140ceb090 setup).
+                    //  - Follower: the four stored floats have no proved route to the
+                    //    builder's controls (0x140977a95..0x140977b6a).
                     Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
+                        let feature = match params.modulator {
+                            Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
+                            Modulator::Glide(_) => "glide (0x0B): pitch and time to ramp start, step and gain",
+                            _ => "envelope follower (0x0A): saved floats to builder controls",
+                        };
                         self.unsupported(
                             &at,
-                            "internal modulator constructor mapping",
+                            feature,
                             format!("{:?} {:?}", params.name, params.modulator),
                             ir::Reason::UnknownLaw,
                         );
                         continue;
                     }
                     Modulator::Other { chunk_id } => {
+                        // 0x09 is BParArp, the note-blind 32-step table modulator
+                        // (BArp32Step): its stored-to-table/length/rate/mode setup is unproved.
+                        let (feature, reason) = if chunk_id == 0x09 {
+                            ("32-step table modulator (0x09): stored fields to table, length, rate and mode", ir::Reason::UnknownLaw)
+                        } else {
+                            ("internal modulator chunk", ir::Reason::Unknown)
+                        };
                         self.unsupported(
                             &at,
-                            "internal modulator chunk",
+                            feature,
                             format!("{chunk_id:#x} {:?}", params.name),
-                            ir::Reason::Unknown,
+                            reason,
                         );
                         continue;
                     }
@@ -1659,21 +1752,36 @@ impl Translation {
                         ));
                         continue;
                     }
-                    let route = self.route(
+                    let before = self.ir.routes.len();
+                    let mut route = self.route(
                         &at,
                         modulator,
                         envelope_source,
                         target,
                         chain.zip(Some(&filter_slots[..])),
                     );
-                    if live && let Some(route) = route {
-                        self.internal_route_controls(
+                    if live && let Some(bound) = route {
+                        let bound = self.internal_route_controls(
                             [index, usize::from(slot), _ordinal],
-                            route,
+                            bound,
                             target,
                             params.unknown_flags[1] != 0,
                             &mut bypass,
                         );
+                        if !bound && params.unknown_flags[1] != 0 {
+                            // Saved bypassed with no live depth lane: the route could
+                            // never be enabled, so it must not run unconditionally.
+                            self.ir.routes.truncate(before);
+                            self.route_intensity.remove(&before);
+                            self.ir.source_indices.unipolar_routes.retain(|r| r.0 < before);
+                            self.unsupported(
+                                &at,
+                                "bypassed modulator route without live depth",
+                                format!("{} ({})", target.param, target.name),
+                                ir::Reason::NotModeled,
+                            );
+                            route = None;
+                        }
                     }
                     #[cfg(feature = "scan")]
                     self.target_outcomes
@@ -1824,6 +1932,34 @@ impl Translation {
                     self.target_outcomes
                         .insert((index, usize::from(slot), true, _ordinal), route.is_some());
                     if let Some(route) = route {
+                        // Native identity (name parser FUN_1409250d0 type values).
+                        let source_type = match params.source {
+                            ModSource::PitchBend => Some(1),
+                            ModSource::PolyAftertouch => Some(2),
+                            ModSource::MonoAftertouch => Some(3),
+                            ModSource::MidiCc(_) => Some(4),
+                            ModSource::KeyPosition => Some(7),
+                            ModSource::Velocity => Some(8),
+                            ModSource::ReleaseVelocity => Some(9),
+                            ModSource::ReleaseTriggerCounter => Some(10),
+                            ModSource::Constant => Some(11),
+                            ModSource::RandomUnipolar => Some(12),
+                            ModSource::RandomBipolar => Some(13),
+                            _ => None,
+                        };
+                        if let (Some(source_type), Some(target_id)) = (
+                            source_type,
+                            sampler_core::native_mod_laws::target_id(&target.param),
+                        ) {
+                            self.ir.source_indices.native_routes.push((
+                                route,
+                                ir::NativeRoute {
+                                    target: target_id,
+                                    flags: target.unknown_flags,
+                                    source_type,
+                                },
+                            ));
+                        }
                         let live = self.script_depth_target(route);
                         if live {
                             self.loop_route_controls(index, usize::from(slot), _ordinal, route);
@@ -1945,15 +2081,10 @@ impl Translation {
                 .chain(&self.ir.chains[chain.0].post_amplitude)
                 .nth(index);
             let saved = match processor {
-                Some(ir::Processor::KontaktLegacyEq(eq)) => [f64::from(eq.gain_db),
-                    f64::from(eq.frequency), f64::from(eq.bandwidth)],
-                Some(ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::Peak { gain },
-                    cutoff: ir::Frequency::Hertz(hz),
-                    resonance: ir::Resonance::Q(q),
-                })) => [20. * gain.linear().log10() / sampler_core::PeakingEq::GAIN_SCALE,
-                    (hz / 20.).log10() / 3.,
-                    sampler_core::PeakingEq::bandwidth_knob(sampler_core::PeakingEq::octaves_of_q(*q))],
+                Some(ir::Processor::Eq(eq)) if eq.count == 1 && eq.bands[0].law == ir::fx::eq::Law::KontaktLegacy => {
+                    let b = eq.bands[0];
+                    [f64::from(b.gain_db), f64::from(b.frequency), f64::from(b.q)]
+                }
                 _ => continue,
             };
             let band = bands.entry(slot).or_default();
@@ -2018,18 +2149,7 @@ impl Translation {
                     parameter,
                     ramp: ir::Time::ZERO,
                 });
-                self.ir
-                    .source_indices
-                    .control_aliases
-                    .push(ir::SourceControlAlias {
-                        control,
-                        parameter: native,
-                        address: ir::SlotAddress {
-                            group: group as i32,
-                            slot: slot as i32,
-                            generic: -1,
-                        },
-                    });
+                self.claim_alias(control, &native, [group as i32, slot as i32, -1], false);
             }
             *band += 1;
         }
@@ -2053,53 +2173,66 @@ impl Translation {
         target: &ni_file::kontakt::objects::ModTarget,
         saved_bypass: bool,
         bypass: &mut Option<ir::ControlRef>,
-    ) {
+    ) -> bool {
         let [group, slot, ordinal] = address;
         let unit = match self.ir.routes[route.0].target {
             ir::Target::Amplitude | ir::Target::Pan => 1.,
             ir::Target::Pitch => 12.,
-            _ => return,
+            // Module targets: depth units per unit of intensity, as the route's own law.
+            ir::Target::Processor { .. } | ir::Target::Control(_) => {
+                match self.route_intensity.get(&route.0) {
+                    Some(&(_, unit)) if unit.is_finite() && unit != 0. => unit,
+                    _ => return false,
+                }
+            }
+            _ => return false,
         };
         if target.unknown_flags & 2 != 0
             || !target.intensity.is_finite()
             || !(0. ..=1.).contains(&target.intensity)
         {
-            return;
+            return false;
         }
         let mut lane = |name: &str, generic: i32, max: f64, saved: f64| {
-            let default = self
-                .script_par(name, group as i32, slot as i32, generic)
-                .map_or(saved, |v| {
-                    if name == "ENGINE_PAR_INTMOD_BYPASS" {
+            let bypass = name == "ENGINE_PAR_INTMOD_BYPASS";
+            let script = |name| self.script_par(name, group as i32, slot as i32, generic);
+            // The legacy and MP intensities write the same depth on the signed
+            // cubic law (v1: INTMOD 1e6 at the target's generic is depth 1).
+            let cubic = ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+                .into_iter()
+                .find_map(|name| script(name))
+                .filter(|_| !bypass)
+                .map(|v| max * sampler_core::EngineParameterLaw::SignedCubic.decode(v));
+            let default = cubic.or_else(|| {
+                script(name).map(|v| {
+                    if bypass {
                         f64::from(v != 0)
                     } else {
                         max * f64::from(v.clamp(0, 1_000_000)) / 1_000_000.
                     }
-                });
+                })
+            });
             let control = ir::ControlRef(self.ir.controls.len());
             self.ir.controls.push(ir::Control {
                 key: format!("kontakt/group/{group}/mod/{slot}/{generic}/{name}"),
                 label: name.into(),
                 value: ir::ControlValue::Continuous {
-                    min: 0.,
+                    // A depth may be negative (inverted) through the cubic writers.
+                    min: if bypass { 0. } else { -max },
                     max,
-                    default,
+                    default: default.unwrap_or(saved),
                     unit: ir::ControlUnit::Percent,
                 },
                 automation: ir::Automation::None,
             });
-            self.ir
-                .source_indices
-                .control_aliases
-                .push(ir::SourceControlAlias {
-                    control,
-                    parameter: name.into(),
-                    address: ir::SlotAddress {
-                        group: group as i32,
-                        slot: slot as i32,
-                        generic,
-                    },
-                });
+            let names: &[&str] = if bypass {
+                &["ENGINE_PAR_INTMOD_BYPASS"]
+            } else {
+                &["ENGINE_PAR_MOD_TARGET_INTENSITY", "ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"]
+            };
+            for name in names {
+                self.claim_alias(control, name, [group as i32, slot as i32, generic], false);
+            }
             control
         };
         let bypass = *bypass.get_or_insert_with(|| {
@@ -2111,20 +2244,50 @@ impl Translation {
             unit,
             f64::from(target.intensity) * unit,
         );
+        // Generic -1 is the modulator's own intensity (ANALOG STRINGS writes its
+        // LFO amounts there); as for external modulators it reaches the first target.
+        // ponytail: -1 aliases target 0 only; multi-target -1 semantics unmeasured.
+        if ordinal == 0 {
+            for parameter in ["ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"] {
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, -1], false);
+            }
+        }
         self.ir
             .source_indices
             .route_controls
             .push((route, depth, bypass));
+        true
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
     /// - 346.768, the one group volume uses (0 dB at 630957). Kontakt's dB is
     /// 6 dB per doubling (gain = 2^(dB/6)), measured with the native oracle
-    /// (tools/kontakt-oracle/probes/volume_law.lua), so this fader is cubic in v.
+    /// (tools/kontakt-oracle/probes/volume_law.lua), so this fader is cubic in v;
+    /// a runtime write decodes with the same law.
     fn script_bus_volume(&self, bus: usize) -> Option<f32> {
         let v = self.script_par("ENGINE_PAR_VOLUME", -1, -1, 1000 + bus as i32)?;
-        let millibels = 18000.0 * f64::from(v.clamp(1, 1_000_000)).log2() - 346_768.234_247_835_1;
-        Some(kontakt_db_gain(millibels / 1000.0) as f32)
+        Some(sampler_core::BUS_VOLUME_LAW.decode(v) as f32)
+    }
+
+    /// Alias a script address to `control`. Internal and external modulators
+    /// number their slots apart, so both can claim one (group, slot, generic):
+    /// the measured loop/module depth (`evict`) wins over an internal route's.
+    // ponytail: KSP's find_mod index spans both lists; resolve it to drop this tie-break.
+    fn claim_alias(&mut self, control: ir::ControlRef, parameter: &str, [group, slot, generic]: [i32; 3], evict: bool) {
+        let address = ir::SlotAddress { group, slot, generic };
+        let aliases = &mut self.ir.source_indices.control_aliases;
+        let alias = ir::SourceControlAlias { control, parameter: parameter.into(), address };
+        match self.alias_claims.entry((parameter.into(), address)) {
+            std::collections::hash_map::Entry::Occupied(at) => {
+                if evict {
+                    aliases[*at.get()] = alias;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(aliases.len());
+                aliases.push(alias);
+            }
+        }
     }
 
     /// Port v1's Constant loop target aliases and signed cubic depth domain.
@@ -2143,7 +2306,11 @@ impl Translation {
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ]
         .into_iter()
-        .find_map(|name| self.script_par(name, group as i32, slot as i32, ordinal as i32));
+        .find_map(|name| {
+            self.script_par(name, group as i32, slot as i32, ordinal as i32).or_else(|| {
+                (ordinal == 0).then(|| self.script_par(name, group as i32, slot as i32, -1))?
+            })
+        });
         let saved = raw.map_or(saved, |v| {
             sampler_core::EngineParameterLaw::SignedCubic.decode(v)
         });
@@ -2159,22 +2326,17 @@ impl Translation {
             },
             automation: ir::Automation::None,
         });
+        // Generic -1 is the modulator's own intensity: scripts address a
+        // one-target modulator that way (ANALOG STRINGS Phase_P1/P2, Loop_Start).
+        // ponytail: -1 aliases the first target only; multi-target -1 semantics unmeasured.
+        let generics = [Some(ordinal as i32), (ordinal == 0).then_some(-1)];
         for parameter in [
             "ENGINE_PAR_INTMOD_INTENSITY",
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ] {
-            self.ir
-                .source_indices
-                .control_aliases
-                .push(ir::SourceControlAlias {
-                    control: depth,
-                    parameter: parameter.into(),
-                    address: ir::SlotAddress {
-                        group: group as i32,
-                        slot: slot as i32,
-                        generic: ordinal as i32,
-                    },
-                });
+            for generic in generics.into_iter().flatten() {
+                self.claim_alias(depth, parameter, [group as i32, slot as i32, generic], true);
+            }
         }
         let bypass = ir::ControlRef(self.ir.controls.len());
         self.ir.controls.push(ir::Control {
@@ -2216,7 +2378,10 @@ impl Translation {
     /// ranges, LFO rates and script-addressed effect knobs (not filters).
     fn script_depth_target(&self, route: ir::RouteRef) -> bool {
         match self.ir.routes[route.0].target {
-            ir::Target::LoopStart | ir::Target::LoopLength | ir::Target::SourceRate(_) => true,
+            ir::Target::LoopStart
+            | ir::Target::LoopLength
+            | ir::Target::SourceRate(_)
+            | ir::Target::SourcePhase(_) => true,
             ir::Target::Processor { parameter, .. } => !matches!(
                 parameter,
                 ir::ProcessorParameter::Gain
@@ -2270,6 +2435,11 @@ impl Translation {
             );
             None
         };
+        // The native lag is signed (FUN_140873040 route field +0xe); only the
+        // non-negative law is proved, so a negative lag is reported, not smoothed.
+        if target.lag_ms < 0 {
+            return report(self, "negative modulation lag", ir::Reason::NotModeled);
+        }
         // Modulating another modulator's intensity scales that modulator's own
         // routes (Kontakt ID25 law); it is not a route of its own.
         if target.param == "intensity" {
@@ -2358,13 +2528,23 @@ impl Translation {
             let chain_data = self.ir.chains.get(chain.0)?;
             let processor = chain_data.pre_amplitude.iter().chain(&chain_data.post_amplitude).nth(index)?;
             let parameter = match (processor, target.param.as_str()) {
-                (ir::Processor::LiveSaturation { .. }, "shaper") => P::Shape,
-                (ir::Processor::LiveDistortion { .. }, "distortionIntensity") => P::Drive,
                 (ir::Processor::LiveFormant { .. }, "formantTalk") => P::FormantTalk,
                 (ir::Processor::LiveFormant { .. }, "formantSharp") => P::FormantSharp,
                 (ir::Processor::LiveFormant { .. }, "formantSize") => P::FormantSize,
-                (ir::Processor::LiveLoFi { .. }, "bitdepth") => P::LoFiBits,
-                (ir::Processor::LiveLoFi { .. }, "downsample") => P::LoFiFrequency,
+                (ir::Processor::TimeMod(config), "filterCutoff" | "filterQ") => {
+                    let role = if target.param == "filterQ" { P::Resonance } else { P::Cutoff };
+                    config.lanes().iter().any(|lane| lane.role == role).then_some(role)?
+                }
+                (ir::Processor::Color(config), name) => {
+                    let role = match name {
+                        "shaper" => P::Shape,
+                        "distortionIntensity" => P::Drive,
+                        "bitdepth" => P::LoFiBits,
+                        "downsample" => P::LoFiFrequency,
+                        _ => return None,
+                    };
+                    config.lanes().iter().any(|lane| lane.role == role).then_some(role)?
+                }
                 _ => return None,
             };
             Some((ir::Target::Processor { chain, index, parameter }, ir::Depth::Normalized(i)))
@@ -2392,14 +2572,7 @@ impl Translation {
                     .chain(&self.ir.chains[chain.0].post_amplitude)
                     .nth(*index)?;
                 if let Some((_, parameter)) = knob {
-                    return matches!(
-                        processor,
-                        ir::Processor::Filter(ir::Filter {
-                            kind: ir::FilterKind::Peak { .. },
-                            ..
-                        }) | ir::Processor::KontaktLegacyEq(_)
-                    )
-                    .then_some((
+                    return matches!(processor, ir::Processor::Eq(_)).then_some((
                         ir::Target::Processor {
                             chain,
                             index: *index,
@@ -2411,16 +2584,14 @@ impl Translation {
                 let native = matches!(
                     processor,
                     ir::Processor::LadderLP4(_) | ir::Processor::Daft(_) | ir::Processor::Ar(_)
+                        | ir::Processor::FilterBank(sampler_ir::fx::filter::Config {
+                            topology: sampler_ir::fx::filter::Topology::Cascade,
+                            ..
+                        })
                 );
                 let parameter = match target.param.as_str() {
                     "filterCutoff"
-                        if !matches!(
-                            processor,
-                            ir::Processor::Filter(ir::Filter {
-                                kind: ir::FilterKind::Peak { .. },
-                                ..
-                            })
-                        ) =>
+                        if !matches!(processor, ir::Processor::Eq(_)) =>
                     {
                         ir::ProcessorParameter::Cutoff
                     }
@@ -2501,6 +2672,15 @@ impl Translation {
                 .any(|b| b.control == control && b.chain == chain)
                 .then_some((ir::Target::Control(control), ir::Depth::Normalized(i)))
         });
+        // Phase and rate of a dormant (saved-bypassed, unwakeable) modulator: inert natively.
+        if addressed.is_none()
+            && matches!(target.param.as_str(), "startPhase" | "frequency")
+            && let Some(slot) = target.slot
+            && let Some(group) = self.ir.source_indices.modulators.iter().find(|m| m.runtime == Some(source)).map(|m| m.group)
+            && self.dormant_modulators.contains(&(group, usize::from(slot)))
+        {
+            return None;
+        }
         if target.slot.is_some() && addressed.is_none() {
             return report(
                 self,
@@ -2637,6 +2817,37 @@ impl Translation {
             {
                 ir::LfoShape::SineScaled(-f64::from(sine))
             }
+            // BLfoMulti (5) and BLfoMultiDigital (6), 0x140b07290 / 0x140b078d0
+            // (modulators-runtime.md): the stored weights (sine, pulse, triangle,
+            // doubled saw, noise) reach the runtime in order sine, saw, triangle,
+            // pulse, noise (builder copy 0x140977e57..0x140977e9f). The stored
+            // normalization byte is records[0].flag. No fade (the exponential Multi
+            // fade is only wired for the sine-only entry above), the pulse width
+            // inside the builder's 0.05..0.95 clamp, and held noise needs a start
+            // phase below one half.
+            // A legacy Multi's saved fade (unsynchronized, records[1] -1: v1's admitted
+            // fade clock) runs the native fade law over the mix; Digital fades keep the
+            // verified sine-only entry above.
+            // ponytail: free-running LFOs fade per voice from note start, as the fade
+            // lives in the per-voice modulator; not reference-rendered.
+            (5 | 6, Some([sine, pulse, triangle, saw, noise]))
+                if (fade_ms == 0. || (lfo.waveform == 5 && (0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1.))
+                    && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
+                    && (0.05..=0.95).contains(&width)
+                    && (noise == 0. || (0. ..0.5).contains(&phase)) =>
+            {
+                let wave = ir::NativeWave::Multi {
+                    weights: [sine, saw, triangle, pulse, noise],
+                    width: width as f32,
+                    normalize: lfo.records[0].flag,
+                    digital: lfo.waveform == 6,
+                };
+                if fade_ms == 0. {
+                    ir::LfoShape::Native(wave)
+                } else {
+                    ir::LfoShape::NativeFaded { wave, fade_ms: lfo.initial_values[0] }
+                }
+            }
             // Native BLfo* processors (modulators.md): recovered tables, any pulse
             // width in 0..1, and held noise whose half-cycle grid counts from a
             // start phase below one half.
@@ -2677,7 +2888,7 @@ impl Translation {
             shape,
             rate,
             delay: ir::Time::ZERO,
-            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. }) {
+            fade_in: if matches!(shape, ir::LfoShape::DigitalSine { .. } | ir::LfoShape::NativeFaded { .. }) {
                 ir::Time::ZERO
             } else {
                 ir::Time::Milliseconds(fade_ms.max(0.0))
@@ -3491,6 +3702,7 @@ mod saved_tests {
             let name = r"C:\old\source.TXT";
             public.extend((name.len() as u32).to_le_bytes());
             public.extend(name.as_bytes());
+            public.extend(0u32.to_le_bytes()); // persistent-table count
             let mut script = vec![0, 0x50, 0];
             script.extend(public);
             let program = Program(StructuredObject {
@@ -3553,6 +3765,7 @@ mod saved_tests {
         script.extend(0u32.to_le_bytes());
         script.extend(u32::MAX.to_le_bytes());
         script.extend(0u32.to_le_bytes());
+        script.extend(0u32.to_le_bytes()); // persistent-table count
         Program(StructuredObject {
             version: 0xaf,
             public_data: vec![0; 70],
@@ -3581,6 +3794,7 @@ mod saved_tests {
         std::fs::write(&path, [0; 16]).unwrap();
         let mut program = menu_program();
         let script = program.0.children.iter_mut().find(|c| c.id == 6).unwrap();
+        script.data.truncate(script.data.len() - 4); // the fixture's empty persistent table
         script.data.extend(2u32.to_le_bytes());
         for entry in [b"%steps ".as_slice(), b"?xy "] {
             script.data.extend((entry.len() as u32).to_le_bytes());
@@ -3910,6 +4124,20 @@ mod modulation {
         assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
     }
 
+    #[test]
+    fn one_script_address_has_one_alias_and_the_measured_lane_wins() {
+        let mut t = translation();
+        let at = [0, 5, -1];
+        t.claim_alias(ir::ControlRef(1), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(2), "ENGINE_PAR_INTMOD_INTENSITY", at, false);
+        t.claim_alias(ir::ControlRef(3), "ENGINE_PAR_MOD_TARGET_MP_INTENSITY", at, false);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [1, 3]);
+        t.claim_alias(ir::ControlRef(4), "ENGINE_PAR_INTMOD_INTENSITY", at, true);
+        let aliases = &t.ir.source_indices.control_aliases;
+        assert_eq!(aliases.iter().map(|a| a.control.0).collect::<Vec<_>>(), [4, 3]);
+    }
+
     fn translation() -> Translation {
         Translation {
             ir: ir::Instrument::default(),
@@ -3918,13 +4146,16 @@ mod modulation {
             start_criteria: Vec::new(),
             voice_groups: Vec::new(),
             snapshot_groups: Vec::new(),
+            retained_snapshot: Default::default(),
             engine: Vec::new(),
             dynamic: false,
             eq_mod_slots: HashMap::new(),
             cutoff_octaves: HashMap::new(),
             route_intensity: HashMap::new(),
+            alias_claims: HashMap::new(),
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
+        dormant_modulators: Default::default(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -4272,6 +4503,32 @@ mod modulation {
         }
     }
 
+    /// A saved-bypassed LFO with module targets keeps a live depth lane (unit =
+    /// the route's own depth per intensity); a route with no known unit is not bound.
+    #[test]
+    fn internal_module_routes_bind_live_depth_in_route_units() {
+        let mut out = translation();
+        out.ir.routes.push(ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Processor {
+                chain: ir::ChainRef(0),
+                index: 0,
+                parameter: ir::ProcessorParameter::Resonance,
+            },
+            depth: ir::Depth::Normalized(0.),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        });
+        let mut bypass = None;
+        let t = target("filterQ", 0.);
+        assert!(!out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        out.route_intensity.insert(0, (0., 1.));
+        assert!(out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
+        assert_eq!(out.ir.source_indices.route_controls.len(), 1);
+    }
+
     /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
     /// envelope minus sustain falls 0.51, 0.23, 0.085, 0.02 at 0.25 s steps
     /// from the 2 s peak (1 - 0.25 = 0.75 of travel, so ratios .67/.30/.11/.026).
@@ -4409,7 +4666,7 @@ mod modulation {
             post_amplitude: vec![filter],
         });
         t.cutoff_octaves
-            .insert((0, 1), crate::effects::LEGACY_CUTOFF_OCTAVES);
+            .insert((0, 1), 8.96);
         for (slot, expected) in [(0, -30.), (5, -26.88)] {
             let route = t
                 .route(
@@ -4433,16 +4690,21 @@ mod modulation {
         }
     }
 
+    /// One native legacy EQ band (the only EQ owner Kontakt translation emits).
+    fn legacy_peak(gain_db: f32) -> ir::Processor {
+        ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+            law: ir::fx::eq::Law::KontaktLegacy,
+            frequency: 0.5,
+            q: 0.25,
+            gain_db,
+            ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+        }))
+    }
+
     #[test]
     fn eq_frequency_and_width_routes_keep_the_physical_band() {
         let mut t = translation();
-        let peak = ir::Processor::Filter(ir::Filter {
-            kind: ir::FilterKind::Peak {
-                gain: ir::Gain::Decibels(6.),
-            },
-            cutoff: ir::Frequency::Hertz(1000.),
-            resonance: ir::Resonance::Q(1.),
-        });
+        let peak = legacy_peak(6.);
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
             pre_amplitude: vec![peak; 3],
@@ -4503,13 +4765,7 @@ mod modulation {
         let mut t = translation();
         t.ir.chains.push(ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(40.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            })],
+            pre_amplitude: vec![legacy_peak(40.)],
             post_amplitude: vec![],
         });
         t.eq_controls(7, ir::ChainRef(0), &[(5, 0)]);
@@ -4531,7 +4787,7 @@ mod modulation {
         let built = crate::effects::chain_with(std::slice::from_ref(&slot), crate::effects::Scope::Voice,
             None, Some((7, -1)), (7, -1), &[]);
         assert_eq!(built.filter_slots, [(5, 1)]);
-        assert!(matches!(built.processors[1], ir::Processor::KontaktLegacyEq(_)));
+        assert!(matches!(built.processors[1], ir::Processor::Eq(_)));
         let mut t = translation();
         t.source_eq_values(7, &[slot]);
         t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
@@ -4626,13 +4882,7 @@ mod modulation {
     fn eq_gain_routes_keep_band_and_physical_slot_identity() {
         for (name, index) in [("eqGain1", 0), ("eqGain2", 1), ("eqGain3", 2)] {
             let mut t = translation();
-            let peak = ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(0.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            });
+            let peak = legacy_peak(0.);
             t.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: vec![peak; 3],
@@ -4695,6 +4945,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,
@@ -4748,6 +4999,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,
@@ -4929,12 +5181,16 @@ mod modulation {
         raw.initial_values[0] = 0.;
         raw.trailing_values = Some([f32::NAN, 0., 0., 0., 0.]);
         assert!(t.lfo("g", &raw, true).is_none());
+        // With the fade off, any weights are the native Digital Multi mixer.
         raw.trailing_values = Some([0.3, 0.2, 0., 0., 0.]);
-        assert!(t.lfo("g", &raw, true).is_none());
+        assert!(matches!(
+            t.lfo("g", &raw, true).unwrap().shape,
+            ir::LfoShape::Native(ir::NativeWave::Multi { digital: true, .. })
+        ));
         raw.trailing_values = Some([0.3, 0., 0., 0., 0.]);
         raw.additional_flag = Some(true);
-        assert!(t.lfo("g", &raw, true).is_none());
-        assert_eq!(t.ir.unsupported.len(), 12);
+        assert!(t.lfo("g", &raw, true).is_some(), "the fade profile byte is moot without a fade");
+        assert_eq!(t.ir.unsupported.len(), 10);
     }
 
     #[test]
@@ -4991,6 +5247,75 @@ mod modulation {
                 .is_none()
         );
         assert_eq!(t.ir.unsupported.len(), 3);
+        // Native Multi: stored (sine, pulse, triangle, doubled saw, noise) land in
+        // runtime order (sine, saw, triangle, pulse, noise); wave 6 is the digital mixer.
+        let mut multi = lfo(5, Some([1.0, 2.0, 3.0, 4.0, 5.0]));
+        multi.initial_values[0] = 0.0;
+        let shape = |digital| {
+            ir::LfoShape::Native(ir::NativeWave::Multi {
+                weights: [1.0, 4.0, 3.0, 2.0, 5.0],
+                width: 0.5,
+                normalize: true,
+                digital,
+            })
+        };
+        assert_eq!(t.lfo("g", &multi, true).unwrap().shape, shape(false));
+        multi.waveform = 6;
+        assert_eq!(t.lfo("g", &multi, true).unwrap().shape, shape(true));
+        // Outside the proved domain: a fade, a pulse width beyond the builder's
+        // clamp, and noise with a start phase at or past one half.
+        let mut faded = multi.clone();
+        faded.initial_values[0] = 5.0;
+        let mut wide = multi.clone();
+        wide.initial_values[2] = 0.99;
+        let mut late = multi.clone();
+        late.initial_values[3] = 0.5;
+        for bad in [faded, wide, late] {
+            assert!(t.lfo("g", &bad, true).is_none());
+        }
+        assert_eq!(t.ir.unsupported.len(), 6);
+    }
+
+    #[test]
+    fn flex_uses_the_native_curve_floor_and_start_level() {
+        use ni_file::kontakt::objects::{EnvelopeFlex, FlexPoint};
+        let point = |time_ms, level, curve| FlexPoint { time_ms, level, curve };
+        let flex = |points: Vec<FlexPoint>, tail: Vec<u8>| EnvelopeFlex {
+            points,
+            sustain: 1,
+            unknown_index: 0,
+            unknown_tail: tail,
+        };
+        // Quick attack ending in a zero level: no leading points, 1 ms floor,
+        // curve 0.5 is linear and 0.25 has ratio 49.
+        let b = flex_breakpoints(&flex(
+            vec![point(0.0, 0.0, 0.5), point(20.0, 1.0, 0.25), point(30.0, 0.0, 0.75)],
+            vec![0; 13],
+        ));
+        assert_eq!(b.sustain, Some(1));
+        assert!(b.flex_release);
+        assert_eq!(b.points[0].time, ir::Time::Milliseconds(1.0));
+        assert_eq!(b.points[0].shape, ir::Curve::Linear);
+        assert_eq!(b.points[1].shape, ir::Curve::Exponential(49f64.ln()));
+        let ir::Curve::Exponential(fast) = b.points[2].shape else { panic!() };
+        assert!(fast < 0.0);
+        // A first row longer than 0.1 s holds the start level 5 ms; a nonzero last
+        // level adds the start point; the sustain index follows.
+        let b = flex_breakpoints(&flex(
+            vec![point(200.0, 1.0, 0.5), point(10.0, 0.5, 0.5), point(10.0, 0.25, 0.5)],
+            vec![0; 13],
+        ));
+        assert_eq!(b.points[0].time, ir::Time::Milliseconds(0.0));
+        assert_eq!(b.points[0].level, 0.25);
+        assert_eq!(b.points[1].time, ir::Time::Milliseconds(5.0));
+        assert_eq!(b.points[1].level, 0.25);
+        assert_eq!(b.points[2].time, ir::Time::Milliseconds(200.0));
+        assert_eq!(b.sustain, Some(3));
+        // The v0x12 bypass byte (+0x195) turns the release scaling off.
+        let mut tail = vec![0, 1];
+        tail.extend([0; 13]);
+        let b = flex_breakpoints(&flex(vec![point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)], tail));
+        assert!(!b.flex_release);
     }
 }
 
@@ -5012,9 +5337,50 @@ mod multi_tests {
     }
 }
 
+/// Kontakt Flex (`BEnvelopeFM7`) as the universal breakpoint envelope.
+/// Point times are deltas in milliseconds with the setter's 1 ms floor
+/// (0x140ae5a10); levels are linear gain; the curve is the setter's ratio in
+/// closed form ([`sampler_core::blocks::envelope::flex_curve`] uses the same
+/// law). Setup (0x14094ce70) starts from the LAST point's level, and when the
+/// first duration exceeds 0.1 s holds that level 5 ms before the first row; both
+/// become leading points here. The release scales the first release segment
+/// (see `Breakpoints::flex_release`) unless the stored bypass byte is set.
+fn flex_breakpoints(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> ir::Breakpoints {
+    type Point = ni_file::kontakt::objects::FlexPoint;
+    let level = |p: &Point| f64::from(p.level.clamp(0.0, 1.0));
+    let last = flex.points.last().map_or(0.0, level);
+    let step = |ms: f64, level: f64| ir::Breakpoint {
+        time: ir::Time::Milliseconds(ms),
+        level,
+        shape: ir::Curve::Linear,
+    };
+    let mut points = Vec::with_capacity(flex.points.len() + 2);
+    if last != 0.0 {
+        points.push(step(0.0, last));
+    }
+    if flex.points.first().is_some_and(|p| p.time_ms.max(1.0) * 0.001f32 > 0.1f32) {
+        points.push(step(5.0, last));
+    }
+    let lead = points.len();
+    points.extend(flex.points.iter().map(|p| ir::Breakpoint {
+        time: ir::Time::Milliseconds(f64::from(p.time_ms.max(1.0))),
+        level: level(p),
+        shape: match f64::from(sampler_core::blocks::envelope::flex_ratio(p.curve)).ln() {
+            k if k == 0.0 => ir::Curve::Linear,
+            k => ir::Curve::Exponential(k),
+        },
+    }));
+    ir::Breakpoints {
+        points,
+        sustain: Some(flex.sustain as usize + lead),
+        flex_release: !flex.unknown_version_word().is_some_and(|word| word >> 8 != 0),
+    }
+}
+
 /// Exponential bow constant for a shaper or flex-envelope segment:
 /// `k = BOW_K * |curvature|`.
-/// Measured, not in the manual: fitted to Kontakt 8 renders of Vista 3 Cellos
+/// Measured, not in the manual (the shaper only now; Flex uses the recovered
+/// native law): fitted to Kontakt 8 renders of Vista 3 Cellos
 /// group 37 swept over CC100 (0..96), 0.08 dB RMS residual with K = 18; the
 /// Una Corda Cotton "Depth" shaper GUI reading (curvature 0.118, mid value
 /// 0.29) implies K about 15. docs/architecture-v2/KONTAKT_REFERENCE.md.
@@ -5141,12 +5507,6 @@ mod census {
     }
 }
 
-/// Kontakt's volume dB scale: 6 dB per doubling, stored gain = 2^(dB/6)
-/// (-6 dB = 0.5, -60 dB = 1/1024). Measured: tools/kontakt-oracle/probes/volume_law.lua.
-pub(crate) fn kontakt_db_gain(db: f64) -> f64 {
-    (db / 6.0).exp2()
-}
-
 /// A modulation assignment whose destination is another modulator's intensity.
 struct IntensityScale {
     at: String,
@@ -5160,7 +5520,7 @@ struct IntensityScale {
     /// The assignment's shaper, applied to the unipolar source (`ftable`).
     shape: Option<ir::ShapeRef>,
     /// Saved lag milliseconds (0: none).
-    lag_ms: u16,
+    lag_ms: i16,
 }
 
 impl Translation {

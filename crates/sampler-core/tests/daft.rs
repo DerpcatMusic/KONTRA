@@ -24,12 +24,12 @@ fn limits() -> Limits {
 const FRAMES: usize = 1000;
 
 fn plan(signal: Vec<[f32; 2]>, cutoff: f64, response: f64) -> Prepared {
-    let daft = Processor::Daft(DaftSettings {
+    let daft = Processor::Filter(FilterSettings::Daft(DaftSettings {
         gain: Parameter::Constant(0.),
         cutoff: Parameter::Constant(cutoff),
         resonance: Parameter::Constant(0.3),
         response: Parameter::Constant(response),
-    });
+    }));
     Prepared::new(
         48000,
         vec![Pcm::new(48000, signal.into_boxed_slice()).unwrap()],

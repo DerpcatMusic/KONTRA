@@ -90,6 +90,7 @@ fn selection_records_the_executed_reverse_cursor_after_start_modulation() {
                     1.,
                 )],
                 shapes: vec![],
+                envelope_controls: vec![],
             }],
             vec![Some(0)],
             vec![60],

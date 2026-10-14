@@ -49,6 +49,16 @@ pub(super) struct AutomationState {
     latched: bool,
 }
 impl Runtime {
+    /// The plan's saved and fixed automation routes, for host presentation.
+    pub fn automation_bindings(&self, plan: crate::PlanId) -> Result<&[AutomationBinding], Error> {
+        Ok(&self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .automation)
+    }
+
     /// Normalized host automation follows the same saved widget route as MIDI CC.
     pub fn dispatch_host_parameter(
         &mut self,

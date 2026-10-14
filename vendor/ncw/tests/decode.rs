@@ -317,7 +317,7 @@ fn mid_side_float_blocks_use_float_arithmetic() {
         .collect();
     let side: Vec<i32> = (0..512).map(|_| 0.125f32.to_bits() as i32).collect();
     let flags = synth::MID_SIDE | synth::FLOAT;
-    let file = synth::file(
+    let mut file = synth::file(
         2,
         32,
         512,
@@ -327,6 +327,8 @@ fn mid_side_float_blocks_use_float_arithmetic() {
         ]
         .concat()],
     );
+    // A real 32-bit 0x131 float file declares float in header word bit 0.
+    file[32] |= 1;
     let (ncw, samples) = decode(file).unwrap();
     assert_eq!(ncw.sample_format, SampleFormat::Float);
     for i in 0..512 {

@@ -155,7 +155,7 @@ impl GroupSettings {
                 };
                 let m = sampler_core::Biquad::new(self.rate, kind, cutoff, q)
                     .map_or(1., |b| b.magnitude(hz as f64));
-                (if poles == 4 { m * m } else { m }) as f32
+                (if poles >= 4 { m.powi(i32::from(poles / 2)) } else { m }) as f32
             })
             .product::<f32>()
             * self

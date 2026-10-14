@@ -74,11 +74,12 @@ fn close(actual: [f32; 2], expected: f32) {
 
 #[test]
 fn lofi_voice_state_processes_and_recycles_without_audio_heap_calls() {
-    let processor = Processor::LoFi(sampler_core::LoFiSettings {
-        bits: 0.1,
-        frequency: 0.2,
-        noise: 0.6,
-        color: 0.7,
+    let knob = |v: f64| sampler_core::Parameter::Constant(v);
+    let processor = Processor::Color(sampler_core::ColorSettings {
+        hold: Some(sampler_core::HoldSettings::Native(knob(0.2))),
+        quantizer: Some(sampler_core::QuantizerSettings::Native(knob(0.1))),
+        noise: Some(sampler_core::NoiseSettings { level: knob(0.6), color: knob(0.7) }),
+        ..sampler_core::ColorSettings::IDENTITY
     });
     let mut rt = Runtime::new(
         plan(vec![processor], vec![], 0, Envelope::default(), 128),
@@ -499,8 +500,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
 #[test]
 fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
     use sampler_core::{
-        ControlDefinition, ControlDomain, ControlId, ControlRange, ControlValue, Parameter,
-        PeakingEq,
+        ControlDefinition, ControlDomain, ControlId, ControlRange, ControlValue, EqBand,
     };
     let lane = |i| ControlRange {
         control: ControlId(i),
@@ -531,11 +531,7 @@ fn held_eq_and_rack_mix_render_and_recycle_without_heap_calls() {
                             wet: lane(1),
                             bypass: lane(2),
                         },
-                        Processor::PeakingEq(PeakingEq {
-                            frequency: Parameter::Constant(0.6),
-                            bandwidth: Parameter::Constant(0.4),
-                            gain_db: Parameter::Constant(6.),
-                        }),
+                        Processor::Eq(EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, 2000., 1., 6.)),
                     ],
                     vec![],
                     0,

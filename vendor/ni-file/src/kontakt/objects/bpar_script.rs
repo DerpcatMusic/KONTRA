@@ -51,7 +51,8 @@ impl BParScript {
         let mut params = BParScriptParams {
             text: {
                 let length = reader.read_u32_le()?;
-                if length == u32::MAX {
+                // Native optional string 0x140743010: any negative signed length.
+                if (length as i32) < 0 {
                     None
                 } else {
                     let bytes = reader.read_bytes(length as usize)?;
@@ -69,8 +70,8 @@ impl BParScript {
             textfile_name: reader.read_optional_sized_utf8()?,
             persistent: Vec::new(),
         };
-        // Older scripts end here. A present but malformed table is a parse fault.
-        let has_table = (reader.position() as usize) < reader.get_ref().len();
+        // BParScript reader 0x140d03920 reads the u32 count unconditionally for
+        // v0x50 and v0x60; a truncated count or entry is a parse fault.
         let mut entries = || -> Result<Vec<String>, Error> {
             let count = reader.read_u32_le()? as usize;
             let mut out = Vec::with_capacity(count.min(65536));
@@ -81,9 +82,7 @@ impl BParScript {
             }
             Ok(out)
         };
-        if has_table {
-            params.persistent = entries()?;
-        }
+        params.persistent = entries()?;
         Ok(params)
     }
 }
@@ -107,7 +106,7 @@ impl std::convert::TryFrom<&Chunk> for BParScript {
 mod tests {
     use super::*;
     #[test]
-    fn present_malformed_persistence_is_a_fault_and_absent_table_is_legacy() {
+    fn the_persistent_count_is_required_and_every_negative_length_is_absent() {
         let mut public_data = Vec::new();
         public_data.extend(u32::MAX.to_le_bytes()); // No inline source.
         public_data.extend([0, 0, 0]);
@@ -120,7 +119,12 @@ mod tests {
             private_data: vec![],
             children: vec![],
         });
+        assert!(script.params().is_err(), "EOF is not a legacy omission");
+        script.0.public_data.extend(0u32.to_le_bytes());
         assert!(script.params().unwrap().persistent.is_empty());
+        script.0.public_data[0..4].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        assert!(script.params().unwrap().text.is_none());
+        script.0.public_data.truncate(script.0.public_data.len() - 4);
         script.0.public_data.extend(1u32.to_le_bytes());
         assert!(script.params().is_err()); // Count1 without its entry.
         assert_eq!(BParScript::decode_source(vec![b'{', 0xe9, b'}']), "{é}");

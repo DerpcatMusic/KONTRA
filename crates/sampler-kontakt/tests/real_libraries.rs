@@ -444,10 +444,7 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
                     .unwrap()
                     .value;
                 assert!(
-                    value
-                        == sampler_core::ScriptStateValue::Text(
-                            sampler_core::Text::try_new(text).unwrap()
-                        ),
+                    capture.text(value) == Some(&sampler_core::Text::try_new(text).unwrap()),
                     "authored text array must reach native storage"
                 );
             }
@@ -526,6 +523,17 @@ fn dolce_init_getter_feedback_preserves_authored_envelope_lanes() {
         );
     }
     println!("DOLCE_AUTHORED_ENVELOPE retained_lanes={}", addresses.len());
+}
+
+#[test]
+fn analog_strings_prepares_with_its_live_lanes() {
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else {
+        return;
+    };
+    let options = sampler_kontakt::Options { keys: 60..=60, mpe: None, ..Default::default() };
+    if let Err(e) = sampler_kontakt::load_streamed(&path, &options, &Default::default(), |_| {}) {
+        panic!("ANALOG STRINGS prepare: {e:?}");
+    }
 }
 
 #[test]
@@ -626,9 +634,7 @@ fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
                         })
                         .any(|processor| match processor {
                             sampler_ir::Processor::LadderLP4(d) => d.address.is_some_and(same_slot),
-                            sampler_ir::Processor::LiveSaturation { address, .. }
-                            | sampler_ir::Processor::LiveDistortion { address, .. } =>
-                                same_slot(*address),
+                            sampler_ir::Processor::Color(c) => c.address.is_some_and(same_slot),
                             _ => false,
                         }),
                     "native effect lane lost its physical processor owner"
@@ -1680,21 +1686,16 @@ fn w15_authored_lofi_offline_ab_measures_reduction_on_the_gate_sample() {
                     .pre_amplitude
                     .iter()
                     .chain(&chain.post_amplitude)
-                    .find(|p| matches!(p, ir::Processor::LoFi { .. }))
+                    .find(|p| matches!(p, ir::Processor::Color(c) if c.quantizer.is_some() || c.hold.is_some()))
                     .map(|p| (z.clone(), p.clone()))
             })
             .expect("gate item must retain its authored Lo-Fi slot");
         // Saved defaults are pristine; exercise the same authored slot's Bits control.
-        let ir::Processor::LoFi {
-            ref mut bits,
-            ref mut frequency,
-            ..
-        } = effect
-        else {
+        let ir::Processor::Color(ref mut color) = effect else {
             unreachable!()
         };
-        *bits = 0.1;
-        *frequency = 1.;
+        color.quantizer = Some(ir::fx::color::Quantizer::Native { bits: 0.1 });
+        color.hold = Some(ir::fx::color::Hold::Native { frequency: 1. });
         zone.routes.clear();
         zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
         library.instrument.chains.push(ir::Chain {
@@ -2029,11 +2030,14 @@ fn conflux_production_load_binds_live_wave_controls_to_the_authored_group() {
         assert_eq!(rt.engine_parameter(address).unwrap(), default);
         rt.set_engine_parameter(address, 370_000).unwrap();
         assert_eq!(rt.engine_parameter(address).unwrap(), 370_000);
-        for name in ["ENGINE_PAR_WT_PHASE", "ENGINE_PAR_WT_FORM_MODE", "ENGINE_PAR_WT_FORM2_MODE"] {
-            let unbound = sampler_core::EngineParameterAddress {
-                parameter: sampler_core::engine_parameter_id(name).unwrap(), ..address };
-            assert!(rt.set_engine_parameter(unbound, 0).is_err());
+        let lane = |name: &str| sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id(name).unwrap(), ..address };
+        // The phase has no authored lane; the two form-mode lanes are bound
+        // (`wavetable_lanes`) with the discrete WavetableForm law.
+        assert!(rt.set_engine_parameter(lane("ENGINE_PAR_WT_PHASE"), 0).is_err());
+        for name in ["ENGINE_PAR_WT_FORM_MODE", "ENGINE_PAR_WT_FORM2_MODE"] {
+            rt.set_engine_parameter(lane(name), 0).expect(name);
         }
     }
-    println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_mode_unbound=true");
+    println!("CONFLUX_LIVE_WAVE physical_owners=3 phase_unbound=true form_modes_bound=true");
 }

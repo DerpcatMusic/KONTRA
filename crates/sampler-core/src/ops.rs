@@ -16,6 +16,23 @@ pub const HOST_VALUES: usize = 32;
 /// A store key occupies this many consecutive registers.
 pub const STORE_KEY: usize = 4;
 
+/// The seed of every script random stream (the runtime's and init's).
+pub const RANDOM_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// KSP `random(a, b)`: an integer in a..=b (either order) from the xorshift64*
+/// stream `state`. Kontakt's own seed is unproved; any in-range value is one
+/// it may draw. Modulo bias is below 2^-31 for 32-bit spans.
+pub fn random(state: &mut u64, a: i32, b: i32) -> i64 {
+    let (low, high) = (i64::from(a.min(b)), i64::from(a.max(b)));
+    let mut x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    let draw = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
+    low + (draw % (high - low + 1) as u64) as i64
+}
+
 /// Reals travel in integer registers as IEEE-754 bit patterns.
 pub fn real(bits: i64) -> f64 {
     f64::from_bits(bits as u64)
@@ -844,7 +861,7 @@ impl Default for OpState {
                 }
                 values
             },
-            random: 0x9e37_79b9_7f4a_7c15,
+            random: RANDOM_SEED,
         }
     }
 }
@@ -1184,16 +1201,8 @@ impl Runtime {
             }
             Op::Random { lhs, rhs } => {
                 let (a, b) = (i32_of(self.reg(id, lhs)?)?, i32_of(self.reg(id, rhs)?)?);
-                let (low, high) = (i64::from(a.min(b)), i64::from(a.max(b)));
-                // xorshift64*; modulo bias is below 2^-31 for 32-bit spans.
-                let mut x = self.ops.random;
-                x ^= x >> 12;
-                x ^= x << 25;
-                x ^= x >> 27;
-                self.ops.random = x;
-                let draw = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
-                let span = (high - low + 1) as u64;
-                self.set_reg(id, lhs, low + (draw % span) as i64)?;
+                let value = random(&mut self.ops.random, a, b);
+                self.set_reg(id, lhs, value)?;
             }
             Op::Call { target } => {
                 let c = self.continuation(id)?;
@@ -1778,7 +1787,16 @@ impl Runtime {
                 for (i, value) in values.iter_mut().take(count).enumerate() {
                     *value = i32_of(self.reg(id, args + i as u16)?)?;
                 }
-                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                // As the init evaluator: a rejected call (absent zone, unattached
+                // widget, unknown property, index) changes nothing and reads 0; it
+                // is not a fault that kills the callback and its note.
+                let admitted = match crate::waveform::admit(&self.behavior_bank(id)?.store, action, values) {
+                    Err(Error::InvalidInput) => {
+                        self.set_reg(id, local, 0)?;
+                        return Ok(false);
+                    }
+                    admitted => admitted?,
+                };
                 let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
                 let plan = self.behavior_plan(c.owner)?;
                 let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;

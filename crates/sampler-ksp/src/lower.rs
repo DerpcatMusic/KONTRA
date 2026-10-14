@@ -1287,6 +1287,27 @@ impl Gen<'_, '_> {
                     }
                 }
             }
+            ExprKind::Builtin(Builtin::OutputChannelName, args) => {
+                // As at init (eval.rs): the plugin's output channels are "Output N";
+                // an index beyond them names nothing.
+                self.cover(Builtin::OutputChannelName, Coverage::Native);
+                let name = |i: i32| format!("Output {}", i + 1);
+                if let Some(index) = self.const_int(args, 0) {
+                    let text = if (0..b::NUM_OUTPUT_CHANNELS).contains(&index) { name(index) } else { String::new() };
+                    TextPart::Constant(self.constant(&text))
+                } else {
+                    self.arg(args, 0, free)?;
+                    let base = self.texts.len() as u16;
+                    for i in 0..b::NUM_OUTPUT_CHANNELS {
+                        self.texts.push(name(i));
+                    }
+                    TextPart::Table {
+                        base,
+                        count: b::NUM_OUTPUT_CHANNELS as u16,
+                        index: free,
+                    }
+                }
+            }
             ExprKind::Builtin(Builtin::GetFolder, args) => {
                 // NI load/save get_folder; FUN_14078d910 case 9 reads host paths, unknown selectors are empty.
                 self.cover(Builtin::GetFolder, Coverage::Native);
@@ -2422,10 +2443,10 @@ impl Gen<'_, '_> {
                 true
             }
             PurgeGroup | GetPurgeState => {
-                self.arg(args, 0, t)?;
                 if builtin == PurgeGroup {
                     self.arg(args, 1, dst)?;
                 }
+                self.arg(args, 0, t)?;
                 self.emit(I::Op(Op::Purge {
                     group: t,
                     local: dst,
@@ -2434,10 +2455,11 @@ impl Gen<'_, '_> {
                 true
             }
             SetEnginePar | GetEnginePar => {
-                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
+                // Ascending registers: the value's evaluation uses those above it.
                 if builtin == SetEnginePar {
                     self.arg(args, 1, dst)?;
                 }
+                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
                 self.emit(I::Op(Op::EngineParameter {
                     address: dst + 1,
                     local: dst,
@@ -3887,11 +3909,12 @@ impl Gen<'_, '_> {
     }
 
     fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
-        self.arg(args, 0, dst + 1)?;
-        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
+        // Ascending registers: each evaluation uses those above its target.
         if write {
             self.arg(args, 2, dst)?;
         }
+        self.arg(args, 0, dst + 1)?;
+        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
         self.indexed_value_at(dst + 1, dst + 2, dst, dst + 3, write)
     }
 

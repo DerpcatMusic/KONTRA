@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod parity_run;
 type Values = BTreeMap<String, ir::Value>;
 thread_local! {
     static SUBMITTED: std::cell::RefCell<BTreeSet<String>> = const { std::cell::RefCell::new(BTreeSet::new()) };
@@ -35,10 +36,10 @@ pub(super) fn submitted_widget(widget: &ir::Widget, indices: &[u32]) {
                     edits.extend(
                         indices
                             .iter()
-                            .map(|index| format!("typed-{}-{index}", id.0)),
+                            .map(|index| format!("typed-{}-{index}", { id.0 })),
                     );
                 } else {
-                    edits.insert(format!("typed-{}", id.0));
+                    edits.insert(format!("typed-{}", { id.0 }));
                 }
             });
         }
@@ -118,6 +119,12 @@ struct Gate {
     preemptions: u64,
     progress_truncated: bool,
     phase: &'static str,
+    /// Script engine-parameter outcomes since the caller last cleared them.
+    engine_outcomes: Vec<sampler_core::EngineParameterOutcome>,
+    /// MIDI that returns a parity stimulus to rest.
+    rest: Vec<[u8; 3]>,
+    /// MIDI played right after each parity note-on.
+    during: Vec<[u8; 3]>,
 }
 impl Gate {
     fn load(selection: Selection) -> Self {
@@ -144,6 +151,9 @@ impl Gate {
             preemptions: 0,
             progress_truncated: false,
             phase: "load",
+            engine_outcomes: Vec::new(),
+            rest: Vec::new(),
+            during: Vec::new(),
         };
         gate.settle();
         gate
@@ -166,7 +176,7 @@ impl Gate {
             core.widget_gate_behavior_progress(0, |p| {
                 let fault = matches!(p.outcome, Some(sampler_core::Outcome::FuelExhausted | sampler_core::Outcome::Fault(_)));
                 if !fault && (p.yielded_at.is_none() || total == self.preemptions) { return; }
-                if self.preemption_observations.len() >= 128 { self.progress_truncated = true; return; }
+                if !fault && self.preemption_observations.len() >= 128 { self.progress_truncated = true; return; }
                 self.preemption_observations.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
                     "phase": self.phase, "sample": sample, "aggregate_preemptions": total,
                     "program": p.program, "callback": atoms.widget_gate_callback(p.program), "pc": p.pc,
@@ -175,6 +185,9 @@ impl Gate {
                     "outcome": p.outcome.map(|outcome| format!("{outcome:?}"))}));
             });
             self.preemptions = total;
+            let outcomes = core.widget_gate_engine_outcomes(0);
+            let room = 4096usize.saturating_sub(self.engine_outcomes.len());
+            self.engine_outcomes.extend(outcomes.into_iter().take(room));
             for (program, outcome) in core.scan_runtime_faults(0) {
                 self.fault_events.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
                     "phase": self.phase, "sample": sample, "program": program,
@@ -938,4 +951,47 @@ fn original_host_state_roundtrip() {
         expected == recalled.values(),
         "host recall preserves exact parameter values"
     );
+}
+
+/// Every part tab of a real instrument, at the minimum and a large editor size,
+/// for layout review. Pixels only; nothing from the library is written besides them.
+#[test]
+#[ignore = "installed library tab capture; set KONTRA_WIDGET_GATE_PATH and KONTRA_TAB_SHOTS"]
+fn tab_layout_shots() {
+    let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
+    let output = std::path::PathBuf::from(std::env::var_os("KONTRA_TAB_SHOTS").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let mut selection = Selection::default();
+    selection.parts = vec![Part { path, ..Default::default() }];
+    let mut gate = Gate::load(selection);
+    for _ in 0..50 {
+        gate.settle();
+    }
+    for (w, h) in [(900u16, 600u16), (1500, 1100)] {
+        gate.editor.resize(Size::new(w as f64, h as f64));
+        for view in ["Interface", "Articulations", "Mapping", "Sound", "Info", "Scripts"] {
+            let id = format!("view-0-{view}");
+            if gate.editor.ui.scene().unwrap().surface(&id).is_none() {
+                gate.editor.press("header-0");
+            }
+            gate.editor.press(&id);
+            for _ in 0..10 {
+                gate.settle();
+            }
+            gate.editor.settle_art();
+            moose::core::screenshot::save_png(&output.join(format!("{view}-{w}.png")),
+                &super::tests::pixels(&gate.editor.ui, w, h), w.into(), h.into());
+        }
+        // Folded to the header alone, then unfolded for the next size.
+        gate.editor.press("collapse-0");
+        for _ in 0..30 {
+            gate.settle();
+        }
+        moose::core::screenshot::save_png(&output.join(format!("Collapsed-{w}.png")),
+            &super::tests::pixels(&gate.editor.ui, w, h), w.into(), h.into());
+        gate.editor.press("collapse-0");
+        for _ in 0..30 {
+            gate.settle();
+        }
+    }
 }

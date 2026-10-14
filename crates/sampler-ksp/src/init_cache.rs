@@ -130,6 +130,23 @@ fn controls(
         .collect()
 }
 
+/// The cache's entry wire shape: the script-state entry as it was before
+/// texts moved to a side table, so cached inits stay readable.
+mod wire {
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize)]
+    pub(super) enum ScriptStateValue {
+        Control(sampler_core::ControlValue),
+        Cell(i64),
+        Text(sampler_core::Text),
+    }
+    #[derive(Serialize, Deserialize)]
+    pub(super) struct ScriptStateEntry {
+        pub(super) address: sampler_core::ScriptStateAddress,
+        pub(super) value: ScriptStateValue,
+    }
+}
+
 struct NativeValues<'a>(&'a Initialized);
 impl NativeValues<'_> {
     fn len(&self) -> usize {
@@ -144,9 +161,8 @@ impl NativeValues<'_> {
 }
 impl Serialize for NativeValues<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use sampler_core::{
-            ScriptStateAddress as A, ScriptStateEntry as Entry, ScriptStateValue as V,
-        };
+        use sampler_core::ScriptStateAddress as A;
+        use wire::{ScriptStateEntry as Entry, ScriptStateValue as V};
         use serde::ser::SerializeSeq;
         let init = &self.0.init;
         let controls = controls(&self.0.hir, self.0.environment.slot);
@@ -276,9 +292,8 @@ impl<'de> serde::de::Visitor<'de> for RestoreValues<'_> {
         f.write_str("complete native initializer state")
     }
     fn visit_seq<A: serde::de::SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
-        use sampler_core::{
-            ScriptStateAddress as Address, ScriptStateEntry, ScriptStateValue as Value,
-        };
+        use sampler_core::ScriptStateAddress as Address;
+        use wire::{ScriptStateEntry, ScriptStateValue as Value};
         let expected = self.entries;
         let mut count = 0;
         let mut prior = None;

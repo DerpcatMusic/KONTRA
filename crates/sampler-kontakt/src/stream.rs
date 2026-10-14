@@ -534,10 +534,12 @@ impl Streamer {
         policy: &StreamPolicy,
         probe: usize,
         canceled: &(dyn Fn() -> bool + Sync),
+        progress: &mut dyn FnMut(usize, usize),
     ) -> Result<Opened, LoadError> {
         let _span = crate::audit::Span::new("sample_headers_latency_probe");
+        let done = std::sync::atomic::AtomicUsize::new(0);
         let opened = std::thread::scope(|scope| {
-            let sources = &sources;
+            let (sources, done) = (&sources, &done);
             let count = std::thread::available_parallelism()
                 .map_or(1, |n| n.get())
                 .min(8)
@@ -582,12 +584,19 @@ impl Streamer {
                                         })?;
                                     Ok((pcm, latency))
                                 })();
+                                done.fetch_add(1, Ordering::Relaxed);
                                 (i, result)
                             })
                             .collect::<Vec<_>>()
                     })
                 })
                 .collect();
+            // Cold headers take seconds: report them from this (the progress) thread.
+            while !workers.iter().all(|w| w.is_finished()) {
+                progress(done.load(Ordering::Relaxed), sources.len());
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            progress(sources.len(), sources.len());
             let mut opened: Vec<_> = workers
                 .into_iter()
                 .flat_map(|w| w.join().expect("sample header worker"))
@@ -1407,7 +1416,7 @@ mod tests {
             })
             .collect();
         let opened =
-            Streamer::open(sources, 48000, &StreamPolicy::default(), 0, &|| false).unwrap();
+            Streamer::open(sources, 48000, &StreamPolicy::default(), 0, &|| false, &mut |_, _| ()).unwrap();
         assert_eq!(
             opened
                 .assets

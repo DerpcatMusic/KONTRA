@@ -67,7 +67,8 @@ use clap_sys::ext::params::{
     CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED, clap_param_info, clap_plugin_params,
 };
 use clap_sys::ext::params::{
-    CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_VALUES, clap_host_params,
+    CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+    CLAP_PARAM_RESCAN_VALUES, clap_host_params,
 };
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_host_preset_load,
@@ -236,6 +237,9 @@ struct ClapPluginData<P: PluginExport> {
     param_infos: Vec<ParamInfo>,
     /// Visible CLAP indices; backing parameter IDs and storage stay fixed.
     exposed_param_indices: Mutex<Vec<usize>>,
+    /// IDs published as stepped by their runtime presentation; like the
+    /// index list, it changes only while deactivated.
+    stepped_ids: Mutex<Vec<u32>>,
     parameter_restart_pending: AtomicBool,
     /// Cached plugin info. Read by the chunker each block for
     /// `automation.min_subblock_samples` and otherwise unused; the
@@ -300,6 +304,9 @@ struct ClapPluginData<P: PluginExport> {
     needs_rescan: Arc<AtomicBool>,
     /// Last `Params::parameter_presentation_revision` the host saw.
     presentation_revision: AtomicU64,
+    /// Set by `process` when the presentation revision moved; drained on
+    /// the main thread, which rescans. One wake per change, not per block.
+    presentation_wake: AtomicBool,
     /// Shared transport slot: audio thread writes each block, editor reads.
     transport_slot: Arc<TransportSlot>,
     /// Host-reported GUI scale (via `clap_plugin_gui::set_scale`).
@@ -709,6 +716,9 @@ unsafe extern "C" fn clap_plugin_init<P: PluginExport>(plugin: *const clap_plugi
             let mut instance = enter_plugin(&data.plugin);
             instance.init();
             data.param_infos = instance.params().param_infos();
+            data.stepped_ids = Mutex::new(stepped_ids(&data.param_infos, |id| {
+                data.params_arc.parameter_presentation(id)
+            }));
             data.exposed_param_indices = Mutex::new(parameter_indices(&data.param_infos, |id| {
                 data.params_arc.parameter_presentation(id)
             }));
@@ -932,6 +942,7 @@ unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const 
         data.pending_state.collect_retired();
         // Runtime presentation metadata is re-read on RESCAN_INFO. A change
         // to the exposed list requests a restart and is published inactive.
+        data.presentation_wake.store(false, Ordering::Relaxed);
         let revision = data.params_arc.parameter_presentation_revision();
         let info_changed = data.presentation_revision.swap(revision, Ordering::Relaxed) != revision;
         let list_changed = info_changed && refresh_parameter_list(data);
@@ -950,7 +961,8 @@ unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const 
                 flags |= CLAP_PARAM_RESCAN_VALUES;
             }
             if info_changed {
-                flags |= CLAP_PARAM_RESCAN_INFO;
+                // Value text follows the presentation (units, labels).
+                flags |= CLAP_PARAM_RESCAN_INFO | CLAP_PARAM_RESCAN_TEXT;
             }
             rescan(data.host, flags);
         }
@@ -2905,6 +2917,16 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         {
             req_cb(data.host);
         }
+        // Presentation (names, visibility) is likewise read on the main
+        // thread; one atomic compare here wakes it.
+        if data.params_arc.parameter_presentation_revision()
+            != data.presentation_revision.load(Ordering::Relaxed)
+            && !data.presentation_wake.swap(true, Ordering::Relaxed)
+            && !data.host.is_null()
+            && let Some(req_cb) = (*data.host).request_callback
+        {
+            req_cb(data.host);
+        }
         let new_latency = instance.latency();
         if data.latency_cache.swap(new_latency, Ordering::Relaxed) != new_latency
             && !data.latency_dirty.swap(true, Ordering::Relaxed)
@@ -3550,21 +3572,43 @@ fn parameter_indices(
         .collect()
 }
 
+/// IDs whose runtime presentation marks them stepped, sorted.
+fn stepped_ids(
+    infos: &[ParamInfo],
+    mut presentation: impl FnMut(u32) -> Option<moose_params::ParameterPresentation>,
+) -> Vec<u32> {
+    let mut ids: Vec<u32> = infos
+        .iter()
+        .filter(|info| presentation(info.id).is_some_and(|p| p.stepped))
+        .map(|info| info.id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 // Main thread only. Active instances keep their published index list until
 // the host restarts them; the parameter IDs and backing storage never change.
 unsafe fn refresh_parameter_list<P: PluginExport>(data: &ClapPluginData<P>) -> bool {
     let next = parameter_indices(&data.param_infos, |id| {
         data.params_arc.parameter_presentation(id)
     });
+    let next_stepped = stepped_ids(&data.param_infos, |id| {
+        data.params_arc.parameter_presentation(id)
+    });
     let mut indices = data
         .exposed_param_indices
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if *indices == next {
+    let mut stepped = data
+        .stepped_ids
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *indices == next && *stepped == next_stepped {
         return false;
     }
     if data.active.load(Ordering::Relaxed) {
         drop(indices);
+        drop(stepped);
         if !data.parameter_restart_pending.swap(true, Ordering::Relaxed)
             && !data.host.is_null()
             && let Some(restart) = unsafe { (*data.host).request_restart }
@@ -3574,7 +3618,9 @@ unsafe fn refresh_parameter_list<P: PluginExport>(data: &ClapPluginData<P>) -> b
         return false;
     }
     *indices = next;
+    *stepped = next_stepped;
     drop(indices);
+    drop(stepped);
     data.parameter_restart_pending
         .store(false, Ordering::Relaxed);
     if !data.host.is_null()
@@ -3668,6 +3714,16 @@ unsafe extern "C" fn params_get_info<P: PluginExport>(
             }
             _ => {}
         }
+        // Stepped by presentation as last published while deactivated.
+        if data
+            .stepped_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .binary_search(&info.id)
+            .is_ok()
+        {
+            flags |= CLAP_PARAM_IS_STEPPED;
+        }
         let presentation = data.params_arc.parameter_presentation(info.id);
         out.flags = presented_flags(flags, presentation.as_ref());
 
@@ -3713,9 +3769,7 @@ mod presentation_tests {
     fn presentation_hidden_overrides_static_flag() {
         let shown = ParameterPresentation {
             name: "A".into(),
-            group: String::new(),
-            hidden: false,
-            available: true,
+            ..ParameterPresentation::default()
         };
         let hidden = ParameterPresentation {
             hidden: true,
@@ -5469,6 +5523,9 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
         let exposed_param_indices = Mutex::new(parameter_indices(&param_infos, |id| {
             params_arc.parameter_presentation(id)
         }));
+        let stepped_ids = Mutex::new(stepped_ids(&param_infos, |id| {
+            params_arc.parameter_presentation(id)
+        }));
         let meter_store = instance.meter_store();
         let snapshot = instance.snapshot_slot();
         let task_spawner = instance.task_spawner();
@@ -5506,6 +5563,7 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
             selected_config: AtomicU32::new(0),
             param_infos,
             exposed_param_indices,
+            stepped_ids,
             parameter_restart_pending: AtomicBool::new(false),
             info,
             plugin_id_hash,
@@ -5523,6 +5581,7 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
             render_mode: AtomicU8::new(ProcessMode::Realtime.as_u8()),
             needs_rescan: Arc::new(AtomicBool::new(false)),
             presentation_revision: AtomicU64::new(0),
+            presentation_wake: AtomicBool::new(false),
             transport_slot: TransportSlot::new(),
             host_scale: AtomicU64::new(0),
             window_scale: AtomicU64::new(0),

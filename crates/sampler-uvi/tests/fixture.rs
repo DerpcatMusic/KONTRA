@@ -140,7 +140,7 @@ fn authored_program_translates_loads_and_renders() {
     assert!(matches!(
         ir.modulators[route.source.0].source,
         ir::ModulationSource::Lfo(ir::Lfo {
-            shape: ir::LfoShape::Sine,
+            shape: ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Sinus)),
             rate: ir::Frequency::Hertz(5.0),
             ..
         })
@@ -596,6 +596,36 @@ fn wave_shaper_rectifies_and_comp_exp_compresses() {
 }
 
 #[test]
+fn maximizer_lifts_to_the_ceiling() {
+    let out = through(r#"<Maximizer Threshold="-40" Ceiling="-3" CeilingMode="2"/>"#, "maximizer");
+    let peak = out[2000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    assert!((peak - 10f32.powf(-3. / 20.)).abs() < 0.02, "{peak}");
+}
+
+#[test]
+fn bit_crusher_holds_quantizes_and_mixes_like_the_native_kernel() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "crusher-plain");
+    let changes = |out: &[[f32; 2]]| out[1000..].windows(2).filter(|w| w[0][0] != w[1][0]).count();
+    // 4 bits: every output is a multiple of 1/16; a 6 kHz target rate holds
+    // each capture for about eight 48 kHz frames.
+    let crushed = through(
+        r#"<BitCrusher EffectiveSampleRate="6000" BitSize="4" Drive="0" Cutoff="0" Mix="1"/>"#,
+        "crusher",
+    );
+    assert!(crushed[1000..].iter().flatten().all(|x| ((x * 16.0).round() - x * 16.0).abs() < 1e-3));
+    assert!(changes(&crushed) * 3 < changes(&plain), "{} {}", changes(&crushed), changes(&plain));
+    // Mix 0 is the untouched input.
+    let dry = through(r#"<BitCrusher BitSize="4" Mix="0"/>"#, "crusher-dry");
+    for (a, b) in dry.iter().zip(&plain) {
+        assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    }
+    // A positive Cutoff is a high-pass above 6.6 kHz: a 440 Hz tone is removed.
+    let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let high = through(r#"<BitCrusher BitSize="24" EffectiveSampleRate="48000" Cutoff="1"/>"#, "crusher-hp");
+    assert!(peak(&high) < peak(&plain) * 0.2, "{} {}", peak(&high), peak(&plain));
+}
+
+#[test]
 fn track_delay_moves_the_impulse_without_feedback() {
     let plain = through(r#"<Gain Volume="1"/>"#, "delay-plain");
     let delayed = through(r#"<TrackDelay DelayTime="0.01"/>"#, "track-delay");
@@ -604,6 +634,23 @@ fn track_delay_moves_the_impulse_without_feedback() {
         for c in 0..2 {
             assert!((actual[c] - expected[c]).abs() < 2e-6);
         }
+    }
+}
+
+#[test]
+fn time_modulation_inserts_run_on_the_universal_engine() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "tm-plain");
+    let delayed = through(r#"<FxDelay DelayTime="0.01" Feedback="0" Mix="1"/>"#, "tm-fxdelay");
+    assert!(delayed[..470].iter().flatten().all(|x| x.abs() < 1e-7));
+    for (actual, expected) in delayed[490..].iter().zip(&plain[10..]) {
+        for c in 0..2 {
+            assert!((actual[c] - expected[c]).abs() < 2e-3, "linear read of an integer delay");
+        }
+    }
+    for tag in ["Chorus", "Flanger", "Phaser", "Phasor", "WhiteChorus", "TapeEcho", "DualDelay"] {
+        let out = through(&format!(r#"<{tag} Mix="0.5"/>"#), &format!("tm-{tag}"));
+        assert!(out.iter().flatten().all(|x| x.is_finite()), "{tag}");
+        assert!(out[2000..].iter().flatten().any(|x| x.abs() > 1e-3), "{tag} stays audible");
     }
 }
 
@@ -735,6 +782,60 @@ fn typed_one_pole_catalog_controls_reach_distinct_live_processors() {
             }
         ));
     }
+}
+
+#[test]
+fn digital_eq_slope_sets_the_pass_band_order() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><DigitalEq Enabled1="1" Type1="1" Slope1="3" Freq1="80" Enabled2="1" Type2="0" Slope2="5" Freq2="9000"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some((c.bands()[0].kind, c.bands()[0].poles)),
+            _ => None,
+        })
+        .collect();
+    // Slope 3 is order 4 (24 dB/oct), slope 5 order 8 (48 dB/oct), under the native band design.
+    assert_eq!(bands, [(ir::fx::eq::Kind::HighPass, 4), (ir::fx::eq::Kind::LowPass, 8)]);
+}
+
+#[test]
+fn fx_preset_legacy_eqs_translate_under_the_cookbook_law() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><FXPreset><TwoBandEq LowGain="6" HighFreq="8000" HighGain="-3"/></FXPreset><ThreeBandEq MidQ="0.5" MidGain="4"/><ParametricEQ Enable1="1" Freq1="40" Q1="2" Enable3="1" Gain3="5"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    use ir::fx::eq::{Kind, Law};
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some(c.bands().to_vec()),
+            _ => None,
+        })
+        .flatten()
+        .map(|b| (b.kind, b.law, b.frequency, b.q, b.gain_db))
+        .collect();
+    let c = Law::Cookbook;
+    assert_eq!(
+        bands,
+        [
+            (Kind::LowShelf, c, 80., 0.5, 6.),
+            (Kind::HighShelf, c, 8000., 0.5, -3.),
+            (Kind::LowShelf, c, 80., 0.5, 0.),
+            (Kind::Peak, c, 2500., 2.5, 4.),
+            (Kind::HighShelf, c, 10000., 0.5, 0.),
+            (Kind::HighPass, c, 40., 2., 0.),
+            (Kind::Peak, c, 180., 0.7, 5.),
+        ]
+    );
 }
 
 #[test]
