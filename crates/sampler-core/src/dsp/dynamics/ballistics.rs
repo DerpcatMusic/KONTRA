@@ -448,39 +448,40 @@ impl Stage for MovingAverage2<'_> {
 /// one-pole, or with auto release a second, slower envelope the request
 /// falls back to; the gain is `2^(-32 env)`. State `aux[0..2]` envelope,
 /// `aux[4..6]` the slow envelope, f64.
-pub(super) struct BusEnvelope {
+pub(super) struct BusEnvelope<const AUTO: bool> {
+    pub curve: super::computer::BusRatio,
     pub attack: f64,
     pub release: f64,
-    pub auto: Option<[f64; 2]>,
+    /// Auto-release up / down coefficients (`AUTO` only).
+    pub auto: [f64; 2],
     env: [f64; 2],
     slow: [f64; 2],
 }
 
-impl BusEnvelope {
-    pub fn new(attack: f64, release: f64, auto: Option<[f64; 2]>, state: &ProcessorState) -> Self {
-        Self { attack, release, auto, env: [state.aux[0], state.aux[1]], slow: [state.aux[4], state.aux[5]] }
+impl<const AUTO: bool> BusEnvelope<AUTO> {
+    pub fn new(curve: super::computer::BusRatio, attack: f64, release: f64, auto: [f64; 2], state: &ProcessorState) -> Self {
+        Self { curve, attack, release, auto, env: [state.aux[0], state.aux[1]], slow: [state.aux[4], state.aux[5]] }
     }
 }
 
-impl BusEnvelope {
+impl<const AUTO: bool> BusEnvelope<AUTO> {
     /// One channel; called with constant `ch` so the frame stays in registers.
     #[inline(always)]
-    fn channel(&mut self, d: f64, ch: usize) -> f64 {
+    fn channel(&mut self, tap: f64, ch: usize) -> f64 {
+        let d = self.curve.depth(tap);
         let env = self.env[ch];
-        let next = match self.auto {
-            None => {
-                let c = if d <= env { self.release } else { self.attack };
-                (1. - c) * d + env * c
-            }
-            Some([up, down]) => {
-                let c = if d <= self.slow[ch] { down } else { up };
-                let slow = (1. - c) * d + c * self.slow[ch];
-                self.slow[ch] = slow;
-                if d > env {
-                    (1. - self.attack) * d + env * self.attack
-                } else {
-                    (1. - self.release) * d.max(slow) + env * self.release
-                }
+        let next = if !AUTO {
+            let c = if d <= env { self.release } else { self.attack };
+            (1. - c) * d + env * c
+        } else {
+            let [up, down] = self.auto;
+            let c = if d <= self.slow[ch] { down } else { up };
+            let slow = (1. - c) * d + c * self.slow[ch];
+            self.slow[ch] = slow;
+            if d > env {
+                (1. - self.attack) * d + env * self.attack
+            } else {
+                (1. - self.release) * d.max(slow) + env * self.release
             }
         };
         self.env[ch] = next;
@@ -488,7 +489,7 @@ impl BusEnvelope {
     }
 }
 
-impl Stage for BusEnvelope {
+impl<const AUTO: bool> Stage for BusEnvelope<AUTO> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         f.gain = [self.channel(f.level[0], 0), self.channel(f.level[1], 1)];

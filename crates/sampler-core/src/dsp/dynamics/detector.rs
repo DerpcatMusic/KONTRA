@@ -391,7 +391,9 @@ pub(super) fn bus_level(v: f64) -> f64 {
 impl Stage for BusTap {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = each(self.0, |v| bus_level(v.abs().min(1.)));
+        // Raw taps: `BusEnvelope` takes the level per channel, so each
+        // channel's log2 -> exp2 loop stays its own dependency chain.
+        f.level = self.0;
     }
 
     #[inline(always)]
