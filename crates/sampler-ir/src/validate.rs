@@ -210,6 +210,8 @@ impl Check<'_> {
             Curve::ToneStack(_) => {}
             // Translators clamp to the native ranges; the runtime checks finiteness.
             Curve::Exciter(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Tape(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;
