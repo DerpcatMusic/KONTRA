@@ -22,6 +22,7 @@ mod coverage;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod engine_parameters;
+pub mod meters;
 mod fx;
 mod inserts;
 pub use inserts::InsertNode;
@@ -1135,6 +1136,8 @@ pub struct AttachedScript {
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
+    /// Ancillary exact XML-element/bus ownership, never a native display law.
+    pub meter_buses: std::sync::Arc<[meters::Binding]>,
 }
 
 impl Translated {
@@ -1247,10 +1250,14 @@ impl Translated {
             });
         }
         let groups = self.groups.clone();
+        let meter_buses = if loaded.interface.widgets.iter().any(|widget| widget.uvi_meter_request.is_some()) {
+            meters::bindings(&self.text, &self.instrument, &self.inserts).into()
+        } else { std::sync::Arc::default() };
         Ok(Some(AttachedScript {
             findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
+            meter_buses,
         }))
     }
 }
