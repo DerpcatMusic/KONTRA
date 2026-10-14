@@ -99,7 +99,7 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 /// Why a delay or modulation module without a mapping stays unsupported.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x5a => "Replika: field binding measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the modern core behind wrapper 0x1408f98d0 (53 controls; core +0x1c0 setParam slot 0x60, update 0x40, process 0x38) and its style kernels are not extracted",
+        0x5a => "Replika: core control laws known (setParam 0x141ac5980: time 8/9, type 28, gains 0/1, mix 4) but the saved-field to core-index binding (generic per-quantum streams at wrapper +0x14580/+0x145f0) and the line read/write recurrence (0x141ab7e00 / 0x141acd110, line filter, saturation 0x141aa44a0) are not extracted",
         0x5b => "Phasis: modern wrapper core not located; no saved-field binding measured",
         0x5c => "Flair: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
         0x5d => "Choral: field binding measured (fx_other.tsv) but the modern wrapper core and its audio laws are not extracted",
