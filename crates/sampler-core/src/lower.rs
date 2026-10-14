@@ -906,8 +906,10 @@ pub fn lower_with(
     }
     engine_bindings.extend(native.into_values());
     // An envelope that is also a group's amplitude keeps that binding.
-    let bound: std::collections::BTreeSet<_> = engine_bindings.iter().map(|b| b.address).collect();
-    engine_bindings.extend(wave_bindings.into_iter().filter(|b| !bound.contains(&b.address)));
+    // One binding per native address: family lanes, then envelope lanes, then
+    // aliases, each skipping an address an earlier source already owns.
+    let mut bound: std::collections::BTreeSet<_> = engine_bindings.iter().map(|b| b.address).collect();
+    engine_bindings.extend(wave_bindings.into_iter().filter(|b| bound.insert(b.address)));
     // One pass over route controls: per-alias scans of routes x zones were
     // quadratic (ANALOG STRINGS spent ~90 s here at 95% load progress).
     let mut zone_routes = vec![false; instrument.routes.len()];
@@ -934,13 +936,17 @@ pub fn lower_with(
         };
         let parameter = crate::engine_parameter_id(&alias.parameter)
             .ok_or_else(|| unsupported(&control.key, Feature::Controls))?;
+        let address = crate::EngineParameterAddress {
+            parameter,
+            group: alias.address.group,
+            slot: alias.address.slot,
+            generic: alias.address.generic,
+        };
+        if !bound.insert(address) {
+            continue;
+        }
         engine_bindings.push(crate::EngineParameterBinding {
-            address: crate::EngineParameterAddress {
-                parameter,
-                group: alias.address.group,
-                slot: alias.address.slot,
-                generic: alias.address.generic,
-            },
+            address,
             control: ir_control_id(&control.key),
             // Kontakt's modulator intensity is signed cubic for every target:
             // ANALOG STRINGS' phase table writes 500000*(cbrt(p)+1) for phase p.
@@ -1360,7 +1366,7 @@ impl Lowering<'_> {
         Ok(envelope)
     }
 
-    fn route_envelopes(&self) -> impl Iterator<Item = (&'a ir::SourceModulator, ir::ModulatorRef, &'a ir::Envelope)> + '_ {
+    fn route_envelopes(&self) -> impl Iterator<Item = (&ir::SourceModulator, ir::ModulatorRef, &ir::Envelope)> + '_ {
         self.route_envelopes.iter().filter_map(|&(source, modulator)| match &self.ir.modulators[modulator.0].source {
             ir::ModulationSource::Envelope(e) => Some((source, modulator, e)),
             _ => None,

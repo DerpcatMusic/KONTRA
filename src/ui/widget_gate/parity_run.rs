@@ -415,6 +415,12 @@ fn stimulus(gate: &mut Gate, bindings: &[sampler_core::EngineParameterBinding], 
                     gate.core.set_control(0, id, v);
                 }
                 context["heard_through"] = json!(i.controls[depth.0].key);
+            } else {
+                // No live depth to open: the row is heard only if the target
+                // modulator already moves something (its saved routes).
+                // ponytail: reported, not forced; force a depth when a row needs it.
+                context["heard_through"] = json!(i.routes.iter().filter(|r| r.source == m)
+                    .map(|r| format!("{} {:?}", variant(format!("{:?}", r.target)), r.depth)).collect::<Vec<_>>());
             }
         }
     }
