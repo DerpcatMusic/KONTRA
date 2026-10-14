@@ -843,7 +843,7 @@ impl TraceGraph {
             }
             PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
             PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
-            PreparedProcessor::Space(i) => (
+            PreparedProcessor::Space(i, _) => (
                 "space",
                 plan.buses
                     .trace_space(*i)

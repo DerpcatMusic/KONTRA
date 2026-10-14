@@ -1636,6 +1636,16 @@ pub enum ProcessorParameter {
     LoFiFrequency,
     LoFiNoise,
     LoFiColor,
+    /// Stored knobs of script-addressed Kontakt delay, modulation and reverb
+    /// units (the family's `set` applies the native setter).
+    Time,
+    Feedback,
+    Depth,
+    Speed,
+    Phase,
+    Size,
+    Colour,
+    Predelay,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1724,6 +1734,33 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+}
+
+impl Processor {
+    /// The same unit addressed by a script slot, so [`Processor::lanes`] are
+    /// live. A unit that already names its slot (an EQ band) keeps it.
+    pub fn at(self, address: SlotAddress) -> Self {
+        match self {
+            Self::Color(c) if c.address.is_none() => Self::Color(c.at(address)),
+            Self::Dynamics(c) if c.address.is_none() => Self::Dynamics(fx::dynamics::Config { address: Some(address), ..c }),
+            Self::Eq(c) if c.address.is_none() => Self::Eq(fx::eq::Config { address: Some(address), ..c }),
+            Self::TimeMod(c) => Self::TimeMod(fx::timemod::Config { address: Some(address), ..c }),
+            Self::Space(c) => Self::Space(fx::space::Config { address: Some(address), ..c }),
+            p => p,
+        }
+    }
+    /// The unit's script slot and its live knobs; no knobs without a slot.
+    pub fn lanes(&self) -> Option<(SlotAddress, Vec<fx::Lane>)> {
+        let (address, lanes) = match self {
+            Self::Color(c) => (c.address, c.lanes()),
+            Self::Dynamics(c) => (c.address, c.lanes()),
+            Self::Eq(c) => (c.address, c.lanes()),
+            Self::TimeMod(c) => (c.address, c.lanes()),
+            Self::Space(c) => (c.address, c.lanes()),
+            _ => return None,
+        };
+        Some((address?, lanes))
+    }
 }
 
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;

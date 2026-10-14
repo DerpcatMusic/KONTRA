@@ -116,6 +116,17 @@ impl Freeverb {
         })
     }
 
+    /// Take `n`'s knobs (predelay, feedback, damping, width, input cutoff)
+    /// as the native setter does; rings and filter states persist.
+    pub(super) fn retune(&mut self, n: &Network, rate: u32) {
+        let (Some(f), r) = (n.freeverb, rate as f32) else { return };
+        let pre = ((n.predelay_seconds * 1000.0) as f32 * r * 0.001) as usize;
+        self.pre = if pre >= PRE { 0 } else { pre };
+        (self.feedback, self.damp, self.gain, self.input_gain) = (f.feedback as f32, f.damp as f32, f.allpass as f32, f.input_gain as f32);
+        self.beta = (2.0 * (1.0 - f.width)) as f32;
+        self.lp = (n.input_cutoff_hz < 0.49 * f64::from(r)).then(|| one_pole(n.input_cutoff_hz as f32, r));
+    }
+
     pub(super) fn clear(&mut self) {
         for c in &mut self.channels {
             c.pre.fill(0.0);
