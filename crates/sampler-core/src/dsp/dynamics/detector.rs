@@ -39,7 +39,7 @@ fn interpolate(p: &[u32; 12], r: impl Fn(usize) -> f32) -> f32 {
 
 /// 4x true peak: a 12-frame history, cursor in `aux[slot]`.
 pub(super) struct TruePeak<'a> {
-    history: &'a mut [[f64; 2]],
+    history: &'a mut [[f64; 2]; TRUE_PEAK_CELLS],
     at: usize,
     slot: usize,
 }
@@ -48,7 +48,8 @@ pub(super) const TRUE_PEAK_CELLS: usize = 12;
 
 impl<'a> TruePeak<'a> {
     pub fn new(history: &'a mut [[f64; 2]], state: &ProcessorState, slot: usize) -> Self {
-        Self { history, at: state.aux[slot] as usize, slot }
+        let history = history.try_into().expect("the true-peak history is 12 cells");
+        Self { history, at: state.aux[slot] as usize % TRUE_PEAK_CELLS, slot }
     }
 
     /// Largest interpolated magnitude per channel, `x` the newest frame.
@@ -57,12 +58,14 @@ impl<'a> TruePeak<'a> {
         self.history[self.at] = x;
         self.at = (self.at + 1) % TRUE_PEAK_CELLS;
         let (h, at) = (&*self.history, self.at);
-        [0, 1].map(|ch| {
+        let channel = |ch: usize| {
             let r = |j: usize| h[(at + j) % TRUE_PEAK_CELLS][ch] as f32;
             PHASES.iter().fold(0f32, |m, p| m.max(interpolate(p, r).abs()))
-        })
+        };
+        [channel(0), channel(1)]
     }
 
+    #[inline(always)]
     pub fn store(&self, state: &mut ProcessorState) {
         state.aux[self.slot] = self.at as f64;
     }
@@ -136,6 +139,7 @@ impl Stage for Sidechain<'_> {
         self.last = [f.audio[0] * f.gain[0], f.audio[1] * f.gain[1]];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[..4].copy_from_slice(&self.hp);
         state.aux[4..6].copy_from_slice(&self.last);
@@ -155,7 +159,7 @@ impl Stage for SignedMean {
     fn tick(&mut self, f: &mut Frame) {
         let x = f.audio.map(|v| v as f32);
         let mean = x[0] * 0.5 + x[1] * 0.5;
-        f.level = [0, 1].map(|ch| f64::from(if self.0 { mean } else { x[ch] }.abs()));
+        f.level = if self.0 { [f64::from(mean.abs()); 2] } else { x.map(|v| f64::from(v.abs())) };
     }
 }
 
@@ -184,6 +188,7 @@ impl Stage for Windowed<'_> {
         f.level = [m; 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         self.window.store(state);
     }
@@ -253,6 +258,7 @@ impl Stage for Hilbert<'_> {
         self.n = n.wrapping_add(1);
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[0] = (self.n % 8) as f64;
         state.aux[1] = f64::from(self.env[0]);
@@ -305,6 +311,7 @@ impl Stage for TenthRoot {
         fr.level = [f64::from(tenth_root(det) * f32::from_bits(0x3f33_3333)); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[i] = f64::from(*v);
@@ -335,14 +342,19 @@ impl Stage for HighPassed {
         let s = fr.audio.map(|v| v as f32);
         let raw = if self.linked { [s[0].abs().max(s[1].abs()); 2] } else { s.map(f32::abs) };
         let (c, f) = (self.hp, &mut self.f);
-        for k in 0..if self.linked { 1 } else { 2 } {
+        let mut channel = |k: usize| {
             let (x1, y1) = (f[2 * k], f[2 * k + 1]);
             let y = (raw[k] * c[0] + x1 * c[1]) - y1 * c[2];
             (f[2 * k], f[2 * k + 1]) = (raw[k] + EPS_18, y + EPS_18);
-            fr.level[k] = f64::from(y);
+            f64::from(y)
+        };
+        fr.level[0] = channel(0);
+        if !self.linked {
+            fr.level[1] = channel(1);
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[i] = f64::from(*v);
@@ -373,9 +385,10 @@ impl Stage for BusTap {
 
     #[inline(always)]
     fn after(&mut self, f: &Frame) {
-        self.0 = [0, 1].map(|ch| f.gain[ch] * f.audio[ch] * 0.0078125);
+        self.0 = [f.gain[0] * f.audio[0] * 0.0078125, f.gain[1] * f.audio[1] * 0.0078125];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.aux[2..4].copy_from_slice(&self.0);
     }
@@ -401,6 +414,7 @@ impl Stage for MaxPeak<'_> {
         f.level = [f64::from(level); 2];
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         if let Some(tp) = &self.0 {
             tp.store(state);

@@ -110,8 +110,9 @@ fn db(level: f64) -> f64 {
 impl Stage for Ratio {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        for ch in 0..self.channels {
-            f.level[ch] = self.target(f.level[ch]);
+        f.level[0] = self.target(f.level[0]);
+        if self.channels == 2 {
+            f.level[1] = self.target(f.level[1]);
         }
     }
 }
