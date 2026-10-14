@@ -7,8 +7,9 @@
 //! saved as `tables/skreamer.f32le`. Gains ramp from zero over `round(rate * 0.0003125)`
 //! 32-frame blocks after reset (≈ 10 ms). Checked bit-exact against the native core under
 //! kemu (model kcolor/skreamer.py).
-// ponytail: knobs are constants (no script/modulation lanes); add when a library drives them.
 use super::super::Planar;
+use super::super::ControlRamp;
+use super::super::control::PreparedParameter;
 use super::super::filter::ladder_kernel::exponential as table_db;
 
 const TABLE_BYTES: &[u8; 2048] = include_bytes!("tables/skreamer.f32le");
@@ -52,12 +53,20 @@ pub(super) struct State {
     gain: Lanes,
     step: Lanes,
     remaining: u32,
-    started: bool,
+    target: Option<Lanes>,
+    /// Native wrapper 0x140aa5860 preserves its 32-frame residual across calls.
+    quantum: u8,
+    /// Live coefficients belong to this history, never another voice or slot.
+    cached: Option<([f32; 5], Skreamer)>,
 }
 
 impl State {
     pub(super) fn finite(&self) -> bool {
-        self.ch.iter().flatten().flatten().chain(&self.gain).all(|v| v.is_finite())
+        self.ch.iter().flatten().flatten().chain(&self.gain).chain(&self.step)
+            .chain(self.target.iter().flatten()).all(|v| v.is_finite())
+            && self.cached.as_ref().is_none_or(|(knobs, unit)| {
+                knobs.iter().chain(&unit.k).chain(&unit.e).chain(&unit.target).all(|v| v.is_finite())
+            })
     }
 }
 
@@ -91,8 +100,11 @@ impl Skreamer {
     }
 
     fn tick(&self, s: &mut State) {
-        if !s.started {
-            s.started = true;
+        // Drive/Mix setters mark the target dirty (0x1409682b5 / 0x140968442).
+        // The wrapper retargets from the current gain at the next control tick,
+        // retaining all channel/filter histories (0x140aa58e6..0x140aa59f4).
+        if s.target != Some(self.target) {
+            s.target = Some(self.target);
             for i in 0..4 {
                 let d = (self.target[i] - s.gain[i]) * self.inverse;
                 if f64::from(d * d) < 1e-15 {
@@ -102,9 +114,7 @@ impl Skreamer {
                     s.step[i] = d;
                 }
             }
-            if s.step.iter().any(|&d| d != 0.0) {
-                s.remaining = self.blocks;
-            }
+            s.remaining = if s.step.iter().any(|&d| d != 0.0) { self.blocks } else { 0 };
         } else if s.remaining != 0 {
             s.remaining -= 1;
             if s.remaining == 0 {
@@ -144,29 +154,139 @@ impl Skreamer {
         e[2]
     }
 
+    /// One span up to the next native control tick; splitting a host block does
+    /// not advance the gain ramp early or discard its residual frame count.
+    fn span(&self, s: &mut State, block: &mut Planar, start: usize, len: usize) -> usize {
+        if s.quantum == 0 {
+            self.tick(s);
+            s.quantum = 32;
+        }
+        let end = (start + usize::from(s.quantum)).min(len);
+        let mut last = s.gain;
+        for (ch, lanes) in s.ch.iter_mut().enumerate() {
+            let mut g = s.gain;
+            for v in &mut block[ch][start..end] {
+                g = std::array::from_fn(|i| g[i] + s.step[i]);
+                *v = f64::from(self.sample(lanes, *v as f32, g));
+            }
+            last = g;
+        }
+        s.gain = last;
+        s.quantum -= u8::try_from(end - start).expect("span is at most 32 frames");
+        end
+    }
+
     pub(super) fn process(&self, s: &mut State, block: &mut Planar, len: usize) {
         let mut start = 0;
         while start < len {
-            let end = (start + 32).min(len);
-            self.tick(s);
-            let mut last = s.gain;
-            for (ch, lanes) in s.ch.iter_mut().enumerate() {
-                let mut g = s.gain;
-                for v in &mut block[ch][start..end] {
-                    g = std::array::from_fn(|i| g[i] + s.step[i]);
-                    *v = f64::from(self.sample(lanes, *v as f32, g));
-                }
-                last = g;
-            }
-            s.gain = last;
-            start = end;
+            start = self.span(s, block, start, len);
         }
+    }
+}
+
+/// Script writes use the same coefficient laws as saved fields. The native
+/// wrapper samples modulation on Tone/Drive at 32-frame ticks; held controls
+/// also take effect at a new processing call without resetting channel state.
+pub(super) fn process_live(
+    knobs: [PreparedParameter; 5], rate: u32, state: &mut State,
+    parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64,
+) {
+    let mut start = 0;
+    while start < len {
+        let mut values = knobs.map(|p| p.value(parameters, at + start as u64, None) as f32);
+        // A projected voice-modulation value is held until the next native
+        // tick, even when the host splits the intervening audio into calls.
+        // Ordinary script writes still update the coefficients at call entry.
+        if state.quantum != 0 && let Some((saved, _)) = state.cached {
+            for i in 0..5 {
+                if knobs[i].projected(parameters) {
+                    values[i] = saved[i];
+                }
+            }
+        }
+        if state.cached.is_none_or(|(saved, _)| saved != values) {
+            state.cached = Some((values, Skreamer::new(values, rate)));
+        }
+        let unit = state.cached.expect("live knobs prepared above").1;
+        start = unit.span(state, block, start, len);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skreamer_projected_knob_waits_for_the_next_native_tick() {
+        let knobs = std::array::from_fn(PreparedParameter::Control);
+        let mut controls = [ControlRamp::test_ramp(0.5, 0.5, 0, 0); 5];
+        let mut state = State::default();
+        let mut block = [[0.2; 64]; 2];
+        process_live(knobs, 48_000, &mut state, &controls, &mut block, 9, 0);
+        controls[0].add_modulation(0.25, crate::ControlRange {
+            control: crate::ControlId(1), low: 0., high: 1., ramp_frames: 0,
+        });
+        process_live(knobs, 48_000, &mut state, &controls, &mut block, 23, 9);
+        assert_eq!(state.cached.unwrap().0[0], 0.5);
+        process_live(knobs, 48_000, &mut state, &controls, &mut block, 1, 32);
+        assert_eq!(state.cached.unwrap().0[0], 0.75);
+    }
+
+    #[test]
+    fn skreamer_retarget_keeps_history_and_the_native_residual_clock() {
+        let initial = Skreamer::new([0.5; 5], 48_000);
+        let changed = Skreamer::new([0.2, 0.9, 0.8, 0.3, 0.1], 48_000);
+        let mut state = State::default();
+        let mut block = [[0.2; 64]; 2];
+        for _ in 0..32 {
+            initial.process(&mut state, &mut block, 64);
+        }
+        initial.process(&mut state, &mut block, 9);
+        assert_eq!(state.quantum, 23);
+        let current = state.gain;
+        assert_eq!(current, initial.target);
+        let history = state.ch;
+        changed.process(&mut state, &mut block, 0);
+        assert_eq!(state.ch, history, "parameter preparation must not reset the filter history");
+        changed.process(&mut state, &mut block, 23);
+        assert_eq!(state.gain, current, "the next native tick has not occurred");
+        assert_eq!(state.quantum, 0);
+        changed.process(&mut state, &mut block, 1);
+        let step: Lanes = std::array::from_fn(|i| (changed.target[i] - current[i]) * changed.inverse);
+        assert_eq!(state.step, step);
+        assert_eq!(state.gain, std::array::from_fn(|i| current[i] + step[i]));
+        assert_eq!(state.remaining, changed.blocks);
+        assert!(state.finite());
+    }
+
+    #[test]
+    fn skreamer_static_and_held_updates_ignore_host_block_partition() {
+        let render = |partition: usize| {
+            let mut state = State::default();
+            let mut output = Vec::new();
+            let mut start = 0;
+            for (end, knobs) in [(777, [0.5; 5]), (934, [0.2, 0.9, 0.8, 0.3, 0.1]), (2048, [0.7; 5])] {
+                let unit = Skreamer::new(knobs, 48_000);
+                while start < end {
+                    let len = partition.min(end - start);
+                    let mut block = [[0.; 64]; 2];
+                    for channel in &mut block {
+                        for (i, v) in channel[..len].iter_mut().enumerate() {
+                            *v = f64::from((0.5 * (std::f64::consts::TAU * 200. * (start + i) as f64 / 48_000.).sin()) as f32);
+                        }
+                    }
+                    unit.process(&mut state, &mut block, len);
+                    output.extend_from_slice(&block[0][..len]);
+                    start += len;
+                }
+            }
+            output
+        };
+        let expected = render(64);
+        for partition in [1, 3, 7, 31, 32, 63] {
+            assert_eq!(render(partition), expected, "partition {partition}");
+        }
+    }
 
     /// The model of the native core (kcolor/skreamer.py, bit-exact to the emulated 0x140aa5810
     /// with error 0): a 0.5 sine at 200 Hz, 48 kHz, frames 960..976, at default knobs and at
