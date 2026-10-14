@@ -2161,6 +2161,9 @@ pub enum Reason {
     /// Recognized and representable, but how the source maps it to sound
     /// (its scaling, curve or timing law) is not established.
     UnknownLaw,
+    /// The law is unverified and the feature was omitted, rather than executed
+    /// by an approximation. Preserve that distinction in every host report.
+    UnknownLawOmitted,
 }
 
 /// A feature name with its numbers and paths removed, so equal causes group:

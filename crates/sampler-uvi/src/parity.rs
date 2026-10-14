@@ -165,11 +165,15 @@ pub fn report_sources(
 
 fn required_modules(source: &str, tokens: &[Token], pending: &mut Vec<String>) {
     let tokens: Vec<_> = tokens.iter().filter(|t| t.class != C::Comment).collect();
-    for w in tokens.windows(3) {
-        if text(source, w[0]) == "require"
-            && text(source, w[1]) == "("
-            && w[2].class == C::String
-            && let Some(name) = lexer::literal(text(source, w[2]))
+    for (i, token) in tokens.iter().enumerate() {
+        if text(source, token) != "require" { continue; }
+        // Lua admits both require("module") and require "module". Neither
+        // form evaluates a dynamic expression in this static source inventory.
+        let Some(next) = tokens.get(i + 1) else { continue };
+        let literal = if text(source, next) == "(" { tokens.get(i + 2) } else { Some(next) };
+        if let Some(literal) = literal
+            && literal.class == C::String
+            && let Some(name) = lexer::literal(text(source, literal))
             && valid_name(&name)
         {
             pending.push(name);

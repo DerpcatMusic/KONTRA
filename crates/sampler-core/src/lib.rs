@@ -866,6 +866,8 @@ pub struct Runtime {
     /// Some expression follows another, so changes must propagate.
     expression_followers: bool,
     expression_changes: Box<[Option<RenderedExpression>]>,
+    /// Monotonic count of owners reached by forwarded poly-pressure inputs.
+    poly_pressure_owners: usize,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_ready: Vec<behavior::Ready>,
@@ -1075,6 +1077,7 @@ impl Runtime {
             expressions: Arena::new(id, limits.expressions),
             expression_followers: false,
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
+            poly_pressure_owners: 0,
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_ready: Vec::with_capacity(ready_capacity),

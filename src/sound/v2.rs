@@ -3197,43 +3197,73 @@ pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::Scr
 
 /// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
 /// folder above the snapshot, named by its metadata or by the snapshot's folder.
-fn snapshot_parent(snapshot: &Path, name: &str) -> Option<PathBuf> {
-    fn find(dir: &Path, wanted: &[String], depth: usize) -> Option<PathBuf> {
+fn snapshot_parent(snapshot: &Path, name: &str) -> anyhow::Result<Option<PathBuf>> {
+    let identity = snapshot_instrument(snapshot)?;
+    let mut wanted = vec![identity];
+    if name != "Kontakt" && !name.is_empty() { wanted.push(name.to_owned()); }
+    // Snapshots/<instrument>/<category>/...: category names are not base identities.
+    if let Some(folder) = snapshot.ancestors().find(|p| {
+        p.parent().and_then(Path::file_name).is_some_and(|s| s.eq_ignore_ascii_case("Snapshots"))
+    }).and_then(Path::file_name) {
+        wanted.push(folder.to_string_lossy().into_owned());
+    }
+    find_snapshot_base(snapshot, &wanted, |base| validate_snapshot_base(snapshot, base))
+}
+
+fn find_snapshot_base(
+    snapshot: &Path,
+    wanted: &[String],
+    validate: impl Fn(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<PathBuf>> {
+    fn find(dir: &Path, wanted: &[String], depth: usize, left: &mut usize, found: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         let mut folders = Vec::new();
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        for entry in std::fs::read_dir(dir)? {
+            ensure!(*left > 0, "Snapshot base search exceeded its directory budget");
+            *left -= 1;
+            let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            let kind = entry.file_type()?;
+            // Do not follow directory symlinks out of this library or around cycles.
+            if kind.is_dir() {
                 folders.push(path);
-            } else if path
+            } else if kind.is_file() && path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
                 && path
                     .file_stem()
                     .is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
             {
-                return Some(path);
+                found.push(path);
             }
         }
         if depth == 0 {
-            return None;
+            return Ok(());
         }
         folders.sort();
-        folders.iter().find_map(|d| find(d, wanted, depth - 1))
+        for dir in folders { find(&dir, wanted, depth - 1, left, found)?; }
+        Ok(())
     }
-    let folder = snapshot
-        .parent()?
-        .file_name()?
-        .to_string_lossy()
-        .into_owned();
-    let wanted: Vec<String> = [name.to_owned(), folder]
-        .into_iter()
-        .filter(|n| !n.is_empty())
-        .collect();
-    snapshot
-        .ancestors()
-        .skip(1)
-        .take(4)
-        .find_map(|dir| find(dir, &wanted, 3))
+    let library = snapshot.ancestors().find(|p| {
+        p.file_name().is_some_and(|s| s.eq_ignore_ascii_case("Snapshots"))
+    }).and_then(Path::parent);
+    let mut left = 16_384;
+    let directories: Vec<_> = if let Some(library) = library {
+        snapshot.ancestors().skip(1).take_while(|dir| dir.starts_with(library)).collect()
+    } else {
+        snapshot.ancestors().skip(1).take(4).collect()
+    };
+    for dir in directories {
+        let mut found = Vec::new();
+        find(dir, wanted, 3, &mut left, &mut found)?;
+        found.sort();
+        found.dedup();
+        ensure!(found.len() <= 1, "Snapshot base is ambiguous; select its NKI explicitly");
+        if let Some(base) = found.pop() {
+            validate(&base)?;
+            return Ok(Some(base));
+        }
+    }
+    Ok(None)
 }
 
 fn kontakt(
@@ -3254,18 +3284,13 @@ fn kontakt(
     // A snapshot is the saved state of an instrument found beside it in the library.
     let snapshot = if let Some(snapshot) = &request.snapshot {
         let state = sampler_kontakt::read_snapshot(snapshot).map_err(load)?;
-        let identity = snapshot_instrument(snapshot).and_then(|name| {
-            ensure!(
-                name == snapshot_base_name(&request.path)?,
-                "Snapshot requires base instrument {name:?}"
-            );
-            Ok(())
-        });
+        let identity = validate_snapshot_base(snapshot, &request.path);
         identity.map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?;
         Some((request.path.clone(), state))
     } else if extension("nksn") {
         let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
-        let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
+        let parent = snapshot_parent(&request.path, &state.instrument)
+            .map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?.ok_or_else(|| {
             CoreError::Load(LoadFailure::message(format!(
                 "no instrument \"{}\" found for snapshot",
                 state.instrument
@@ -3747,14 +3772,14 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let parent = path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
-                .then(|| {
-                    let state = sampler_kontakt::read_snapshot(path).ok()?;
-                    snapshot_parent(path, &state.instrument)
-                });
-            let path = parent.flatten().unwrap_or_else(|| path.to_path_buf());
+            let parent = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
+                let state = sampler_kontakt::read_snapshot(path)
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+                Some(snapshot_parent(path, &state.instrument)
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?
+                    .ok_or_else(|| CoreError::Load(LoadFailure::message("no base instrument found for snapshot")))?)
+            } else { None };
+            let path = parent.unwrap_or_else(|| path.to_path_buf());
             let instrument = sampler_kontakt::read(&path)
                 .map_err(|e| CoreError::Load(LoadFailure::message(e)))?
                 .instrument;
@@ -6850,6 +6875,7 @@ mod tests {
             let state = sampler_kontakt::read_snapshot(file)
                 .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
             let parent = snapshot_parent(file, &state.instrument)
+                .unwrap_or_else(|e| panic!("{}: {e}", file.display()))
                 .unwrap_or_else(|| panic!("no instrument for {}", file.display()));
             let plain = sampler_kontakt::read(&parent).unwrap();
             let applied = sampler_kontakt::read_with_snapshot(&parent, &state).unwrap();
@@ -7490,6 +7516,21 @@ pub(crate) fn snapshot_base_name(path: &Path) -> anyhow::Result<String> {
     .map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
 }
 
+/// Both direct snapshot loads and explicit base selection use the same metadata
+/// contract. Generic template names require the second name to identify the file,
+/// and the native program must still match either of the embedded identities.
+fn validate_snapshot_base(snapshot: &Path, base: &Path) -> anyhow::Result<()> {
+    let chunks = sampler_kontakt::read_chunks(snapshot)?;
+    let names = ni_file::kontakt::objects::snapshot_metadata_names(
+        chunks.find_first(0x51).context("Snapshot metadata missing")?,
+    )?;
+    let wanted = snapshot_binding_name(&names, Some(base))?;
+    let actual = snapshot_base_name(base)?;
+    ensure!(actual == wanted || (names.0 == "Kontakt" && actual == names.0),
+        "Snapshot requires base instrument {wanted:?}, got {actual:?}");
+    Ok(())
+}
+
 // A factory snapshot may retain Kontakt's generic template name. Only use
 // its second embedded name when it also exactly names the supplied NKI file;
 // the program name, group/source/slot identities are still validated below.
@@ -7508,6 +7549,59 @@ fn snapshot_binding_name<'a>(
         );
     }
     Ok(&names.1)
+}
+
+#[cfg(test)]
+mod snapshot_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn generic_template_uses_embedded_content_identity_and_checks_selected_file() {
+        let names = ("Kontakt".into(), "Example Orchestra".into());
+        assert_eq!(snapshot_binding_name(&names, None).unwrap(), "Example Orchestra");
+        assert!(snapshot_binding_name(&names, Some(Path::new("Example Orchestra.nki"))).is_ok());
+        assert!(snapshot_binding_name(&names, Some(Path::new("Kontakt.nki"))).is_err());
+        let ordinary = ("Named Program".into(), "Other Content".into());
+        assert_eq!(snapshot_binding_name(&ordinary, None).unwrap(), "Named Program");
+    }
+
+    #[test]
+    fn nested_categories_find_base_and_ambiguity_is_never_guessed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let snapshots = root.join("Snapshots/Example Orchestra/Category/More/Deep");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        let snapshot = snapshots.join("Preset.nksn");
+        std::fs::write(&snapshot, []).unwrap();
+        let instruments = root.join("Instruments");
+        std::fs::create_dir(&instruments).unwrap();
+        let base = instruments.join("Example Orchestra.NKI");
+        std::fs::write(&base, []).unwrap();
+        let wanted = ["Example Orchestra".into()];
+        assert_eq!(find_snapshot_base(&snapshot, &wanted, |_| Ok(())).unwrap(), Some(base));
+        std::fs::create_dir(root.join("Other")).unwrap();
+        std::fs::write(root.join("Other/Example Orchestra.nki"), []).unwrap();
+        assert!(find_snapshot_base(&snapshot, &wanted, |_| Ok(())).unwrap_err().to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn base_identity_validation_errors_are_preserved() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("Preset.nksn");
+        std::fs::write(&snapshot, []).unwrap();
+        std::fs::write(directory.path().join("Named.nki"), []).unwrap();
+        assert!(find_snapshot_base(&snapshot, &["Named".into()], |_| anyhow::bail!("wrong identity"))
+            .unwrap_err().to_string().contains("wrong identity"));
+    }
+
+    #[test]
+    #[ignore = "installed library: set KONTRA_SNAPSHOT_FIXTURE to a native snapshot"]
+    fn installed_snapshot_resolves_and_applies_state() {
+        let snapshot = PathBuf::from(std::env::var_os("KONTRA_SNAPSHOT_FIXTURE").expect("snapshot fixture"));
+        let state = sampler_kontakt::read_snapshot(&snapshot).unwrap();
+        let base = snapshot_parent(&snapshot, &state.instrument).unwrap().expect("installed base");
+        sampler_kontakt::read_with_snapshot(&base, &state).unwrap();
+    }
 }
 
 #[cfg(test)]

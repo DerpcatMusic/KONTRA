@@ -22,6 +22,7 @@ pub enum Context {
     Note,
     Release,
     Controller,
+    PolyAt,
     /// Instrument-owned callback (UI control, listener, ...), no originating event.
     Plan,
 }
@@ -615,7 +616,7 @@ impl Gen<'_, '_> {
         match self.ctx {
             Context::Note => self.emit(I::ForwardAttack),
             Context::Release => self.emit(I::ForwardReleaseGroups),
-            Context::Controller => self.emit(I::ForwardController),
+            Context::Controller | Context::PolyAt => self.emit(I::ForwardController),
             Context::Plan => Ok(()),
         }
     }
@@ -1051,6 +1052,7 @@ impl Gen<'_, '_> {
             SysVar::CcNum if self.ctx == Context::Controller => {
                 I::ReadControllerNumber { local: dst }
             }
+            SysVar::PolyAtNum if self.ctx == Context::PolyAt => I::ReadPolyPressureKey { local: dst },
             SysVar::WidgetInteraction(field) => {
                 I::Op(Op::ReadWidgetInteraction { local: dst, field })
             }
@@ -1119,7 +1121,7 @@ impl Gen<'_, '_> {
 
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
-            SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::Cc | SysArray::KeyDown | SysArray::PolyAt => true,
             SysArray::EventPar => self.ui_id.is_some() || self.note_context(),
             SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
@@ -1148,6 +1150,10 @@ impl Gen<'_, '_> {
                 })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::PolyAt => {
+                self.emit(I::ReadPolyPressure { local: at })?;
+                self.emit(I::ControllerToMidi7 { local: at })
+            }
             SysArray::EventPar if self.note_context() => {
                 let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
                 self.set(bound, 0)?;
@@ -2106,7 +2112,7 @@ impl Gen<'_, '_> {
                 self.land(end);
                 true
             }
-            IgnoreController if self.ctx == Context::Controller => {
+            IgnoreController if matches!(self.ctx, Context::Controller | Context::PolyAt) => {
                 self.emit(I::SuppressController)?;
                 true
             }
