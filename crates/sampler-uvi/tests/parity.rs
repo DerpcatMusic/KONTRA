@@ -174,6 +174,20 @@ fn embedded_modules_share_report_and_coverage_ids() {
 }
 
 #[test]
+fn literal_require_forms_retain_transitive_modules_and_cycles_once() {
+    let mut files = sampler_uvi::script::Scripts::default();
+    files.insert("Scripts/helpers.lua", "require -- comment\n [=[nested]=]".into());
+    files.insert("Scripts/nested.lua", "require('helpers')".into());
+    for source in ["require 'helpers'", "require(\"helpers\")", "require [=[helpers]=]"] {
+        let reports = sampler_uvi::parity::parity_reports_with_files(&xml(source, ""), &files);
+        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.iter().filter(|r| r.id == "uvi:module:nested").count(), 1);
+    }
+    let reports = sampler_uvi::parity::parity_reports_with_files(&xml("require(dynamic)", ""), &files);
+    assert_eq!(reports.len(), 1, "dynamic names cannot be invented by static inspection");
+}
+
+#[test]
 fn a_lane_without_a_translated_slot_is_a_stub() {
     let program = xml(
         "Program.inserts[1]:setParameter('Bypass',true)",

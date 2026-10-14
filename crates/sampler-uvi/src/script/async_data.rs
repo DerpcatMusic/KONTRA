@@ -69,6 +69,20 @@ impl UserData for Task {
     }
 }
 
+/// Resource APIs share the same task identity/status contract even when a
+/// resource cannot be supplied. Failure is a completed task, never nil passed
+/// to a completion callback and never a fabricated successful resource load.
+pub(super) fn completed_task(lua: &Lua, id: u64, success: bool) -> mlua::Result<mlua::AnyUserData> {
+    lua.create_userdata(Task {
+        id,
+        status: Arc::new(Status {
+            state: AtomicU8::new(FINISHED),
+            cancel: AtomicBool::new(false),
+            success: AtomicBool::new(success),
+        }),
+    })
+}
+
 struct Request {
     id: u64,
     path: String,
