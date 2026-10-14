@@ -27,16 +27,17 @@ Current limits are explicit:
 | Incoming / reply transactions | caller-selected, maximum 64 each |
 | Retired revisions per reply | 64, independent of total arena slots |
 | Logical resident revision heads / PCM | 256 MiB with normal lowering |
-| Physical dynamic packed heads | separate quota using that same configured limit; covers worker staging, current/old-voice revisions and returned retired payloads |
+| Physical dynamic PCM | separate quota using that same configured limit; packed heads and full buffers share admission through staging, current/old-voice revisions and returned retired payloads |
 | Queued revision bytes | separately bounded by the same configured byte limit until replies return |
 | Decode jobs in flight | one |
 | Script-side request metadata | authored target inventory (at most 65,536) plus 129 maximum transport/worker credits; 8 MiB total paths, 4 KiB per path |
 | File metadata | 1 MiB aggregate, 65,536 chunks, 4,096 markers/loops |
 
-`SampleControl::head_budget()` supplies the worker's physical authority, and
-`Runtime::sample_head_budget_status()` reports held/peak dynamic packed bytes.
-The physical lease is reserved before each packed allocation and follows the
-immutable head generation until its storage is actually freed on control.
+`SampleControl::physical_budget()` supplies the worker's physical authority, and
+`Runtime::sample_physical_budget_status()` reports held/peak dynamic payload bytes.
+The original head-budget method names remain aliases. A physical lease is reserved
+before each packed or full-buffer allocation and follows the immutable storage
+until it is actually freed on control.
 Logical arena removal, task acknowledgement, cancellation, or dropping the last
 audio reader cannot release it prematurely. Foreign streamed-budget identities
 are rejected before submission. This quota is independent of the initial static
@@ -50,12 +51,20 @@ and FIFO request ID. Superseded pending metadata is removed before admission,
 returns its path credits, and still delivers its original task's canceled callback.
 The fixed payload transport and one-worker limits remain unchanged.
 
-The physical quota above covers **streamed packed heads**, not full-resident
-revision buffers, page pools, encoded-reader workspaces, or process RSS. Full-resident
-revision decode/arena/queue limits remain separate logical bounds; they are not yet
-one generation-owned physical quota across retained replies. Likewise, authored
+`ResidentBuffer` reserves checked full PCM bytes before allocation and decoding;
+its immutable `Pcm` generation retains the same lease through clones, sounding
+voices, purge guards and returned replies. Non-finite decode, source failure,
+cancellation and failed publication release staging on control. Existing caller-owned
+full buffers can be admitted without copying at submission; their earlier caller
+allocation is outside this contract until admission succeeds. Foreign authorities
+are rejected. Budget-bound full assets use `set_budgeted_resident_loader`; raw
+whole-buffer callbacks are explicitly incompatible because they allocate before
+admission. Legacy unbudgeted static reload behavior is unchanged.
+
+This physical quota covers dynamic packed heads and full PCM, excluding octave
+levels, page pools, encoded-reader workspaces and process RSS. Authored
 `SamplePlayer.AllowStreaming=false` and Program/Part streaming policy still need
-explicit translation and bounded full-resident admission. The native manual says
+explicit translation and bounded mandatory-resident static assembly. The native manual says
 that a Sample oscillator can require memory playback despite Program Streaming;
 current streaming success is not proof of that residency policy's parity.
 [UVI oscillator residency policy](https://manual.uvi.net/falcon/en/oscillators/)
@@ -78,8 +87,9 @@ After a committed reply, `sampleInfo` reads current numeric file metadata with t
 
 - Core `sample_revision`: five fixtures cover old/new render equivalence against independent runtimes, rate/window/loop retention, cancellation, queue/reply/slot/byte pressure, stale plan rejection, control-only payload destruction, more than 64 distinct targets, and dormant/per-key pitch diagnostics. Commit/render/retirement paths run under an allocator/deallocator guard.
 - UVI `sample_loading` and `resource_tasks`: four fixtures cover actual resident decode/commit, callback identity and one delivery, polling before/after publication, no-callback loading, missing sources, and cancellation.
+- Core `resident_budget`: four fixtures cover pre-allocation rejection, exact limits/overflow/non-finite data, full/head composition, full old/new render bytes, retained Pcm clones and replies, cancellation, foreign authority and caller-buffer adoption. Three private resident generation fixtures and one guarded async purge/reload fixture cover retained readers, reload pressure, incompatible callbacks, changed authority, and purge during staging.
 - Core `dynamic_head_budget`: three fixtures independently cover simultaneous old/new sounding sources, exact sample bytes, canceled payload replies, foreign authority rejection, and quota retained until control actually drops returned payloads. Audio commit/render/release/collection runs under allocation/deallocation guards.
-- UVI worker quota tests: zero/one-byte-short/exact caps exercise the actual source worker, and cancellation immediately after a source read prevents publication and releases staging.
+- UVI worker quota tests: zero/one-byte-short/exact caps exercise actual streamed and full-resident preparation. Invalid geometry is rejected before allocation; cancellation immediately after a read and decoder/source failure prevent publication and release staging.
 - UVI `dynamic_initialization`: 1,746 distinct authored players queue real requests before binding, then every worker result reaches a real audio commit and the original success callback. A second fixture supersedes one target 1,024 times, receives all 1,023 canceled callbacks and the final successful commit, and checks physical held/peak bytes. Both use authored loose WAV sources; they do not prove an installed bank's metadata/codec coverage.
 - UVI `dynamic_streamed`: a genuine attached production script thread loads an initially empty player from an authored loose WAV without any Lua wait coroutine. The owner wakes for decode and commit replies. All 40,000 frames match an independently loaded resident UVI plan bit for bit; source data remains streamed and the fixture records zero stream underruns after explicit offline page readiness.
 - Kontakt `dynamic_registry_pages`: old/new AssetIds read their exact registered page bytes; duplicate identity is refused, original registry sharing is preserved, and registrations retire independently.
