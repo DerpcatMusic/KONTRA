@@ -488,3 +488,27 @@ fn uvi_widener_matches_the_native() {
         1e-6,
     );
 }
+
+#[test]
+fn uvi_redux2_matches_the_native() {
+    uvi_unit(
+        "Redux2",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let redux = sampler_ir::fx::color::Redux {
+                frequency: f("Frequency", 44_100.0),
+                bits: f("Bits", 32.0),
+                jitter: f("Jitter", 0.0),
+                dither: f("Dither", 0.0),
+                mu_law: f("QuantizeLaw", 0.0) != 0.0,
+                impulses: f("Type", 1.0) == 0.0,
+                antialias: f("Antialiasing", 1.0) != 0.0,
+                band_limit: f("BandLimitFreq", 20_000.0),
+            };
+            let position = f("FilterPosition", 0.0) as u8;
+            let filter = (position != 0).then(|| (f("FilterMode", 0.0) as u8, f("FilterFreq", 10_000.0), f("FilterRes", 0.0), position == 2));
+            sampler_ir::fx::color::Config::redux(redux, filter, f("Mix", 1.0))
+        },
+        1e-5,
+    );
+}

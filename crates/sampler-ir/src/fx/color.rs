@@ -165,6 +165,21 @@ pub struct Widener {
     pub shelf_db: f32,
 }
 
+/// UVI Redux2's rate and bit reduction: Frequency Hz, Bits 1..32, Jitter 0..1, Dither 0..2,
+/// QuantizeLaw 1 = mu-law, Type 0 = impulses (else held), Antialiasing, BandLimitFreq Hz.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Redux {
+    pub frequency: f32,
+    pub bits: f32,
+    pub jitter: f32,
+    pub dither: f32,
+    pub mu_law: bool,
+    pub impulses: bool,
+    pub antialias: bool,
+    pub band_limit: f32,
+}
+
 /// UVI ToneStack controls: Bass, Mid, Treble, Gain 0..1, Model 0..=25.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -209,6 +224,8 @@ pub struct Config {
     pub filter: Option<Biquad>,
     pub hold: Option<Hold>,
     pub decimator: Option<Decimator>,
+    /// UVI Redux2's clocked reduction (after the decimator).
+    pub redux: Option<Redux>,
     pub quantizer: Option<Quantizer>,
     pub curve: Curve,
     /// Kontakt Distortion damping: normalized 0..1 knob of the embedded
@@ -233,6 +250,7 @@ impl Config {
         filter: None,
         hold: None,
         decimator: None,
+        redux: None,
         quantizer: None,
         curve: Curve::Identity,
         damping: None,
@@ -320,6 +338,22 @@ impl Config {
         }
     }
 
+    /// UVI Redux2 (FilterPosition 1 filters before, 2 after; FilterMode 0 LP, 1 BP, 2 HP;
+    /// resonance `Q = 9.5 res + 0.5`), wet `mix`.
+    pub fn redux(redux: Redux, filter: Option<(u8, f32, f32, bool)>, mix: f32) -> Self {
+        Self {
+            redux: Some(redux),
+            filter: filter.map(|(mode, hertz, res, post)| Biquad {
+                mode,
+                hertz: f64::from(hertz),
+                q: f64::from((res * 9.5) + 0.5),
+                post,
+            }),
+            mix: f64::from(mix),
+            ..Self::IDENTITY
+        }
+    }
+
     /// Kontakt Skreamer.
     pub fn skreamer(knobs: [f32; 5]) -> Self {
         Self { curve: Curve::Skreamer(knobs), ..Self::IDENTITY }
@@ -383,6 +417,7 @@ impl Config {
             Self { curve: Curve::ToneStack(_), .. } => "Tone stack",
             Self { curve: Curve::Diode(_), .. } => "Diode clipper",
             Self { decimator: Some(_), .. } => "Formant crusher",
+            Self { redux: Some(_), .. } => "Redux",
             Self { gainer: Some(_), .. } => "Gainer",
             Self { stereo: Some(_), .. } => "Stereo Modeller",
             Self { widener: Some(_), .. } => "Widener",

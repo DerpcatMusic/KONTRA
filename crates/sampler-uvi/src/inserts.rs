@@ -255,6 +255,31 @@ impl Translation {
                     };
                     out.push(ir::Processor::Color(Config { widener: Some(widener), ..Config::IDENTITY }));
                 }
+                "Redux2" => {
+                    use ir::fx::color::{Config, Redux};
+                    let redux = Redux {
+                        frequency: number(node, "Frequency", 44_100.0)?.clamp(200.0, 44_100.0) as f32,
+                        bits: number(node, "Bits", 32.0)?.clamp(1.0, 32.0) as f32,
+                        jitter: number(node, "Jitter", 0.0)?.clamp(0.0, 1.0) as f32,
+                        dither: number(node, "Dither", 0.0)?.clamp(0.0, 2.0) as f32,
+                        mu_law: number(node, "QuantizeLaw", 0.0)? != 0.0,
+                        // Type is registered inline (not in the parameter table); 1 holds.
+                        impulses: number(node, "Type", 1.0)? == 0.0,
+                        antialias: number(node, "Antialiasing", 1.0)? != 0.0,
+                        band_limit: number(node, "BandLimitFreq", 20_000.0)?.clamp(200.0, 20_000.0) as f32,
+                    };
+                    let position = number(node, "FilterPosition", 0.0)?.clamp(0.0, 2.0) as u8;
+                    let filter = (position != 0).then_some(()).map(|()| -> Result<_, String> {
+                        Ok((
+                            number(node, "FilterMode", 0.0)?.clamp(0.0, 2.0) as u8,
+                            number(node, "FilterFreq", 10_000.0)?.clamp(20.0, 20_000.0) as f32,
+                            number(node, "FilterRes", 0.0)?.clamp(0.0, 1.0) as f32,
+                            position == 2,
+                        ))
+                    }).transpose()?;
+                    let mix = number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32;
+                    out.push(ir::Processor::Color(Config::redux(redux, filter, mix)));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};

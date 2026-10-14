@@ -216,6 +216,13 @@ impl Check<'_> {
                 }
             }
         }
+        if let Some(r) = c.redux {
+            self.within(f64::from(r.frequency), 1.0..=f64::MAX, "redux frequency")?;
+            self.within(f64::from(r.bits), 1.0..=32.0, "redux bits")?;
+            self.within(f64::from(r.jitter), 0.0..=1.0, "redux jitter")?;
+            self.within(f64::from(r.dither), 0.0..=2.0, "redux dither")?;
+            self.within(f64::from(r.band_limit), 1.0..=f64::MAX, "redux band limit")?;
+        }
         if let Some(w) = c.widener {
             self.within(f64::from(w.delay), -15.0..=15.0, "widener delay")?;
             self.within(f64::from(w.width), -1.0..=1.0, "widener width")?;
