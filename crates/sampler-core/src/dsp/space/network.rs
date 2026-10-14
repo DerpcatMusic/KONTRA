@@ -807,21 +807,66 @@ impl Network {
             i += n;
         }
         self.w = w0.wrapping_add(len);
+        // Taps across the block (each frame still sums in tap order), then
+        // the output stage; allpass chains run a stage at a time.
+        let mut g = [[0f32; BLOCK]; 2];
+        for (g, t) in g.iter_mut().zip(&self.spec.taps) {
+            for &(i, c) in t {
+                let s = &src[usize::from(i)];
+                for j in 0..len {
+                    g[j] += c * s[j];
+                }
+            }
+        }
+        let mut o = [[0f32; BLOCK]; 2];
         for j in 0..len {
-            let g = self.spec.taps.each_ref().map(|t| t.iter().fold(0f32, |acc, &(i, c)| acc + c * src[usize::from(i)][j]));
-            [l[j], r[j]] = self.output(g, xs[j], l[j], r[j], w0.wrapping_add(j));
+            [o[0][j], o[1][j]] = self.mix_out([g[0][j], g[1][j]], xs[j]);
+        }
+        let jezar = matches!(self.spec.chain, Chain::Jezar(_));
+        let per_frame = match &mut self.spec.chain {
+            Chain::Schroeder(c) | Chain::Jezar(c) => {
+                for (o, c) in o.iter_mut().zip(c.iter_mut()) {
+                    for a in c {
+                        for j in 0..len {
+                            let w = w0.wrapping_add(j);
+                            o[j] = if jezar { a.jezar(w, o[j]) } else { a.schroeder(w, o[j]) };
+                        }
+                    }
+                }
+                false
+            }
+            Chain::None => false,
+            _ => true,
+        };
+        for j in 0..len {
+            let mut v = [o[0][j], o[1][j]];
+            if per_frame {
+                v = self.chain(v, w0.wrapping_add(j));
+            }
+            [l[j], r[j]] = self.post(v, l[j], r[j]);
         }
     }
 
     /// The output stage for one frame: tap groups `g`, input stage `x`.
     #[inline(always)]
     fn output(&mut self, g: [f32; 2], x: [f32; 2], inl: f32, inr: f32, w: usize) -> [f32; 2] {
-        let s = &mut self.spec;
-        let mut o = [s.out[0][0] * g[0] + s.out[0][1] * g[1], s.out[1][0] * g[0] + s.out[1][1] * g[1]];
-        if s.direct != 0.0 {
-            o = [o[0] + s.direct * x[0], o[1] + s.direct * x[1]];
-        }
-        match &mut s.chain {
+        let o = self.mix_out(g, x);
+        let o = self.chain(o, w);
+        self.post(o, inl, inr)
+    }
+
+    /// The output groups' L/R mix and the direct input.
+    #[inline(always)]
+    fn mix_out(&self, g: [f32; 2], x: [f32; 2]) -> [f32; 2] {
+        let s = &self.spec;
+        let o = [s.out[0][0] * g[0] + s.out[0][1] * g[1], s.out[1][0] * g[0] + s.out[1][1] * g[1]];
+        if s.direct != 0.0 { [o[0] + s.direct * x[0], o[1] + s.direct * x[1]] } else { o }
+    }
+
+    /// The output chain for one frame.
+    #[inline(always)]
+    fn chain(&mut self, mut o: [f32; 2], w: usize) -> [f32; 2] {
+        match &mut self.spec.chain {
             Chain::None => {}
             Chain::Schroeder(c) => {
                 for ch in 0..2 {
@@ -842,6 +887,13 @@ impl Network {
                 o = c.iter_mut().fold(o, |v, u| u.tick(w, v));
             }
         }
+        o
+    }
+
+    /// Shelf, high cut, width and the dry/wet mix for one frame.
+    #[inline(always)]
+    fn post(&mut self, mut o: [f32; 2], inl: f32, inr: f32) -> [f32; 2] {
+        let s = &self.spec;
         if let Some(sh) = s.shelf {
             for ch in 0..2 {
                 let [ic1, ic2] = self.shelf[ch];
@@ -885,10 +937,7 @@ impl Line<'_> {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn run<const I: u8, const M: u8, const F: bool, const N: usize>(&self, i0: usize, rings: [&mut Ring; N], st: &mut State, v: &mut [f32], glide: &[(f64, f64)], src: &mut [[f32; BLOCK]]) {
-        // A local copy: ring stores cannot alias it, so the lane constants
-        // stay in registers across the block.
-        let k = &*self.k;
-        let k = &Lanes { ..*k };
+        let k = self.k;
         let mut y: [f32; N] = std::array::from_fn(|c| v[c]);
         let mut rings = rings.map(Ring::view);
         for j in 0..self.len {
