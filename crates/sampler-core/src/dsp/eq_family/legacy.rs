@@ -198,10 +198,9 @@ impl NativeEq {
                 len - position
             };
             let svf = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9 + i]));
-            for (channel, history) in block.iter_mut().zip(&mut state.z) {
-                svf.run(history, &mut channel[position..position + count]);
-                *history = history.map(super::super::flush);
-            }
+            let [left, right] = &mut block;
+            svf.run_stereo(&mut state.z, [&mut left[position..position + count], &mut right[position..position + count]]);
+            state.z = state.z.map(|history| history.map(super::super::flush));
             position += count;
             if !active {
                 continue;
