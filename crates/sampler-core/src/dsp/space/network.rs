@@ -314,8 +314,6 @@ struct Lanes {
     inj: [[f32; MAX_LINES]; 2],
     /// Write biquad.
     bq: [[f32; MAX_LINES]; 5],
-    /// Each line's tap coefficient per output group, when tapped.
-    tc: [[Option<f32>; MAX_LINES]; 2],
 }
 
 /// Per-line state.
@@ -338,7 +336,7 @@ pub(super) struct Network {
     pre_on: bool,
     /// A permutation matrix that is the identity: parallel lines.
     diagonal: bool,
-    /// Parallel lines with taps in line order: lines run a block at a time.
+    /// Parallel lines: lines run a block at a time.
     pub(super) parallel: bool,
     rings: Vec<Ring>,
     pre: [Ring; 2],
@@ -365,13 +363,7 @@ impl Network {
             Modulation::Quad { w } => (w.cos(), w.sin()),
             _ => (1.0, 0.0),
         };
-        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dc: ZERO, ds: ZERO, a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5], tc: [[None; MAX_LINES]; 2] };
-        for (c, taps) in spec.taps.iter().enumerate() {
-            for &(i, g) in taps {
-                k.tc[c][usize::from(i)] = Some(g);
-            }
-        }
-        let in_order = spec.taps.iter().all(|t| t.windows(2).all(|p| p[0].0 < p[1].0));
+        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dc: ZERO, ds: ZERO, a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5] };
         let gains = match &spec.matrix {
             Matrix::Permutation { g, .. } => *g,
             _ => [1.0; MAX_LINES],
@@ -398,7 +390,7 @@ impl Network {
             v: ZERO,
             pre_on: spec.predelay != [0.0; 2] || spec.echo != 0.0,
             diagonal,
-            parallel: diagonal && in_order,
+            parallel: diagonal,
             n,
             rings: spec.lines.iter().map(|l| Ring::new(l.cap)).collect(),
             pre: [Ring::new(spec.pre_cap), Ring::new(spec.pre_cap)],
@@ -627,13 +619,12 @@ impl Network {
             }
             xs[j] = self.input(l[j], r[j], w0.wrapping_add(j));
         }
-        let mut g = [[0f32; 2]; BLOCK];
+        let mut src = [[0f32; BLOCK]; MAX_LINES];
         let (k, st) = (&*self.k, &mut *self.st);
         let s = &self.spec;
         let one = s.write_filter.unwrap_or(0.0);
         for (i, ring) in self.rings.iter_mut().enumerate() {
             let mut v = self.v[i];
-            let (t0, t1) = (k.tc[0][i], k.tc[1][i]);
             for j in 0..len {
                 let w = w0.wrapping_add(j);
                 let (jj, f) = position::<M>(k, i, lfo[j], self.glide[i], (step0 + j) as f64);
@@ -641,23 +632,18 @@ impl Network {
                 v = rd * k.a[i] + k.b[i] * v;
                 let u = v * k.g[i];
                 write::<F>(k, st, one, i, ring, w, w.wrapping_sub(s.inject_offset), u, xs[j]);
-                let src = match s.tap_from {
+                src[i][j] = match s.tap_from {
                     TapFrom::Read => rd,
                     TapFrom::Filtered => v,
                     TapFrom::Mixed => u,
                 };
-                if let Some(c) = t0 {
-                    g[j][0] += c * src;
-                }
-                if let Some(c) = t1 {
-                    g[j][1] += c * src;
-                }
             }
             self.v[i] = v;
         }
         self.w = w0.wrapping_add(len);
         for j in 0..len {
-            [l[j], r[j]] = self.output(g[j], xs[j], l[j], r[j], w0.wrapping_add(j));
+            let g = self.spec.taps.each_ref().map(|t| t.iter().fold(0f32, |acc, &(i, c)| acc + c * src[usize::from(i)][j]));
+            [l[j], r[j]] = self.output(g, xs[j], l[j], r[j], w0.wrapping_add(j));
         }
     }
 
