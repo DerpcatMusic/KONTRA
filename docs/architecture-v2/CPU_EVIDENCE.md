@@ -591,6 +591,19 @@ Post-envelope or nonlinear per-voice FX also remain; factoring them over a
 group sum changes control/history and floating-point association. No blanket
 FX factoring, lossy pitch table or asynchronous result substitution is accepted.
 
+A separate unimplemented reuse hypothesis keeps PCM assets distinct: voices
+with an identical effective fraction/step, immutable polyphase bank and output
+clock repeat the same `t.mul_add(b - a, a)` coefficient interpolation. A bounded
+coefficient strip could reuse those exact f32 weights while every voice still
+performs its original source loads, FMA accumulator recurrence, final reduction,
+envelope and effects. It would not require equal sample values or asset IDs.
+At the existing maximum 104-f32 padded row, 64 outputs require 26 KiB before
+keys/metadata; repeated initialization and unique-phase misses could outweigh
+the saved arithmetic. A future primitive and whole-path experiment must prove
+the original rounding and accumulator order, effective mipmap/quality/phase
+identity, live pitch and boundary fallbacks, fixed worker storage and cheap
+miss behavior. No coefficient strip has been implemented or accepted.
+
 The opt-in whole-callback stage companion uses
 `KONTRA_CPU_RECEIPT_AUDIT=1`, after warmup, to enable existing V2 stage clocks.
 The default remains uninstrumented. It reports the actual zero runtime buses,
@@ -774,6 +787,44 @@ pass (one existing ignored test). Raw logs are `cursor-step-unit-coherent.log`
 and `cursor-step-integrations.log`. A controlled current-layout before/after
 callback pair is still pending; the sampled copy share is not an accepted
 whole-callback speedup or proof of the 1% target.
+
+The controlled same-layout executables are now frozen as
+`whole-callback-cursor-step-before` / `whole-callback-cursor-step-after`, with
+SHA-256 `60a949e5b266f8d7a628c9d2cf87e8ccda6d82520ec3df16e1e9cb76219d121c`
+and `389b07d68980534c0cacfb180c3d709f37a9a455e9284183f7b0312f8fde311a`.
+Both builds verify their compiled-source hash manifests stayed unchanged;
+the two manifests differ only in the approved step-update source files.
+The original cursor builder/live assignment is selected with exact checked
+text replacements for the baseline, then the candidate is restored. No git
+restore/reset is used. Prepared/runtime layouts and all other compiled source
+hashes match. `prepare_voice` shrinks from 8,226 to 8,069 machine-code bytes;
+its five memcpy call sites become two. The remaining two are the separate
+modulated loop-offset path, not the live pitch step.
+
+`cursor-step-callback-paired.json` records two alternating rounds of five
+actual callback cases, each with 300 physical owners, 512 warmup and 1,000
+measured blocks on CPU 5, with diagnostic clocks disabled. All ten pairs have
+exact PCM hash/energy, zero runtime faults, zero heap calls and complete
+33-callback release coverage. This first window is **contended**: the monitor
+retains 107 unrelated compiler observations and 32 busy `kswapd0` intervals.
+Its p50 results are attribution, not clean acceptance or deadline guarantees.
+
+| Frames / source layout / workload | Before p50 us, two rounds | In-place p50 us, two rounds | Change, two rounds |
+| --- | ---: | ---: | ---: |
+| 64 / distinct / plain | 43.750 / 44.981 | 37.531 / 37.261 | -14.2% / -17.2% |
+| 256 / distinct / plain | 100.022 / 98.082 | 86.891 / 85.501 | -13.1% / -12.8% |
+| 256 / distinct / fractional | 883.007 / 900.187 | 870.056 / 874.326 | -1.5% / -2.9% |
+| 256 / distinct / 3EQ+Stereo | 1,997.858 / 2,025.408 | 1,963.376 / 1,975.127 | -1.7% / -2.5% |
+| 256 / shared / 3EQ+Stereo | 1,243.923 / 1,202.262 | 1,195.802 / 1,204.703 | -3.9% / +0.2% |
+
+All long tails remain: eight wall deadline misses before and four after,
+including candidate plain maxima 2,193.811 us at 64 frames and 5,963.261 us
+at 256 frames in round two. Those cannot be hidden by improved medians or
+assigned to a cause from this receipt alone. Candidate plain 256-frame mean
+meter is 1.707 / 1.733%, fractional 18.401 / 18.247%, and distinct EQ
+38.987 / 39.884%; none meets 1%. A bounded compiler-free repeat is still
+needed before promoting a numeric performance claim. The source correction
+and its exact output/state oracles are checkpointed in `aa054145c`.
 
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
