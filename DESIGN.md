@@ -151,7 +151,7 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 - **Behavior:** search filters both libraries and instruments; folder settings remain in the same editor shell.
 
 ### Rack Rows
-- **Style:** each instrument is a flat row with a numbered name header and compact MIDI, output, level, pan, group, and transport controls.
+- **Style:** each instrument has two compact header rows: name and preset/actions above; MIDI, output, pan, level, tune, mute and solo below. The name retains its width at the minimum editor size.
 - **State:** the selected part receives a raised neutral fill; load errors appear inline and retain the name of any still-playing instrument.
 
 ### Library Browser
@@ -160,7 +160,7 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 
 ### Keyboard
 - **Style:** a stable four-octave bed uses near-white naturals and near-black sharps, with octave controls and a restrained range label.
-- **Behavior:** mouse press and release produce note-on and note-off events.
+- **Behavior:** mouse press and release produce note-on and note-off events. Highlights show held mouse/computer/host keys and clear on key-up, independently of sustain, script-generated notes and audio release tails. Authored colours tint light naturals and dark sharps rather than replacing the piano faces with solid colour.
 
 ### Compatibility Status
 - **Style:** concise status remains in the rack footer; actual loading and missing-sample failures use the semantic error color. The Info view states unsupported behavior plainly.

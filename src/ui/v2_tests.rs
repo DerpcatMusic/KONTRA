@@ -727,6 +727,63 @@ fn editor_with_a_real_instrument() {
     shot(&h, "report");
 }
 
+/// Exercise the plugin loader, including a snapshot's resolved resource owner.
+#[cfg(feature = "shots")]
+#[test]
+#[ignore = "set KONTRA_UI_IR_PATCH to a locally owned native instrument or snapshot"]
+fn native_interface_through_the_plugin_loader() {
+    use moose::prelude::BackgroundTask;
+    use std::time::{Duration, Instant};
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").unwrap());
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {
+        path: path.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    crate::plugin::Load.run(&p);
+    {
+        let v = p.shared.view.lock().unwrap();
+        let part = &v.parts[0];
+        assert!(part.instrument.is_some(), "{}", part.status);
+        assert!(part.interfaces.iter().any(|f| f.native_ui.is_some()));
+        let resource_path = part.resource_path.as_ref().expect("resolved resource owner");
+        assert!(resource_path.extension().is_some_and(|ext| ext == "nki"));
+        if path.extension().is_some_and(|ext| ext == "nksn") {
+            assert_ne!(resource_path, &path, "snapshot must use its base NKI resources");
+        }
+    }
+    for (width, height) in [(900, 640), (1180, 780)] {
+        let mut h = Harness::new(&p, f64::from(width), f64::from(height));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            h.idle(1);
+            let diagnostics = super::native_ui::gate_diagnostics();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            if !super::native_ui::gate_targets(0).is_empty() { break; }
+            assert!(Instant::now() < deadline, "native interface did not become interactive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.idle(40);
+        assert!(h.ui.scene().unwrap().surface("view-0-Interface").is_some());
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-view").unwrap().frame;
+        for surface in scene.surfaces().filter(|s| s.key.as_str().starts_with("nui-")
+            && s.key.as_str().ends_with("-root/component")) {
+            assert!(surface.frame.y + surface.frame.size.height <= viewport.y + viewport.size.height + 1.,
+                "fitted native interface must remain inside the rack: {:?}, {viewport:?}", surface.frame);
+        }
+        if let Some(out) = std::env::var_os("KONTRA_NATIVE_LOAD_SHOTS") {
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(
+                &out.join(format!("native-{width}x{height}.png")),
+                &pixels(&h.ui, width, height), u32::from(width), u32::from(height),
+            );
+        }
+    }
+}
+
 fn kind_name(k: &ir::Kind) -> String {
     let s = format!("{k:?}");
     s.chars().take(60).collect()

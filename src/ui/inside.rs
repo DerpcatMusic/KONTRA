@@ -96,7 +96,8 @@ impl State {
 /// Which views `slot` has something to show in.
 fn offered(cx: &Cx, slot: usize) -> Vec<View> {
     let v = &cx.view.parts[slot];
-    let has_face = v.interfaces.iter().any(|i| !i.widgets.is_empty());
+    let has_face = v.interfaces.iter().enumerate()
+        .any(|(n, i)| super::part::view_available(i, v.updates.get(n)));
     let inst = v.instrument.as_deref();
     View::ALL
         .into_iter()
