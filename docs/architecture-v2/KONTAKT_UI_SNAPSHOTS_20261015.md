@@ -57,3 +57,24 @@ The historical rows omit operation/capacity class; new bounded reply metadata
 is required to identify the prepared resource that was exhausted. The same
 session separately recorded runtime capacity drops and cold starts. Do not
 infer their common cause from temporal proximity alone.
+
+## Flat-popup pointer correction
+
+A separate authored fixture found a general menu hit/clip defect in the shared
+production painter. In a 320×200 viewport a three-visible-row popup occupied
+y=128..200 (72 pixels), while its last row occupied y=189.964..220.946
+(30.982 pixels). Its center lay below the viewport, and a real pointer click
+produced no edit. The row hit area also measured only 32.277 pixels inside a
+120-pixel popup, leaving row whitespace unclickable.
+
+Each flat popup row now uses the same `CONTROL * scale` height as its container
+calculation and fills the popup width. The focused pointer/pixel fixture passes
+at 100% and 200%, with both an unknown current value and a hidden selected item.
+It verifies a tab edit, no passive/opening edits, omission of a hidden row without
+renumbering, last-row containment and selection through row whitespace. Original
+item index 3 submits semantic value 60, never visible position 2 or index 3.
+Production CPU pixels change when the popup opens. Authored private fixture PNGs
+can be captured with `KONTRA_MENU_FIXTURE_SHOTS`; normal tests write no pictures.
+This fixes the shared flat-popup geometry. It does not prove original Kontakt
+pixels or the actual library tab/menu callbacks, which require the separate
+bounded production lifecycle gesture witness.
