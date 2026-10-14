@@ -337,8 +337,8 @@ impl Translation {
                 {
                     out.extend(self.algorithmic_reverb(node, &at)?);
                 }
-                "TrackDelay" | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay"
-                | "DualDelayX" | "TapeEcho" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
+                "TrackDelay" | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DiffuseDelay"
+                | "DualDelayX" | "TapeEcho" | "DiffuseDelayNested" | "Buzz" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
                 | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter" => {
                     if let Some(config) = self.timemod(node, &at)? {
                         out.push(ir::Processor::TimeMod(config));

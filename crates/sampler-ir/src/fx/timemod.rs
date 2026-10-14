@@ -122,6 +122,154 @@ pub enum Native {
     /// `0x14165c960`); the line's `interpolation` is its read mode and the
     /// unit's dry/wet its equal-power mix.
     UviDualDelay(DualDelay),
+    /// UVI legacy SimpleDelay / StereoDelay / PingPongDelay (Workstation
+    /// 4.0.9); the unit's dry/wet is the linear mix.
+    UviLegacyDelay(UviLegacyDelay),
+    /// UVI DiffuseDelay (Workstation 4.0.9 core `0x141657890`); the unit's
+    /// dry/wet is the equal-power mix.
+    UviDiffuseDelay(UviDiffuseDelay),
+    /// UVI TapeEcho (Workstation 4.0.9 core `0x141663e40`) without its
+    /// reverb; the unit's dry/wet is the equal-power mix.
+    UviTapeEcho(UviTapeEcho),
+    /// Kontakt Twin Delay (0x6B; kernel `0x140ab07d0`): wet output only, the
+    /// unit's dry is the slot's.
+    TwinDelay(TwinDelay),
+    /// Kontakt Psyche Delay (0x63; kernel `0x140aadb50`): wet output only.
+    PsycheDelay(PsycheDelay),
+    /// UVI Velvet Delay (`DiffuseDelayNested`, kernel `0x14165af50`); the
+    /// unit's dry/wet is the linear mix.
+    UviVelvetDelay(UviVelvetDelay),
+    /// UVI analog tape delay (`Buzz`, process `0x14166ab40`); the unit's
+    /// dry/wet is `Dry`/`Wet`.
+    UviBuzzDelay(UviBuzzDelay),
+}
+
+/// UVI Velvet Delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviVelvetDelay {
+    /// Seconds, or beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub spread: f32,
+    pub diffusion: f32,
+    pub seed: u32,
+    /// 0..=6: ramp, uniform, exp, ramp down, parabolic, inverse, parametric.
+    pub shape: u8,
+    pub curve: f32,
+}
+
+/// UVI `Buzz` analog tape delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviBuzzDelay {
+    /// Seconds, or beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub feedback: f32,
+    pub trash: f32,
+    pub spread: f32,
+    /// Seconds.
+    pub glide: f32,
+    /// 0..=2.
+    pub mode: u8,
+}
+
+/// Kontakt Psyche Delay saved controls (reader `0x140ac5bc0`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PsycheDelay {
+    /// Free: milliseconds (5..2000). Synced: the note count.
+    pub time: f32,
+    /// Sync unit factor (≤ 0: free).
+    pub unit: f32,
+    pub feedback: f32,
+    pub detune: f32,
+    pub pitch: f32,
+    /// Stereo offset: the right side's time is `time·(1 - offset/2)`.
+    pub offset: f32,
+    pub cross: f32,
+    pub reverse_stereo: bool,
+    pub detune_stereo: bool,
+    pub reverse: bool,
+}
+
+/// Kontakt Twin Delay saved controls (all normalized `0..=1` unless synced).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TwinDelay {
+    /// Left, right: free time `x` (seconds `0.001 + x²·1.999`), or the
+    /// synced count when `time_unit` is set.
+    pub time: [f32; 2],
+    /// Left, right: free predelay `x` (seconds `2x`), or the synced count.
+    pub predelay: [f32; 2],
+    /// Sync unit factors (≤ 0: free) for time L/R and predelay L/R.
+    pub time_unit: [f32; 2],
+    pub predelay_unit: [f32; 2],
+    pub feedback: [f32; 2],
+    pub level: [f32; 2],
+    pub width: f32,
+    pub cross: f32,
+}
+
+/// UVI TapeEcho controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviTapeEcho {
+    pub speed: f32,
+    pub feedback: f32,
+    /// 1..=12: which heads play (5..=12 also feed the reverb).
+    pub mode: u8,
+    pub bass_db: f32,
+    pub treble_db: f32,
+    /// Head delays in seconds, or quarter-note beats when synced.
+    pub delays: [f32; 3],
+    pub synced: bool,
+    pub noise: f32,
+    pub tape_stop: bool,
+}
+
+/// UVI DiffuseDelay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviDiffuseDelay {
+    /// Seconds, or quarter-note beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub spread: f32,
+    pub diffusion: f32,
+    pub feedback: f32,
+    pub damp: f32,
+    pub crosstalk: f32,
+    pub randomness: f32,
+    pub mod_rate: f32,
+    /// Cents.
+    pub mod_depth: f32,
+}
+
+/// Which UVI legacy delay node.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviLegacyKind {
+    Simple,
+    Stereo,
+    PingPong,
+}
+
+/// UVI legacy delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviLegacyDelay {
+    pub kind: UviLegacyKind,
+    /// Left and right seconds, or quarter-note beats when synced (Simple and
+    /// PingPong use the left).
+    pub time: [f32; 2],
+    pub synced: bool,
+    pub feedback: f32,
+    /// Loop filter, `-1..=1`: negative low-pass, positive high-pass, 0 off.
+    pub cutoff: f32,
+    /// PingPong input split, `-1..=1` (-1 all into the left line).
+    pub spread: f32,
 }
 
 pub const BANK_VOICES: usize = 7;
@@ -197,6 +345,23 @@ pub struct DualDelay {
     pub mod_cents: f32,
     pub mod_hz: f32,
     pub mod_offset: f32,
+    /// DualDelayX's extra loop stages (`None`: plain DualDelay).
+    pub x: Option<DualX>,
+}
+
+/// DualDelayX loop stages; each `Some` is switched on.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualX {
+    /// CrusherFreq table index (0..=9), CrusherBits (4..=16).
+    pub crusher: Option<(u8, u8)>,
+    /// DispersionFreq Hz, DispersionSpread ms.
+    pub dispersion: Option<(f32, f32)>,
+    /// DiffusionAmount, DiffusionSpread ms.
+    pub diffusion: Option<(f32, f32)>,
+    /// TapeDrive, TapeWarmth.
+    pub tape: Option<(f32, f32)>,
+    pub reflection: bool,
 }
 
 /// Modulated multi-tap delay line.
@@ -423,6 +588,80 @@ impl Config {
                     && d.mod_cents >= 0.)
                 {
                     return Err("uvi dual delay");
+                }
+                if let Some(x) = d.x {
+                    let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                    if !(x.crusher.is_none_or(|(i, b)| i <= 9 && (4..=16).contains(&b))
+                        && x.dispersion.is_none_or(|(f, s)| ok(f, 0., 20_000.) && ok(s, 1., 100.))
+                        && x.diffusion.is_none_or(|(a, s)| ok(a, 0., 1.) && ok(s, 1., 100.))
+                        && x.tape.is_none_or(|(d, w)| ok(d, 0., 1.) && ok(w, 0., 1.)))
+                    {
+                        return Err("uvi dual delay x");
+                    }
+                }
+            }
+            if let Native::UviLegacyDelay(d) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
+                    return Err("uvi legacy delay");
+                }
+            }
+            if let Native::UviVelvetDelay(v) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(v.time, 0., 128.) && ok(v.spread, 0.1, 1.) && ok(v.diffusion, 0., 1.) && v.shape <= 6 && ok(v.curve, -1., 1.)) {
+                    return Err("uvi velvet delay");
+                }
+            }
+            if let Native::UviBuzzDelay(b) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(b.time, 0., 128.) && ok(b.feedback, 0., 1.) && ok(b.trash, 0., 1.) && ok(b.spread, 0., 2.) && ok(b.glide, 0.01, 1.) && b.mode <= 2) {
+                    return Err("uvi buzz delay");
+                }
+            }
+            if let Native::PsycheDelay(p) = l.native {
+                let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !([p.feedback, p.detune, p.pitch, p.offset, p.cross].into_iter().all(unit) && p.unit.is_finite() && p.time.is_finite() && (0. ..=2000.).contains(&p.time)) {
+                    return Err("psyche delay");
+                }
+            }
+            if let Native::TwinDelay(t) = l.native {
+                let all = [t.time, t.predelay, t.time_unit, t.predelay_unit, t.feedback, t.level];
+                let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !(all.iter().flatten().all(|v| v.is_finite())
+                    && t.feedback.iter().chain(&t.level).all(|&v| unit(v))
+                    && unit(t.width)
+                    && unit(t.cross)
+                    && t.time.iter().chain(&t.predelay).all(|&v| (0. ..=64.).contains(&v)))
+                {
+                    return Err("twin delay");
+                }
+            }
+            if let Native::UviTapeEcho(t) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(t.speed, 1., 3.)
+                    && ok(t.feedback, 0., 2.)
+                    && (1..=12).contains(&t.mode)
+                    && ok(t.bass_db, -10., 10.)
+                    && ok(t.treble_db, -10., 10.)
+                    && t.delays.iter().all(|&d| ok(d, 0., 128.))
+                    && ok(t.noise, 0., 0.001))
+                {
+                    return Err("uvi tape echo");
+                }
+            }
+            if let Native::UviDiffuseDelay(d) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(d.time, 0.001, 128.)
+                    && ok(d.spread, 0., 1.)
+                    && ok(d.diffusion, 0., 1.)
+                    && ok(d.feedback, 0., 1.)
+                    && ok(d.damp, 0., 1.)
+                    && ok(d.crosstalk, -1., 1.)
+                    && ok(d.randomness, 0., 0.5)
+                    && ok(d.mod_rate, 0.1, 10.)
+                    && ok(d.mod_depth, 0., 20.))
+                {
+                    return Err("uvi diffuse delay");
                 }
             }
             if let Native::LegacyModDelay { base_ms, excursion, feedback, smoothing, .. } = l.native {
