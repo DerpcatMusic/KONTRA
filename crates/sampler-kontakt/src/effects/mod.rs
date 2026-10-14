@@ -932,14 +932,14 @@ pub(crate) fn chain_with(
                     None => modelled = false,
                 }
             }
-            Some(Params::Fields(fields)) if fx.module == 0x42 => {
+            Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 flush(&mut combined, &mut filters, &mut out);
-                match color::tape(fields) {
+                match color::typed_core(fx.module, fields) {
                     Some(config) => {
                         out.processors.push(sampler_ir::Processor::Color(config));
                         combined = gain;
                         if dynamic.is_some() {
-                            notes.push(("Tape Saturator live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                            notes.push(("Creative FX live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
                         }
                     }
                     None => modelled = false,

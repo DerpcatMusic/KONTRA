@@ -212,6 +212,8 @@ impl Check<'_> {
             Curve::Exciter(_) => {}
             // Translators clamp to the native ranges; the runtime checks finiteness.
             Curve::Tape(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Bite(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;
