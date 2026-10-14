@@ -928,8 +928,32 @@ oracles. The frozen executable is `coefficient-reuse-primitive`, SHA-256
 `156a8e3c27ec545e64decf2e9b69c2359857eae868d670799388a2c3dce9c41a`;
 its command/source manifest is `coefficient-reuse-primitive-freeze.json` and
 the passing log is `coefficient-reuse-final-correctness.log`. The ignored stage
-diagnostic is unrun at this checkpoint. No timing gain or production change is
+diagnostic was initially unrun at this checkpoint. No production change is
 claimed.
+
+The subsequent `coefficient-reuse-stage.json` **rejects this tile design**.
+The same frozen executable, pinned to CPU 5, compares four alternating orders
+for each cohort, with 2,000 fresh 64-frame blocks per algorithm. All 16 output
+hashes match. Its 0.32-second monitor records zero compilers and only the
+measured child above the busy-process threshold; this is a short stage window,
+not a host deadline test. Cohort detection, exact key checks, row construction
+and consumption are timed; allocation and initial storage touch are not.
+
+| Raw source cohort | Median candidate / original elapsed | Four paired ratios |
+| --- | ---: | --- |
+| Two aligned voices, no tile fill | 1.008 | 1.012, 0.968, 1.004, 1.037 |
+| Four aligned voices, fresh tile | 1.751 | 1.774, 1.732, 1.653, 1.770 |
+| Eight aligned voices, fresh tile | 1.293 | 1.296, 1.266, 1.289, 1.334 |
+| Eight unique phases, no tile fill | 1.013 | 1.015, 1.045, 1.011, 1.007 |
+
+Every aligned four/eight-voice comparison loses despite computing each weight
+only once. The new weight stores/loads, layout and register pressure need
+assembly/PMU attribution before assigning a cause; fewer arithmetic operations
+alone did not produce faster execution. The failed stage gate prevents a
+production integration or claimed callback improvement. A later distinct
+experiment could share a small number of coefficients directly in registers
+across voices, retaining each original accumulation order and avoiding a
+materialized tile. That is a hypothesis, not an implemented optimization.
 
 Any later runtime prototype must derive keys from the actual run after
 expression pitch and source projection, use the selected kernel/FMA mode,
