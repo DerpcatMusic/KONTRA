@@ -19,6 +19,7 @@ mod shaping;
 mod skreamer;
 mod stereo;
 mod tone;
+mod widener;
 
 pub use shaping::Rectifier;
 pub use sampler_ir::fx::color::Decimator;
@@ -104,6 +105,8 @@ pub struct Settings {
     /// Wet share, 0..=1.
     pub mix: f64,
     pub stereo: Option<StereoSettings>,
+    /// UVI Widener, after the mix.
+    pub widener: Option<sampler_ir::fx::color::Widener>,
 }
 
 impl Settings {
@@ -119,6 +122,7 @@ impl Settings {
         tone: None,
         mix: 1.0,
         stereo: None,
+        widener: None,
     };
 
     /// A Gainer: `x * (dry + g)`, `g` slewing to `gain`.
@@ -172,6 +176,7 @@ impl Settings {
             && self.mix.is_finite()
             && (0.0..=1.0).contains(&self.mix)
             && self.stereo.is_none_or(StereoSettings::valid)
+            && self.widener.is_none_or(|w| [w.delay, w.width, w.shelf_hertz, w.shelf_db].iter().all(|v| v.is_finite()) && w.delay.abs() <= 15.0)
     }
 
     /// Whether the unit leaves no tail: no stage keeps history.
@@ -184,12 +189,14 @@ impl Settings {
             && self.noise.is_none()
             && self.tone.is_none()
             && self.stereo.is_none()
+            && self.widener.is_none()
             && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
-    pub(super) fn ring_frames(&self) -> usize {
-        if self.stereo.is_some_and(|s| s.pseudo) { 1024 } else { 0 }
+    pub(super) fn ring_frames(&self, rate: u32) -> usize {
+        let widener = self.widener.map_or(0, |w| widener::Engine::frames(w, rate));
+        if self.stereo.is_some_and(|s| s.pseudo) { 1024.max(widener) } else { widener }
     }
 
     pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Color {
@@ -255,6 +262,7 @@ impl Settings {
             tone: self.tone.and_then(|cutoff| tone::Tone::new(cutoff, rate)),
             mix: self.mix as f32,
             stereo: self.stereo.map(|s| s.compile(rate, bindings)),
+            widener: self.widener.map(|w| widener::Engine::new(w, rate)),
         }
     }
 }
@@ -304,6 +312,7 @@ pub(crate) struct Color {
     tone: Option<tone::Tone>,
     mix: f32,
     stereo: Option<stereo::Stereo>,
+    widener: Option<widener::Engine>,
 }
 
 /// Every stage's history; a stage the unit lacks leaves its field untouched.
@@ -324,6 +333,7 @@ pub(super) struct State {
     diode: diode::State,
     tone: tone::ToneState,
     stereo: stereo::StereoState,
+    widener: widener::State,
 }
 
 impl State {
@@ -341,6 +351,7 @@ impl State {
             && self.tonestack.finite()
             && self.diode.finite()
             && self.tone.finite()
+            && self.widener.finite()
     }
 }
 
@@ -358,6 +369,7 @@ impl Color {
             && self.mix == 1.0
             && matches!(self.curve, Curve::Identity | Curve::Classic(_) | Curve::Rectifier(_))
             && self.stereo.as_ref().is_none_or(stereo::Stereo::batches)
+            && self.widener.is_none()
     }
 
     /// The dominant stage's trace name, and every knob as a parameter.
@@ -548,6 +560,9 @@ impl Color {
                     *y = f64::from((*y as f32) * wet + dry * (*x as f32));
                 }
             }
+        }
+        if let Some(w) = &self.widener {
+            w.process(&mut state.widener, block, len, ring);
         }
         if let Some(stereo) = &self.stereo {
             stereo.process(&mut state.stereo, parameters, block, len, at, ring);

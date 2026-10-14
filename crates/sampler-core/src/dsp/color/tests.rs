@@ -356,6 +356,7 @@ fn uvi_unit(name: &str, preset: impl Fn(&serde_json::Value) -> sampler_ir::fx::c
             ("sine", [sine.clone(), sine], [sine_out.clone(), sine_out]),
         ] {
             let mut state = State::default();
+            let mut ring = vec![[0f64; 2]; 4096];
             let mut out = [vec![], vec![]];
             for start in (0..256).step_by(64) {
                 let mut block = [[0.; BLOCK]; 2];
@@ -364,7 +365,7 @@ fn uvi_unit(name: &str, preset: impl Fn(&serde_json::Value) -> sampler_ir::fx::c
                         block[c][i] = f64::from(input[c][start + i] as f32);
                     }
                 }
-                run(&unit, &mut state, &mut block, 64);
+                unit.process(&mut state, &[], &mut block, 64, 0, &mut ring);
                 for c in 0..2 {
                     out[c].extend_from_slice(&block[c][..64]);
                 }
@@ -467,5 +468,23 @@ fn uvi_exciter_matches_the_native() {
             sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::Exciter(e), ..sampler_ir::fx::color::Config::IDENTITY }
         },
         2e-6,
+    );
+}
+
+#[test]
+fn uvi_widener_matches_the_native() {
+    uvi_unit(
+        "Widener",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let w = sampler_ir::fx::color::Widener {
+                delay: f("Delay", 0.0),
+                width: f("Width", 0.0),
+                shelf_hertz: f("HighShelfFreqSide", 10_000.0),
+                shelf_db: f("HighSelfGainSide", 0.0),
+            };
+            sampler_ir::fx::color::Config { widener: Some(w), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
     );
 }

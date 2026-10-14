@@ -216,6 +216,12 @@ impl Check<'_> {
                 }
             }
         }
+        if let Some(w) = c.widener {
+            self.within(f64::from(w.delay), -15.0..=15.0, "widener delay")?;
+            self.within(f64::from(w.width), -1.0..=1.0, "widener width")?;
+            self.within(f64::from(w.shelf_hertz), 1.0..=f64::MAX, "widener shelf hertz")?;
+            self.within(f64::from(w.shelf_db), -15.0..=15.0, "widener shelf gain")?;
+        }
         if let Some(tone) = c.tone {
             self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;
         }
