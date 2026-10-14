@@ -209,3 +209,36 @@ per-export difference establishes a clock-induced gain, an overhead estimate or
 an optimization speedup. No export optimization or new full real-bank UI/pixel
 parity claim accompanies this diagnostic. Further changes were deferred for the
 requested production build and installed-binary replacement.
+
+## Rotating widget sample
+
+The [sampled numeric receipt](receipts/ao-export-sampled-20261015.json) uses
+probe commit `fae3f896e` and immutable helper SHA
+`847d6a1d21527d472b36890fbf2fb4a82c7e3aa8b0fd826309ebc5188b797075`.
+A fresh normal LayerNext gesture completed 107 full exports / 1,085,515 widgets
+over a 26,092.845 ms owner window. The rotating stride-128 subset contained
+8,485 widgets. Its completed caller-CPU intervals were:
+
+| Sampled work | CPU ms | Share of sampled widget CPU |
+| --- | ---: | ---: |
+| Current value read | 9.225 | 4.59% |
+| Documented-property inventory | 68.518 | 34.08% |
+| Remaining conversion, including probe overhead | 123.319 | 61.33% |
+| Full sampled widgets | 201.063 | 100% |
+
+These percentages describe the observed subset, not an extrapolated exact
+whole-loop cost. The value/inventory intervals are disjoint and nested in the
+sampled-widget interval. Both non-nil-element counters were zero in this AO run;
+it provides no evidence of expensive element-bound value reads. Inventory is a
+measurable next target; static classification and mlua raw iteration alternatives
+remain experiments until exact malformed-key, mutation, full-model and pixel
+oracles pass. No export optimization is enabled.
+
+All 1,746 tasks succeeded with zero pending/failed/canceled tasks, script/core
+error or stream underrun. Independent verification again compared 4,656 windows
+/ 1,191,936 frames with matching aggregate fingerprint `2777464607603900197` and
+zero mismatch. The process took 33.662 s with 66 compiler observations (maximum
+98.8% compiler CPU). Publication frequency and scheduling differ from earlier
+receipts. This is contended attribution, with no overhead or speedup claim.
+Further optimization was deferred to prioritize reported Kontakt snapshot/UI
+state and menu correctness.
