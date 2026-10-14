@@ -14,12 +14,6 @@ pub(super) fn one_pole32(state: f32, input: f32, coefficient: f32) -> f32 {
     state + (input - state) * coefficient
 }
 
-// Callers retain multiplication order (Lo-Fi puts its coefficient first).
-#[inline(always)]
-pub(super) fn biased_one_pole32(state: f32, increment: f32) -> f32 {
-    state + (increment + 1e-20)
-}
-
 #[inline(always)]
 pub(super) fn gainer(current: f32, target: f32, dry: f64, k: f32) -> (f64, f32) {
     (dry + f64::from(current), one_pole32(current, target, k))

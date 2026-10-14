@@ -1,37 +1,38 @@
-//! The Kontakt Reverb (Galois, SerType 0x59) core, `NI::DSP::GaloisReverb`.
-//!
-//! Laws, from the Kontakt 8.13.1 binary:
-//! - controls: setter [ref] (ten normalized controls, see
-//!   [`sampler_ir::fx::space::Galois`]); Hall/Room is the dispatcher's control
-//!   10, which picks one of two cores built by the wrapper
-//!   constructor [ref] ([ref](core, flag)`). Control 10 at or
-//!   above 0.5 runs the flag-1 core; saved type 1 is Hall
-//!   and the flag-1 lines are the longer ones, so flag 1 is called Hall.
-//! - line lengths: [ref], `prime[(int)(slope·size·10 + 90 + base)]`
-//!   (Room) or `prime[(int)((slope/32)^1.61·size·736 + 90 + base)]` (Hall),
-//!   prime table [ref], base/slope tables from the constructor.
-//! - feedback matrix: 31×31 orthogonal circulant of the length-31 m-sequence
-//!   `c[n+5] = c[n] ^ c[n+2]` (seed 1,1,0,1,1), `a` where `c = 0`, `b` where
-//!   `c = 1`, `a − b = 2/√32`, rows summing to −1. Applied here with a
-//!   32-point Walsh–Hadamard transform instead of the native 32×32 product.
-//! - per-line gain and damping: [ref] and the tail of [ref]
-//!   (Jot absorption: `g^L` and a one-pole whose pole meets `(g'/g)^L` at
-//!   Nyquist).
-//! - processing: stereo kernels [ref] (Room, four 3-delay diffusers)
-//!   and [ref] (Hall, two), dispatched by [ref]; diffusers
-//!   [ref]; low shelf [ref] /
-//!   [ref]; high cut and the 2 Hz delay modulation in [ref] /
-//!   [ref].
-//!
-//! The core's filters assume 44.1 kHz ([ref], `π/44100`); its line
-//! lengths are samples. Above 48 kHz the native core runs decimated by
-//! `trunc(rate / 44100)` behind a resampler pair whose kernel is not
-//! extracted; here it runs at the host rate.
-//! Parameter ramps are not reproduced: the controls are
-//! constant for a unit's life.
-//!
-//! Verified against the native kernel executed in an emulator
-//! (`tools/re/kemu.py`): see the tests.
+#![allow(dead_code)]
+// The Kontakt Reverb (Galois, SerType 0x59) core, `NI::DSP::GaloisReverb`.
+//
+// Laws, from the Kontakt 8.13.1 binary:
+// - controls: setter [ref] (ten normalized controls, see
+//   [`sampler_ir::fx::space::Galois`]); Hall/Room is the dispatcher's control
+//   10, which picks one of two cores built by the wrapper
+//   constructor [ref] ([ref](core, flag)`). Control 10 at or
+//   above 0.5 runs the flag-1 core; saved type 1 is Hall
+//   and the flag-1 lines are the longer ones, so flag 1 is called Hall.
+// - line lengths: [ref], `prime[(int)(slope·size·10 + 90 + base)]`
+//   (Room) or `prime[(int)((slope/32)^1.61·size·736 + 90 + base)]` (Hall),
+//   prime table [ref], base/slope tables from the constructor.
+// - feedback matrix: 31×31 orthogonal circulant of the length-31 m-sequence
+//   `c[n+5] = c[n] ^ c[n+2]` (seed 1,1,0,1,1), `a` where `c = 0`, `b` where
+//   `c = 1`, `a − b = 2/√32`, rows summing to −1. Applied here with a
+//   32-point Walsh–Hadamard transform instead of the native 32×32 product.
+// - per-line gain and damping: [ref] and the tail of [ref]
+//   (Jot absorption: `g^L` and a one-pole whose pole meets `(g'/g)^L` at
+//   Nyquist).
+// - processing: stereo kernels [ref] (Room, four 3-delay diffusers)
+//   and [ref] (Hall, two), dispatched by [ref]; diffusers
+//   [ref]; low shelf [ref] /
+//   [ref]; high cut and the 2 Hz delay modulation in [ref] /
+//   [ref].
+//
+// The core's filters assume 44.1 kHz ([ref], `π/44100`); its line
+// lengths are samples. Above 48 kHz the native core runs decimated by
+// `trunc(rate / 44100)` behind a resampler pair whose kernel is not
+// extracted; here it runs at the host rate.
+// Parameter ramps are not reproduced: the controls are
+// constant for a unit's life.
+//
+// Verified against the native kernel executed in an emulator
+// (`tools/re/kemu.py`): see the tests.
 
 use crate::Error;
 use sampler_ir::fx::space::{Galois as Controls, Network};
@@ -221,7 +222,7 @@ struct Channel {
     lp: f32,
 }
 
-pub(super) struct GaloisCore {
+pub(crate) struct GaloisCore {
     lines: Vec<Ring>,
     len0: usize,
     flen: [f32; LINES],
@@ -251,7 +252,7 @@ pub(super) struct GaloisCore {
 }
 
 impl GaloisCore {
-    pub(super) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
         let g = n.galois.ok_or(Error::InvalidInput)?;
         if rate == 0 || g.controls.iter().any(|v| !(0.0..=1.0).contains(v)) {
             return Err(Error::InvalidInput);
@@ -259,7 +260,7 @@ impl GaloisCore {
         Ok(Self::with(&g, rate as f64))
     }
 
-    fn with(g: &Controls, rate: f64) -> Self {
+    pub(crate) fn with(g: &Controls, rate: f64) -> Self {
         let x = g.controls;
         let hall = g.hall;
         let len = lengths(hall, x[Controls::SIZE]);
@@ -348,7 +349,7 @@ impl GaloisCore {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for r in self.lines.iter_mut().chain(&mut self.pre) {
             r.buf.fill(0.0);
         }
@@ -391,7 +392,7 @@ impl GaloisCore {
     }
 
     /// Replace `l`/`r` with the core's output (its own dry/wet mix included).
-    pub(super) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+    pub(crate) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
         for (xl, xr) in l.iter_mut().zip(r.iter_mut()) {
             let w = self.w;
             self.w = w.wrapping_add(1);
@@ -441,5 +442,3 @@ impl GaloisCore {
     }
 }
 
-#[cfg(test)]
-mod tests;
