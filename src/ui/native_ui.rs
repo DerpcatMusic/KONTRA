@@ -197,6 +197,10 @@ pub(super) struct State {
     failed: bool,
     failure: Option<String>,
     started: bool,
+    /// Frames the first draw still spreads over: the VM is made on one, the
+    /// graph first rendered on the next, and lowered on the third, so no one
+    /// frame pays all of them (Conflux: 30 + 25 + 28 ms, then MUI layout).
+    stages: u8,
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
@@ -316,6 +320,7 @@ impl State {
             failed: false,
             failure: None,
             started: false,
+            stages: 2,
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
@@ -469,6 +474,12 @@ impl State {
                         drafts: HashMap::new(),
                     },
                 );
+                if self.stages > 0 {
+                    self.stages -= 1;
+                    // Wake the editor for the next stage.
+                    super::picture_worker::completed();
+                    return Ok(caption("Loading the authored interface…").pad(12.));
+                }
             }
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
@@ -509,6 +520,12 @@ impl State {
                 self.graph_work = Some(session.graph_work());
             }
             let graph = graph?;
+            if self.stages > 0 && local.graph.is_none() {
+                self.stages -= 1;
+                local.graph = Some(graph);
+                super::picture_worker::completed();
+                return Ok(caption("Loading the authored interface…").pad(12.));
+            }
             #[cfg(feature = "shots")]
             {
                 // An audit figure: walking 1700 nodes each frame would dwarf the frame.
@@ -2287,6 +2304,7 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            stages: 0,
             entry: "main".into(),
             seed: Vec::new(),
             size: Size::new(970., 600.),
@@ -3156,6 +3174,7 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            stages: 0,
             entry: "main".into(),
             seed: vec![
                 (face.source, 0, widget.clone()),

@@ -2650,13 +2650,17 @@ fn probe_load_frames() {
     }
     let load_ms = ms(loader.join().unwrap());
     // Publication: the frames that first show the loaded part.
-    let after: Vec<f64> = (0..8)
-        .map(|_| {
-            let t = Instant::now();
-            h.idle(1);
-            ms(t.elapsed())
-        })
-        .collect();
+    // Each frame split into the editor's build and MUI's layout and scene.
+    let (mut after, mut split) = (Vec::new(), Vec::new());
+    let frames_after = std::env::var("PROBE_AFTER_FRAMES").ok().and_then(|n| n.parse().ok()).unwrap_or(8);
+    for _ in 0..frames_after {
+        let t = Instant::now();
+        let root = (h.build)(&mut h.ui, &mut h.bridge);
+        let built = ms(t.elapsed());
+        h.ui.frame(root, Some(h.size), Input::default(), 1. / 60.).unwrap();
+        after.push(ms(t.elapsed()));
+        split.push([built, ms(t.elapsed()) - built]);
+    }
     let kb = |key: &str| {
         std::fs::read_to_string("/proc/self/status").unwrap().lines()
             .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok())
@@ -2669,7 +2673,7 @@ fn probe_load_frames() {
         "FRAMES {}",
         serde_json::json!({"load_ms": load_ms, "frames": frames, "mean_frame_ms": sum / f64::from(frames.max(1)),
             "worst_frame_ms": worst, "worst_at_progress": worst_at, "worst_by_decile": bands,
-            "first_95_ms": first95, "ms_at_95": at95, "after_publish_ms": after,
+            "first_95_ms": first95, "ms_at_95": at95, "after_publish_ms": after, "after_build_frame_ms": split,
             "hwm_mb": kb("VmHWM:") as f64 / 1024., "rss_mb": kb("VmRSS:") as f64 / 1024., "trace": trace})
     );
 }
