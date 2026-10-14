@@ -1,6 +1,6 @@
 //! UVI `filter` effects onto sampler_ir::fx::filter.
 //!
-//! BiquadFilter, MoogFilter and Rez are native laws of the engine's cascade core (UVI
+//! BiquadFilter, MoogFilter, Rez and XpanderFilter are native laws of the engine's cascade core (UVI
 //! Workstation 4.0.9, checked under kemu; see `sampler-core::dsp::filter::cascade`). OnePole is
 //! the SVF one-pole (its Freq to coefficient law is not proved). Every other UVI filter element
 //! is named here with the exact thing that is not proved, so the report says why it is dropped
@@ -24,11 +24,10 @@ const GAPS: &[(&str, &str)] = &[
     ("TalkBox", "vowel tables for VowelMode (0..4) and FilterMode are not extracted"),
     ("UviFilter", "MappingMode (0..2) cutoff mapping and the filter bank behind it are not extracted"),
     ("VowelFilter", "formant tables for the 11 FilterA/FilterB vowels and the Formant/Morph laws are not extracted"),
-    ("XpanderFilter", "the 37 Xpander modes, Algorithm, DistortionType and Fat laws are not extracted"),
 ];
 
 /// The elements with a native law.
-const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez"];
+const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez", "XpanderFilter"];
 
 /// Whether `tag` is a UVI filter element this module owns.
 pub(crate) fn handles(tag: &str) -> bool {
@@ -54,14 +53,25 @@ pub(crate) fn translate(
         let tracking = number("KeyTracking", 0.0)?;
         let key = f64::from(key.unwrap_or(60));
         // Native 0x1419ef640 order: 2^(((note - 60) kt) / 12) times Freq, in f32.
-        let hertz = ((((key - 60.0) * tracking) as f32 * (1.0f32 / 12.0)).exp2()
-            * number("Freq", 1000.0)? as f32)
-            .clamp(20.0, 20_000.0);
+        let hertz = (((key - 60.0) * tracking) as f32 * (1.0f32 / 12.0)).exp2()
+            * number("Freq", 1000.0)?.clamp(20.0, 20_000.0) as f32;
+        // Xpander takes the tracked frequency as is (its update clamps to the rate).
+        let hertz = if tag == "XpanderFilter" { hertz } else { hertz.clamp(20.0, 20_000.0) };
         let q = number("Q", 0.0)?.clamp(0.0, 1.0) as f32;
         let mode = number("Mode", if tag == "BiquadFilter" { 1.0 } else { 0.0 })?.clamp(0.0, 3.0) as u8;
         let uvi = match tag {
             "BiquadFilter" => Uvi::Biquad { mode, hertz, q },
             "MoogFilter" => Uvi::Moog { hertz, q },
+            "XpanderFilter" => Uvi::Xpander {
+                mode: number("Mode", 3.0)?.clamp(0.0, 36.0) as u8,
+                hertz,
+                q,
+                distortion: number("DistortionType", 0.0)?.clamp(0.0, 2.0) as u8,
+                drive: number("Drive", 0.0)?.clamp(-20.0, 20.0) as f32,
+                fat: number("Fat", 1.0)?.clamp(0.0, 1.0) as f32,
+                algorithm: number("Algorithm", 0.0)?.clamp(0.0, 1.0) as u8,
+                oversampling: number("Oversampling", 1.0)? != 0.0,
+            },
             _ => Uvi::Rez { mode: mode.min(2), hertz, q },
         };
         let mut config = Config::new(Topology::Cascade, Response::LowPass, 2);
@@ -147,6 +157,9 @@ mod tests {
         let t = run(r#"<MoogFilter Freq="5000" Q="0.9"/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert_eq!(c.variant, Variant::Uvi(Uvi::Moog { hertz: 5000.0, q: 0.9 }));
+        let t = run(r#"<XpanderFilter Freq="500" Algorithm="1"/>"#, None).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert!(matches!(c.variant, Variant::Uvi(Uvi::Xpander { mode: 3, algorithm: 1, oversampling: true, .. })));
         let t = run(r#"<BiquadFilter/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert_eq!(c.variant, Variant::Uvi(Uvi::Biquad { mode: 1, hertz: 1000.0, q: 0.0 }));
