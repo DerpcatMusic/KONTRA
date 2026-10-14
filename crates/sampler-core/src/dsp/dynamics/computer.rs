@@ -31,7 +31,9 @@ pub(super) fn table_db(level: f64) -> f64 {
 #[inline(always)]
 pub(super) fn table_gain(db: f64) -> f64 {
     let x = (db / DB_PER_BIT).clamp(-1000., 1000.);
-    let whole = x.floor();
+    // floor without a libm call (baseline x86-64 has no roundsd); |x| <= 1000.
+    let t = x as i64 as f64;
+    let whole = if t > x { t - 1. } else { t };
     let at = (x - whole) * SEGMENTS as f64;
     let i = (at as usize).min(SEGMENTS - 1);
     let t = &*EXP2;

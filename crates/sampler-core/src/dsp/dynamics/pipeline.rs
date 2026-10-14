@@ -29,13 +29,19 @@ pub(super) struct Frame {
     /// `audio` through the look-ahead delay.
     pub heard: [f64; 2],
     pub out: [f64; 2],
+    /// A feedback tap carried to the next frame in registers (a stage field
+    /// stored and reloaded each frame stalls on store forwarding).
+    pub tap: [f64; 2],
 }
 
 pub(super) trait Stage {
+    /// Before the first frame of the block.
+    #[inline(always)]
+    fn begin(&mut self, _: &mut Frame) {}
     fn tick(&mut self, f: &mut Frame);
     /// End of frame: feedback detectors read the applied gain here.
     #[inline(always)]
-    fn after(&mut self, _: &Frame) {}
+    fn after(&mut self, _: &mut Frame) {}
     /// Persist the stage's state at the end of the block.
     #[inline(always)]
     fn store(&mut self, _: &mut ProcessorState) {}
@@ -45,11 +51,15 @@ macro_rules! chain {
     ($($s:ident $i:tt),+) => {
         impl<$($s: Stage),+> Stage for ($($s,)+) {
             #[inline(always)]
+            fn begin(&mut self, f: &mut Frame) {
+                $(self.$i.begin(f);)+
+            }
+            #[inline(always)]
             fn tick(&mut self, f: &mut Frame) {
                 $(self.$i.tick(f);)+
             }
             #[inline(always)]
-            fn after(&mut self, f: &Frame) {
+            fn after(&mut self, f: &mut Frame) {
                 $(self.$i.after(f);)+
             }
             #[inline(always)]
@@ -69,11 +79,12 @@ chain!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 /// Run `len` frames of `block` through the chain, in place.
 pub(super) fn run<S: Stage>(mut s: S, state: &mut ProcessorState, block: &mut Planar, len: usize) {
     let mut f = Frame::default();
+    s.begin(&mut f);
     for i in 0..len {
         f.x = [block[0][i], block[1][i]];
         f.audio = f.x;
         s.tick(&mut f);
-        s.after(&f);
+        s.after(&mut f);
         [block[0][i], block[1][i]] = f.out;
     }
     s.store(state);
