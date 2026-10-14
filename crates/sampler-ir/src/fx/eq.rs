@@ -55,6 +55,9 @@ pub enum Law {
     /// section; the native cubic-spline tables turn them into Hz, bandwidth and dB (proved). The
     /// biquad that follows is generic RBJ (topology unproved). `q` is ignored for HP/LP sections.
     Solid(SolidSection),
+    /// RBJ cookbook biquads by the bilinear transform: Hertz, Q (`alpha = sin(w0) / 2q`), decibels
+    /// (`A = 10^(dB/40)`). UVI TwoBandEq/ThreeBandEq/ParametricEQ coefficient routines (proved).
+    Cookbook,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

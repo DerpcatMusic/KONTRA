@@ -124,6 +124,34 @@ pub(super) fn design(kind: Kind, rate: u32, hz: f64, q: f64, boost_db: f64) -> O
     (f.b.iter().chain(&f.a).all(|v| v.is_finite()) && a2.abs() < 1. && 1. + a1 + a2 > 0. && 1. - a1 + a2 > 0.).then_some(f)
 }
 
+/// RBJ cookbook biquad by the bilinear transform: `A = 10^(dB/40)`, `alpha = sin(w0) / 2q`. The
+/// coefficients of UVI's TwoBandEq/ThreeBandEq/ParametricEQ routines (0x141296b30, 0x141291cf0,
+/// 0x1416403e0, 0x141640060, 0x141640220, 0x14163fd30, 0x14163fe30), checked under emulation.
+pub(super) fn cookbook(kind: Kind, rate: u32, hz: f64, q: f64, boost_db: f64) -> Option<Biquad> {
+    let a = 10f64.powf(boost_db / 40.);
+    let (sin, cos) = (TAU * hz / f64::from(rate)).sin_cos();
+    let alpha = sin / (2. * q);
+    let r = 2. * a.sqrt() * alpha;
+    let (p, m) = (a + 1., a - 1.);
+    let (b, d) = match kind {
+        Kind::Peak => ([1. + alpha * a, -2. * cos, 1. - alpha * a], [1. + alpha / a, -2. * cos, 1. - alpha / a]),
+        Kind::LowShelf => (
+            [a * (p - m * cos + r), 2. * a * (m - p * cos), a * (p - m * cos - r)],
+            [p + m * cos + r, -2. * (m + p * cos), p + m * cos - r],
+        ),
+        Kind::HighShelf => (
+            [a * (p + m * cos + r), -2. * a * (m + p * cos), a * (p + m * cos - r)],
+            [p - m * cos + r, 2. * (m - p * cos), p - m * cos - r],
+        ),
+        Kind::LowPass => ([(1. - cos) / 2., 1. - cos, (1. - cos) / 2.], [1. + alpha, -2. * cos, 1. - alpha]),
+        Kind::HighPass => ([(1. + cos) / 2., -(1. + cos), (1. + cos) / 2.], [1. + alpha, -2. * cos, 1. - alpha]),
+        Kind::BandPass => ([alpha, 0., -alpha], [1. + alpha, -2. * cos, 1. - alpha]),
+        Kind::Notch => ([1., -2. * cos, 1.], [1. + alpha, -2. * cos, 1. - alpha]),
+        _ => return None,
+    };
+    Some(Biquad { b: b.map(|v| v / d[0]), a: [d[1] / d[0], d[2] / d[0]] })
+}
+
 /// First-order matched design (one real pole; DC and Nyquist gains matched). `kind` is a
 /// first-order low/high pass or shelf; `boost_db` is the shelf boost.
 pub(super) fn first_order(kind: Kind, rate: u32, hz: f64, boost_db: f64) -> Option<Biquad> {

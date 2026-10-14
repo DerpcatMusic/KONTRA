@@ -274,7 +274,7 @@ impl Check<'_> {
                         self.finite(f64::from(band.gain_db), "EQ gain")?;
                         self.finite(f64::from(band.proportional_q), "EQ proportional Q")?;
                         match band.law {
-                            crate::fx::eq::Law::Rbj => {
+                            crate::fx::eq::Law::Rbj | crate::fx::eq::Law::Cookbook => {
                                 self.within(f64::from(band.frequency), 1e-3..=1e6, "EQ frequency")?;
                                 self.within(f64::from(band.q), 1e-3..=1e3, "EQ Q")?;
                             }

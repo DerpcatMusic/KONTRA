@@ -259,3 +259,23 @@ fn every_kind_matches_its_analogue_prototype() {
         assert!(*error < 3.5, "{kind:?} {error} dB at {at} Hz");
     }
 }
+
+/// UVI ParametricEQ coefficient routines run under emulation at 48 kHz: peak 0x1416403e0 (1 kHz,
+/// +6 dB, Q 0.7), low pass 0x14163fd30 (16 kHz, Q 0.7), high pass 0x14163fe30 (30 Hz, Q 2) and high
+/// shelf 0x141640220 (7.4 kHz, -4 dB at A = 10^(dB/20), slope 1: cookbook -8 dB, Q 1/sqrt 2).
+#[test]
+fn cookbook_is_the_uvi_parametric_eq_law() {
+    let cases = [
+        (Kind::Peak, 1000., 0.7, 6., [1.0616237889328701, -1.8601148764443352, 0.814541945454859, -1.8601148764443352, 0.8761657343877289]),
+        (Kind::LowPass, 16000., 0.7, 0., [0.46336638514573497, 0.9267327702914699, 0.46336638514573497, 0.6178218468609797, 0.2356436937219601]),
+        (Kind::HighPass, 30., 2., 0., [0.9990153661693021, -1.9980307323386042, 0.9990153661693021, -1.998023029282513, 0.9980384353946954]),
+        (Kind::HighShelf, 7400., std::f64::consts::FRAC_1_SQRT_2, -8., [0.5355857724005818, -0.25310761134475296, 0.11318659779714484, -0.9348776648168456, 0.33054242366981945]),
+    ];
+    for (kind, hz, q, db, native) in cases {
+        let f = kernel::cookbook(kind, 48_000, hz, q, db).unwrap();
+        let got = [f.b[0], f.b[1], f.b[2], f.a[0], f.a[1]];
+        for (g, n) in got.iter().zip(native) {
+            assert!((g - n).abs() < 1e-12, "{kind:?} {got:?} vs {native:?}");
+        }
+    }
+}
