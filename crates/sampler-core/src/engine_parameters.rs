@@ -479,20 +479,49 @@ fn layer_encode(target: ModTarget, value: i64) -> i32 {
     .round()
     .clamp(0., 1e6) as i32
 }
-fn slot_parameter(name: &str) -> Option<SlotKind> {
-    match name {
-        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => Some(SlotKind::Bypass),
-        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
-            Some(SlotKind::Output)
+/// The slot control behind a slot parameter write, and its law.
+/// `$ENGINE_PAR_VOLUME` at (-1, -1, `$NI_BUS_OFFSET` + bus) is an instrument
+/// bus volume: the bus's Mix block at [`crate::BUS_VOLUME_SLOT`], on Kontakt's
+/// volume law (18000·log2(v) − 346768 mB, 2^(dB/6)) = (v/unity)^3 with +12 dB at 1e6.
+fn slot_parameter(
+    name: &str,
+    a: EngineParameterAddress,
+) -> Option<(SlotKind, ControlId, EngineParameterLaw)> {
+    let effect = EngineParameterLaw::CubicGain { unity: 396851. };
+    let (kind, slot, law) = match name {
+        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+            (SlotKind::Bypass, a.slot, effect)
         }
-        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
-        _ => None,
-    }
+        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+            (SlotKind::Output, a.slot, effect)
+        }
+        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => (SlotKind::Dry, a.slot, effect),
+        "$ENGINE_PAR_VOLUME" if a.group == -1 && a.slot == -1 && a.generic >= 1000 => (
+            SlotKind::Output,
+            crate::BUS_VOLUME_SLOT,
+            EngineParameterLaw::CubicGain { unity: 1e6 / 4f64.cbrt() },
+        ),
+        _ => return None,
+    };
+    Some((kind, crate::slot_control(kind, a.group, slot, a.generic), law))
 }
 
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn bus_volume_reaches_the_bus_mix_on_the_kontakt_volume_law() {
+        let id = engine_parameter_id("ENGINE_PAR_VOLUME").unwrap();
+        let at = |generic| EngineParameterAddress { parameter: id, group: -1, slot: -1, generic };
+        assert!(slot_parameter("$ENGINE_PAR_VOLUME", at(-1)).is_none());
+        let (kind, control, law) = slot_parameter("$ENGINE_PAR_VOLUME", at(1002)).unwrap();
+        assert_eq!(kind, SlotKind::Output);
+        assert_eq!(control, crate::slot_control(kind, -1, crate::BUS_VOLUME_SLOT, 1002));
+        for v in [1000, 250_000, 629_961, 1_000_000] {
+            let db = layer_decode(ModTarget::Decibels, v) as f64 / 1000.;
+            assert!((law.decode(v) - (db / 6.).exp2()).abs() < 1e-4 * law.decode(v).max(1e-3), "{v}");
+        }
+    }
     #[test]
     fn display_is_the_bare_number_because_scripts_append_the_unit() {
         let show = |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);
@@ -807,15 +836,12 @@ impl Runtime {
                 )
                 .map(|_| ());
         }
-        if let Some(kind) = slot_parameter(name) {
-            let id = crate::slot_control(kind, address.group, address.slot, address.generic);
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
             if self.control_definition(plan, id).is_ok() {
                 let value = if kind == SlotKind::Bypass {
                     f64::from(value != 0)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }
-                        .decode(value)
-                        .min(kind.max())
+                    law.decode(value).min(kind.max())
                 };
                 return self
                     .edit_controls_now(
@@ -861,15 +887,12 @@ impl Runtime {
                 return Ok(b.law.encode(v));
             }
         }
-        if let Some(kind) = slot_parameter(name) {
-            if let Ok(ControlValue::Real(v)) = self.control_value(
-                plan,
-                crate::slot_control(kind, address.group, address.slot, address.generic),
-            ) {
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
+            if let Ok(ControlValue::Real(v)) = self.control_value(plan, id) {
                 return Ok(if kind == SlotKind::Bypass {
                     i32::from(v != 0.)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }.encode(v)
+                    law.encode(v)
                 });
             }
         }

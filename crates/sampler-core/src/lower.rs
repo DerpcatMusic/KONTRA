@@ -881,16 +881,11 @@ pub fn lower_with(
     }
     let mut route_bound = vec![false; instrument.controls.len()];
     let mut zone_bound = vec![false; instrument.controls.len()];
-    let mut loop_bound = vec![false; instrument.controls.len()];
     for &(route, depth, bypass) in &instrument.source_indices.route_controls {
         for control in [depth, bypass] {
             route_bound[control.0] = true;
             zone_bound[control.0] |= zone_routes[route.0];
         }
-        loop_bound[depth.0] |= matches!(
-            instrument.routes[route.0].target,
-            ir::Target::LoopStart | ir::Target::LoopLength
-        );
     }
     for alias in &instrument.source_indices.control_aliases {
         if route_bound[alias.control.0] && !zone_bound[alias.control.0] {
@@ -910,7 +905,12 @@ pub fn lower_with(
                 generic: alias.address.generic,
             },
             control: ir_control_id(&control.key),
-            law: if loop_bound[alias.control.0] {
+            // Kontakt's modulator intensity is signed cubic for every target:
+            // ANALOG STRINGS' phase table writes 500000*(cbrt(p)+1) for phase p.
+            law: if matches!(
+                alias.parameter.as_str(),
+                "ENGINE_PAR_INTMOD_INTENSITY" | "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"
+            ) {
                 crate::EngineParameterLaw::SignedCubic
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
