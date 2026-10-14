@@ -24,7 +24,9 @@ Keygroup/oscillator taps and native mono summation, normalization, ballistics an
 display laws remain unresolved. Taking the larger voice/channel peak does not
 recover a summed signal: cancellation is a counterexample covered by the test.
 
-The production UVI UI bridge is not connected to these new taps yet. Typed UVI
-requests remain unavailable and diagnosed until their identity and consumer are
-proved. Kontakt's existing output meter addresses and readback behavior remain
-separate.
+The [conservative UVI bridge](UVI_METER_REQUESTS.md) now publishes raw observations
+for uniquely owned Program/Layer default buses before the mixer drains them.
+Typed availability stays separate from the scalar painter. Missing ownership,
+collapsed/per-voice scopes, stale plans and native display laws remain diagnosed;
+there is no Program fallback. Kontakt's existing output meter addresses and
+readback behavior remain separate.

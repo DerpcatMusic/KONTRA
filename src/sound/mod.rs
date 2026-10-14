@@ -287,6 +287,7 @@ pub struct ScriptUi {
     /// selected preset is a snapshot rather than an instrument file.
     pub resource_path: Option<std::path::PathBuf>,
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
+    pub uvi_meter_buses: std::sync::Arc<[sampler_uvi::meters::Binding]>,
     pub uvi_revision: u64,
     pub uvi_source: Option<(String, u32, String)>,
     /// By script instance ([`sampler_core::ScriptInstanceId`]).

@@ -33,6 +33,7 @@ use moose::core::{
 };
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
+mod uvi_meters;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -585,6 +586,8 @@ pub(crate) struct PartShared {
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    uvi_meters: Mutex<Vec<uvi_meters::Cell>>,
+    uvi_meter_interest: AtomicUsize,
     pub(crate) editor_taps: [AtomicU64; 16],
     pub(crate) engine_bindings: Mutex<Arc<[sampler_core::EngineParameterBinding]>>,
     waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
@@ -2380,6 +2383,8 @@ fn load_part_with(
             let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
             *ingress = None;
             atoms.engine_meters.lock_unpoisoned().clear();
+            atoms.uvi_meters.lock_unpoisoned().clear();
+            atoms.uvi_meter_interest.store(0, Ordering::Release);
             *atoms.waveforms.lock_unpoisoned() = None;
             epoch
         };
@@ -2517,6 +2522,8 @@ fn load_part_with(
                 let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
                 *ingress = None;
                 atoms.engine_meters.lock_unpoisoned().clear();
+                atoms.uvi_meters.lock_unpoisoned().clear();
+                atoms.uvi_meter_interest.store(0, Ordering::Release);
                 *atoms.waveforms.lock_unpoisoned() = None;
                 epoch
             };
@@ -3468,6 +3475,12 @@ impl PluginLogic for Sampler {
                 let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) else {
                     continue;
                 };
+                // Raw UVI taps must be published before take_node_peaks
+                // consumes the same physical output observations below.
+                atoms.refresh_uvi_meters(s.core.epoch(slot), |request| {
+                    s.core.uvi_meter_observation(slot, request)
+                });
+                s.core.finish_uvi_meter_observation(slot);
                 let Ok(meters) = atoms.node_meters.try_lock_unpoisoned() else {
                     continue;
                 };

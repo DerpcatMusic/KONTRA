@@ -20,6 +20,7 @@
 //! without reloading.
 
 use anyhow::{Context, ensure};
+mod uvi_meters;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -85,6 +86,10 @@ pub struct Part {
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
+    uvi_meter_buses: Arc<[sampler_uvi::meters::Binding]>,
+    uvi_meter_plan: Option<sampler_core::PlanId>,
+    uvi_meter_inputs: bool,
+    uvi_meter_started_at: u64,
     pub(crate) host_bindings: Arc<[super::HostBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
@@ -307,6 +312,10 @@ impl Part {
         Ok(Self {
             epoch: 0,
             engine_bindings,
+            uvi_meter_buses: Arc::default(),
+            uvi_meter_plan: None,
+            uvi_meter_inputs: false,
+            uvi_meter_started_at: 0,
             host_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress {
@@ -3501,6 +3510,7 @@ fn uvi(
     report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets, &stream));
     report.decoded.full_bytes = stream.full_bytes;
     let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
+    let uvi_meter_buses = attached.as_ref().map(|a| a.meter_buses.clone()).unwrap_or_default();
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded
@@ -3528,6 +3538,7 @@ fn uvi(
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi {
             uvi: uvi_ui,
+            uvi_meter_buses,
             views: loaded.scripts,
             resources: loaded.resources,
             ..Default::default()
@@ -3766,6 +3777,7 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
         if request.mpe_upper {
             part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, part.runtime.note_capacity().max(1))

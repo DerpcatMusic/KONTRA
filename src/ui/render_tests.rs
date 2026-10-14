@@ -70,6 +70,10 @@ fn unavailable_falcon_meter_never_reads_or_paints_unrelated_program_output() {
         let mut values = Values::default();
         let mut input = InputState::default();
         if let Some(level)=level {input.meters.insert(WidgetRef(0),level);}
+        input.uvi_meters.insert(WidgetRef(0),sampler_uvi::meters::Observation {
+            availability:sampler_uvi::meters::Availability::RawStereoObserved,
+            physical_bus:Some(7),stereo_peak:Some([1.,0.25]),
+        });
         for _ in 0..3 {
             let root=view_state(&mut ui,"meter",face,PageRef(0),assets,Presentation::Bitmap,1.,&mut values,&mut input);
             ui.frame(root,Some(Size::new(160.,120.)),Input::default(),1./60.).unwrap();

@@ -343,6 +343,8 @@ pub type Values = HashMap<ControlId, f64>;
 pub struct InputState {
     pub values: HashMap<WidgetRef, ir::Value>,
     pub meters: HashMap<WidgetRef, f64>,
+    /// Raw Kontra bus observations; never coerced to a native scalar meter.
+    pub uvi_meters: HashMap<WidgetRef, sampler_uvi::meters::Observation>,
     pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
