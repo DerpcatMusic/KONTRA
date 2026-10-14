@@ -27,11 +27,13 @@ struct Take {
     envelope: Vec<f64>,
     /// Groups of the voices sounding 0.1 s in.
     groups: Vec<u32>,
+    /// Left over right energy, dB: what a pan or stereo-width control moves.
+    balance: f64,
 }
 
 impl Take {
     fn of(samples: &[f32]) -> Self {
-        let mut t = Take { rms_db: -200., peak: 0., nan: 0, denormal: 0, clipped: 0, frames: samples.len(), bands: vec![-200.; BANDS], groups: Vec::new(),
+        let mut t = Take { rms_db: -200., peak: 0., nan: 0, denormal: 0, clipped: 0, frames: samples.len(), bands: vec![-200.; BANDS], groups: Vec::new(), balance: 0.,
             envelope: samples.chunks(ENVELOPE_FRAME).map(|c| 10. * (c.iter().filter(|x| x.is_finite()).map(|&x| f64::from(x) * f64::from(x)).sum::<f64>() / c.len() as f64 + 1e-20).log10()).collect() };
         let mut sum = 0f64;
         for &x in samples {
@@ -78,13 +80,14 @@ impl Take {
     /// loudest, mean |level-over-time change| dB over frames within 60 dB of the
     /// loudest). The last catches attack, decay and release changes the whole-note
     /// RMS averages away.
-    fn delta(&self, other: &Take) -> (f64, f64, f64) {
+    fn delta(&self, other: &Take) -> (f64, f64, f64, f64) {
         let live = |a: &[f64], b: &[f64]| {
             let top = a.iter().chain(b).cloned().fold(-200., f64::max);
             let live: Vec<f64> = a.iter().zip(b).filter(|(a, b)| a.max(**b) > top - 60.).map(|(a, b)| (a - b).abs()).collect();
             live.iter().sum::<f64>() / live.len().max(1) as f64
         };
-        ((self.rms_db - other.rms_db).abs(), live(&self.bands, &other.bands), live(&self.envelope, &other.envelope))
+        ((self.rms_db - other.rms_db).abs(), live(&self.bands, &other.bands), live(&self.envelope, &other.envelope),
+            (self.balance - other.balance).abs())
     }
     fn json(&self) -> Value {
         json!({"rms_db": round(self.rms_db), "peak": round(f64::from(self.peak)), "nan": self.nan,
@@ -101,23 +104,26 @@ struct Noise {
     rms: f64,
     spectral: f64,
     envelope: f64,
+    balance: f64,
 }
 impl Noise {
     fn of(a: &Take, b: &Take) -> Self {
-        let (r, s, e) = a.delta(b);
-        Noise { rms: (3. * r).max(0.5), spectral: (3. * s).max(1.0), envelope: (3. * e).max(0.5) }
+        let (r, s, e, b) = a.delta(b);
+        Noise { rms: (3. * r).max(0.5), spectral: (3. * s).max(1.0), envelope: (3. * e).max(0.5), balance: (3. * b).max(0.5) }
     }
     fn changed(&self, a: &Take, b: &Take) -> (bool, Value) {
-        let (rms, spectral, envelope) = a.delta(b);
-        let changed = !(a.silent() && b.silent()) && (rms > self.rms || spectral > self.spectral || envelope > self.envelope);
-        (changed, json!({"rms_delta_db": round(rms), "spectral_delta_db": round(spectral), "envelope_delta_db": round(envelope)}))
+        let (rms, spectral, envelope, balance) = a.delta(b);
+        let changed = !(a.silent() && b.silent())
+            && (rms > self.rms || spectral > self.spectral || envelope > self.envelope || balance > self.balance);
+        (changed, json!({"rms_delta_db": round(rms), "spectral_delta_db": round(spectral), "envelope_delta_db": round(envelope),
+            "balance_delta_db": round(balance)}))
     }
     /// What an audio comparison says about a control that moved.
     fn verdict(&self, a: &Take, b: &Take) -> (&'static str, Value) {
         let (changed, delta) = self.changed(a, b);
-        let (rms, spectral, envelope) = a.delta(b);
+        let (rms, spectral, envelope, balance) = a.delta(b);
         let verdict = if a.silent() && b.silent() { "both-takes-silent" } else if changed { "pass" }
-            else if rms > 0.5 || spectral > 1.0 || envelope > 0.5 { "masked-by-noise" } else { "moves-but-silent-change" };
+            else if rms > 0.5 || spectral > 1.0 || envelope > 0.5 || balance > 0.5 { "masked-by-noise" } else { "moves-but-silent-change" };
         (verdict, delta)
     }
 }
@@ -130,6 +136,10 @@ fn kb(key: &str) -> u64 {
 
 impl Gate {
     fn render(&mut self, seconds: f64, out: &mut Vec<f32>) {
+        self.render_side(seconds, out, &mut Vec::new());
+    }
+    /// `out` gets L + R, `side` L - R.
+    fn render_side(&mut self, seconds: f64, out: &mut Vec<f32>, side: &mut Vec<f32>) {
         let frames = (seconds * RATE) as usize;
         let mut done = 0;
         let mut blocks = 0;
@@ -139,10 +149,12 @@ impl Gate {
             let r = self.core.render(n);
             let start = out.len();
             out.resize(start + n, 0.);
+            side.resize(start + n, 0.);
             for (bus, live) in r.buses.iter().zip(r.live) {
                 if live {
                     for i in 0..n {
                         out[start + i] += bus[0][i] + bus[1][i];
+                        side[start + i] += bus[0][i] - bus[1][i];
                     }
                 }
             }
@@ -174,22 +186,23 @@ impl Gate {
         let mut tail = Vec::new();
         self.render(0.3, &mut tail);
         self.core.widget_gate_reseed(0);
-        let mut samples = Vec::new();
+        let (mut samples, mut side) = (Vec::new(), Vec::new());
         self.core.play(0, Event::midi1(0x90, key, velocity));
         // A stimulus after note-on: scripts reset per-note values at note start.
         for [s, d1, d2] in self.during.clone() {
             self.core.play(0, Event::midi1(s, d1, d2));
         }
-        self.render(0.1, &mut samples);
+        self.render_side(0.1, &mut samples, &mut side);
         let mut groups: Vec<u32> = self.core.voice_taps(0).iter().flatten().map(|t| t.group).collect();
         groups.sort();
         groups.dedup();
         // Long enough for decay to reach sustain and release to fade: envelope
         // controls change nothing audible in a short note.
-        self.render(0.9, &mut samples);
+        self.render_side(0.9, &mut samples, &mut side);
         self.core.play(0, Event::midi1(0x80, key, 0));
-        self.render(0.8, &mut samples);
-        Take { groups, ..Take::of(&samples) }
+        self.render_side(0.8, &mut samples, &mut side);
+        let energy = |sign: f32| samples.iter().zip(&side).map(|(m, s)| f64::from(m + sign * s).powi(2)).sum::<f64>() + 1e-20;
+        Take { groups, balance: 10. * (energy(1.) / energy(-1.)).log10(), ..Take::of(&samples) }
     }
     fn tab(&mut self, view: &str) -> bool {
         let id = format!("view-0-{view}");
@@ -298,19 +311,24 @@ fn snapshots(nki: &Path) -> Vec<PathBuf> {
 /// The script's engine-parameter writes during one control test.
 struct Writes {
     applied: usize,
+    /// The distinct addresses those applied writes went to.
+    applied_at: Vec<String>,
     /// Addresses a script wrote that no engine parameter is bound to: the write
     /// is dropped, so the control cannot change the sound.
     unbound: Vec<String>,
 }
 impl Writes {
     fn of(outcomes: &[sampler_core::EngineParameterOutcome]) -> Self {
-        let mut unbound: Vec<String> = outcomes.iter().filter(|o| o.write && o.result.is_err())
-            .map(|o| o.address.map_or_else(|| "unresolved address".into(), |a| format!("{} group {} slot {} generic {}",
-                sampler_core::engine_parameter_name(a.parameter).unwrap_or("?"), a.group, a.slot, a.generic)))
-            .collect();
-        unbound.sort();
-        unbound.dedup();
-        Writes { applied: outcomes.iter().filter(|o| o.write && o.result.is_ok()).count(), unbound }
+        let names = |ok: bool| {
+            let mut v: Vec<String> = outcomes.iter().filter(|o| o.write && o.result.is_ok() == ok)
+                .map(|o| o.address.map_or_else(|| "unresolved address".into(), |a| format!("{} group {} slot {} generic {}",
+                    sampler_core::engine_parameter_name(a.parameter).unwrap_or("?"), a.group, a.slot, a.generic)))
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        Writes { applied: outcomes.iter().filter(|o| o.write && o.result.is_ok()).count(), applied_at: names(true), unbound: names(false) }
     }
     /// An audio verdict refined by what the script did: a write to an unbound
     /// address is an engine gap; no write at all (an unassigned macro) means the
@@ -323,7 +341,7 @@ impl Writes {
         }
     }
     fn json(&self) -> Value {
-        json!({"applied": self.applied, "unbound": self.unbound})
+        json!({"applied": self.applied, "applied_at": self.applied_at, "unbound": self.unbound})
     }
 }
 
@@ -381,6 +399,23 @@ fn stimulus(gate: &mut Gate, bindings: &[sampler_core::EngineParameterBinding], 
             context["stimulus"] = json!(format!("{up:?}"));
             gate.during.push(up);
             gate.rest.push(rest);
+        }
+        // A route into another modulator's rate or phase is heard only through
+        // that modulator: give its pitch route (else any controlled route) full depth.
+        if let (sampler_ir::Target::SourceRate(m) | sampler_ir::Target::SourcePhase(m), Some(i)) = (route.target, instrument) {
+            let controlled = |pitch: bool| i.source_indices.route_controls.iter()
+                .find(|(r, _, _)| i.routes[r.0].source == m && (!pitch || i.routes[r.0].target == sampler_ir::Target::Pitch));
+            if let Some((_, depth, bypass)) = controlled(true).or_else(|| controlled(false)) {
+                let max = match i.controls[depth.0].value { sampler_ir::ControlValue::Continuous { max, .. } => max, _ => 1. };
+                for (control, v) in [(depth, max), (bypass, 0.)] {
+                    let id = sampler_ui_ir::ControlId(sampler_core::lower::ir_control_id(&i.controls[control.0].key).0);
+                    if let Some(old) = gate.core.control_value(0, id) {
+                        restore.push((id, old));
+                    }
+                    gate.core.set_control(0, id, v);
+                }
+                context["heard_through"] = json!(i.controls[depth.0].key);
+            }
         }
     }
     gate.settle();
@@ -512,10 +547,10 @@ fn parity_run() {
 
     // Same note twice: the threshold above per-take randomness.
     let (a, b) = (gate.take(key, 100), gate.take(key, 100));
-    let (r, s, e) = a.delta(&b);
+    let (r, s, e, _) = a.delta(&b);
     let noise = Noise::of(&a, &b);
     let baseline = json!({"key": key, "rms_delta_db": round(r), "spectral_delta_db": round(s), "envelope_delta_db": round(e),
-        "threshold_rms_db": round(noise.rms), "threshold_spectral_db": round(noise.spectral), "threshold_envelope_db": round(noise.envelope), "sounding_groups": a.groups.len()});
+        "threshold_rms_db": round(noise.rms), "threshold_spectral_db": round(noise.spectral), "threshold_envelope_db": round(noise.envelope), "threshold_balance_db": round(noise.balance), "sounding_groups": a.groups.len()});
 
     // 4. Controls: performance-view widgets through real pointer drags.
     gate.tab("Interface");
@@ -537,7 +572,9 @@ fn parity_run() {
         let first_fault = gate.fault_events.len();
         gate.faults();
         let (sub_min, keys_min, low) = gate.sweep(at, false, key);
+        let at_min = gate.values();
         let (sub_max, keys_max, high) = gate.sweep(at, true, key);
+        let at_max = gate.values();
         let faults = gate.faults();
         let fault = gate.fault_events.get(first_fault).map(|f| format!("{} {}", f["callback"], f["outcome"]));
         let writes = Writes::of(&std::mem::take(&mut gate.engine_outcomes));
@@ -550,8 +587,10 @@ fn parity_run() {
             else if faults > 0 && audio_verdict == "moves-but-silent-change" { "script-fault" }
             else { writes.verdict(audio_verdict, !routes.is_empty()) };
         let owners: Vec<String> = keys.iter().map(|k| owner_of(&gate, instrument.as_deref(), k)).collect();
+        // The owners' settled values after each sweep: the range a script callback saw.
+        let range: Vec<String> = keys.iter().map(|k| format!("{:?} -> {:?}", at_min.get(k), at_max.get(k))).collect();
         controls.push(json!({"id": id, "kind": kind, "verdict": verdict, "at": [at.x.round(), at.y.round()], "submitted": sub_min + sub_max,
-            "engine_keys": keys.len(), "owners": owners, "routes": routes, "engine_writes": writes.json(), "faults": faults, "first_fault": fault, "audio": delta}));
+            "engine_keys": keys.len(), "owners": owners, "range": range, "routes": routes, "engine_writes": writes.json(), "faults": faults, "first_fault": fault, "audio": delta}));
     }
     // Host automation the instrument assigns.
     let mut host = Vec::new();
@@ -572,6 +611,30 @@ fn parity_run() {
         host.push(json!({"address": address, "accepted": ok_low && ok_high, "slider": a.slider, "switch": a.switch,
             "verdict": if !(ok_low && ok_high) { "rejected" } else { writes.verdict(audio, false) }, "engine_writes": writes.json(), "audio": delta}));
     }
+    // Performance inputs as MIDI, rest vs full, after note-on, before the
+    // engine rows move any depth: tells a dead
+    // wheel knob (its script only forwards set_controller) from an instrument
+    // whose modulation slots ignore the wheel in this state.
+    let mut midi = Vec::new();
+    // `cc1-before-note` holds the wheel from before note-on, as a UI wheel sweep does.
+    for (name, rest, up) in [("cc1", [0xb0, 1, 0], [0xb0, 1, 127]), ("cc1-before-note", [0xb0, 1, 0], [0xb0, 1, 127]),
+        ("pitch-bend", [0xe0, 0, 64], [0xe0, 0, 0]), ("aftertouch", [0xd0, 0, 0], [0xd0, 127, 0])] {
+        let at = |gate: &mut Gate, e: [u8; 3]| if name.ends_with("before-note") {
+            gate.core.play(0, Event::midi1(e[0], e[1], e[2]));
+            gate.settle();
+            gate.take_as_is(key, 100)
+        } else {
+            gate.during = vec![e];
+            gate.take_as_is(key, 100)
+        };
+        let low = at(&mut gate, rest);
+        let high = at(&mut gate, up);
+        gate.during.clear();
+        gate.core.play(0, Event::midi1(rest[0], rest[1], rest[2]));
+        gate.set_dynamics();
+        let (verdict, delta) = noise.verdict(&low, &high);
+        midi.push(json!({"input": name, "verdict": verdict, "audio": delta}));
+    }
     // A spread sample of engine parameters bound to controls.
     let mut engine = Vec::new();
     let audible: Vec<_> = bindings.iter().filter(|b| b.address.group < 0 || a.groups.contains(&(b.address.group as u32))).collect();
@@ -591,6 +654,7 @@ fn parity_run() {
         if let Some(v) = before {
             gate.core.set_control(0, id, v);
         }
+        let restored = before.is_some() && gate.core.control_value(0, id) == before;
         for (control, v) in restore {
             gate.core.set_control(0, control, v);
         }
@@ -602,23 +666,7 @@ fn parity_run() {
         let (audio, delta) = noise.verdict(&low, &high);
         let moved = lo_v != hi_v;
         engine.push(json!({"route": format!("{} group {} slot {} generic {}", sampler_core::engine_parameter_name(b.address.parameter).unwrap_or("?"), b.address.group, b.address.slot, b.address.generic),
-            "moved": moved, "context": context, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
-    }
-    // Performance inputs as MIDI, rest vs full, after note-on: tells a dead
-    // wheel knob (its script only forwards set_controller) from an instrument
-    // whose modulation slots ignore the wheel in this state.
-    let mut midi = Vec::new();
-    for (name, rest, up) in [("cc1", [0xb0, 1, 0], [0xb0, 1, 127]), ("pitch-bend", [0xe0, 0, 64], [0xe0, 0, 0]),
-        ("aftertouch", [0xd0, 0, 0], [0xd0, 127, 0])] {
-        gate.during = vec![rest];
-        let low = gate.take_as_is(key, 100);
-        gate.during = vec![up];
-        let high = gate.take_as_is(key, 100);
-        gate.during.clear();
-        gate.core.play(0, Event::midi1(rest[0], rest[1], rest[2]));
-        gate.set_dynamics();
-        let (verdict, delta) = noise.verdict(&low, &high);
-        midi.push(json!({"input": name, "verdict": verdict, "audio": delta}));
+            "moved": moved, "restored": restored, "context": context, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
     }
     for (name, rows) in [("controls-ui", &controls), ("controls-host", &host), ("controls-engine", &engine)] {
         let failed: Vec<&Value> = rows.iter().filter(|r| !matches!(r["verdict"].as_str(), Some("pass" | "masked-by-noise" | "inert-in-state"))).collect();
