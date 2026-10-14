@@ -273,6 +273,23 @@ pub struct DualDelay {
     pub mod_cents: f32,
     pub mod_hz: f32,
     pub mod_offset: f32,
+    /// DualDelayX's extra loop stages (`None`: plain DualDelay).
+    pub x: Option<DualX>,
+}
+
+/// DualDelayX loop stages; each `Some` is switched on.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualX {
+    /// CrusherFreq table index (0..=9), CrusherBits (4..=16).
+    pub crusher: Option<(u8, u8)>,
+    /// DispersionFreq Hz, DispersionSpread ms.
+    pub dispersion: Option<(f32, f32)>,
+    /// DiffusionAmount, DiffusionSpread ms.
+    pub diffusion: Option<(f32, f32)>,
+    /// TapeDrive, TapeWarmth.
+    pub tape: Option<(f32, f32)>,
+    pub reflection: bool,
 }
 
 /// Modulated multi-tap delay line.
@@ -464,6 +481,16 @@ impl Config {
                     && d.mod_cents >= 0.)
                 {
                     return Err("uvi dual delay");
+                }
+                if let Some(x) = d.x {
+                    let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                    if !(x.crusher.is_none_or(|(i, b)| i <= 9 && (4..=16).contains(&b))
+                        && x.dispersion.is_none_or(|(f, s)| ok(f, 0., 20_000.) && ok(s, 1., 100.))
+                        && x.diffusion.is_none_or(|(a, s)| ok(a, 0., 1.) && ok(s, 1., 100.))
+                        && x.tape.is_none_or(|(d, w)| ok(d, 0., 1.) && ok(w, 0., 1.)))
+                    {
+                        return Err("uvi dual delay x");
+                    }
                 }
             }
             if let Native::UviLegacyDelay(d) = l.native {

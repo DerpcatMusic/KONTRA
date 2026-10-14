@@ -19,6 +19,7 @@ use std::f64::consts::{PI, TAU};
 
 mod diffuse;
 mod dual;
+mod dual_x;
 mod mt;
 mod tape;
 mod buzz;
@@ -202,7 +203,7 @@ impl TimeMod {
                 Native::None => {}
                 Native::LegacyDelay { .. } => cap = LEGACY_RING,
                 Native::LegacyFlanger { .. } => cap = FLANGER_RING,
-                Native::UviDualDelay(_) => cap = dual::ring(rate) + GUARD,
+                Native::UviDualDelay(d) => cap = dual::ring(rate) + GUARD + d.x.map_or(0, |_| dual_x::capacity(rate)),
                 Native::UviLegacyDelay(d) => cap = uvi_legacy::capacity(&d, rate),
                 Native::UviDiffuseDelay(_) => cap = diffuse::capacity(rate),
                 Native::UviTapeEcho(_) => cap = tape::capacity(rate),

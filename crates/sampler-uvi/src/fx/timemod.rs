@@ -12,7 +12,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, UviBuzzDelay, UviDiffuseDelay, UviLegacyDelay, UviTapeEcho, UviVelvetDelay, UviLegacyKind,
+        Allpass, Config, DelayTime, DualDelay, DualX, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, UviBuzzDelay, UviDiffuseDelay, UviLegacyDelay, UviTapeEcho, UviVelvetDelay, UviLegacyKind,
     },
 };
 
@@ -64,22 +64,24 @@ impl Translation {
         if number(node, "Interpolation", 1.)? > 2. {
             self.unsupported(at, &format!("{tag} Interpolation"), number(node, "Interpolation", 1.)?);
         }
-        if x {
-            for (name, why) in [
-                ("Crusher", "crusher table 0x141f8f908 and quantizer unproved"),
-                ("Dispersion", "dispersion allpass 0x14164ccd0 unproved"),
-                ("Diffusion", "diffusion network 0x14165b160 unproved"),
-                ("TapeSaturation", "tape curve 0x1419f245c unproved"),
-                ("Reflection", "reflected rotation 0x14165df70 unproved"),
-            ] {
-                if number(node, name, 0.)? != 0. {
-                    self.unsupported(at, &format!("{tag} {name} ({why})"), 1);
-                }
-            }
+        let on = |name| -> Result<bool, String> { Ok(x && number(node, name, 0.)? != 0.) };
+        let stages = if x {
             if number(node, "DuckerBypass", 1.)? == 0. {
-                self.unsupported(at, &format!("{tag} Ducker (envelope 0x14165e350 unproved)"), 1);
+                self.unsupported(at, &format!("{tag} Ducker (level detector behind runtime-dispatched vector ops 0x141686cb0/ca0 unproved)"), 1);
             }
-        }
+            if on("TapeSaturation")? {
+                self.unsupported(at, &format!("{tag} TapeSaturation wet gain (constant 0x14259eeb0 is encrypted in the image; output not level-compensated)"), 1);
+            }
+            Some(DualX {
+                crusher: if on("Crusher")? { Some((number(node, "CrusherFreq", 9.)?.clamp(0., 9.) as u8, number(node, "CrusherBits", 16.)?.clamp(4., 16.) as u8)) } else { None },
+                dispersion: if on("Dispersion")? { Some((n("DispersionFreq", 200.)?.clamp(0., 20_000.), n("DispersionSpread", 20.)?.clamp(1., 100.))) } else { None },
+                diffusion: if on("Diffusion")? { Some((n("DiffusionAmount", 0.3)?.clamp(0., 1.), n("DiffusionSpread", 20.)?.clamp(1., 100.))) } else { None },
+                tape: if on("TapeSaturation")? { Some((n("TapeDrive", 0.)?.clamp(0., 1.), n("TapeWarmth", 0.5)?.clamp(0., 1.))) } else { None },
+                reflection: on("Reflection")?,
+            })
+        } else {
+            None
+        };
         let d = DualDelay {
             time: n("DelayTime", 0.125)?.clamp(0., 5.),
             synced,
@@ -95,6 +97,7 @@ impl Translation {
             mod_cents: if modulation { n("ModDepth", 0.)?.max(0.) } else { 0. },
             mod_hz: n("ModRate", 1.)?.max(0.01),
             mod_offset: n("ModChannelOffset", 1.)?,
+            x: stages,
         };
         let mut line = Line::single(DelayTime::Ms(0.), 5000.);
         line.native = Native::UviDualDelay(d);
