@@ -245,6 +245,12 @@ sections, plus additive `performance` records. Script reports reuse `sampler-par
 owners and lowering records. A source-free report can be opened through the
 workbench's Open reports action or `--report-json FILE`.
 
+Validated Falcon hierarchical menus include their grouped tree and original
+zero-based item indices in each widget's `menu_hierarchy` metadata. The shared
+production popup writes the original item value when a leaf is selected;
+ambiguous paths and renderer limits remain explicit UI omissions. See the
+[hierarchical menu evidence](architecture-v2/UVI_HIERARCHICAL_MENUS.md).
+
 Load timings include process wall time and launcher time including the heavy-job
 queue, sandbox and JSON transfer. Asset preparation includes worker wait,
 discovery, reads, decoding and cache admission. CPU paint/PNG time includes image

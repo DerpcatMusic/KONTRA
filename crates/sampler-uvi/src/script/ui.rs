@@ -600,6 +600,19 @@ impl ScriptHost {
             }
             wd.menu_cycle = kind == "MultiStateButton";
             wd.menu_arrow = flag(w, "displayArrow", true);
+            if !wd.menu_cycle
+                && matches!(w.raw_get::<Value>("hierarchical"), Ok(Value::Boolean(true)))
+                && let ui::Kind::Menu { items } = &wd.kind
+            {
+                match ui::menu_hierarchy(items) {
+                    Ok(tree) => wd.menu_hierarchy = Some(tree),
+                    Err(error) => out.unsupported.push(ui::Unsupported {
+                        widget: Some(ui::WidgetRef(index)),
+                        feature: format!("{kind}.hierarchical"),
+                        value: format!("documented path tree cannot be represented: {error:?}"),
+                    }),
+                }
+            }
             if matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. }) {
                 wd.popup_display = match w.raw_get::<Value>("showPopupDisplay") {
                     Ok(Value::Boolean(value)) => Some(value),
@@ -856,6 +869,7 @@ impl ScriptHost {
                         "textColourOn" | "textColourOff" => matches!(wd.kind, ui::Kind::Button { .. }) && text(w,&key).and_then(|c| color(&c)).is_some(),
                         "outlineColour" | "arrowColour" => matches!(wd.kind, ui::Kind::Menu { .. }) && text(w,&key).and_then(|c| color(&c)).is_some(),
                         "displayArrow" => matches!(wd.kind, ui::Kind::Menu { .. }) && matches!(w.raw_get::<Value>("displayArrow"), Ok(Value::Boolean(_))),
+                        "hierarchical" => !wd.menu_cycle && matches!(wd.kind, ui::Kind::Menu { .. }) && matches!(w.raw_get::<Value>("hierarchical"), Ok(Value::Boolean(_))),
                         "showPopupDisplay" => matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. }) && wd.popup_display.is_some(),
                         _ => false,
                     };
