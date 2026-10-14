@@ -15,6 +15,19 @@ pub struct PageKey {
     pub asset: AssetId,
     pub index: usize,
 }
+/// Read-only control-side snapshot of one voice's predicted page demand.
+/// This reports current readiness, not historical proof of the exact missed read.
+#[derive(Clone, Debug)]
+pub struct StreamDemandSnapshot {
+    pub voice: crate::VoiceId,
+    pub key: PageKey,
+    pub frames: Range<usize>,
+    pub deadline: u64,
+    pub starved: bool,
+    pub cold: bool,
+    pub resident: bool,
+    pub status: PageStatus,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeFailure {
     Unavailable,
@@ -776,6 +789,41 @@ impl crate::Runtime {
     /// replacement pages; never invalidate pages still needed by playing voices.
     pub fn stream_cache_mut(&mut self) -> Option<&mut StreamCache> {
         self.stream_cache.as_mut()
+    }
+    /// Inspect live voice demand without polling workers, advancing playback or
+    /// mutating protection/requests. Call on control between render calls. The
+    /// visitor can bound output with `false`; requery after commands or rendering.
+    /// Resident coverage is checked for the exact interpolation range in each
+    /// page; a ready tail page and a permanent resident head remain distinct.
+    pub fn visit_stream_demand(
+        &self,
+        frames: u32,
+        mut accept: impl FnMut(StreamDemandSnapshot) -> bool,
+    ) -> Result<bool, Error> {
+        for (index, slot) in self.voices.slots.iter().enumerate() {
+            let Some(voice) = slot.value.as_ref() else { continue };
+            let id = crate::VoiceId(self.voices.id(index));
+            let family = self.families.get(voice.family.0).unwrap();
+            let note = self.notes.get(family.note.0).unwrap();
+            let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
+            let complete = self.visit_voice_demand(id, frames, |demand| {
+                if demand.frames.is_empty() { return true; }
+                for page in demand.frames.start / PAGE_FRAMES..=(demand.frames.end - 1) / PAGE_FRAMES {
+                    let range = demand.frames.start.max(page * PAGE_FRAMES)
+                        ..demand.frames.end.min((page + 1) * PAGE_FRAMES);
+                    let key = PageKey { asset: demand.asset, index: page };
+                    if !accept(StreamDemandSnapshot {
+                        voice: id, key, resident: asset.resident_covers(range.clone()),
+                        frames: range, deadline: demand.deadline,
+                        starved: voice.cursor.starved(), cold: voice.cursor.holding_onset(),
+                        status: self.stream_cache.as_ref().map_or(PageStatus::Missing, |cache| cache.status(key)),
+                    }) { return false; }
+                }
+                true
+            })?;
+            if !complete { return Ok(false); }
+        }
+        Ok(true)
     }
     /// The horizon admitted with each start, matched to the frontend's service
     /// horizon. Setup side; changing it does not allocate.
