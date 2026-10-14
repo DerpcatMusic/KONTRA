@@ -40,6 +40,18 @@ pub const BUSES: usize = 16;
 /// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
 pub use crate::plugin::automation_ids::HOST_AUTOMATION_SLOTS;
+/// A host automation slot's route into one control, from the plan's bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostBinding {
+    pub address: u16,
+    /// The bound widget and its control, in UI IR identities.
+    pub widget: sampler_ui_ir::ControlId,
+    pub control: sampler_ui_ir::ControlId,
+    /// The normalized window the host value is mapped through.
+    pub low: f64,
+    pub high: f64,
+    pub domain: sampler_core::ControlDomain,
+}
 /// How far a part tunes, in semitones either way.
 pub const TUNE_RANGE: f32 = 36.0;
 /// One stereo block: `[left, right]`.
