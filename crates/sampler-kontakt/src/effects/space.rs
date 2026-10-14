@@ -14,8 +14,8 @@
 //!   predelay, stereo; measured). Topology and laws unproved: generic plate.
 //! - 0x16 Convolution: Reverse, early/late filters and composition, the
 //!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
-//!   applied; IR size and decimation (unextracted resamplers) are reported
-//!   unmodeled.
+//!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
+//!   preparation at the inner rate untraced) are reported unmodeled.
 //! - 0x65 Raum, 0x7a Reverb Delight: field bindings measured, cores not
 //!   extracted; reported unmodeled with the reason in the slot's `effect` note.
 
@@ -62,7 +62,7 @@ pub(super) fn convolution(
         notes.push((
             "IR size".into(),
             format!(
-                "early {} late {}: Kontakt resamples the response by the size (0x1419b3450) through a band-limited resampler whose kernel (0x1419be690) is not extracted",
+                "early {} late {}: Kontakt time-stretches the response by the size without changing its pitch (0x1419b3450 drives an STFT time-stretch engine, setup 0x1419be690, 0x1419baf70..); the engine is not extracted",
                 c.early[0], c.late[0]
             ),
             NotModeled,
@@ -71,7 +71,7 @@ pub(super) fn convolution(
     if c.decimation > 1.0 {
         notes.push((
             "IR sample-rate decimation".into(),
-            format!("{}: the wet path's down/up resampler pair (0x140a84580) is not extracted", c.decimation),
+            format!("{}: the wet path runs at (int)(rate/S.Rate) between a resampler pair (0x140a84580; the Kaiser law is in sampler-core space/resample.rs), but how the IR is prepared at that inner rate (the IR-rate rescale under flag +0x354) is not traced", c.decimation),
             NotModeled,
         ));
     }
