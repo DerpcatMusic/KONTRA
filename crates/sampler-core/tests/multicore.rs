@@ -77,6 +77,7 @@ fn runtime(threads: usize, modulated: bool) -> Runtime {
             ],
             shapes: vec![],
             breakpoints: vec![],
+            envelope_controls: vec![],
         };
         plan.with_voice_modulation(vec![program], vec![Some(0); LAYERS], vec![0; LAYERS])
             .unwrap()

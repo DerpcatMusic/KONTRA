@@ -256,6 +256,7 @@ impl Config {
                     _ => return Err(gap("AR filters are low, band or high pass")),
                 };
                 Ok(vec![Processor::Ar(Ar {
+                    address: self.binding.map(|b| b.address),
                     // Saved types 100..=108 run pole group major: LP2 BP2 HP2 LP4 BP4 HP4 ...
                     mode: group * 3 + band,
                     cutoff: self.cutoff,
@@ -263,6 +264,7 @@ impl Config {
                 })])
             }
             Topology::Daft => Ok(vec![Processor::Daft(Daft {
+                address: self.binding.map(|b| b.address),
                 gain: self.drive,
                 cutoff: self.cutoff,
                 resonance: self.resonance,

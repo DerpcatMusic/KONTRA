@@ -1746,6 +1746,8 @@ impl Processor {
             Self::Eq(c) if c.address.is_none() => Self::Eq(fx::eq::Config { address: Some(address), ..c }),
             Self::TimeMod(c) => Self::TimeMod(fx::timemod::Config { address: Some(address), ..c }),
             Self::Space(c) => Self::Space(fx::space::Config { address: Some(address), ..c }),
+            Self::Ar(a) => Self::Ar(Ar { address: Some(address), ..a }),
+            Self::Daft(d) => Self::Daft(Daft { address: Some(address), ..d }),
             p => p,
         }
     }
@@ -1757,6 +1759,14 @@ impl Processor {
             Self::Eq(c) => (c.address, c.lanes()),
             Self::TimeMod(c) => (c.address, c.lanes()),
             Self::Space(c) => (c.address, c.lanes()),
+            // BParFXFilter CUTOFF and RESONANCE store the write (filters_eq.tsv identity).
+            Self::Ar(Ar { address, cutoff, resonance, .. }) | Self::Daft(Daft { address, cutoff, resonance, .. }) => (
+                *address,
+                vec![
+                    fx::Lane::new("ENGINE_PAR_CUTOFF", ProcessorParameter::Cutoff, *cutoff, fx::Law::Identity),
+                    fx::Lane::new("ENGINE_PAR_RESONANCE", ProcessorParameter::Resonance, *resonance, fx::Law::Identity),
+                ],
+            ),
             _ => return None,
         };
         Some((address?, lanes))
@@ -1768,6 +1778,9 @@ impl Processor {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Daft {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub gain: f64,
     pub cutoff: f64,
     pub resonance: f64,
@@ -1780,6 +1793,9 @@ pub struct Daft {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ar {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub mode: u8,
     pub cutoff: f64,
     pub resonance: f64,

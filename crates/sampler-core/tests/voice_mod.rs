@@ -57,6 +57,7 @@ fn program(sources: Vec<ModSource>, routes: Vec<ModRoute>) -> ModProgram {
         sources,
         routes,
         shapes: vec![],
+        envelope_controls: vec![],
     }
 }
 fn modulated(plan: Prepared, program: ModProgram, start: u32) -> Prepared {
@@ -546,6 +547,7 @@ fn measure_modulation_cost_per_voice() {
             },
         ],
         shapes: vec![vec![(0., -1.), (0.5, 0.), (1., 0.)]],
+        envelope_controls: vec![],
     };
     let full = ModProgram {
         controls: vec![],
@@ -562,6 +564,7 @@ fn measure_modulation_cost_per_voice() {
             ModRoute::new(0, ModTarget::Pan, 0.2),
         ],
         shapes: vec![],
+        envelope_controls: vec![],
     };
     let base = looped(None, false);
     let rest_mpe = {
@@ -600,6 +603,7 @@ fn a_second_source_scales_route_depth() {
             ..ModRoute::new(0, ModTarget::Decibels, 6.)
         }],
         shapes: vec![vec![(0., 0.), (0.25, 0.25), (1., 1.75)]],
+        envelope_controls: vec![],
     };
     let mut rt = Runtime::new(
         modulated(plan(64, Envelope::default()), program, 0),

@@ -2729,6 +2729,67 @@ fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
     }
 }
 
+/// A routed (non-amplitude) Kontakt envelope's stages are engine lanes at its
+/// saved slot; a voice reads them when it starts (ANALOG STRINGS ENV_Filter 88/2).
+#[test]
+fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("mod-env")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::ZERO,
+                decay: ir::Time::Milliseconds(1.),
+                sustain: 0.,
+                ..Default::default()
+            }),
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Amplitude,
+            depth: ir::Depth::Gain(ir::Gain::Decibels(-40.)),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
+        ..Default::default()
+    };
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0, slot: 2, external: false, name: "ENV_Filter".into(),
+        runtime: Some(ir::ModulatorRef(0)), settings: None,
+    });
+    ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0, slot: 2, attack_ms: 0., attack_curve: 0., hold_ms: 0., decay_ms: 1.,
+        sustain: 0., release_ms: 0., ahd_only: false, native_amplitude: false,
+    });
+    let sustain = sampler_core::EngineParameterAddress {
+        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap(),
+        group: 0, slot: 2, generic: -1,
+    };
+    let level = |write: Option<i32>| {
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        if let Some(value) = write {
+            rt.set_engine_parameter(sustain, value).unwrap();
+        }
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 512];
+        rt.render(&mut out).unwrap();
+        out[511][0]
+    };
+    let (authored, held) = (level(None), level(Some(1_000_000)));
+    // The envelope sits at sustain after 1 ms: 0 leaves the route's -40 dB, 1 adds none.
+    assert!((held / authored).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
+}
+
 fn native_primary_fixture() -> ir::Instrument {
     let mut ir = ir::Instrument {
         assets: vec![asset("native-primary")],
