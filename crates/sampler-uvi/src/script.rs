@@ -1736,6 +1736,7 @@ impl ScriptHost {
         // Retained templates are gathered anew for this element on every call.
         // Public definitions remain fresh mutable tables, with numeric and named
         // entries sharing one identity.
+        shared.profile.register_chunk("@kontra/catalog-definitions");
         let clone_schema = catalog_copy::cloner(lua)?;
         native.set(
             "definitions",
@@ -2114,7 +2115,11 @@ impl ScriptHost {
                         .and_then(|v| v.replace(',', ".").parse::<f32>().ok())
                         .filter(|v| v.is_finite())
                         .unwrap_or(if matches!(index, 0 | 4 | 8 | 10 | 12) { 1. } else { 0. });
+                    s.profile.step_envelope_level();
                     return Ok(Value::Number(f64::from(value)));
+                }
+                if s.profile.enabled() {
+                    return s.profile.parameter(lua, kinds.get(id).map_or("", String::as_str), &name, &s.params, id);
                 }
                 let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str))
                     .iter()
@@ -2192,7 +2197,13 @@ impl ScriptHost {
                     s.note_assigned(&source.to_string_lossy());
                 }
                 let id = format!("uvi:module:{name}");
-                let chunk_name = s.files.script_path(&name).unwrap_or(name);
+                let resolved_name = s.files.script_path(&name);
+                if let Some(name) = &resolved_name {
+                    s.profile.register_chunk(name);
+                } else if name == "uvi.ChordRec" {
+                    s.profile.register_chunk(&name);
+                }
+                let chunk_name = resolved_name.unwrap_or(name);
                 let bytes = source.as_bytes();
                 let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name);
                 if s.inspection.borrow().is_some() {
@@ -2361,6 +2372,7 @@ impl ScriptHost {
         )?;
         self.install_api()?;
         modules::install_class(lua, &globals)?;
+        shared.profile.register_chunk("prelude");
         lua.load(PRELUDE).set_name("prelude").exec()
     }
 
@@ -2667,6 +2679,7 @@ impl ScriptHost {
                 } else {
                     "script".into()
                 };
+                self.shared.profile.register_chunk(&chunk_name);
                 let mut chunk = self.lua.load(&text).set_name(&chunk_name);
                 if self.shared.inspection.borrow().is_some() {
                     chunk =

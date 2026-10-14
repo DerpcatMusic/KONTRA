@@ -45,6 +45,7 @@ end
             .iter()
             .any(|frame| frame["self_samples"].as_u64().unwrap() > 0 && frame["kind"] == "Lua")
     );
+    assert!(frames.iter().any(|frame| frame["source"] == "script"));
     for frame in frames {
         assert!(
             frame["inclusive_samples"].as_u64().unwrap() >= frame["self_samples"].as_u64().unwrap()
@@ -62,6 +63,57 @@ end
             .contains("AUTHORED_BODY_MUST_NOT_BE_RETAINED")
     );
     assert!(!report.to_string().contains("for i=1,n"));
+}
+
+#[test]
+fn lookup_probe_preserves_live_getter_results_without_retaining_fields_or_values() {
+    let xml = r#"<UVI4><Program><Inserts><OnePole Bypass="true" Freq="2345" PRIVATE_FIELD="PRIVATE_VALUE" NumericField="1.25"/></Inserts><EventProcessors><ScriptProcessor><script><![CDATA[
+local filter=Program.inserts[1]
+proof=table.concat({tostring(filter:getParameter('Bypass')),tostring(filter:getParameter('Freq')),
+  tostring(filter:getParameter('Mode')),tostring(filter:getParameter('PRIVATE_FIELD')),
+  tostring(filter:getParameter('NumericField')),tostring(filter:getParameter('Unrecognized'))},'|')
+function onInit() setSize(320,200) Knob('Fixture',filter:getParameter('Freq'),20,20000) end
+]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let ordinary = ScriptHost::new(xml, (), Config::default()).unwrap();
+    let profiled = ScriptHost::new_profiled(xml, (), Config::default(), false).unwrap();
+    assert_eq!(ordinary.global_text("proof"), profiled.global_text("proof"));
+    assert_eq!(ordinary.interface(), profiled.interface());
+    let report = profiled.initialization_profile();
+    let kinds = report["parameter_lookups"]["kinds"].as_array().unwrap();
+    let one_pole = kinds.iter().find(|kind| kind["kind"] == "OnePole").unwrap();
+    assert_eq!(one_pole["schema"]["calls"], 7);
+    assert_eq!(one_pole["schema"]["hits"], 4);
+    assert_eq!(one_pole["schema"]["max_length"], 4);
+    for (class, expected) in [
+        ("saved_boolean", 1),
+        ("saved_number", 3),
+        ("default_number", 1),
+        ("saved_text", 1),
+        ("missing", 1),
+    ] {
+        assert_eq!(one_pole["value_classes"][class], expected);
+    }
+    assert_eq!(report["parameter_lookups"]["dropped_calls"], 0);
+    assert!(!report.to_string().contains("PRIVATE_FIELD"));
+    assert!(!report.to_string().contains("PRIVATE_VALUE"));
+}
+
+#[test]
+fn profile_names_embedded_modules_from_the_resource_authority() {
+    let mut files = sampler_uvi::script::Scripts::default();
+    files.insert("Scripts/ProfileFixture.lua", "local function calculate() local n=0 for i=1,1000000 do n=n+i end return n end return calculate()".into());
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[proof=require('ProfileFixture')]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let host = ScriptHost::new_profiled(xml, files, Config::default(), false).unwrap();
+    let report = host.initialization_profile();
+    assert!(
+        report["lua_samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|frame| frame["source"] == "scripts/profilefixture.lua")
+    );
+    assert!(!report.to_string().contains("local n=0"));
+    assert_eq!(report["dropped_chunk_names"], 0);
 }
 
 #[cfg(feature = "library-access")]
