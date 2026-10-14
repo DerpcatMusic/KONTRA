@@ -30,7 +30,7 @@ impl Bank {
     pub fn resource(&self, _: &str, _: &str) -> Result<Vec<Vec<u8>>, AccessError> {
         Err(AccessError::Disabled)
     }
-    pub(crate) fn sample_resource(&self, _: &str, _: &str, _: bool) -> Result<crate::script::SampleResource,String> {
+    pub(crate) fn sample_resource(&self, _: &str, _: crate::script::SamplePath<'_>, _: bool) -> Result<crate::script::SampleResource,String> {
         Err(AccessError::Disabled.to_string())
     }
     pub fn decode_resource(

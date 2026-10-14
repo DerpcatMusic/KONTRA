@@ -294,6 +294,26 @@ impl Pcm {
         }
         uncovered(&self.0.head.read(), range, |_| false)
     }
+    /// Copy an exact source-frame window from one pinned resident generation.
+    /// Intended for bounded control-side verification/waveforms. Never opens a
+    /// file, allocates, changes readiness, or partially writes on failure.
+    pub fn copy_resident_range(&self, start: usize, out: &mut [Frame]) -> Result<(), Error> {
+        let end = start.checked_add(out.len()).ok_or(Error::InvalidInput)?;
+        if end > self.frame_count() { return Err(Error::InvalidInput); }
+        if out.is_empty() { return Ok(()); }
+        if let Some(full) = self.resident_frames() {
+            out.copy_from_slice(&full[start..end]);
+            return Ok(());
+        }
+        let ranges = self.0.head.read();
+        if !uncovered(&ranges, start..end, |_| false) { return Err(Error::NotReady); }
+        for (base, packed) in ranges.iter() {
+            let a = start.max(*base);
+            let b = end.min(*base + packed.len());
+            if a < b { packed.copy(a - base, &mut out[a - start..b - start]); }
+        }
+        Ok(())
+    }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
         self.0.cold.swap(false, Relaxed)

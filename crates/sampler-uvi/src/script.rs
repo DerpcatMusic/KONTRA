@@ -19,7 +19,7 @@ use std::{
 
 mod async_data;
 mod sample_loading;
-pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource};
+pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource, SamplePath, SampleLoadTimings, SampleSourceTimings};
 mod catalog_copy;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
@@ -968,6 +968,10 @@ fn script_relative(lua: &Lua, path: String) -> String {
     if path.is_empty() || path.starts_with(['/', '$']) {
         return path;
     }
+    script_directory(lua).map_or_else(|| path.clone(), |base| format!("/{base}/{path}"))
+}
+
+fn script_directory(lua: &Lua) -> Option<String> {
     for level in 0..32 {
         let Some(source) = lua.inspect_stack(level, |d| d.source().source.map(|s| s.into_owned()))
         else {
@@ -978,11 +982,11 @@ fn script_relative(lua: &Lua, path: String) -> String {
             if source.ends_with(".lua")
                 && let Some((base, _)) = source.rsplit_once('/')
             {
-                return format!("/{base}/{path}");
+                return Some(base.to_owned());
             }
         }
     }
-    path
+    None
 }
 
 /// The catalog fields that shape a bus convolver's impulse response.

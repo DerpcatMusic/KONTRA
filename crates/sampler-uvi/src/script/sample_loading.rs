@@ -1,6 +1,10 @@
 //! One bounded decode worker and one dedicated core transaction producer.
 //! Lua objects stay on their owner; source bytes and registrations retire there.
-use super::{ScriptHost, Shared, script_relative};
+use super::{ScriptHost, Shared, script_directory};
+mod metrics;
+pub use metrics::{SampleLoadTimings, SampleSourceTimings};
+use metrics::{WorkerTimings, elapsed};
+use std::time::Instant;
 use mlua::{
     AnyUserData, Lua, MultiValue, Thread, UserData, UserDataFields, UserDataMethods, Value,
     Variadic,
@@ -29,6 +33,7 @@ pub struct SampleLoadStatus {
     pub worker_active: usize,
     pub ready: usize,
     pub submitted: usize,
+    pub timings: SampleLoadTimings,
 }
 #[derive(Default)]
 struct Counts {
@@ -36,6 +41,7 @@ struct Counts {
     successful: Cell<usize>,
     failed: Cell<usize>,
     cancelled: Cell<usize>,
+    timings: Cell<SampleLoadTimings>,
 }
 impl ScriptHost {
     pub fn sample_load_status(&self) -> SampleLoadStatus {
@@ -43,7 +49,14 @@ impl ScriptHost {
     }
 }
 
-pub type SampleSource = Arc<dyn Fn(&str, bool) -> Result<SampleResource, String> + Send + Sync>;
+/// Keep the caller's raw path until the owning resource authority can apply
+/// its ordered lookup rules. A module-relative rewrite loses later candidates.
+#[derive(Clone, Copy, Debug)]
+pub struct SamplePath<'a> {
+    pub path: &'a str,
+    pub script_directory: Option<&'a str>,
+}
+pub type SampleSource = Arc<dyn Fn(SamplePath<'_>, bool) -> Result<SampleResource, String> + Send + Sync>;
 /// Numeric file facts plus the same immutable authority used by page decoding.
 pub struct SampleResource {
     pub source: Arc<dyn sampler_kontakt::AssetSource>,
@@ -57,6 +70,7 @@ pub struct SampleResource {
     pub channels: u16,
     pub bits: u16,
     pub tempo: f64,
+    pub timings: SampleSourceTimings,
 }
 #[derive(Clone)]
 struct Info {
@@ -183,14 +197,25 @@ struct Pending {
     id: u64,
     target: u32,
     path: String,
+    script_directory: Option<String>,
+    queued_at: Instant,
+    prepared_at: Option<Instant>,
+    submitted_at: Option<Instant>,
     status: Arc<SampleTask>,
     task: Option<AnyUserData>,
     callback: Option<Thread>,
+}
+impl Pending {
+    fn path_bytes(&self) -> usize {
+        self.path.len() + self.script_directory.as_ref().map_or(0, String::len)
+    }
 }
 struct Request {
     id: u64,
     target: u32,
     path: String,
+    script_directory: Option<String>,
+    queued_at: Instant,
     status: Arc<SampleTask>,
     source: SampleSource,
     recipe: Recipe,
@@ -200,6 +225,7 @@ struct Request {
 }
 struct Response {
     id: u64,
+    timings: WorkerTimings,
     result: Result<(PreparedSampleRevision, Info), String>,
 }
 struct Worker {
@@ -218,8 +244,11 @@ impl Worker {
                 let mut page = vec![[0.; 2]; sampler_core::PAGE_FRAMES];
                 while let Ok(r) = requests.recv() {
                     let id = r.id;
-                    let result = prepare(r, &mut page);
-                    if replies.send(Response { id, result }).is_err() {
+                    let mut timings = WorkerTimings::default();
+                    let start = Instant::now();
+                    let result = prepare(r, &mut page, &mut timings);
+                    timings.prepare_ns = elapsed(start).saturating_sub(timings.resolve_ns);
+                    if replies.send(Response { id, result, timings }).is_err() {
                         break;
                     }
                     owner.unpark();
@@ -242,14 +271,25 @@ impl Drop for Worker {
 fn prepare(
     r: Request,
     page: &mut [sampler_core::Frame],
+    trace: &mut WorkerTimings,
 ) -> Result<(PreparedSampleRevision, Info), String> {
     if r.status.cancelled() {
         return Err("sample load cancelled".into());
     }
-    let mut resource = (r.source)(&r.path, r.recipe.playback.is_some())?;
+    trace.queue_ns = elapsed(r.queued_at);
+    let started = Instant::now();
+    let found = (r.source)(SamplePath { path: &r.path, script_directory: r.script_directory.as_deref() }, r.recipe.playback.is_some());
+    trace.resolve_ns = elapsed(started);
+    let mut resource = found.map_err(|e|format!("sample source resolution for '{}': {e}", r.path))?;
+    trace.source = resource.timings;
     let mut reader = match resource.reader.take() {
         Some(reader) => reader,
-        None => resource.source.open().map_err(|e| e.to_string())?,
+        None => {
+            let started = Instant::now();
+            let opened = resource.source.open();
+            trace.source.reader_open_ns = trace.source.reader_open_ns.saturating_add(elapsed(started));
+            opened.map_err(|e|format!("sample reader open: {e}"))?
+        },
     };
     let (rate, frames) = (reader.rate(), reader.frames());
     let info = Info {
@@ -270,7 +310,7 @@ fn prepare(
         playback.direction = Direction::Reverse;
     }
     PreparedSampleRevision::validate_geometry(frames, rate, playback, r.rate)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e|format!("sample playback geometry: frames={frames} rate={rate} output={} start={} end={:?} loop={:?} direction={:?}: {e}",r.rate,playback.start,playback.end,playback.loop_range,playback.direction))?;
     let stream = r.dynamic.is_some() && r.recipe.residency != sampler_ir::AssetResidency::Resident;
     let pcm = if stream {
         Pcm::streamed(rate, frames).map_err(|e| e.to_string())?
@@ -461,9 +501,13 @@ impl SampleLoads {
             worker_active,
             ready,
             submitted,
+            timings: self.counts.timings.get(),
         }
     }
     fn finish(shared: &Shared, counts: &Counts, mut pending: Pending, error: Option<&str>) {
+        let mut timings = counts.timings.get();
+        timings.total.add(elapsed(pending.queued_at));
+        counts.timings.set(timings);
         if let Some(error) = error {
             pending.status.fail();
             shared.find("lua loadSample failed", error);
@@ -497,7 +541,7 @@ impl SampleLoads {
             );
             return;
         }
-        if pending.path.len() > 4096 {
+        if pending.path.len() > 4096 || pending.script_directory.as_ref().is_some_and(|p| p.len() > 4096) {
             Self::finish(
                 shared,
                 &self.counts,
@@ -518,7 +562,7 @@ impl SampleLoads {
                 .remove(&id)
                 .expect("pending target index is exact");
             older.status.cancel();
-            self.paths -= older.path.len();
+            self.paths -= older.path_bytes();
             Self::finish(shared, &self.counts, older, None);
         }
         let capacity = self
@@ -531,7 +575,7 @@ impl SampleLoads {
             + usize::from(self.active.is_some())
             + usize::from(self.ready.is_some())
             >= capacity
-            || self.paths.saturating_add(pending.path.len()) > MAX_PATH_BYTES
+            || self.paths.saturating_add(pending.path_bytes()) > MAX_PATH_BYTES
         {
             Self::finish(
                 shared,
@@ -542,7 +586,7 @@ impl SampleLoads {
             return;
         }
         self.latest.insert(pending.target, pending.status.clone());
-        self.paths += pending.path.len();
+        self.paths += pending.path_bytes();
         self.pending_targets.insert(pending.target, pending.id);
         self.pending.insert(pending.id, pending);
     }
@@ -553,7 +597,10 @@ impl SampleLoads {
                     break;
                 };
                 if let Some((pending, info)) = self.submitted.remove(&reply.sequence) {
-                    self.paths -= pending.path.len();
+                    let mut timings = self.counts.timings.get();
+                    timings.commit_ack.add(elapsed(pending.submitted_at.expect("submitted clock")));
+                    self.counts.timings.set(timings);
+                    self.paths -= pending.path_bytes();
                     if reply.result.is_ok() {
                         if let Some(error) = &info.geometry_error {
                             shared.find("sampleInfo file geometry unsupported", error);
@@ -579,15 +626,19 @@ impl SampleLoads {
         }
         if let Some(worker) = &self.worker {
             if let Ok(response) = worker.receive.try_recv() {
-                let pending = self
+                let mut pending = self
                     .active
                     .take()
                     .expect("one active bounded sample decode");
                 debug_assert_eq!(pending.id, response.id);
+                let mut timings = self.counts.timings.get();
+                timings.worker(response.timings);
+                self.counts.timings.set(timings);
+                pending.prepared_at = Some(Instant::now());
                 match response.result {
                     Ok((revision, info)) => self.ready = Some((pending, revision, info)),
                     Err(error) => {
-                        self.paths -= pending.path.len();
+                        self.paths -= pending.path_bytes();
                         let canceled = pending.status.cancelled();
                         Self::finish(
                             shared,
@@ -599,20 +650,24 @@ impl SampleLoads {
                 }
             }
         }
-        if let Some((pending, revision, info)) = self.ready.take() {
+        if let Some((mut pending, revision, info)) = self.ready.take() {
             if pending.status.cancelled() {
-                self.paths -= pending.path.len();
+                self.paths -= pending.path_bytes();
                 Self::finish(shared, &self.counts, pending, None);
             } else if let Some(control) = self.control.as_mut() {
                 match control.submit(revision, pending.status.clone()) {
                     Ok(sequence) => {
+                        let mut timings = self.counts.timings.get();
+                        timings.ready_submit.add(elapsed(pending.prepared_at.expect("prepared clock")));
+                        self.counts.timings.set(timings);
+                        pending.submitted_at = Some(Instant::now());
                         self.submitted.insert(sequence, (pending, info));
                     }
                     Err((sampler_core::Error::Capacity, revision, _)) => {
                         self.ready = Some((pending, revision, info));
                     }
                     Err((error, _, _)) => {
-                        self.paths -= pending.path.len();
+                        self.paths -= pending.path_bytes();
                         Self::finish(
                             shared,
                             &self.counts,
@@ -632,14 +687,14 @@ impl SampleLoads {
         while let Some((_, pending)) = self.pending.pop_first() {
             self.pending_targets.remove(&pending.target);
             if pending.status.cancelled() {
-                self.paths -= pending.path.len();
+                self.paths -= pending.path_bytes();
                 Self::finish(shared, &self.counts, pending, None);
                 continue;
             }
             let recipe = match &self.recipes[&pending.target] {
                 Ok(r) => *r,
                 Err(e) => {
-                    self.paths -= pending.path.len();
+                    self.paths -= pending.path_bytes();
                     Self::finish(shared, &self.counts, pending, Some(e));
                     continue;
                 }
@@ -648,6 +703,8 @@ impl SampleLoads {
                 id: pending.id,
                 target: pending.target,
                 path: pending.path.clone(),
+                script_directory: pending.script_directory.clone(),
+                queued_at: pending.queued_at,
                 status: pending.status.clone(),
                 source: self.source.as_ref().unwrap().clone(),
                 recipe,
@@ -666,7 +723,7 @@ impl SampleLoads {
             {
                 Ok(()) => self.active = Some(pending),
                 Err(_) => {
-                    self.paths -= pending.path.len();
+                    self.paths -= pending.path_bytes();
                     Self::finish(
                         shared,
                         &self.counts,
@@ -729,7 +786,7 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
             };
             let target = id.and_then(|id| s.nodes.borrow().get(id).map(|n| n.0 as u32));
             let path = match args.get(1) {
-                Some(Value::String(p)) => script_relative(lua, p.to_str()?.to_owned()),
+                Some(Value::String(p)) => p.to_str()?.to_owned(),
                 _ => String::new(),
             };
             let callback = args.get(2).and_then(|v| {
@@ -755,6 +812,10 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
                 id: next,
                 target: target.unwrap_or(u32::MAX),
                 path,
+                script_directory: script_directory(lua),
+                queued_at: Instant::now(),
+                prepared_at: None,
+                submitted_at: None,
                 status,
                 task: task.clone(),
                 callback: thread,
@@ -814,12 +875,15 @@ mod tests {
                 channels: 2,
                 bits: 16,
                 tempo: 0.,
+                timings: Default::default(),
             })
         });
         Request {
             id: 1,
             target: 7,
             path: "memory.wav".into(),
+            script_directory: None,
+            queued_at: Instant::now(),
             status,
             source: authority,
             recipe: Recipe {
@@ -839,6 +903,7 @@ mod tests {
             let result = prepare(
                 request(budget.clone(), false),
                 &mut [[0.; 2]; sampler_core::PAGE_FRAMES],
+                &mut WorkerTimings::default(),
             );
             assert_eq!(result.is_ok(), success);
             match result {
@@ -862,7 +927,7 @@ mod tests {
         let budget = HeadBudget::new(32);
         let request = request(budget.clone(), true);
         let task = request.status.clone();
-        let error = prepare(request, &mut [[0.; 2]; sampler_core::PAGE_FRAMES])
+        let error = prepare(request, &mut [[0.; 2]; sampler_core::PAGE_FRAMES], &mut WorkerTimings::default())
             .err()
             .unwrap();
         assert!(error.contains("cancelled"));
@@ -876,7 +941,7 @@ mod tests {
             let budget = HeadBudget::new(limit);
             let mut r = request(budget.clone(), false);
             r.dynamic = None;
-            let result = prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]);
+            let result = prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES], &mut WorkerTimings::default());
             assert_eq!(result.is_ok(), success);
             if let Ok((revision, _)) = result {
                 assert_eq!(
@@ -896,7 +961,7 @@ mod tests {
             start: 17,
             ..Default::default()
         });
-        assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]).is_err());
+        assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES], &mut WorkerTimings::default()).is_err());
         assert_eq!(
             budget.status().peak_bytes,
             0,
@@ -921,7 +986,7 @@ mod tests {
                 });
             }
             let task = r.status.clone();
-            assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES]).is_err());
+            assert!(prepare(r, &mut [[0.; 2]; sampler_core::PAGE_FRAMES], &mut WorkerTimings::default()).is_err());
             assert!(!task.success());
             assert_eq!(task.cancelled(), cancel);
             assert_eq!(budget.status().held_bytes, 0);
