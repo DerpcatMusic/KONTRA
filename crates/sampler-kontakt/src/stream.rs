@@ -1,12 +1,12 @@
 //! Streamed instruments: random-access sample reads, resident heads sized from
 //! measured read latency, and the decode worker thread behind the core's
-//! page cache. Only heads and a bounded page pool are resident.
+//! page cache. Authored RAM-only sources, heads and a bounded page pool are resident.
 
 use crate::{
     LoadError,
     samples::{FileAt, Source},
 };
-use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
+use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, ResidentBuffer, StreamCache, StreamWorker};
 use sampler_ir as ir;
 use std::{
     collections::{HashMap, HashSet},
@@ -352,10 +352,13 @@ pub struct StreamReport {
     pub head_assets: usize,
     pub head_ranges: usize,
     pub head_source_frames: u64,
-    /// Configured cap on packed resident starts; decoded staging is separate.
+    /// Shared physical cap on required full PCM and packed starts, including
+    /// staged/current/retired storage; decode workspaces/page pools are separate.
     pub head_budget: usize,
+    pub required_resident_assets: usize,
+    pub required_resident_bytes: usize,
     /// Eager attack preparation explicitly fell back to cold starts after this
-    /// packed-budget failure. Mandatory wavetable ranges still remain resident.
+    /// payload-budget failure. Mandatory full sources/wavetable ranges stay resident.
     pub head_fallback: Option<HeadBudgetExceeded>,
     /// Bytes every asset would take fully decoded, as `load` holds them.
     pub full_bytes: u64,
@@ -409,12 +412,13 @@ pub struct StreamPolicy {
     pub voices: usize,
     /// Decode/preload threads, clamped to 1..=8.
     pub decoders: usize,
-    /// Shared cap on packed staged/current/retired start ranges. Decoder
+    /// Shared cap on required full PCM and packed staged/current/retired starts. Decoder
     /// workspaces and the stream page pool have independent bounds.
     pub head_budget: usize,
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
-    /// Opt in to cold starts only when eager heads exceed their packed budget.
+    /// Opt in to cold starts when optional attack preparation exceeds the shared
+    /// payload budget. Mandatory full sources are never made disk-streamed.
     /// Source, metadata, cancellation and mandatory-residency failures propagate.
     pub allow_cold_fallback: bool,
     /// RAM-only: keep whole samples smallest first within this safe byte budget.
@@ -608,7 +612,7 @@ impl std::fmt::Display for HeadBudgetExceeded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "resident attack ranges require at least {} bytes, exceeding configured head budget {} bytes",
+            "resident PCM requires at least {} bytes, exceeding configured payload budget {} bytes",
             self.required_at_least_bytes, self.budget_bytes
         )
     }
@@ -626,7 +630,7 @@ fn head_budget_error(budget: usize, required: usize) -> io::Error {
 fn canceled_head() -> io::Error {
     io::Error::new(
         io::ErrorKind::Interrupted,
-        "sample head preparation canceled",
+        "sample residency preparation canceled",
     )
 }
 fn range_bounds(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<(usize, usize)> {
@@ -847,6 +851,8 @@ impl Streamer {
         }
         state
     }
+    /// Control-only clone of the exact startup physical payload authority.
+    pub fn physical_budget(&self)->HeadBudget {self.residency_budget.clone()}
     /// Clone the existing source for bounded control-worker reads. Opening or
     /// decoding it belongs off the audio thread; this does not preload frames.
     pub fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
@@ -855,6 +861,7 @@ impl Streamer {
 
     /// Open every source as a streamed asset, timing an open plus first-page
     /// read on up to `probe` of them to size heads by `policy`.
+    #[cfg(test)]
     pub(crate) fn open(
         sources: Vec<(Arc<dyn AssetSource>, &std::path::Path)>,
         rate: u32,
@@ -863,6 +870,15 @@ impl Streamer {
         canceled: &(dyn Fn() -> bool + Sync),
         progress: &mut dyn FnMut(usize, usize),
     ) -> Result<Opened, LoadError> {
+        let requirements=vec![ir::AssetResidency::Streamable;sources.len()];
+        Self::open_required(sources,&requirements,rate,policy,probe,canceled,progress)
+    }
+    pub(crate) fn open_required(
+        sources:Vec<(Arc<dyn AssetSource>,&std::path::Path)>,
+        requirements:&[ir::AssetResidency],rate:u32,policy:&StreamPolicy,probe:usize,
+        canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize),
+    )->Result<Opened,LoadError> {
+        if requirements.len()!=sources.len() {return Err(LoadError::Invalid {path:"sample residency".into(),reason:"source requirement count mismatch".into()});}
         let _span = crate::audit::Span::new("sample_headers_latency_probe");
         let done = std::sync::atomic::AtomicUsize::new(0);
         let opened = std::thread::scope(|scope| {
@@ -879,12 +895,15 @@ impl Streamer {
                             .step_by(count)
                             .map(|i| {
                                 let (source, path) = &sources[i];
+                                let make=if requirements[i]==ir::AssetResidency::Resident {
+                                    Pcm::pending_resident as fn(u32,usize)->Result<Pcm,sampler_core::Error>
+                                }else{Pcm::streamed};
                                 let result = (|| {
                                     if canceled() {
                                         return Err(LoadError::Canceled);
                                     }
                                     if let Some((rate, frames)) = source.header().filter(|_|i>=probe) {
-                                        let pcm = Pcm::streamed(rate, frames).map_err(|e| {
+                                        let pcm = make(rate, frames).map_err(|e| {
                                             LoadError::Invalid {
                                                 path: (*path).into(),
                                                 reason: e.to_string(),
@@ -907,7 +926,7 @@ impl Streamer {
                                     } else {
                                         None
                                     };
-                                    let pcm = Pcm::streamed(reader.rate(), reader.frames())
+                                    let pcm = make(reader.rate(), reader.frames())
                                         .map_err(|e| LoadError::Invalid {
                                             path: (*path).into(),
                                             reason: e.to_string(),
@@ -972,6 +991,8 @@ impl Streamer {
             head_source_frames: 0,
             head_budget: policy.head_budget,
             head_fallback: None,
+            required_resident_assets: 0,
+            required_resident_bytes: 0,
             full_bytes: full,
             pool_pages: policy.voices * PAGES_PER_VOICE,
             pool_bytes: 0,
@@ -1053,7 +1074,9 @@ impl Streamer {
                 .filter(|pcm| read.insert(pcm.asset_id()))
                 .filter_map(|pcm| {
                     let ranges = &table[&pcm.asset_id()];
-                    ((!lazy || pinned_wavetables.contains(&pcm.asset_id())) && !ranges.is_empty())
+                    ((!lazy || pinned_wavetables.contains(&pcm.asset_id()) || pcm.requires_resident())
+                        && (!ranges.is_empty() || pcm.requires_resident())
+                        && !(pcm.requires_resident() && pcm.resident_frames().is_some()))
                         .then_some((pcm, ranges.as_slice()))
                 })
                 .collect::<Vec<_>>()
@@ -1063,7 +1086,8 @@ impl Streamer {
         // Binding and publication serialize on each Pcm's control mutation lock.
         // Escaped unbudgeted recipes can never publish into a bound asset.
         for pcm in assets {
-            pcm.bind_head_budget(&residency_budget).map_err(|e| {
+            let bound=if pcm.requires_resident() {pcm.bind_resident_budget(&residency_budget)}else{pcm.bind_head_budget(&residency_budget)};
+            bound.map_err(|e| {
                 if e == sampler_core::Error::Capacity {
                     head_budget_error(head_budget, head_budget.saturating_add(1))
                 } else {
@@ -1073,7 +1097,7 @@ impl Streamer {
         }
         let prepare = |selected: &[(&Pcm, &[Range<usize>])]| {
             let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
-                let (min, _) = range_bounds(pcm, ranges)?;
+                let min=if pcm.requires_resident() {pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(||io::Error::other("resident source size overflow"))?}else{range_bounds(pcm, ranges)?.0};
                 sum.checked_add(min)
                     .ok_or_else(|| io::Error::other("sample head size overflow"))
             })?;
@@ -1115,8 +1139,10 @@ impl Streamer {
         {
             let _publication = crate::audit::Span::new("sample_head_publication");
             for ((pcm, _), prepared) in selected.into_iter().zip(staged) {
-                pcm.publish_ranges(prepared)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                match prepared {
+                    head_prepare::Prepared::Head(head)=>{pcm.publish_ranges(head).map(|_|())},
+                    head_prepare::Prepared::Resident(full)=>pcm.publish_initial_resident(full),
+                }.map_err(|e| io::Error::new(io::ErrorKind::InvalidData,e))?;
             }
         }
         // One page workspace shared by the explicit-residency worker recipes,
@@ -1132,6 +1158,15 @@ impl Streamer {
             ) else {
                 continue;
             };
+            if pcm.requires_resident() {
+                let (rate,frames,budget)=(pcm.sample_rate(),pcm.frame_count(),residency_budget.clone());
+                pcm.set_budgeted_resident_loader(move|| {
+                    let buffer=ResidentBuffer::new(rate,frames,&budget)?;
+                    let mut reader=source.open().map_err(|_|sampler_core::Error::NotReady)?;
+                    head_prepare::fill_resident(rate,frames,buffer,&mut reader,&||false,None).map_err(|_|sampler_core::Error::NotReady)
+                }).map_err(|e|io::Error::other(e))?;
+                continue;
+            }
             let recipe = pcm.head_preparer();
             let residency_page=residency_page.clone();
             pcm.set_prepared_residency_loader(move || {
@@ -1290,7 +1325,7 @@ fn reload(
         pcm.head_bytes();
     }
     for pcm in assets {
-        if !pcm.residency_permitted() || pcm.resident_frames().is_some() || !pcm.take_cold() {
+        if !pcm.residency_permitted() || pcm.requires_resident() || pcm.resident_frames().is_some() || !pcm.take_cold() {
             continue;
         }
         let id = pcm.asset_id();
@@ -1782,7 +1817,10 @@ impl Streamed {
                 invalid(e.to_string())
             }
         })?;
-        report.head_bytes = bytes;
+        let _=bytes;
+        report.head_bytes = kept.iter().map(Pcm::head_bytes).sum();
+        report.required_resident_assets=kept.iter().filter(|p|p.requires_resident()).count();
+        report.required_resident_bytes=kept.iter().filter(|p|p.requires_resident()).map(|p|p.resident_frames().map_or(0,|f|f.len()*size_of::<Frame>())).sum();
         report.head_fallback = streamer.head_fallback();
         cache.set_wake(
             streamer
@@ -2179,6 +2217,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mandatory_full_sources_are_not_published_when_later_source_fails_or_read_is_canceled() {
+        struct Fixture { cancel: Arc<AtomicBool>, fail: bool, cancel_read: bool }
+        impl AssetSource for Fixture {
+            fn open(&self)->io::Result<SampleReader> {
+                let (cancel,fail,cancel_read)=(self.cancel.clone(),self.fail,self.cancel_read);
+                Ok(SampleReader::custom(48000,8192,move|_,out| {
+                    if fail {return Err(io::Error::new(io::ErrorKind::InvalidData,"independent fixture source failure"));}
+                    out.fill([0.25;2]);
+                    if cancel_read {cancel.store(true,Ordering::Release);}
+                    Ok(())
+                }))
+            }
+        }
+        for cancel_read in [false,true] {
+            let cancel=Arc::new(AtomicBool::new(false));
+            let assets=vec![Pcm::pending_resident(48000,8192).unwrap(),Pcm::streamed(48000,8192).unwrap()];
+            let sources=HashMap::from([
+                (assets[0].asset_id(),Arc::new(Fixture {cancel:cancel.clone(),fail:false,cancel_read}) as Arc<dyn AssetSource>),
+                (assets[1].asset_id(),Arc::new(Fixture {cancel:cancel.clone(),fail:true,cancel_read:false}) as Arc<dyn AssetSource>),
+            ]);
+            let (_cache,worker)=StreamCache::new(8).unwrap();
+            let result=Streamer::start_cancelable(sources,&assets,vec![vec![0..16];2],worker,1,false,8192*8+32,HashSet::new(),true,&||cancel.load(Ordering::Acquire));
+            assert!(result.is_err(),"neither a source failure nor cancellation can become a cold fallback success");
+            assert!(assets[0].resident_frames().is_none());
+            assert_eq!(assets[1].head_bytes(),0);
+            assert_eq!(cancel.load(Ordering::Acquire),cancel_read);
+        }
+    }
     #[test]
     fn exact_packing_failure_drops_all_staged_heads_before_mandatory_fallback() {
         let assets=vec![Pcm::streamed(48000,16).unwrap(),Pcm::streamed(48000,16).unwrap()];

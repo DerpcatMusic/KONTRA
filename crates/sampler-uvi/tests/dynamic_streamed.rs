@@ -164,3 +164,94 @@ fn parked_owner_completes_a_real_dormant_stream_load_and_pages_match_resident_re
         driver.ui().fault_counts()
     );
 }
+
+#[test]
+fn authored_memory_requirements_keep_dynamic_source_body_resident_with_stream_service_bound() {
+    let dir = Scratch::new();
+    let frames = 40000;
+    std::fs::write(dir.0.join("tone.wav"), wav(frames)).unwrap();
+    for (program, oscillator) in [
+        ("Streaming='1'", "AllowStreaming='0'"),
+        ("Streaming='0'", "AllowStreaming='1'"),
+    ] {
+        let path = dir.0.join("Memory.uvip");
+        std::fs::write(&path,format!(r#"<UVI4><Program {program}><EventProcessors><ScriptProcessor><script><![CDATA[
+            Ready=OnOffButton('Ready',false)
+            function onInit()
+                local osc=Program.layers[1].keygroups[1].oscillators[1]
+                task=loadSample(osc,'tone.wav',function(t)
+                    assert(rawequal(task,t) and t.finished and t.success)
+                    Ready:setValue(true)
+                end)
+            end
+        ]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup LowKey='60' HighKey='60'><Oscillators><SamplePlayer {oscillator} BaseNote='60' NoteTracking='0'/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#)).unwrap();
+        let mut translated = sampler_uvi::translate_path(&path).unwrap();
+        let attached = translated
+            .attach_script(48000, Default::default())
+            .unwrap()
+            .unwrap();
+        let target = SampleTargetId(translated.instrument.source_indices.sample_targets[0].node);
+        let streamed = sampler_uvi::assemble_translated_streamed(
+            translated,
+            48000,
+            &sampler_kontakt::StreamPolicy {
+                voices: 4,
+                head_budget: 1 << 20,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
+        let (mut rt, control) = Runtime::new(streamed.loaded.plan, limits)
+            .unwrap()
+            .with_stream_cache(streamed.cache)
+            .with_sample_updates(4)
+            .unwrap();
+        let mut driver = attached.driver;
+        driver
+            .bind_sample_stream(streamed.streamer.dynamic_sources())
+            .unwrap();
+        driver.bind_sample_control(control).unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            rt.poll_sample_update().unwrap();
+            let status = driver.sample_load_status().unwrap();
+            if status.successful == 1
+                && status.pending == 0
+                && driver.ui().values().iter().any(|(_, v)| *v == 1.)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "authored resident task failed: {status:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let pcm = rt.sample_target_asset(target).unwrap();
+        assert_eq!(pcm.head_bytes(), 0);
+        let full = pcm
+            .resident_frames()
+            .expect("authored RAM law cannot silently stream tails");
+        for (i, frame) in full.iter().enumerate() {
+            let expected = (((i * 37) % 8000) as i16 - 4000) as f32 / 32768.;
+            assert_eq!(frame.map(f32::to_bits), [expected; 2].map(f32::to_bits));
+        }
+        assert_eq!(
+            rt.sample_physical_budget_status().unwrap().held_bytes,
+            frames * 8
+        );
+        drop(full);
+        rt.trigger(input(), 60, 1.).unwrap();
+        let mut audio = [[0.; 2]; 256];
+        for _ in 0..frames.div_ceil(256) {
+            rt.render(&mut audio).unwrap();
+        }
+        assert_eq!(
+            rt.stats().stream_underruns,
+            0,
+            "no page readiness wait was used for memory playback"
+        );
+        assert!(driver.ui().fault_counts().runtime.is_empty());
+    }
+}

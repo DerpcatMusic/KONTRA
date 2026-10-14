@@ -39,6 +39,7 @@ struct PcmData {
     rate: u32,
     frames: Snapshot<Option<ResidentData>>,
     resident_budget: std::sync::OnceLock<HeadBudget>,
+    resident_published: AtomicBool,
     full: bool,
     residency_owners: std::sync::atomic::AtomicUsize,
     residency_managed: AtomicBool,
@@ -313,6 +314,10 @@ impl Pcm {
         self.0.used.store(now, Relaxed);
     }
     fn create(rate: u32, length: usize, frames: Option<ResidentData>) -> Result<Self, Error> {
+        let full=frames.is_some();
+        Self::create_kind(rate,length,frames,full)
+    }
+    fn create_kind(rate:u32,length:usize,frames:Option<ResidentData>,full:bool)->Result<Self,Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
@@ -322,7 +327,8 @@ impl Pcm {
         Ok(Self(std::sync::Arc::new(PcmData {
             id: AssetId(id),
             rate,
-            full: frames.is_some(),
+            full,
+            resident_published: AtomicBool::new(frames.is_some()),
             frames: Snapshot::new(frames),
             resident_budget: std::sync::OnceLock::new(),
             residency_owners: std::sync::atomic::AtomicUsize::new(0),
@@ -337,6 +343,27 @@ impl Pcm {
             cold: AtomicBool::new(false),
             length,
         })))
+    }
+    /// Real admitted source metadata whose complete PCM must be prepared on
+    /// control before publishing the part. This descriptor cannot stream tails.
+    pub fn pending_resident(rate:u32,frames:usize)->Result<Self,Error> {
+        if rate==0 || frames==0 {return Err(Error::InvalidInput);}
+        if frames.checked_mul(size_of::<Frame>()).is_none_or(|n|n>isize::MAX as usize) {return Err(Error::Capacity);}
+        Self::create_kind(rate,frames,None,true)
+    }
+    pub fn requires_resident(&self)->bool {self.0.full}
+    /// Control-only one-shot initial publication; it never overwrites the
+    /// bytes of an existing revision. Reload uses its budgeted residency recipe.
+    pub fn publish_initial_resident(&self,buffer:ResidentBuffer)->Result<(),Error> {
+        let (rate,data,budget)=buffer.into_parts()?;
+        let _mutation=self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full || self.0.resident_published.load(Relaxed) {return Err(Error::RevisionConflict);}
+        if rate!=self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+        if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+        if !self.residency_permitted() {return Err(Error::NotReady);}
+        self.0.frames.replace(Some(data),|_|());
+        self.0.resident_published.store(true,Relaxed);
+        Ok(())
     }
     pub fn asset_id(&self) -> AssetId {
         self.0.id
@@ -524,6 +551,14 @@ impl Pcm {
         self.resident_frames()
             .map_or(0, |f| f.len() * size_of::<Frame>())
             + self.level_bytes()
+    }
+    /// Control side: current full PCM outside this exact physical authority,
+    /// plus octave levels. Add the shared authority's held bytes only once.
+    pub fn resident_non_head_bytes_outside(&self,budget:&HeadBudget)->usize {
+        self.0.frames.collect();
+        let bytes=if self.0.resident_budget.get().is_some_and(|owned|owned.same(budget)) {0}
+            else {self.resident_frames().map_or(0,|f|f.len()*size_of::<Frame>())};
+        bytes+self.level_bytes()
     }
     /// Control side: current full PCM, octave levels and streamed head bytes.
     /// A shared head quota's held bytes additionally include retired/staged data.

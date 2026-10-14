@@ -14,6 +14,7 @@ mod access_error;
 pub mod arpeggiator;
 mod audio;
 mod sample_metadata;
+mod residency_policy;
 #[cfg(feature = "library-access")]
 mod bank;
 #[cfg(feature = "scan")]
@@ -287,6 +288,15 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
+    // Every authored user contributes, including a bypassed user sharing an
+    // otherwise audible source. Do not instantiate unused/missing file assets.
+    for player in program.descendants().filter(|n|n.has_tag_name("SamplePlayer")) {
+        let required=residency_policy::sample(player).map_err(Translate::Invalid)?;
+        let Some(path)=player.attribute("SamplePath") else {continue;};
+        let relative=path.replace('\\',"/");
+        let location=match &out.source {Source::Bank=>relative,Source::Disk(folder)=>folder.join(relative).to_string_lossy().into_owned()};
+        if let Some(asset)=out.assets.get(&location) {out.ir.assets[asset.0].residency=out.ir.assets[asset.0].residency.merge(required);}
+    }
     // Whatever was neither structure nor consumed is reported once per node.
     // Modulation sources and mappers act only through connections, which
     // report what they could not translate.
@@ -1307,6 +1317,10 @@ fn staged(
     stage: sampler_kontakt::Stage,
 ) -> Box<dyn std::error::Error> {
     use sampler_kontakt::{LoadError, Stage};
+    let error=match error.downcast::<sampler_kontakt::LoadError>() {
+        Ok(load)=>return Box::new(load.at(stage)),
+        Err(other)=>other,
+    };
     let (load, stage) = match error.downcast::<Error>() {
         Ok(e) => match *e {
             Error::Io { path, error } => (LoadError::Io { path, error }, Stage::Container),
@@ -1436,24 +1450,32 @@ pub fn assemble_translated(
 /// page pool are resident; the rest is read from the bank or file on demand.
 #[track_caller]
 pub fn assemble_translated_streamed(
-    t: Translated,
-    rate: u32,
-    policy: &sampler_kontakt::StreamPolicy,
-) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
-    let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
-    let sources = t
-        .locations
-        .iter()
-        .map(|location| match &t.bank {
-            #[cfg(feature = "library-access")]
-            Some((bank, program_path)) => bank.stream_source(program_path, location),
-            #[cfg(not(feature = "library-access"))]
-            Some(_) => Err("bank samples need the library-access feature".to_string()),
-            None => stream::source(vec![stream::Origin::File(location.into())]),
-        })
-        .collect();
-    assemble_streamed(t.instrument, t.locations, sources, rate, policy)
-        .map_err(|e| staged(e, &named, sampler_kontakt::Stage::Prepare))
+    t: Translated,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    assemble_translated_streamed_cancelable(t,rate,policy,&||false)
+}
+/// As assemble_translated_streamed, preserving caller cancellation through
+/// source resolution, bounded decode and final publication. No canceled part
+/// is returned; the error remains LoadError::Canceled rather than Invalid.
+#[track_caller]
+pub fn assemble_translated_streamed_cancelable(
+    t:Translated,rate:u32,policy:&sampler_kontakt::StreamPolicy,canceled:&(dyn Fn()->bool+Sync),
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+    let named=t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let mut sources=Vec::with_capacity(t.locations.len());
+    for location in &t.locations {
+        if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+        sources.push(match &t.bank {
+            #[cfg(feature="library-access")]
+            Some((bank,program_path))=>bank.stream_source(program_path,location),
+            #[cfg(not(feature="library-access"))]
+            Some(_)=>Err("bank samples need the library-access feature".to_string()),
+            None=>stream::source(vec![stream::Origin::File(location.into())]),
+        });
+    }
+    assemble_streamed_cancelable(t.instrument,t.locations,sources,rate,policy,canceled)
+        .map_err(|e|staged(e,&named,sampler_kontakt::Stage::Prepare))
 }
 
 /// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
@@ -1574,12 +1596,16 @@ fn retain_failed_sample_targets(instrument: &mut ir::Instrument, usable: &[bool]
 /// [`assemble`] for streamed samples. Failed initial samples are reported;
 /// script-loadable players retain an unbound recipe, while other zones are removed.
 fn assemble_streamed(
+    instrument: ir::Instrument,locations:Vec<String>,sources:AssetSources,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    assemble_streamed_cancelable(instrument,locations,sources,rate,policy,&||false)
+}
+fn assemble_streamed_cancelable(
     mut instrument: ir::Instrument,
-    locations: Vec<String>,
-    sources: AssetSources,
-    rate: u32,
-    policy: &sampler_kontakt::StreamPolicy,
-) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    locations: Vec<String>, sources:AssetSources,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+    canceled:&(dyn Fn()->bool+Sync),
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     for (location, result) in locations.iter().zip(&sources) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
@@ -1593,10 +1619,15 @@ fn assemble_streamed(
     inserts::fill_impulses(&mut instrument, &locations, |a| {
         let source = sources[a].as_ref().map_err(Clone::clone)?;
         let mut reader = source.open().map_err(|e| e.to_string())?;
+        if canceled(){return Err("load cancelled".into());}
         let mut frames = vec![[0f32; 2]; reader.frames()];
-        reader.read(0, &mut frames).map_err(|e| e.to_string())?;
+        for (index,page) in frames.chunks_mut(sampler_core::PAGE_FRAMES).enumerate() {
+            if canceled(){return Err("load cancelled".into());}
+            reader.read(index*sampler_core::PAGE_FRAMES,page).map_err(|e|e.to_string())?;
+        }
         Ok((reader.rate(), frames))
     });
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     retain_failed_sample_targets(&mut instrument, &usable);
     let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
@@ -1613,7 +1644,7 @@ fn assemble_streamed(
     };
     let bindings = engine_parameters::bindings(&instrument);
     let mut streamed =
-        sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+        sampler_kontakt::stream_instrument_cancelable(instrument, sources, labels, &options, policy,canceled)?;
     streamed.loaded.plan = streamed
         .loaded
         .plan
