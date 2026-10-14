@@ -385,9 +385,38 @@ Combined local-dispatch plus scoped-validation runtime pairs have typical caller
 medians 2,372–2,392 us before and 2,180–2,193 us after, but one candidate is
 2,399.9 us. Hashes remain exact. This is a **combined** receipt and does not
 attribute improvement to width; the parent has a separate same-binary guard
-witness. Raw: `eq-local-guard-combined-paired.json`. A small register-blocked
-recurrence prototype is under oracle/timing validation; no slower wider kernel
-is accepted by default.
+witness. Raw: `eq-local-guard-combined-paired.json`. The slower monolithic kernel
+was removed from the runtime path.
+
+The accepted replacement completes four independent double-precision lane
+recurrences before moving to the next four lanes. This limits live registers
+without reordering any lane's temporal recurrence or floating-point expression.
+Its local dispatched AVX2 assembly has YMM multiply/add/subtract instructions and
+no helper calls in the temporal loop; it introduces no fused operations.
+The primitive oracle covers empty/short/full blocks, inactive masks, signed
+zero, denormals and final histories. The native EQ oracle also checks inherited
+moving coefficient cadence and unequal tails. The 192-voice scalar-chain versus
+batch comparison remains bit-exact at 1/2/4 threads with no audio allocation.
+
+An isolated same-binary 100,000-call stage receipt improves 97.2–99.3 ms to
+88.4–93.8 ms (4–10%). The whole-runtime pair then freezes the **same** coherent
+source-accessor and scoped-validation code on both sides, changing only EQ.
+Four alternating CPU5-pinned 300-voice, 256-frame resident pairs have caller
+medians 2,126–2,141 us before versus 1,992–2,013 us after (about 6–7% lower).
+All eight hashes are `fd8fcc10718a4a71`, with zero wall deadline misses and no
+`rustc` observed by the half-second process monitor. Additional short checks
+give 537.7→507.1 us at 64 frames and 2,216.4→2,061.5 us with preloaded pages at
+256 frames, also exact with zero misses. These measure core render, not the
+entire plugin meter. Raw: `eq-blocked-stage-receipt.log`,
+`eq-blocked-stage-v3.asm`, `eq-blocked-300-paired-clean.json`,
+`eq-blocked-short-buffer-paged.json`, `eq-blocked-native-test.log`,
+`eq-blocked-chain-test.log`.
+
+The initial whole-runtime pair set overlapped an already-running agent test
+build and an external synth build after its start snapshot. It is retained as
+`eq-blocked-300-paired-contended.json`; its 0–244 misses per cell and variable
+caller time are excluded from quiet timing proof. This is why the clean repeat
+records compilation activity throughout its window.
 
 Remaining acceptance gap: a verified 300-source real instrument or owned real
 PCM fixture through production policy has now been obtained for owned WAV
