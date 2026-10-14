@@ -3412,7 +3412,7 @@ fn kontakt(
         streamer,
         report: stream,
     } = streamed;
-    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets));
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets, &stream));
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded
         .dynamics()
@@ -3498,7 +3498,7 @@ fn uvi(
         streamer,
         report: stream,
     } = streamed;
-    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets));
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets, &stream));
     report.decoded.full_bytes = stream.full_bytes;
     let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
     let driver = attached.map(|a| {
