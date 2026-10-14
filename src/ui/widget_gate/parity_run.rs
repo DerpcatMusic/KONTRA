@@ -448,7 +448,8 @@ fn parity_run() {
     let from = gate.fault_cursor;
     let faults = gate.faults();
     checks.push(check("sweep-script-faults", faults == 0,
-        json!({"faults": faults, "events": gate.fault_events[from..].iter().take(4).collect::<Vec<_>>()})));
+        json!({"faults": faults, "events": gate.fault_events[from..].iter().take(4).collect::<Vec<_>>(),
+            "where": gate.preemption_observations.iter().filter(|o| !o["outcome"].is_null()).take(4).collect::<Vec<_>>()})));
 
     // 3. Presets: the first N snapshots and the last.
     let all = snapshots(Path::new(&path));
