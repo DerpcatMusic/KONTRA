@@ -65,7 +65,7 @@ fn constant_mix_simd_preserves_pcm_and_dynamic_envelope_continuation() {
                     let take = if block % 3 == 0 { len.saturating_sub(1) } else { len };
                     let mut expected = vec![[0.123, -0.567]; len];
                     let mut actual = expected.clone();
-                    let gains = [0.7, -0.2];
+                    let gains = [[0.7, -0.2], [1., 1.], [0., -0.], [-1., 0.375]][block % 4];
                     if reverse {
                         super::mix(input[..take].iter().rev(), &mut expected, &mut before, gain, gains);
                         candidate(input[..take].iter().rev(), &mut actual, &mut after, gain, gains);
