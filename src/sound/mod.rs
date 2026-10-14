@@ -21,6 +21,8 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod articulation;
+#[cfg(test)]
+mod stream_accounting_tests;
 pub mod edits;
 pub(crate) mod effect_controls;
 pub mod event;
@@ -234,14 +236,25 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Bytes held in memory: start data plus the page pool.
+    /// Initial assets' resident frames/octaves, reserved heads and page pool.
+    /// Head reservations include staged and retired generations until control
+    /// reclaims them. Dynamic source revisions have separate ownership and
+    /// accounting; this is initial sample storage, not total process RSS.
     pub fn resident_bytes(&self) -> u64 {
-        let heads: usize = self
+        let physical = self.streamer.physical_budget();
+        let non_heads: usize = self
             .assets
             .iter()
-            .map(sampler_core::Pcm::resident_bytes)
+            .map(|pcm| {
+                // Reclaim unpinned old heads on control before observing the
+                // shared reservation, without counting current heads twice.
+                pcm.head_bytes();
+                pcm.resident_non_head_bytes_outside(&physical)
+            })
             .sum();
-        (heads + self.report.pool_bytes) as u64
+        non_heads
+            .saturating_add(physical.status().held_bytes)
+            .saturating_add(self.report.pool_bytes) as u64
     }
 
     /// Drop the start data of samples not played since `before` (the part's

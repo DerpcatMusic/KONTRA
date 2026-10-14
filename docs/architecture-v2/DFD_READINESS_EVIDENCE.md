@@ -1,11 +1,11 @@
 # DFD attack readiness and immutable disk sources
 
-The production V2 `Auto` policy currently publishes lazy sample heads. A loaded
-editor is therefore not evidence that authored sample attacks are resident.
-This differs from the initial-portion-in-RAM behavior described by
+The current V2 `Auto` policy prepares resident attacks before part publication,
+with an explicit capacity fallback and a 256 MiB per-stream quota. The chronological
+receipts below explain the change from lazy heads and the remaining dense-tail
+underruns. Complete attack coverage does not establish tail-stream deadline safety.
+The intended initial-portion-in-RAM behavior is described in
 [Native Instruments' DFD documentation](https://support.native-instruments.com/support/solutions/articles/69000879768-what-is-dfd-).
-These receipts identify that gap; this checkpoint does not change preload
-budgets or claim a completed DFD startup policy.
 
 ## What is measured
 
@@ -248,3 +248,77 @@ Numeric receipts are retained privately under
 They include paired full process receipts, bounded decoder probes, aggregate
 summary, exact coverage bounds and a binary fingerprint. No instrument source,
 sample data or bank payload is included.
+
+## Default policy revision after the above measurements
+
+The product Auto policy now requests eager resident attack preparation with a
+256 MiB **per initial stream** packed-head cap, replacing lazy 8 MiB admission.
+It uses the existing bounded parallel loader workers; audio never reads files or
+waits for preloading. All authored alternatives remain in the head plan. This
+cap is not total process RAM: the page pool, metadata, worker scratch, dynamic
+sample revisions, full-resident data and other parts are separate allocations.
+The initial source load must finish preloading before its part is published.
+
+If exact lossless packed heads exceed the cap, the typed capacity fallback
+releases the entire staged attack batch before retrying mandatory wavetable
+ranges over the same immutable sources/quota. Decode/storage/cancellation errors
+remain errors. Fallback is retained in the load report and support diagnostics,
+and the report panel explicitly says sample attacks may wait for disk. Such a
+load is not claimed to have complete attack readiness. The startup report records
+planned/covered ranges and packed bytes/budget; it excludes later dynamic loads.
+
+A small authored UVI fixture checks actual production Auto loading, exact attack
+coverage, nonzero audio in the first callback and zero cold starts/underruns.
+A separate physical accounting fixture retains old heads through an audio guard,
+stages new heads, and verifies both consume quota until control-side collection;
+its audio guard release performs no allocation/deallocation.
+
+The 17-second cold head-open observation above is still a limitation. This policy
+revision is not a cold-load speed claim or an early GUI publication implementation.
+The UI inspector remains independently usable without loading the plugin binary.
+A new real-bank paced first-note receipt is needed before claiming SSD deadline
+acceptance for this default policy. Full-resident dynamic leases, aggregate
+multi-part admission, authored UVI residency flags and dense-tail deadline margins
+remain open work.
+
+The first real-bank trial of this revision used a 128 MiB ceiling. With 23
+compiler observations, a 16.614 ms read-probe p95 produced 1,406 base head
+frames and exceeded the exact packed quota: all ordinary attacks fell back,
+121 cold starts remained, and first signal appeared one 64-frame block late.
+The next warmer 256-frame trial (10 compiler observations) measured 115 us
+probe p95, 614 head frames and 87,059,856 packed bytes; all 17,059 ranges across
+15,008 assets were ready, first signal offset was zero, and cold starts,
+underruns and guarded heap calls stayed zero. These are different adaptive
+geometries and uncontrolled cache conditions, **not an A/B speedup**.
+The bounded Auto ceiling was increased to 256 MiB to accommodate the observed
+latency-driven geometry rather than suppressing or clipping it. The subsequent
+256 MiB receipt is below. Explicit fallback remains essential for larger plans
+or slower storage; 256 MiB is not a universal readiness guarantee.
+
+### Actual 256 MiB Auto receipt: attack success, tail failure retained
+
+The 64-frame host run covered all 17,047 planned ranges across 15,008 assets,
+using 206,391,132 packed bytes. It loaded in 5,626.73 ms and had first signal at
+block offset zero, zero cold starts, ordinary underruns, callback deadline misses
+and guarded heap calls. Compiler activity appeared in 21 monitoring observations.
+
+The following warmer 256-frame run covered all 17,059 ranges with 86,859,594
+packed bytes and loaded in 535.516 ms. First signal again had offset zero, with
+zero cold starts, callback deadline misses and guarded heap calls. However,
+**24 ordinary stream underruns appeared at block 2**, output offset 512 frames
+(~10.67 ms), around the first head-to-tail transition. The 4,856 decoder jobs
+reported no failures or reply backpressure; maximum queue wait was 12,386 us
+and maximum combined seek/read/decode was 24,927 us. Compiler activity appeared
+in eight observations. Those wall times include storage waits and scheduling;
+they do not identify pure codec CPU or disk latency.
+
+The second burst reached 160 deferred cold starts despite unchanged complete
+static head coverage, while ordinary underruns stayed at 24. The static recipe
+therefore does not prove every script-authored dynamic onset is covered. Exact
+voice/page/deadline correlation remains necessary. The warm/cold and geometry
+differences preclude a speedup claim. This evidence explicitly fails a claim of
+universally safe SSD streaming.
+
+Immutable numeric artifacts: `dfd-auto-eager-256cap-evidence.json`, per-host JSON
+and decoder stderr under the shared diagnostic artifact directory. The older
+128 MiB failure and successful warmer receipt remain preserved separately.

@@ -84,3 +84,7 @@ not a paired before/after claim for the concurrent source-reuse experiment.
 
 Raw numeric receipts and per-case logs are under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261014/whole-callback-release.json`.
+The original executable is frozen alongside it as
+`whole-callback-release-baseline` (SHA-256
+`a24fbc61099ec998ee279ca253cbd96001011df37e9d455f027457c326f58e73`);
+the receipt's historical shared-target path can later refer to a rebuilt binary.

@@ -1189,6 +1189,15 @@ impl V2Core {
         Some(self.parts.get(part)?.as_ref()?.runtime.stats())
     }
 
+    /// Control-side demand inspection between render calls; never polls or waits.
+    #[cfg(feature = "shots")]
+    pub fn visit_stream_demand(
+        &self, part: usize, frames: u32,
+        accept: impl FnMut(sampler_core::StreamDemandSnapshot) -> bool,
+    ) -> Option<Result<bool, sampler_core::Error>> {
+        Some(self.parts.get(part)?.as_ref()?.runtime.visit_stream_demand(frames, accept))
+    }
+
     pub(crate) fn release_all_notes(&mut self) {
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
@@ -3055,8 +3064,13 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     });
     sampler_kontakt::StreamPolicy {
         resident_budget,
-        lazy: request.streaming == super::Streaming::Auto,
-        head_budget: resident_budget.unwrap_or(8 << 20),
+        // Prepare Auto attacks on the loader worker before publication;
+        // any capacity fallback stays explicit in the load report.
+        lazy: false,
+        head_budget: resident_budget.unwrap_or(256 << 20),
+        // Capacity fallback is distinct from a source/decode failure and must
+        // remain visible in the load report and diagnostics.
+        allow_cold_fallback: true,
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
         voices: MAX_VOICES,
@@ -3398,6 +3412,7 @@ fn kontakt(
         streamer,
         report: stream,
     } = streamed;
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets));
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded
         .dynamics()
@@ -3441,12 +3456,15 @@ fn kontakt(
 fn uvi(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
+    canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
+    if canceled() { return Err(CoreError::Canceled); }
     let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     drop(span);
     progress(Progress(300));
+    if canceled() { return Err(CoreError::Canceled); }
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let config = sampler_uvi::script::Config::realtime();
@@ -3465,8 +3483,14 @@ fn uvi(
         report.uvi_faults = a.driver.ui().fault_counts();
     }
     let tree = nest(&mut t.instrument);
-    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &stream_policy(request))
-        .map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed_cancelable(
+        t, rate, &stream_policy(request), canceled,
+    ).map_err(|e| {
+        if e.downcast_ref::<sampler_kontakt::LoadError>().is_some_and(|e|
+            matches!(e.cause(), sampler_kontakt::LoadError::Canceled)) {
+            CoreError::Canceled
+        } else { load(&*e) }
+    })?;
     let sampler_kontakt::Streamed {
         mut loaded,
         assets,
@@ -3474,6 +3498,7 @@ fn uvi(
         streamer,
         report: stream,
     } = streamed;
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets));
     report.decoded.full_bytes = stream.full_bytes;
     let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
     let driver = attached.map(|a| {
@@ -3615,7 +3640,7 @@ impl V2Loader {
         } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_uvi(&request.path) {
-            uvi(request, progress)?
+            uvi(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
