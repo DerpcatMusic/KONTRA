@@ -107,6 +107,27 @@ pub enum Native {
     /// UVI TapeEcho (Workstation 4.0.9 core `0x141663e40`) without its
     /// reverb; the unit's dry/wet is the equal-power mix.
     UviTapeEcho(UviTapeEcho),
+    /// Kontakt Twin Delay (0x6B; kernel `0x140ab07d0`): wet output only, the
+    /// unit's dry is the slot's.
+    TwinDelay(TwinDelay),
+}
+
+/// Kontakt Twin Delay saved controls (all normalized `0..=1` unless synced).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TwinDelay {
+    /// Left, right: free time `x` (seconds `0.001 + x²·1.999`), or the
+    /// synced count when `time_unit` is set.
+    pub time: [f32; 2],
+    /// Left, right: free predelay `x` (seconds `2x`), or the synced count.
+    pub predelay: [f32; 2],
+    /// Sync unit factors (≤ 0: free) for time L/R and predelay L/R.
+    pub time_unit: [f32; 2],
+    pub predelay_unit: [f32; 2],
+    pub feedback: [f32; 2],
+    pub level: [f32; 2],
+    pub width: f32,
+    pub cross: f32,
 }
 
 /// UVI TapeEcho controls in native units.
@@ -391,6 +412,18 @@ impl Config {
                 let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
                 if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
                     return Err("uvi legacy delay");
+                }
+            }
+            if let Native::TwinDelay(t) = l.native {
+                let all = [t.time, t.predelay, t.time_unit, t.predelay_unit, t.feedback, t.level];
+                let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !(all.iter().flatten().all(|v| v.is_finite())
+                    && t.feedback.iter().chain(&t.level).all(|&v| unit(v))
+                    && unit(t.width)
+                    && unit(t.cross)
+                    && t.time.iter().chain(&t.predelay).all(|&v| (0. ..=64.).contains(&v)))
+                {
+                    return Err("twin delay");
                 }
             }
             if let Native::UviTapeEcho(t) = l.native {
