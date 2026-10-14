@@ -131,7 +131,7 @@ fn native_parameter(
 
 /// The runtime color unit for an IR config: script-addressed knobs become the
 /// engine-parameter lanes of [`native_lanes`], everything else a constant.
-fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
+pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
     use crate::{CurveSettings as Curve, HoldSettings, NoiseSettings, QuantizerSettings};
     use ir::ProcessorParameter as P;
     use ir::fx::color as fx;
@@ -152,7 +152,9 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Hold::Native { frequency } => HoldSettings::Native(knob(P::LoFiFrequency, frequency)),
             fx::Hold::Rate { hertz } => HoldSettings::Rate(hertz),
         }),
-        decimator: c.decimator.map(|d| crate::Decimator { period: d.period, blend: d.blend }),
+        decimator: c.decimator,
+        redux: c.redux,
+        filter: c.filter,
         quantizer: c.quantizer.map(|q| match q {
             fx::Quantizer::Native { bits } => QuantizerSettings::Native(knob(P::LoFiBits, bits)),
             fx::Quantizer::Floor { bits } => QuantizerSettings::Floor(bits),
@@ -171,6 +173,14 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
             fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
             fx::Curve::Drive(d) => Curve::Drive(d),
+            fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
+            fx::Curve::Dirt(d) => Curve::Dirt(d),
+            fx::Curve::Freak(d) => Curve::Freak(d),
+            fx::Curve::Bite(d) => Curve::Bite(d),
+            fx::Curve::Tape(d) => Curve::Tape(d),
+            fx::Curve::Exciter(d) => Curve::Exciter(d),
+            fx::Curve::ToneStack(d) => Curve::ToneStack(d),
+            fx::Curve::Diode(d) => Curve::Diode(d),
         },
         damping: c.damping.map(|d| knob(P::Damping, d)),
         noise: c.noise.map(|n| NoiseSettings {
@@ -178,6 +188,7 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             color: knob(P::LoFiColor, n.color),
         }),
         tone: c.tone,
+        widener: c.widener,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
             width: Parameter::Constant(s.width),
@@ -2333,6 +2344,11 @@ impl Lowering<'_> {
                 ir::fx::filter::Topology::FormantII => {
                     Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
                 }
+                ir::fx::filter::Topology::Cascade
+                    if let ir::fx::filter::Variant::Kontakt(k) = c.variant =>
+                {
+                    Processor::Filter(crate::FilterSettings::Kontakt(k))
+                }
                 ir::fx::filter::Topology::Cascade => {
                     let class = cascade_class(&c)
                         .ok_or_else(|| unsupported(owner, Feature::Controls))?;
@@ -3057,6 +3073,7 @@ fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
         V::Ladder => return Some(L::Ladder),
         V::Versatile(v) => return Some(L::Versatile(v)),
         V::Uvi(u) => return Some(L::Uvi(u)),
+        V::Kontakt(_) => return None,
         V::MultiSv { mode, bandwidth } => return Some(L::Sv(crate::SvFilter::Multi { mode, bandwidth })),
         V::Sv => {
             use crate::SvFilter as S;

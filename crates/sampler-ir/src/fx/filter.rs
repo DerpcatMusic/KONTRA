@@ -71,6 +71,21 @@ pub enum Variant {
     MultiSv { mode: u8, bandwidth: f32 },
     /// A UVI Workstation filter element with constant controls.
     Uvi(Uvi),
+    /// A Kontakt KONTAKTFX filter core (saved types 120, 130, 140..=143).
+    Kontakt(KontaktFx),
+}
+
+/// The Kontakt KONTAKTFX filter cores and their stored knobs (0..=1, native parameter order).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KontaktFx {
+    /// Simple LP/HP: the low-pass and high-pass cutoffs.
+    SimpleLpHp { lp: f32, hp: f32 },
+    /// Dual SKF: HP cutoff, HP resonance, LP cutoff, LP resonance, drive.
+    DualSkf([f32; 5]),
+    /// Monark: `mode` 0 LP4, 1 LP2, 2 LP1, 3 BP; `variant` 0 clean, 1 noisy drive, 2 drive;
+    /// cutoff, resonance, input gain, cutoff modulation, drive.
+    Monark { mode: u8, variant: u8, knobs: [f32; 5] },
 }
 
 /// UVI filter elements the engine runs natively; `hertz` is already key tracked.
@@ -83,6 +98,17 @@ pub enum Uvi {
     Moog { hertz: f32, q: f32 },
     /// `Rez`: Mode 0 LP, 1 HP, 2 BP; Q 0..1.
     Rez { mode: u8, hertz: f32, q: f32 },
+    /// `XpanderFilter`: Mode 0..=36, Q 0..1, distortion 0 soft / 1 hard / 2 Padé, drive in
+    /// dB, Fat 0..1, algorithm 0 ladder / 1 zero-delay ladder, oversampling 0..=1.
+    Xpander { mode: u8, hertz: f32, q: f32, distortion: u8, drive: f32, fat: f32, algorithm: u8, oversampling: bool },
+    /// `DigitalFilter`: kind 0 LP, 1 HP, 2 BP, 3 notch, 4/5 low/high shelf, 6 peak; order 1..=16;
+    /// `track` = (key - 60) KeyTracking semitones; `spread` semitones (L down, R up).
+    Digital { kind: u8, order: u8, hertz: f32, track: f32, spread: f32, q: f32, gain: f32, bandwidth: f32 },
+    /// `VowelFilter`: vowels `a`, `b` (0..=10) morphed, Formant octaves, Mode 0 LP, 1 BP, 2 HP,
+    /// `count` formants 1..=4.
+    Vowel { morph: f32, q: f32, formant: f32, a: u8, b: u8, mode: u8, count: u8 },
+    /// `CombFilter`: feedback comb at `hertz`, gain `q` (negated in Mode 1).
+    Comb { hertz: f32, q: f32, negative: bool },
 }
 
 /// The 3x2 Versatile knobs beyond cutoff and resonance, as stored (0..=1).

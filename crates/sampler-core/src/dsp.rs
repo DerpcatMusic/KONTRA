@@ -249,6 +249,8 @@ pub(crate) mod color;
 pub(crate) mod dynamics;
 pub(crate) mod eq_family;
 pub(crate) mod filter;
+pub(crate) mod hiir;
+pub(crate) mod kaiser;
 pub(crate) mod space;
 pub(crate) mod timemod;
 pub(super) mod control;
@@ -468,8 +470,8 @@ pub(super) fn compile_processors(
                 },
                 Processor::Filter(settings) => {
                     let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(settings.cells()).ok_or(Error::Capacity)?;
                     let mut engine = settings.compile(rate, bindings);
+                    *delay_frames = offset.checked_add(engine.cells()).ok_or(Error::Capacity)?;
                     engine.modulation_index = filters.len();
                     filters.push(svf::PreparedFilter::NativeControl);
                     PreparedProcessor::Filter { engine, offset }
@@ -479,7 +481,7 @@ pub(super) fn compile_processors(
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(settings.ring_frames()).ok_or(Error::Capacity)?;
+                    *delay_frames = offset.checked_add(settings.ring_frames(rate)).ok_or(Error::Capacity)?;
                     PreparedProcessor::Color {
                         color: settings.compile(rate, bindings),
                         offset,

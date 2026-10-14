@@ -463,6 +463,30 @@ impl Slot {
                         });
                     }
                     r.skip_repeats(kind);
+                } else if matches!(kind, 120 | 130 | 140..=143) {
+                    // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
+                    // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
+                    // kind x3. Knobs go out in record order, Monark's variant last.
+                    let kinds = |r: &mut Reader, n: usize| (0..n).all(|_| r.i32() == Some(kind));
+                    let (knobs, variant) = match kind {
+                        120 => {
+                            r.flag()?;
+                            kinds(&mut r, 4).then_some(())?;
+                            (2, None)
+                        }
+                        130 => {
+                            kinds(&mut r, 2).then_some(())?;
+                            (5, None)
+                        }
+                        _ => {
+                            kinds(&mut r, 1).then_some(())?;
+                            (5, Some(r.i32()? as f32))
+                        }
+                    };
+                    let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
+                    let mut extra = values[2..].to_vec();
+                    extra.extend(variant);
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
                 } else if r.i32()? != kind {
                     return None;
                 }
@@ -621,7 +645,7 @@ fn filter(
     kind: i32,
     cutoff: f32,
     resonance: f32,
-    extra: Option<f32>,
+    extra: &[f32],
 ) -> Result<(Vec<sampler_ir::Processor>, filter::Mapped), Gap> {
     let mapped = filter::map(kind, cutoff, resonance, extra)?;
     // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
@@ -884,7 +908,7 @@ pub(crate) fn chain_with(
                         if dynamic.is_some() {
                             notes.push(("Formant II live controls".into(), "script/modulation lanes exist for Formant I only".into(), sampler_ir::Reason::NotModeled));
                         }
-                        match filter(91, knobs[0], knobs[1], Some(knobs[2])) {
+                        match filter(91, knobs[0], knobs[1], &knobs[2..]) {
                             Ok((processors, mapped)) => {
                                 out.processors.extend(processors);
                                 note_fidelity(&mut notes, 91, &mapped);
@@ -927,6 +951,19 @@ pub(crate) fn chain_with(
                         combined = gain;
                         if dynamic.is_some() {
                             notes.push(("Skreamer live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                        }
+                    }
+                    None => modelled = false,
+                }
+            }
+            Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
+                flush(&mut combined, &mut filters, &mut out);
+                match color::typed_core(fx.module, fields) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::Color(config));
+                        combined = gain;
+                        if dynamic.is_some() {
+                            notes.push(("Creative FX live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
                         }
                     }
                     None => modelled = false,
@@ -1091,7 +1128,11 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
-            }) => match filter(*kind, *cutoff, *resonance, extra.first().copied().filter(|_| matches!(kind, 63..=65))) {
+            }) => match filter(*kind, *cutoff, *resonance, match kind {
+                63..=65 => &extra[..extra.len().min(1)],
+                19 | 120 | 130 | 140..=143 => extra,
+                _ => &[],
+            }) {
                 Ok((processors, mapped)) => {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
@@ -1763,6 +1804,36 @@ mod tests {
         fx
     }
 
+    /// The three KONTAKTFX record layouts decode to the core's knobs in native order.
+    #[test]
+    fn kontaktfx_filter_records_reach_their_cores() {
+        use sampler_ir::fx::filter::{KontaktFx, Variant};
+        let record = |kind: i32, head: &[u8], tail: usize, knobs: &[f32]| {
+            let mut public = head.to_vec();
+            public.extend(knobs.iter().flat_map(|v| v.to_le_bytes()));
+            public.extend((0..tail).flat_map(|_| kind.to_le_bytes()));
+            slot(0x18, public, 1.)
+        };
+        let k = |kind: i32, n: usize| (0..n).flat_map(|_| kind.to_le_bytes()).collect::<Vec<u8>>();
+        let simple = [k(120, 1), vec![1], k(120, 4)].concat();
+        let monark = [k(141, 2), 2i32.to_le_bytes().to_vec()].concat();
+        for (fx, expected) in [
+            (record(120, &simple, 0, &[0.7, 0.3]), KontaktFx::SimpleLpHp { lp: 0.7, hp: 0.3 }),
+            (record(130, &k(130, 3), 2, &[0.5, 0.25, 0.75, 0.125, 0.0]), KontaktFx::DualSkf([0.25, 0.125, 0.5, 0.75, 0.5])),
+            (
+                record(141, &monark, 3, &[0.5, 0.25, 2.5, 1.0, 0.0]),
+                KontaktFx::Monark { mode: 1, variant: 2, knobs: [0.5, 0.25, 0.5, 0.5, 1.0] },
+            ),
+        ] {
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            assert!(
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::FilterBank(c) if c.variant == Variant::Kontakt(expected))),
+                "{expected:?}: {:?}",
+                built.processors
+            );
+        }
+    }
+
     #[test]
     fn init_only_group_eq_gain_writes_reach_static_bands() {
         let initialized = sampler_ksp::initialize(
@@ -2269,7 +2340,7 @@ mod tests {
                 assert_eq!(c.cutoff, f64::from(cutoff));
             }
         }
-        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, &[]).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
@@ -2278,17 +2349,17 @@ mod tests {
     #[test]
     fn sv_filters_are_native_cascade_classes() {
         use sampler_ir::fx::filter::{Topology, Variant};
-        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, &[]).unwrap().0[0] else {
             panic!()
         };
         assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
-        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, Some(0.3)).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, &[0.3]).unwrap().0[0] else {
             panic!()
         };
         assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
         // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
-        assert!(filter(8, 0.5, 0.5, None).is_ok());
-        assert!(filter(1, 0.5, 0.5, None).is_err());
+        assert!(filter(8, 0.5, 0.5, &[]).is_ok());
+        assert!(filter(1, 0.5, 0.5, &[]).is_err());
     }
 
     use super::*;
@@ -2506,6 +2577,12 @@ mod tests {
             }
             for scope in [Scope::Voice, Scope::Bus] {
                 let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                if module == 0x42 {
+                    // Tape is modelled: any nonzero quality byte turns Quality on.
+                    let tape = sampler_ir::fx::color::Tape { gain: 0.5, warmth: 0.25, rolloff: 0.75, quality: true };
+                    assert!(out.processors.contains(&sampler_ir::Processor::Color(sampler_ir::fx::color::Config::tape(tape))));
+                    continue;
+                }
                 assert!(out.processors.is_empty());
                 assert!(out.send_taps.is_empty());
                 assert_eq!(out.notes.len(), 1);

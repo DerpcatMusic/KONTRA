@@ -37,12 +37,26 @@ pub enum Hold {
 }
 
 /// Fractional decimator with a linear ramp (UVI Formant Crusher sub-kernel
-/// 0x1412d43c0): `blend` 1 holds, 0 follows the ramp.
+/// 0x1412d43c0): period `1 / f32(h0 / rate + h1 / rate)` frames; `blend` 1 holds, 0 follows
+/// the ramp.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decimator {
-    pub period: f64,
-    pub blend: f64,
+    pub hertz: [f64; 2],
+    pub blend: f32,
+}
+
+/// An RBJ biquad in transposed direct form II, f32 (UVI 0x141646fa0; designs 0x14163fd30 LP,
+/// 0x14163ff50 BP at 0 dB peak, 0x14163fe30 HP, in f64 at `hertz / rate`). `post` runs it
+/// after the drive/quantize stages instead of before them.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Biquad {
+    /// 0 low-pass, 1 band-pass, 2 high-pass.
+    pub mode: u8,
+    pub hertz: f64,
+    pub q: f64,
+    pub post: bool,
 }
 
 /// Bit-depth reduction.
@@ -81,6 +95,22 @@ pub enum Curve {
     Skreamer([f32; 5]),
     /// A UVI drive engine (gain, curve, wet/dry, output gain).
     Drive(Drive),
+    /// Kontakt Tubescreamer (diode clipper and DK tone stack / MNA pot network).
+    Tubescreamer(Tubescreamer),
+    /// Kontakt Dirt (two diode drive stages with routing, effektrig x2).
+    Dirt(Dirt),
+    /// Kontakt Freak (quadrature/side-chain modulated feedback drive with fuzz).
+    Freak(Freak),
+    /// Kontakt Bite (resampling log quantizer with its own filters, effektrig x2).
+    Bite(Bite),
+    /// Kontakt Tape Saturator (oversampled table shaper with its own filters).
+    Tape(Tape),
+    /// UVI Exciter (Tape sine / Tube envelope cubic, HIIR oversampled).
+    Exciter(Exciter),
+    /// UVI ToneStack (Yeh/Smith passive stack, 26 models).
+    ToneStack(ToneStack),
+    /// UVI DiodeClipper (Newton-solved diode pair, DC blocker, output gain).
+    Diode(Diode),
 }
 
 /// The UVI drive engines' curves.
@@ -105,6 +135,111 @@ pub struct Drive {
     pub trash: f32,
     pub mix: f32,
     pub output_gain: f32,
+    /// 2^k oversampling (0..=4).
+    pub oversampling: u8,
+}
+
+/// UVI DiodeClipper controls as stored: Drive dB (0..30), Tone and HighPass Hz, Asymmetry
+/// 0..1, OutputGain dB.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Diode {
+    pub drive: f32,
+    pub tone: f32,
+    pub high_pass: f32,
+    pub asymmetry: f32,
+    pub output_gain: f32,
+}
+
+/// UVI Exciter controls as stored: Mode 0 Tape / 1 Tube, gains in dB, Amount 0..15, Mix %,
+/// 2^k oversampling.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exciter {
+    pub mode: u8,
+    pub input_gain: f32,
+    pub amount: f32,
+    pub mix: f32,
+    pub output_gain: f32,
+    pub oversampling: u8,
+}
+
+/// Kontakt Bite core values (0..1, enums as i/2) by core index: saturate, prefilter,
+/// frequency, jitter, crunch, bits, dither, dcquant, expand, postfilter, hpf, mix.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bite {
+    pub knobs: [f32; 12],
+}
+
+/// Kontakt Freak core values (0..1, the mode enum as i/2) by core index p0..p18.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Freak {
+    pub knobs: [f32; 19],
+}
+
+/// Kontakt Dirt core values (0..1, enums as i/2) by core index: drive A/B, blend A/B, tone
+/// A/B, bias A/B, diode type A/B, comp A/B, routing, amount lo/hi, level.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dirt {
+    pub knobs: [f32; 16],
+}
+
+/// Kontakt Tubescreamer core values by index: drive, pot a, pot b, filter, tone, level,
+/// circuit (i/2).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tubescreamer {
+    pub knobs: [f32; 7],
+}
+
+/// Kontakt Tape Saturator controls (normalized 0..1): gain, warmth, HF roll-off, Quality.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tape {
+    pub gain: f32,
+    pub warmth: f32,
+    pub rolloff: f32,
+    pub quality: bool,
+}
+
+/// UVI Widener controls as stored: Delay ms (-15..15, negative delays the left), Width
+/// -1..1, the side shelf's HighShelfFreqSide Hz and HighSelfGainSide dB.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Widener {
+    pub delay: f32,
+    pub width: f32,
+    pub shelf_hertz: f32,
+    pub shelf_db: f32,
+}
+
+/// UVI Redux2's rate and bit reduction: Frequency Hz, Bits 1..32, Jitter 0..1, Dither 0..2,
+/// QuantizeLaw 1 = mu-law, Type 0 = impulses (else held), Antialiasing, BandLimitFreq Hz.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Redux {
+    pub frequency: f32,
+    pub bits: f32,
+    pub jitter: f32,
+    pub dither: f32,
+    pub mu_law: bool,
+    pub impulses: bool,
+    pub antialias: bool,
+    pub band_limit: f32,
+}
+
+/// UVI ToneStack controls: Bass, Mid, Treble, Gain 0..1, Model 0..=25.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToneStack {
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
+    pub gain: f32,
+    pub model: u8,
 }
 
 /// Kontakt Lo-Fi noise (0x140aad8a2): shared LCG, one-pole colored.
@@ -136,8 +271,12 @@ pub struct Config {
     /// unit's knobs. Absent: the knobs are constants.
     pub address: Option<SlotAddress>,
     pub gainer: Option<Gainer>,
+    /// The tone/filter section (before the hold unless `post`).
+    pub filter: Option<Biquad>,
     pub hold: Option<Hold>,
     pub decimator: Option<Decimator>,
+    /// UVI Redux2's clocked reduction (after the decimator).
+    pub redux: Option<Redux>,
     pub quantizer: Option<Quantizer>,
     pub curve: Curve,
     /// Kontakt Distortion damping: normalized 0..1 knob of the embedded
@@ -150,6 +289,8 @@ pub struct Config {
     /// Wet share of the stages above (UVI Mix); 1 is fully wet.
     pub mix: f64,
     pub stereo: Option<Stereo>,
+    /// UVI Widener (after the mix).
+    pub widener: Option<Widener>,
 }
 
 impl Config {
@@ -157,8 +298,10 @@ impl Config {
     pub const IDENTITY: Self = Self {
         address: None,
         gainer: None,
+        filter: None,
         hold: None,
         decimator: None,
+        redux: None,
         quantizer: None,
         curve: Curve::Identity,
         damping: None,
@@ -166,6 +309,7 @@ impl Config {
         tone: None,
         mix: 1.0,
         stereo: None,
+        widener: None,
     };
 
     /// Kontakt Gainer.
@@ -223,6 +367,67 @@ impl Config {
             mix,
             ..Self::IDENTITY
         }
+    }
+
+    /// UVI FormantCrusher (prepare 0x1412d31a0, update 0x1412d33c0, kernel 0x1412d4000): an
+    /// RBJ low-pass at F1 (Q), then the decimator at the period `1 / (F1 + F2)`, wet `mix`.
+    /// F1, F2 morph geometrically between vowels `a` and `b` (table 0x141e7a420), scaled by
+    /// `2^formant`.
+    pub fn formant_crusher(morph: f32, q: f32, formant: f32, mix: f32, bite: f32, a: u8, b: u8) -> Self {
+        const VOWELS: [[f64; 2]; 11] = [
+            [700.0, 1100.0], [500.0, 1350.0], [250.0, 1700.0], [570.0, 840.0], [300.0, 870.0], [440.0, 1020.0],
+            [520.0, 1190.0], [660.0, 1720.0], [530.0, 1840.0], [390.0, 1990.0], [270.0, 2290.0],
+        ];
+        let fm = 2f64.powf(f64::from(formant));
+        let (a, b) = (VOWELS[usize::from(a.min(10))], VOWELS[usize::from(b.min(10))]);
+        let hz: [f64; 2] = std::array::from_fn(|i| (b[i] / a[i]).powf(f64::from(morph)) * a[i] * fm);
+        Self {
+            filter: Some(Biquad { mode: 0, hertz: hz[0], q: f64::from(q), post: false }),
+            decimator: Some(Decimator { hertz: hz, blend: bite }),
+            mix: f64::from(mix),
+            ..Self::IDENTITY
+        }
+    }
+
+    /// UVI Redux2 (FilterPosition 1 filters before, 2 after; FilterMode 0 LP, 1 BP, 2 HP;
+    /// resonance `Q = 9.5 res + 0.5`), wet `mix`.
+    pub fn redux(redux: Redux, filter: Option<(u8, f32, f32, bool)>, mix: f32) -> Self {
+        Self {
+            redux: Some(redux),
+            filter: filter.map(|(mode, hertz, res, post)| Biquad {
+                mode,
+                hertz: f64::from(hertz),
+                q: f64::from((res * 9.5) + 0.5),
+                post,
+            }),
+            mix: f64::from(mix),
+            ..Self::IDENTITY
+        }
+    }
+
+    /// Kontakt Tubescreamer.
+    pub fn tubescreamer(ts: Tubescreamer) -> Self {
+        Self { curve: Curve::Tubescreamer(ts), ..Self::IDENTITY }
+    }
+
+    /// Kontakt Dirt.
+    pub fn dirt(dirt: Dirt) -> Self {
+        Self { curve: Curve::Dirt(dirt), ..Self::IDENTITY }
+    }
+
+    /// Kontakt Freak.
+    pub fn freak(freak: Freak) -> Self {
+        Self { curve: Curve::Freak(freak), ..Self::IDENTITY }
+    }
+
+    /// Kontakt Bite.
+    pub fn bite(bite: Bite) -> Self {
+        Self { curve: Curve::Bite(bite), ..Self::IDENTITY }
+    }
+
+    /// Kontakt Tape Saturator.
+    pub fn tape(tape: Tape) -> Self {
+        Self { curve: Curve::Tape(tape), ..Self::IDENTITY }
     }
 
     /// Kontakt Skreamer.
@@ -287,9 +492,19 @@ impl Config {
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
-            Self { decimator: Some(_), .. } => "Decimator",
+            Self { curve: Curve::Tubescreamer(_), .. } => "Tubescreamer",
+            Self { curve: Curve::Dirt(_), .. } => "Dirt",
+            Self { curve: Curve::Freak(_), .. } => "Freak",
+            Self { curve: Curve::Bite(_), .. } => "Bite",
+            Self { curve: Curve::Tape(_), .. } => "Tape",
+            Self { curve: Curve::Exciter(_), .. } => "Exciter",
+            Self { curve: Curve::ToneStack(_), .. } => "Tone stack",
+            Self { curve: Curve::Diode(_), .. } => "Diode clipper",
+            Self { decimator: Some(_), .. } => "Formant crusher",
+            Self { redux: Some(_), .. } => "Redux",
             Self { gainer: Some(_), .. } => "Gainer",
             Self { stereo: Some(_), .. } => "Stereo Modeller",
+            Self { widener: Some(_), .. } => "Widener",
             _ => "Color",
         }
     }

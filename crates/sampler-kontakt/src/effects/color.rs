@@ -41,6 +41,75 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
+/// The modules whose saved fields `typed_core` maps.
+pub(super) const TYPED_CORES: [u16; 5] = [0x42, 0x66, 0x67, 0x68, 0x78];
+
+/// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
+/// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
+fn core_value(v: &ni_file::kontakt::objects::EffectValue) -> Option<f32> {
+    use ni_file::kontakt::objects::EffectValue::{Byte, Float, Integer};
+    match *v {
+        Float(f) if f.is_finite() => Some(f.clamp(0.0, 1.0)),
+        Byte(b) => Some(if b != 0 { 1.0 } else { 0.0 }),
+        Integer(i @ 0..=2) => Some(i as f32 * 0.5),
+        _ => None,
+    }
+}
+
+/// Places saved fields at their core indices (`to[field] = index`) over `defaults`.
+fn scatter<const N: usize>(values: &[f32], to: &[usize], defaults: [f32; N]) -> Option<[f32; N]> {
+    (values.len() == to.len()).then(|| {
+        let mut knobs = defaults;
+        for (&v, &i) in values.iter().zip(to) {
+            knobs[i] = v;
+        }
+        knobs
+    })
+}
+
+/// Effektrig/KONTAKTFX cores from their typed records (per-type apply, kcolor/records.md).
+pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    let values: Vec<f32> = fields.iter().map(|f| core_value(&f.value)).collect::<Option<_>>()?;
+    match module {
+        // Tape Saturator: gain, warmth, roll-off, quality, identity (setter 0x140ae1e10).
+        0x42 => {
+            let [gain, warmth, rolloff, quality] = scatter(&values, &[0, 1, 2, 3], [0.0; 4])?;
+            Some(Config::tape(sampler_ir::fx::color::Tape { gain, warmth, rolloff, quality: quality >= 0.5 }))
+        }
+        // Bite (apply 0x140aba100): hpf, frequency, bits, jitter, crunch, dither, expand,
+        // saturate, prefilter, postfilter, mix, dcquant.
+        0x66 => {
+            let knobs = scatter(&values, &[10, 2, 5, 3, 4, 6, 8, 0, 1, 9, 11, 7], [0.0; 12])?;
+            Some(Config::bite(sampler_ir::fx::color::Bite { knobs }))
+        }
+        // Dirt (apply 0x140aba420): f32 x10, comp A/B, type A/B, routing; the level (p15)
+        // stays at its default 0.75 (unity).
+        0x67 => {
+            const DEFAULTS: [f32; 16] =
+                [0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0, 1.0, 0.5, 0.75];
+            let knobs = scatter(&values, &[0, 2, 6, 4, 1, 3, 7, 5, 13, 14, 10, 11, 8, 9, 12], DEFAULTS)?;
+            Some(Config::dirt(sampler_ir::fx::color::Dirt { knobs }))
+        }
+        // Freak (apply 0x140aba860): f32 x13, u8 x5, the mode enum; unsaved knobs keep the
+        // init-slot defaults.
+        0x68 => {
+            const DEFAULTS: [f32; 19] =
+                [0.0, 0.5, 1.0, 0.5, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.0, 1.0, 0.5, 0.5, 0.0, 0.5, 1.0, 1.0];
+            let to = [3, 4, 11, 18, 13, 12, 14, 1, 0, 10, 5, 7, 6, 15, 17, 2, 8, 9, 16];
+            let knobs = scatter(&values, &to, DEFAULTS)?;
+            Some(Config::freak(sampler_ir::fx::color::Freak { knobs }))
+        }
+        // Tubescreamer (BParFXSkreamerDlx, apply 0x140abb9f0): mode, drive, tone, pot a, pot b,
+        // filter, then a u8 that only resets the cores (no param). Level is fixed at 0.5.
+        0x78 => {
+            let (_reset, values) = values.split_last()?;
+            let knobs = scatter(values, &[6, 0, 4, 1, 2, 3], [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0])?;
+            Some(Config::tubescreamer(sampler_ir::fx::color::Tubescreamer { knobs }))
+        }
+        _ => None,
+    }
+}
+
 /// 0x13 Gainer (reader 0x140d019b0): `dry + out * g`, g slewing.
 pub(super) fn gainer(gain: f64, dry: f64) -> Config {
     Config::gainer(sampler_ir::Gain::Linear(gain), dry)
@@ -61,11 +130,70 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x42 => "Tape Saturator: NI::KONTAKTFX::Tape core 0x140ae1190 with table interpolation; only the indexed setters 0x140ae1e10 are extracted, the saved-field binding and tables are not",
-        0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {
+        0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
-        0x66 | 0x67 | 0x68 => "creative drive module: core not extracted",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ni_file::kontakt::objects::{EffectField, EffectValue};
+
+    fn fields(values: Vec<EffectValue>) -> Vec<EffectField> {
+        values.into_iter().map(|value| EffectField { name: "param_n", value }).collect()
+    }
+
+    #[test]
+    fn bite_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(
+            [Integer(2)]
+                .into_iter()
+                .chain((1..=10).map(|i| Float(i as f32 / 10.0)))
+                .chain([Byte(0x5a)])
+                .collect(),
+        );
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Bite(b), .. }) = typed_core(0x66, &saved) else {
+            panic!("Bite not mapped");
+        };
+        // saturate .7, prefilter .8, frequency .1, jitter .3, crunch .4, bits .2, dither .5,
+        // dcquant 1, expand .6, postfilter .9, hpf 1 (i32 2), mix 1.
+        assert_eq!(b.knobs, [0.7, 0.8, 0.1, 0.3, 0.4, 0.2, 0.5, 1.0, 0.6, 0.9, 1.0, 1.0]);
+        // An out-of-range enum is a reader error, not a guess.
+        let mut bad = saved.clone();
+        bad[0].value = Integer(3);
+        assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn tubescreamer_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(vec![Integer(2), Float(0.1), Float(0.2), Float(0.3), Float(0.4), Float(0.6), Byte(1)]);
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Tubescreamer(t), .. }) = typed_core(0x78, &saved) else {
+            panic!("Tubescreamer not mapped");
+        };
+        // drive .1, pot a .3, pot b .4, filter .6, tone .2, level fixed .5, circuit 2 (1.0).
+        assert_eq!(t.knobs, [0.1, 0.3, 0.4, 0.6, 0.2, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn dirt_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(
+            (1..=10)
+                .map(|i| Float(i as f32 / 10.0))
+                .chain([Byte(1), Byte(0), Integer(1), Integer(2), Integer(0)])
+                .collect(),
+        );
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Dirt(d), .. }) = typed_core(0x67, &saved) else {
+            panic!("Dirt not mapped");
+        };
+        assert_eq!(
+            d.knobs,
+            [0.1, 0.5, 0.2, 0.6, 0.4, 0.8, 0.3, 0.7, 0.5, 1.0, 1.0, 0.0, 0.0, 0.9, 1.0, 0.75]
+        );
+    }
 }

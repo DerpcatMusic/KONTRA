@@ -208,11 +208,89 @@ impl Translation {
                         mix,
                     )));
                 }
-                "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz"
-                    if number(node, "Oversampling", 0.0)? == 0.0 =>
-                {
-                    // Native drive engines (color chain Curve::Drive); oversampled units fall
-                    // through to the unproved report below.
+                "FormantCrusher" => {
+                    out.push(ir::Processor::Color(ir::fx::color::Config::formant_crusher(
+                        number(node, "Morph", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Q", 10.0)?.clamp(10.0, 20.0) as f32,
+                        number(node, "Formant", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Bite", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "FilterA", 0.0)?.clamp(0.0, 10.0) as u8,
+                        number(node, "FilterB", 2.0)?.clamp(0.0, 10.0) as u8,
+                    )));
+                }
+                "DiodeClipper" => {
+                    use ir::fx::color::{Config, Curve, Diode};
+                    let diode = Diode {
+                        drive: number(node, "Drive", 0.0)?.clamp(0.0, 30.0) as f32,
+                        tone: number(node, "Tone", 20_000.0)?.clamp(100.0, 20_000.0) as f32,
+                        high_pass: number(node, "HighPass", 1.0)?.clamp(1.0, 20_000.0) as f32,
+                        asymmetry: number(node, "Asymmetry", 0.0)?.clamp(0.0, 1.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Diode(diode), ..Config::IDENTITY }));
+                }
+                "ToneStack" => {
+                    use ir::fx::color::{Config, Curve, ToneStack};
+                    let unit = |name, default| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(0.0, 1.0) as f32) };
+                    let stack = ToneStack {
+                        bass: unit("Bass", 0.5)?,
+                        mid: unit("Mid", 0.5)?,
+                        treble: unit("Treble", 0.5)?,
+                        gain: unit("Gain", 0.3)?,
+                        model: number(node, "Model", 0.0)?.clamp(0.0, 25.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::ToneStack(stack), ..Config::IDENTITY }));
+                }
+                "Exciter" => {
+                    use ir::fx::color::{Config, Curve, Exciter};
+                    let exciter = Exciter {
+                        mode: number(node, "Mode", 1.0)?.clamp(0.0, 1.0) as u8,
+                        input_gain: number(node, "InputGain", 0.0)?.clamp(-30.0, 20.0) as f32,
+                        amount: number(node, "Amount", 0.0)?.clamp(0.0, 15.0) as f32,
+                        mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                        oversampling: number(node, "Oversampling", 0.0)?.clamp(0.0, 4.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Exciter(exciter), ..Config::IDENTITY }));
+                }
+                "Widener" => {
+                    use ir::fx::color::{Config, Widener};
+                    let widener = Widener {
+                        delay: number(node, "Delay", 0.0)?.clamp(-15.0, 15.0) as f32,
+                        width: number(node, "Width", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        shelf_hertz: number(node, "HighShelfFreqSide", 10_000.0)?.clamp(2000.0, 20_000.0) as f32,
+                        shelf_db: number(node, "HighSelfGainSide", 0.0)?.clamp(-15.0, 15.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { widener: Some(widener), ..Config::IDENTITY }));
+                }
+                "Redux2" => {
+                    use ir::fx::color::{Config, Redux};
+                    let redux = Redux {
+                        frequency: number(node, "Frequency", 44_100.0)?.clamp(200.0, 44_100.0) as f32,
+                        bits: number(node, "Bits", 32.0)?.clamp(1.0, 32.0) as f32,
+                        jitter: number(node, "Jitter", 0.0)?.clamp(0.0, 1.0) as f32,
+                        dither: number(node, "Dither", 0.0)?.clamp(0.0, 2.0) as f32,
+                        mu_law: number(node, "QuantizeLaw", 0.0)? != 0.0,
+                        // Type is registered inline (not in the parameter table); 1 holds.
+                        impulses: number(node, "Type", 1.0)? == 0.0,
+                        antialias: number(node, "Antialiasing", 1.0)? != 0.0,
+                        band_limit: number(node, "BandLimitFreq", 20_000.0)?.clamp(200.0, 20_000.0) as f32,
+                    };
+                    let position = number(node, "FilterPosition", 0.0)?.clamp(0.0, 2.0) as u8;
+                    let filter = (position != 0).then_some(()).map(|()| -> Result<_, String> {
+                        Ok((
+                            number(node, "FilterMode", 0.0)?.clamp(0.0, 2.0) as u8,
+                            number(node, "FilterFreq", 10_000.0)?.clamp(20.0, 20_000.0) as f32,
+                            number(node, "FilterRes", 0.0)?.clamp(0.0, 1.0) as f32,
+                            position == 2,
+                        ))
+                    }).transpose()?;
+                    let mix = number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32;
+                    out.push(ir::Processor::Color(Config::redux(redux, filter, mix)));
+                }
+                "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
+                    // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};
                     let drive = Drive {
                         kind: match node.tag_name().name() {
@@ -225,6 +303,7 @@ impl Translation {
                         trash: number(node, "Trash", 0.0)?.clamp(0.0, 1.0) as f32,
                         mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
                         output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                        oversampling: number(node, "Oversampling", 0.0)?.clamp(0.0, 4.0) as u8,
                     };
                     out.push(ir::Processor::Color(Config { curve: Curve::Drive(drive), ..Config::IDENTITY }));
                 }
