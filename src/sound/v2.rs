@@ -1260,6 +1260,20 @@ impl V2Core {
             part.runtime.visit_behavior_progress(visit);
         }
     }
+    /// The engine parameters the loaded plan binds to controls (parity harness).
+    #[cfg(test)]
+    pub(crate) fn widget_gate_engine_bindings(
+        &self,
+        part: usize,
+    ) -> Vec<sampler_core::EngineParameterBinding> {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return Vec::new();
+        };
+        p.runtime
+            .engine_parameter_bindings(p.runtime.active_plan())
+            .map(<[_]>::to_vec)
+            .unwrap_or_default()
+    }
     #[cfg(test)]
     pub(crate) fn widget_gate_preemptions(&self, part: usize) -> u64 {
         self.parts
