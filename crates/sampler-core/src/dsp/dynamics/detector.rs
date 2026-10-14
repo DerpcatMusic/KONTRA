@@ -82,9 +82,8 @@ impl<'a> TruePeak<'a> {
 /// signed mean when `Link::Mean`, peak / true peak / RMS, the channel maximum
 /// when `Link::Max`. State: `z[c][1]` mean square, `aux[0..4]` high-pass
 /// (x1, y1 per channel), `aux[4..6]` the last gained frame, `aux[6]` the
-/// true-peak cursor.
-pub(super) struct Sidechain<'a> {
-    pub feedback: bool,
+/// true-peak cursor. `FEEDBACK`: detect the last gained frame, not the input.
+pub(super) struct Sidechain<'a, const FEEDBACK: bool> {
     pub highpass: f64,
     pub link: Link,
     pub detector: Detector,
@@ -95,10 +94,9 @@ pub(super) struct Sidechain<'a> {
     last: [f64; 2],
 }
 
-impl<'a> Sidechain<'a> {
+impl<'a, const FEEDBACK: bool> Sidechain<'a, FEEDBACK> {
     pub fn new(state: &ProcessorState, true_peak: Option<TruePeak<'a>>) -> Self {
         Self {
-            feedback: false,
             highpass: 0.,
             link: Link::Off,
             detector: Detector::Peak,
@@ -109,12 +107,17 @@ impl<'a> Sidechain<'a> {
             last: [state.aux[4], state.aux[5]],
         }
     }
+
+    /// High-pass pole, link, detector and RMS pole.
+    pub fn with(self, (highpass, link, detector, rms): (f64, Link, Detector, f64)) -> Self {
+        Self { highpass, link, detector, rms, ..self }
+    }
 }
 
-impl Stage for Sidechain<'_> {
+impl<const FEEDBACK: bool> Stage for Sidechain<'_, FEEDBACK> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let mut sc = if self.feedback { self.last } else { f.audio };
+        let mut sc = if FEEDBACK { f.tap } else { f.audio };
         if self.highpass > 0. {
             for ch in 0..2 {
                 let y = self.highpass * (self.hp[2 * ch + 1] + sc[ch] - self.hp[2 * ch]);
@@ -142,10 +145,15 @@ impl Stage for Sidechain<'_> {
     }
 
     #[inline(always)]
-    fn after(&mut self, f: &Frame) {
-        // Only the feedback topology reads it (a store here would stall the next read).
-        if self.feedback {
-            self.last = [f.audio[0] * f.gain[0], f.audio[1] * f.gain[1]];
+    fn begin(&mut self, f: &mut Frame) {
+        f.tap = self.last;
+    }
+
+    #[inline(always)]
+    fn after(&mut self, f: &mut Frame) {
+        if FEEDBACK {
+            f.tap = [f.audio[0] * f.gain[0], f.audio[1] * f.gain[1]];
+            self.last = f.tap;
         }
     }
 
@@ -397,7 +405,7 @@ impl Stage for BusTap {
     }
 
     #[inline(always)]
-    fn after(&mut self, f: &Frame) {
+    fn after(&mut self, f: &mut Frame) {
         self.0 = [f.gain[0] * f.audio[0] * 0.0078125, f.gain[1] * f.audio[1] * 0.0078125];
     }
 
