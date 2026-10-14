@@ -1870,6 +1870,36 @@ impl ScriptHost {
                         value: binding.law.normalized_value(value).ok()?,
                     })
                 };
+                if name != "Bypass"
+                    && live.contains(&name.as_str())
+                    && crate::engine_parameters::lane_kind(&kind)
+                    && let Some(node) = node
+                {
+                    // A delay, modulation or reverb unit: its lanes, or nothing. One
+                    // left bypassed without a Mix of its own was never built: silent.
+                    let silent = !live.contains(&"Bypass")
+                        && s.params.borrow().get(id).is_some_and(|p| {
+                            p.iter().any(|(k, v)| k == "Bypass" && v.parse::<f64>().is_ok_and(|b| b != 0.))
+                        });
+                    let writes = if silent {
+                        Some(Vec::new())
+                    } else {
+                        s.params.borrow().get(id).and_then(|p| crate::engine_parameters::retune(node, &kind, p, &name, value))
+                    };
+                    let Some(writes) = writes else { return Ok(None) };
+                    for (address, value) in writes {
+                        if !s.command(Command::EngineParameter { address, value }) {
+                            return Ok(None);
+                        }
+                    }
+                    if let Some(params) = s.params.borrow_mut().get_mut(id) {
+                        match params.iter_mut().find(|(k, _)| *k == name) {
+                            Some((_, v)) => *v = value.to_string(),
+                            None => params.push((name.clone(), value.to_string())),
+                        }
+                    }
+                    return Ok(Some(true));
+                }
                 let command = if name == "Bypass" && live.contains(&"Bypass") {
                     // The insert's Mix: a core slot control.
                     sampler_core::engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").zip(node).map(
@@ -1975,9 +2005,11 @@ impl ScriptHost {
                 Ok(Some(true))
                 })()?;
                 // While initializing, a write with no live path is applied by the
-                // translation that follows (it reads the patched XML).
+                // translation that follows (it reads the patched XML). A write a
+                // full queue refused stays refused.
                 if applied != Some(true)
                     && s.initializing.get()
+                    && s.commands.borrow().len() < 1 << 16
                     && let Some(v) = written
                     && s.fold(id, &field, v)
                 {

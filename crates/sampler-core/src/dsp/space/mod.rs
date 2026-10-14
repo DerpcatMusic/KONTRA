@@ -271,6 +271,10 @@ impl Space {
                 net.core.retune(spec);
             }
         }
+        // A unit whose dry/wet are lanes (UVI SparkVerb's Mix).
+        if (config.dry, config.wet) != (self.config.dry, self.config.wet) {
+            (self.dry, self.wet) = (config.dry as f32, config.wet as f32);
+        }
         self.config = config;
     }
 
