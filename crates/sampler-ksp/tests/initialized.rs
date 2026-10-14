@@ -83,7 +83,13 @@ fn init_transport_values_come_from_the_host_or_are_rejected() {
 }
 
 #[test]
-fn init_random_is_rejected_not_the_lower_bound() {
-    let source = "on init\ndeclare $x\n$x := random(5, 9)\nset_engine_par($ENGINE_PAR_VOLUME, $x, -1, -1, -1)\nend on";
-    assert!(sampler_ksp::initialize(source, Limits::LIBRARY, &Environment::default()).is_err());
+fn init_random_draws_in_range_from_the_runtime_stream() {
+    // Either bound order; the same seed as the runtime, so repeatable.
+    let source = "on init\ndeclare $x\n$x := random(9, 5)\nset_engine_par($ENGINE_PAR_VOLUME, $x, -1, -1, -1)\nend on";
+    let value = |s| sampler_ksp::initialize(s, Limits::LIBRARY, &Environment::default()).unwrap().engine_pars()[0].value;
+    let first = value(source);
+    assert!((5..=9).contains(&first), "{first}");
+    assert_eq!(value(source), first);
+    let mut state = sampler_core::RANDOM_SEED;
+    assert_eq!(i64::from(first), sampler_core::random(&mut state, 9, 5));
 }

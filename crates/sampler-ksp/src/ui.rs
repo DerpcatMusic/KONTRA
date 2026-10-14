@@ -638,8 +638,11 @@ pub fn interface(
         if hide & 8 != 0 {
             bld.unsupported(Some(i), "$HIDE_PART_MOD_LIGHT", hide.to_string());
         }
+        // NKS properties map a control for Komplete Kontrol hardware: no view or
+        // sound of their own, so accepted without effect.
+        let nks = |name: &str| name.starts_with("$CONTROL_PAR_NKS_");
         for (name, v) in &w.properties {
-            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) {
+            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) && !nks(name) {
                 bld.unsupported(Some(i), name.clone(), text(v));
             }
         }
@@ -648,7 +651,7 @@ pub fn interface(
             let mapped = match name.as_str() {
                 "$CONTROL_PAR_VALUE" => w.kind == WidgetKind::Table,
                 "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_TEXTLINE" => true,
-                _ => false,
+                _ => nks(name),
             };
             if mapped {
                 continue;

@@ -134,7 +134,8 @@ fn waveform_runtime_rejections_preserve_attachment_table_and_projection() {
         let apply = sampler_ksp::derived_control_id(0, "$apply");
         support::without_heap(|| {
             invoke_id(&mut rt, plan, apply);
-            assert_eq!(rt.take_fault().map(|(_, e)| e), Some(Error::InvalidInput));
+            // Rejected as at init: nothing changes and the callback continues.
+            assert!(rt.take_fault().is_none(), "{operation}");
             assert_eq!(rt.script_store(plan, ScriptInstanceId(0), attachment_key(id)), Ok(Some(27)));
             assert_eq!(stored(&rt, plan, 0, id, Property::Table, 3), Some(77));
         });
