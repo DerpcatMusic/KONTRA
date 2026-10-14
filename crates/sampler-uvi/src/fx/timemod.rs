@@ -1,7 +1,8 @@
 //! UVI delay, chorus, flanger, phaser and ensemble inserts onto
 //! `sampler_ir::fx::timemod`.
 //!
-//! TrackDelay and DualDelay(X) run their native laws. The others' laws are
+//! TrackDelay, DualDelay(X) and the legacy Simple/Stereo/PingPong delays run
+//! their native laws. The others' laws are
 //! unproved, so each of those mappings is a documented-parameter, generic
 //! topology. Each one reports `UnknownLaw` for
 //! the effect and `NotModeled` for each control it cannot honour, so the
@@ -11,7 +12,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap,
+        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap, UviLegacyDelay, UviLegacyKind,
     },
 };
 
@@ -140,33 +141,44 @@ impl Translation {
         if tag == "DualDelay" || tag == "DualDelayX" {
             return self.dual_delay(node, at, tag, synced).map(Some);
         }
+        if let Some(kind) = match tag {
+            "SimpleDelay" => Some(UviLegacyKind::Simple),
+            "StereoDelay" => Some(UviLegacyKind::Stereo),
+            "PingPongDelay" => Some(UviLegacyKind::PingPong),
+            _ => None,
+        } {
+            // Native laws: `sampler_core` `dsp/timemod/uvi_legacy.rs`.
+            let time = |name, default| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(0., if synced { 128. } else { 10. }) as f32) };
+            let time = if kind == UviLegacyKind::Stereo { [time("LeftDelayTime", 0.8)?, time("RightDelayTime", 0.1)?] } else { [time("DelayTime", 0.1)?; 2] };
+            let mut line = Line::single(DelayTime::Ms(0.), 10_000.);
+            line.native = Native::UviLegacyDelay(UviLegacyDelay {
+                kind,
+                time,
+                synced,
+                feedback: number(node, "Feedback", 0.)?.clamp(0., 1.) as f32,
+                cutoff: number(node, "Cutoff", 0.)?.clamp(-1., 1.) as f32,
+                spread: number(node, "Spread", -1.)?.clamp(-1., 1.) as f32,
+            });
+            if kind != UviLegacyKind::PingPong {
+                self.not_modeled(at, node, tag, &[("Spread", -1.)])?;
+            }
+            self.not_modeled(at, node, tag, &[("Diffusion", 1.)])?;
+            return Ok(Some(delay_config(line, mix)));
+        }
         if synced {
             self.unsupported(at, &format!("{tag} host sync"), "free time used");
         }
         let config = match tag {
-            "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" => {
-                let (left, right) = if tag == "StereoDelay" {
-                    (number(node, "LeftDelayTime", 0.8)?, number(node, "RightDelayTime", 0.1)?)
-                } else {
-                    let t = number(node, "DelayTime", 0.1)?;
-                    (t, t)
-                };
-                let (left, right) = (left.clamp(0.001, 10.), right.clamp(0.001, 10.));
-                let mut line = Line::single(DelayTime::Ms(left * 1000.), left.max(right) * 1000.);
-                line.right_scale = right / left;
+            "FxDelay" | "FatDelay" => {
+                // FxDelay 0x141249980 (in-loop drive, auto-pan) and FatDelay
+                // 0x141242d10 (four lines at d, (1+D)d, (2-D)d, 2d): their
+                // drive and mixing laws are unproved, so one generic line.
+                let t = number(node, "DelayTime", 0.1)?.clamp(0.001, 10.);
+                let mut line = Line::single(DelayTime::Ms(t * 1000.), t * 1000.);
                 feedback(&mut line, number(node, "Feedback", 0.)?);
-                if tag == "PingPongDelay" {
-                    // Spread picks the side of the first echo; width is not modelled.
-                    let fb = line.feedback.matrix[0][0];
-                    line.feedback.matrix = [[0., fb], [fb, 0.]];
-                    line.input = if number(node, "Spread", -1.)? < 0. { [[0.5, 0.5], [0., 0.]] } else { [[0., 0.], [0.5, 0.5]] };
-                }
                 self.not_modeled(at, node, tag, &[("Cutoff", 0.), ("Diffusion", 1.)])?;
-                if tag == "FatDelay" || tag == "FxDelay" {
-                    // The documented Speed / Diffusion / drive stages are not modelled.
-                    if tag == "FxDelay" {
-                        self.not_modeled(at, node, tag, &[("BypassDrive", 0.)])?;
-                    }
+                if tag == "FxDelay" {
+                    self.not_modeled(at, node, tag, &[("BypassDrive", 0.)])?;
                 }
                 delay_config(line, mix)
             }

@@ -98,6 +98,34 @@ pub enum Native {
     /// `0x14165c960`); the line's `interpolation` is its read mode and the
     /// unit's dry/wet its equal-power mix.
     UviDualDelay(DualDelay),
+    /// UVI legacy SimpleDelay / StereoDelay / PingPongDelay (Workstation
+    /// 4.0.9); the unit's dry/wet is the linear mix.
+    UviLegacyDelay(UviLegacyDelay),
+}
+
+/// Which UVI legacy delay node.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviLegacyKind {
+    Simple,
+    Stereo,
+    PingPong,
+}
+
+/// UVI legacy delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviLegacyDelay {
+    pub kind: UviLegacyKind,
+    /// Left and right seconds, or quarter-note beats when synced (Simple and
+    /// PingPong use the left).
+    pub time: [f32; 2],
+    pub synced: bool,
+    pub feedback: f32,
+    /// Loop filter, `-1..=1`: negative low-pass, positive high-pass, 0 off.
+    pub cutoff: f32,
+    /// PingPong input split, `-1..=1` (-1 all into the left line).
+    pub spread: f32,
 }
 
 /// UVI DualDelay controls in native units.
@@ -316,6 +344,12 @@ impl Config {
                     && d.mod_cents >= 0.)
                 {
                     return Err("uvi dual delay");
+                }
+            }
+            if let Native::UviLegacyDelay(d) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
+                    return Err("uvi legacy delay");
                 }
             }
             if let Native::LegacyFlanger { color, depth, feedback } = l.native {
