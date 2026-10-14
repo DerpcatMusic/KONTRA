@@ -518,7 +518,8 @@ fn part(
     // Selected and unfolded, one outline wraps both header rows.
     let outline = (!stuck && banded && !cx.selection.parts[slot].collapsed && cx.state.chosen() == Some(slot))
         .then(|| {
-            block(Len::Pct(100.), ROW + ROW.min(room.unwrap_or(ROW)).max(0.))
+            // Row 2 and the rule under it, as much as the fold spring shows.
+            block(Len::Pct(100.), ROW + (ROW + 1.).min(room.unwrap_or(ROW + 1.)).max(0.))
                 .stroke(Role::Ink.alpha(0.55))
                 .stroke_width(1)
                 .anchor(Align::Start, Align::Start)
