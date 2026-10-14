@@ -1778,7 +1778,16 @@ impl Runtime {
                 for (i, value) in values.iter_mut().take(count).enumerate() {
                     *value = i32_of(self.reg(id, args + i as u16)?)?;
                 }
-                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                // As the init evaluator: a rejected call (absent zone, unattached
+                // widget, unknown property, index) changes nothing and reads 0; it
+                // is not a fault that kills the callback and its note.
+                let admitted = match crate::waveform::admit(&self.behavior_bank(id)?.store, action, values) {
+                    Err(Error::InvalidInput) => {
+                        self.set_reg(id, local, 0)?;
+                        return Ok(false);
+                    }
+                    admitted => admitted?,
+                };
                 let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
                 let plan = self.behavior_plan(c.owner)?;
                 let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;
