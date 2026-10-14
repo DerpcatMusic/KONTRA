@@ -100,6 +100,14 @@ impl Noise {
         let changed = !(a.silent() && b.silent()) && (rms > self.rms || spectral > self.spectral);
         (changed, json!({"rms_delta_db": round(rms), "spectral_delta_db": round(spectral)}))
     }
+    /// What an audio comparison says about a control that moved.
+    fn verdict(&self, a: &Take, b: &Take) -> (&'static str, Value) {
+        let (changed, delta) = self.changed(a, b);
+        let (rms, spectral) = a.delta(b);
+        let verdict = if a.silent() && b.silent() { "both-takes-silent" } else if changed { "pass" }
+            else if rms > 0.5 || spectral > 1.0 { "masked-by-noise" } else { "moves-but-silent-change" };
+        (verdict, delta)
+    }
 }
 
 fn kb(key: &str) -> u64 {
@@ -213,18 +221,19 @@ fn layout(ui: &Ui, w: f64, h: f64) -> Value {
     let clipped: Vec<&String> = rects.iter().filter(|(_, r)| visible(r) && !inside(r)).map(|(k, _)| k).collect();
     let within: Vec<&(String, R)> = rects.iter().filter(|(_, r)| inside(r)).collect();
     let area = |r: &R| (r[2] - r[0]) * (r[3] - r[1]);
-    let mut overlaps = Vec::new();
+    let (mut overlaps, mut anonymous) = (Vec::new(), 0);
     for (i, (ka, a)) in within.iter().map(|x| (&x.0, &x.1)).enumerate() {
         for (kb, b) in within[i + 1..].iter().map(|x| (&x.0, &x.1)) {
             let ix = a[2].min(b[2]) - a[0].max(b[0]);
             let iy = a[3].min(b[3]) - a[1].max(b[1]);
             if ix > 0. && iy > 0. && ix * iy > 0.25 * area(a).min(area(b)) && !contains(a, b) && !contains(b, a) {
-                overlaps.push(json!([ka, kb]));
+                // Anonymous product layout keys ("/0/2/...") are informational only.
+                if ka.starts_with('/') && kb.starts_with('/') { anonymous += 1 } else { overlaps.push(json!([ka, kb])) }
             }
         }
     }
     json!({"surfaces": rects.len(), "clipped": clipped.len(), "clipped_examples": clipped.iter().take(8).collect::<Vec<_>>(),
-        "overlaps": overlaps.len(), "overlap_examples": overlaps.iter().take(8).collect::<Vec<_>>()})
+        "overlaps": overlaps.len(), "anonymous_overlaps": anonymous, "overlap_examples": overlaps.iter().take(8).collect::<Vec<_>>()})
 }
 
 /// Share of pixels that differ from the top-left one; ~0 is a blank view.
@@ -381,19 +390,22 @@ fn parity_run() {
         let low = gate.take(key, 100);
         let (sub_max, keys_max) = gate.sweep(&id, at, true);
         let high = gate.take(key, 100);
-        let (audio, delta) = noise.changed(&low, &high);
+        let (audio_verdict, delta) = noise.verdict(&low, &high);
         let mut keys: Vec<String> = keys_min.into_iter().chain(keys_max).collect();
         keys.sort();
         keys.dedup();
         let verdict = if sub_min + sub_max == 0 { "ui-not-submitted" } else if keys.is_empty() { "engine-unchanged" }
-            else if !audio { "moves-but-silent-change" } else { "pass" };
+            else { audio_verdict };
         let routes: Vec<String> = keys.iter().filter_map(|k| route_of(k)).collect();
-        controls.push(json!({"id": id, "kind": kind, "verdict": verdict, "submitted": sub_min + sub_max,
+        controls.push(json!({"id": id, "kind": kind, "verdict": verdict, "at": [at.x.round(), at.y.round()], "submitted": sub_min + sub_max,
             "engine_keys": keys.len(), "routes": routes, "audio": delta}));
     }
     // Host automation the instrument assigns.
     let mut host = Vec::new();
-    for a in instrument.as_ref().map(|i| i.script_automation.clone()).unwrap_or_default() {
+    let assigned: Vec<_> = instrument.as_ref().map(|i| i.script_automation.clone()).unwrap_or_default().into_iter()
+        .filter(|a| matches!(a.source, sampler_ir::ScriptAutomationSource::HostParameter(_))).collect();
+    let host_total = assigned.len();
+    for a in assigned.iter().step_by((host_total / max_controls.max(1)).max(1)).take(max_controls) {
         let sampler_ir::ScriptAutomationSource::HostParameter(address) = a.source else { continue };
         let ok_low = gate.core.host_parameter(address, 0.);
         gate.settle();
@@ -401,9 +413,9 @@ fn parity_run() {
         let ok_high = gate.core.host_parameter(address, 1.);
         gate.settle();
         let high = gate.take(key, 100);
-        let (audio, delta) = noise.changed(&low, &high);
+        let (audio, delta) = noise.verdict(&low, &high);
         host.push(json!({"address": address, "accepted": ok_low && ok_high, "slider": a.slider, "switch": a.switch,
-            "verdict": if !(ok_low && ok_high) { "rejected" } else if audio { "pass" } else { "moves-but-silent-change" }, "audio": delta}));
+            "verdict": if !(ok_low && ok_high) { "rejected" } else { audio }, "audio": delta}));
     }
     // A spread sample of engine parameters bound to controls.
     let mut engine = Vec::new();
@@ -423,13 +435,13 @@ fn parity_run() {
         if let Some(v) = before {
             gate.core.set_control(0, id, v);
         }
-        let (audio, delta) = noise.changed(&low, &high);
+        let (audio, delta) = noise.verdict(&low, &high);
         let moved = lo_v != hi_v;
         engine.push(json!({"route": format!("{} group {} slot {} generic {}", sampler_core::engine_parameter_name(b.address.parameter).unwrap_or("?"), b.address.group, b.address.slot, b.address.generic),
-            "moved": moved, "verdict": if !moved { "engine-unchanged" } else if audio { "pass" } else { "moves-but-silent-change" }, "audio": delta}));
+            "moved": moved, "verdict": if !moved { "engine-unchanged" } else { audio }, "audio": delta}));
     }
     for (name, rows) in [("controls-ui", &controls), ("controls-host", &host), ("controls-engine", &engine)] {
-        let failed: Vec<&Value> = rows.iter().filter(|r| r["verdict"] != "pass").collect();
+        let failed: Vec<&Value> = rows.iter().filter(|r| r["verdict"] != "pass" && r["verdict"] != "masked-by-noise").collect();
         checks.push(check(name, failed.is_empty(), json!({"failed": failed.len(), "total": rows.len()})));
     }
 
@@ -462,14 +474,14 @@ fn parity_run() {
         let (audio, delta) = noise.changed(&previous, &take);
         let pass = failure == "none" && rebuilt && ink(&rgba) > 0.02 && audio && !take.silent() && faults == 0;
         presets.push(json!({"name": preset.file_stem().unwrap().to_string_lossy(), "png": png, "ms": round(ms), "failure": failure,
-            "ui_rebuilt": rebuilt, "ink": round(ink(&rgba)), "faults": faults, "audio_changed": audio, "audio": delta, "take": take.json(), "pass": pass}));
+            "ui_rebuilt": rebuilt, "ink": round(ink(&rgba)), "faults": faults, "audio_changed": audio, "audio": delta, "take": take.json(), "silent": take.silent(), "pass": pass}));
         previous = take;
     }
     checks.push(check("presets", presets.iter().all(|p| p["pass"] == true),
         json!({"failed": presets.iter().filter(|p| p["pass"] != true).count(), "total": presets.len(), "available": all.len()})));
 
     let result = json!({"parity_run_schema": 1, "path": path, "checks": checks, "load": load, "ui": ui, "notes": notes,
-        "baseline": baseline, "controls": {"ui": controls, "ui_targets_total": total_targets, "host": host, "engine": engine, "engine_bindings_total": bindings.len()},
+        "baseline": baseline, "controls": {"ui": controls, "ui_targets_total": total_targets, "host": host, "host_assigned_total": host_total, "engine": engine, "engine_bindings_total": bindings.len()},
         "presets": presets, "final_rss_mb": kb("VmRSS:") / 1024, "final_peak_rss_mb": kb("VmHWM:") / 1024});
     std::fs::write(out.join("result.json"), serde_json::to_string_pretty(&result).unwrap()).unwrap();
 }

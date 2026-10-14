@@ -83,11 +83,20 @@ def summary(run, previous):
                   f"partial {load.get('partial')}, script faults {load.get('script_faults')}", '']
         for c in fails:
             lines.append(f"- FAIL `{c['check']}` {json.dumps(c['detail'])}")
-        dead = [c for c in i.get('controls', {}).get('ui', []) + i.get('controls', {}).get('engine', [])
-                if c.get('verdict') == 'moves-but-silent-change']
-        if dead:
-            lines += ['', 'Controls that move but change nothing:']
-            lines += [f"- `{c.get('id', '')}` {', '.join(c.get('routes', [])) or c.get('route', '')}" for c in dead[:20]]
+        ctl = i.get('controls', {})
+        bad = [(kind, c) for kind in ('ui', 'host', 'engine') for c in ctl.get(kind, [])
+               if c.get('verdict') not in ('pass', 'masked-by-noise')]
+        if bad:
+            lines += ['', f"Controls that fail (noise threshold {i.get('baseline', {})}):"]
+            for kind, c in bad[:30]:
+                where = c.get('id') or c.get('route') or f"host {c.get('address')}"
+                extra = ', '.join(c.get('routes', []))
+                lines.append(f"- {kind} `{where}` {c.get('verdict')} at={c.get('at', '')} {extra} {json.dumps(c.get('audio', {}))}")
+        bad = [p for p in i.get('presets', []) if not p.get('pass')]
+        if bad:
+            lines += ['', 'Presets that fail:']
+            lines += [f"- {p['name']}: failure={p['failure']} rebuilt={p['ui_rebuilt']} silent={p.get('silent')} "
+                      f"audio_changed={p['audio_changed']} faults={p['faults']}" for p in bad]
         lines.append('')
     if previous:
         old, new = checks(previous), checks(run)
