@@ -150,6 +150,13 @@ impl FaultInbox {
 pub struct RuntimeProblems {
     /// Notes or voices refused for lack of preallocated capacity.
     pub capacity_drops: u64,
+    /// Core starts rejected by the voice-slot pool, excluding stream-page
+    /// admission and adapter/script capacity failures in the aggregate above.
+    #[serde(default)]
+    pub voice_pool_refusals: u64,
+    /// Silent source-waiting voices replaced at full voice-slot capacity.
+    #[serde(default)]
+    pub waiting_voice_replacements: u64,
     /// Streamed audio not read in time and played silent.
     pub underruns: u64,
     /// Voices admitted before their first source frames were resident. Separate

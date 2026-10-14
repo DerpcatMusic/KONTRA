@@ -856,6 +856,8 @@ pub struct Runtime {
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
     voice_drops: u64,
+    voice_pool_refusals: u64,
+    waiting_voice_replacements: u64,
     refused_starts: u64,
     stretch_fallbacks: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -1074,6 +1076,8 @@ impl Runtime {
             stream_admission_errors: [0; 2],
             stream_reserved: 0,
             voice_drops: 0,
+            voice_pool_refusals: 0,
+            waiting_voice_replacements: 0,
             refused_starts: 0,
             stretch_fallbacks: 0,
             voice_growths: 0,
@@ -1870,8 +1874,12 @@ impl Runtime {
                     .is_some_and(|v| v.started && v.cursor.waiting())
             });
             match waiting {
-                Some(i) => self.end_voice(VoiceId(self.voices.id(i))),
+                Some(i) => {
+                    self.waiting_voice_replacements = self.waiting_voice_replacements.saturating_add(1);
+                    self.end_voice(VoiceId(self.voices.id(i)));
+                }
                 None => {
+                    self.voice_pool_refusals = self.voice_pool_refusals.saturating_add(1);
                     self.voice_drops = self.voice_drops.saturating_add(1);
                     return Err(Error::Capacity);
                 }
