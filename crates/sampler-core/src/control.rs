@@ -13,6 +13,51 @@ pub use transfer::{
     RejectedControls,
 };
 
+/// Source-free ownership sample taken at a refused callback admission. Numeric
+/// program/stage addresses belong to `plan`; they contain no script values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviorAdmissionOwner {
+    pub owner: crate::BehaviorOwner,
+    pub plan: PlanId,
+    pub program: usize,
+    pub source_slot: i32,
+    pub stage: usize,
+    pub pc: usize,
+    pub waiting: bool,
+    pub preempted: bool,
+    pub outcome: Option<crate::Outcome>,
+}
+
+/// Failure-time callback ownership, returned with a rejected control operation.
+/// The fixed-size samples and capped rejection-only traversal never allocate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviorAdmissionFailure {
+    pub required_callbacks: usize,
+    pub used: usize,
+    pub capacity: usize,
+    pub available: usize,
+    pub reserved: usize,
+    /// Counts below cover only `scanned` occupied continuations.
+    pub scanned: usize,
+    pub scan_truncated: bool,
+    pub note_owned: usize,
+    pub plan_owned: usize,
+    pub waiting: usize,
+    pub preempted: usize,
+    pub terminal: usize,
+    pub finished: usize,
+    /// Scheduler queue depth, including callbacks parked behind an earlier yield.
+    pub yielded_queue: usize,
+    pub pending_commands: usize,
+    pub reserved_commands: usize,
+    pub stalled_effects: u64,
+    pub outbox_used: usize,
+    pub outbox_capacity: usize,
+    /// Occupied-list order, with an explicit count of omitted owner samples.
+    pub owners: [Option<BehaviorAdmissionOwner>; 8],
+    pub owners_omitted: usize,
+}
+
 /// Persistent semantic identity assigned by the source frontend/composition root.
 /// Never derive this from a widget position, dense index or randomized hash.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -442,6 +487,10 @@ impl Runtime {
                 interaction: crate::WidgetInteraction::default(),
             })
         });
+        // Pure validation must precede resource admission: a malformed edit is
+        // still malformed while other callbacks own the arena. No values or
+        // revisions change until the complete callback preflight also succeeds.
+        self.validate_controls(plan, expected_revision, &[write])?;
         if let Some(binding) = binding {
             self.validate_plan_context(plan, binding.program, event.unwrap())?;
         }
