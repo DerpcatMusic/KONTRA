@@ -765,8 +765,14 @@ back around its step update. This is distinct from the scratch `memset`.
 An approved narrow experiment replaces that assignment with a mutable cursor
 step setter, retaining the same validation, pitch arithmetic and stretch
 clock behavior. The existing value-returning builder remains available.
-It still needs independent cursor/PCM/state oracles and a controlled current
-layout before/after callback pair; the sampled copy share is not an accepted
+The independent old value-returning update oracle now matches full cursor
+continuation and exact PCM through changing pitch, both qualities/directions,
+four loop shapes, finite/released loops, tuned native slots and wavetable steps
+above the ordinary sample-rate cap. Another 101 source, resampling, realtime,
+scalar/batch/parallel, modulation, wavetable, stretch, revision and bus tests
+pass (one existing ignored test). Raw logs are `cursor-step-unit-coherent.log`
+and `cursor-step-integrations.log`. A controlled current-layout before/after
+callback pair is still pending; the sampled copy share is not an accepted
 whole-callback speedup or proof of the 1% target.
 
 | Stage or cost | Evidence | Remaining gap |

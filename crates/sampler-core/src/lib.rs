@@ -575,12 +575,12 @@ impl Voice {
     /// Set this block's pitch step. A stretch voice's cursor is the time axis:
     /// it advances at the speed-scaled rate while the engine plays `pitch`.
     fn set_step(&mut self, pitch: f64) {
-        self.cursor = match self.stretch {
-            None => self.cursor.with_step(pitch),
+        match self.stretch {
+            None => self.cursor.set_step(pitch),
             Some(link) => {
                 self.stretch_step = pitch;
                 let time = f64::from(link.spec.speed) * link.rate_ratio;
-                self.cursor.with_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP))
+                self.cursor.set_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP));
             }
         };
     }
