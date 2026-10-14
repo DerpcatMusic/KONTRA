@@ -105,19 +105,20 @@ pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -
     }))
 }
 
-/// `BParFXFBComp` v0x10 (0x4c): seven normalized floats (input, output,
-/// attack, release, ratio, mix, high quality) and three bytes (side-chain,
-/// link, side-chain routing), feeding controls 0..9 of `BEffectFBComp`
-/// (`0x1409a9980`, no clamp) and the core setter `0x141ac56d0`. Saved order
-/// to control id is inferred from the layout, not traced.
-pub(super) fn feedback(v: [f32; 7], [sidechain, link, routed]: [bool; 3]) -> Result<Processor, Note> {
+/// `BParFXFBComp` v0x10 (0x4c): seven floats then three bytes, feeding
+/// `BEffectFBComp` (`0x1409a9980`, no clamp) and the core setter `0x141ac56d0`.
+/// Measured bindings (kontakt-bindings/fx_dynamics_dist_tape.tsv, KE150):
+/// fields 0..5 input, makeup, attack, release, ratio, mix (identity), field 7
+/// (first byte) high quality. Field 6 (float) and fields 8, 9 (bytes) have no
+/// measured binding: link and side-chain are inferred from the layout.
+pub(super) fn feedback(v: [f32; 7], [quality, link, sidechain]: [bool; 3]) -> Result<Processor, Note> {
     if !v.iter().all(|x| x.is_finite() && (-1.0..=2.0).contains(x)) {
         return Err(("feedback compressor parameters".into(), format!("{v:?}"), Reason::InvalidValue));
     }
-    if sidechain || routed {
+    if sidechain {
         return Err(("feedback compressor external side-chain".into(), String::new(), Reason::NotModeled));
     }
-    let [input, output, attack, release, ratio, mix, quality] = v;
+    let [input, output, attack, release, ratio, mix, _] = v;
     let attack = attack * f32::from_bits(0x3d4c_6061) + f32::from_bits(0x38d8_d874);
     let release = release * f32::from_bits(0x3f93_3334) + 0.05;
     Ok(Processor::Dynamics(Config {
@@ -126,7 +127,7 @@ pub(super) fn feedback(v: [f32; 7], [sidechain, link, routed]: [bool; 3]) -> Res
                 threshold_db: f64::from(10f32.powf(input * 2.5 - 0.5)),
                 ratio: f64::from(ratio * 19.0 + 1.0),
             },
-            high_quality: quality > 0.5,
+            high_quality: quality,
         },
         attack: Time::Seconds(f64::from(attack)),
         release: Time::Seconds(f64::from(release)),
@@ -200,11 +201,11 @@ mod limiter_tests {
         let Ok(Processor::Dynamics(h)) = hilbert(2.0, 0.5, 0.9, false) else { panic!() };
         assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. })));
         assert!(hilbert(0.5, 0.5, 0.5, true).is_err());
-        let Ok(Processor::Dynamics(f)) = feedback([0.2, 0.8, 0.0, 0.0, 1.0, 1.0, 1.0], [false, true, false]) else {
+        let Ok(Processor::Dynamics(f)) = feedback([0.2, 0.8, 0.0, 0.0, 1.0, 1.0, 0.0], [true, true, false]) else {
             panic!()
         };
         assert!(matches!(f.law, Law::KontaktFeedback { native: Native { ratio: 20.0, .. }, high_quality: true }));
-        assert!(feedback([0.5; 7], [true, false, false]).is_err());
+        assert!(feedback([0.5; 7], [false, false, true]).is_err());
         let Ok(Processor::Dynamics(t)) = transient(1.0, 0.5, 0.5, 1) else { panic!() };
         assert!(matches!(t.law, Law::KontaktTransient { attack: 1.0, clip: true, .. }));
         assert!(transient(0.5, 0.5, 0.5, 2).is_err());
