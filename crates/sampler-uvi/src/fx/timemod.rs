@@ -12,7 +12,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap, UviLegacyDelay, UviLegacyKind,
+        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, Tap, UviDiffuseDelay, UviLegacyDelay, UviLegacyKind,
     },
 };
 
@@ -140,6 +140,25 @@ impl Translation {
         }
         if tag == "DualDelay" || tag == "DualDelayX" {
             return self.dual_delay(node, at, tag, synced).map(Some);
+        }
+        if tag == "DiffuseDelay" {
+            // Native laws: `sampler_core` `dsp/timemod/diffuse.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviDiffuseDelay(UviDiffuseDelay {
+                time: n("DelayTime", 0.125, 0.01, if synced { 128. } else { 1. })?,
+                synced,
+                spread: n("TimeSpread", 1., 0., 1.)?,
+                diffusion: n("Diffusion", 0.5, 0., 1.)?,
+                feedback: n("Feedback", 0., 0., 1.)?,
+                damp: n("Damp", 0., 0., 1.)?,
+                crosstalk: n("CrossTalk", 0., -1., 1.)?,
+                randomness: n("Randomness", 0., 0., 0.5)?,
+                mod_rate: n("ModRate", 1., 0.1, 10.)?,
+                mod_depth: n("ModDepth", 0., 0., 20.)?,
+            });
+            let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
+            return Ok(Some(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) }));
         }
         if let Some(kind) = match tag {
             "SimpleDelay" => Some(UviLegacyKind::Simple),

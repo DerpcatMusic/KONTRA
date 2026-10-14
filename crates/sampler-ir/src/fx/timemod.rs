@@ -101,6 +101,27 @@ pub enum Native {
     /// UVI legacy SimpleDelay / StereoDelay / PingPongDelay (Workstation
     /// 4.0.9); the unit's dry/wet is the linear mix.
     UviLegacyDelay(UviLegacyDelay),
+    /// UVI DiffuseDelay (Workstation 4.0.9 core `0x141657890`); the unit's
+    /// dry/wet is the equal-power mix.
+    UviDiffuseDelay(UviDiffuseDelay),
+}
+
+/// UVI DiffuseDelay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviDiffuseDelay {
+    /// Seconds, or quarter-note beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub spread: f32,
+    pub diffusion: f32,
+    pub feedback: f32,
+    pub damp: f32,
+    pub crosstalk: f32,
+    pub randomness: f32,
+    pub mod_rate: f32,
+    /// Cents.
+    pub mod_depth: f32,
 }
 
 /// Which UVI legacy delay node.
@@ -350,6 +371,21 @@ impl Config {
                 let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
                 if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
                     return Err("uvi legacy delay");
+                }
+            }
+            if let Native::UviDiffuseDelay(d) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(d.time, 0.001, 128.)
+                    && ok(d.spread, 0., 1.)
+                    && ok(d.diffusion, 0., 1.)
+                    && ok(d.feedback, 0., 1.)
+                    && ok(d.damp, 0., 1.)
+                    && ok(d.crosstalk, -1., 1.)
+                    && ok(d.randomness, 0., 0.5)
+                    && ok(d.mod_rate, 0.1, 10.)
+                    && ok(d.mod_depth, 0., 20.))
+                {
+                    return Err("uvi diffuse delay");
                 }
             }
             if let Native::LegacyFlanger { color, depth, feedback } = l.native {
