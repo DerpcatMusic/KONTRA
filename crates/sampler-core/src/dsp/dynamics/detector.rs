@@ -2,7 +2,7 @@
 //! channel 0). Each is one law's measured detector; the true-peak
 //! interpolator and the sliding window are shared.
 
-use super::pipeline::{Frame, Stage, Window};
+use super::pipeline::{each, Frame, Stage, Window};
 use super::ProcessorState;
 use sampler_ir::fx::dynamics::{Detector, Link};
 
@@ -37,6 +37,17 @@ fn interpolate(p: &[u32; 12], r: impl Fn(usize) -> f32) -> f32 {
     head + tail
 }
 
+/// Largest interpolated magnitude of channel `ch`, `at` the oldest frame.
+#[inline(always)]
+fn phase_max(h: &[[f64; 2]; TRUE_PEAK_CELLS], at: usize, ch: usize) -> f32 {
+    let r = |j: usize| h[(at + j) % TRUE_PEAK_CELLS][ch] as f32;
+    let mut m = 0f32;
+    for p in &PHASES {
+        m = m.max(interpolate(p, r).abs());
+    }
+    m
+}
+
 /// 4x true peak: a 12-frame history, cursor in `aux[slot]`.
 pub(super) struct TruePeak<'a> {
     history: &'a mut [[f64; 2]; TRUE_PEAK_CELLS],
@@ -58,11 +69,7 @@ impl<'a> TruePeak<'a> {
         self.history[self.at] = x;
         self.at = (self.at + 1) % TRUE_PEAK_CELLS;
         let (h, at) = (&*self.history, self.at);
-        let channel = |ch: usize| {
-            let r = |j: usize| h[(at + j) % TRUE_PEAK_CELLS][ch] as f32;
-            PHASES.iter().fold(0f32, |m, p| m.max(interpolate(p, r).abs()))
-        };
-        [channel(0), channel(1)]
+        [phase_max(h, at, 0), phase_max(h, at, 1)]
     }
 
     #[inline(always)]
@@ -118,9 +125,9 @@ impl Stage for Sidechain<'_> {
         if self.link == Link::Mean {
             sc = [(sc[0] + sc[1]) * 0.5; 2];
         }
-        let mut level = sc.map(f64::abs);
+        let mut level = each(sc, f64::abs);
         if let Some(tp) = &mut self.true_peak {
-            level = tp.push(sc).map(f64::from);
+            level = each(tp.push(sc), f64::from);
         }
         if let Detector::Rms { .. } = self.detector {
             for ch in 0..2 {
@@ -136,7 +143,10 @@ impl Stage for Sidechain<'_> {
 
     #[inline(always)]
     fn after(&mut self, f: &Frame) {
-        self.last = [f.audio[0] * f.gain[0], f.audio[1] * f.gain[1]];
+        // Only the feedback topology reads it (a store here would stall the next read).
+        if self.feedback {
+            self.last = [f.audio[0] * f.gain[0], f.audio[1] * f.gain[1]];
+        }
     }
 
     #[inline(always)]
@@ -157,9 +167,9 @@ pub(super) struct SignedMean(pub bool);
 impl Stage for SignedMean {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let x = f.audio.map(|v| v as f32);
+        let x = each(f.audio, |v| v as f32);
         let mean = x[0] * 0.5 + x[1] * 0.5;
-        f.level = if self.0 { [f64::from(mean.abs()); 2] } else { x.map(|v| f64::from(v.abs())) };
+        f.level = if self.0 { [f64::from(mean.abs()); 2] } else { each(x, |v| f64::from(v.abs())) };
     }
 }
 
@@ -206,7 +216,7 @@ pub(super) struct Hilbert<'a> {
     pub rise: f32,
     pub fall: f32,
     pub window: Window<'a>,
-    cells: &'a mut [[f64; 2]],
+    cells: &'a mut [[f64; 2]; HILBERT_CELLS],
     n: usize,
     env: [f32; 2],
 }
@@ -222,26 +232,27 @@ impl<'a> Hilbert<'a> {
     ) -> Self {
         let (allpass, delay, rise, fall) = coefficients;
         let env = [state.aux[1] as f32, state.aux[2] as f32];
-        Self { allpass, delay, rise, fall, window, cells, n: state.aux[0] as usize, env }
+        Self { allpass, delay, rise, fall, window, cells: cells.try_into().expect("Hilbert cells"), n: state.aux[0] as usize, env }
     }
 }
 
 impl Stage for Hilbert<'_> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let driven = f.audio.map(|v| v as f32);
+        let driven = each(f.audio, |v| v as f32);
         f.peak = self.window.push(f64::from(driven[0].abs().max(driven[1].abs())));
         let mut lanes = [driven[0], driven[0], driven[1], driven[1]];
         let mut last_input = lanes;
         let n = self.n;
         let (write, read) = ((n + 1) & 7, (n + 1).wrapping_sub(self.delay) & 7);
-        for (s, coef) in self.allpass.iter().enumerate() {
+        let (allpass, cells) = (self.allpass, &mut *self.cells);
+        for (s, coef) in allpass.iter().enumerate() {
             last_input = lanes;
             let slot = |k: usize, j: usize| s * 16 + k * 2 + j / 2;
             for (k, lane) in lanes.iter_mut().enumerate() {
-                let r = self.cells[slot(read, k)][k & 1] as f32;
+                let r = cells[slot(read, k)][k & 1] as f32;
                 let v = (*lane - r) * coef[k];
-                self.cells[slot(write, k)][k & 1] = f64::from(v + *lane);
+                cells[slot(write, k)][k & 1] = f64::from(v + *lane);
                 *lane = v + r;
             }
         }
@@ -339,8 +350,8 @@ impl HighPassed {
 impl Stage for HighPassed {
     #[inline(always)]
     fn tick(&mut self, fr: &mut Frame) {
-        let s = fr.audio.map(|v| v as f32);
-        let raw = if self.linked { [s[0].abs().max(s[1].abs()); 2] } else { s.map(f32::abs) };
+        let s = each(fr.audio, |v| v as f32);
+        let raw = if self.linked { [s[0].abs().max(s[1].abs()); 2] } else { each(s, f32::abs) };
         let (c, f) = (self.hp, &mut self.f);
         let mut channel = |k: usize| {
             let (x1, y1) = (f[2 * k], f[2 * k + 1]);
@@ -380,7 +391,7 @@ pub(super) fn bus_level(v: f64) -> f64 {
 impl Stage for BusTap {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = self.0.map(|v| bus_level(v.abs().min(1.)));
+        f.level = each(self.0, |v| bus_level(v.abs().min(1.)));
     }
 
     #[inline(always)]
@@ -403,7 +414,7 @@ const MAX_FLOOR: f32 = f32::from_bits(0x2edb_e6ff); // 0x141e6e4f0
 impl Stage for MaxPeak<'_> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let x = f.audio.map(|v| v as f32);
+        let x = each(f.audio, |v| v as f32);
         let level = match &mut self.0 {
             Some(tp) => {
                 let [l, r] = tp.push(f.audio);
