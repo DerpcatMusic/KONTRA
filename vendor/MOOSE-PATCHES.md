@@ -56,6 +56,13 @@ Value text follows the presentation too: a presentation change adds
 `CLAP_PARAM_RESCAN_TEXT` to the rescan, and the VST3 shim raises
 `kParamValuesChanged` (1 << 0) with `kParamTitlesChanged`.
 
+`ParameterPresentation::stepped` marks a parameter whose static range holds
+only integer steps at runtime (KONTRA: a slot bound to a switch). CLAP may
+change `CLAP_PARAM_IS_STEPPED` only via `RESCAN_ALL` while deactivated, so it
+joins the exposed index list: a change while active requests a restart and
+is published in `deactivate`. VST3 keeps the static `stepCount`: changing it
+needs `kReloadComponent`, which hosts handle as a full reload.
+
 ## Native editor parent contracts
 
 VST3 attachment now rejects null parents, unsupported or null platform types,

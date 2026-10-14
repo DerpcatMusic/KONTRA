@@ -44,6 +44,18 @@ pub(crate) struct Slot {
 }
 
 impl Slot {
+    /// Host values 0 and 1 are its only states: a switch or two-entry
+    /// control over the full window. Wider steps would need a plain range
+    /// other than 0..1, which would change what saved automation lanes mean.
+    fn two_state(&self) -> bool {
+        let full = (self.low, self.high) == (0., 1.) || (self.low, self.high) == (1., 0.);
+        full && match self.domain {
+            sampler_core::ControlDomain::Toggle => true,
+            sampler_core::ControlDomain::Integer { min, max } => max.checked_sub(min) == Some(1),
+            sampler_core::ControlDomain::Real { .. } => false,
+        }
+    }
+
     /// The control's value for host value `v`, as the control reads it.
     fn text(&self, v: f64) -> String {
         use sampler_core::ControlDomain as D;
@@ -208,13 +220,14 @@ impl HostAutomation {
             Some(slot) => ParameterPresentation {
                 name: slot.name.clone(),
                 group: slot.group.clone(),
+                stepped: slot.two_state(),
                 ..Default::default()
             },
             None => ParameterPresentation {
                 name: format!("Automation {address}"),
                 group: "Instrument automation".into(),
                 hidden: true,
-                available: true,
+                ..Default::default()
             },
         })
     }
@@ -344,6 +357,8 @@ mod tests {
         let p = host.presentation(BASE + 3).unwrap();
         assert_eq!((p.name.as_str(), p.hidden), ("Cutoff", false));
         assert!(host.presentation(BASE + 6).unwrap().hidden);
+        assert!(host.presentation(BASE + 5).unwrap().stepped);
+        assert!(!host.presentation(BASE + 4).unwrap().stepped, "three entries stay continuous");
         assert_eq!(host.format_value(BASE + 3, 0.5).unwrap(), "50 %");
         assert_eq!(host.parse_value(BASE + 3, "25 %"), Some(0.25));
         assert_eq!(host.format_value(BASE + 4, 1.).unwrap(), "Sine");
