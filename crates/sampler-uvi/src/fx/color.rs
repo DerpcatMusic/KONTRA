@@ -2,7 +2,7 @@
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
 //! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve;
-//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper; ToneStack (26 models).
+//! FormantCrusher as its biquad + decimator; DiodeClipper as its solver shaper; ToneStack (26 models); Exciter (Tape/Tube, HIIR).
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
@@ -12,7 +12,6 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
         "Redux" | "Redux2" => {
             "kernel at 0x1411e4de0 dispatches to 8 specialised bit/rate variants (0x1411e59f0..0x1411eb6d0) keyed by mode and flags; variant bodies and parameter conversion not transcribed"
         }
-        "Exciter" => "kernel 0x14125c680 runs an oversampled (up to 2^n) stage via 0x14125c870/0x14125cb60 with an FIR resampler (0x14163cdc0); shaper laws not transcribed",
         "BigMuffTone" => {
             "tone filter at 0x141256270 is a runtime-built biquad from unreferenced double constants at 0x141e6e870..0x141e6e898; coefficients not transcribed"
         }

@@ -170,6 +170,7 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
             fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
             fx::Curve::Drive(d) => Curve::Drive(d),
+            fx::Curve::Exciter(d) => Curve::Exciter(d),
             fx::Curve::ToneStack(d) => Curve::ToneStack(d),
             fx::Curve::Diode(d) => Curve::Diode(d),
         },

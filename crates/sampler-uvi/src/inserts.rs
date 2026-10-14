@@ -233,6 +233,18 @@ impl Translation {
                     };
                     out.push(ir::Processor::Color(Config { curve: Curve::ToneStack(stack), ..Config::IDENTITY }));
                 }
+                "Exciter" => {
+                    use ir::fx::color::{Config, Curve, Exciter};
+                    let exciter = Exciter {
+                        mode: number(node, "Mode", 1.0)?.clamp(0.0, 1.0) as u8,
+                        input_gain: number(node, "InputGain", 0.0)?.clamp(-30.0, 20.0) as f32,
+                        amount: number(node, "Amount", 0.0)?.clamp(0.0, 15.0) as f32,
+                        mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                        oversampling: number(node, "Oversampling", 0.0)?.clamp(0.0, 4.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Exciter(exciter), ..Config::IDENTITY }));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};
