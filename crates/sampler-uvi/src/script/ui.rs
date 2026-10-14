@@ -451,7 +451,17 @@ impl ScriptHost {
         };
         #[cfg(feature = "scan")]
         let widget_span = self.owner_span(super::diagnostics::OwnerStage::ExportWidgets);
+        #[cfg(feature = "scan")]
+        let export_audit = self.owner_audit();
+        #[cfg(feature = "scan")]
+        let sample_offset = export_audit.as_ref().map(|audit|audit.export_sample_offset());
+        #[cfg(feature = "scan")]
+        let (mut bound_values, mut sampled_bound_values) = (0usize, 0usize);
         for (index, proxy) in widgets.iter().enumerate() {
+            #[cfg(feature = "scan")]
+            let sampled_audit = export_audit.as_ref().filter(|_|sample_offset==Some(index & 127));
+            #[cfg(feature = "scan")]
+            let _widget_sample = sampled_audit.map(|audit|audit.span(super::diagnostics::OwnerStage::ExportWidgetSample));
             // Plain reads of the widget's data table: the proxy's __index is a Lua
             // call per property, and a snapshot reads ~70 per widget. Only a value
             // bound to an element is computed (by the proxy).
@@ -467,10 +477,19 @@ impl ScriptHost {
                 num(w, "width").unwrap_or(0.),
                 num(w, "height").unwrap_or(0.),
             );
-            let value = if matches!(w.raw_get::<Value>("element"), Ok(Value::Nil) | Err(_)) {
-                num(w, "value")
-            } else {
-                num(proxy, "value")
+            let value = {
+                #[cfg(feature = "scan")]
+                let _value_sample = sampled_audit.map(|audit|audit.span(super::diagnostics::OwnerStage::ExportValueSample));
+                if matches!(w.raw_get::<Value>("element"), Ok(Value::Nil) | Err(_)) {
+                    num(w, "value")
+                } else {
+                    #[cfg(feature = "scan")]
+                    if export_audit.is_some() {
+                        bound_values += 1;
+                        sampled_bound_values += usize::from(sampled_audit.is_some());
+                    }
+                    num(proxy, "value")
+                }
             }
             .unwrap_or(0.);
             let range = ui::Range {
@@ -851,6 +870,8 @@ impl ScriptHost {
                 "channel",
             ];
             {
+                #[cfg(feature = "scan")]
+                let _inventory_sample = sampled_audit.map(|audit|audit.span(super::diagnostics::OwnerStage::ExportInventorySample));
                 for (key, _) in data.pairs::<String, Value>().flatten() {
                     // Lua scripts freely attach private data/functions to widgets.
                     // Only documented UI properties count as rendering gaps.
@@ -905,6 +926,11 @@ impl ScriptHost {
                 });
             }
             out.widgets.push(wd);
+        }
+        #[cfg(feature = "scan")]
+        if let Some(audit) = &export_audit {
+            audit.add(super::diagnostics::OwnerCounter::ExportBoundValues, bound_values);
+            audit.add(super::diagnostics::OwnerCounter::ExportSampledBoundValues, sampled_bound_values);
         }
         #[cfg(feature = "scan")]
         drop(widget_span);
@@ -966,6 +992,9 @@ impl ScriptHost {
         out
     }
 }
+
+#[cfg(all(test, feature = "scan"))]
+mod export_profile_tests;
 
 /// UVI script state is independent of KSP integer memory. Table keys preserve
 /// Lua's numeric/string distinction; cycles and userdata fail rather than truncate.

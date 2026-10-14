@@ -8,7 +8,7 @@ scan path takes no phase-clock reads and performs no extra binding-graph scan.
 `UiBridge::owner_audit()` reads aggregate atomics directly. It never queues a
 request behind a busy Lua owner or acquires the interface mutex. It returns
 `None` when disabled. No script bodies, arguments, file names, task paths or UI
-strings enter this report. Storage is fixed at 29 stages and 13 counters; report
+strings enter this report. Storage is fixed at 32 stages and 16 counters; report
 construction allocates only on the caller outside audio/owner work.
 
 ## Timing boundaries
@@ -31,6 +31,7 @@ Nested groups must not be added to those outer totals:
 | Backpressure UI requests | Request handling inside that retry; nested again |
 | Seeded barrier events/advance | Barrier work nested in UI requests, separate from ordinary owner-turn stages |
 | Export registry/topology/widgets/page/validation | Five disjoint substages nested in interface export (or the initial snapshot) |
+| Sampled widget/value/inventory | Rotating declaration-index residue, stride 128; value and inventory are disjoint inside the sampled full-widget interval |
 
 Each completed interval records calls, total/max monotonic wall nanoseconds, a
 16-bin wall histogram and caller-thread CPU nanoseconds/samples. Histogram upper
@@ -65,6 +66,15 @@ histograms remain separate. Ordinary all-target compilation and scan compilation
 passed. These fixtures do not establish real-library timing or native pixels.
 The existing seeded-audit integration suite passed 7/7 and UI integration passed
 17/17 on the same source cohort.
+
+The optional finer probe selects one declaration-index residue out of 128 per
+export and rotates that residue across exports. Stage call counts retain the
+actual sample size; counters retain all bound-value reads and sampled bound-value
+reads. It performs no extra Lua property/getter reads. Sampled totals describe
+the observed subset and must not be scaled into exact whole-loop costs. An
+authored 257-widget fixture verifies the rotation, exact complete-interface
+equality, custom getter mutation ordering, raw data edits and unchanged custom
+`__index` side-effect counts with the probe enabled/disabled.
 
 The dynamic-source witness can capture `owner_audit_before` after service binding
 and `owner_audit_after` after task settlement, before independent PCM checking.
