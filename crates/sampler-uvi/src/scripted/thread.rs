@@ -7,7 +7,7 @@
 
 use super::{HostInput, Script};
 #[cfg(feature = "scan")]
-use crate::script::diagnostics::{OwnerPhase, ScanProgress};
+use crate::script::diagnostics::{OwnerAudit, OwnerAuditSnapshot, OwnerCounter, OwnerPhase, OwnerStage, ScanProgress};
 use crate::script::{
     Command, Config, FaultCategory, FaultCounts, Files, Finding, ScriptHost, UiState,
 };
@@ -102,6 +102,8 @@ type AuditReply = (
 
 fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>) {
     while let Ok(message) = incoming.pop() {
+        #[cfg(feature = "scan")]
+        host.owner_count(OwnerCounter::Events, 1);
         match message {
             Message::Control { id, value } => {
                 let _ = host.set_control(id, value);
@@ -134,6 +136,8 @@ fn process_ui_requests(
     #[cfg(feature = "scan")] audit_reply: &mut Option<AuditReply>,
 ) {
     while let Ok(request) = requests.try_recv() {
+        #[cfg(feature = "scan")]
+        host.owner_count(OwnerCounter::UiRequests, 1);
         match request {
             UiRequest::SampleStatus(reply)=>{let _=reply.send(ScriptHost::sample_load_status(host));}
             UiRequest::SampleControl(control,reply)=>{let _=reply.send(host.bind_sample_control(control));}
@@ -148,9 +152,16 @@ fn process_ui_requests(
             UiRequest::Audit(ms, reply) => {
                 // Events were published before this request; drain again to close the queue race.
                 host.owner_phase(OwnerPhase::Events);
-                process_events(host, _incoming);
+                let audit = host.owner_audit();
+                {
+                    let _span = audit.as_ref().map(|a|a.span(OwnerStage::AuditBarrierEvents));
+                    process_events(host, _incoming);
+                }
                 host.owner_phase(OwnerPhase::Advance);
-                host.advance(ms);
+                {
+                    let _span = audit.as_ref().map(|a|a.span(OwnerStage::AuditBarrierAdvance));
+                    host.advance(ms);
+                }
                 *audit_reply = Some((reply, host.take_commands(), host.next_due(), ms));
                 // Complete this barrier after publication, before later UI requests.
                 break;
@@ -185,6 +196,16 @@ impl ScriptThread {
         config: Config,
         state: Option<UiState>,
     ) -> Result<(Self, Loaded), String> {
+        Self::spawn_owner(xml, files, config, state,
+            #[cfg(feature = "scan")]
+            OwnerAudit::from_env()?,
+        )
+    }
+
+    fn spawn_owner(
+        xml: Arc<str>, files: impl Files + Send + 'static, config: Config, state: Option<UiState>,
+        #[cfg(feature = "scan")] owner_audit: Option<Arc<OwnerAudit>>,
+    ) -> Result<(Self, Loaded), String> {
         #[cfg(feature = "scan")]
         let audit = config.audit_seed.is_some();
         let (ui_send, ui_receive) = mpsc::sync_channel(256);
@@ -202,6 +223,8 @@ impl ScriptThread {
                 #[cfg(feature = "scan")]
                 let scan = scan.clone();
                 move || {
+                    #[cfg(feature = "scan")]
+                    let load_span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Loading));
                     let mut host =
                         match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
                             Ok(host) => host,
@@ -211,6 +234,11 @@ impl ScriptThread {
                                 return drop(ready.send(Err(e)));
                             }
                         };
+                    #[cfg(feature = "scan")]
+                    {
+                        host.install_owner_audit(owner_audit.clone());
+                        drop(load_span);
+                    }
                     let handles = host.handles_notes();
                     let ui = Arc::new(UiBridge::new(&host, ui_send, std::thread::current()));
                     #[cfg(feature = "scan")]
@@ -231,12 +259,21 @@ impl ScriptThread {
                     let mut finding_revision = host.finding_revision();
                     while !stop.load(Ordering::Acquire) {
                         #[cfg(feature = "scan")]
+                        host.owner_count(OwnerCounter::Turns, 1);
+                        #[cfg(feature = "scan")]
                         let mut audit_reply = None;
                         #[cfg(feature = "scan")]
                         host.owner_phase(OwnerPhase::Events);
-                        process_events(&mut host, &mut incoming);
+                        {
+                            #[cfg(feature = "scan")]
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Events));
+                            process_events(&mut host, &mut incoming);
+                        }
                         #[cfg(feature = "scan")]
                         host.owner_phase(OwnerPhase::UiRequests);
+                        {
+                        #[cfg(feature = "scan")]
+                        let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::UiRequests));
                         process_ui_requests(
                             &mut host,
                             &ui_receive,
@@ -244,8 +281,11 @@ impl ScriptThread {
                             #[cfg(feature = "scan")]
                             &mut audit_reply,
                         );
+                        }
                         #[cfg(feature = "scan")]
                         if !audit {
+                            host.owner_phase(OwnerPhase::Advance);
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Advance));
                             host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
                         }
                         #[cfg(not(feature = "scan"))]
@@ -254,15 +294,20 @@ impl ScriptThread {
                         host.owner_phase(OwnerPhase::Publish);
                         let current = host.ui_revision();
                         if current != revision {
+                            #[cfg(feature = "scan")]
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::UiPublish));
                             ui.publish(&host);
                             revision = current;
                         }
                         if host.finding_revision() != finding_revision {
+                            #[cfg(feature = "scan")]
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::FindingsPublish));
                             ui.publish_findings(&host);
                             finding_revision = host.finding_revision();
                         }
                         #[cfg(feature = "scan")]
                         {
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::ScanSnapshot));
                             *scan.lock().unwrap() = host.scan_faults();
                         }
                         #[cfg(feature = "scan")]
@@ -275,21 +320,45 @@ impl ScriptThread {
                         #[cfg(feature = "scan")]
                         if audit {
                             host.owner_phase(OwnerPhase::Parked);
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Park));
                             std::thread::park();
                             continue;
                         }
-                        backlog.extend(host.take_commands());
+                        {
+                            #[cfg(feature = "scan")]
+                            let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::CommandsCollect));
+                            let collected = host.take_commands();
+                            #[cfg(feature = "scan")]
+                            host.owner_count(OwnerCounter::CommandsCollected, collected.len());
+                            backlog.extend(collected);
+                            #[cfg(feature = "scan")]
+                            if let Some(audit) = &owner_audit { audit.max(OwnerCounter::BacklogHighWater, backlog.len()); }
+                        }
+                        {
+                        #[cfg(feature = "scan")]
+                        let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::CommandsPush));
                         for command in backlog.drain(..) {
                             // A full queue only delays: the audio side drains it every block.
                             let mut command = command;
                             loop {
                                 match outgoing.push(command) {
-                                    Ok(()) => break,
+                                    Ok(()) => {
+                                        #[cfg(feature = "scan")]
+                                        host.owner_count(OwnerCounter::CommandsPushed, 1);
+                                        break;
+                                    },
                                     Err(rtrb::PushError::Full(back)) => {
+                                        #[cfg(feature = "scan")]
+                                        let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Backpressure));
+                                        #[cfg(feature = "scan")]
+                                        host.owner_count(OwnerCounter::QueueFullRetries, 1);
                                         command = back;
                                         if stop.load(Ordering::Acquire) {
                                             return;
                                         }
+                                        {
+                                        #[cfg(feature = "scan")]
+                                        let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::BackpressureUiRequests));
                                         process_ui_requests(
                                             &mut host,
                                             &ui_receive,
@@ -297,11 +366,17 @@ impl ScriptThread {
                                             #[cfg(feature = "scan")]
                                             &mut audit_reply,
                                         );
+                                        }
                                         std::thread::sleep(POLL);
                                     }
                                 }
                             }
                         }
+                        }
+                        #[cfg(feature = "scan")]
+                        host.owner_phase(OwnerPhase::Parked);
+                        #[cfg(feature = "scan")]
+                        let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Park));
                         if host.next_due().is_some() {
                             std::thread::park_timeout(POLL);
                         } else if let Some(timer)=host.sample_collection_timer() {
@@ -513,6 +588,8 @@ impl Drop for ScriptThread {
 /// cell identities plus atomics; Lua and the interface mutex stay on the worker.
 pub struct UiBridge {
     #[cfg(feature = "scan")]
+    owner_audit: Option<Arc<OwnerAudit>>,
+    #[cfg(feature = "scan")]
     progress: Option<Arc<ScanProgress>>,
     edits: mpsc::SyncSender<UiRequest>,
     owner: std::thread::Thread,
@@ -530,11 +607,15 @@ impl UiBridge {
         edits: mpsc::SyncSender<UiRequest>,
         owner: std::thread::Thread,
     ) -> Self {
+        #[cfg(feature = "scan")]
+        let _span = host.owner_span(OwnerStage::InitialSnapshot);
         let _ = host.save_ui_state();
         let face = host.interface();
         let mut values = ScriptHost::control_values_from(&face);
         values.sort_by_key(|(id, _)| *id);
         Self {
+            #[cfg(feature = "scan")]
+            owner_audit: host.owner_audit(),
             #[cfg(feature = "scan")]
             progress: host.scan_progress(),
             edits,
@@ -581,6 +662,11 @@ impl UiBridge {
     pub fn scan_progress(&self) -> Option<Arc<ScanProgress>> {
         self.progress.clone()
     }
+    /// Fixed numeric aggregates; never waits for a Lua/UI-owner request.
+    #[cfg(feature = "scan")]
+    pub fn owner_audit(&self) -> Option<OwnerAuditSnapshot> {
+        self.owner_audit.as_ref().map(|audit|audit.snapshot())
+    }
     pub fn fault_counts(&self) -> FaultCounts {
         self.faults.lock().unwrap().clone()
     }
@@ -592,18 +678,52 @@ impl UiBridge {
         )
     }
     fn publish(&self, host: &ScriptHost) {
-        let next = host.interface();
+        let next = {
+            #[cfg(feature = "scan")]
+            let _span = host.owner_span(OwnerStage::InterfaceExport);
+            host.interface()
+        };
+        #[cfg(feature = "scan")]
+        {
+            if let Some(audit) = &self.owner_audit {
+                audit.add(OwnerCounter::SnapshotWidgets, next.widgets.len());
+                audit.add(OwnerCounter::SnapshotBindings, next.widgets.iter().filter(|widget|
+                    !matches!(widget.binding, sampler_ui_ir::Binding::None)).count());
+            }
+        }
+        {
+        #[cfg(feature = "scan")]
+        let _span = host.owner_span(OwnerStage::ValueMirror);
         for (id, v) in ScriptHost::control_values_from(&next) {
             if let Ok(i) = self.values.binary_search_by_key(&id, |(id, _)| *id) {
                 self.values[i].1.store(v.to_bits(), Ordering::Release);
             }
         }
-        let mut face = self.face.lock().unwrap();
-        if **face != next {
+        }
+        let mut face = {
+            #[cfg(feature = "scan")]
+            let _span = host.owner_span(OwnerStage::FaceLock);
+            self.face.lock().unwrap()
+        };
+        let changed = {
+            #[cfg(feature = "scan")]
+            let _span = host.owner_span(OwnerStage::FaceCompare);
+            **face != next
+        };
+        {
+        #[cfg(feature = "scan")]
+        let _span = host.owner_span(OwnerStage::FaceReplace);
+        if changed {
             *face = Arc::new(next);
             self.revision.fetch_add(1, Ordering::Release);
+            #[cfg(feature = "scan")]
+            host.owner_count(OwnerCounter::FaceChanges, 1);
+            drop(face);
+        } else {
+            drop(face);
+            drop(next);
         }
-        drop(face);
+        }
     }
     pub fn edit(&self, id: ControlId, value: f64) -> bool {
         if !value.is_finite() || self.value(id).is_none() {
@@ -644,3 +764,6 @@ impl UiBridge {
         self.revision.load(Ordering::Acquire)
     }
 }
+
+#[cfg(all(test, feature = "scan"))]
+mod owner_audit_tests;
