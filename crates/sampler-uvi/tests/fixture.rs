@@ -785,6 +785,27 @@ fn typed_one_pole_catalog_controls_reach_distinct_live_processors() {
 }
 
 #[test]
+fn digital_eq_slope_sets_the_pass_band_order() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><DigitalEq Enabled1="1" Type1="1" Slope1="3" Freq1="80" Enabled2="1" Type2="0" Slope2="5" Freq2="9000"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some((c.bands()[0].kind, c.bands()[0].poles)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bands, [(ir::fx::eq::Kind::HighPass, 4), (ir::fx::eq::Kind::LowPass, 4)]);
+    let steep = instrument.unsupported.iter().filter(|u| u.feature.contains("steeper than 24")).count();
+    assert_eq!(steep, 1);
+}
+
+#[test]
 fn initialized_controller_and_widget_cutoff_writes_change_production_pcm() {
     use sampler_core::{ControlValue, EngineParameterAddress, EngineParameterLaw};
     use sampler_uvi::{script::Config, scripted::HostInput};
