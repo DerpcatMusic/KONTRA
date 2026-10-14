@@ -21,6 +21,7 @@ mod diffuse;
 mod dual;
 mod mt;
 mod tape;
+mod twin;
 mod uvi_legacy;
 #[cfg(test)]
 mod tests;
@@ -202,6 +203,7 @@ impl TimeMod {
                 Native::UviLegacyDelay(d) => cap = uvi_legacy::capacity(&d, rate),
                 Native::UviDiffuseDelay(_) => cap = diffuse::capacity(rate),
                 Native::UviTapeEcho(_) => cap = tape::capacity(rate),
+                Native::TwinDelay(_) => cap = twin::capacity(rate),
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -310,6 +312,9 @@ impl TimeMod {
         }
         if let Some(Native::UviDualDelay(d)) = cfg.line.map(|l| l.native) {
             return self.dual_delay(state, slab, block, len, tempo, d);
+        }
+        if let Some(Native::TwinDelay(t)) = cfg.line.map(|l| l.native) {
+            return self.twin_delay(state, slab, block, len, tempo, t);
         }
         if let Some(Native::UviTapeEcho(t)) = cfg.line.map(|l| l.native) {
             return self.uvi_tape_echo(state, slab, block, len, tempo, t);
