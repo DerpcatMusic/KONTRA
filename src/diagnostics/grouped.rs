@@ -544,6 +544,23 @@ mod tests {
     #[test]
     #[cfg(feature = "plugin")]
     fn runtime_summary_logs_once_but_keeps_live_counts_and_sidecar() {
+        const CHILD: &str = "KONTRA_TEST_RUNTIME_SUMMARY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Plugin lifecycle tests can retire the process-wide session between
+            // summary(), flush() and snapshot(). Give this journal contract its
+            // own process instead of accepting a missing summary as eviction.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "diagnostics::grouped::tests::runtime_summary_logs_once_but_keeps_live_counts_and_sidecar",
+                ])
+                .env(CHILD, "1")
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated runtime summary journal contract");
+            return;
+        }
         let id = format!("runtime-summary-once-{}", std::process::id());
         let mut log = RuntimeLog::new(&id, "/Libraries/Kontakt/A/a.nki", 0);
         log.fault(0, sampler_core::Outcome::FuelExhausted);
@@ -556,8 +573,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sidecar["locations"].as_array().unwrap().len(), 2);
-        // Events reach the history through a worker queue; the history is a bounded
-        // process-wide ring that parallel tests can evict from or overflow.
+        // Events reach the journal through a worker queue.
         super::super::flush(std::time::Duration::from_secs(10)).unwrap();
         let snapshot = super::super::snapshot();
         let logged = snapshot
@@ -566,12 +582,7 @@ mod tests {
             .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
                 && e.load_id.as_deref() == Some(id.as_str()))
             .count();
-        assert!(
-            logged == 1
-                || (logged == 0
-                    && snapshot.status.history_evicted + snapshot.status.dropped_events > 0),
-            "one journal summary per load, not per refresh: {logged}"
-        );
+        assert_eq!(logged, 1, "one journal summary per load, not per refresh");
     }
 
     #[test]
