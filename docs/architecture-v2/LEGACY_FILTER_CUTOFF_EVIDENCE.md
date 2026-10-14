@@ -14,8 +14,9 @@ native host, modulation-clock, or complete audio-parity measurement. The numeric
 receipt records the exact original binary hash; it contains no binary payload.
 
 Admission now retains finite-f32 cutoff bases for precisely the ten original
-legacy classes. The existing runtime saturates after adding modulation. No audio
-math changed. Clipping the saved base during translation would change a later
+legacy classes. The coefficient law saturates after adding modulation; the control
+clock now retains raw cutoff state instead of clipping its target before slewing.
+The coefficient math is unchanged. Clipping the saved base during translation would change a later
 negative modulation delta; the runtime regression explicitly distinguishes 8.5
 plus -8 from a prematurely clipped 1 plus -8. Other filter families, resonance,
 extra knobs, NaN/infinity and values outside finite-f32 range remain checked.
@@ -43,3 +44,14 @@ The translated-instrument cache hashes sampler-ir/core/importer sources, so thes
 semantic changes invalidate previous cached translations automatically. An early
 cancellation fix separately ensures a canceled path load does not read or
 translate a container before returning Canceled.
+
+An additional isolated original-wrapper probe (0x140ae9f90, branch global zero,
+zero offset, no modulation buffers, no-op audio callback, 128 frames) confirms
+raw clock state survives: an 8.5 -> .5 target produces setter arguments
+8.41489315, 8.32978630, 8.24467945, 8.15957260, 8.07446575 at resonance .25.
+The negative case is symmetric. The runtime regression checks its four
+32-frame updates against the first four original values. The original wrapper
+also performs a boundary update in this setup; that boundary phase has not
+been calibrated in the runtime. Such out-of-range authored cutoffs therefore
+retain a specific partial-fidelity warning. This is not a claim of complete
+wrapper-clock parity.
