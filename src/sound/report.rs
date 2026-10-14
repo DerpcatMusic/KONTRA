@@ -16,6 +16,8 @@ pub enum MissingReason {
     InvalidValue,
     /// Representable, but how the source maps it to sound is not established.
     UnknownLaw,
+    /// An unverified law prevented a source or route from being translated.
+    UnknownLawOmitted,
 }
 
 /// One feature that was not translated or not implemented.
@@ -220,6 +222,7 @@ impl From<&sampler_ir::Unsupported> for Missing {
                 sampler_ir::Reason::NotModeled => MissingReason::NotModeled,
                 sampler_ir::Reason::InvalidValue => MissingReason::InvalidValue,
                 sampler_ir::Reason::UnknownLaw => MissingReason::UnknownLaw,
+                sampler_ir::Reason::UnknownLawOmitted => MissingReason::UnknownLawOmitted,
             },
         }
     }

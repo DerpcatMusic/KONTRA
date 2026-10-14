@@ -1511,18 +1511,17 @@ impl ScriptHost {
                 let loaded = id
                     .zip(path)
                     .is_some_and(|(id, path)| s.rebuild_impulse(id, Some(&path)));
+                let task = async_data::completed_task(lua, s.next_id(), loaded)?;
                 // A response the bank cannot supply fails the task, as in UVI.
                 if let Some(Value::Function(callback)) =
                     args.iter().find(|v| matches!(v, Value::Function(_)))
                 {
-                    let task = lua.create_table()?;
-                    task.set("success", loaded)?;
                     let thread = lua.create_thread(callback.clone())?;
                     s.deferred
                         .borrow_mut()
-                        .push((thread, MultiValue::from_vec(vec![Value::Table(task)]), None));
+                        .push((thread, MultiValue::from_vec(vec![Value::UserData(task.clone())]), None));
                 }
-                Ok(())
+                Ok(task)
             })?,
         )?;
         for name in ["loadSample"] {
@@ -1535,14 +1534,16 @@ impl ScriptHost {
                     if let Some(Value::Function(callback)) =
                         args.iter().find(|v| matches!(v, Value::Function(_)))
                     {
+                        let task = async_data::completed_task(lua, s.next_id(), false)?;
                         let thread = lua.create_thread(callback.clone())?;
                         s.deferred.borrow_mut().push((
                             thread,
-                            MultiValue::from_vec(vec![Value::Nil]),
+                            MultiValue::from_vec(vec![Value::UserData(task.clone())]),
                             None,
                         ));
+                        return Ok(Some(task));
                     }
-                    Ok(())
+                    Ok(None)
                 })?,
             )?;
         }

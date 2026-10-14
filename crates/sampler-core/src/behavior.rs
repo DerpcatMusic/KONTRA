@@ -89,6 +89,13 @@ pub enum Instruction {
     ReadControllerValue {
         local: u16,
     },
+    ReadPolyPressureKey {
+        local: u16,
+    },
+    /// Index in `local` is replaced by the full-resolution stage-owned value.
+    ReadPolyPressure {
+        local: u16,
+    },
     /// Latest input value in the callback's performance domain, including consumed CCs.
     ReadInputController {
         controller: u16,
@@ -624,6 +631,7 @@ impl Program {
                     | Instruction::ReadControllerGroup { .. }
                     | Instruction::ReadControllerChannel { .. }
                     | Instruction::ReadControllerValue { .. }
+                    | Instruction::ReadPolyPressureKey { .. }
             )
         });
         let requires_performance = requires_controller
@@ -631,6 +639,7 @@ impl Program {
                 matches!(
                     op,
                     Instruction::ReadInputController { .. }
+                        | Instruction::ReadPolyPressure { .. }
                         | Instruction::SendParameter { .. }
                         | Instruction::WriteController { .. }
                         | Instruction::PlayMidi { .. }
@@ -695,6 +704,8 @@ impl Program {
             | Instruction::ReadControllerGroup { local }
             | Instruction::ReadControllerChannel { local }
             | Instruction::ReadControllerValue { local }
+            | Instruction::ReadPolyPressureKey { local }
+            | Instruction::ReadPolyPressure { local }
             | Instruction::ControllerToMidi7 { local }
             | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
@@ -2517,6 +2528,15 @@ impl Runtime {
                                 && n.input.is_some_and(|i| i64::from(i.key) == key)
                         });
                 *self.local_cell_mut(id, local)? = i64::from(held);
+            }
+            Instruction::ReadPolyPressureKey { local } => {
+                let key = self.controller_event_mut(id)?.poly_key.ok_or(Error::InvalidInput)?;
+                *self.local_cell_mut(id, local)? = i64::from(key);
+            }
+            Instruction::ReadPolyPressure { local } => {
+                let key = u8::try_from(*self.local_cell_mut(id, local)?).map_err(|_| Error::InvalidInput)?;
+                let value = self.behavior_poly_pressure(id, key)?;
+                *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::SendParameter {
                 kind,

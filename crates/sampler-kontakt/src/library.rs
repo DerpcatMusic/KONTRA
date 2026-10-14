@@ -1866,7 +1866,7 @@ impl Translation {
                     ModSource::Unassigned => continue,
                     other => {
                         let reason = match other {
-                            ModSource::RandomBipolar => ir::Reason::UnknownLaw,
+                            ModSource::RandomBipolar => ir::Reason::UnknownLawOmitted,
                             _ => not_modeled,
                         };
                         let targets: Vec<_> =

@@ -698,6 +698,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             note: script.routed(EntryKind::Note).map(|p| base + p),
             release: script.routed(EntryKind::Release).map(|p| base + p),
             controller: script.routed(EntryKind::Controller).map(|p| base + p),
+            poly_at: script.routed(EntryKind::PolyAt).map(|p| base + p),
         });
         for w in &script.model.interface.widgets {
             use model::{Location, WidgetValue};
@@ -1260,7 +1261,7 @@ fn compile_initialized_inner(
             K::Note => (EntryKind::Note, lower::Context::Note),
             K::Release => (EntryKind::Release, lower::Context::Release),
             K::Controller => (EntryKind::Controller, lower::Context::Controller),
-            K::PolyAt => (EntryKind::PolyAt, lower::Context::Plan),
+            K::PolyAt => (EntryKind::PolyAt, lower::Context::PolyAt),
             K::UiControl(var) => (
                 EntryKind::UiControl(hir.vars[var.0 as usize].ui.unwrap_or(0) as usize),
                 lower::Context::Plan,
