@@ -704,28 +704,46 @@ impl Instrument {
                 let Processor::Dynamics(c) = *processor else {
                     continue;
                 };
+                use fx::dynamics::Law;
+                // These are physical editor controls, in the DSP law's units.
+                // Native is not a domain: Feedback takes linear input drive and
+                // ratio 1..20, unlike the original compressor's dB / 0..1 knobs.
+                let (input_label, input_low, input_high, input_unit, ratio_low, ratio_high, attack_low, release_low) = match c.law {
+                    Law::Generic(_) => ("Threshold", -60., 0., ControlUnit::Decibels, 1., 20., 0., 0.),
+                    Law::KontaktClassic(_) | Law::KontaktPro(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0., 0.),
+                    Law::KontaktEnhanced(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0.000_001, 0.),
+                    Law::KontaktFeedback { .. } =>
+                        ("Input gain", 10_f64.powf(-0.5), 100., ControlUnit::None, 1., 20., 0.000_1, 0.05),
+                    Law::KontaktLimiter(_) =>
+                        ("Input gain", -24., 24., ControlUnit::Decibels, 0., 0., 0., 0.),
+                    // These cores either ignore the four generic knobs or use
+                    // different controls. Do not invent a compressor editor.
+                    _ => continue,
+                };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
-                        "Threshold",
+                        input_label,
                         c.threshold(),
-                        -60_f64,
-                        0_f64,
-                        ControlUnit::Decibels,
+                        input_low,
+                        input_high,
+                        input_unit,
                     ),
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
                         c.ratio(),
-                        if c.is_native() { 0_f64 } else { 1_f64 },
-                        if c.is_native() { 1_f64 } else { 20_f64 },
+                        ratio_low,
+                        ratio_high,
                         ControlUnit::None,
                     ),
                     (
                         ProcessorParameter::Attack,
                         "Attack",
                         c.attack.seconds(),
-                        0_f64,
+                        attack_low,
                         1_f64,
                         ControlUnit::Seconds,
                     ),
@@ -733,11 +751,15 @@ impl Instrument {
                         ProcessorParameter::Release,
                         "Release",
                         c.release.seconds(),
-                        0_f64,
+                        release_low,
                         5_f64,
                         ControlUnit::Seconds,
                     ),
                 ] {
+                    if matches!(c.law, Law::KontaktLimiter(_))
+                        && matches!(parameter, ProcessorParameter::Ratio | ProcessorParameter::Attack) {
+                        continue;
+                    }
                     if existing.contains(&(chain, index, parameter as u8)) {
                         continue;
                     }

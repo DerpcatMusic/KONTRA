@@ -635,9 +635,14 @@ fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
                         .any(|processor| match processor {
                             sampler_ir::Processor::LadderLP4(d) => d.address.is_some_and(same_slot),
                             sampler_ir::Processor::Color(c) => c.address.is_some_and(same_slot),
-                            _ => false,
+                            processor => processor.lanes().is_some_and(|(slot, lanes)| {
+                                same_slot(slot) && lanes.iter().any(|lane| {
+                                    sampler_core::engine_parameter_id(lane.name)
+                                        == Some(binding.address.parameter)
+                                })
+                            }),
                         }),
-                    "native effect lane lost its physical processor owner"
+                    "native effect lane {name} at {:?} lost its physical processor owner", binding.address
                 );
             }
         }

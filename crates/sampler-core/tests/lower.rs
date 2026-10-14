@@ -3989,3 +3989,43 @@ fn routes_move_scripted_effect_lanes_additively() {
     assert!((routed - saved).abs() < 1e-4, "{routed} vs {saved}");
     assert!((routed - unmoved).abs() > 1e-3, "{routed} vs {unmoved}");
 }
+
+#[test]
+fn compressor_editors_use_each_laws_physical_domain_without_invalidating_loads() {
+    use ir::fx::dynamics::{Config, Law, Link, Native};
+    let native = Native { threshold_db: -12.0, ratio: 0.2 };
+    for (law, expected_controls) in [
+        (Law::KontaktClassic(native), 4),
+        (Law::KontaktEnhanced(native), 4),
+        (Law::KontaktPro(native), 4),
+        (Law::KontaktFeedback { native: Native { threshold_db: 1.7782794, ratio: 4.8 }, high_quality: true }, 4),
+        (Law::KontaktLimiter(Native { threshold_db: 0.0, ratio: 0.0 }), 2),
+        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }), 0),
+    ] {
+        let mut i = instrument();
+        i.sequences.clear();
+        i.zones = vec![ir::Zone { chain: Some(ir::ChainRef(0)),
+            pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0)) }];
+        i.assets.truncate(1);
+        i.chains = vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![], post_amplitude: vec![ir::Processor::Dynamics(Config {
+                address: None, law, attack: ir::Time::Seconds(0.01),
+                release: ir::Time::Seconds(0.1), link: Link::Max,
+                makeup: ir::Gain::UNITY, mix: 1.0,
+            })] }];
+        i.register_compressor_controls();
+        i.register_compressor_controls();
+        assert_eq!(i.controls.len(), expected_controls, "{law:?}");
+        let plan = lower(&i, 48000, vec![constant(0.8)], no_behaviors).unwrap();
+        let descriptors: Vec<_> = plan.parameter_registry().descriptors().collect();
+        assert_eq!(descriptors.len(), expected_controls, "{law:?}");
+        if matches!(law, Law::KontaktFeedback { .. }) {
+            assert_eq!(descriptors[0].unit, sampler_core::ParameterUnit::Linear);
+            assert_eq!(descriptors[0].default, 1.7782794);
+            assert_eq!(descriptors[1].default, 4.8);
+        }
+        let limits = Limits::for_plan(&plan, 4, 4);
+        Runtime::new(plan, limits).unwrap();
+    }
+}

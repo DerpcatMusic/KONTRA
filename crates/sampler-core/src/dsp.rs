@@ -233,7 +233,7 @@ fn live_knob(p: &Parameter) -> bool {
 }
 
 impl Processor {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         match self {
             Processor::Gain(gain) => gain.is_finite(),
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
