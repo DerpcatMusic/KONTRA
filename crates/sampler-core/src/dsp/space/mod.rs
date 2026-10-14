@@ -377,7 +377,11 @@ mod tests {
     fn cpu_per_instance() {
         const RATE: u32 = 48_000;
         let frames = 10 * RATE as usize;
+        let only = std::env::var("CPU_ONLY").ok();
         for (name, net, parallel) in presets().into_iter().flat_map(|(n, net)| [(n, net.clone(), true), (n, net, false)]) {
+            if only.as_deref().is_some_and(|o| o != name) {
+                continue;
+            }
             let mut net = Net::new(&net, RATE).unwrap();
             if !parallel {
                 if !net.core.parallel {
