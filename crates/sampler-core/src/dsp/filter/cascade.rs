@@ -27,6 +27,7 @@
 //! (truncated series, operation order) and the sections in f32 as the native does.
 
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 
 /// Frames between control evaluations (the engine's native-knob clock).
@@ -1017,6 +1018,309 @@ impl Rez {
     }
 }
 
+// ----------------------------------------------------------------- UVI Xpander
+
+/// `XpanderFilter` output mixes per Mode (`[input, y1, y2, y3, y4]`, dumped from the native
+/// update 0x1412cbc30; row 0 is the static LP1 row).
+const XPANDER_MIX: [[f32; 5]; 37] = [
+    [0., 1., 0., 0., 0.],
+    [0., 0., 1., 0., 0.],
+    [0., 0., 0., 1., 0.],
+    [0., 0., 0., 0., 1.],
+    [1., -1., 0., 0., 0.],
+    [1., -2., 1., 0., 0.],
+    [1., -3., 3., -1., 0.],
+    [1., -4., 6., -4., 1.],
+    [0., 2., -2., 0., 0.],
+    [0., 0., 4., -8., 4.],
+    [1., -2., 2., 0., 0.],
+    [1., -4., 8., -8., 4.],
+    [1., -3., 6., -4., 0.],
+    [0., 1., -3., 6., -4.],
+    [-1., 2., 0., 0., 0.],
+    [1., -4., 4., 0., 0.],
+    [0., 0., 0., 1., -1.],
+    [0., 1., -3., 3., -1.],
+    [0., 1., -2., 1., 0.],
+    [0., 0., 1., -1., 0.],
+    [0., -1., 2., 0., 0.],
+    [0., 0., 1., -2., 2.],
+    [1., -4., 7., -6., 2.],
+    [0., 4., -12., 16., -8.],
+    [1., -1., 1., 0., 0.],
+    [1., 0., -1., 2., -1.],
+    [-1., 4., -5.25, 2.5, 0.],
+    [0., 0., 4., -8., 5.],
+    [1., -4., 6.25, -4.5, 1.25],
+    [0., 2., -6., 6.5, -2.5],
+    [-0.25, 1., -2.25, 2.5, 0.],
+    [0., 0., 0.25, -0.5, 1.25],
+    [1., -4., 10., -12., 5.],
+    [0., 0.5, -1.5, 3.5, -2.5],
+    [1., -4., 10.25, -12.5, 6.25],
+    [0.25, -1., 2.75, -3.5, 2.5],
+    [1., -4., 7.25, -6.5, 2.5],
+];
+
+/// Cells: the kernel's 5 states, R and g of the last call (0 fresh), the drive-glide flag,
+/// then the HIIR stage-0 memories (up then down).
+pub(crate) const XPANDER_CELLS: usize = 8 + 64;
+const XP_PREVIOUS: usize = 5;
+const XP_GLIDED: usize = 7;
+const XP_HIIR: usize = 8;
+
+/// `XpanderFilter` (process 0x1412bf1c0, update 0x1412cbc30; kernels 0x1412c14e0 /
+/// 0x1412bf450 / 0x1412c03f0 for Algorithm 0 and 0x1412c4cb0 / 0x1412c2580 / 0x1412c3870 for
+/// Algorithm 1, one per distortion): a four-pole ladder with the input saturator inside the
+/// feedback loop and a five-tap output mix, at 2x through the shared HIIR stage (edge
+/// `min(20000 / rate, 0.48) rate`, 80 dB) when Algorithm 0 runs at or under 48 kHz or
+/// Oversampling is on. Chain (wrapper 0x1412ca0a0 / 0x1412c8520 / 0x1412c9260): input times
+/// the drive (a fresh unit's first frame at 1), up, kernel, down, times `1 / NL(drive)`. R
+/// and g ramp across each call from the previous call's (0 on a fresh unit).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Xpander {
+    r: f32,
+    g: f32,
+    fat: f32,
+    mix: [f32; 5],
+    distortion: u8,
+    zdf: bool,
+    os2: bool,
+    drive: f32,
+    hiir: Hiir,
+}
+
+/// The ladder's input nonlinearity: 0 Padé `u (27 + u^2) / (27 + 9 u^2)`, 1 hard clip, 2 the
+/// Padé of `1e-6 u^2` (near linear).
+#[inline(always)]
+fn xp_sat<const D: u8>(u: f32) -> f32 {
+    match D {
+        0 => (((u * u) + 27.0) * u) / (((u * u) * 9.0) + 27.0),
+        1 => u.clamp(-1.0, 1.0),
+        _ => {
+            let t = (u * u) * f32::from_bits(0x3586_37be);
+            ((t + 27.0) * u) / ((t * 9.0) + 27.0)
+        }
+    }
+}
+
+impl Xpander {
+    pub(crate) fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let Uvi::Xpander { mode, hertz, q, distortion, drive, fat, algorithm, oversampling } = u else {
+            return None;
+        };
+        let zdf = algorithm == 1;
+        let os2 = (!zdf && rate <= 48_000.0) || oversampling;
+        let rate2 = if os2 { rate + rate } else { rate };
+        let fb = f32::from_bits;
+        let (mut r, g) = if zdf {
+            let x = (hertz / rate2).min(fb(0x3eff_7cee));
+            let t = (x * fb(0x4049_0fdb)).tan();
+            (q, t + t)
+        } else {
+            let x = (hertz / rate2).min(0.5);
+            let x2 = x * x;
+            let w = x * fb(0x40c9_0fdb);
+            let t = x2 * fb(0x421d_e9e7);
+            let r = ((((w * fb(0x3d57_7319)) + fb(0x3f80_5f07)) - (t * fb(0x3dbd_a512))) + ((t * w) * fb(0x3cb2_95ea)))
+                * q;
+            let g = (((w * fb(0x3f7d_3c36)) - (t * fb(0x3ed9_30be))) + ((t * w) * fb(0x3e0d_6a16)))
+                - ((x2 * x2) * fb(0x41fb_dc68));
+            (r, g)
+        };
+        if distortion == 2 && fb(0x469c_4000) < hertz {
+            let h = rate2 * 0.5;
+            r *= 1.0 - (hertz.min(h) - fb(0x469c_4000)) / h;
+        }
+        Some(Self {
+            r,
+            g,
+            fat,
+            mix: XPANDER_MIX[usize::from(mode.min(36))],
+            distortion: distortion.min(2),
+            zdf,
+            os2,
+            drive: 10f32.powf(drive * fb(0x3d4c_cccd)),
+            hiir: Hiir::new(rate, f64::from((20_000.0 / rate).min(fb(0x3ef5_c28f))) * f64::from(rate), 80.0),
+        })
+    }
+
+    fn makeup(&self, drive: f32) -> f32 {
+        1.0 / match self.distortion {
+            0 => xp_sat::<0>(drive),
+            1 => xp_sat::<1>(drive),
+            _ => xp_sat::<2>(drive),
+        }
+    }
+
+    fn kernel(&self, s: &mut [f32; 5], x: &mut [f32], previous: [f32; 2]) {
+        match (self.zdf, self.distortion) {
+            (false, 0) => self.ladder::<0>(s, x, previous),
+            (false, 1) => self.ladder::<1>(s, x, previous),
+            (false, _) => self.ladder::<2>(s, x, previous),
+            (true, 0) => self.tpt::<0>(s, x, previous),
+            (true, 1) => self.tpt::<1>(s, x, previous),
+            (true, _) => self.tpt::<2>(s, x, previous),
+        }
+    }
+
+    /// Algorithm 1's output mix (the mono kernels' order).
+    #[inline(always)]
+    fn out(&self, t: f32, [y1, y2, y3, y4]: [f32; 4]) -> f32 {
+        let m = self.mix;
+        (((y4 * m[4]) + (y3 * m[3])) + (y2 * m[2])) + ((t * m[0]) + (y1 * m[1]))
+    }
+
+    /// Algorithm 0: one-sample feedback delay, `s = [s1, s2, s3, s4, y4]`. The engine is stereo, so
+    /// this is the stereo SIMD kernel's per-channel order (0x1412c78d0 / 0x1412c60b0 / 0x1412c6cf0;
+    /// the native takes it for 2 channels when bit 2 of the block size is clear).
+    fn ladder<const D: u8>(&self, s: &mut [f32; 5], x: &mut [f32], [rc, gc]: [f32; 2]) {
+        let (ka, kb) = (f32::from_bits(0x3f44_ec4f), f32::from_bits(0x3e6c_4ec6));
+        let inv = 1.0 / x.len() as f32;
+        let fat = self.fat * 4.0;
+        let mut k = rc * 4.0;
+        let mut gain = (rc * fat) + 1.0;
+        let dgain = (((self.r * fat) + 1.0) - gain) * inv;
+        let dk = ((self.r * 4.0) - k) * inv;
+        let (mut a, mut b, mut c) = (gc * ka, gc * kb, 1.0 - gc);
+        let da = ((self.g * ka) - a) * inv;
+        let db = ((self.g * kb) - b) * inv;
+        let dc = ((1.0 - self.g) - c) * inv;
+        let [mut s1, mut s2, mut s3, mut s4, mut y4] = *s;
+        for v in x {
+            let feedback = k * y4;
+            k += dk;
+            let u = (gain * *v) - feedback;
+            let t = if D == 2 {
+                // The stereo kernels' form: 1000 P(u / 1000).
+                let w = u / 1000.0;
+                let ww = w * w;
+                1000.0 * (((ww + 27.0) * w) / ((ww * 9.0) + 27.0))
+            } else {
+                xp_sat::<D>(u)
+            };
+            let y1 = (t * a) + s1;
+            s1 = (t * b) + (c * y1);
+            let y2 = (a * y1) + s2;
+            let y3 = (a * y2) + s3;
+            s2 = (c * y2) + (b * y1);
+            y4 = (a * y3) + s4;
+            s3 = (c * y3) + (b * y2);
+            s4 = (c * y4) + (b * y3);
+            gain += dgain;
+            let m = self.mix;
+            *v = (y4 * m[4]) + ((y3 * m[3]) + ((y2 * m[2]) + ((y1 * m[1]) + (t * m[0]))));
+            (a, b, c) = (a + da, b + db, c + dc);
+        }
+        *s = [s1, s2, s3, s4, y4];
+    }
+
+    /// Algorithm 1: the zero-delay (TPT) ladder, coefficients re-derived at 64-frame sub-block
+    /// edges and ramped inside; `s[..4]` are the `(1 + G)`-scaled stage states.
+    fn tpt<const D: u8>(&self, s: &mut [f32; 5], x: &mut [f32], [rc, gc]: [f32; 2]) {
+        let inv = 1.0 / x.len() as f32;
+        let (dg, dr) = (self.g - gc, self.r - rc);
+        let scale = 1.0 / ((gc * 0.5) + 1.0);
+        let [mut s1, mut s2, mut s3, mut s4] = [s[0], s[1], s[2], s[3]].map(|v| scale * v);
+        let mut g1p = None;
+        for (index, chunk) in x.chunks_mut(64).enumerate() {
+            let (i0, l) = (index * 64, chunk.len());
+            let (r0, r1) = (i0 as f32 * inv, (i0 + l) as f32 * inv);
+            let big0 = ((r0 * dg) + gc) * 0.5;
+            let big1 = ((r1 * dg) + gc) * 0.5;
+            let k0 = ((r0 * dr) + rc) * 4.0;
+            let k1 = ((r1 * dr) + rc) * 4.0;
+            let n0 = 1.0 / (big0 + 1.0);
+            let mut gain = (k0 * self.fat) + 1.0;
+            let mut c = (1.0 - big0) * n0;
+            let mut h = n0 * big0;
+            let mut norm = 1.0 / ((((h * h) * (h * h)) * k0) + 1.0);
+            let p = big1 + 1.0;
+            g1p = Some(p);
+            let ip = 1.0 / p;
+            let h1 = big1 * ip;
+            let il = 1.0 / l as f32;
+            let dh = (h1 - h) * il;
+            let dc = (((1.0 - big1) * ip) - c) * il;
+            let dn = (il / ((((h1 * h1) * (h1 * h1)) * k1) + 1.0)) - (norm / l as f32);
+            let dk = (k1 - k0) * il;
+            let dgain = (((k1 * self.fat) + 1.0) - gain) * il;
+            let mut k = k0;
+            for v in chunk {
+                let est = ((((((h * s1) + s2) * h) + s3) * h) + s4) * k;
+                k += dk;
+                let u = (gain * *v) - est;
+                let t = if D == 2 {
+                    let tt = (u * u) * f32::from_bits(0x3586_37be);
+                    (norm / ((tt * 9.0) + 27.0)) * ((tt + 27.0) * u)
+                } else {
+                    xp_sat::<D>(u) * norm
+                };
+                let v1 = t * h;
+                let y1 = v1 + s1;
+                let y2 = (y1 * h) + s2;
+                s1 = (y1 * c) + v1;
+                let v2 = y2 * h;
+                let y3 = v2 + s3;
+                s2 = (y2 * c) + (y1 * h);
+                let v3 = y3 * h;
+                h += dh;
+                let y4 = v3 + s4;
+                s3 = (y3 * c) + v2;
+                s4 = (y4 * c) + v3;
+                c += dc;
+                gain += dgain;
+                *v = self.out(t, [y1, y2, y3, y4]);
+                norm += dn;
+            }
+        }
+        if let Some(p) = g1p {
+            *s = [p * s1, p * s2, p * s3, p * s4, 0.0];
+        }
+    }
+
+    /// Drive, 2x up, kernel, down, makeup; state in `cells`.
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        const BLOCK: usize = super::super::BLOCK;
+        let previous = [cells[XP_PREVIOUS][0] as f32, cells[XP_PREVIOUS + 1][0] as f32];
+        // A fresh unit's drive glide starts at 1 and reaches the target after one frame.
+        let glide = cells[XP_GLIDED][0] == 0.0 && (self.drive - 1.0).abs() >= f32::from_bits(0x3586_37bd);
+        let makeup = self.makeup(self.drive);
+        for ch in 0..2 {
+            let mut s: [f32; 5] = std::array::from_fn(|i| cells[i][ch] as f32);
+            let mut out: [f32; BLOCK] = std::array::from_fn(|i| block[ch][i] as f32 * self.drive);
+            if glide && len > 0 {
+                out[0] = block[ch][0] as f32;
+            }
+            if self.os2 {
+                let mut h = HiirState::default();
+                for (m, c) in h.first().into_iter().flatten().flatten().zip(&cells[XP_HIIR..]) {
+                    *m = c[ch] as f32;
+                }
+                let (mut up, mut scratch) = ([0f32; 2 * BLOCK], [0f32; 2 * BLOCK]);
+                self.hiir.up(&mut h, &out[..len], 1, &mut up, &mut scratch);
+                self.kernel(&mut s, &mut up[..2 * len], previous);
+                self.hiir.down(&mut h, &mut up[..2 * len], 1, &mut out);
+                for (m, c) in h.first().into_iter().flatten().flatten().zip(&mut cells[XP_HIIR..]) {
+                    c[ch] = flushed(*m);
+                }
+            } else {
+                self.kernel(&mut s, &mut out[..len], previous);
+            }
+            for (i, (o, v)) in block[ch][..len].iter_mut().zip(&out).enumerate() {
+                let makeup = if glide && i == 0 { self.makeup(1.0) } else { makeup };
+                *o = f64::from(*v * makeup);
+            }
+            for (i, v) in s.iter().enumerate() {
+                cells[i][ch] = flushed(*v);
+            }
+        }
+        cells[XP_PREVIOUS] = [f64::from(self.r); 2];
+        cells[XP_PREVIOUS + 1] = [f64::from(self.g); 2];
+        cells[XP_GLIDED] = [1.0; 2];
+    }
+}
+
 // ----------------------------------------------------------------- runtime
 
 /// Normalized cutoff and resonance (the native knobs).
@@ -1036,12 +1340,21 @@ impl CascadeSettings {
         })
     }
 
+    /// `[f64; 2]` state cells this configuration owns.
+    pub(crate) fn cells(self) -> usize {
+        if matches!(self.class, Legacy::Uvi(Uvi::Xpander { .. })) { XPANDER_CELLS } else { CELLS }
+    }
+
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Cascade {
         super::ladder_kernel::prepare();
         Cascade {
             class: self.class,
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
             rate: rate as f32,
+            xpander: match self.class {
+                Legacy::Uvi(u) => Xpander::new(u, rate as f32),
+                _ => None,
+            },
         }
     }
 }
@@ -1050,9 +1363,14 @@ pub(crate) struct Cascade {
     class: Legacy,
     parameters: [PreparedParameter; 2],
     rate: f32,
+    xpander: Option<Xpander>,
 }
 
 impl Cascade {
+    pub(crate) fn cells(&self) -> usize {
+        if self.xpander.is_some() { XPANDER_CELLS } else { CELLS }
+    }
+
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
         [("cutoff", self.parameters[0]), ("resonance", self.parameters[1])]
     }
@@ -1085,6 +1403,10 @@ impl Cascade {
                     .clamp(0., 1.)
             })
         };
+        if let Some(x) = &self.xpander {
+            x.process(cells, block, len);
+            return !cells.iter().flatten().all(|v| v.is_finite());
+        }
         if let Legacy::Sv(sv) = self.class {
             self.sv(sv, cells, block, len, target);
             return !cells[..KNOBS].iter().flatten().all(|v| v.is_finite());
@@ -1161,6 +1483,7 @@ impl Cascade {
             Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
             Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
             Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
+            Legacy::Uvi(Uvi::Xpander { .. }) => unreachable!("Xpander runs before the clocked laws"),
             _ => {}
         }
         let seen = cells[KNOBS];
@@ -1445,6 +1768,57 @@ mod tests {
                 // ~1.6e-7 absolute); ours use libm.
                 if !(err < 3e-5) {
                     failures.push(format!("{name} {p}: err {err}: {:?} vs {:?}", &block[0][..3], &native[..3]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI XpanderFilter end to end (drive, HIIR 2x, kernel with its R/g ramp, makeup) under
+    /// kemu: a fresh unit (R and g ramp from 0) and a settled one, 64-frame impulse at 48 kHz.
+    #[test]
+    fn xpander_matches_the_native_chain() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("cascade_xpander_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let p = &case["params"];
+            let num = |k: &str| p[k].as_f64().unwrap() as f32;
+            let uvi = Uvi::Xpander {
+                mode: num("Mode") as u8,
+                hertz: num("Freq"),
+                q: num("Q"),
+                distortion: num("DistortionType") as u8,
+                drive: num("Drive_dB"),
+                fat: num("Fat"),
+                algorithm: num("Algorithm") as u8,
+                oversampling: num("Oversampling") != 0.0,
+            };
+            let settings =
+                CascadeSettings { class: Legacy::Uvi(uvi), cutoff: Parameter::Constant(0.0), resonance: Parameter::Constant(0.0) };
+            let unit = settings.compile(48_000, &mut Vec::new());
+            let x = unit.xpander.unwrap();
+            let (r, g) = (case["R"].as_f64().unwrap() as f32, case["g"].as_f64().unwrap() as f32);
+            if (x.r - r).abs() > 1e-6 || (x.g - g).abs() > 1e-6 {
+                failures.push(format!("{p}: R/g {} {} vs {r} {g}", x.r, x.g));
+            }
+            let mut cells = vec![[0f64; 2]; settings.cells()];
+            if !case["fresh"].as_bool().unwrap() {
+                cells[XP_PREVIOUS] = [f64::from(x.r); 2];
+                // Settled R and g only: the drive still glides from 1 on this first call.
+                cells[XP_PREVIOUS + 1] = [f64::from(x.g); 2];
+            }
+            let mut block = [[0f64; super::super::super::BLOCK]; 2];
+            block[0][0] = 1.0;
+            block[1][0] = 0.5;
+            unit.process(&mut cells, &[], &mut block, 64, 0, [0.0; 4]);
+            for (ch, key) in ["out", "right"].into_iter().enumerate() {
+                let Some(native) = case[key].as_array() else { continue };
+                let native: Vec<f32> = native.iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = block[ch].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                // Mono alg-0 vectors differ from our stereo-kernel order by rounding.
+                if !(err < 2e-5) {
+                    failures.push(format!("{p} fresh {} {key}: err {err}: {:?} vs {:?}", case["fresh"], &block[ch][..4], &native[..4]));
                 }
             }
         }
