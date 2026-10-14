@@ -125,9 +125,15 @@ pub(super) fn process(
             let c = Feedback::new(knobs, high_quality, rate);
             let detector = HighPassed::new(c.hp, linked, state);
             let k = [c.attack, c.release, c.couple, c.floor];
-            let ballistics = FeedbackLoop::new(c.curve, k, c.steps, linked, c.bypass, cells);
             let out = FeedbackOut::new(c.lp, c.hp, shared, state);
-            run((Drive { gain: c.drive, offset: EPS_18 }, detector, ballistics, out), state, block, len);
+            let input = Drive { gain: c.drive, offset: EPS_18 };
+            if c.steps == 4 {
+                let ballistics = FeedbackLoop::<4>::new(c.curve, k, linked, c.bypass, cells);
+                run((input, detector, ballistics, out), state, block, len);
+            } else {
+                let ballistics = FeedbackLoop::<2>::new(c.curve, k, linked, c.bypass, cells);
+                run((input, detector, ballistics, out), state, block, len);
+            }
         }
         Law::KontaktTransient { attack, sustain, gain, clip } => {
             let c = Transient::new([attack, sustain, gain].map(|v| v as f32), rate);
