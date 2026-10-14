@@ -1459,6 +1459,60 @@ impl DspState {
 mod tests {
     use super::*;
 
+    // Attribution prototype only: production admission still uses DspState::reset.
+    fn reset_owned_candidate(stage: &PreparedProcessor, state: &mut ProcessorState) {
+        state.z = [[0.; 2]; 2];
+        state.aux = [0.; 16];
+        state.delay_position = 0;
+        state.delay_filled = 0;
+        if matches!(stage, PreparedProcessor::Color { .. } | PreparedProcessor::Filter { .. }) {
+            state.color = Default::default();
+        }
+    }
+
+    #[test]
+    #[ignore = "optimized voice-admission reset footprint attribution, not callback timing"]
+    fn voice_reset_stage_evidence() {
+        use std::{hint::black_box, time::Instant};
+        let mut processors = Vec::new();
+        for (frequency, gain) in [(0.3, 6.), (0.55, -4.), (0.7, 3.)] {
+            let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, frequency, 0.5, gain);
+            band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+            processors.push(Processor::Eq(band));
+        }
+        processors.push(Processor::Color(ColorSettings::stereo(StereoSettings {
+            width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
+        })));
+        let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
+            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+        let stages: Vec<_> = chain.pre.iter().chain(&chain.post).collect();
+        eprintln!("voice_reset ProcessorState_bytes={} owned_stages={}",
+            size_of::<ProcessorState>(), stages.len());
+        for stride in [stages.len(), stages.len() * 4] {
+            let mut cells = vec![ProcessorState::default(); 300 * stride];
+            let loops = ((128 << 20) / (cells.len() * size_of::<ProcessorState>())).clamp(16, 2000);
+            for pair in 0..4 {
+                for candidate in if pair % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
+                    let start = Instant::now();
+                    for _ in 0..loops {
+                        for states in black_box(&mut cells[..]).chunks_exact_mut(stride) {
+                            match candidate {
+                                0 => states.fill(ProcessorState::default()),
+                                1 => states[..stages.len()].fill(ProcessorState::default()),
+                                _ => for (stage, state) in stages.iter().zip(states) {
+                                    reset_owned_candidate(stage, state);
+                                },
+                            }
+                        }
+                    }
+                    black_box(&mut cells);
+                    eprintln!("voice_reset stride={stride} pair={pair} candidate={candidate} voices=300 loops={loops} us={}",
+                        start.elapsed().as_micros());
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "optimized, isolated validation-stage evidence; not a full callback benchmark"]
     fn finite_guard_stage_evidence() {
