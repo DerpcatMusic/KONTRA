@@ -1,6 +1,6 @@
 //! The rack: every part stacked Kontakt-style, each under its own header.
 //!
-//! A header, two compact lines, names the part, steps its preset, routes it
+//! A header's main line names the part, steps its preset, routes it
 //! and mixes it; its chevron folds the part down to the header alone (the
 //! height springs), its ✕ removes it.
 //! Below an open header sit its second row (views and performance chips),
@@ -32,9 +32,10 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
-/// A header's height with the rule under it: name/actions, then routing/mix. Parts
+/// The fixed main header, with its rule. The expanded continuation row is
+/// part of the foldable body, so collapsed and sticky headers stay compact. Parts
 /// shrink no further, and stuck headers stack at this pitch.
-pub const SLIM: f64 = CONTROL * 2. + 6.;
+pub const SLIM: f64 = CONTROL + 6.;
 
 /// Parts built in a frame before the rack knows where they are.
 const UNPLACED: usize = 4;
@@ -618,14 +619,7 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
 /// Previous or next preset in the part's library folder, if there is one.
 fn step_preset(cx: &Cx, slot: usize, by: isize) -> Option<String> {
     let path = &cx.selection.parts[slot].path;
-    let library = cx.library_of(Path::new(path));
-    let multi = import::is_multi(Path::new(path));
-    let siblings: Vec<_> = cx
-        .view
-        .files
-        .iter()
-        .filter(|p| import::is_multi(p) == multi && cx.library_of(p) == library)
-        .collect();
+    let siblings: Vec<_> = preset_paths(cx, slot).collect();
     let at = siblings.iter().position(|p| p.to_string_lossy() == *path)?;
     let to = at.checked_add_signed(by)?;
     siblings.get(to).map(|p| p.to_string_lossy().into_owned())
@@ -867,6 +861,10 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let part = &mut cx.selection.parts[slot];
     let mut gain = f64::from(part.gain);
     let gain_el = gain_knob(ui, &format!("volume-{slot}"), &mut gain);
+    let gain_el = match cx.view.parts[slot].instrument.as_deref().and_then(instrument::volume_text) {
+        Some(volume) => gain_el.tip(format!("Volume: {gain:+.1} dB\nInstrument volume: {volume}\nThe saved instrument volume applies until its controller arrives.")),
+        None => gain_el,
+    };
     part.gain = gain as f32;
     let mut pan = f64::from(part.pan);
     let pan_el = pan_wedge(ui, &format!("pan-{slot}"), &mut pan);
@@ -914,7 +912,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     } else {
         SPACE
     });
-    let mut tail = Vec::new();
+    let mut tail = vec![switches];
     if !narrow {
         tail.push(dot);
     }
@@ -922,19 +920,9 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     tail.push(more_el);
     tail.extend(remove_el);
     let tail = cluster(tail).gap(TIGHT + 1.);
-    let top = row![fold_el, name_row, tail]
-        .gap(SPACE)
+    let body = row![fold_el, name_row, mix, tail]
+        .gap(if narrow { TIGHT } else { SPACE })
         .align(Align::Center)
-        .h(CONTROL)
-        .w(Len::Pct(100.));
-    let routing = row![mix, spacer().flex(1), switches]
-        .gap(SPACE)
-        .align(Align::Center)
-        .h(CONTROL)
-        .w(Len::Pct(100.));
-    let body = col![top, routing]
-        .gap(0)
-        .align(Align::Stretch)
         .pad(edges(0., SPACE, 0., TIGHT))
         .flex(1)
         .min_w(0);
@@ -1097,20 +1085,23 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
 // Port from v1 0cb7a8a0:src/ui/rack.rs.
 fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let part = cx.selection.parts.get(slot)?;
-    if !part.snapshot_base() {
-        return None;
-    }
+    if part.path.is_empty() { return None; }
+    let raw_snapshot = Path::new(&part.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    let base = if raw_snapshot {
+        cx.view.parts[slot].resource_path.as_deref().unwrap_or(Path::new(&part.path))
+    } else { Path::new(&part.path) };
     let paths = cx
         .view
         .shelf
         .snapshots
-        .get(Path::new(&part.path))
+        .get(base)
         .map(|s| s.paths.as_slice())
         .unwrap_or(&[]);
-    if paths.is_empty() && part.snapshot.is_empty() {
-        return None;
+    if paths.is_empty() && part.snapshot.is_empty() && !raw_snapshot {
+        return preset_row(ui, cx, slot);
     }
-    let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
+    let selected = if raw_snapshot { &part.path } else { &part.snapshot };
+    let chosen = paths.iter().position(|p| p == Path::new(selected));
     let previous = chosen
         .and_then(|i| i.checked_sub(1))
         .and_then(|i| paths.get(i))
@@ -1118,10 +1109,10 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let next = chosen
         .map_or_else(|| paths.first(), |i| paths.get(i + 1))
         .cloned();
-    let title = if part.snapshot.is_empty() {
+    let title = if selected.is_empty() {
         "Select preset…".into()
     } else {
-        super::header::stem(&part.snapshot)
+        super::header::stem(selected)
     };
     let id = format!("snapshot-{slot}");
     let (hit, selector) = dropdown(ui, id.as_str(), &title, "Preset");
@@ -1151,7 +1142,8 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         next.is_some(),
     );
     if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
-        cx.snapshot(slot, path.to_string_lossy().into_owned());
+        if raw_snapshot { cx.replace(slot, path.to_string_lossy().into_owned()); }
+        else { cx.snapshot(slot, path.to_string_lossy().into_owned()); }
     }
     Some(
         col![
@@ -1165,4 +1157,29 @@ fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         .gap(0)
         .shrink(0),
     )
+}
+
+/// Same catalog and ordering as the main header's preset stepping.
+pub(super) fn preset_paths<'a>(cx: &'a Cx, slot: usize) -> impl Iterator<Item = &'a std::path::PathBuf> {
+    let path = &cx.selection.parts[slot].path;
+    let library = cx.library_of(Path::new(path));
+    let multi = import::is_multi(Path::new(path));
+    cx.view.files.iter().filter(move |p| import::is_multi(p) == multi && cx.library_of(p) == library)
+}
+
+fn preset_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let path = cx.selection.parts.get(slot)?.path.clone();
+    let id = format!("preset-picker-{slot}");
+    let (hit, selector) = dropdown(ui, &id, &super::header::stem(&path), "Instrument preset");
+    if hit { menu::open_under(ui, cx, menu::Target::Presets(slot), &id); }
+    let [previous, next] = neighbors(cx, slot);
+    let arrow = |ui: &mut Ui, id: String, icon: Icon, name: &str, enabled: bool| {
+        if enabled { icon_button(ui, id, icon, name, false) }
+        else { (false, dead_icon(icon, name)) }
+    };
+    let (prev_hit, prev) = arrow(ui, format!("preset-picker-prev-{slot}"), Icon::Left, "Previous preset", previous.is_some());
+    let (next_hit, next_el) = arrow(ui, format!("preset-picker-next-{slot}"), Icon::Right, "Next preset", next.is_some());
+    if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) { cx.replace(slot, path); }
+    Some(col![row![selector.flex(1), prev, next_el].gap(TIGHT).align(Align::Center)
+        .pad((SPACE, TIGHT)).w(Len::Pct(100.)), rule()].gap(0).shrink(0))
 }

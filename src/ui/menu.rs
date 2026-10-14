@@ -19,6 +19,7 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    Presets(usize),
     Snapshots(usize),
     View(usize),
     /// A key on the keyboard.
@@ -59,6 +60,7 @@ pub enum Command {
     Streaming(Streaming),
     PartStreaming(usize, Option<Streaming>),
     LoadSnapshot(usize),
+    SelectPreset { slot: usize, source: (String, u32, String), path: String },
     SelectSnapshot {
         slot: usize,
         source: (String, u32, String),
@@ -194,12 +196,26 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::Presets(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot) else { return Vec::new(); };
+            super::rack::preset_paths(cx, *slot).into_iter().map(|path| Item::Act {
+                label: super::header::stem(&path.to_string_lossy()), hint: "",
+                on: path == Path::new(&part.path),
+                command: Command::SelectPreset { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
+            }).collect()
+        }
         Target::Snapshots(slot) => {
-            let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else {
+            let Some(part) = cx.selection.parts.get(*slot) else {
                 return Vec::new();
             };
+            let raw = Path::new(&part.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+            if !part.snapshot_base() && !raw { return Vec::new(); }
+            let base = if raw {
+                cx.view.parts[*slot].resource_path.as_deref().unwrap_or(Path::new(&part.path))
+            } else { Path::new(&part.path) };
+            let selected = if raw { &part.path } else { &part.snapshot };
             let mut items = Vec::new();
-            if let Some(catalog) = cx.view.shelf.snapshots.get(Path::new(&part.path)) {
+            if let Some(catalog) = cx.view.shelf.snapshots.get(base) {
                 for path in &catalog.paths {
                     let label = super::header::stem(&path.to_string_lossy());
                     let category = path
@@ -210,7 +226,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     items.push(Item::Act {
                         label: format!("{label} · {category}"),
                         hint: "",
-                        on: path == Path::new(&part.snapshot),
+                        on: path == Path::new(selected),
                         command: Command::SelectSnapshot {
                             slot: *slot,
                             source: part.source(),
@@ -224,7 +240,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }
             items.push(check(
                 "Original instrument",
-                part.snapshot.is_empty(),
+                !raw && part.snapshot.is_empty(),
                 Command::SelectSnapshot {
                     slot: *slot,
                     source: part.source(),
@@ -1142,10 +1158,20 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
                 .get(slot)
                 .is_some_and(|part| part.source() == source)
             {
-                cx.snapshot(slot, path);
+                if Path::new(&source.0).extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
+                    let path = if path.is_empty() {
+                        cx.view.parts[slot].resource_path.as_ref().map(|p| p.to_string_lossy().into_owned())
+                    } else { Some(path) };
+                    if let Some(path) = path { cx.replace(slot, path); }
+                } else { cx.snapshot(slot, path); }
             } else {
                 cx.state.notice =
                     "Preset ignored: the base instrument changed while its menu was open.".into();
+            }
+        }
+        Command::SelectPreset { slot, source, path } => {
+            if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
+                cx.replace(slot, path);
             }
         }
         Command::LoadSnapshot(slot) => {

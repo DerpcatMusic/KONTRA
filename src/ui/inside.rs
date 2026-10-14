@@ -113,6 +113,8 @@ fn offered(cx: &Cx, slot: usize) -> Vec<View> {
 
 /// The view switch above the stage, and the view it picks.
 pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
+    let compact = ui.scene().and_then(|s| s.surface(&format!("header-{slot}")))
+        .is_some_and(|s| s.frame.size.width < 800.);
     let offered = offered(cx, slot);
     let st = cx.state.inside.entry(slot).or_default();
     let view = st
@@ -126,10 +128,14 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
     let tabs = offered
         .iter()
         .map(|&v| {
+            let label = if compact { match v {
+                View::Interface => "UI", View::Articulations => "Arts", View::Mapping => "Map",
+                _ => v.label(),
+            }} else { v.label() };
             let (hit, el) = latch(
                 ui,
                 format!("view-{slot}-{}", v.label()),
-                v.label(),
+                label,
                 v.label(),
                 v == view,
             );

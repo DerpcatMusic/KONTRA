@@ -171,15 +171,17 @@ fn performance_dynamics_fit_the_minimum_rack() {
 }
 
 #[test]
-fn performance_keeps_numeric_volume_readable() {
+fn performance_keeps_instrument_volume_in_the_gain_tooltip() {
     for (width, height) in [(900., 600.), (1180., 900.)] {
         let p = specimen();
         let h = Harness::new(&p, width, height);
-        let volume = h.ui.scene().unwrap().surface("perf-vol-0").unwrap().frame;
+        let scene = h.ui.scene().unwrap();
+        let volume = scene.surface("volume-0").unwrap();
         assert!(
-            volume.size.width >= TEXT * 9.,
-            "Volume and CC7 -6.0 dB must fit: {volume:?}"
+            volume.tip.as_deref().unwrap().contains("CC7 -6.0 dB"),
+            "instrument volume remains readable without a separate CC7 strip"
         );
+        assert!(scene.surface("perf-vol-0").is_none());
     }
 }
 

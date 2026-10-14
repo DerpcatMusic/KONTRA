@@ -878,7 +878,7 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
 }
 
 /// What the part plays and listens to, as chips for the header's second row:
-/// the articulation (with its effective trigger), the instrument volume and
+/// the articulation (with its effective trigger) and
 /// the dynamics controller it waits for (one click sets where it starts).
 fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
     let Some(v) = cx.view.parts.get(slot) else {
@@ -900,26 +900,11 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             );
             let text = format!("{} · {}", a.name, inside::input_label(&input));
             items.push(
-                row![
-                    caption("Articulation").fill(secondary()).lines(1).shrink(0),
-                    body(text.clone()).lines(1).flex(1).min_w(0)
-                ]
-                .gap(SPACE)
-                .align(Align::Center)
-                .shrink(0)
+                row![caption(text.clone()).lines(1).flex(1).min_w(0)]
+                .align(Align::Center).flex(1).min_w(0)
                 .tip(text)
                 .named("Articulation")
                 .id(format!("perf-art-{slot}")),
-            );
-        }
-        if let Some(text) = volume_text(inst) {
-            items.push(
-                row![caption("Volume").fill(secondary()), body(text).lines(1)]
-                    .gap(SPACE)
-                    .align(Align::Center)
-                    .shrink(0)
-                    .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
-                    .id(format!("perf-vol-{slot}")),
             );
         }
     }
@@ -935,7 +920,7 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
     if !moving.is_empty() {
         let now = cx.selection.parts[slot].dynamics;
         let mut picked = now;
-        let tabs = [(-1, "Kontakt"), (64, "64"), (127, "127")]
+        let tabs = [(-1, "Auto"), (64, "64"), (127, "127")]
             .into_iter()
             .map(|(value, label)| {
                 let (hit, el) = latch(
@@ -978,22 +963,21 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             .gap(SPACE)
             .align(Align::Center)
             .flex(1)
-            .min_w(CONTROL * 9.),
+            .min_w(0),
         );
     }
     items
 }
 
 /// The header's second row: the view switch (interface, articulations,
-/// mapping, sound, info) then the performance chips, on one wrapping line.
+/// mapping, sound, info) then compact performance chips, on one line.
 /// The row is `None` when the part has neither.
 pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Option<El>) {
     let (view, tabs) = inside::bar(ui, cx, slot);
     let items: Vec<El> = tabs.into_iter().chain(performance(ui, cx, slot)).collect();
     let row2 = (!items.is_empty()).then(|| {
         row(items)
-            .wrap()
-            .gap(SPACE * 2.)
+            .gap(SPACE)
             .line_gap(TIGHT)
             .align(Align::Center)
             .pad((INSET, 2.))
