@@ -2157,6 +2157,25 @@ mod tests {
     }
 
     #[test]
+    fn exact_packing_failure_drops_all_staged_heads_before_mandatory_fallback() {
+        let assets=vec![Pcm::streamed(48000,16).unwrap(),Pcm::streamed(48000,16).unwrap()];
+        let opened:[Arc<AtomicU64>;2]=std::array::from_fn(|_|Arc::new(AtomicU64::new(0)));
+        let sources=assets.iter().enumerate().map(|(i,pcm)|(pcm.asset_id(),Arc::new(HeadFixture{opens:opened[i].clone(),cancel:None,frames:16,wide:i==1}) as Arc<dyn AssetSource>)).collect();
+        let (_,worker)=StreamCache::new(1).unwrap();
+        // The two mono16 minima fit 64 bytes. The first mono head stages 32;
+        // the second is stereo-f32 (128), forcing exact-byte admission failure.
+        let (streamer,bytes)=Streamer::start_cancelable(sources,&assets,vec![vec![0..16];2],worker,1,false,64,HashSet::from([assets[0].asset_id()]),true,&||false).unwrap();
+        assert!(streamer.head_fallback().is_some());
+        assert_eq!((opened[0].load(Ordering::Relaxed),opened[1].load(Ordering::Relaxed)),(2,1));
+        assert_eq!(bytes,32);
+        assert_eq!(streamer.head_budget_status().held_bytes,32,"no abandoned staged quota survives the retry");
+        assert_eq!(streamer.head_budget_status().peak_bytes,32);
+        assert!(assets[0].resident_covers(0..16));
+        assert_eq!(assets[1].head_bytes(),0);
+        assert!(!streamer.head_readiness(&assets).complete());
+    }
+
+    #[test]
     fn cold_fallback_does_not_swallow_source_or_metadata_failures() {
         for wrong_header in [false,true] {
             struct Failed(bool);

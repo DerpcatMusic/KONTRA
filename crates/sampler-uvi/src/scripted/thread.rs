@@ -83,6 +83,7 @@ pub struct ScriptThread {
 }
 
 enum UiRequest {
+    SampleStatus(mpsc::SyncSender<crate::script::SampleLoadStatus>),
     SampleControl(sampler_core::SampleControl, mpsc::SyncSender<Result<(),String>>),
     SampleStream(sampler_kontakt::DynamicSources, mpsc::SyncSender<Result<(),String>>),
     Edit(ControlId, f64),
@@ -134,6 +135,7 @@ fn process_ui_requests(
 ) {
     while let Ok(request) = requests.try_recv() {
         match request {
+            UiRequest::SampleStatus(reply)=>{let _=reply.send(ScriptHost::sample_load_status(host));}
             UiRequest::SampleControl(control,reply)=>{let _=reply.send(host.bind_sample_control(control));}
             UiRequest::SampleStream(sources,reply)=>{let _=reply.send(host.bind_sample_stream(sources));}
             UiRequest::Edit(id, value) => {
@@ -411,6 +413,12 @@ impl ScriptThread {
 }
 
 impl Script for ScriptThread {
+    fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {
+        let (send,reply)=mpsc::sync_channel(1);
+        self.ui.edits.try_send(UiRequest::SampleStatus(send)).map_err(|_|"sample status owner unavailable/capacity".to_string())?;
+        self.ui.owner.unpark();
+        reply.recv_timeout(Duration::from_secs(2)).map_err(|_|"sample status owner reply timeout".to_string())
+    }
     fn bind_sample_control(&mut self, control: sampler_core::SampleControl) -> Result<(), String> {
         let (send,reply)=mpsc::sync_channel(1);
         self.ui.edits.try_send(UiRequest::SampleControl(control,send)).map_err(|_|"sample owner unavailable/capacity".to_string())?;

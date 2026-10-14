@@ -82,7 +82,7 @@ fn run(targets: usize, requests: usize, supersede: bool) {
         .map(|t| SampleTargetId(t.node))
         .collect();
     assert_eq!(ids.len(), targets);
-    let attached = translated
+    let mut attached = translated
         .attach_script(48000, Default::default())
         .unwrap()
         .unwrap();
@@ -91,6 +91,12 @@ fn run(targets: usize, requests: usize, supersede: bool) {
         "initial metadata requests must not fail before the service binds: {:?}",
         attached.driver.ui().fault_counts()
     );
+    let before = attached.driver.sample_load_status().unwrap();
+    assert_eq!(before.requested, requests);
+    assert_eq!(before.successful, 0);
+    assert_eq!(before.failed, 0);
+    assert_eq!(before.cancelled, if supersede { requests - 1 } else { 0 });
+    assert_eq!(before.pending, targets);
     let streamed = sampler_uvi::assemble_translated_streamed(
         translated,
         48000,
@@ -136,6 +142,15 @@ fn run(targets: usize, requests: usize, supersede: bool) {
         );
         assert!(pcm.resident_frames().is_none());
     }
+    let tasks = driver.sample_load_status().unwrap();
+    assert_eq!(tasks.requested, requests);
+    assert_eq!(tasks.successful, targets);
+    assert_eq!(tasks.cancelled, requests - targets);
+    assert_eq!((tasks.failed, tasks.pending), (0, 0));
+    assert_eq!(
+        tasks.requested,
+        tasks.successful + tasks.failed + tasks.cancelled + tasks.pending
+    );
     let budget = runtime.sample_head_budget_status().unwrap();
     assert_eq!(budget.held_bytes, targets * 16);
     assert!(budget.peak_bytes <= budget.limit_bytes);

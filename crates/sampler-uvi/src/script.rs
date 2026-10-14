@@ -19,7 +19,7 @@ use std::{
 
 mod async_data;
 mod sample_loading;
-pub use sample_loading::{SampleResource, SampleSource};
+pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource};
 mod catalog_copy;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
