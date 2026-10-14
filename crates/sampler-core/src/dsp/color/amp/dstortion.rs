@@ -41,7 +41,7 @@ fn st(s: &mut [f32; 32], o: isize, v: V) {
     s[i..i + 4].copy_from_slice(&v);
 }
 
-fn zip(a: V, b: V, f: impl Fn(f32, f32) -> f32) -> V {
+pub(super) fn zip(a: V, b: V, f: impl Fn(f32, f32) -> f32) -> V {
     std::array::from_fn(|l| f(a[l], b[l]))
 }
 
