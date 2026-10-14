@@ -480,7 +480,7 @@ pub(super) fn compile_processors(
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
-                    *delay_frames = offset.checked_add(settings.ring_frames()).ok_or(Error::Capacity)?;
+                    *delay_frames = offset.checked_add(settings.ring_frames(rate)).ok_or(Error::Capacity)?;
                     PreparedProcessor::Color {
                         color: settings.compile(rate, bindings),
                         offset,
