@@ -77,7 +77,10 @@ chain!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
 chain!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 
 /// Run `len` frames of `block` through the chain, in place.
-pub(super) fn run<S: Stage>(mut s: S, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+pub(super) fn run<S: Stage>(s: S, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+    // A local copy (not the by-reference argument) lets LLVM keep stage
+    // fields in registers across frames.
+    let mut s = s;
     let mut f = Frame::default();
     s.begin(&mut f);
     for i in 0..len {
