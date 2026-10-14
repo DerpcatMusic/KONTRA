@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod parity_run;
 type Values = BTreeMap<String, ir::Value>;
 thread_local! {
     static SUBMITTED: std::cell::RefCell<BTreeSet<String>> = const { std::cell::RefCell::new(BTreeSet::new()) };
