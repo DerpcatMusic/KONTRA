@@ -971,9 +971,14 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
 }
 
 /// A caption's natural width, as a flex basis it can shrink from.
-// ponytail: average glyph estimate; measure the text if labels clip early.
+// ponytail: two-class glyph estimate fitted to the UI font; measure the
+// text if labels clip early or leave gaps.
 fn text_basis(text: &str) -> f64 {
-    text.chars().count() as f64 * SMALL * 0.62
+    let em: f64 = text
+        .chars()
+        .map(|c| if c.is_ascii_uppercase() || c.is_ascii_digit() { 0.64 } else { 0.41 })
+        .sum();
+    (em * SMALL).ceil() + 2.
 }
 
 /// The header's second row: the view switch (interface, articulations,
