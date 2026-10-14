@@ -1034,7 +1034,7 @@ fn decode(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     };
-    // ponytail: linear LRU over a few dozen readers; a map if that shows up.
+    // Linear LRU is bounded at 128 readers per worker; keep it off audio.
     let mut readers = ReaderCache::new(reader_byte_limit);
     let mut tick = 0u64;
     let mut held = None;
