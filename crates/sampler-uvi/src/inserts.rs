@@ -410,6 +410,12 @@ impl Translation {
                     continue;
                 }
             }
+            if live && engine_parameters::lane_family(node) {
+                // Each unit of the element listens at its own lane slot.
+                for (k, p) in out[first..].iter_mut().enumerate() {
+                    *p = p.at(engine_parameters::lane_slot(id, k));
+                }
+            }
             let count = out.len() - first;
             if count == 0 && mix {
                 out.truncate(slot);

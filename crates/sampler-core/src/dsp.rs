@@ -218,7 +218,8 @@ pub enum Processor {
 /// Stored-value knobs of a unit whose family applies its own setter: each
 /// lane's role and the parameter it follows.
 pub type LiveKnobs = [Option<(sampler_ir::ProcessorParameter, Parameter)>; LIVE_KNOBS];
-pub const LIVE_KNOBS: usize = 5;
+/// UVI SparkVerb has the most: wet, dry, size, three decays, predelay, width.
+pub const LIVE_KNOBS: usize = 8;
 type PreparedKnobs = [Option<(sampler_ir::ProcessorParameter, control::PreparedParameter)>; LIVE_KNOBS];
 
 fn live_valid(knobs: &LiveKnobs) -> bool {

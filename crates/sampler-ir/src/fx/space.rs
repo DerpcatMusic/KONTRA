@@ -100,6 +100,16 @@ pub struct SparkVerb {
     pub predelay_seconds: f32,
 }
 
+impl SparkVerb {
+    /// The tail the host keeps ringing (0x141321310): twice the RT60 of the
+    /// slowest band plus the predelay is covered by `2·` this; frozen, 60 s.
+    pub fn tail_seconds(&self) -> f64 {
+        let band = |on: bool, v: f32| if on { 1.0 } else { f64::from(v) };
+        let slowest = 1f64.max(band(self.low_cut, self.decay_low)).max(band(self.high_cut, self.decay_high));
+        if self.freeze { 60.0 } else { (0.1 * f64::from(self.room_m) * f64::from(self.decay) * slowest).clamp(0.01, 60.0) }
+    }
+}
+
 /// The ten normalized controls (`0..=1`) of the Kontakt Reverb core setter
 /// `FUN_141aea370`, in its index order: time, size, damping, modulation,
 /// diffusion, predelay, high cut, low shelf, internal dry/wet, stereo.
@@ -278,6 +288,23 @@ impl Config {
         use super::{Lane, Law, tables};
         use crate::ProcessorParameter as P;
         let (Some(_), Some(n)) = (self.address, self.network) else { return Vec::new() };
+        if let (Topology::SparkVerb, Some(s)) = (n.topology, n.spark) {
+            // UVI SparkVerb: each lane is the unit's own field.
+            use super::uvi_lane;
+            return [
+                uvi_lane(P::Gain, self.wet, 0., 1.),
+                uvi_lane(P::Response, self.dry, 0., 1.),
+                uvi_lane(P::Size, f64::from(s.room_m), 0., 100.),
+                uvi_lane(P::Time, f64::from(s.decay), 0., 20.),
+                uvi_lane(P::Damping, f64::from(s.decay_low), 0., 20.),
+                uvi_lane(P::Colour, f64::from(s.decay_high), 0., 20.),
+                uvi_lane(P::Predelay, n.predelay_seconds, 0., 0.1),
+                uvi_lane(P::Width, f64::from(s.width), 0., 1.),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+        }
         let (Topology::Freeverb, Some(f)) = (n.topology, n.freeverb) else { return Vec::new() };
         let cutoff = (n.input_cutoff_hz / 20.).log(1000.);
         vec![
@@ -293,7 +320,32 @@ impl Config {
     /// (case 0x3e of 0x1409619b0; sampler-kontakt `effects::space::legacy`).
     pub fn set(&mut self, role: crate::ProcessorParameter, stored: f64) {
         use crate::ProcessorParameter as P;
+        match role {
+            P::Gain if self.network.is_some_and(|n| n.spark.is_some()) => return self.wet = stored,
+            P::Response if self.network.is_some_and(|n| n.spark.is_some()) => return self.dry = stored,
+            _ => {}
+        }
         let Some(n) = &mut self.network else { return };
+        if let Some(s) = &mut n.spark {
+            let v = stored as f32;
+            match role {
+                P::Size => s.room_m = v,
+                P::Time => s.decay = v,
+                P::Damping => s.decay_low = v,
+                P::Colour => s.decay_high = v,
+                P::Predelay => {
+                    n.predelay_seconds = stored;
+                    s.predelay_seconds = v;
+                }
+                P::Width => {
+                    s.width = v;
+                    n.width = f64::from(v).clamp(0.0, 1.0);
+                }
+                _ => {}
+            }
+            n.decay_seconds = s.tail_seconds();
+            return;
+        }
         let Some(f) = &mut n.freeverb else { return };
         let v = f64::from((stored as f32).clamp(0., 1.));
         match role {

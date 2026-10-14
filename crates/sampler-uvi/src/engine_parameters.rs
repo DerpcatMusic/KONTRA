@@ -14,6 +14,113 @@ pub(crate) fn bus_scope(node: roxmltree::Node) -> bool {
     !node.ancestors().any(|a| a.has_tag_name("Keygroup"))
 }
 
+/// Lane slots of a family element start here, clear of the catalog-position
+/// slots below and of the Mix at slot -1.
+const LANE_SLOTS: i32 = 1000;
+
+/// Where the `k`-th processor of scripted bus element `node` listens.
+pub(crate) fn lane_slot(node: usize, k: usize) -> ir::SlotAddress {
+    ir::SlotAddress {
+        group: -1,
+        slot: LANE_SLOTS + i32::try_from(k).unwrap_or(0),
+        generic: i32::try_from(node).unwrap_or(-1),
+    }
+}
+
+/// Delay, modulation and reverb elements on a bus: they translate to family
+/// units (`Processor::TimeMod`/`Space`) whose lanes take script writes.
+pub(crate) fn lane_family(node: roxmltree::Node) -> bool {
+    lane_kind(node.tag_name().name()) && bus_scope(node)
+}
+
+pub(crate) fn lane_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DiffuseDelay"
+            | "DualDelayX" | "TapeEcho" | "DiffuseDelayNested" | "Buzz" | "Chorus" | "Flanger" | "AnalogChorus"
+            | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter"
+            | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+    )
+}
+
+/// A script's write of `name` on a family element (`lane_family`), as the
+/// lane writes that move its units from the old configuration to the new
+/// one. The element is translated alone from its retained fields, before and
+/// after the write. `None` when anything but lanes would change: a field
+/// with no lane, a value outside its lane, a new report or another layout.
+pub(crate) fn retune(
+    node: usize,
+    kind: &str,
+    params: &[(String, String)],
+    name: &str,
+    value: f64,
+) -> Option<Vec<(EngineParameterAddress, i32)>> {
+    let alone = |written: Option<f64>| -> Option<(Vec<ir::Processor>, Vec<String>)> {
+        let escape = |v: &str| v.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+        let mut xml = format!("<UVI4><Program><Inserts><{kind}");
+        // Bypass is the element's Mix, outside its units.
+        for (k, v) in params.iter().filter(|(k, _)| k != "Bypass" && (written.is_none() || k != name)) {
+            xml += &format!(" {k}=\"{}\"", escape(v));
+        }
+        if let Some(v) = written {
+            xml += &format!(" {name}=\"{v}\"");
+        }
+        xml += "/></Inserts></Program></UVI4>";
+        let (ir, _, _, inserts) = crate::translate_full(&xml, crate::Source::Bank).ok()?;
+        let at = inserts.iter().find(|i| i.count > 0)?;
+        let units = ir.chains[at.chain.0].pre_amplitude.get(at.first..at.first + at.count)?.to_vec();
+        Some((units, ir.unsupported.into_iter().map(|u| u.feature).collect()))
+    };
+    let (old, old_reports) = alone(None)?;
+    let (new, new_reports) = alone(Some(value))?;
+    if old.len() != new.len() || new_reports.iter().any(|r| !old_reports.contains(r)) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (k, (old, new)) in old.into_iter().zip(new).enumerate() {
+        let slot = lane_slot(node, k);
+        let (old, new) = (old.at(slot), new.at(slot));
+        if old == new {
+            continue;
+        }
+        let (Some((_, before)), Some((_, after))) = (old.lanes(), new.lanes()) else {
+            return None;
+        };
+        if before.iter().map(|l| l.role).ne(after.iter().map(|l| l.role)) {
+            return None;
+        }
+        // The new configuration must be the old one with the new lane values.
+        let mut moved = old;
+        for lane in &after {
+            match &mut moved {
+                ir::Processor::TimeMod(c) => c.set(lane.role, lane.value),
+                ir::Processor::Space(c) => c.set(lane.role, lane.value),
+                _ => return None,
+            }
+        }
+        if moved != new {
+            return None;
+        }
+        for (b, a) in before.iter().zip(&after).filter(|(b, a)| b.value != a.value) {
+            let _ = b;
+            let law = match a.law {
+                ir::fx::Law::Identity => EngineParameterLaw::Linear { low: 0., high: 1. },
+                ir::fx::Law::Linear { a: low, b } => EngineParameterLaw::Linear { low, high: low + b },
+                ir::fx::Law::Exp { a: low, r } => EngineParameterLaw::Exponential { low, high: low * r },
+                _ => return None,
+            };
+            let address = EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(a.name)?,
+                group: slot.group,
+                slot: slot.slot,
+                generic: slot.generic,
+            };
+            out.push((address, law.normalized_value(a.value).ok()?));
+        }
+    }
+    Some(out)
+}
+
 /// Processors of the insert (offset from its first) that follow `name`. Pure
 /// in the kind and name; the translator emits the same fixed layouts:
 /// ThreeBandShelves is [level, low shelf, high shelf] with the shelves
@@ -97,6 +204,14 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
         .filter(|p| !node_lanes(node, p.name).is_empty())
         .map(|p| p.name)
         .collect();
+    if lane_family(node) {
+        // Any field: `retune` decides whether its write is lanes only.
+        for name in parameters::definitions(kind).iter().map(|p| p.name) {
+            if name != "Bypass" && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
     if bypassable(node) {
         out.push("Bypass");
     } else if kind == "AuxEffect"
