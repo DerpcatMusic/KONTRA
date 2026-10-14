@@ -2800,10 +2800,13 @@ impl Translation {
             // fade is only wired for the sine-only entry above), the pulse width
             // inside the builder's 0.05..0.95 clamp, and held noise needs a start
             // phase below one half.
-            // A saved fade (unsynchronized, records[1] -1, v1's admitted fade clock)
-            // runs the native fade law over the mix.
+            // A legacy Multi's saved fade (unsynchronized, records[1] -1: v1's admitted
+            // fade clock) runs the native fade law over the mix; Digital fades keep the
+            // verified sine-only entry above.
+            // ponytail: free-running LFOs fade per voice from note start, as the fade
+            // lives in the per-voice modulator; not reference-rendered.
             (5 | 6, Some([sine, pulse, triangle, saw, noise]))
-                if (fade_ms == 0. || ((0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1. && lfo.additional_flag != Some(true)))
+                if (fade_ms == 0. || (lfo.waveform == 5 && (0. ..=5000.).contains(&fade_ms) && lfo.records[1].values[0] == -1.))
                     && [sine, pulse, triangle, saw, noise].iter().all(|w| w.is_finite())
                     && (0.05..=0.95).contains(&width)
                     && (noise == 0. || (0. ..0.5).contains(&phase)) =>
