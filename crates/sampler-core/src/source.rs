@@ -716,12 +716,18 @@ impl Cursor {
 
     // Prepared candidates and validated expression changes supply this rate.
     pub(super) fn with_step(mut self, step: f64) -> Self {
+        self.set_step(step);
+        self
+    }
+
+    /// Update live pitch without copying the cursor's independent loop history.
+    #[inline]
+    pub(super) fn set_step(&mut self, step: f64) {
         debug_assert!(
             self.wavetable.is_some() && step.is_finite() && step > 0.
                 || (MIN_STEP..=MAX_STEP).contains(&step)
         );
         self.step = step;
-        self
     }
 
     fn first_boundary(&self, loop_range: Loop) -> u64 {
@@ -1762,6 +1768,67 @@ fn mix<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_place_step_preserves_full_cursor_and_independent_continuation() {
+        // Literal old by-value updater, independent of the new wrapper/setter.
+        fn before(mut cursor: Cursor, step: f64) -> Cursor {
+            debug_assert!(cursor.wavetable.is_some() && step.is_finite() && step > 0.
+                || (MIN_STEP..=MAX_STEP).contains(&step));
+            cursor.step = step;
+            cursor
+        }
+        let pcm: Vec<Frame> = (0..6144).map(|i| {
+            [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()]
+        }).collect();
+        for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
+            let kernel = Kernel::new(quality);
+            for direction in [Direction::Forward, Direction::Reverse] {
+                for shape in [LoopShape::Wrap, LoopShape::PingPong,
+                    LoopShape::Crossfade { frames: 9 }, LoopShape::EqualPowerCrossfade { frames: 9 }] {
+                    for mode in 0..4 {
+                        if mode == 3 && direction == Direction::Reverse { continue; }
+                        let range = Loop { start: 32, end: 71, mode: LoopMode::UntilRelease,
+                            shape, passes: std::num::NonZeroU32::new(7) };
+                        let mut playback = Playback { direction, ..Playback::default() };
+                        match mode {
+                            0 => (),
+                            1 => playback.loop_range = Some(range),
+                            2 => {
+                                playback.loop_slots[0] = Some(LoopSlot { range, tuning: 0.731 });
+                                playback.loop_slots[7] = Some(LoopSlot {
+                                    range: Loop { start: 87, end: 120, ..range }, tuning: 1.201,
+                                });
+                            },
+                            _ => playback.wavetable = Some(crate::Wavetable::default()),
+                        }
+                        let frames = if mode == 3 { pcm.len() } else { 160 };
+                        let mut old = playback.cursor(frames, 48000, 48000).unwrap();
+                        old.position = 20;
+                        old.fraction = 0.37;
+                        let mut new = old;
+                        for tick in 0..240 {
+                            let step = [MIN_STEP, 0.731, 1., 1.201, 3.17, MAX_STEP][tick % 6];
+                            let step = if mode == 3 && tick % 11 == 0 { 27.31 } else { step };
+                            old = before(old, step);
+                            new.set_step(step);
+                            assert_eq!(format!("{old:?}"), format!("{new:?}"));
+                            assert_eq!(old.step.to_bits(), new.step.to_bits());
+                            assert_eq!(old.fraction.to_bits(), new.fraction.to_bits());
+                            assert_eq!(old.last.map(f32::to_bits), new.last.map(f32::to_bits));
+                            assert_eq!(old.done(), new.done());
+                            assert_eq!(old.sample(pcm.as_slice(), &kernel).map(|f| f.map(f32::to_bits)),
+                                new.sample(pcm.as_slice(), &kernel).map(|f| f.map(f32::to_bits)));
+                            old.advance();
+                            new.advance();
+                            if tick == 79 { old.release(); new.release(); }
+                        }
+                        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+                    }
+                }
+            }
+        }
+    }
 
     fn scalar_frames(
         cursor: &mut Cursor,
