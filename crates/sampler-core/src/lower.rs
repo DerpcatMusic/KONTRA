@@ -129,7 +129,7 @@ fn native_parameter(
 
 /// The runtime color unit for an IR config: script-addressed knobs become the
 /// engine-parameter lanes of [`native_lanes`], everything else a constant.
-fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
+pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
     use crate::{CurveSettings as Curve, HoldSettings, NoiseSettings, QuantizerSettings};
     use ir::ProcessorParameter as P;
     use ir::fx::color as fx;
@@ -150,7 +150,8 @@ fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Hold::Native { frequency } => HoldSettings::Native(knob(P::LoFiFrequency, frequency)),
             fx::Hold::Rate { hertz } => HoldSettings::Rate(hertz),
         }),
-        decimator: c.decimator.map(|d| crate::Decimator { period: d.period, blend: d.blend }),
+        decimator: c.decimator,
+        filter: c.filter,
         quantizer: c.quantizer.map(|q| match q {
             fx::Quantizer::Native { bits } => QuantizerSettings::Native(knob(P::LoFiBits, bits)),
             fx::Quantizer::Floor { bits } => QuantizerSettings::Floor(bits),

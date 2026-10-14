@@ -37,12 +37,26 @@ pub enum Hold {
 }
 
 /// Fractional decimator with a linear ramp (UVI Formant Crusher sub-kernel
-/// 0x1412d43c0): `blend` 1 holds, 0 follows the ramp.
+/// 0x1412d43c0): period `1 / f32(h0 / rate + h1 / rate)` frames; `blend` 1 holds, 0 follows
+/// the ramp.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decimator {
-    pub period: f64,
-    pub blend: f64,
+    pub hertz: [f64; 2],
+    pub blend: f32,
+}
+
+/// An RBJ biquad in transposed direct form II, f32 (UVI 0x141646fa0; designs 0x14163fd30 LP,
+/// 0x14163ff50 BP at 0 dB peak, 0x14163fe30 HP, in f64 at `hertz / rate`). `post` runs it
+/// after the drive/quantize stages instead of before them.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Biquad {
+    /// 0 low-pass, 1 band-pass, 2 high-pass.
+    pub mode: u8,
+    pub hertz: f64,
+    pub q: f64,
+    pub post: bool,
 }
 
 /// Bit-depth reduction.
@@ -138,6 +152,8 @@ pub struct Config {
     /// unit's knobs. Absent: the knobs are constants.
     pub address: Option<SlotAddress>,
     pub gainer: Option<Gainer>,
+    /// The tone/filter section (before the hold unless `post`).
+    pub filter: Option<Biquad>,
     pub hold: Option<Hold>,
     pub decimator: Option<Decimator>,
     pub quantizer: Option<Quantizer>,
@@ -159,6 +175,7 @@ impl Config {
     pub const IDENTITY: Self = Self {
         address: None,
         gainer: None,
+        filter: None,
         hold: None,
         decimator: None,
         quantizer: None,
@@ -227,6 +244,26 @@ impl Config {
         }
     }
 
+    /// UVI FormantCrusher (prepare 0x1412d31a0, update 0x1412d33c0, kernel 0x1412d4000): an
+    /// RBJ low-pass at F1 (Q), then the decimator at the period `1 / (F1 + F2)`, wet `mix`.
+    /// F1, F2 morph geometrically between vowels `a` and `b` (table 0x141e7a420), scaled by
+    /// `2^formant`.
+    pub fn formant_crusher(morph: f32, q: f32, formant: f32, mix: f32, bite: f32, a: u8, b: u8) -> Self {
+        const VOWELS: [[f64; 2]; 11] = [
+            [700.0, 1100.0], [500.0, 1350.0], [250.0, 1700.0], [570.0, 840.0], [300.0, 870.0], [440.0, 1020.0],
+            [520.0, 1190.0], [660.0, 1720.0], [530.0, 1840.0], [390.0, 1990.0], [270.0, 2290.0],
+        ];
+        let fm = 2f64.powf(f64::from(formant));
+        let (a, b) = (VOWELS[usize::from(a.min(10))], VOWELS[usize::from(b.min(10))]);
+        let hz: [f64; 2] = std::array::from_fn(|i| (b[i] / a[i]).powf(f64::from(morph)) * a[i] * fm);
+        Self {
+            filter: Some(Biquad { mode: 0, hertz: hz[0], q: f64::from(q), post: false }),
+            decimator: Some(Decimator { hertz: hz, blend: bite }),
+            mix: f64::from(mix),
+            ..Self::IDENTITY
+        }
+    }
+
     /// Kontakt Skreamer.
     pub fn skreamer(knobs: [f32; 5]) -> Self {
         Self { curve: Curve::Skreamer(knobs), ..Self::IDENTITY }
@@ -286,7 +323,7 @@ impl Config {
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
-            Self { decimator: Some(_), .. } => "Decimator",
+            Self { decimator: Some(_), .. } => "Formant crusher",
             Self { gainer: Some(_), .. } => "Gainer",
             Self { stereo: Some(_), .. } => "Stereo Modeller",
             _ => "Color",
