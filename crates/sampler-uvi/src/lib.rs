@@ -327,6 +327,13 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     Ok((out.ir, out.locations, out.osc_groups, out.insert_nodes))
 }
 
+/// A layer's or keygroup's own `BusRouter`s.
+fn routers<'a>(node: Node<'a, 'a>) -> impl Iterator<Item = Node<'a, 'a>> {
+    node.children()
+        .filter(|n| n.has_tag_name("BusRouters"))
+        .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+}
+
 /// A node's own `SignalConnection`s.
 fn connections<'a>(node: Node<'a, 'a>) -> impl Iterator<Item = Node<'a, 'a>> {
     node.children()
@@ -366,7 +373,18 @@ fn curve(c: f64) -> ir::Curve {
     }
 }
 
+thread_local! {
+    /// The (node, attribute) pairs the translator reads, while
+    /// [`translate_initialized`] records them.
+    static READS: std::cell::RefCell<Option<HashSet<(usize, String)>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
+    READS.with(|r| {
+        if let Some(reads) = r.borrow_mut().as_mut() {
+            reads.insert((node.id().get_usize(), name.to_owned()));
+        }
+    });
     match node.attribute(name) {
         None => Ok(default),
         Some(text) => text
@@ -391,6 +409,7 @@ fn midi(node: Node, name: &str, default: u8) -> Result<u8, String> {
 
 /// Where a program's samples live: loose on disk (resolved and existence-checked
 /// against a folder) or inside the open bank (resolved later by the loader).
+#[derive(Clone)]
 enum Source {
     Disk(PathBuf),
     Bank,
@@ -575,12 +594,12 @@ impl Translation {
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
-            for router in layer
-                .children()
-                .filter(|n| n.has_tag_name("BusRouters"))
-                .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
-                .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-            {
+            for router in routers(layer) {
+                if number(router, "Bypass", 0.0)? != 0.0 {
+                    // A bypassed send carries nothing.
+                    self.used.insert(router.id());
+                    continue;
+                }
                 let Some(bus) = router
                     .attribute("Destination")
                     .and_then(|d| d.rsplit('/').next())
@@ -691,6 +710,15 @@ impl Translation {
             Some((modulator, velocity)) => (Some(modulator), velocity),
             None => (None, ir::VelocityResponse::None),
         };
+        // A keygroup's own aux sends: a bypassed or silent one carries nothing.
+        for router in routers(keygroup) {
+            if number(router, "Bypass", 0.0)? == 0.0 && number(router, "Gain", 1.0)? != 0.0 {
+                // ponytail: an audible keygroup send taps the keygroup ahead of the
+                // layer's fader and inserts; IR sends leave groups, after the layer gain.
+                self.unsupported(&path(router), "keygroup aux send", number(router, "Gain", 1.0)?);
+            }
+            self.used.insert(router.id());
+        }
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
         let (processors, placed) = self.inserts(
@@ -1175,6 +1203,20 @@ impl Translated {
             }
             .at(sampler_kontakt::Stage::ScriptCompile)
         })?;
+        if !loaded.folded_writes.is_empty() {
+            // Initialization wrote fields with no live path: translate the
+            // program as the scripts left it (node ids are unchanged).
+            let source = match (&self.bank, &self.dir) {
+                (None, Some(dir)) => Source::Disk(dir.clone()),
+                _ => Source::Bank,
+            };
+            if let Ok((mut instrument, locations, groups, inserts)) =
+                translate_initialized(&self.text, source, &loaded.insert_overrides, &loaded.folded_writes)
+            {
+                instrument.uvi_script_sources = self.instrument.uvi_script_sources.take();
+                (self.instrument, self.locations, self.groups, self.inserts) = (instrument, locations, groups, inserts);
+            }
+        }
         engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1701,9 +1743,9 @@ fn initialized_translation(
         script::ScriptHost::new(&text, files.clone(), script::Config::default())
     }
     .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
-    let patched = apply_overrides(&text, &host.insert_overrides());
-    let (mut instrument, locations, groups, inserts) = translate_full(&patched, source)
-        .map_err(|error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))))?;
+    let (mut instrument, locations, groups, inserts) =
+        translate_initialized(&text, source, &host.insert_overrides(), &host.folded_writes())
+            .map_err(|error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))))?;
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = files.sources();
     }
@@ -1857,6 +1899,59 @@ fn promote(text: String, scripts: &script::Scripts) -> String {
 }
 
 /// Write initialized script values into XML before translating the program.
+/// Translate `text` as initialization left it: `overrides` patch its XML. A
+/// folded write (node, kind, field) the translator never reads has no effect
+/// and is reported. When a written value makes the program untranslatable, the
+/// authored program is translated and the folded writes are reported instead.
+fn translate_initialized(
+    text: &str,
+    source: Source,
+    overrides: &[(usize, String, String)],
+    folded: &[(usize, String, String)],
+) -> Result<FullTranslation, Translate> {
+    if folded.is_empty() {
+        return translate_full(&apply_overrides(text, overrides), source);
+    }
+    let patched = apply_overrides(text, overrides);
+    READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+    let result = translate_full(&patched, source.clone());
+    let reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+    let (mut full, why) = match result {
+        Ok(full) => (full, "a write the translation does not read"),
+        Err(_) => {
+            let unfolded: Vec<_> = overrides
+                .iter()
+                .filter(|(node, name, _)| !folded.iter().any(|(n, _, f)| n == node && f == name))
+                .cloned()
+                .collect();
+            (translate_full(&apply_overrides(text, &unfolded), source)?, "a written value the translation rejects")
+        }
+    };
+    // An element left bypassed (or inside a bypassed one) is silent, so its
+    // fields are rightly never read: such writes have no effect.
+    let doc = roxmltree::Document::parse(&patched).ok();
+    let silent = |node: usize| {
+        let Some(doc) = &doc else { return false };
+        let Some(node) = u32::try_from(node).ok().and_then(|n| doc.get_node(roxmltree::NodeId::new(n))) else {
+            return false;
+        };
+        node.ancestors().any(|a| a.attribute("Bypass").and_then(|b| b.parse::<f64>().ok()).is_some_and(|b| b != 0.))
+    };
+    let mut reported = HashSet::new();
+    for (node, kind, name) in folded {
+        let read = why.starts_with("a write") && (reads.contains(&(*node, name.clone())) || silent(*node));
+        if !read && reported.insert((kind.as_str(), name.as_str())) {
+            full.0.unsupported.push(ir::Unsupported {
+                location: "script".into(),
+                feature: format!("lua setParameter {kind}.{name}"),
+                value: why.into(),
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+    Ok(full)
+}
+
 fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
     let Ok(doc) = roxmltree::Document::parse(text) else {
         return text.to_owned();

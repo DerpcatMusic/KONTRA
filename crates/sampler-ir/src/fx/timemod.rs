@@ -548,6 +548,9 @@ impl Config {
         if self.address.is_none() {
             return Vec::new();
         }
+        if self.uvi() {
+            return self.uvi_lanes();
+        }
         let speed = match self.lfo.rate {
             Rate::Hz(hz) => Some(f64::from(hz)),
             _ => None,
@@ -598,6 +601,9 @@ impl Config {
     pub fn set(&mut self, role: crate::ProcessorParameter, stored: f64) {
         use crate::ProcessorParameter as P;
         let v = stored as f32;
+        if self.uvi() {
+            return self.uvi_set(role, stored);
+        }
         match role {
             P::Speed => self.lfo.rate = Rate::Hz(v),
             // ponytail: takes effect at the next LFO reset; the native re-phases at once (0x140960040).
@@ -634,6 +640,85 @@ impl Config {
                 *base_ms = v;
                 line.taps[0].time = DelayTime::Ms(stored);
             }
+            _ => {}
+        }
+    }
+
+    /// A UVI unit: one of its native kernels, or a line or allpass on a UVI
+    /// table LFO (Chorus, Flanger, Phaser, Cross Phaser, Phasor).
+    fn uvi(&self) -> bool {
+        matches!(self.lfo.shape, LfoShape::Uvi { .. })
+            || self.line.is_some_and(|l| {
+                matches!(
+                    l.native,
+                    Native::UviDualDelay(_)
+                        | Native::UviLegacyDelay(_)
+                        | Native::UviDiffuseDelay(_)
+                        | Native::UviTapeEcho(_)
+                        | Native::UviVelvetDelay(_)
+                        | Native::UviBuzzDelay(_)
+                )
+            })
+    }
+
+    /// A UVI unit's live knobs, each its own field: the unit's wet and dry
+    /// gains, its LFO rate in Hz, then DualDelay's time, feedback and loop
+    /// cuts, or a plain line's base time and feedback, or an allpass feedback.
+    /// A script write elsewhere is a new configuration, not a lane.
+    fn uvi_lanes(&self) -> Vec<super::Lane> {
+        use super::uvi_lane;
+        use crate::ProcessorParameter as P;
+        let mut lanes = vec![uvi_lane(P::Gain, self.wet, 0., 2.), uvi_lane(P::Response, self.dry, 0., 1.)];
+        if let (LfoShape::Uvi { .. }, Rate::Hz(hz)) = (self.lfo.shape, self.lfo.rate) {
+            lanes.push(uvi_lane(P::Speed, f64::from(hz), 0., 200.));
+        }
+        match self.line.map(|l| (l.native, l)) {
+            Some((Native::UviDualDelay(d), _)) => lanes.extend([
+                uvi_lane(P::Time, f64::from(d.time), 0., 5.),
+                uvi_lane(P::Feedback, f64::from(d.feedback), 0., 1.),
+                uvi_lane(P::Cutoff, f64::from(d.high_cut_hz), 1., 20_000.),
+                uvi_lane(P::Frequency, f64::from(d.low_cut_hz), 1., 20_000.),
+            ]),
+            Some((Native::None, l)) => {
+                if l.tap_count == 1
+                    && let DelayTime::Ms(ms) = l.taps[0].time
+                {
+                    lanes.push(uvi_lane(P::Time, ms, 0., l.max_ms));
+                }
+                let [[a, b], [c, d]] = l.feedback.matrix;
+                if a == d && b == 0. && c == 0. {
+                    lanes.push(uvi_lane(P::Feedback, a, -1., 1.));
+                }
+            }
+            _ => {}
+        }
+        if let (None, Some(a)) = (self.line, self.allpass) {
+            lanes.push(uvi_lane(P::Feedback, f64::from(a.feedback), -1., 1.));
+        }
+        lanes.into_iter().flatten().collect()
+    }
+
+    /// Write lane `role` of a UVI unit (see [`Config::uvi_lanes`]).
+    fn uvi_set(&mut self, role: crate::ProcessorParameter, stored: f64) {
+        use crate::ProcessorParameter as P;
+        let v = stored as f32;
+        match role {
+            P::Gain => return self.wet = stored,
+            P::Response => return self.dry = stored,
+            P::Speed => return self.lfo.rate = Rate::Hz(v),
+            _ => {}
+        }
+        if let (None, Some(a), P::Feedback) = (self.line, &mut self.allpass, role) {
+            return a.feedback = v;
+        }
+        let Some(line) = &mut self.line else { return };
+        match (&mut line.native, role) {
+            (Native::UviDualDelay(d), P::Time) => d.time = v,
+            (Native::UviDualDelay(d), P::Feedback) => d.feedback = v,
+            (Native::UviDualDelay(d), P::Cutoff) => d.high_cut_hz = v,
+            (Native::UviDualDelay(d), P::Frequency) => d.low_cut_hz = v,
+            (Native::None, P::Time) if line.tap_count == 1 => line.taps[0].time = DelayTime::Ms(stored),
+            (Native::None, P::Feedback) => line.feedback.matrix = [[stored, 0.], [0., stored]],
             _ => {}
         }
     }
