@@ -261,3 +261,37 @@ fn canceled_full_payload_and_foreign_authority_cannot_release_or_bypass_admissio
     drop(rt);
     assert_eq!(budget.status().held_bytes, 0);
 }
+
+#[test]
+fn initial_resident_descriptor_validates_metadata_authority_and_one_shot_publication() {
+    let budget = HeadBudget::new(256);
+    let pcm = Pcm::pending_resident(44100, 16).unwrap();
+    assert!(pcm.requires_resident() && pcm.resident_frames().is_none());
+    pcm.bind_resident_budget(&budget).unwrap();
+    assert_eq!(
+        pcm.publish_initial_resident(ResidentBuffer::new(48000, 16, &budget).unwrap()),
+        Err(Error::InvalidInput)
+    );
+    assert_eq!(budget.status().held_bytes, 0);
+    let foreign = HeadBudget::new(256);
+    assert_eq!(
+        pcm.publish_initial_resident(ResidentBuffer::new(44100, 16, &foreign).unwrap()),
+        Err(Error::RevisionConflict)
+    );
+    assert_eq!(foreign.status().held_bytes, 0);
+    let mut data = ResidentBuffer::new(44100, 16, &budget).unwrap();
+    data.frames_mut().fill([0.25, -0.5]);
+    pcm.publish_initial_resident(data).unwrap();
+    assert_eq!(&*pcm.resident_frames().unwrap(), &[[0.25, -0.5]; 16]);
+    assert_eq!(budget.status().held_bytes, 128);
+    assert_eq!(pcm.resident_non_head_bytes_outside(&budget), 0);
+    assert_eq!(pcm.resident_non_head_bytes_outside(&foreign), 128);
+    assert_eq!(
+        pcm.publish_initial_resident(ResidentBuffer::new(44100, 16, &budget).unwrap()),
+        Err(Error::RevisionConflict)
+    );
+    assert_eq!(&*pcm.resident_frames().unwrap(), &[[0.25, -0.5]; 16]);
+    assert_eq!(budget.status().held_bytes, 128);
+    drop(pcm);
+    assert_eq!(budget.status().held_bytes, 0);
+}

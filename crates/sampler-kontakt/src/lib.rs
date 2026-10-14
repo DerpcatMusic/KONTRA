@@ -54,7 +54,7 @@ pub use load::take_script_init_runs;
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish,
     load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
-    load_streamed, prepare, stream_instrument,
+    load_streamed, prepare, stream_instrument, stream_instrument_cancelable,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
