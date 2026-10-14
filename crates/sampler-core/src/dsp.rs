@@ -856,9 +856,9 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::LiveFormant { .. }
                         | PreparedProcessor::Filter { .. }
                         | PreparedProcessor::Branch { .. }
-                        | PreparedProcessor::Eq(_)
                         | PreparedProcessor::ControlMatrix(_)
                 ) || matches!(stage, PreparedProcessor::Color { color, .. } if !color.batches())
+                  || matches!(stage, PreparedProcessor::Eq(eq) if !eq.batches())
             })
     }
 
