@@ -47,12 +47,19 @@ For a UVI initialization profile, add `--profile-init`. The Load timings view
 separates compilation, object-graph construction, module execution, restore,
 `onInit`, parameter overlays, IR translation and UI export. It also shows selected
 native API wall clocks and bounded Lua safepoint stacks. Nested clocks overlap;
-sample counts are inclusive attribution, not exclusive CPU time. Stack sampling
-is limited to 500 Hz, four frames and 512 distinct frame records, and reports its
-measured overhead. Production constructors do not enable this collector.
+sample counts distinguish inclusive visits and the observed top frame, rather
+than exclusive CPU time. Stack sampling is limited to 500 Hz, four frames and
+512 distinct frame records. It reports stack-collection time; aggregate profiling
+overhead needs a same-executable on/off comparison. Production constructors do
+not enable this collector.
 No script text, argument values, stack-memory bytes or heap contents are captured.
 Compare like modes and record OS-cache/workload conditions before claiming speed
 improvements; an inspected constructor is not a plugin-startup measurement.
+
+For deterministic UVI inspection, set `KONTRA_UVI_AUDIT_SEED` to an unsigned
+32-bit integer. Initialized reports record the applied seed in `mode.audit_seed`.
+Both profiled and ordinary inspection use that explicit scanner configuration;
+omitting it preserves the previous RNG behavior. Plugin defaults are unchanged.
 
 Snapshots use the same base-NKI resolver and identity check as playback. Saved
 snapshot state is applied before initialization; UI resources belong to the base

@@ -25,6 +25,7 @@ struct Options {
     ui_only: bool,
     profile_init: bool,
     settle_ui: bool,
+    audit_seed: Option<u32>,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -72,6 +73,10 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     }
     if opts.profile_init && !matches!(opts.path.extension().and_then(|e| e.to_str()), Some("uvip" | "ufs")) {
         return Err("--profile-init currently profiles UVI UVIP/UFS initialization only");
+    }
+    if opts.initialize && matches!(opts.path.extension().and_then(|e| e.to_str()), Some("uvip" | "ufs")) {
+        opts.audit_seed = sampler_uvi::script::audit_seed()
+            .map_err(|_| "KONTRA_UVI_AUDIT_SEED needs an unsigned 32-bit integer")?;
     }
     Ok(opts)
 }
@@ -185,7 +190,7 @@ fn base(opts: &Options, kind: &str) -> Value {
     json!({
         "format": "kontra-library-inspector", "schema": 1,
         "item": {"path": opts.path, "kind": kind, "program": opts.program},
-        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"settle_ui":opts.settle_ui,"lua_coverage":opts.initialize && !opts.ui_only},
+        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"settle_ui":opts.settle_ui,"audit_seed":opts.audit_seed,"lua_coverage":opts.initialize && !opts.ui_only},
         "status": "ok", "stages": [], "metadata": {}, "scripts": [],
         "converted": {"status": "not_run", "scope": "No product IR translation requested"},
         "ui": {"status": "not_evaluated", "scope": "Source frontends do not execute authored UI initialization", "interfaces": []},
@@ -1432,12 +1437,15 @@ fn uvi(opts: &Options, report: &mut Value) {
         } else {
             sampler_uvi::ScriptedOrigin::Loose(&opts.path)
         };
-        match sampler_uvi::inspect_decoded_scripted_program_with_options(
+        let mut config = sampler_uvi::script::Config::default();
+        config.audit_seed = opts.audit_seed;
+        match sampler_uvi::inspect_decoded_scripted_program_with_config(
             xml,
             files,
             origin,
             !opts.ui_only,
             opts.profile_init,
+            config,
         ) {
             Ok((ir, host)) => {
                 timing(report, "translate_and_initialize", started);

@@ -63,3 +63,41 @@ end
     );
     assert!(!report.to_string().contains("for i=1,n"));
 }
+
+#[cfg(feature = "library-access")]
+#[test]
+fn configured_inspection_without_a_seed_keeps_legacy_default_behavior() {
+    use sampler_uvi::script::Scripts;
+    use sampler_uvi::{
+        ScriptedOrigin, inspect_decoded_scripted_program_with_config,
+        inspect_decoded_scripted_program_with_options,
+    };
+    let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(320,200) local k=Knob('Default',7,0,10) initialized=7]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let path = std::path::Path::new("fixture.uvip");
+    let (_, legacy) = inspect_decoded_scripted_program_with_options(
+        xml.into(),
+        Scripts::default(),
+        ScriptedOrigin::Loose(path),
+        false,
+        false,
+    )
+    .unwrap();
+    let (_, configured) = inspect_decoded_scripted_program_with_config(
+        xml.into(),
+        Scripts::default(),
+        ScriptedOrigin::Loose(path),
+        false,
+        false,
+        Config::default(),
+    )
+    .unwrap();
+    assert_eq!(legacy.interface(), configured.interface());
+    assert_eq!(legacy.control_values(), configured.control_values());
+    assert_eq!(
+        legacy.global_text("initialized"),
+        configured.global_text("initialized")
+    );
+    assert!(
+        legacy.initialization_profile().is_null() && configured.initialization_profile().is_null()
+    );
+}
