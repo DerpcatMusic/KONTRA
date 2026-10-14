@@ -112,6 +112,43 @@ pub enum Native {
     TwinDelay(TwinDelay),
     /// Kontakt Psyche Delay (0x63; kernel `0x140aadb50`): wet output only.
     PsycheDelay(PsycheDelay),
+    /// UVI Velvet Delay (`DiffuseDelayNested`, kernel `0x14165af50`); the
+    /// unit's dry/wet is the linear mix.
+    UviVelvetDelay(UviVelvetDelay),
+    /// UVI analog tape delay (`Buzz`, process `0x14166ab40`); the unit's
+    /// dry/wet is `Dry`/`Wet`.
+    UviBuzzDelay(UviBuzzDelay),
+}
+
+/// UVI Velvet Delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviVelvetDelay {
+    /// Seconds, or beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub spread: f32,
+    pub diffusion: f32,
+    pub seed: u32,
+    /// 0..=6: ramp, uniform, exp, ramp down, parabolic, inverse, parametric.
+    pub shape: u8,
+    pub curve: f32,
+}
+
+/// UVI `Buzz` analog tape delay controls in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviBuzzDelay {
+    /// Seconds, or beats when synced.
+    pub time: f32,
+    pub synced: bool,
+    pub feedback: f32,
+    pub trash: f32,
+    pub spread: f32,
+    /// Seconds.
+    pub glide: f32,
+    /// 0..=2.
+    pub mode: u8,
 }
 
 /// Kontakt Psyche Delay saved controls (reader `0x140ac5bc0`).
@@ -433,6 +470,18 @@ impl Config {
                 let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
                 if !(d.time.iter().all(|&t| ok(t, 0., 128.)) && ok(d.feedback, 0., 1.) && ok(d.cutoff, -1., 1.) && ok(d.spread, -1., 1.)) {
                     return Err("uvi legacy delay");
+                }
+            }
+            if let Native::UviVelvetDelay(v) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(v.time, 0., 128.) && ok(v.spread, 0.1, 1.) && ok(v.diffusion, 0., 1.) && v.shape <= 6 && ok(v.curve, -1., 1.)) {
+                    return Err("uvi velvet delay");
+                }
+            }
+            if let Native::UviBuzzDelay(b) = l.native {
+                let ok = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+                if !(ok(b.time, 0., 128.) && ok(b.feedback, 0., 1.) && ok(b.trash, 0., 1.) && ok(b.spread, 0., 2.) && ok(b.glide, 0.01, 1.) && b.mode <= 2) {
+                    return Err("uvi buzz delay");
                 }
             }
             if let Native::PsycheDelay(p) = l.native {

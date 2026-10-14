@@ -12,7 +12,7 @@ use roxmltree::Node;
 use sampler_ir::{
     self as ir,
     fx::timemod::{
-        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, UviDiffuseDelay, UviLegacyDelay, UviTapeEcho, UviLegacyKind,
+        Allpass, Config, DelayTime, DualDelay, Interpolation, Lfo, LfoShape, Line, Native, Order, Rate, SweepLaw, UviBuzzDelay, UviDiffuseDelay, UviLegacyDelay, UviTapeEcho, UviVelvetDelay, UviLegacyKind,
     },
 };
 
@@ -163,6 +163,38 @@ impl Translation {
             }
             let mix = number(node, "Mix", 0.5)?.clamp(0., 1.);
             return Ok(Some(Config { dry: (1. - mix).sqrt(), wet: mix.sqrt(), ..delay_config(line, mix) }));
+        }
+        if tag == "DiffuseDelayNested" {
+            // Native laws: `sampler_core` `dsp/timemod/velvet.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let mut line = Line::single(DelayTime::Ms(0.), 1000.);
+            line.native = Native::UviVelvetDelay(UviVelvetDelay {
+                time: n("DelayTime", 0.05, 0.001, if synced { 128. } else { 1. })?,
+                synced,
+                spread: n("TimeSpread", 1., 0.1, 1.)?,
+                diffusion: n("Diffusion", 0.1, 0., 0.9)?,
+                seed: number(node, "Seed", 0.)?.clamp(0., 100.) as u32,
+                shape: number(node, "Shape", 0.)?.clamp(0., 6.) as u8,
+                curve: n("ShapeCurve", 0., -1., 1.)?,
+            });
+            return Ok(Some(delay_config(line, mix)));
+        }
+        if tag == "Buzz" {
+            // Native laws: `sampler_core` `dsp/timemod/buzz.rs`.
+            let n = |name, default: f64, lo: f64, hi: f64| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(lo, hi) as f32) };
+            let ms = n("Delay", 200., if synced { 0. } else { 40. }, if synced { 128. } else { 2000. })?;
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::UviBuzzDelay(UviBuzzDelay {
+                time: if synced { ms } else { ms * 0.001 },
+                synced,
+                feedback: n("Feedback", 0.2, 0., 1.)?,
+                trash: n("Trash", 0.25, 0., 1.)?,
+                spread: n("Spread", 1., 0., 2.)?,
+                glide: n("InterpolationTime", 0.1, 0.01, 1.)?,
+                mode: number(node, "DistortionMode", 0.)?.clamp(0., 2.) as u8,
+            });
+            let (dry, wet) = (number(node, "Dry", 0.5)?.clamp(0., 1.), number(node, "Wet", 0.5)?.clamp(0., 1.));
+            return Ok(Some(Config { dry, wet, ..delay_config(line, wet) }));
         }
         if tag == "DiffuseDelay" {
             // Native laws: `sampler_core` `dsp/timemod/diffuse.rs`.
