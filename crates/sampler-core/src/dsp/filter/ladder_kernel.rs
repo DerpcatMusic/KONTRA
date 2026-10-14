@@ -93,7 +93,7 @@ impl Controls {
 
 /// The native exponential table is generated, rather than a captured table.
 /// Adjacent entries are rounded before linear interpolation.
-fn exponential(index: f32) -> f32 {
+pub(crate) fn exponential(index: f32) -> f32 {
     let index = index.clamp(0.0, 2399.0);
     let integer = index as usize;
     // All prepared filter and script constructors warm this table offthread.

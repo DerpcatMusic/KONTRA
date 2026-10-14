@@ -2327,7 +2327,7 @@ impl Lowering<'_> {
                     Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
                 }
                 ir::fx::filter::Topology::Cascade => {
-                    let class = cascade_class(c.response, c.poles)
+                    let class = cascade_class(&c)
                         .ok_or_else(|| unsupported(owner, Feature::Controls))?;
                     Processor::Filter(crate::FilterSettings::Cascade(crate::CascadeSettings {
                         class,
@@ -2962,10 +2962,18 @@ mod chain_sharing_tests {
 }
 
 /// The legacy BFilter class a cascade configuration names.
-fn cascade_class(response: ir::fx::filter::Response, poles: u8) -> Option<crate::LegacyFilter> {
+fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
     use crate::LegacyFilter as L;
-    use ir::fx::filter::Response as R;
-    Some(match (response, poles) {
+    use ir::fx::filter::{Response as R, Variant as V};
+    match c.variant {
+        V::Default => {}
+        V::VowelA => return Some(L::VowelA),
+        V::VowelB => return Some(L::VowelB),
+        V::Pro52 => return Some(L::Pro52),
+        V::Ladder => return Some(L::Ladder),
+        V::Versatile(v) => return Some(L::Versatile(v)),
+    }
+    Some(match (c.response, c.poles) {
         (R::LowPass, 1) => L::Lp1,
         (R::HighPass, 1) => L::Hp1,
         (R::BandPass, 2) => L::Bp2,
