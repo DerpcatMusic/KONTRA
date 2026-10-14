@@ -386,6 +386,12 @@ function element.hasParameter(self, name)
   return (defs and defs[name] ~= nil) or native.hasParameter(rawget(self,'__id'),name)
 end
 __touched = {}
+-- `Program/Layer/Keygroup/CombFilter`: where a rejected write landed, for reports.
+local function element_path(self)
+  local parts, e = {}, self
+  while e do table.insert(parts, 1, tostring(rawget(e, 'type'))); e = rawget(e, 'parent') end
+  return table.concat(parts, '/')
+end
 function element.setParameter(self, name, value)
   if name == nil then return end
   if type(name) == "number" then
@@ -393,25 +399,39 @@ function element.setParameter(self, name, value)
   end
   if type(name) ~= 'string' then return end
   local defs = rawget(self, 'parameterDefinitions')
+  local def = defs and defs[name]
   local expected, min, max
-  if defs then
-    local def = defs[name]
-    if def then expected,min,max=def.type,def.min,def.max end
+  if def then
+    expected,min,max=def.type,def.min,def.max
+    if def.provenance == 'retained-xml' and expected == 'float' then expected = 'any' end
   else expected,min,max=native.definition(rawget(self,'__id'),name) end
   if not expected then return end
-  -- Vendor Element contract: unknown names/IDs and mismatched types are ignored.
-  -- Native execution remains unverified.
+  -- uvi-script is Lua 5.1 (lua.uvi.net): one `number` type. Element::setParameter
+  -- silently ignores "a value whose Lua type does not match the parameter type",
+  -- so number, boolean and string are the classes that can mismatch; 'any' is a
+  -- retained field of an undocumented element (SignalConnection), with no declared type.
   local actual = type(value)
-  if actual == 'boolean' then actual = 'bool'
-  elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
-  if actual ~= expected and not (expected == 'float' and actual == 'int') then
+  local class = actual
+  if expected == 'int' or expected == 'float' then class = 'number'
+  elseif expected == 'bool' then class = 'boolean'
+  elseif expected == 'string' then class = 'string'
+  elseif expected == 'any' then class = (actual == 'boolean' or actual == 'number') and actual or 'number' end
+  if actual ~= class then
+    if actual == 'boolean' then actual = 'bool'
+    elseif actual == 'number' then actual = value == math.floor(value) and 'int' or 'float' end
     native.setterMismatch(expected,actual)
     return
   end
-  if actual == 'int' or actual == 'float' then
+  if actual == 'number' then
     if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
     -- Keep reversed documented bounds intact; native semantics need a measurement.
     if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
+    if expected == 'int' and value ~= math.floor(value) then
+      -- A fraction for an integer: the native number-to-int conversion (truncate
+      -- or round) is not measured, so the write is reported and not applied.
+      report("setParameter fraction to an integer parameter", element_path(self) .. "." .. name .. "=" .. tostring(value))
+      return
+    end
   end
   -- true: queued control, false: retained XML model only, nil: rejected.
   local accepted = native.setParam(rawget(self, "__id"), name, value)
@@ -423,7 +443,7 @@ function element.setParameter(self, name, value)
     end
     overlay[name] = value
   end
-  if accepted ~= true then report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "") end
+  if accepted ~= true then report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), element_path(self) .. "=" .. tostring(value)) end
 end
 function element.getParameterConnections(self, name)
   if type(name) == 'number' then

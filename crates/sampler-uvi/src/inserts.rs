@@ -100,7 +100,10 @@ impl Translation {
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
             let mix = scripted && engine_parameters::bypassable(node);
             if bypassed && !mix {
+                // Exactly silent: nothing to translate (a script that enables it
+                // reports its write).
                 placed.push((id, slot, 0));
+                self.used.insert(node.id());
                 continue;
             }
             if mix {
@@ -405,6 +408,12 @@ impl Translation {
                     out.truncate(slot);
                     placed.push((id, slot, 0));
                     continue;
+                }
+            }
+            if live && engine_parameters::lane_family(node) {
+                // Each unit of the element listens at its own lane slot.
+                for (k, p) in out[first..].iter_mut().enumerate() {
+                    *p = p.at(engine_parameters::lane_slot(id, k));
                 }
             }
             let count = out.len() - first;
