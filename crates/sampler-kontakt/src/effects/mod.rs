@@ -1173,10 +1173,11 @@ pub(crate) fn chain_with(
             // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
             Some(Params::Gainer { gain: parameter }) => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(sampler_ir::Processor::Color(color::gainer(
+                // Addressed, so a script's GN_GAIN reaches it (Conflux's Volume knob).
+                push_color(&mut out, fx.slot, dynamic, color::gainer(
                     f64::from(*parameter) * if mix.is_some() { 1.0 } else { wet },
                     if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
-                )));
+                ));
             }
             Some(Params::StereoModeller {
                 spread,
