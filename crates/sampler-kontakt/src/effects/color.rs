@@ -42,7 +42,39 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 5] = [0x42, 0x66, 0x67, 0x68, 0x78];
+pub(super) const TYPED_CORES: [u16; 6] = [0x24, 0x42, 0x66, 0x67, 0x68, 0x78];
+
+/// The record's fields as f32 (an i32 enum as its value), or None for any other kind.
+fn raw(fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Vec<f32>> {
+    use ni_file::kontakt::objects::EffectValue::{Byte, Float, Integer};
+    fields
+        .iter()
+        .map(|f| match f.value {
+            Float(v) if v.is_finite() => Some(v),
+            Integer(i) => Some(i as f32),
+            Byte(b) => Some(f32::from(b)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Amp, cabinet and pedal records (bindings: kontakt-bindings/fx_other.tsv) in core order.
+fn amp(module: u16, fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    use sampler_ir::fx::color::{Amp, AmpModel};
+    let v = raw(fields)?;
+    let (model, values) = match (module, &v[..]) {
+        // Cabinet (reader 0x140d005b0, Fx4I): size, air, treble, bass (stored -1..1), type
+        // (the type law 0x140ab8c70 clamps it to 0..=10).
+        (0x24, &[size, air, treble, bass, kind]) => (
+            AmpModel::Cabinet,
+            vec![size.clamp(0.0, 1.0), air.clamp(0.0, 1.0), treble.clamp(-1.0, 1.0), bass.clamp(-1.0, 1.0), kind.clamp(0.0, 10.0)],
+        ),
+        _ => return None,
+    };
+    let mut knobs = [0.0; 24];
+    knobs[..values.len()].copy_from_slice(&values);
+    Some(Config::amp(Amp { model, knobs }))
+}
 
 /// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
 /// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
@@ -69,6 +101,9 @@ fn scatter<const N: usize>(values: &[f32], to: &[usize], defaults: [f32; N]) -> 
 
 /// Effektrig/KONTAKTFX cores from their typed records (per-type apply, kcolor/records.md).
 pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    if module == 0x24 {
+        return amp(module, fields);
+    }
     let values: Vec<f32> = fields.iter().map(|f| core_value(&f.value)).collect::<Option<_>>()?;
     match module {
         // Tape Saturator: gain, warmth, roll-off, quality, identity (setter 0x140ae1e10).
@@ -130,7 +165,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
+        0x23 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         _ => return None,
@@ -166,6 +201,16 @@ mod tests {
         let mut bad = saved.clone();
         bad[0].value = Integer(3);
         assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn cabinet_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Float, Integer};
+        let saved = fields(vec![Float(0.3), Float(0.6), Float(-0.5), Float(2.0), Integer(12)]);
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Amp(a), .. }) = typed_core(0x24, &saved) else {
+            panic!("Cabinet not mapped");
+        };
+        assert_eq!(a.knobs[..5], [0.3, 0.6, -0.5, 1.0, 10.0]);
     }
 
     #[test]
