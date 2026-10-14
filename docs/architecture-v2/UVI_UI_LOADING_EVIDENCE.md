@@ -114,3 +114,51 @@ seeds are rejected before initialization. Seeded on/off CLI fixtures produce
 identical complete interface records, while a no-seed configured inspection
 matches the legacy default wrapper. These are authored fixtures; the preceding
 six-run frozen receipt did not fix the Lua RNG seed and claims count invariants.
+
+## Seeded top-frame baseline
+
+The [current seeded receipt](receipts/ao-ui-seeded-self-20261015.json) uses audit
+seed 611 and executable SHA-256
+`00694e20286c5f9c98eb1a5477a52f53f601f7ca9bb50a949729ff71e31bc43e`.
+One profile-on run followed by one off run preserves the complete interface
+hash, resolved geometry hash, and both production Bitmap and Vector PNG hashes
+exactly. Both retain 10,145 widgets, 101 visible widgets, all 53 resolved menu
+trees, 28 diagnosed properties, 89 successful asset requests and 14,053,215 VM
+checkpoints. No Runtime, PCM, audio host or gestures execute in this AO path.
+
+The on/off process durations are 6,017.7/5,723.6 ms and total child user CPU is
+7,072.1/6,803.6 ms. This single ordered pair does not resolve instrumentation
+overhead: resource reads alone differ 199.650/4.129 ms and the render clocks also
+differ. None of 59 monitor observations saw a compiler or the named external CPU
+workload; other desktop activity was not excluded. It is a state/pixel oracle
+and diagnostic baseline, not an accepted speed comparison.
+
+The on run records 896 top-frame visits, all retained, with 1.964 ms spent
+gathering stacks. Prelude `getParameter` has 212 self/277 inclusive visits;
+element `__index` 136/239; the compatibility `type` wrapper 108/108; and the
+private catalog copier 103/103. These are observed safepoint visits, not exclusive
+CPU. The profiler currently scrubs bare named Lua chunks to `<dynamic>`, so line
+and function metadata alone can merge different library chunks. That limits
+attribution until explicitly trusted compile-time names are retained.
+
+Native read-parameter calls number 575,045 (228.4 ms inclusive wall), and complete
+definition requests 60,034 (527.2 ms). The immutable catalog is already parsed
+once. The getter still searches the kind's schema and the current element's
+retained fields linearly, then parses or clones the live result. No measurement
+yet distinguishes frequent short lists from costly long-kind lookups. The next
+probe records bounded length, hit-position and value-class distributions;
+neither live field/value caching nor blanket hash indexing follows from these
+aggregate counts.
+
+A separate [current Morphology snapshot witness](receipts/morphology-current-ui-20261015.json)
+uses the same executable and the single-constructor production lifecycle path.
+It retains 671 widgets and 481 bindings, observes the first exact listener cycle
+after one 128-frame block, and changes visible widgets from 140 to 113 as the
+drawers close. All 50 initial and 46 settled resource requests succeed. Finite
+activation is complete, one recurring listener remains active, and faults,
+active voices and discarded output peak remain zero. Both states have recorded
+model/PNG hashes; the old receipt did not retain its hash values, so this is not
+a byte comparison with that older image. The 1,077 source-conversion gaps remain
+grouped explicitly. This witness uses bounded Runtime/DSP stepping without a
+plugin, DAW or audio device. It does not update the installed binary or establish
+Kontakt-native pixel parity.
