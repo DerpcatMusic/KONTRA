@@ -30,6 +30,8 @@ use crate::blocks::lfo::uvi_sine;
 pub(super) const MAX_LINES: usize = 32;
 /// Frames per modulation update of [`Modulation::Glide`].
 pub(super) const GLIDE_BLOCK: usize = 64;
+/// Frames per pass of the parallel-lines path.
+const BLOCK: usize = 64;
 
 /// A power-of-two delay ring. Each ring stores frame `w` at a different
 /// offset (`skew`), so rings of one size written at the same `w` do not
@@ -312,6 +314,8 @@ struct Lanes {
     inj: [[f32; MAX_LINES]; 2],
     /// Write biquad.
     bq: [[f32; MAX_LINES]; 5],
+    /// Each line's tap coefficient per output group, when tapped.
+    tc: [[Option<f32>; MAX_LINES]; 2],
 }
 
 /// Per-line state.
@@ -334,6 +338,8 @@ pub(super) struct Network {
     pre_on: bool,
     /// A permutation matrix that is the identity: parallel lines.
     diagonal: bool,
+    /// Parallel lines with taps in line order: lines run a block at a time.
+    pub(super) parallel: bool,
     rings: Vec<Ring>,
     pre: [Ring; 2],
     lp: [f32; 2],
@@ -359,7 +365,13 @@ impl Network {
             Modulation::Quad { w } => (w.cos(), w.sin()),
             _ => (1.0, 0.0),
         };
-        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dc: ZERO, ds: ZERO, a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5] };
+        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dc: ZERO, ds: ZERO, a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5], tc: [[None; MAX_LINES]; 2] };
+        for (c, taps) in spec.taps.iter().enumerate() {
+            for &(i, g) in taps {
+                k.tc[c][usize::from(i)] = Some(g);
+            }
+        }
+        let in_order = spec.taps.iter().all(|t| t.windows(2).all(|p| p[0].0 < p[1].0));
         let gains = match &spec.matrix {
             Matrix::Permutation { g, .. } => *g,
             _ => [1.0; MAX_LINES],
@@ -379,12 +391,14 @@ impl Network {
                 k.bq[c][i] = l.bq[c];
             }
         }
+        let diagonal = matches!(&spec.matrix, Matrix::Permutation { p, .. } if p[..n].iter().enumerate().all(|(i, &k)| usize::from(k) == i));
         let mut s = Self {
             k: Box::new(k),
             st: Box::new(State { s0: ZERO, s1: ZERO, dc: ZERO }),
             v: ZERO,
             pre_on: spec.predelay != [0.0; 2] || spec.echo != 0.0,
-            diagonal: matches!(&spec.matrix, Matrix::Permutation { p, .. } if p[..n].iter().enumerate().all(|(i, &k)| usize::from(k) == i)),
+            diagonal,
+            parallel: diagonal && in_order,
             n,
             rings: spec.lines.iter().map(|l| Ring::new(l.cap)).collect(),
             pre: [Ring::new(spec.pre_cap), Ring::new(spec.pre_cap)],
@@ -487,9 +501,16 @@ impl Network {
             } else {
                 l.len() - k
             };
-            for j in 0..len {
-                let step = if M == 2 { (len - self.left + j) as f64 } else { 0.0 };
-                [l[k + j], r[k + j]] = self.frame::<I, M, F>(l[k + j], r[k + j], step);
+            if self.parallel {
+                for c in (k..k + len).step_by(BLOCK) {
+                    let e = (c + BLOCK).min(k + len);
+                    self.block::<I, M, F>(&mut l[c..e], &mut r[c..e], c - k);
+                }
+            } else {
+                for j in 0..len {
+                    let step = if M == 2 { (len - self.left + j) as f64 } else { 0.0 };
+                    [l[k + j], r[k + j]] = self.frame::<I, M, F>(l[k + j], r[k + j], step);
+                }
             }
             if M == 2 {
                 self.left -= len;
@@ -498,22 +519,20 @@ impl Network {
         }
     }
 
+    /// Advance the quadrature phasor: this frame's `[cos, sin]`.
     #[inline(always)]
-    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, inl: f32, inr: f32, step: f64) -> [f32; 2] {
-        let n = self.n;
-        let w = self.w;
-        self.w = w.wrapping_add(1);
+    fn lfo(&mut self) -> [f32; 2] {
+        let (c, si) = self.phasor;
+        let (cw, sw) = self.rot;
+        let (nc, ns) = (c * cw - sw * si, c * sw + si * cw);
+        self.phasor = (nc, ns);
+        [nc as f32, ns as f32]
+    }
+
+    /// The input stage for one frame at write position `w`.
+    #[inline(always)]
+    fn input(&mut self, inl: f32, inr: f32, w: usize) -> [f32; 2] {
         let s = &mut self.spec;
-        // Modulation phasor.
-        let mut lfo = [0f32; 2];
-        if M == 1 {
-            let (c, si) = self.phasor;
-            let (cw, sw) = self.rot;
-            let (nc, ns) = (c * cw - sw * si, c * sw + si * cw);
-            self.phasor = (nc, ns);
-            lfo = [nc as f32, ns as f32];
-        }
-        // Input.
         let mut x = [inl, inr];
         if s.mix != 0.0 {
             let mean = 0.5 * x[1] + 0.5 * x[0];
@@ -543,65 +562,35 @@ impl Network {
             }
             x[c] = v;
         }
+        x
+    }
+
+    #[inline(always)]
+    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, inl: f32, inr: f32, step: f64) -> [f32; 2] {
+        let n = self.n;
+        let w = self.w;
+        self.w = w.wrapping_add(1);
+        let lfo = if M == 1 { self.lfo() } else { [0.0; 2] };
+        let x = self.input(inl, inr, w);
+        let s = &mut self.spec;
         // Lines.
         let (k, st) = (&*self.k, &mut *self.st);
         let mut rd = [0f32; MAX_LINES];
         for (i, ring) in self.rings.iter().enumerate() {
-            let (j, f) = match M {
-                0 => (k.j[i], k.f[i]),
-                1 => {
-                    let d = lfo[0] * k.dc[i] + lfo[1] * k.ds[i] + k.base[i];
-                    let whole = d as i32;
-                    (whole as usize, d - whole as f32)
-                }
-                _ => {
-                    let d = self.glide[i].0 + step * self.glide[i].1;
-                    let j = d as usize;
-                    (j, (d - j as f64) as f32)
-                }
-            };
-            rd[i] = match I {
-                0 => ring.at(w, j),
-                1 => {
-                    let (a, b) = (ring.at(w, j), ring.at(w, j + 1));
-                    a + (b - a) * f
-                }
-                2 => (1.0 - f) * ring.at(w, j) + f * ring.at(w, j + 1),
-                _ => {
-                    let (m, a, b, c) = (ring.at(w, j.wrapping_sub(1)), ring.at(w, j), ring.at(w, j + 1), ring.at(w, j + 2));
-                    let (fm, fp, f2) = (f - 1.0, f + 1.0, f - 2.0);
-                    -f * fm * f2 / 6.0 * m + fp * fm * f2 / 2.0 * a - fp * f * f2 / 2.0 * b + fp * f * fm / 6.0 * c
-                }
-            };
+            let (j, f) = position::<M>(k, i, lfo, self.glide[i], step);
+            rd[i] = read::<I>(ring, w, j, f);
         }
         // Scalar per line: mixing vector and scalar passes over the same
         // arrays stalls on store forwarding.
         let mut u = [0f32; MAX_LINES];
         let one = s.write_filter.unwrap_or(0.0);
         let at = w.wrapping_sub(s.inject_offset);
-        let mut put = |i: usize, ring: &mut Ring, mut y: f32| {
-            if F {
-                let [b0, b1, b2, a1, a2] = &k.bq;
-                let z = b0[i] * y + st.s0[i];
-                st.s0[i] = b1[i] * y - a1[i] * z + st.s1[i];
-                st.s1[i] = b2[i] * y - a2[i] * z;
-                st.dc[i] += one * (z - st.dc[i]);
-                y = z - st.dc[i];
-            }
-            let inj = x[0] * k.inj[0][i] + x[1] * k.inj[1][i];
-            if at == w {
-                ring.put(w, y + inj);
-            } else {
-                ring.put(w, y);
-                ring.add(at, inj);
-            }
-        };
         let v = &mut self.v;
         if self.diagonal {
             for (i, ring) in self.rings.iter_mut().enumerate() {
                 v[i] = rd[i] * k.a[i] + k.b[i] * v[i];
                 u[i] = v[i] * k.g[i];
-                put(i, ring, u[i]);
+                write::<F>(k, st, one, i, ring, w, at, u[i], x);
             }
         } else {
             for i in 0..n {
@@ -609,17 +598,73 @@ impl Network {
             }
             apply(&s.matrix, v, n, &mut u);
             for (i, ring) in self.rings.iter_mut().enumerate() {
-                put(i, ring, u[i]);
+                write::<F>(k, st, one, i, ring, w, at, u[i], x);
             }
         }
         let v = &self.v;
-        // Output.
         let src: &[f32; MAX_LINES] = match s.tap_from {
             TapFrom::Read => &rd,
             TapFrom::Filtered => v,
             TapFrom::Mixed => &u,
         };
         let g = s.taps.each_ref().map(|t| t.iter().fold(0f32, |acc, &(i, c)| acc + c * src[usize::from(i)]));
+        self.output(g, x, inl, inr, w)
+    }
+
+    /// Parallel lines, `l.len() ≤ BLOCK` frames, `step0` frames into the
+    /// glide block: the input stage per frame, then each line across the
+    /// block, then the output stage per frame. Same arithmetic, same order
+    /// as [`Self::frame`].
+    #[inline(always)]
+    fn block<const I: u8, const M: u8, const F: bool>(&mut self, l: &mut [f32], r: &mut [f32], step0: usize) {
+        let len = l.len();
+        let w0 = self.w;
+        let mut xs = [[0f32; 2]; BLOCK];
+        let mut lfo = [[0f32; 2]; BLOCK];
+        for j in 0..len {
+            if M == 1 {
+                lfo[j] = self.lfo();
+            }
+            xs[j] = self.input(l[j], r[j], w0.wrapping_add(j));
+        }
+        let mut g = [[0f32; 2]; BLOCK];
+        let (k, st) = (&*self.k, &mut *self.st);
+        let s = &self.spec;
+        let one = s.write_filter.unwrap_or(0.0);
+        for (i, ring) in self.rings.iter_mut().enumerate() {
+            let mut v = self.v[i];
+            let (t0, t1) = (k.tc[0][i], k.tc[1][i]);
+            for j in 0..len {
+                let w = w0.wrapping_add(j);
+                let (jj, f) = position::<M>(k, i, lfo[j], self.glide[i], (step0 + j) as f64);
+                let rd = read::<I>(ring, w, jj, f);
+                v = rd * k.a[i] + k.b[i] * v;
+                let u = v * k.g[i];
+                write::<F>(k, st, one, i, ring, w, w.wrapping_sub(s.inject_offset), u, xs[j]);
+                let src = match s.tap_from {
+                    TapFrom::Read => rd,
+                    TapFrom::Filtered => v,
+                    TapFrom::Mixed => u,
+                };
+                if let Some(c) = t0 {
+                    g[j][0] += c * src;
+                }
+                if let Some(c) = t1 {
+                    g[j][1] += c * src;
+                }
+            }
+            self.v[i] = v;
+        }
+        self.w = w0.wrapping_add(len);
+        for j in 0..len {
+            [l[j], r[j]] = self.output(g[j], xs[j], l[j], r[j], w0.wrapping_add(j));
+        }
+    }
+
+    /// The output stage for one frame: tap groups `g`, input stage `x`.
+    #[inline(always)]
+    fn output(&mut self, g: [f32; 2], x: [f32; 2], inl: f32, inr: f32, w: usize) -> [f32; 2] {
+        let s = &mut self.spec;
         let mut o = [s.out[0][0] * g[0] + s.out[0][1] * g[1], s.out[1][0] * g[0] + s.out[1][1] * g[1]];
         if s.direct != 0.0 {
             o = [o[0] + s.direct * x[0], o[1] + s.direct * x[1]];
@@ -663,6 +708,64 @@ impl Network {
             o = [((o[0] - mid) * width + mid) * s.wet + s.dry * inl, ((o[1] - mid) * width + mid) * s.wet + s.dry * inr];
         }
         o
+    }
+}
+
+/// Line `i`'s whole and fractional delay this frame.
+#[inline(always)]
+fn position<const M: u8>(k: &Lanes, i: usize, lfo: [f32; 2], glide: (f64, f64), step: f64) -> (usize, f32) {
+    match M {
+        0 => (k.j[i], k.f[i]),
+        1 => {
+            let d = lfo[0] * k.dc[i] + lfo[1] * k.ds[i] + k.base[i];
+            let whole = d as i32;
+            (whole as usize, d - whole as f32)
+        }
+        _ => {
+            let d = glide.0 + step * glide.1;
+            let j = d as usize;
+            (j, (d - j as f64) as f32)
+        }
+    }
+}
+
+/// Read `j + f` frames behind `w`.
+#[inline(always)]
+fn read<const I: u8>(ring: &Ring, w: usize, j: usize, f: f32) -> f32 {
+    match I {
+        0 => ring.at(w, j),
+        1 => {
+            let (a, b) = (ring.at(w, j), ring.at(w, j + 1));
+            a + (b - a) * f
+        }
+        2 => (1.0 - f) * ring.at(w, j) + f * ring.at(w, j + 1),
+        _ => {
+            let (m, a, b, c) = (ring.at(w, j.wrapping_sub(1)), ring.at(w, j), ring.at(w, j + 1), ring.at(w, j + 2));
+            let (fm, fp, f2) = (f - 1.0, f + 1.0, f - 2.0);
+            -f * fm * f2 / 6.0 * m + fp * fm * f2 / 2.0 * a - fp * f * f2 / 2.0 * b + fp * f * fm / 6.0 * c
+        }
+    }
+}
+
+/// Line `i`'s write: the optional biquad and DC blocker, then the input
+/// injection at the head or at `at`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn write<const F: bool>(k: &Lanes, st: &mut State, one: f32, i: usize, ring: &mut Ring, w: usize, at: usize, mut y: f32, x: [f32; 2]) {
+    if F {
+        let [b0, b1, b2, a1, a2] = &k.bq;
+        let z = b0[i] * y + st.s0[i];
+        st.s0[i] = b1[i] * y - a1[i] * z + st.s1[i];
+        st.s1[i] = b2[i] * y - a2[i] * z;
+        st.dc[i] += one * (z - st.dc[i]);
+        y = z - st.dc[i];
+    }
+    let inj = x[0] * k.inj[0][i] + x[1] * k.inj[1][i];
+    if at == w {
+        ring.put(w, y + inj);
+    } else {
+        ring.put(w, y);
+        ring.add(at, inj);
     }
 }
 
@@ -712,5 +815,38 @@ pub(super) fn hadamard(x: &mut [f32]) {
             }
         }
         h *= 2;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The parallel-lines path is bit-identical to the per-frame path.
+    #[test]
+    fn parallel_lines_match_the_frame_path() {
+        let mut seed = 1u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        };
+        let input: Vec<[f32; 2]> = (0..3000).map(|_| [noise(), noise()]).collect();
+        let mut checked = 0;
+        for (name, net) in super::super::tests::presets() {
+            let spec = super::super::design::spec(&net, 48_000).unwrap();
+            let (mut a, mut b) = (super::Network::new(spec.clone()), super::Network::new(spec));
+            if !a.parallel {
+                continue;
+            }
+            b.parallel = false;
+            for chunk in input.chunks(37) {
+                let (mut l, mut r): (Vec<f32>, Vec<f32>) = chunk.iter().map(|f| (f[0], f[1])).unzip();
+                let (mut l2, mut r2) = (l.clone(), r.clone());
+                a.process(&mut l, &mut r);
+                b.process(&mut l2, &mut r2);
+                let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!((bits(&l), bits(&r)), (bits(&l2), bits(&r2)), "{name}");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 3, "{checked}");
     }
 }
