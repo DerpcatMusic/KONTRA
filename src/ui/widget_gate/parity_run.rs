@@ -259,6 +259,7 @@ fn layout(ui: &Ui, w: f64, h: f64) -> Value {
             let mut r = [s.frame.x, s.frame.y, s.frame.x + s.frame.size.width, s.frame.y + s.frame.size.height];
             // Only the part a clipping ancestor (scroll viewport, panel) lets show:
             // a row scrolled half out of its list is cut on purpose, not clipped.
+            // ponytail: nearest clip only; intersect `clip_path` too if nested clips disagree.
             if let Some(c) = s.clip {
                 r = [r[0].max(c.x0), r[1].max(c.y0), r[2].min(c.x1), r[3].min(c.y1)];
             }
