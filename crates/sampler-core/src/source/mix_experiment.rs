@@ -115,10 +115,10 @@ fn constant_mix_simd_stage_evidence() {
                         let target = black_box(&mut output[..len]);
                         let env = black_box(&mut envelope);
                         if reverse {
-                            if mode == 0 { super::mix(source.iter().rev(), target, env, 0.731, [0.7, -0.2]); }
-                            else { candidate(source.iter().rev(), target, env, 0.731, [0.7, -0.2]); }
-                        } else if mode == 0 { super::mix(source.iter(), target, env, 0.731, [0.7, -0.2]); }
-                        else { candidate(source.iter(), target, env, 0.731, [0.7, -0.2]); }
+                            if mode == 0 { super::mix(source.iter().rev(), target, env, gain, gains); }
+                            else { candidate(source.iter().rev(), target, env, gain, gains); }
+                        } else if mode == 0 { super::mix(source.iter(), target, env, gain, gains); }
+                        else { candidate(source.iter(), target, env, gain, gains); }
                     }
                     times[mode] = start.elapsed().as_nanos();
                     hashes[mode] = output.iter().flatten().fold(0_u64, |h, x| h.rotate_left(7) ^ u64::from(x.to_bits()));
