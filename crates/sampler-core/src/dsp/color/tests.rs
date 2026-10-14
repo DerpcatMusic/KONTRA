@@ -429,3 +429,22 @@ fn uvi_diode_clipper_matches_the_native() {
         1e-6,
     );
 }
+
+#[test]
+fn uvi_tone_stack_matches_the_native() {
+    uvi_unit(
+        "ToneStack",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let s = sampler_ir::fx::color::ToneStack {
+                bass: f("Bass", 0.5),
+                mid: f("Mid", 0.5),
+                treble: f("Treble", 0.5),
+                gain: f("Gain", 0.3),
+                model: f("Model", 0.0) as u8,
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::ToneStack(s), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
+    );
+}

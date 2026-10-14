@@ -221,6 +221,18 @@ impl Translation {
                     };
                     out.push(ir::Processor::Color(Config { curve: Curve::Diode(diode), ..Config::IDENTITY }));
                 }
+                "ToneStack" => {
+                    use ir::fx::color::{Config, Curve, ToneStack};
+                    let unit = |name, default| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(0.0, 1.0) as f32) };
+                    let stack = ToneStack {
+                        bass: unit("Bass", 0.5)?,
+                        mid: unit("Mid", 0.5)?,
+                        treble: unit("Treble", 0.5)?,
+                        gain: unit("Gain", 0.3)?,
+                        model: number(node, "Model", 0.0)?.clamp(0.0, 25.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::ToneStack(stack), ..Config::IDENTITY }));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};
