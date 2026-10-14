@@ -150,6 +150,26 @@ probe records bounded length, hit-position and value-class distributions;
 neither live field/value caching nor blanket hash indexing follows from these
 aggregate counts.
 
+The opt-in lookup probe now records at most 256 public catalog kinds, each with
+13 bounded length/hit-position buckets for immutable schema and live retained
+fields. Misses count the complete searched length; hits count the first matched
+position. It records result classes, cloned byte totals, allocation failures and
+separate Step Envelope level reads. Unknown kinds share one fixed bucket, and no
+authored parameter names, values or element IDs enter these records. Its own
+record-update clock excludes search-branch overhead and other profiler work.
+The disabled-profile path keeps its original getter loop; no index, value,
+default or field-list cache was added.
+
+Sampled chunk names now require explicit bounded compiler registration from the
+host or resolved resource authority (512 names, at most 240 characters, no control
+characters). Unregistered debug names stay `<dynamic>`. These names label chunks;
+they do not verify a body supplied with that label. Authored fixtures cover live
+field replacement, duplicate first-match behavior, defaults/boolean parsing,
+allocation failure, record bounds, and named-module privacy. Default-feature unit
+tests and scan-enabled initialization/interface oracles each pass four tests.
+Real-bank distributions and aggregate probe overhead still require a newly
+frozen executable; the preceding seeded receipt predates these counters.
+
 A separate [current Morphology snapshot witness](receipts/morphology-current-ui-20261015.json)
 uses the same executable and the single-constructor production lifecycle path.
 It retains 671 widgets and 481 bindings, observes the first exact listener cycle
