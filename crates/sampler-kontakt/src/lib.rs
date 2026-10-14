@@ -67,7 +67,10 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
+pub use snapshot::{
+    GroupState, SnapshotState, apply_snapshot, read_snapshot, resolve_snapshot_base,
+    snapshot_base_name, snapshot_identity, validate_snapshot_base,
+};
 pub use stream::{
     AssetSource, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
 };

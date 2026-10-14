@@ -9,6 +9,7 @@ pub(super) struct ControllerEvent {
     pub channels: u16,
     pub number: u8,
     pub poly_key: Option<u8>,
+    pub poly_recipients: Option<crate::InputSelector>,
     pub value: u32,
     pub pending: bool,
     pub stage: usize,
@@ -85,6 +86,7 @@ impl Runtime {
             channels,
             number,
             poly_key: None,
+            poly_recipients: None,
             value,
             pending: true,
             stage: 0,
@@ -123,15 +125,30 @@ impl Runtime {
         key: u8,
         value: u32,
     ) -> Result<(Option<BehaviorId>, usize), Error> {
+        self.dispatch_poly_pressure_selected(performance, origin, key, value, None)
+    }
+
+    /// A host adapter may preserve physical recipients separately from its
+    /// mapped script channel. The selector survives callback waits unchanged.
+    pub fn dispatch_poly_pressure_selected(
+        &mut self,
+        performance: PerformanceId,
+        origin: ChannelAddress,
+        key: u8,
+        value: u32,
+        recipients: Option<crate::InputSelector>,
+    ) -> Result<(Option<BehaviorId>, usize), Error> {
         let performance = self.performance_index(performance)?;
-        if key >= 128 || origin.group >= 16 || origin.channel >= 16 {
+        if key >= 128 || origin.group >= 16 || origin.channel >= 16
+            || recipients.is_some_and(|s| s.key.is_some_and(|v| v >= 128)
+                || s.channel.is_some_and(|v| v >= 16) || s.group.is_some_and(|v| v >= 16)) {
             return Err(Error::InvalidInput);
         }
         self.apply_due();
         let previous = self.poly_pressure_owners;
         let callback = self.admit_controller(self.active_plan, ControllerEvent {
             performance, origin, channels: 1 << origin.channel, number: 130,
-            poly_key: Some(key), value, pending: true, stage: 0, reserved: 0,
+            poly_key: Some(key), poly_recipients: recipients, value, pending: true, stage: 0, reserved: 0,
         })?;
         let owners = self.poly_pressure_owners.wrapping_sub(previous);
         Ok((callback, owners))
@@ -245,6 +262,7 @@ impl Runtime {
             event.stage += 1;
             event.number = number;
             event.poly_key = None;
+            event.poly_recipients = None;
             event.value = value;
             event.pending = true;
             event.reserved = 0;
@@ -259,6 +277,7 @@ impl Runtime {
                     channels: event.channels,
                     number,
                     poly_key: None,
+                    poly_recipients: None,
                     value,
                     stage: event.stage + 1,
                     pending: true,
@@ -277,6 +296,7 @@ impl Runtime {
                     channels: 1 << n.address.channel,
                     number,
                     poly_key: None,
+                    poly_recipients: None,
                     value,
                     stage: stage.index() + 1,
                     pending: true,
@@ -415,7 +435,12 @@ impl Runtime {
 
     fn publish_input_event(&mut self, event: ControllerEvent) -> Result<(), Error> {
         if let Some(key) = event.poly_key {
-            let owners = self.set_input_expressions(event.origin, Some(key), |e| crate::Expression { pressure: event.value, ..e })?;
+            let update = |e| crate::Expression { pressure: event.value, ..e };
+            let owners = if let Some(selector) = event.poly_recipients {
+                self.set_source_expressions(selector, update)?
+            } else {
+                self.set_input_expressions(event.origin, Some(key), update)?
+            };
             self.poly_pressure_owners = self.poly_pressure_owners.wrapping_add(owners);
             self.performance_state.poly_pressure[event.performance][usize::from(key)] = event.value;
             Ok(())

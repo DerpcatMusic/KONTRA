@@ -48,6 +48,38 @@ fn limits(plan: &Prepared, behaviors: usize) -> Limits {
 }
 
 #[test]
+fn delayed_poly_pressure_captures_mapped_physical_recipients_without_heap() {
+    let prepared = Prepared::new(48000, vec![], vec![], 0).unwrap()
+        .with_programs(vec![program(vec![I::Wait(4), I::ForwardController])], None).unwrap()
+        .with_stages(vec![Stage { poly_at: Some(0), ..Stage::default() }]).unwrap();
+    let budget = Limits { notes: 3, expressions: 3, behaviors: 2, commands: 2,
+        behavior_cells: prepared.behavior_local_count() * 2, behavior_fuel: 64,
+        ..Limits::for_plan(&prepared, 3, 0) };
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let wire = Input { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) };
+        let first = rt.note_on(wire, 60, 1.).unwrap();
+        let other = rt.note_on(Input { external_id: Some(2), ..wire }, 60, 1.).unwrap();
+        let physical = Input { protocol: Protocol::Clap, port: 2, channel: 9, external_id: Some(101), ..wire };
+        rt.set_input_source(first, physical).unwrap();
+        rt.set_input_source(other, Input { external_id: Some(102), ..physical }).unwrap();
+        let selector = InputSelector { protocol: Some(Protocol::Clap), port: Some(2),
+            group: Some(0), channel: Some(9), key: Some(60), external_id: Some(101) };
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_poly_pressure_selected(domain, wire.channel_address(), 60, 345, Some(selector)).unwrap();
+        let pressure = |rt: &Runtime, note| rt.expression(rt.expression_id(note).unwrap()).unwrap().pressure;
+        assert_eq!(pressure(&rt, first), 0);
+        // A later input with the same mapped wire must not broaden the pending event.
+        rt.dispatch_poly_pressure_selected(domain, wire.channel_address(), 60, 789,
+            Some(InputSelector { external_id: Some(102), ..selector })).unwrap();
+        rt.render(&mut [[0.; 2]; 5]).unwrap();
+        assert_eq!(pressure(&rt, first), 345);
+        assert_eq!(pressure(&rt, other), 789);
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+    });
+}
+
+#[test]
 fn consumption_and_generated_ccs_project_only_into_following_stages() {
     let audit = |base, target| {
         let mut code = vec![
