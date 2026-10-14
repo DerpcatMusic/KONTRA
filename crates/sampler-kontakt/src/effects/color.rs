@@ -41,6 +41,25 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
+/// 0x42 Tape Saturator: saved +8 gain, +0xc warmth, +0x10 roll-off (f32 clamped to 0..1),
+/// +0x14 quality (u8, nonzero = on), identity-bound to core indices 0..3 (setter 0x140ae1e10).
+pub(super) fn tape(fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    use ni_file::kontakt::objects::EffectValue::{Byte, Float};
+    match fields.iter().map(|f| &f.value).collect::<Vec<_>>()[..] {
+        [Float(gain), Float(warmth), Float(rolloff), Byte(quality)] => {
+            [gain, warmth, rolloff].iter().all(|v| v.is_finite()).then(|| {
+                Config::tape(sampler_ir::fx::color::Tape {
+                    gain: gain.clamp(0.0, 1.0),
+                    warmth: warmth.clamp(0.0, 1.0),
+                    rolloff: rolloff.clamp(0.0, 1.0),
+                    quality: *quality != 0,
+                })
+            })
+        }
+        _ => None,
+    }
+}
+
 /// 0x13 Gainer (reader 0x140d019b0): `dry + out * g`, g slewing.
 pub(super) fn gainer(gain: f64, dry: f64) -> Config {
     Config::gainer(sampler_ir::Gain::Linear(gain), dry)
@@ -61,7 +80,6 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x42 => "Tape Saturator: NI::KONTAKTFX::Tape core 0x140ae1190 with table interpolation; only the indexed setters 0x140ae1e10 are extracted, the saved-field binding and tables are not",
         0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }

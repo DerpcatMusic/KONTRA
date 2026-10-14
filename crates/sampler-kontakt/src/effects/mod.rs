@@ -932,6 +932,19 @@ pub(crate) fn chain_with(
                     None => modelled = false,
                 }
             }
+            Some(Params::Fields(fields)) if fx.module == 0x42 => {
+                flush(&mut combined, &mut filters, &mut out);
+                match color::tape(fields) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::Color(config));
+                        combined = gain;
+                        if dynamic.is_some() {
+                            notes.push(("Tape Saturator live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                        }
+                    }
+                    None => modelled = false,
+                }
+            }
             Some(Params::LoFi { values, flag }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 if let Some(config) = color::lofi(values) {
@@ -2456,6 +2469,12 @@ mod tests {
             }
             for scope in [Scope::Voice, Scope::Bus] {
                 let out = chain_with(&slots, scope, None, Some((7, -1)), (7, -1), &[]);
+                if module == 0x42 {
+                    // Tape is modelled: any nonzero quality byte turns Quality on.
+                    let tape = sampler_ir::fx::color::Tape { gain: 0.5, warmth: 0.25, rolloff: 0.75, quality: true };
+                    assert!(out.processors.contains(&sampler_ir::Processor::Color(sampler_ir::fx::color::Config::tape(tape))));
+                    continue;
+                }
                 assert!(out.processors.is_empty());
                 assert!(out.send_taps.is_empty());
                 assert_eq!(out.notes.len(), 1);
