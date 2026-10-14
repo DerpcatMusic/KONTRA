@@ -52,6 +52,9 @@ host saw new parameter names only after some unrelated main-thread callback.
 `process` now compares it (one atomic load) and, once per change, calls
 `clap_host::request_callback`; `on_main_thread` rescans as before. KONTRA
 names its host automation slots after the controls they drive this way.
+Value text follows the presentation too: a presentation change adds
+`CLAP_PARAM_RESCAN_TEXT` to the rescan, and the VST3 shim raises
+`kParamValuesChanged` (1 << 0) with `kParamTitlesChanged`.
 
 ## Native editor parent contracts
 

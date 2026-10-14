@@ -67,7 +67,8 @@ use clap_sys::ext::params::{
     CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED, clap_param_info, clap_plugin_params,
 };
 use clap_sys::ext::params::{
-    CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_VALUES, clap_host_params,
+    CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+    CLAP_PARAM_RESCAN_VALUES, clap_host_params,
 };
 use clap_sys::ext::preset_load::{
     CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_host_preset_load,
@@ -954,7 +955,8 @@ unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const 
                 flags |= CLAP_PARAM_RESCAN_VALUES;
             }
             if info_changed {
-                flags |= CLAP_PARAM_RESCAN_INFO;
+                // Value text follows the presentation (units, labels).
+                flags |= CLAP_PARAM_RESCAN_INFO | CLAP_PARAM_RESCAN_TEXT;
             }
             rescan(data.host, flags);
         }
