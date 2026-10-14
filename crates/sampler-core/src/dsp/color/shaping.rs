@@ -49,52 +49,95 @@ impl Rectifier {
     }
 }
 
-/// Formant Crusher's decimator: a held input sampled every `period` frames
-/// (fractional, never rounded) with a linear ramp toward it, mixed by `blend`
-/// (1 holds, 0 follows the ramp).
+/// Formant Crusher's decimator (0x1412d43c0): a held input sampled every `period` frames
+/// (fractional, never rounded) with a linear ramp toward it, mixed by `blend` (1 holds, 0
+/// follows the ramp); f32 values, f64 phase, as the native.
 #[derive(Clone, Copy, Debug)]
-pub struct Decimator {
-    pub period: f64,
-    pub blend: f64,
+pub(super) struct Decimate {
+    period: f64,
+    blend: f32,
 }
 
-impl Decimator {
-    pub(super) fn valid(&self) -> bool {
-        self.period.is_finite() && self.period >= 1. && self.blend.is_finite()
+impl Decimate {
+    pub(super) fn new(d: sampler_ir::fx::color::Decimator, rate: u32) -> Self {
+        let fs = f64::from(rate as f32);
+        Self { period: 1.0 / f64::from((d.hertz[1] / fs + d.hertz[0] / fs) as f32), blend: d.blend }
     }
 
-    /// Per channel `z[c] = [current, held]`, `delta` per channel and one shared
-    /// phase: it only depends on the period.
+    pub(super) fn period(&self) -> f64 {
+        self.period
+    }
+
+    pub(super) fn blend(&self) -> f32 {
+        self.blend
+    }
+
+    /// Per channel `z[c] = [current, held]` and `delta`; one phase per channel too, though
+    /// both channels advance it alike.
     pub(super) fn process(&self, state: &mut DecimatorState, block: &mut Planar, len: usize) {
-        let mut phase = state.phase;
-        for i in 0..len {
-            let reload = phase <= 0.;
-            for c in 0..2 {
-                let [mut current, mut held] = state.z[c];
-                if reload {
-                    held = block[c][i];
-                    state.delta[c] = (held - current) / self.period;
+        let period = self.period as f32;
+        for c in 0..2 {
+            let mut phase = state.phase;
+            let [mut current, mut held] = state.z[c];
+            for v in &mut block[c][..len] {
+                if phase <= 0.0 {
+                    held = *v as f32;
+                    state.delta[c] = (held - current) / period;
+                    phase += self.period;
                 }
                 let old = current;
-                current += state.delta[c];
-                block[c][i] = (held - old) * self.blend + old;
-                state.z[c] = [current, held];
+                current = old + state.delta[c];
+                *v = f64::from(((held - old) * self.blend) + old);
+                phase -= 1.0;
             }
-            if reload {
-                phase += self.period;
+            state.z[c] = [current, held];
+            if c == 1 {
+                state.phase = phase;
             }
-            phase -= 1.;
         }
-        state.phase = phase;
     }
 }
 
-/// [`Decimator`] history.
+/// [`Decimate`] history.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct DecimatorState {
-    pub(super) z: [[f64; 2]; 2],
-    pub(super) delta: [f64; 2],
+    pub(super) z: [[f32; 2]; 2],
+    pub(super) delta: [f32; 2],
     pub(super) phase: f64,
+}
+
+impl DecimatorState {
+    pub(super) fn finite(&self) -> bool {
+        self.z.iter().flatten().chain(&self.delta).all(|v| v.is_finite()) && self.phase.is_finite()
+    }
+}
+
+/// The color chain's RBJ biquad, transposed direct form II in f32 (UVI 0x141646fa0); the
+/// design is the filter family's (`cascade::rbj`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Biquad {
+    c: [f32; 5],
+    pub(super) post: bool,
+}
+
+impl Biquad {
+    pub(super) fn new(b: sampler_ir::fx::color::Biquad, rate: u32) -> Self {
+        let c = super::super::filter::cascade::rbj(b.mode.min(2), b.hertz / f64::from(rate as f32), b.q);
+        Self { c: c.map(|v| v as f32), post: b.post }
+    }
+
+    pub(super) fn process(&self, state: &mut [[f32; 2]; 2], block: &mut Planar, len: usize) {
+        let [b0, b1, b2, a1, a2] = self.c;
+        for (s, channel) in state.iter_mut().zip(block.iter_mut()) {
+            for v in &mut channel[..len] {
+                let x = *v as f32;
+                let y = (x * b0) + s[0];
+                s[0] = ((x * b1) + s[1]) - (y * a1);
+                s[1] = (x * b2) - (y * a2);
+                *v = f64::from(y);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@
 //! BFilterSimpleLP/HP/LPHP, BFilterDualSKF, BFilterBlueMonark, BFilterLadder_legacy,
 //! BFilterVowelA/B, BFilterVersatile.
 
-use sampler_ir::fx::filter::{Config, Fidelity, Gap, Response, Topology, Variant};
+use sampler_ir::fx::filter::{Config, Fidelity, Gap, KontaktFx, Response, Topology, Variant};
 
 /// How a saved type is realised.
 enum Build {
@@ -19,8 +19,6 @@ enum Build {
     Config(Config, Fidelity, &'static str),
     /// Handled by another translation arm (the family named).
     Elsewhere(&'static str),
-    /// Not configurable yet, and why.
-    Gap(&'static str),
 }
 
 const fn cascade(response: Response, poles: u8) -> Config {
@@ -47,10 +45,15 @@ const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Le
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
+const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
+const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
+const fn monark(mode: u8) -> KontaktFx {
+    KontaktFx::Monark { mode, variant: 0, knobs: [0.0; 5] }
+}
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; type 91 is measured ($FILTER_TYPE_FORMANT_2)";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
-    use Build::{Config as C, Elsewhere, Gap};
+    use Build::{Config as C, Elsewhere};
     Some(match id {
         2 => ("Legacy LP1", C(cascade(Lp, 1), Exact, LEGACY)),
         3 => ("Legacy HP1", C(cascade(Hp, 1), Exact, LEGACY)),
@@ -67,7 +70,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
         16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
         17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
-        19 => ("3x2 Versatile", Gap("core extracted and run by the cascade core (Legacy::Versatile, kemu-exact), but the v0x95 serialized order of SHIFTB..FILTER_GAIN past resonance is not extracted (object offsets 0x38..0x60 only)")),
+        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Exact, STAGES)),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
@@ -112,12 +115,12 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         106 => ("AR LP2/4", C(native(Topology::Ar, Lp, 0), Exact, AR)),
         107 => ("AR BP2/4", C(native(Topology::Ar, Bp, 0), Exact, AR)),
         108 => ("AR HP2/4", C(native(Topology::Ar, Hp, 0), Exact, AR)),
-        120 => ("Simple LP/HP", Gap("BFilterSimpleLPHP (vtable 0x144f11f40) core not extracted")),
-        130 => ("Dual SKF", Gap("BFilterDualSKF (vtable 0x144f12808) core not extracted")),
-        140 => ("Monark LP1", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        141 => ("Monark LP2", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        142 => ("Monark LP4", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        143 => ("Monark BP", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
+        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Exact, KFX)),
+        130 => ("Dual SKF", C(variant(Bp, 4, Variant::Kontakt(KontaktFx::DualSkf([0.0; 5]))), Exact, KFX)),
+        140 => ("Monark LP1", C(variant(Lp, 1, Variant::Kontakt(monark(2))), Exact, KFX)),
+        141 => ("Monark LP2", C(variant(Lp, 2, Variant::Kontakt(monark(1))), Exact, KFX)),
+        142 => ("Monark LP4", C(variant(Lp, 4, Variant::Kontakt(monark(0))), Exact, KFX)),
+        143 => ("Monark BP", C(variant(Bp, 2, Variant::Kontakt(monark(3))), Exact, KFX)),
         _ => return None,
     })
 }
@@ -144,19 +147,55 @@ pub(crate) fn template(id: i32) -> Option<Mapped> {
 }
 
 /// A saved type with its stored cutoff, resonance and optional third knob (Formant Size).
-pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> Result<Mapped, Gap> {
+/// Placeholder knobs that [`map`] replaces with the record's.
+const VERSATILE_UNSET: sampler_ir::fx::filter::Versatile =
+    sampler_ir::fx::filter::Versatile { shift: [0.0; 2], resonance: [0.0; 2], types: [0.0; 3], wet: [0.0; 3], gain: 0.0 };
+
+/// `extra` is the SV bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader 0x140d00db0, offsets
+/// 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
+pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result<Mapped, Gap> {
     match build(id) {
         None => Err(Gap { name: "filter type", reason: "type id not in the Kontakt 8 filter table" }),
-        Some((name, Build::Gap(reason))) => Err(Gap { name, reason }),
         Some((name, Build::Elsewhere(_))) => {
             Err(Gap { name, reason: "belongs to another translation arm" })
         }
         Some((_, Build::Config(mut config, fidelity, caveat))) => {
             config.cutoff = f64::from(cutoff);
             config.resonance = f64::from(resonance);
-            config.extra = extra.map_or(0.0, f64::from);
-            if let Variant::MultiSv { bandwidth, .. } = &mut config.variant {
-                *bandwidth = extra.unwrap_or(0.0).clamp(0.0, 1.0);
+            let lead = extra.first().copied().filter(|_| id != 19);
+            config.extra = lead.map_or(0.0, f64::from);
+            match &mut config.variant {
+                Variant::MultiSv { bandwidth, .. } => *bandwidth = lead.unwrap_or(0.0).clamp(0.0, 1.0),
+                Variant::Versatile(v) => {
+                    let &[sb, sc, rb, rc, ta, tb, tc, wa, wb, wc, gain] = extra else {
+                        return Err(Gap { name: "3x2 Versatile", reason: "record without the 11 Versatile knobs" });
+                    };
+                    *v = sampler_ir::fx::filter::Versatile {
+                        shift: [sb, sc],
+                        resonance: [rb, rc],
+                        types: [ta, tb, tc],
+                        wet: [wa, wb, wc],
+                        gain,
+                    };
+                }
+                // Record order a, b, then `extra` (Monark's variant last); see the reader.
+                Variant::Kontakt(k) => {
+                    config.extra = 0.0;
+                    let (a, b) = (cutoff, resonance);
+                    let get = |i: usize| extra.get(i).copied().ok_or(Gap { name: "KONTAKTFX filter", reason: "record without its knobs" });
+                    *k = match *k {
+                        KontaktFx::SimpleLpHp { .. } => KontaktFx::SimpleLpHp { lp: a, hp: b },
+                        // record e is the stored 2v - 1 drive
+                        KontaktFx::DualSkf(_) => KontaktFx::DualSkf([b, get(1)?, a, get(0)?, (get(2)? + 1.0) * 0.5]),
+                        // record c is the stored 3v + 1 input gain, e the stored 2v - 1 modulation
+                        KontaktFx::Monark { mode, .. } => KontaktFx::Monark {
+                            mode,
+                            variant: get(3)?.clamp(0.0, 2.0) as u8,
+                            knobs: [a, b, (get(0)? - 1.0) / 3.0, (get(2)? + 1.0) * 0.5, get(1)?],
+                        },
+                    };
+                }
+                _ => {}
             }
             Ok(Mapped { config, fidelity, caveat })
         }
@@ -172,7 +211,6 @@ pub(crate) fn coverage() -> Vec<(i32, &'static str, String)> {
             let status = match b {
                 Build::Config(_, f, caveat) => format!("{f:?}: {caveat}"),
                 Build::Elsewhere(who) => format!("elsewhere: {who}"),
-                Build::Gap(reason) => format!("gap: {reason}"),
             };
             Some((id, name, status))
         })
@@ -190,7 +228,7 @@ mod tests {
             (2, Lp, 1), (3, Hp, 1), (4, Bp, 2), (6, Lp, 2), (7, Hp, 2),
             (8, Lp, 4), (9, Hp, 4), (10, Bp, 4), (11, Nt, 4), (12, Lp, 6),
         ] {
-            let m = map(id, 0.5, 0.3, None).unwrap();
+            let m = map(id, 0.5, 0.3, &[]).unwrap();
             assert_eq!(m.fidelity, Exact, "{id}");
             assert_eq!((m.config.topology, m.config.response, m.config.poles), (Topology::Cascade, response, poles));
             assert!(matches!(m.config.processors(None).unwrap()[..], [Processor::FilterBank(_)]));
@@ -198,13 +236,23 @@ mod tests {
     }
 
     #[test]
+    fn versatile_takes_its_eleven_knobs_in_object_order() {
+        let knobs: Vec<f32> = (0..11).map(|i| i as f32 / 10.0).collect();
+        let m = map(19, 0.5, 0.5, &knobs).unwrap();
+        let Variant::Versatile(v) = m.config.variant else { panic!() };
+        let flat: Vec<f32> = v.shift.iter().chain(&v.resonance).chain(&v.types).chain(&v.wet).chain([&v.gain]).copied().collect();
+        assert_eq!(flat, knobs);
+        assert!(map(19, 0.5, 0.5, &knobs[..10]).is_err());
+    }
+
+    #[test]
     fn every_table_entry_builds_or_says_why_not() {
         for (id, name, status) in coverage() {
             if status.starts_with("gap") || status.starts_with("elsewhere") {
-                assert!(map(id, 0.5, 0.5, Some(0.5)).is_err(), "{id} {name}");
+                assert!(map(id, 0.5, 0.5, &[0.5; 11]).is_err(), "{id} {name}");
                 continue;
             }
-            let m = map(id, 0.5, 0.5, Some(0.5)).unwrap();
+            let m = map(id, 0.5, 0.5, &[0.5; 11]).unwrap();
             assert!(!m.config.processors(None).unwrap().is_empty(), "{id} {name}");
         }
     }

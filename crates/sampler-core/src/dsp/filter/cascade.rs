@@ -27,6 +27,7 @@
 //! (truncated series, operation order) and the sections in f32 as the native does.
 
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 
 /// Frames between control evaluations (the engine's native-knob clock).
@@ -1017,6 +1018,710 @@ impl Rez {
     }
 }
 
+// ----------------------------------------------------------------- UVI Xpander
+
+/// `XpanderFilter` output mixes per Mode (`[input, y1, y2, y3, y4]`, dumped from the native
+/// update 0x1412cbc30; row 0 is the static LP1 row).
+const XPANDER_MIX: [[f32; 5]; 37] = [
+    [0., 1., 0., 0., 0.],
+    [0., 0., 1., 0., 0.],
+    [0., 0., 0., 1., 0.],
+    [0., 0., 0., 0., 1.],
+    [1., -1., 0., 0., 0.],
+    [1., -2., 1., 0., 0.],
+    [1., -3., 3., -1., 0.],
+    [1., -4., 6., -4., 1.],
+    [0., 2., -2., 0., 0.],
+    [0., 0., 4., -8., 4.],
+    [1., -2., 2., 0., 0.],
+    [1., -4., 8., -8., 4.],
+    [1., -3., 6., -4., 0.],
+    [0., 1., -3., 6., -4.],
+    [-1., 2., 0., 0., 0.],
+    [1., -4., 4., 0., 0.],
+    [0., 0., 0., 1., -1.],
+    [0., 1., -3., 3., -1.],
+    [0., 1., -2., 1., 0.],
+    [0., 0., 1., -1., 0.],
+    [0., -1., 2., 0., 0.],
+    [0., 0., 1., -2., 2.],
+    [1., -4., 7., -6., 2.],
+    [0., 4., -12., 16., -8.],
+    [1., -1., 1., 0., 0.],
+    [1., 0., -1., 2., -1.],
+    [-1., 4., -5.25, 2.5, 0.],
+    [0., 0., 4., -8., 5.],
+    [1., -4., 6.25, -4.5, 1.25],
+    [0., 2., -6., 6.5, -2.5],
+    [-0.25, 1., -2.25, 2.5, 0.],
+    [0., 0., 0.25, -0.5, 1.25],
+    [1., -4., 10., -12., 5.],
+    [0., 0.5, -1.5, 3.5, -2.5],
+    [1., -4., 10.25, -12.5, 6.25],
+    [0.25, -1., 2.75, -3.5, 2.5],
+    [1., -4., 7.25, -6.5, 2.5],
+];
+
+/// Cells: the kernel's 5 states, R and g of the last call (0 fresh), the drive-glide flag,
+/// then the HIIR stage-0 memories (up then down).
+pub(crate) const XPANDER_CELLS: usize = 8 + 64;
+const XP_PREVIOUS: usize = 5;
+const XP_GLIDED: usize = 7;
+const XP_HIIR: usize = 8;
+
+/// `XpanderFilter` (process 0x1412bf1c0, update 0x1412cbc30; kernels 0x1412c14e0 /
+/// 0x1412bf450 / 0x1412c03f0 for Algorithm 0 and 0x1412c4cb0 / 0x1412c2580 / 0x1412c3870 for
+/// Algorithm 1, one per distortion): a four-pole ladder with the input saturator inside the
+/// feedback loop and a five-tap output mix, at 2x through the shared HIIR stage (edge
+/// `min(20000 / rate, 0.48) rate`, 80 dB) when Algorithm 0 runs at or under 48 kHz or
+/// Oversampling is on. Chain (wrapper 0x1412ca0a0 / 0x1412c8520 / 0x1412c9260): input times
+/// the drive (a fresh unit's first frame at 1), up, kernel, down, times `1 / NL(drive)`. R
+/// and g ramp across each call from the previous call's (0 on a fresh unit).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Xpander {
+    r: f32,
+    g: f32,
+    fat: f32,
+    mix: [f32; 5],
+    distortion: u8,
+    zdf: bool,
+    os2: bool,
+    drive: f32,
+    hiir: Hiir,
+}
+
+/// The ladder's input nonlinearity: 0 Padé `u (27 + u^2) / (27 + 9 u^2)`, 1 hard clip, 2 the
+/// Padé of `1e-6 u^2` (near linear).
+#[inline(always)]
+fn xp_sat<const D: u8>(u: f32) -> f32 {
+    match D {
+        0 => (((u * u) + 27.0) * u) / (((u * u) * 9.0) + 27.0),
+        1 => u.clamp(-1.0, 1.0),
+        _ => {
+            let t = (u * u) * f32::from_bits(0x3586_37be);
+            ((t + 27.0) * u) / ((t * 9.0) + 27.0)
+        }
+    }
+}
+
+impl Xpander {
+    pub(crate) fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let Uvi::Xpander { mode, hertz, q, distortion, drive, fat, algorithm, oversampling } = u else {
+            return None;
+        };
+        let zdf = algorithm == 1;
+        let os2 = (!zdf && rate <= 48_000.0) || oversampling;
+        let rate2 = if os2 { rate + rate } else { rate };
+        let fb = f32::from_bits;
+        let (mut r, g) = if zdf {
+            let x = (hertz / rate2).min(fb(0x3eff_7cee));
+            let t = (x * fb(0x4049_0fdb)).tan();
+            (q, t + t)
+        } else {
+            let x = (hertz / rate2).min(0.5);
+            let x2 = x * x;
+            let w = x * fb(0x40c9_0fdb);
+            let t = x2 * fb(0x421d_e9e7);
+            let r = ((((w * fb(0x3d57_7319)) + fb(0x3f80_5f07)) - (t * fb(0x3dbd_a512))) + ((t * w) * fb(0x3cb2_95ea)))
+                * q;
+            let g = (((w * fb(0x3f7d_3c36)) - (t * fb(0x3ed9_30be))) + ((t * w) * fb(0x3e0d_6a16)))
+                - ((x2 * x2) * fb(0x41fb_dc68));
+            (r, g)
+        };
+        if distortion == 2 && fb(0x469c_4000) < hertz {
+            let h = rate2 * 0.5;
+            r *= 1.0 - (hertz.min(h) - fb(0x469c_4000)) / h;
+        }
+        Some(Self {
+            r,
+            g,
+            fat,
+            mix: XPANDER_MIX[usize::from(mode.min(36))],
+            distortion: distortion.min(2),
+            zdf,
+            os2,
+            drive: 10f32.powf(drive * fb(0x3d4c_cccd)),
+            hiir: Hiir::new(rate, f64::from((20_000.0 / rate).min(fb(0x3ef5_c28f))) * f64::from(rate), 80.0),
+        })
+    }
+
+    fn makeup(&self, drive: f32) -> f32 {
+        1.0 / match self.distortion {
+            0 => xp_sat::<0>(drive),
+            1 => xp_sat::<1>(drive),
+            _ => xp_sat::<2>(drive),
+        }
+    }
+
+    fn kernel(&self, s: &mut [f32; 5], x: &mut [f32], previous: [f32; 2]) {
+        match (self.zdf, self.distortion) {
+            (false, 0) => self.ladder::<0>(s, x, previous),
+            (false, 1) => self.ladder::<1>(s, x, previous),
+            (false, _) => self.ladder::<2>(s, x, previous),
+            (true, 0) => self.tpt::<0>(s, x, previous),
+            (true, 1) => self.tpt::<1>(s, x, previous),
+            (true, _) => self.tpt::<2>(s, x, previous),
+        }
+    }
+
+    /// Algorithm 1's output mix (the mono kernels' order).
+    #[inline(always)]
+    fn out(&self, t: f32, [y1, y2, y3, y4]: [f32; 4]) -> f32 {
+        let m = self.mix;
+        (((y4 * m[4]) + (y3 * m[3])) + (y2 * m[2])) + ((t * m[0]) + (y1 * m[1]))
+    }
+
+    /// Algorithm 0: one-sample feedback delay, `s = [s1, s2, s3, s4, y4]`. The engine is stereo, so
+    /// this is the stereo SIMD kernel's per-channel order (0x1412c78d0 / 0x1412c60b0 / 0x1412c6cf0;
+    /// the native takes it for 2 channels when bit 2 of the block size is clear).
+    fn ladder<const D: u8>(&self, s: &mut [f32; 5], x: &mut [f32], [rc, gc]: [f32; 2]) {
+        let (ka, kb) = (f32::from_bits(0x3f44_ec4f), f32::from_bits(0x3e6c_4ec6));
+        let inv = 1.0 / x.len() as f32;
+        let fat = self.fat * 4.0;
+        let mut k = rc * 4.0;
+        let mut gain = (rc * fat) + 1.0;
+        let dgain = (((self.r * fat) + 1.0) - gain) * inv;
+        let dk = ((self.r * 4.0) - k) * inv;
+        let (mut a, mut b, mut c) = (gc * ka, gc * kb, 1.0 - gc);
+        let da = ((self.g * ka) - a) * inv;
+        let db = ((self.g * kb) - b) * inv;
+        let dc = ((1.0 - self.g) - c) * inv;
+        let [mut s1, mut s2, mut s3, mut s4, mut y4] = *s;
+        for v in x {
+            let feedback = k * y4;
+            k += dk;
+            let u = (gain * *v) - feedback;
+            let t = if D == 2 {
+                // The stereo kernels' form: 1000 P(u / 1000).
+                let w = u / 1000.0;
+                let ww = w * w;
+                1000.0 * (((ww + 27.0) * w) / ((ww * 9.0) + 27.0))
+            } else {
+                xp_sat::<D>(u)
+            };
+            let y1 = (t * a) + s1;
+            s1 = (t * b) + (c * y1);
+            let y2 = (a * y1) + s2;
+            let y3 = (a * y2) + s3;
+            s2 = (c * y2) + (b * y1);
+            y4 = (a * y3) + s4;
+            s3 = (c * y3) + (b * y2);
+            s4 = (c * y4) + (b * y3);
+            gain += dgain;
+            let m = self.mix;
+            *v = (y4 * m[4]) + ((y3 * m[3]) + ((y2 * m[2]) + ((y1 * m[1]) + (t * m[0]))));
+            (a, b, c) = (a + da, b + db, c + dc);
+        }
+        *s = [s1, s2, s3, s4, y4];
+    }
+
+    /// Algorithm 1: the zero-delay (TPT) ladder, coefficients re-derived at 64-frame sub-block
+    /// edges and ramped inside; `s[..4]` are the `(1 + G)`-scaled stage states.
+    fn tpt<const D: u8>(&self, s: &mut [f32; 5], x: &mut [f32], [rc, gc]: [f32; 2]) {
+        let inv = 1.0 / x.len() as f32;
+        let (dg, dr) = (self.g - gc, self.r - rc);
+        let scale = 1.0 / ((gc * 0.5) + 1.0);
+        let [mut s1, mut s2, mut s3, mut s4] = [s[0], s[1], s[2], s[3]].map(|v| scale * v);
+        let mut g1p = None;
+        for (index, chunk) in x.chunks_mut(64).enumerate() {
+            let (i0, l) = (index * 64, chunk.len());
+            let (r0, r1) = (i0 as f32 * inv, (i0 + l) as f32 * inv);
+            let big0 = ((r0 * dg) + gc) * 0.5;
+            let big1 = ((r1 * dg) + gc) * 0.5;
+            let k0 = ((r0 * dr) + rc) * 4.0;
+            let k1 = ((r1 * dr) + rc) * 4.0;
+            let n0 = 1.0 / (big0 + 1.0);
+            let mut gain = (k0 * self.fat) + 1.0;
+            let mut c = (1.0 - big0) * n0;
+            let mut h = n0 * big0;
+            let mut norm = 1.0 / ((((h * h) * (h * h)) * k0) + 1.0);
+            let p = big1 + 1.0;
+            g1p = Some(p);
+            let ip = 1.0 / p;
+            let h1 = big1 * ip;
+            let il = 1.0 / l as f32;
+            let dh = (h1 - h) * il;
+            let dc = (((1.0 - big1) * ip) - c) * il;
+            let dn = (il / ((((h1 * h1) * (h1 * h1)) * k1) + 1.0)) - (norm / l as f32);
+            let dk = (k1 - k0) * il;
+            let dgain = (((k1 * self.fat) + 1.0) - gain) * il;
+            let mut k = k0;
+            for v in chunk {
+                let est = ((((((h * s1) + s2) * h) + s3) * h) + s4) * k;
+                k += dk;
+                let u = (gain * *v) - est;
+                let t = if D == 2 {
+                    let tt = (u * u) * f32::from_bits(0x3586_37be);
+                    (norm / ((tt * 9.0) + 27.0)) * ((tt + 27.0) * u)
+                } else {
+                    xp_sat::<D>(u) * norm
+                };
+                let v1 = t * h;
+                let y1 = v1 + s1;
+                let y2 = (y1 * h) + s2;
+                s1 = (y1 * c) + v1;
+                let v2 = y2 * h;
+                let y3 = v2 + s3;
+                s2 = (y2 * c) + (y1 * h);
+                let v3 = y3 * h;
+                h += dh;
+                let y4 = v3 + s4;
+                s3 = (y3 * c) + v2;
+                s4 = (y4 * c) + v3;
+                c += dc;
+                gain += dgain;
+                *v = self.out(t, [y1, y2, y3, y4]);
+                norm += dn;
+            }
+        }
+        if let Some(p) = g1p {
+            *s = [p * s1, p * s2, p * s3, p * s4, 0.0];
+        }
+    }
+
+    /// Drive, 2x up, kernel, down, makeup; state in `cells`.
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        const BLOCK: usize = super::super::BLOCK;
+        let previous = [cells[XP_PREVIOUS][0] as f32, cells[XP_PREVIOUS + 1][0] as f32];
+        // A fresh unit's drive glide starts at 1 and reaches the target after one frame.
+        let glide = cells[XP_GLIDED][0] == 0.0 && (self.drive - 1.0).abs() >= f32::from_bits(0x3586_37bd);
+        let makeup = self.makeup(self.drive);
+        for ch in 0..2 {
+            let mut s: [f32; 5] = std::array::from_fn(|i| cells[i][ch] as f32);
+            let mut out: [f32; BLOCK] = std::array::from_fn(|i| block[ch][i] as f32 * self.drive);
+            if glide && len > 0 {
+                out[0] = block[ch][0] as f32;
+            }
+            if self.os2 {
+                let mut h = HiirState::default();
+                for (m, c) in h.first().into_iter().flatten().flatten().zip(&cells[XP_HIIR..]) {
+                    *m = c[ch] as f32;
+                }
+                let (mut up, mut scratch) = ([0f32; 2 * BLOCK], [0f32; 2 * BLOCK]);
+                self.hiir.up(&mut h, &out[..len], 1, &mut up, &mut scratch);
+                self.kernel(&mut s, &mut up[..2 * len], previous);
+                self.hiir.down(&mut h, &mut up[..2 * len], 1, &mut out);
+                for (m, c) in h.first().into_iter().flatten().flatten().zip(&mut cells[XP_HIIR..]) {
+                    c[ch] = flushed(*m);
+                }
+            } else {
+                self.kernel(&mut s, &mut out[..len], previous);
+            }
+            for (i, (o, v)) in block[ch][..len].iter_mut().zip(&out).enumerate() {
+                let makeup = if glide && i == 0 { self.makeup(1.0) } else { makeup };
+                *o = f64::from(*v * makeup);
+            }
+            for (i, v) in s.iter().enumerate() {
+                cells[i][ch] = flushed(*v);
+            }
+        }
+        cells[XP_PREVIOUS] = [f64::from(self.r); 2];
+        cells[XP_PREVIOUS + 1] = [f64::from(self.g); 2];
+        cells[XP_GLIDED] = [1.0; 2];
+    }
+}
+
+// ----------------------------------------------------------------- UVI section banks + comb
+
+/// Sections a [`Bank`] holds: DigitalFilter's 16th-order band shapes give 16 plus one.
+const BANK: usize = 17;
+/// Cells: 2 transposed-direct-form-II states per section, then the first-order state.
+const BANK_FIRST: usize = 2 * BANK;
+const _: () = assert!(BANK_FIRST < CELLS);
+
+/// Fixed sections in transposed direct form II, chained or summed, per channel. `wide` runs
+/// DigitalFilter's f64 sections with an f32 store after each (0x141646fb0) and its f32
+/// first-order stage (0x141648c00); otherwise the coefficients and states are f32
+/// (0x141646fa0) and the sections are summed in order and scaled (VowelFilter 0x141345ef0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Bank {
+    sections: [[[f64; 5]; BANK]; 2],
+    count: usize,
+    first: [Option<[f32; 3]>; 2],
+    wide: bool,
+    sum: Option<f32>,
+}
+
+/// `VowelFilter` formant table (0x141ea1f30): 11 vowels x 4 formants, Hz.
+const VOWELS: [[f64; 4]; 11] = [
+    [700.0, 1100.0, 2450.0, 2900.0],
+    [500.0, 1350.0, 1700.0, 2900.0],
+    [250.0, 1700.0, 2500.0, 2700.0],
+    [570.0, 840.0, 2400.0, 3500.0],
+    [300.0, 870.0, 2240.0, 2650.0],
+    [440.0, 1020.0, 2240.0, 2900.0],
+    [520.0, 1190.0, 2390.0, 2900.0],
+    [660.0, 1720.0, 2410.0, 2900.0],
+    [530.0, 1840.0, 2480.0, 2900.0],
+    [390.0, 1990.0, 2550.0, 2900.0],
+    [270.0, 2290.0, 3010.0, 3500.0],
+];
+
+/// RBJ sections at sample rate 1 in f64 (0x14163fd30 LP, 0x14163ff50 BP at 0 dB peak,
+/// 0x14163fe30 HP); above Nyquist LP and BP pass and HP is silent.
+pub(crate) fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
+    if fn_ > 0.5 {
+        return [if mode == 2 { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0, 0.0];
+    }
+    let (sn, cs) = (fn_ * std::f64::consts::TAU).sin_cos();
+    let al = sn * (0.5 / q);
+    let a0 = al + 1.0;
+    let (a1, a2) = ((cs * -2.0) / a0, (1.0 - al) / a0);
+    match mode {
+        0 => {
+            let t = 1.0 - cs;
+            let b0 = (t * 0.5) / a0;
+            [b0, t / a0, b0, a1, a2]
+        }
+        1 => [al / a0, 0.0 / a0, -(al / a0), a1, a2],
+        _ => {
+            let b0 = ((cs + 1.0) * 0.5) / a0;
+            [b0, (-1.0 - cs) / a0, b0, a1, a2]
+        }
+    }
+}
+
+/// `(re, im)` square root, C99 `csqrt` branch cuts (the sign of a zero imaginary part kept).
+fn csqrt((x, y): (f64, f64)) -> (f64, f64) {
+    if x == 0.0 && y == 0.0 {
+        return (0.0, y);
+    }
+    let t = ((x.abs() + x.hypot(y)) * 0.5).sqrt();
+    if x >= 0.0 { (t, y / (t + t)) } else { (y.abs() / (t + t), t.copysign(y)) }
+}
+
+/// 0x141643f60: analog `(p2 s^2 + p3 s + p4) / (s^2 + p5 s + p6)` through the bilinear map.
+fn bilinear(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, w: f64) -> [f64; 5] {
+    let k = 1.0 / (w * 0.5).tan();
+    let k2 = k * k;
+    let n2 = k2 * p2;
+    let n = 1.0 / (k * p5 + p6 + k2);
+    [
+        (k * p3 + p4 + n2) * n,
+        ((p4 - n2) + (p4 - n2)) * n,
+        ((p4 - k * p3) + n2) * n,
+        ((p6 - k2) + (p6 - k2)) * n,
+        ((p6 - k * p5) + k2) * n,
+    ]
+}
+
+/// 0x1416440a0: analog `(p2 s^2 + p3 s + p4) / (p5 s^2 + p6 s + p7)`.
+fn bilinear2(p2: f64, p3: f64, p4: f64, p5: f64, p6: f64, p7: f64, w: f64) -> [f64; 5] {
+    let k = 1.0 / (w * 0.5).tan();
+    let p5 = k * k * p5;
+    let p2 = k * k * p2;
+    let n = 1.0 / (k * p6 + p5 + p7);
+    [(k * p3 + p2 + p4) * n, ((p4 - p2) + (p4 - p2)) * n, ((p2 - k * p3) + p4) * n, ((p7 - p5) + (p7 - p5)) * n, ((p5 - k * p6) + p7) * n]
+}
+
+/// 0x1412881a0: the four roots of `s^2 + B s + C` under the band transform.
+fn band_roots(b: f64, c: f64) -> [(f64, f64); 4] {
+    let d4 = (b * b - c * 4.0) + 8.0;
+    let (sre, sim) = csqrt((d4, 0.0));
+    let (q8, q10) = (sre * 0.25, sim * 0.25);
+    let d3 = sre * -b * 0.5;
+    let d2 = sim * -b * 0.5;
+    let d7 = (b * b * 0.5 - c) - 2.0;
+    let w1 = csqrt((d7 - d3, -d2));
+    let pb = b * -0.25;
+    let w2 = csqrt((d3 + d7, d2));
+    let z0 = ((-q8 - w1.0 * 0.5) + pb, -q10 - w1.1 * 0.5);
+    let za = ((-q8 + w1.0 * 0.5) + pb, w1.1 * 0.5 + -q10);
+    let zb = ((q8 - w2.0 * 0.5) + pb, q10 - w2.1 * 0.5);
+    let z3 = (w2.0 * 0.5 + q8 + pb, w2.1 * 0.5 + q10);
+    if d4 <= 0.0 { [z0, zb, za, z3] } else { [z0, za, zb, z3] }
+}
+
+fn re_mul(a: (f64, f64), b: (f64, f64)) -> f64 {
+    a.0 * b.0 - a.1 * b.1
+}
+
+/// `DigitalFilter` design (0x1412840f0): kind 0 LP, 1 HP, 2 BP, 3 notch, 4 low shelf, 5 high
+/// shelf, 6 peak; order `n`, `fn_ = fc / rate`. Sections plus the odd orders' first-order stage.
+fn digital_design(kind: u8, n: usize, fn_: f64, gain_db: f32, q: f64, bw: f64) -> (Vec<[f64; 5]>, Option<[f32; 3]>) {
+    use std::f64::consts::PI;
+    let nf = n as f64;
+    let w = fn_ * (2.0 * PI);
+    let r = 0.5 / q;
+    let mut phi = 0.0;
+    let mut k = 1.0;
+    if r >= 1.0 {
+        if r > 1.0 {
+            k = ((r * r - 1.0).sqrt() + r).powf(1.0 / nf + 1.0 / nf);
+        }
+    } else if n / 2 > 0 {
+        phi = r.acos() / (n / 2) as f64;
+    }
+    let r2 = r * r;
+    let g = f64::from((gain_db * 0.115_129_25).exp());
+    let a = g.powf(1.0 / (nf + nf));
+    let a2 = a * a;
+    let d = 2f64.powf(bw * 0.5) - 2f64.powf(bw * -0.5);
+    let (kk, ikk) = (k * k, 1.0 / (k * k));
+    let (mut bs, mut cs) = ([0f64; 16], [0f64; 16]);
+    let pairs = match n % 4 {
+        2 => {
+            let last = n / 2 - 1;
+            let mut i = 0;
+            while i < last {
+                let th = (1.0 - (i + 2) as f64 * (1.0 / nf)) * PI;
+                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
+                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
+                i += 2;
+            }
+            cs[last] = 1.0;
+            bs[last] = if r >= 1.0 { 1.0 / k + k } else { (PI - phi).cos() * -2.0 };
+            n / 2
+        }
+        0 => {
+            let mut i = 0;
+            while i < n / 2 {
+                let th = (1.0 - (i + 1) as f64 * (1.0 / nf)) * PI;
+                (bs[i], cs[i]) = ((th + phi).cos() * (k * -2.0), kk);
+                (bs[i + 1], cs[i + 1]) = ((th - phi).cos() * (-2.0 / k), ikk);
+                i += 2;
+            }
+            n / 2
+        }
+        _ if n == 3 => {
+            let t = (r2 - 2.0) * r2;
+            let z1 = csqrt((t, 0.0));
+            let zb = csqrt(((r2 - z1.0) - 1.0, -z1.1));
+            let zc = csqrt(((r2 + z1.0) - 1.0, z1.1));
+            bs[0] = zb.0 + zc.0;
+            cs[0] = zb.0 * zc.0 - zb.1 * zc.1;
+            1
+        }
+        _ => n / 2,
+    };
+    let mut sections = Vec::with_capacity(BANK);
+    for j in 0..pairs {
+        let (b, c) = (bs[j], cs[j]);
+        match kind {
+            0 => sections.push(bilinear(0.0, 0.0, 1.0, b, c, w)),
+            1 => sections.push(bilinear(1.0, 0.0, 0.0, b, c, w)),
+            4 => sections.push(bilinear(c, b * a, a2, b / a, c / a2, w)),
+            5 => sections.push(bilinear(c * a2 * a2, b * a2 * a, a2, b * a, c * a2, w)),
+            2 | 3 => {
+                let z = band_roots(b * d, c * d * d + 2.0);
+                for (u, v) in [(z[0], z[1]), (z[2], z[3])] {
+                    let (p5, p6) = (-u.0 - v.0, re_mul(u, v));
+                    sections.push(if kind == 2 { bilinear(0.0, d, 0.0, p5, p6, w) } else { bilinear(1.0, 0.0, 1.0, p5, p6, w) });
+                }
+            }
+            _ => {
+                let ic = 1.0 / c;
+                let nz = band_roots(d * a * (b * ic), (d * ic) * (a2 * d) + 2.0);
+                let pz = band_roots((b / a) * d, d * d * (c / a2) + 2.0);
+                for (n0, n1, q0, q1) in [(nz[0], nz[1], pz[0], pz[1]), (nz[2], nz[3], pz[2], pz[3])] {
+                    sections.push(bilinear(1.0, -n0.0 - n1.0, re_mul(n0, n1), -q0.0 - q1.0, re_mul(q0, q1), w));
+                }
+            }
+        }
+    }
+    let mut first = None;
+    if n & 1 == 1 {
+        let k = 1.0 / (w * 0.5).tan();
+        let f3 = |v: [f64; 3]| Some(v.map(|v| v as f32));
+        match kind {
+            0 => {
+                let n = 1.0 / (k + 1.0);
+                first = f3([n, n, (1.0 - k) * n]);
+            }
+            1 => {
+                let n = 1.0 / (k + 1.0);
+                first = f3([k * n, -(k * n), (1.0 - k) * n]);
+            }
+            4 => {
+                let ia = 1.0 / a;
+                let n = 1.0 / (k + ia);
+                first = f3([(k + a) * n, (a - k) * n, (ia - k) * n]);
+            }
+            5 => {
+                let n = 1.0 / (k + a);
+                first = f3([(k * a2 + a) * n, (a - k * a2) * n, (a - k) * n]);
+            }
+            2 => sections.push(bilinear2(0.0, d, 0.0, 1.0, d, 1.0, w)),
+            3 => sections.push(bilinear2(1.0, 0.0, 1.0, 1.0, d, 1.0, w)),
+            _ => sections.push(bilinear2(1.0, d * a, 1.0, 1.0, d / a, 1.0, w)),
+        }
+    }
+    (sections, first)
+}
+
+impl Bank {
+    fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let mut bank = Self { sections: [[[0.0; 5]; BANK]; 2], count: 0, first: [None; 2], wide: false, sum: None };
+        match u {
+            Uvi::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } => {
+                bank.wide = true;
+                for ch in 0..2 {
+                    // 0x141287010: stereo spread is -/+ half the semitones per channel.
+                    let sign = if ch == 0 { -1.0 } else { 1.0 };
+                    let e = ((spread * (1.0 / 24.0)) * sign) + (track * (1.0 / 12.0));
+                    // ponytail: the clamp statics (0x14258bff0/4) are encrypted .data; the Freq
+                    // range 10..22000 stands in until a runtime dump.
+                    let fc = (e.exp2() * hertz).clamp(10.0, 22_000.0);
+                    let (sections, first) = digital_design(
+                        kind,
+                        usize::from(order),
+                        f64::from(fc / rate),
+                        gain,
+                        f64::from(q),
+                        f64::from(bandwidth),
+                    );
+                    bank.count = sections.len().min(BANK);
+                    bank.sections[ch][..bank.count].copy_from_slice(&sections[..bank.count]);
+                    bank.first[ch] = first;
+                }
+            }
+            Uvi::Vowel { morph, q, formant, a, b, mode, count } => {
+                let count = usize::from(count.clamp(1, 4));
+                let m = f64::from(morph);
+                for i in 0..count {
+                    let hz = m * VOWELS[usize::from(b.min(10))][i] + (1.0 - m) * VOWELS[usize::from(a.min(10))][i];
+                    let fn_ = (2f64.powf(f64::from(formant)) * hz) / f64::from(rate);
+                    let s = rbj(mode.min(2), fn_, f64::from(q)).map(|c| f64::from(c as f32));
+                    bank.sections[0][i] = s;
+                    bank.sections[1][i] = s;
+                }
+                bank.count = count;
+                bank.sum = Some(if mode == 1 { 1.0 } else { 1.0 / count as f32 });
+            }
+            _ => return None,
+        }
+        Some(bank)
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        for ch in 0..2 {
+            let sections = &self.sections[ch][..self.count];
+            let mut s: [[f64; 2]; BANK] = std::array::from_fn(|i| [cells[2 * i][ch], cells[2 * i + 1][ch]]);
+            let x = &mut block[ch][..len];
+            if self.wide {
+                for v in x.iter_mut() {
+                    let mut y = f64::from(*v as f32);
+                    for (c, s) in sections.iter().zip(&mut s) {
+                        let o = y * c[0] + s[0];
+                        s[0] = (y * c[1] + s[1]) - o * c[3];
+                        s[1] = y * c[2] - o * c[4];
+                        y = f64::from(o as f32);
+                    }
+                    *v = y;
+                }
+                if let Some([b0, b1, a1]) = self.first[ch] {
+                    let mut z = cells[BANK_FIRST][ch] as f32;
+                    for v in x.iter_mut() {
+                        let u = *v as f32;
+                        let y = (u * b0) + z;
+                        z = (u * b1) - (y * a1);
+                        *v = f64::from(y);
+                    }
+                    cells[BANK_FIRST][ch] = flushed(z);
+                }
+            } else {
+                let gain = self.sum.unwrap_or(1.0);
+                for v in x.iter_mut() {
+                    let u = *v as f32;
+                    let mut acc = 0f32;
+                    for (c, s) in sections.iter().zip(&mut s) {
+                        let [b0, b1, b2, a1, a2] = c.map(|c| c as f32);
+                        let y = (u * b0) + s[0] as f32;
+                        s[0] = f64::from(((u * b1) + s[1] as f32) - (y * a1));
+                        s[1] = f64::from((u * b2) - (y * a2));
+                        acc += y;
+                    }
+                    *v = f64::from(if gain == 1.0 { acc } else { acc * gain });
+                }
+            }
+            for (i, s) in s[..self.count].iter().enumerate() {
+                cells[2 * i][ch] = super::super::flush(s[0]);
+                cells[2 * i + 1][ch] = super::super::flush(s[1]);
+            }
+        }
+    }
+}
+
+/// `CombFilter` (delay 0x141105240, process 0x141106490): `y = x + g (d0 + (d1 - d0) frac)`
+/// with `d0 = y[n - D]`, `d1 = y[n - D - 1]`, the delay `rate / fc` split into integer and
+/// fraction, `g = Q` (Mode 0) or `-Q` (Mode 1). Cells: the write index, then a ring of
+/// `D + 2` outputs (the native ring is larger; only these taps are read).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Comb {
+    delay: usize,
+    frac: f32,
+    g: f32,
+}
+
+impl Comb {
+    fn new(u: Uvi, rate: f32) -> Option<Self> {
+        let Uvi::Comb { hertz, q, negative } = u else { return None };
+        let half = rate * 0.5;
+        let fc = if hertz <= half { hertz } else { half };
+        let p = 1.0 / ((fc + fc) / rate);
+        let dl = (p + p).abs();
+        let delay = dl as usize;
+        Some(Self { delay, frac: dl - delay as f32, g: if negative { -q } else { q } })
+    }
+
+    fn cells(&self) -> usize {
+        1 + self.delay + 2
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        let size = self.delay + 2;
+        let start = cells[0][0] as usize % size;
+        let ring = &mut cells[1..1 + size];
+        for ch in 0..2 {
+            let mut w = start;
+            for v in &mut block[ch][..len] {
+                let i0 = (w + size - self.delay) % size;
+                let d0 = ring[i0][ch] as f32;
+                let d1 = ring[(i0 + size - 1) % size][ch] as f32;
+                let y = ((((d1 - d0) * self.frac) + d0) * self.g) + *v as f32;
+                ring[w][ch] = flushed(y);
+                *v = f64::from(y);
+                w = (w + 1) % size;
+            }
+        }
+        cells[0] = [((start + len) % size) as f64; 2];
+    }
+}
+
+/// The UVI laws designed once at prepare (their controls are constants).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fixed {
+    Xpander(Xpander),
+    Bank(Bank),
+    Comb(Comb),
+}
+
+impl Fixed {
+    fn new(class: Legacy, rate: f32) -> Option<Self> {
+        let Legacy::Uvi(u) = class else { return None };
+        Xpander::new(u, rate)
+            .map(Self::Xpander)
+            .or_else(|| Bank::new(u, rate).map(Self::Bank))
+            .or_else(|| Comb::new(u, rate).map(Self::Comb))
+    }
+
+    fn cells(&self) -> usize {
+        match self {
+            Self::Xpander(_) => XPANDER_CELLS,
+            Self::Bank(_) => CELLS,
+            Self::Comb(c) => c.cells(),
+        }
+    }
+
+    fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
+        match self {
+            Self::Xpander(x) => x.process(cells, block, len),
+            Self::Bank(b) => b.process(cells, block, len),
+            Self::Comb(c) => c.process(cells, block, len),
+        }
+    }
+}
+
 // ----------------------------------------------------------------- runtime
 
 /// Normalized cutoff and resonance (the native knobs).
@@ -1042,6 +1747,7 @@ impl CascadeSettings {
             class: self.class,
             parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
             rate: rate as f32,
+            fixed: Fixed::new(self.class, rate as f32),
         }
     }
 }
@@ -1050,9 +1756,15 @@ pub(crate) struct Cascade {
     class: Legacy,
     parameters: [PreparedParameter; 2],
     rate: f32,
+    /// UVI laws designed at prepare.
+    fixed: Option<Fixed>,
 }
 
 impl Cascade {
+    pub(crate) fn cells(&self) -> usize {
+        self.fixed.map_or(CELLS, |f| f.cells())
+    }
+
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
         [("cutoff", self.parameters[0]), ("resonance", self.parameters[1])]
     }
@@ -1085,6 +1797,10 @@ impl Cascade {
                     .clamp(0., 1.)
             })
         };
+        if let Some(f) = &self.fixed {
+            f.process(cells, block, len);
+            return !cells.iter().flatten().all(|v| v.is_finite());
+        }
         if let Legacy::Sv(sv) = self.class {
             self.sv(sv, cells, block, len, target);
             return !cells[..KNOBS].iter().flatten().all(|v| v.is_finite());
@@ -1161,6 +1877,9 @@ impl Cascade {
             Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
             Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
             Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
+            Legacy::Uvi(Uvi::Xpander { .. } | Uvi::Digital { .. } | Uvi::Vowel { .. } | Uvi::Comb { .. }) => {
+                unreachable!("fixed UVI laws run before the clocked laws")
+            }
             _ => {}
         }
         let seen = cells[KNOBS];
@@ -1445,6 +2164,120 @@ mod tests {
                 // ~1.6e-7 absolute); ours use libm.
                 if !(err < 3e-5) {
                     failures.push(format!("{name} {p}: err {err}: {:?} vs {:?}", &block[0][..3], &native[..3]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI XpanderFilter end to end (drive, HIIR 2x, kernel with its R/g ramp, makeup) under
+    /// kemu: a fresh unit (R and g ramp from 0) and a settled one, 64-frame impulse at 48 kHz.
+    #[test]
+    fn xpander_matches_the_native_chain() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("cascade_xpander_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let p = &case["params"];
+            let num = |k: &str| p[k].as_f64().unwrap() as f32;
+            let uvi = Uvi::Xpander {
+                mode: num("Mode") as u8,
+                hertz: num("Freq"),
+                q: num("Q"),
+                distortion: num("DistortionType") as u8,
+                drive: num("Drive_dB"),
+                fat: num("Fat"),
+                algorithm: num("Algorithm") as u8,
+                oversampling: num("Oversampling") != 0.0,
+            };
+            let settings =
+                CascadeSettings { class: Legacy::Uvi(uvi), cutoff: Parameter::Constant(0.0), resonance: Parameter::Constant(0.0) };
+            let unit = settings.compile(48_000, &mut Vec::new());
+            let Some(Fixed::Xpander(x)) = unit.fixed else { panic!() };
+            let (r, g) = (case["R"].as_f64().unwrap() as f32, case["g"].as_f64().unwrap() as f32);
+            if (x.r - r).abs() > 1e-6 || (x.g - g).abs() > 1e-6 {
+                failures.push(format!("{p}: R/g {} {} vs {r} {g}", x.r, x.g));
+            }
+            let mut cells = vec![[0f64; 2]; unit.cells()];
+            if !case["fresh"].as_bool().unwrap() {
+                cells[XP_PREVIOUS] = [f64::from(x.r); 2];
+                // Settled R and g only: the drive still glides from 1 on this first call.
+                cells[XP_PREVIOUS + 1] = [f64::from(x.g); 2];
+            }
+            let mut block = [[0f64; super::super::super::BLOCK]; 2];
+            block[0][0] = 1.0;
+            block[1][0] = 0.5;
+            unit.process(&mut cells, &[], &mut block, 64, 0, [0.0; 4]);
+            for (ch, key) in ["out", "right"].into_iter().enumerate() {
+                let Some(native) = case[key].as_array() else { continue };
+                let native: Vec<f32> = native.iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = block[ch].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                // Mono alg-0 vectors differ from our stereo-kernel order by rounding.
+                if !(err < 2e-5) {
+                    failures.push(format!("{p} fresh {} {key}: err {err}: {:?} vs {:?}", case["fresh"], &block[ch][..4], &native[..4]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// UVI DigitalFilter (f64 TDF-II cascade + first-order stage, stereo spread), VowelFilter
+    /// (parallel f32 bank) and CombFilter (fractional feedback delay) under kemu.
+    #[test]
+    fn uvi_banks_and_comb_match_the_native_vectors() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("cascade_uvi_bank_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for name in ["DigitalFilter", "VowelFilter", "CombFilter"] {
+            for case in vectors[name].as_array().unwrap() {
+                let p = &case["params"];
+                let num = |k: &str| p[k].as_f64().unwrap() as f32;
+                let uvi = match name {
+                    "DigitalFilter" => Uvi::Digital {
+                        kind: num("Type") as u8,
+                        order: num("order") as u8,
+                        hertz: num("Freq"),
+                        track: 0.0,
+                        spread: num("Spread"),
+                        q: num("Q"),
+                        gain: num("Gain"),
+                        bandwidth: num("Bandwidth"),
+                    },
+                    "VowelFilter" => Uvi::Vowel {
+                        morph: num("Morph"),
+                        q: num("Q"),
+                        formant: num("Formant"),
+                        a: num("FilterA") as u8,
+                        b: num("FilterB") as u8,
+                        mode: num("Mode") as u8,
+                        count: num("NumFormants") as u8,
+                    },
+                    _ => Uvi::Comb { hertz: num("Freq"), q: num("Q"), negative: num("Mode") == 1.0 },
+                };
+                let unit = CascadeSettings {
+                    class: Legacy::Uvi(uvi),
+                    cutoff: Parameter::Constant(0.0),
+                    resonance: Parameter::Constant(0.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let mut cells = vec![[0f64; 2]; unit.cells()];
+                let mut block = [[0f64; super::super::super::BLOCK]; 2];
+                block[0][0] = 1.0;
+                block[1][0] = 1.0;
+                // Two calls of 32 frames: the comb ring and bank states carry across.
+                unit.process(&mut cells, &[], &mut block, 32, 0, [0.0; 4]);
+                let mut rest = [[0f64; super::super::super::BLOCK]; 2];
+                unit.process(&mut cells, &[], &mut rest, 32, 32, [0.0; 4]);
+                for ch in 0..2 {
+                    block[ch][32..64].copy_from_slice(&rest[ch][..32]);
+                }
+                for (ch, key) in ["out", "right"].into_iter().enumerate() {
+                    let Some(native) = case[key].as_array() else { continue };
+                    let native: Vec<f32> = native.iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                    let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                    let err = block[ch].iter().zip(&native).map(|(a, b)| (*a as f32 - b).abs() / scale).fold(0f32, f32::max);
+                    if !(err < 1e-5) {
+                        failures.push(format!("{name} {p} {key}: err {err}: {:?} vs {:?}", &block[ch][..3], &native[..3]));
+                    }
                 }
             }
         }
