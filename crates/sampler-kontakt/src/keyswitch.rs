@@ -264,6 +264,8 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
         (Some(low), Some(high)) if (0..=high).contains(&low) && high <= 127 => {
             Ok((low as u8..=high as u8).collect())
         }
+        // A range sized by saved state to nothing (`LOW + 0 - 1`) switches no keys.
+        (Some(low), Some(high)) if high < low && (0..=127).contains(&low) => Ok(Vec::new()),
         (Some(_), Some(_)) => Err(format!("{what} {line:?} is outside 0..=127")),
         _ => Err(format!("{what} in {line:?} depends on runtime state")),
     };
@@ -354,7 +356,11 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
     }
     // The first indexed range is the articulation set; without one, all
     // single-key switches together. Anything else is a further switch set.
-    let primary: Vec<usize> = match patterns.iter().position(|p| p.range) {
+    let primary: Vec<usize> = match patterns
+        .iter()
+        .position(|p| p.range && p.keys.as_ref().is_ok_and(|k| !k.is_empty()))
+        .or_else(|| patterns.iter().position(|p| p.range && p.keys.is_err()))
+    {
         Some(first) => vec![first],
         None => (0..patterns.len()).collect(),
     };
@@ -950,6 +956,11 @@ end on
         assert!(
             matches!(detect(hinted, &[]), Detection::Unrecognized(why) if why.contains("control keys [24]"))
         );
+        // A range sized to nothing by saved state is inert; the next range is the set.
+        let empty = "on init\n declare $low := 20\n declare $count := 0\nend on\non note\n\
+            if (in_range($EVENT_NOTE, $low, $low + $count - 1))\n $o := $EVENT_NOTE - $low\n end if\n\
+            if (in_range($EVENT_NOTE, 24, 27))\n $ks := $EVENT_NOTE - 24\n end if\nend on";
+        assert!(matches!(detect(empty, &[]), Detection::Found(f) if f.keys.len() == 4));
         let toggle = "on init\nend on\non note\n if ($EVENT_NOTE = 24)\n $legato := 1\n exit\n end if\nend on";
         assert!(
             matches!(detect(toggle, &[]), Detection::Unrecognized(why) if why.contains("single"))
