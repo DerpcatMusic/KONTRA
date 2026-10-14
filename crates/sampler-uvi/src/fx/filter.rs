@@ -1,6 +1,6 @@
 //! UVI `filter` effects onto sampler_ir::fx::filter.
 //!
-//! BiquadFilter, MoogFilter, Rez, XpanderFilter, VowelFilter and CombFilter are native laws of the engine's cascade core (UVI
+//! BiquadFilter, MoogFilter, Rez, XpanderFilter, VowelFilter, CombFilter and DigitalFilter are native laws of the engine's cascade core (UVI
 //! Workstation 4.0.9, checked under kemu; see `sampler-core::dsp::filter::cascade`). OnePole is
 //! the SVF one-pole (its Freq to coefficient law is not proved). Every other UVI filter element
 //! is named here with the exact thing that is not proved, so the report says why it is dropped
@@ -15,7 +15,6 @@ use sampler_ir::Processor;
 const GAPS: &[(&str, &str)] = &[
     ("BrickwallFilter", "Slope (0..2) steepness and the native brickwall design are not extracted"),
     ("CrossOverFilter", "a three-way split feeds separate output buses; neither the crossover alignment nor the bus routing is modelled"),
-    ("DigitalFilter", "Slope (0..7) and Spread (-48..48) semantics and the Q law are not extracted"),
     ("FxFilter", "legacy FX Filter low/high frequency and Q laws are not extracted"),
     ("HighpassFilterRL", "RL inductor model (Model 1..2, Inductor 2..3) and Drive law are not extracted"),
     ("IIRLFOFilter", "LFO-driven IIR design is not extracted"),
@@ -25,7 +24,7 @@ const GAPS: &[(&str, &str)] = &[
 ];
 
 /// The elements with a native law.
-const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez", "XpanderFilter", "VowelFilter", "CombFilter"];
+const NATIVE: &[&str] = &["OnePole", "BiquadFilter", "MoogFilter", "Rez", "XpanderFilter", "VowelFilter", "CombFilter", "DigitalFilter"];
 
 /// Whether `tag` is a UVI filter element this module owns.
 pub(crate) fn handles(tag: &str) -> bool {
@@ -81,6 +80,17 @@ pub(crate) fn translate(
             },
             // ponytail: the native ring (0.05 s past the block) bounds the delay; tracked
             // cutoffs under 20 Hz are held at 20 Hz instead of wrapping that ring.
+            "DigitalFilter" => Uvi::Digital {
+                kind: number("Type", 0.0)?.clamp(0.0, 6.0) as u8,
+                // Slope 0..7 = order (table 0x141e731a8).
+                order: [1, 2, 3, 4, 6, 8, 12, 16][number("Slope", 1.0)?.clamp(0.0, 7.0) as usize],
+                hertz: number("Freq", 1000.0)?.clamp(10.0, 22_000.0) as f32,
+                track: ((key - 60.0) * tracking.clamp(-1.0, 1.0)) as f32,
+                spread: number("Spread", 0.0)?.clamp(-48.0, 48.0) as f32,
+                q: number("Q", 0.707)?.clamp(0.018, 28.284) as f32,
+                gain: number("Gain", 0.0)?.clamp(-30.0, 30.0) as f32,
+                bandwidth: number("Bandwidth", 1.0)?.clamp(0.01, 10.0) as f32,
+            },
             "CombFilter" => Uvi::Comb { hertz, q, negative: mode == 1 },
             _ => Uvi::Rez { mode: mode.min(2), hertz, q },
         };
@@ -176,6 +186,9 @@ mod tests {
         let t = run(r#"<CombFilter Mode="1" Q="0.5"/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert_eq!(c.variant, Variant::Uvi(Uvi::Comb { hertz: 1000.0, q: 0.5, negative: true }));
+        let t = run(r#"<DigitalFilter Type="2" Slope="7" KeyTracking="0.5"/>"#, Some(72)).unwrap();
+        let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
+        assert!(matches!(c.variant, Variant::Uvi(Uvi::Digital { kind: 2, order: 16, track: 6.0, .. })));
         let t = run(r#"<BiquadFilter/>"#, None).unwrap();
         let [Processor::FilterBank(c)] = t.processors[..] else { panic!() };
         assert_eq!(c.variant, Variant::Uvi(Uvi::Biquad { mode: 1, hertz: 1000.0, q: 0.0 }));
