@@ -847,6 +847,48 @@ of 272.466 us versus 218.464 us before, despite better median and p99. These
 short unpaced measurements establish a compute improvement, not isolated-host
 deadline reliability or an authored streamed-instrument acceptance.
 
+The next direct-mixing SIMD wrapper is **rejected for production**. It exists
+only in `source/mix_experiment.rs` behind `cfg(test)`. Assembly confirms its
+forward/reverse constant kernels use YMM instructions with no FMA contraction;
+the existing production loop uses SSE. An oracle matches PCM bits and full
+envelope continuation for changing gains, constant/moving/curved/released/AHD
+and native envelopes, short spans, unequal source/output lengths, reverse
+traversal, signed-zero and subnormal operands.
+
+The first `mix-simd-stage.json` is rejected evidence: it overlaps six compiler
+observations, and disassembly reveals the test-only candidate specialized its
+fixed channel gains while the general production baseline retained runtime
+arguments. The corrected benchmark makes gain arguments opaque outside each
+timed region and varies channel gains in the oracle. Its new assembly no
+longer embeds the fixed channel gains. Corrected sources and the original
+diagnostic are retained; the correction uses ordinary `git absorb` fixups,
+without rebasing shared history.
+
+`mix-simd-variable-gains-stage.json` captures four alternating comparisons per
+case in the same optimized executable on CPU 5: 50,000 blocks per algorithm,
+or 10,000 for native envelopes. All 48 hashes match, zero compiler observations
+are recorded, and the busy-process monitor sees only the measured child.
+The median candidate/original elapsed ratios are:
+
+| Primitive case | Forward ratio | Reverse ratio |
+| --- | ---: | ---: |
+| 3 frames, short-span fallback | 1.269 | 1.065 |
+| 128 frames, unity envelope | 0.906 | 1.040 |
+| 128 frames, sustain 0.8 | 0.921 | 0.943 |
+| 128 frames, sustain zero | 0.931 | 0.939 |
+| 128 frames, moving envelope fallback | 0.925 | 1.004 |
+| 128 frames, native envelope fallback | 1.003 | 1.005 |
+
+The short forward span loses in every comparison (ratios 1.109–1.476).
+Long-constant improvements do not pay for a generic wrapper with these edge
+costs, and native-envelope changes are unresolved near parity. The moving
+forward fallback improves despite retaining the original math, demonstrating
+that wrapper/inlining/layout also affects this experiment. These are short
+stage measurements, not complete callback percentages or an exhaustive tail
+test. The failed stage gate prevents production promotion; no full-callback
+gain is claimed for this wrapper. Native envelopes deliberately stay outside
+the constant fast path because their destination clocks must keep draining.
+
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
 | Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners, fixed mass key-up faults, [isolated admission lookup attribution](ADMISSION_CPU_EVIDENCE.md) | Authored script events and layered host-end ownership cost |
