@@ -139,6 +139,45 @@ full source/host normalization or oscillator output. The auxiliary waveform
 setter `0x141a3f0e0` stores its selector only. Numeric leaf execution and the
 audio consumers remain separate gates; none was ported to production here.
 
+The detached original-byte leaf probe now executes 12 mode writes, including
+0, 1–9, 10 and -1. It verifies the exact write footprint: the mode, nine
+weights, update flag and update counter; other bytes remain unchanged. Mode 3
+sets weight cells 0 and 2 together; modes 1/2/4/5/6/7/8/9 set cells
+0/1/6/7/3/4/5/8 respectively. This is a measured state selector, not proof of
+the corresponding oscillator output.
+
+The tuning leaf returns for all eight finite inputs in units 0, 2 and 3:
+unit 0 preserves input bits including negative zero, unit 3 returns zero, and
+unit 2 produces the following selected outputs. All returned cases leave
+machine storage unchanged. The eight unit-1 cases explicitly stop at imported
+`roundf`; no math implementation is substituted to manufacture native vectors.
+
+| Unit 2 raw input | Native output |
+| ---: | ---: |
+| -1 | 0.000025000294044730254 |
+| 0 | 0.4999934136867523 |
+| 0.5 | 70.7110595703125 |
+| 1 | 10000.3408203125 |
+
+A separate original configuration probe executes 36 finite raw-field cases
+through `0x140cdaf50`, after native preparation. The three clamp lanes map -1
+to 0 and 2 to 1, preserving negative zero. Raw fields `+0x84/+0xbc` instead
+preserve all tested -1..2 input bits. Unit-2 conversion of `+0xc0` matches the
+leaf above. The concrete optional-unit branch is supplied directly; no virtual
+getter is invented. Configuration calls no imports and preserves an opaque
+128-byte sentinel region at `+0x101e0..+0x10260`. The region's preservation is
+not labeled oscillator-phase continuity without consumer proof.
+
+Finally, original dispatcher `0x140cddeb0` is observed on eight combinations
+of raw selector `+0x10180` (0–3) and flag `+0x1017c` (0/1), stopping at the
+first instruction of each selected kernel. It selects eight distinct entries:
+flag 0 selects `0x140b2d8d0/0x140b09e30/0x140b0e1f0/0x140b127b0`; flag 1
+selects `0x140b305a0/0x140b0cbc0/0x140b11160/0x140b15780`. No audio kernel is
+executed or replaced by this dispatch probe. Together these findings identify
+concrete native branches for later calibration; they do not settle host value
+normalization, serialized ordinal conversion, complete processing or C8–C10
+parity.
+
 Raw local receipts live under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261014/`:
 `wavetable-native-string-audit.json`, `wavetable-native-string-xrefs.json`,
@@ -154,3 +193,6 @@ Preparation probe source, numeric output and log are
 `wavetable-native-typed-dispatch.txt`.
 Direct machine/helper slices are `wavetable-native-machine-consumers.txt` and
 `wavetable-native-auxiliary-helpers.txt`.
+The later probes are `wavetable-native-leaf-probe.py/.json/.log`,
+`wavetable-native-config-probe.py/.json/.log` and
+`wavetable-native-dispatch-probe.py/.json/.log`.
