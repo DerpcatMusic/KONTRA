@@ -95,6 +95,8 @@ pub enum Curve {
     Skreamer([f32; 5]),
     /// A UVI drive engine (gain, curve, wet/dry, output gain).
     Drive(Drive),
+    /// UVI Exciter (Tape sine / Tube envelope cubic, HIIR oversampled).
+    Exciter(Exciter),
     /// UVI ToneStack (Yeh/Smith passive stack, 26 models).
     ToneStack(ToneStack),
     /// UVI DiodeClipper (Newton-solved diode pair, DC blocker, output gain).
@@ -137,6 +139,19 @@ pub struct Diode {
     pub high_pass: f32,
     pub asymmetry: f32,
     pub output_gain: f32,
+}
+
+/// UVI Exciter controls as stored: Mode 0 Tape / 1 Tube, gains in dB, Amount 0..15, Mix %,
+/// 2^k oversampling.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exciter {
+    pub mode: u8,
+    pub input_gain: f32,
+    pub amount: f32,
+    pub mix: f32,
+    pub output_gain: f32,
+    pub oversampling: u8,
 }
 
 /// UVI ToneStack controls: Bass, Mid, Treble, Gain 0..1, Model 0..=25.
@@ -350,6 +365,7 @@ impl Config {
             Self { curve: Curve::Destructor { .. }, .. } => "Bit crusher",
             Self { curve: Curve::Skreamer(_), .. } => "Skreamer",
             Self { curve: Curve::Drive(_), .. } => "Drive",
+            Self { curve: Curve::Exciter(_), .. } => "Exciter",
             Self { curve: Curve::ToneStack(_), .. } => "Tone stack",
             Self { curve: Curve::Diode(_), .. } => "Diode clipper",
             Self { decimator: Some(_), .. } => "Formant crusher",
