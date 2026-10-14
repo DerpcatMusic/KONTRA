@@ -9,7 +9,8 @@ dir=${RE_PROJECT_DIR:-/home/derpcat/kontakto-engine-analysis-20261007/ghidra-pro
 project=${RE_PROJECT:-Kontakt8131}
 script=${RE_SCRIPT:-DecompileByString.java}
 log=$(mktemp)
-/home/derpcat/.local/bin/analyzeHeadless "$dir" "$project" -process -noanalysis -readOnly \
+# One headless session per project at a time (Ghidra locks it): queue.
+flock "/tmp/ghidra-query-$project.lock" /home/derpcat/.local/bin/analyzeHeadless "$dir" "$project" -process -noanalysis -readOnly \
   -scriptPath "$here/ghidra" -postScript "$script" "$@" >"$log" 2>&1 || { tail -40 "$log" >&2; exit 1; }
 # Script output: everything after "SCRIPT:", minus the logger's prefix/suffix.
 awk -v tag="${script%.java}.java> " '

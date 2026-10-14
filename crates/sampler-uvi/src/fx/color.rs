@@ -16,7 +16,7 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
             "tone filter at [ref] is a runtime-built biquad from unreferenced double constants at [ref]..[ref]; coefficients not transcribed"
         }
         "Drive" | "TSDrive"
-        | "DoubleDrive" | "UviDrive" | "Buzz" | "Retro" | "Vinyl" => {
+        | "DoubleDrive" | "UviDrive" | "Retro" | "Vinyl" => {
             "per-class kernel located but its saturation law, oversampling and filter stages are not transcribed; no Kontakt/UVI oracle to prove a transcription"
         }
         "JCMAmp" | "BoxModeler" | "Cabinet" => {

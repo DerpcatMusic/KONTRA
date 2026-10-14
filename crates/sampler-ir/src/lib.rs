@@ -1827,6 +1827,22 @@ pub struct ImpulseShape {
     pub auto_gain: bool,
     /// Volume envelope knots `[time fraction, dB]`, interpolated in amplitude.
     pub envelope: Option<[[f32; 2]; 8]>,
+    /// Kontakt's early/late filters and their crossfade.
+    pub filters: Option<ImpulseFilters>,
+    /// Predelay frames `(int)((rate·ms)·0.001)` in f32 (Kontakt's wrapper)
+    /// instead of rounded.
+    pub truncate_pre_delay: bool,
+}
+
+/// Kontakt Convolution's early and late filters: `[low cut, high cut]` Hz
+/// each, the early response up to `crossover` (a fraction of the length)
+/// and the late one after it. `None` filters the whole response with `late`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImpulseFilters {
+    pub early: [f32; 2],
+    pub late: [f32; 2],
+    pub crossover: Option<f32>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
