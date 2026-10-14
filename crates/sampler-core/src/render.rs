@@ -429,6 +429,10 @@ impl Runtime {
         let mut gains = [[0.; 2]; VOICES];
         let mut starved = [false; VOICES];
         let mut plan_id = None;
+        let reuse_mask = super::source::reuse::candidates(
+            voices.iter().map(|&i| self.voices.slots[i].value.as_ref().unwrap()),
+        );
+        let mut source_reuse = None;
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let f = self.families.get(v.family.0).unwrap();
@@ -450,11 +454,17 @@ impl Runtime {
             begun[lane] = if let Some(frames) = asset.resident_frames() {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
-                let pcm = super::source::Resident {
-                    frames: &frames,
-                    levels: guard.as_deref().map_or(&[], |l| l),
-                };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+                if reuse_mask & (1 << lane) != 0 {
+                    source_reuse
+                        .get_or_insert_with(super::source::reuse::ResidentReuse::default)
+                        .begin(chain, v, frames, guard, output.len(), &self.kernel, &mut planar, engine)
+                } else {
+                    let pcm = super::source::Resident {
+                        frames: &frames,
+                        levels: guard.as_deref().map_or(&[], |l| l),
+                    };
+                    chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+                }
             } else {
                 asset.touch(at + output.len() as u64);
                 let head = asset.try_head();
@@ -476,6 +486,9 @@ impl Runtime {
             batch.ends[2 * lane] = len;
             batch.ends[2 * lane + 1] = len;
         }
+        // Readers retire before any plan/voice lifecycle mutation. Their drop
+        // only releases snapshot counts; storage reclamation remains control-side.
+        drop(source_reuse);
         batch.len = batch.ends.iter().copied().max().unwrap_or(0);
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;

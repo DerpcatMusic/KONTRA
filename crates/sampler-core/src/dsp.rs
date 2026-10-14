@@ -878,6 +878,7 @@ impl PreparedVoiceChain {
 
 /// One voice block's source output, settled by [`PreparedVoiceChain::begin`].
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Begun {
     pub produced: usize,
     pub len: usize,

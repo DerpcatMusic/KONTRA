@@ -513,6 +513,77 @@ budget by large factors; no universal promise follows from the completed gains.
 
 ## Measurement coverage and limits
 
+The next bounded experiment reuses only resident, pre-envelope source blocks
+within an existing eight-voice batch. Each hit requires an exhaustive bitwise
+cursor key, source slot, chain, requested length, envelope completion/remaining
+frames and tail count, plus current resident and mipmap pointers/lengths.
+Retained first-read guards prevent pointer ABA during control-side publication.
+The same immutable interpolation kernel belongs to the batch. Gain, envelope,
+processor state, bus routing and slot-order summation still run independently.
+Wavetables, native loop slots, stretching, cold holds and starvation/fade-in
+states remain on the existing path; existing script/modulation batch exclusions
+remain in force. No allocation, Arc clone, locking, I/O or audio-side storage
+reclamation is introduced. The compact eight-entry cache occupies 11,792 bytes
+in its test build; an initial full-cursor copy exceeded the intended 16 KiB
+bound and was replaced before performance evaluation.
+
+The initial cache has three passing direct state/publication oracles and 76
+passing integration checks, including heap guards, exact scalar-owner versus
+1/2/4-thread batched PCM, tails, buses, streaming pages and source revisions.
+`source-reuse-runtime-paired.json` preserves all 24 exact hash/energy results.
+Shared-source 300-voice caller p50 changed from 1,912.0 to 1,213.1 us for
+3EQ+Stereo, and from 1,403.7 to 657.7 us for the filter workload in the first
+round. Distinct assets and phases paid roughly 3–15% penalties. A compiler
+was captured in 80 monitor observations, and several phase-workload runs had
+large deadline tails on both sides. These receipts establish exactness and
+identify a miss-path problem; they are not clean performance acceptance.
+The unconditional cache is rejected. The retained revision performs a cheap
+candidate preflight, lazily constructs the cache only for resident candidates,
+and skips full keys/stores/lookups for unique sources or phases. Its five
+direct oracles also check every `Begun` field, including tail settlement, and
+zero/exhausted/partial tails; all 76 integration checks pass. A fresh baseline
+and candidate were frozen against the same head-budget data layout.
+`source-reuse-gated-runtime-paired.json` preserves the revised 24-cell matrix.
+The first round has 46 compiler observations and its adverse tails remain
+in the receipt. All 12 second-round runs are compiler-free, with exact hashes
+and energy and zero wall deadline misses. Their 300-voice caller p50 results
+at 48 kHz/256 frames are:
+
+| Source layout | Workload | Before us | Retained revision us | Change |
+| --- | --- | ---: | ---: | ---: |
+| Shared asset/cursor | 3EQ+Stereo | 1,913.399 | 1,240.775 | -35.2% |
+| Shared asset/cursor | Filter | 1,401.816 | 672.653 | -52.0% |
+| 300 distinct assets | 3EQ+Stereo | 1,962.929 | 1,970.868 | +0.4% |
+| 300 distinct assets | Filter | 1,412.177 | 1,415.707 | +0.2% |
+| 300 distinct phases | 3EQ+Stereo | 1,989.029 | 2,009.489 | +1.0% |
+| 300 distinct phases | Filter | 1,436.546 | 1,439.717 | +0.2% |
+
+This is an accepted bounded optimization for exact eligible source matches,
+with a measured small miss-path cost. It is not a universal 35–52% improvement:
+distinct sources still need their original compute, and authored script or
+modulation paths may be ineligible. One compiler-free alternating pair per
+cell does not establish isolated-host tail guarantees. The matching shared
+workloads still require roughly 12.6–23.3% core deadline time, far above 1%.
+The actual complete callback receipt is separate:
+[whole callback evidence](WHOLE_CALLBACK_CPU_EVIDENCE.md).
+
+A further hypothesis is worker-baked interpolation tiles, not yet implemented.
+It could remove repeated callback sinc work for a fixed immutable source,
+exact cursor/pitch, quality and mipmap generation, with immediate original-path
+fallback on every cache miss or control change. Each tile must also carry the
+exact continuation state, preserve loop/release behavior, retain its immutable
+source lease and obey a fixed byte budget with control-side reclamation. A
+64-frame stereo f32 payload is 512 bytes. At 300 distinct voices and 48 kHz,
+fresh payload alone turns over at 115.2 MB/s; an 8 MiB payload-only cache holds
+about 72.8 ms. Keys, continuation states, handoff and f64 blocks increase that
+cost. These are arithmetic capacity estimates, not measured bandwidth results.
+Unique source/pitch streams still require the original interpolation compute
+on a worker, and live controls can invalidate work before consumption. Moving
+that compute outside the callback is not a reduction in total process CPU.
+Post-envelope or nonlinear per-voice FX also remain; factoring them over a
+group sum changes control/history and floating-point association. No blanket
+FX factoring, lossy pitch table or asynchronous result substitution is accepted.
+
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
 | Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners and phase-specific faults | Named helper-level release/admission cycle attribution and authored script events |
