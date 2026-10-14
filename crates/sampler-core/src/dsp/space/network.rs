@@ -597,9 +597,14 @@ impl Network {
                     self.block::<I, M, F>(&mut l[c..e], &mut r[c..e], c - k);
                 }
             } else {
-                for j in 0..len {
-                    let step = if M == 2 { (len - self.left + j) as f64 } else { 0.0 };
-                    [l[k + j], r[k + j]] = self.frame::<I, M, F>(l[k + j], r[k + j], step);
+                for c in (k..k + len).step_by(BLOCK) {
+                    let e = (c + BLOCK).min(k + len);
+                    let mut xs = [[0f32; 2]; BLOCK];
+                    self.input_block(&l[c..e], &r[c..e], self.w, &mut xs);
+                    for j in c..e {
+                        let step = if M == 2 { (len - self.left + j - k) as f64 } else { 0.0 };
+                        [l[j], r[j]] = self.frame::<I, M, F>(l[j], r[j], xs[j - c], step);
+                    }
                 }
             }
             if M == 2 {
@@ -652,49 +657,68 @@ impl Network {
         }
     }
 
-    /// The input stage for one frame at write position `w`.
+    /// The input stage for frames `w0..` (at most a block). Every stage is a
+    /// per-channel chain with private state, so it runs a stage at a time.
     #[inline(always)]
-    fn input(&mut self, inl: f32, inr: f32, w: usize) -> [f32; 2] {
+    fn input_block(&mut self, l: &[f32], r: &[f32], w0: usize, xs: &mut [[f32; 2]; BLOCK]) {
+        let len = l.len();
         let s = &mut self.spec;
-        let mut x = [inl, inr];
-        if s.mix != 0.0 {
-            let mean = 0.5 * x[1] + 0.5 * x[0];
-            let keep = 1.0 - s.mix;
-            x = x.map(|v| s.mix * mean + keep * v);
+        let mut ch = [[0f32; BLOCK]; 2];
+        for j in 0..len {
+            let mut x = [l[j], r[j]];
+            if s.mix != 0.0 {
+                let mean = 0.5 * x[1] + 0.5 * x[0];
+                let keep = 1.0 - s.mix;
+                x = x.map(|v| s.mix * mean + keep * v);
+            }
+            [ch[0][j], ch[1][j]] = x;
         }
         // A fully mono input runs the stage once.
         let chans = if s.mix == 1.0 { 1 } else { 2 };
-        for c in 0..chans {
-            let mut v = x[c] * s.gain;
-            for (q, [b0, b1, b2, a1, a2]) in s.input_bq.iter().enumerate() {
-                let [x1, x2, y1, y2] = self.df1[q][c];
-                let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-                self.df1[q][c] = [v, x1, y, y1];
-                v = y;
+        for (c, v) in ch.iter_mut().enumerate().take(chans) {
+            let v = &mut v[..len];
+            v.iter_mut().for_each(|v| *v *= s.gain);
+            for (q, &[b0, b1, b2, a1, a2]) in s.input_bq.iter().enumerate() {
+                let mut d = self.df1[q][c];
+                for v in v.iter_mut() {
+                    let [x1, x2, y1, y2] = d;
+                    let y = b0 * *v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                    d = [*v, x1, y, y1];
+                    *v = y;
+                }
+                self.df1[q][c] = d;
             }
             if let Some(k) = s.input_lp {
-                self.lp[c] += k * (v - self.lp[c]);
-                v = self.lp[c];
+                let mut lp = self.lp[c];
+                for v in v.iter_mut() {
+                    lp += k * (*v - lp);
+                    *v = lp;
+                }
+                self.lp[c] = lp;
             }
             if self.pre_on {
                 let ring = &mut self.pre[c];
-                let echo = if s.echo != 0.0 { s.echo * ring.weighted(w, s.predelay[c]) } else { 0.0 };
-                ring.put(w, v + echo);
-                v = ring.weighted(w, s.predelay[c]);
+                let d = s.predelay[c];
+                for (j, v) in v.iter_mut().enumerate() {
+                    let w = w0.wrapping_add(j);
+                    let echo = if s.echo != 0.0 { s.echo * ring.weighted(w, d) } else { 0.0 };
+                    ring.put(w, *v + echo);
+                    *v = ring.weighted(w, d);
+                }
             }
             for a in &mut s.diffuser[c] {
-                v = a.lattice(w, v);
+                for (j, v) in v.iter_mut().enumerate() {
+                    *v = a.lattice(w0.wrapping_add(j), *v);
+                }
             }
-            x[c] = v;
         }
-        if chans == 1 {
-            x[1] = x[0];
+        for j in 0..len {
+            xs[j] = [ch[0][j], ch[usize::from(chans == 2)][j]];
         }
-        x
     }
 
     #[inline(always)]
-    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, inl: f32, inr: f32, step: f64) -> [f32; 2] {
+    fn frame<const I: u8, const M: u8, const F: bool>(&mut self, inl: f32, inr: f32, x: [f32; 2], step: f64) -> [f32; 2] {
         let n = self.n;
         let w = self.w;
         self.w = w.wrapping_add(1);
@@ -703,7 +727,6 @@ impl Network {
             3 => self.lfo2(),
             _ => [0.0; 4],
         };
-        let x = self.input(inl, inr, w);
         let s = &mut self.spec;
         // Lines.
         let (k, st) = (&*self.k, &mut *self.st);
@@ -784,8 +807,8 @@ impl Network {
                 3 => self.lfo2(),
                 _ => [0.0; 4],
             };
-            xs[j] = self.input(l[j], r[j], w0.wrapping_add(j));
         }
+        self.input_block(l, r, w0, &mut xs);
         let mut src = [[0f32; BLOCK]; MAX_LINES];
         let (k, st) = (&*self.k, &mut *self.st);
         let s = &self.spec;
