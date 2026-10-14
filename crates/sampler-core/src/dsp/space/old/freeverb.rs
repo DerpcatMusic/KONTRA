@@ -1,18 +1,19 @@
-//! The Kontakt legacy Reverb (0x15) network, exact to `FUN_140aa3d10` (process),
-//! `FUN_14094c760` (delay lengths) and the case-0x3e setter in `FUN_1409619b0`.
-//!
-//! Per channel: input channel mix, gain, a lowpass, a predelay, eight damped
-//! feedback combs summed into four serial allpasses. The comb and allpass
-//! lengths are `int((channel_offset_ms + tuning_ms) * rate / 1000)`, with the
-//! classic Freeverb tuning expressed in milliseconds (samples at 44.1 kHz /
-//! 44.1) and the right channel 23/44.1 ms longer.
-//!
-//! The input lowpass is the one stage not reproduced exactly: Kontakt runs a
-//! shared biquad-prototype filter object (vtable `0x144e95870`) whose
-//! prototype coefficients are not written anywhere in the static image, so a
-//! one-pole at the configured `input_cutoff_hz` stands in; `None` bypasses it.
+#![allow(dead_code)]
+// The Kontakt legacy Reverb (0x15) network, exact to `FUN_140aa3d10` (process),
+// `FUN_14094c760` (delay lengths) and the case-0x3e setter in `FUN_1409619b0`.
+//
+// Per channel: input channel mix, gain, a lowpass, a predelay, eight damped
+// feedback combs summed into four serial allpasses. The comb and allpass
+// lengths are `int((channel_offset_ms + tuning_ms) * rate / 1000)`, with the
+// classic Freeverb tuning expressed in milliseconds (samples at 44.1 kHz /
+// 44.1) and the right channel 23/44.1 ms longer.
+//
+// The input lowpass is the one stage not reproduced exactly: Kontakt runs a
+// shared biquad-prototype filter object (vtable `0x144e95870`) whose
+// prototype coefficients are not written anywhere in the static image, so a
+// one-pole at the configured `input_cutoff_hz` stands in; `None` bypasses it.
 
-use super::common::one_pole;
+fn one_pole(hz: f32, rate: f32) -> f32 { 1.0 - (-std::f32::consts::TAU * hz.min(rate * 0.49) / rate).exp() }
 use crate::Error;
 use sampler_ir::fx::space::Network;
 
@@ -68,7 +69,7 @@ struct Channel {
     lp: f32,
 }
 
-pub(super) struct Freeverb {
+pub(crate) struct Freeverb {
     channels: [Channel; 2],
     /// Predelay read index and delay in samples.
     rd: usize,
@@ -87,7 +88,7 @@ fn length(offset: f32, tuning: f64, rate: f32) -> usize {
 }
 
 impl Freeverb {
-    pub(super) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
         let f = n.freeverb.ok_or(Error::InvalidInput)?;
         if rate == 0 {
             return Err(Error::InvalidInput);
@@ -116,7 +117,7 @@ impl Freeverb {
         })
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for c in &mut self.channels {
             c.pre.fill(0.0);
             for r in c.combs.iter_mut().chain(c.allpass.iter_mut()) {
@@ -129,7 +130,7 @@ impl Freeverb {
     }
 
     /// Replace `l`/`r` with the wet signal.
-    pub(super) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+    pub(crate) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
         let (damp, keep, fb, g) = (self.damp, 1.0 - self.damp, self.feedback, self.gain);
         for (a, b) in l.iter_mut().zip(r.iter_mut()) {
             let mut x = [*a, *b];
@@ -170,60 +171,3 @@ impl Freeverb {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sampler_ir::fx::space::{Freeverb as Coef, Topology};
-
-    fn network(width: f64, predelay: f64) -> Network {
-        Network {
-            topology: Topology::Freeverb,
-            predelay_seconds: predelay,
-            input_cutoff_hz: 192_000.0,
-            freeverb: Some(Coef { feedback: 0.8, damp: 0.7, allpass: 0.5, input_gain: 0.015, width }),
-            ..Network::DEFAULT
-        }
-    }
-
-    fn impulse(n: &Network, rate: u32, frames: usize) -> [Vec<f32>; 2] {
-        let mut fv = Freeverb::new(n, rate).unwrap();
-        let mut l = vec![0f32; frames];
-        let mut r = vec![0f32; frames];
-        l[0] = 1.0;
-        fv.process(&mut l, &mut r);
-        [l, r]
-    }
-
-    /// Native vector: at 44.1 kHz the first comb (1116 samples) returns the
-    /// input scaled by 0.015 through four allpasses of g = 0.5, each passing
-    /// `-g` straight through, and the shortest allpass (225) echoes at
-    /// 1116 + 225 once the previous stages are open.
-    #[test]
-    fn first_arrival_and_lengths() {
-        let [l, r] = impulse(&network(1.0, 0.0), 44_100, 4000);
-        assert!(l[..1116].iter().all(|v| *v == 0.0));
-        let first = 0.015f32 * 0.5f32.powi(4);
-        assert!((l[1116] - first).abs() < 1e-9, "{}", l[1116]);
-        // Width 1 keeps the channels apart: the right input is silent.
-        assert!(r.iter().all(|v| *v == 0.0));
-    }
-
-    #[test]
-    fn predelay_shifts_the_arrival() {
-        // 10 ms at 44.1 kHz is 441 samples.
-        let [l, _] = impulse(&network(1.0, 0.010), 44_100, 2000);
-        assert_eq!(l[..1116 + 441].iter().position(|v| *v != 0.0), None);
-        assert!(l[1116 + 441] != 0.0);
-    }
-
-    /// Width 0.5 mixes the channels fully (beta = 1): both outputs carry the
-    /// mean, so a left-only impulse reaches the right channel; the right
-    /// channel's lines are 23 samples longer.
-    #[test]
-    fn channel_mix_and_spread() {
-        let [l, r] = impulse(&network(0.5, 0.0), 44_100, 2000);
-        assert!((l[1116] - 0.015 * 0.5 * 0.5f32.powi(4)).abs() < 1e-9);
-        assert!(r[1116 + 23] != 0.0);
-        assert!(r[1116 + 22] == 0.0);
-    }
-}

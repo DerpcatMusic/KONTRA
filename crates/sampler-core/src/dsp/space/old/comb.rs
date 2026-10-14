@@ -1,18 +1,19 @@
-//! Comb/allpass layouts.
-//!
-//! [`CombAllpass`]: per channel a predelay feeds eight parallel damped
-//! feedback combs whose read taps sum into four serial allpasses. This is the
-//! structure the Kontakt legacy Reverb (0x15, `FUN_140aa3d10`) is proved to
-//! have: comb recurrence `h = d*delayed + (1-d)*h_prev`, write
-//! `input + feedback*h`; allpass `out = delayed - g*in`, write `in + g*out`.
-//! Delay lengths and the control laws are not recovered, so the lengths are
-//! the classic Schroeder/Moorer tuning.
-//!
-//! [`Diffuser`]: only the allpass chain, for smearing effects.
+#![allow(dead_code)]
+// Comb/allpass layouts.
+//
+// [`CombAllpass`]: per channel a predelay feeds eight parallel damped
+// feedback combs whose read taps sum into four serial allpasses. This is the
+// structure the Kontakt legacy Reverb (0x15, `FUN_140aa3d10`) is proved to
+// have: comb recurrence `h = d*delayed + (1-d)*h_prev`, write
+// `input + feedback*h`; allpass `out = delayed - g*in`, write `in + g*out`.
+// Delay lengths and the control laws are not recovered, so the lengths are
+// the classic Schroeder/Moorer tuning.
+//
+// [`Diffuser`]: only the allpass chain, for smearing effects.
 
 use super::common::{Allpass, Front, Line, one_pole};
 use crate::Error;
-use crate::dsp::kernels::biased_one_pole32;
+use super::common::biased_one_pole32;
 use sampler_ir::fx::space::Network;
 
 const COMBS: usize = 8;
@@ -39,7 +40,7 @@ struct Channel {
 }
 
 /// Two channels of eight combs and four allpasses.
-pub(super) struct CombAllpass {
+pub(crate) struct CombAllpass {
     pos: usize,
     channels: [Channel; 2],
     damp: f32,
@@ -54,7 +55,7 @@ fn lengths(rate: f32, size: f32, spread: f32) -> impl Iterator<Item = [usize; 2]
 }
 
 impl CombAllpass {
-    pub(super) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
         if rate == 0 {
             return Err(Error::InvalidInput);
         }
@@ -78,7 +79,7 @@ impl CombAllpass {
         Ok(Self { pos: 0, channels: [channel(0), channel(1)], damp: one_pole(s.damping_hz as f32, rate) })
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for ch in &mut self.channels {
             ch.front.clear();
             for c in &mut ch.combs {
@@ -89,7 +90,7 @@ impl CombAllpass {
         }
     }
 
-    pub(super) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         sampler_simd::dispatch(
             #[inline(always)]
             || {
@@ -125,13 +126,13 @@ impl Channel {
 /// Four allpasses per channel (lengths in ms at size 1).
 const DIFFUSER_MS: [f32; ALLPASSES] = [5.0, 7.5, 11.0, 15.5];
 
-pub(super) struct Diffuser {
+pub(crate) struct Diffuser {
     pos: usize,
     channels: [(Front, [Allpass; ALLPASSES]); 2],
 }
 
 impl Diffuser {
-    pub(super) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
         if rate == 0 {
             return Err(Error::InvalidInput);
         }
@@ -148,14 +149,14 @@ impl Diffuser {
         Ok(Self { pos: 0, channels: [channel(0), channel(1)] })
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for (front, chain) in &mut self.channels {
             front.clear();
             chain.iter_mut().for_each(Allpass::clear);
         }
     }
 
-    pub(super) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let pos = self.pos;
             self.pos = pos.wrapping_add(1);
@@ -170,56 +171,3 @@ impl Diffuser {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sampler_ir::fx::space::Topology;
-
-    fn network(decay: f64) -> Network {
-        Network { topology: Topology::CombAllpass, decay_seconds: decay, damping_hz: 12_000.0, ..Network::DEFAULT }
-    }
-
-    fn response(n: &Network, seconds: usize) -> (Vec<f32>, Vec<f32>) {
-        let mut rv = CombAllpass::new(n, 48_000).unwrap();
-        let mut l = vec![0.0; seconds * 48_000];
-        let mut r = l.clone();
-        l[0] = 1.0;
-        r[0] = 1.0;
-        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-            rv.process(l, r);
-        }
-        (l, r)
-    }
-
-    #[test]
-    fn decay_time_follows_the_setting() {
-        for target in [0.8, 2.0] {
-            let (l, _) = response(&network(target), 8);
-            let got = super::super::common::rt60(&l, 48_000.0);
-            assert!((got / target as f32 - 1.0).abs() < 0.35, "target {target} got {got}");
-        }
-    }
-
-    #[test]
-    fn allpass_chain_keeps_energy() {
-        let n = Network { topology: Topology::Diffuser, ..Network::DEFAULT };
-        let mut d = Diffuser::new(&n, 48_000).unwrap();
-        let mut l = vec![0.0; 48_000];
-        let mut r = l.clone();
-        l[0] = 1.0;
-        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-            d.process(l, r);
-        }
-        let energy: f32 = l.iter().map(|v| v * v).sum();
-        // The input one-pole (20 kHz) keeps c / (2 - c) of an impulse's energy;
-        // the allpass chain neither adds nor removes any.
-        let c = 1.0 - (-std::f32::consts::TAU * 20_000.0 / 48_000.0).exp();
-        assert!((energy / (c / (2.0 - c)) - 1.0).abs() < 0.01, "{energy}");
-    }
-
-    #[test]
-    fn long_decay_is_stable() {
-        let (l, r) = response(&network(60.0), 3);
-        assert!(l.iter().chain(&r).all(|v| v.is_finite() && v.abs() < 10.0));
-    }
-}

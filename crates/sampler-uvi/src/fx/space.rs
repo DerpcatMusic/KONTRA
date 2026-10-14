@@ -234,10 +234,13 @@ impl Translation {
                 })));
             }
             "Diffusion" => {
+                // Constructor 0x14130fc60: Diffusion +0x38, DiffusionStart +0x3c,
+                // Mix +0x40; equal-power mix 0x141311900.
                 network.topology = Topology::Diffuser;
-                network.size = (number(node, "DiffusionStart", 5.0)? / 5.0).clamp(0.05, 1.5);
-                network.diffusion = 0.75 * number(node, "Diffusion", 0.618)?.clamp(0.0, 1.0);
-                mix = number(node, "Mix", 1.0)?;
+                network.diffusion_start_ms = number(node, "DiffusionStart", 5.0)?.clamp(0.1, 50.0);
+                network.diffusion = number(node, "Diffusion", 0.618)?.clamp(0.0, 1.0);
+                let mix = number(node, "Mix", 1.0)?.clamp(0.0, 1.0);
+                return Ok(Some(ir::Processor::Space(Config { network: Some(network), impulse: None, dry: (1.0 - mix).sqrt(), wet: mix.sqrt() })));
             }
             _ => return Ok(None),
         }
