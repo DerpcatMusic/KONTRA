@@ -1,7 +1,7 @@
 //! Gain-computer stages: the static curve from detector level to the amount
 //! the ballistics follow (or straight to a gain).
 
-use super::pipeline::{Frame, Stage};
+use super::pipeline::{each, Frame, Stage};
 use sampler_ir::fx::dynamics::Direction;
 use std::sync::LazyLock;
 
@@ -123,7 +123,7 @@ pub(super) struct Trigger(pub f32);
 impl Stage for Trigger {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| if v as f32 <= self.0 { 0. } else { 1. });
+        f.level = each(f.level, |v| if v as f32 <= self.0 { 0. } else { 1. });
     }
 }
 
@@ -148,7 +148,7 @@ const CURVE: [[f32; 3]; 8] = [
 impl Stage for Segments {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| {
+        f.level = each(f.level, |v| {
             let excess = v as f32 - self.threshold;
             f64::from(if excess >= 0. {
                 let x = excess * self.excess_scale;
@@ -259,7 +259,7 @@ pub(super) struct BusRatio {
 impl Stage for BusRatio {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = f.level.map(|v| ((self.threshold - v) * self.slope).clamp(0., 1.));
+        f.level = each(f.level, |v| ((self.threshold - v) * self.slope).clamp(0., 1.));
     }
 }
 
@@ -274,7 +274,7 @@ pub(super) struct TransientMix {
 impl Stage for TransientMix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let [a, sustain] = f.level.map(|v| v as f32);
+        let [a, sustain] = each(f.level, |v| v as f32);
         let db = (sustain * self.sustain - self.sustain * f32::from_bits(0x3ea8_f5c3) * a) + a * self.attack + self.gain;
         let gain = super::super::filter::ar_kernel::exponential(db * f32::from_bits(0x411f_73da) + 1200.);
         f.gain = [f64::from(gain); 2];
