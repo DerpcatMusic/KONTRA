@@ -149,6 +149,11 @@ fn initial_required_full_pcm_is_charged_once_in_product_memory() {
     }).unwrap();
     let stream = Stream {streamer:streamed.streamer, assets:streamed.assets, report:streamed.report};
     assert_eq!(stream.report.required_resident_bytes, 512);
+    let startup = super::report::StreamStartup::of(&stream.streamer, &stream.assets, &stream.report);
+    assert_eq!(startup.required_resident_assets, 1);
+    assert_eq!(startup.required_resident_bytes, 512);
+    assert_eq!(startup.packed_head_bytes, 0);
+    assert_eq!(startup.physical_payload_bytes, 512);
     assert_eq!(stream.resident_bytes(), stream.report.pool_bytes as u64 + 512);
     assert_eq!(stream.assets[0].resident_frames().unwrap().len(), 64);
 }
