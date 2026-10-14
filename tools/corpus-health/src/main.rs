@@ -323,10 +323,42 @@ impl Pick {
     }
 }
 
+/// [`auto_pick`], at `key` instead when given (a retry at another covered key).
+fn pick_key(ir: &sampler_ir::Instrument, key: Option<u8>) -> Option<Pick> {
+    auto_pick(ir).map(|p| Pick { key: key.unwrap_or(p.key), ..p })
+}
+
+/// Other plain keys zones cover at the pick's velocity, an octave apart
+/// over that range. A script may play only part of its
+/// mapping (an articulation's playable range), so one silent key is not a
+/// silent instrument.
+fn other_keys(ir: &sampler_ir::Instrument, pick: Pick) -> Vec<u8> {
+    let switch: HashSet<u8> = ir.articulations.iter().flat_map(|a| a.switch_keys.iter().copied()).collect();
+    let covered: Vec<u8> = (0..=127u8)
+        .filter(|k| *k != pick.key && !switch.contains(k))
+        .filter(|k| {
+            ir.zones.iter().any(|z| {
+                (z.keys.low..=z.keys.high).contains(k) && (z.velocities.low..=z.velocities.high).contains(&pick.velocity)
+            })
+        })
+        .collect();
+    // One key per octave of the covered range, nearest the pick first, and
+    // both ends (an articulation may play only its top or bottom band).
+    let mut keys: Vec<u8> = covered.iter().copied().step_by(12).collect();
+    keys.sort_by_key(|k| k.abs_diff(pick.key));
+    keys.truncate(6);
+    for end in [covered.last(), covered.first()].into_iter().flatten() {
+        if !keys.contains(end) {
+            keys.push(*end);
+        }
+    }
+    keys
+}
+
 /// The key most zones cover at the test velocity, nearest middle C, outside
 /// the articulation switch keys. Falls back to the velocity nearest 64 that
 /// any zone covers, then to playing a switch key first.
-fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
+fn auto_pick(ir: &sampler_ir::Instrument) -> Option<Pick> {
     let switch: HashSet<u8> = ir
         .articulations
         .iter()
@@ -455,6 +487,8 @@ struct Sound {
     /// One sentence on a silent note ([`sampler_core::why_silent`]); set when
     /// selections were recorded.
     why_silent: Option<String>,
+    /// The other covered key that sounded when the picked one was silent.
+    retried_key: Option<u8>,
 }
 
 /// What a worker is doing, for failure records and the watchdog.
@@ -1381,6 +1415,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         tail_peak,
         faults,
         why_silent,
+        retried_key: None,
     })
 }
 
@@ -1414,7 +1449,7 @@ fn scripts(subject: &Subject) -> Value {
     })
 }
 
-fn load_item(item: &Item, ctx: &Ctx) -> Loading {
+fn load_item(item: &Item, ctx: &Ctx, key: Option<u8>) -> Loading {
     let policy = sampler_kontakt::StreamPolicy {
         decoders: 2,
         ..Default::default()
@@ -1440,7 +1475,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&e, "parse"),
             };
             let read_ms = t.elapsed().as_millis() as u64;
-            let Some(pick) = pick_key(&kontakt.instrument) else {
+            let Some(pick) = pick_key(&kontakt.instrument, key) else {
                 return no_zone();
             };
             let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
@@ -1518,7 +1553,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
             let translate_ms = t.elapsed().as_millis() as u64;
-            let Some(pick) = pick_key(&ir) else {
+            let Some(pick) = pick_key(&ir, key) else {
                 return no_zone();
             };
             if ctx.tier == Tier::Parse {
@@ -1545,7 +1580,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             stage("load");
             if ctx.tier == Tier::Parse {
                 return match sampler_uvi::translate_path(path) {
-                    Ok(t) => match pick_key(&t.instrument) {
+                    Ok(t) => match pick_key(&t.instrument, key) {
                         Some(pick) => (
                             ok(pick, &t.instrument),
                             Some((Subject::Ir(Box::new(t.instrument)), pick)),
@@ -1556,7 +1591,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 };
             }
             match sampler_uvi::load_streamed(path, 48000, &policy) {
-                Ok(s) => match pick_key(&s.loaded.instrument) {
+                Ok(s) => match pick_key(&s.loaded.instrument, key) {
                     Some(pick) => (
                         ok(pick, &s.loaded.instrument),
                         Some((Subject::Streamed(Box::new(s)), pick)),
@@ -1644,7 +1679,7 @@ fn stage_of(r: &Value) -> &'static str {
 /// every program is.
 fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let start = Instant::now();
-    let (load, _) = load_item(item, ctx);
+    let (load, _) = load_item(item, ctx, None);
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
@@ -1731,7 +1766,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         (0, (0, 0))
     };
     let start = Instant::now();
-    let (load, loaded) = load_item(item, ctx);
+    let (load, loaded) = load_item(item, ctx, None);
     let load_ms = start.elapsed().as_millis() as u64;
     let heap_after_load = heap::live();
     let mut record = json!({
@@ -1795,11 +1830,23 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             let played = Instant::now();
             let ccs = musical_ccs(subject.instrument(), &dynamics);
             let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
-            let reload = |ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx) {
+            let reload_at = |key: Option<u8>, ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx, key) {
                 (_, Some((s, p))) => play(s, p, diagnose, ccs).ok(),
                 _ => None,
             };
+            let reload = |ccs: &[(u8, u8)], diagnose: bool| reload_at(None, ccs, diagnose);
+            let others = other_keys(subject.instrument(), pick);
             let first = play(subject, pick, false, &[]);
+            // Silent at the picked key: try other covered keys before calling the
+            // instrument silent (the script may not play that key at all).
+            let first = match first {
+                Ok(s) if silent(&s) => Ok(others
+                    .iter()
+                    .find_map(|&k| reload_at(Some(k), &[], false).filter(|x| !silent(x)).map(|x| (k, x)))
+                    .map(|(k, x)| Sound { retried_key: Some(k), ..x })
+                    .unwrap_or(s)),
+                other => other,
+            };
             let first = match first {
                 Ok(mut s)
                     if silent(&s)
@@ -1883,6 +1930,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                         "tail_peak_db": db(s.tail_peak),
                         "script_faults": s.faults,
                         "why_silent": s.why_silent,
+                        "retried_key": s.retried_key,
                     });
                 }
                 Err(e) => record["sound"] = json!({"error": normalize(&e)}),
