@@ -173,8 +173,15 @@ impl Check<'_> {
             None => {}
         }
         if let Some(d) = c.decimator {
-            self.within(d.period, 1.0..=f64::MAX, "decimator period")?;
-            self.finite(d.blend, "decimator blend")?;
+            for hz in d.hertz {
+                self.within(hz, 1.0..=f64::MAX, "decimator hertz")?;
+            }
+            self.within(f64::from(d.blend), 0.0..=1.0, "decimator blend")?;
+        }
+        if let Some(b) = c.filter {
+            self.within(f64::from(b.mode), 0.0..=2.0, "color filter mode")?;
+            self.within(b.hertz, 1.0..=f64::MAX, "color filter hertz")?;
+            self.within(b.q, 1e-3..=f64::MAX, "color filter q")?;
         }
         match c.quantizer {
             Some(Quantizer::Native { bits }) => unit(bits, "color bits")?,

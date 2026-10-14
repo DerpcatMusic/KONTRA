@@ -1359,7 +1359,7 @@ const VOWELS: [[f64; 4]; 11] = [
 
 /// RBJ sections at sample rate 1 in f64 (0x14163fd30 LP, 0x14163ff50 BP at 0 dB peak,
 /// 0x14163fe30 HP); above Nyquist LP and BP pass and HP is silent.
-fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
+pub(crate) fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
     if fn_ > 0.5 {
         return [if mode == 2 { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0, 0.0];
     }

@@ -199,6 +199,17 @@ impl Translation {
                         mix,
                     )));
                 }
+                "FormantCrusher" => {
+                    out.push(ir::Processor::Color(ir::fx::color::Config::formant_crusher(
+                        number(node, "Morph", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Q", 10.0)?.clamp(10.0, 20.0) as f32,
+                        number(node, "Formant", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Bite", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "FilterA", 0.0)?.clamp(0.0, 10.0) as u8,
+                        number(node, "FilterB", 2.0)?.clamp(0.0, 10.0) as u8,
+                    )));
+                }
                 "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
                     // Native drive engines (color chain Curve::Drive with the HIIR stage).
                     use ir::fx::color::{Config, Curve, Drive, DriveKind};

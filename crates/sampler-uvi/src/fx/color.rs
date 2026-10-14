@@ -1,7 +1,8 @@
 //! UVI `color` effects onto `sampler_ir::fx::color`.
 //!
 //! Mapped (inserts.rs): `WaveShaper` rectifier modes 6/7 as a color rectifier; GarageFuzz,
-//! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve.
+//! SmoothOverdrive and StraightFuzz (with the HIIR oversampler) as the color chain's drive curve;
+//! FormantCrusher as its biquad + decimator.
 //! Everything else in the family is reported here, with what is missing, never
 //! mapped to the nearest curve.
 
@@ -10,9 +11,6 @@ pub(crate) fn unproved(element: &str) -> Option<&'static str> {
     Some(match element {
         "Redux" | "Redux2" => {
             "kernel at 0x1411e4de0 dispatches to 8 specialised bit/rate variants (0x1411e59f0..0x1411eb6d0) keyed by mode and flags; variant bodies and parameter conversion not transcribed"
-        }
-        "FormantCrusher" => {
-            "kernel at 0x1412d4000 chains a biquad bank (0x141646fa0) and a 0x1038-byte per-channel formant stage (0x1412d43c0); stage laws not transcribed"
         }
         "Exciter" => "kernel 0x14125c680 runs an oversampled (up to 2^n) stage via 0x14125c870/0x14125cb60 with an FIR resampler (0x14163cdc0); shaper laws not transcribed",
         "BigMuffTone" => {
