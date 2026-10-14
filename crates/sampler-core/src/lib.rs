@@ -309,8 +309,10 @@ pub enum Protocol {
     Vst3,
 }
 
-/// Original host address, never the transposed playback address. Adapters own
-/// wildcard matching and protocol-specific interpretation of absent/signed IDs.
+/// Input ownership address, never the transposed playback address. Adapters
+/// own wildcard matching and protocol-specific interpretation of IDs. An
+/// adapter mapping host tuples onto an internal wire retains the physical
+/// tuple separately through [`Runtime::set_input_source`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub protocol: Protocol,

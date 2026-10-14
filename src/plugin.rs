@@ -2971,6 +2971,37 @@ pub struct Dsp {
     unsupported: u64,
     end_rejections: u64,
     playing: bool,
+    master_gain: MasterGain,
+}
+
+/// Keep sample-accurate smoothing while reusing the transform of an identical
+/// dB value. The host event loop splits blocks at automation boundaries.
+#[derive(Default)]
+struct MasterGain {
+    previous: Option<(u32, f32)>,
+}
+
+impl MasterGain {
+    fn fill(&mut self, volume: &FloatParam, output: &mut [f32]) {
+        volume.read_into(output);
+        let Some(first) = output.first().copied() else { return };
+        let bits = first.to_bits();
+        if output.iter().all(|sample| sample.to_bits() == bits) {
+            let linear = match self.previous {
+                Some((previous, linear)) if previous == bits => linear,
+                _ => {
+                    let linear = db_to_linear(first);
+                    self.previous = Some((bits, linear));
+                    linear
+                }
+            };
+            output.fill(linear);
+        } else {
+            let last = output.last().unwrap().to_bits();
+            for sample in output.iter_mut() { *sample = db_to_linear(*sample); }
+            self.previous = Some((last, *output.last().unwrap()));
+        }
+    }
 }
 
 impl Default for Dsp {
@@ -2986,6 +3017,7 @@ impl Default for Dsp {
             unsupported: 0,
             end_rejections: 0,
             playing: false,
+            master_gain: MasterGain::default(),
         }
     }
 }
@@ -3235,9 +3267,7 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            for gain in &mut gains[..len] {
-                *gain = db_to_linear(p.volume.read());
-            }
+            s.master_gain.fill(&p.volume, &mut gains[..len]);
             let ports = s.core.bus_ports().map(usize::from);
             s.core.set_tap(scope.checked_sub(1));
             let Rendered { buses, live } = s.core.render(len);
@@ -3513,6 +3543,55 @@ pub(crate) mod tests {
         assert_eq!(db_to_linear(p.volume.read()), 1.0, "master gain");
         let full_scale = 1.0_f32;
         assert_eq!(full_scale * db_to_linear(p.volume.read()), full_scale);
+    }
+
+    #[test]
+    fn master_gain_bulk_reads_preserve_smoothed_samples_and_automation_boundaries() {
+        let reference = SamplerParams::new();
+        let cached = SamplerParams::new();
+        reference.volume.set_sample_rate(48000.0);
+        cached.volume.set_sample_rate(48000.0);
+        let mut gain = MasterGain::default();
+        for target in [0.0, -60.0, 6.0, -3.5, 0.0, -0.0, -60.0] {
+            reference.volume.set_value(target);
+            cached.volume.set_value(target);
+            for frames in [1, 3, 64, 128, 17, 128, 128, 128, 128, 128, 128] {
+                let mut actual = [0.; MAX_BLOCK];
+                gain.fill(&cached.volume, &mut actual[..frames]);
+                for &sample in &actual[..frames] {
+                    let expected: f32 = db_to_linear(reference.volume.read());
+                    assert_eq!(sample.to_bits(), expected.to_bits(), "target {target}, {frames}-frame boundary");
+                }
+                let a: f32 = cached.volume.current();
+                let b: f32 = reference.volume.current();
+                assert_eq!(a.to_bits(), b.to_bits(), "both smoothers advance by exactly the same sample count");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "timing receipt: run optimized and without competing workloads"]
+    fn master_gain_cpu_receipt() {
+        use std::hint::black_box;
+        let parameter = SamplerParams::new();
+        parameter.volume.set_sample_rate(48000.0);
+        let blocks = 100_000;
+        for moving in [false, true] {
+            for cached in [false, true] {
+                parameter.volume.set_value(0.0);
+                parameter.volume.snap_smoother();
+                let mut gain = MasterGain::default();
+                let mut out = [0.; MAX_BLOCK];
+                let began = Instant::now();
+                for block in 0..blocks {
+                    if moving { parameter.volume.set_value(if block % 2 == 0 { -30.0 } else { -6.0 }); }
+                    if cached { gain.fill(&parameter.volume, &mut out); }
+                    else { for sample in &mut out { *sample = db_to_linear(parameter.volume.read()); } }
+                    black_box(&out);
+                }
+                eprintln!("master_gain moving={moving} cached={cached} blocks={blocks} frames={} elapsed_ns={}", MAX_BLOCK, began.elapsed().as_nanos());
+            }
+        }
     }
     use std::{
         alloc::{GlobalAlloc, Layout, System},
