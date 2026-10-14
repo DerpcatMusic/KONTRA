@@ -447,6 +447,26 @@ impl State {
 }
 
 impl Color {
+    /// Only prepared subunits can mutate their histories. Live controls alter
+    /// their values, not which subunits this color processor owns. Preserve the
+    /// guards for every owned history, even while a unit is bypassed.
+    pub(super) fn finite_state(&self, state: &State) -> bool {
+        self.gainer.is_none_or(|_| state.gain.is_finite())
+            && self.hold.as_ref().is_none_or(|_| {
+                state.hold.held.iter().all(|v| v.is_finite()) && state.hold.phase.is_finite()
+            })
+            && self.decimator.as_ref().is_none_or(|_| state.decimator.finite())
+            && self.filter.as_ref().is_none_or(|_| state.biquad.iter().flatten().all(|v| v.is_finite()))
+            && self.redux.as_ref().is_none_or(|_| state.redux.finite())
+            && self.damping.as_ref().is_none_or(|_| state.damper.iter().flatten().all(|v| v.is_finite()))
+            && self.noise.as_ref().is_none_or(|_| state.noise.history.iter().all(|v| v.is_finite()))
+            && (!matches!(self.curve, Curve::Enhanced(..) | Curve::Drums(..)) || state.saturator.finite())
+            && state.shaper.finite()
+            && self.tone.as_ref().is_none_or(|_| state.tone.finite())
+            && self.stereo.as_ref().is_none_or(|_| state.stereo.width.is_finite() && state.stereo.pan.is_finite())
+            && self.widener.as_ref().is_none_or(|_| state.widener.finite())
+    }
+
     /// Whether the unit has a voice-lane kernel: only memoryless curves, the
     /// Gainer slew and the non-pseudo Stereo Modeller do.
     pub(super) fn batches(&self) -> bool {
