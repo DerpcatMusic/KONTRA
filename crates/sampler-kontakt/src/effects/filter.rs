@@ -67,7 +67,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
         16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
         17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
-        19 => ("3x2 Versatile", Gap("core extracted and run by the cascade core (Legacy::Versatile, kemu-exact), but the v0x95 serialized order of SHIFTB..FILTER_GAIN past resonance is not extracted (object offsets 0x38..0x60 only)")),
+        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Exact, STAGES)),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
@@ -144,7 +144,13 @@ pub(crate) fn template(id: i32) -> Option<Mapped> {
 }
 
 /// A saved type with its stored cutoff, resonance and optional third knob (Formant Size).
-pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> Result<Mapped, Gap> {
+/// Placeholder knobs that [`map`] replaces with the record's.
+const VERSATILE_UNSET: sampler_ir::fx::filter::Versatile =
+    sampler_ir::fx::filter::Versatile { shift: [0.0; 2], resonance: [0.0; 2], types: [0.0; 3], wet: [0.0; 3], gain: 0.0 };
+
+/// `extra` is the SV bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader 0x140d00db0, offsets
+/// 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
+pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result<Mapped, Gap> {
     match build(id) {
         None => Err(Gap { name: "filter type", reason: "type id not in the Kontakt 8 filter table" }),
         Some((name, Build::Gap(reason))) => Err(Gap { name, reason }),
@@ -154,9 +160,23 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: Option<f32>) -> R
         Some((_, Build::Config(mut config, fidelity, caveat))) => {
             config.cutoff = f64::from(cutoff);
             config.resonance = f64::from(resonance);
-            config.extra = extra.map_or(0.0, f64::from);
-            if let Variant::MultiSv { bandwidth, .. } = &mut config.variant {
-                *bandwidth = extra.unwrap_or(0.0).clamp(0.0, 1.0);
+            let lead = extra.first().copied().filter(|_| id != 19);
+            config.extra = lead.map_or(0.0, f64::from);
+            match &mut config.variant {
+                Variant::MultiSv { bandwidth, .. } => *bandwidth = lead.unwrap_or(0.0).clamp(0.0, 1.0),
+                Variant::Versatile(v) => {
+                    let &[sb, sc, rb, rc, ta, tb, tc, wa, wb, wc, gain] = extra else {
+                        return Err(Gap { name: "3x2 Versatile", reason: "record without the 11 Versatile knobs" });
+                    };
+                    *v = sampler_ir::fx::filter::Versatile {
+                        shift: [sb, sc],
+                        resonance: [rb, rc],
+                        types: [ta, tb, tc],
+                        wet: [wa, wb, wc],
+                        gain,
+                    };
+                }
+                _ => {}
             }
             Ok(Mapped { config, fidelity, caveat })
         }
@@ -190,7 +210,7 @@ mod tests {
             (2, Lp, 1), (3, Hp, 1), (4, Bp, 2), (6, Lp, 2), (7, Hp, 2),
             (8, Lp, 4), (9, Hp, 4), (10, Bp, 4), (11, Nt, 4), (12, Lp, 6),
         ] {
-            let m = map(id, 0.5, 0.3, None).unwrap();
+            let m = map(id, 0.5, 0.3, &[]).unwrap();
             assert_eq!(m.fidelity, Exact, "{id}");
             assert_eq!((m.config.topology, m.config.response, m.config.poles), (Topology::Cascade, response, poles));
             assert!(matches!(m.config.processors(None).unwrap()[..], [Processor::FilterBank(_)]));
@@ -198,13 +218,23 @@ mod tests {
     }
 
     #[test]
+    fn versatile_takes_its_eleven_knobs_in_object_order() {
+        let knobs: Vec<f32> = (0..11).map(|i| i as f32 / 10.0).collect();
+        let m = map(19, 0.5, 0.5, &knobs).unwrap();
+        let Variant::Versatile(v) = m.config.variant else { panic!() };
+        let flat: Vec<f32> = v.shift.iter().chain(&v.resonance).chain(&v.types).chain(&v.wet).chain([&v.gain]).copied().collect();
+        assert_eq!(flat, knobs);
+        assert!(map(19, 0.5, 0.5, &knobs[..10]).is_err());
+    }
+
+    #[test]
     fn every_table_entry_builds_or_says_why_not() {
         for (id, name, status) in coverage() {
             if status.starts_with("gap") || status.starts_with("elsewhere") {
-                assert!(map(id, 0.5, 0.5, Some(0.5)).is_err(), "{id} {name}");
+                assert!(map(id, 0.5, 0.5, &[0.5; 11]).is_err(), "{id} {name}");
                 continue;
             }
-            let m = map(id, 0.5, 0.5, Some(0.5)).unwrap();
+            let m = map(id, 0.5, 0.5, &[0.5; 11]).unwrap();
             assert!(!m.config.processors(None).unwrap().is_empty(), "{id} {name}");
         }
     }

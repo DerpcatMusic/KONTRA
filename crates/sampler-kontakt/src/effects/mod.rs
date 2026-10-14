@@ -621,7 +621,7 @@ fn filter(
     kind: i32,
     cutoff: f32,
     resonance: f32,
-    extra: Option<f32>,
+    extra: &[f32],
 ) -> Result<(Vec<sampler_ir::Processor>, filter::Mapped), Gap> {
     let mapped = filter::map(kind, cutoff, resonance, extra)?;
     // The native kernels (Ladder, AR, Daft, Formant I) are admitted by their own arms, which
@@ -884,7 +884,7 @@ pub(crate) fn chain_with(
                         if dynamic.is_some() {
                             notes.push(("Formant II live controls".into(), "script/modulation lanes exist for Formant I only".into(), sampler_ir::Reason::NotModeled));
                         }
-                        match filter(91, knobs[0], knobs[1], Some(knobs[2])) {
+                        match filter(91, knobs[0], knobs[1], &knobs[2..]) {
                             Ok((processors, mapped)) => {
                                 out.processors.extend(processors);
                                 note_fidelity(&mut notes, 91, &mapped);
@@ -1091,7 +1091,11 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
-            }) => match filter(*kind, *cutoff, *resonance, extra.first().copied().filter(|_| matches!(kind, 63..=65))) {
+            }) => match filter(*kind, *cutoff, *resonance, match kind {
+                63..=65 => &extra[..extra.len().min(1)],
+                19 => extra,
+                _ => &[],
+            }) {
                 Ok((processors, mapped)) => {
                     out.filter_slots
                         .push((fx.slot, out.processors.len() + filters.len()));
@@ -2215,7 +2219,7 @@ mod tests {
                 assert_eq!(c.cutoff, f64::from(cutoff));
             }
         }
-        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, None).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, &[]).unwrap().0[0] else {
             panic!("missing filter")
         };
         assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
@@ -2224,17 +2228,17 @@ mod tests {
     #[test]
     fn sv_filters_are_native_cascade_classes() {
         use sampler_ir::fx::filter::{Topology, Variant};
-        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, None).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, &[]).unwrap().0[0] else {
             panic!()
         };
         assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
-        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, Some(0.3)).unwrap().0[0] else {
+        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, &[0.3]).unwrap().0[0] else {
             panic!()
         };
         assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
         // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
-        assert!(filter(8, 0.5, 0.5, None).is_ok());
-        assert!(filter(1, 0.5, 0.5, None).is_err());
+        assert!(filter(8, 0.5, 0.5, &[]).is_ok());
+        assert!(filter(1, 0.5, 0.5, &[]).is_err());
     }
 
     use super::*;
