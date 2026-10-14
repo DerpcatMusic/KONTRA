@@ -194,7 +194,7 @@ impl Translation {
                         reason: ir::Reason::UnknownLaw,
                     });
                 }
-                return Ok(Some(ir::Processor::Space(Config { network: Some(network), impulse: None, dry: 1.0 - mix, wet: mix })));
+                return Ok(Some(ir::Processor::Space(Config { address: None, network: Some(network), impulse: None, dry: 1.0 - mix, wet: mix })));
             }
             "Bloom" => {
                 network.topology = Topology::Fdn;
@@ -249,7 +249,7 @@ impl Translation {
                 network.diffusion_start_ms = number(node, "DiffusionStart", 5.0)?.clamp(0.1, 50.0);
                 network.diffusion = number(node, "Diffusion", 0.618)?.clamp(0.0, 1.0);
                 let mix = number(node, "Mix", 1.0)?.clamp(0.0, 1.0);
-                return Ok(Some(ir::Processor::Space(Config { network: Some(network), impulse: None, dry: (1.0 - mix).sqrt(), wet: mix.sqrt() })));
+                return Ok(Some(ir::Processor::Space(Config { address: None, network: Some(network), impulse: None, dry: (1.0 - mix).sqrt(), wet: mix.sqrt() })));
             }
             _ => return Ok(None),
         }

@@ -152,7 +152,7 @@ mod tests {
     fn steady_impulse_matches_native_bits() {
         let mut line = Line::single(DelayTime::Ms(0.), 1000.);
         line.native = Native::UviVelvetDelay(velvet(0.05, 1.0, 0.1, 0, 0, 0.0));
-        let cfg = Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
+        let cfg = Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
         let at = 6144; // 1344 frames into the second crossfade
         let mut x = vec![[0.0; 2]; at + 400];
         x[at][0] = 1.0;

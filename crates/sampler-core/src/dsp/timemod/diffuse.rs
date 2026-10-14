@@ -215,7 +215,7 @@ mod tests {
         let d = UviDiffuseDelay { time: 0.125, synced: false, spread: 1.0, diffusion: 0.0, feedback: 0.0, damp: 0.0, crosstalk: 0.0, randomness: 0.0, mod_rate: 1.0, mod_depth: 0.0 };
         let mut line = Line::single(DelayTime::Ms(0.), 1000.);
         line.native = Native::UviDiffuseDelay(d);
-        let cfg = Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
+        let cfg = Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry: 0., wet: 1. };
         let (y, _) = run(cfg, 48_000, 120., &impulse(7000, [1., 1.]), 64);
         let n = stages(6000, 1.0);
         let total: f64 = lengths(6000, 1.0, n, 0.0, 0).iter().map(|v| v.round_ties_even()).sum();
