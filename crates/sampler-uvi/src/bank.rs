@@ -28,8 +28,20 @@ static RECENT: Mutex<Vec<Recent>> = Mutex::new(Vec::new());
 const RECENT_BANKS: usize = 2;
 
 fn recent<T>(ufs: &Ufs, f: impl FnOnce(&mut Recent) -> T) -> Option<T> {
+    let start = std::env::var_os("KONTRA_AUDIT_UFS_DIRECTORY").map(|_| std::time::Instant::now());
     let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
-    recent.iter_mut().find(|r| r.ufs.same_bank(ufs)).map(f)
+    let wait_ns = start.map_or(0, |start| {
+        start.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    });
+    let work_start = start.map(|_| std::time::Instant::now());
+    let result = recent.iter_mut().find(|r| r.ufs.same_bank(ufs)).map(f);
+    if let Some(start) = work_start {
+        eprintln!(
+            "BANK_NAMESPACE_CACHE {}",
+            serde_json::json!({"schema":1,"hit":result.is_some(),"lock_wait_ns":wait_ns,"locked_work_ns":start.elapsed().as_nanos().min(u64::MAX as u128) as u64,"cached_banks":recent.len()})
+        );
+    }
+    result
 }
 
 /// An open bank. Deliberately not Debug: it holds access values.
@@ -170,6 +182,8 @@ impl Bank {
             .decode_directory(&namespaces.metadata)
             .map_err(bank_error)?;
         drop(span);
+        let map_start =
+            std::env::var_os("KONTRA_AUDIT_UFS_DIRECTORY").map(|_| std::time::Instant::now());
         let mut paths = HashMap::with_capacity(directory.files.len());
         for (index, member) in directory.files.iter().enumerate() {
             if let Some(path) = &member.path {
@@ -178,6 +192,12 @@ impl Bank {
                     .and_modify(|entry| *entry = None)
                     .or_insert(Some(index));
             }
+        }
+        if let Some(start) = map_start {
+            eprintln!(
+                "BANK_NAMESPACE_INDEX {}",
+                serde_json::json!({"schema":1,"casefold_map_ms":start.elapsed().as_secs_f64()*1000.,"path_entries":paths.len(),"ambiguous_paths":paths.values().filter(|index|index.is_none()).count(),"path_string_capacity_bytes":paths.keys().map(String::capacity).sum::<usize>(),"bucket_capacity":paths.capacity()})
+            );
         }
         // Share the immutable namespace with all reopened readers. Cloning
         // every member/footer/name and the lookup map made a cache hit O(bank
@@ -854,6 +874,24 @@ mod tests {
                 *ui_path_extensions.entry(extension).or_insert(0usize) += 1;
             }
         }
+        let mut header_window_predictions = Vec::new();
+        for window in [512u64, 4096, 8192, 65536] {
+            let mut previous = None;
+            let mut fills = 0u64;
+            let mut bytes = 0u64;
+            for record in &first.directory.records {
+                let length = (first.ufs.header.physical_size - record.offset).min(12);
+                let last = (record.offset + length - 1) / window;
+                for page in record.offset / window..=last {
+                    if previous != Some(page) {
+                        fills += 1;
+                        bytes += window.min(first.ufs.header.physical_size - page * window);
+                        previous = Some(page);
+                    }
+                }
+            }
+            header_window_predictions.push(serde_json::json!({"window_bytes":window,"predicted_fills":fills,"predicted_requested_bytes":bytes}));
+        }
         println!(
             "BANK_METADATA_PROFILE {}",
             serde_json::json!({
@@ -862,6 +900,7 @@ mod tests {
                 "members":first.directory.files.len(), "records":first.directory.records.len(), "lookup_paths":first.paths.len(),
                 "cold_ms":cold_ms,"warm_ms":warm_ms,"legacy_clone_ms":legacy_clone_ms,
                 "ui_path_extensions":ui_path_extensions,
+                "header_window_predictions":header_window_predictions,"prediction_scope":"One aligned lookahead window, header-offset sequence only; no bank bytes read by prediction and no OS cache assumption",
                 "namespace_shared":true,"lookup_map_shared":true,"decoded_payloads":0
             })
         );
