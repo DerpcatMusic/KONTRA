@@ -71,6 +71,9 @@ impl ResidentBuffer {
             budget: budget.clone(),
         })
     }
+    pub fn bytes(&self) -> usize {
+        self.data.frames.len() * size_of::<Frame>()
+    }
     pub fn frames_mut(&mut self) -> &mut [Frame] {
         &mut self.data.frames
     }

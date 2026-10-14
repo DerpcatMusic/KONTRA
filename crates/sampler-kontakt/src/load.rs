@@ -316,8 +316,9 @@ pub fn load_read_streamed_cancelable(
         );
     }
     drop(span);
-    let opened = crate::stream::Streamer::open(
-        registry,
+    let requirements=instrument.assets.iter().map(|a|a.residency).collect::<Vec<_>>();
+    let opened = crate::stream::Streamer::open_required(
+        registry,&requirements,
         options.rate,
         policy,
         32,
@@ -355,24 +356,32 @@ pub fn load_read_streamed_cancelable(
 /// `labels[i]` belong to asset `i`. As [`load_streamed`], without the Kontakt
 /// container: only zone starts and a page pool are resident.
 pub fn stream_instrument(
-    mut instrument: ir::Instrument,
+    instrument: ir::Instrument,
     sources: Vec<std::sync::Arc<dyn crate::AssetSource>>,
     labels: Vec<String>,
     options: &Options,
     policy: &crate::StreamPolicy,
 ) -> Result<crate::Streamed, LoadError> {
+    stream_instrument_cancelable(instrument,sources,labels,options,policy,&||false)
+}
+pub fn stream_instrument_cancelable(
+    mut instrument:ir::Instrument,sources:Vec<std::sync::Arc<dyn crate::AssetSource>>,labels:Vec<String>,
+    options:&Options,policy:&crate::StreamPolicy,canceled:&(dyn Fn()->bool+Sync),
+)->Result<crate::Streamed,LoadError> {
+    if canceled(){return Err(LoadError::Canceled);}
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
     let listed = kept
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened =
-        crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false, &mut |_, _| ())?;
+    let requirements=instrument.assets.iter().map(|a|a.residency).collect::<Vec<_>>();
+    let opened=crate::stream::Streamer::open_required(listed,&requirements,options.rate,policy,32,canceled,&mut|_,_|())?;
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
-    crate::Streamed::new(loaded, opened, kept, &||false)
+    if canceled(){return Err(LoadError::Canceled);}
+    crate::Streamed::new(loaded, opened, kept, canceled)
 }
 
 /// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to

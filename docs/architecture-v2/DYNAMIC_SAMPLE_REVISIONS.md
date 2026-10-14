@@ -62,14 +62,29 @@ whole-buffer callbacks are explicitly incompatible because they allocate before
 admission. Legacy unbudgeted static reload behavior is unchanged.
 
 This physical quota covers dynamic packed heads and full PCM, excluding octave
-levels, page pools, encoded-reader workspaces and process RSS. Authored
-`SamplePlayer.AllowStreaming=false` and Program/Part streaming policy still need
-explicit translation and bounded mandatory-resident static assembly. The native manual says
+levels, page pools, encoded-reader workspaces and process RSS.
+
+Initial authored `Program.Streaming=0` or `SamplePlayer.AllowStreaming=0` now
+requires full resident PCM. Typed `Asset.residency` retains the strongest
+requirement of every shared source user, including a bypassed player sharing an
+audible asset. Missing flags retain the catalog's streaming-enabled default.
+Static metadata descriptors remain unready until one-shot full-buffer publication;
+full buffers and ordinary packed attacks share the configured static physical
+quota. Full buffers reserve before allocation and decode, all preparation finishes
+before part publication, and a cold fallback retains mandatory RAM sources. An
+insufficient mandatory quota fails explicitly. `report.head_bytes` remains packed
+storage; `required_resident_assets/bytes` reports full bodies separately.
+`resident_non_head_bytes_outside(&authority)` permits exact single-charge accounting.
+
+The same policy parser controls dynamic requests even when a stream service is
+bound. Required full bodies remain resident; ordinary requests keep streamed tails.
+Program/oscillator **live parameter writes** and Part inheritance still need their
+own verified transactions and remain reported unsupported. The native manual says
 that a Sample oscillator can require memory playback despite Program Streaming;
-current streaming success is not proof of that residency policy's parity.
+initial XML policy support does not establish live-write or Part-policy parity.
 [UVI oscillator residency policy](https://manual.uvi.net/falcon/en/oscillators/)
 
-The worker currently reads an 8,192-frame onset and bounded loop endpoint legs, with guards for the engine's maximum supported interpolation reach. Packed storage reduces suitable mono/16-bit heads without changing decoded values. This dynamic head rule is separate from the existing static `HeadChoice::Auto` lazy policy; it is not evidence that the latter is free of cold-onset starvation. Dense-burst/backlog sizing and real policy deadlines require their own receipts.
+The worker currently reads an 8,192-frame onset and bounded loop endpoint legs, with guards for the engine's maximum supported interpolation reach. Packed storage reduces suitable mono/16-bit heads without changing decoded values. This dynamic head rule is separate from the separate initial static stream policy; it is not evidence that the latter is free of cold-onset starvation. Dense-burst/backlog sizing and real policy deadlines require their own receipts.
 
 A deterministic inline/offline player without a stream registry can request bounded resident preparation; it has no audio-thread file access. Production bank/loose loading supplies the stream registry and keeps large source bodies on disk.
 
@@ -122,3 +137,9 @@ loading. The example can discover authored control metadata and apply one
 explicit normal control edit. An unavailable or unidentified UI trigger must not
 be replaced by invoking an internal vendor Lua function. The fresh-load zero
 request receipt remains separate from any subsequent interaction witness.
+
+Static cancelable wrappers preserve `LoadError::Canceled` through UVI staging;
+the noncancelable APIs remain compatible wrappers. Cancellation is checked during
+source resolution, around impulse preparation and between bounded 4,096-frame
+full/head reads. Source failures and canceled staging cannot become successful
+cold fallbacks. A filesystem operation itself may still block until it returns.

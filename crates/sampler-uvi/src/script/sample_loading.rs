@@ -110,6 +110,7 @@ const MAX_RESIDENT: usize = 256 << 20;
 const HEAD: usize = 8192;
 #[derive(Clone, Copy)]
 struct Recipe {
+    residency: sampler_ir::AssetResidency,
     playback: Option<Playback>,
     reverse: bool,
 }
@@ -131,9 +132,11 @@ fn recipe(node: roxmltree::Node<'_, '_>) -> Result<Recipe, String> {
         }
         Ok(v as usize)
     };
+    let residency = crate::residency_policy::sample(node)?;
     let reverse = number(node, "Reverse", 0.)? != 0.;
     let Some(options) = node.children().find(|n| n.has_tag_name("PlaybackOptions")) else {
         return Ok(Recipe {
+            residency,
             playback: None,
             reverse,
         });
@@ -171,6 +174,7 @@ fn recipe(node: roxmltree::Node<'_, '_>) -> Result<Recipe, String> {
         return Err("unsupported additional authored sample loops".into());
     }
     Ok(Recipe {
+        residency,
         playback: Some(p),
         reverse,
     })
@@ -267,7 +271,8 @@ fn prepare(
     }
     PreparedSampleRevision::validate_geometry(frames, rate, playback, r.rate)
         .map_err(|e| e.to_string())?;
-    let pcm = if r.dynamic.is_some() {
+    let stream = r.dynamic.is_some() && r.recipe.residency != sampler_ir::AssetResidency::Resident;
+    let pcm = if stream {
         Pcm::streamed(rate, frames).map_err(|e| e.to_string())?
     } else {
         let bytes = frames.checked_mul(8).ok_or("sample decode byte overflow")?;
@@ -291,7 +296,7 @@ fn prepare(
     };
     let mut revision = PreparedSampleRevision::new(SampleTargetId(r.target), pcm, playback, r.rate)
         .map_err(|e| e.to_string())?;
-    if let Some(dynamic) = r.dynamic {
+    if let Some(dynamic) = r.dynamic.filter(|_| stream) {
         // Include the interpolation guards and both ends of a short loop.
         let end = playback.end.unwrap_or(frames);
         let guard = sampler_core::read_radius(16.).saturating_add(1);
@@ -818,6 +823,7 @@ mod tests {
             status,
             source: authority,
             recipe: Recipe {
+                residency: Default::default(),
                 playback: None,
                 reverse: false,
             },
