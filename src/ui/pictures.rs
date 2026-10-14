@@ -51,6 +51,8 @@ pub struct AssetProbe {
     pub duration_ms: f64,
     pub read_ms: f64,
     pub decode_ms: f64,
+    pub queue_ms: Option<f64>,
+    pub permit_wait_ms: Option<f64>,
     pub encoded_bytes: usize,
     pub prepared_bytes: usize,
     pub width: Option<u32>,
@@ -488,6 +490,8 @@ impl Source {
             duration_ms: 0.,
             read_ms: 0.,
             decode_ms: 0.,
+            queue_ms: None,
+            permit_wait_ms: None,
             encoded_bytes: 0,
             prepared_bytes: 0,
             width: None,
@@ -1081,6 +1085,36 @@ mod tests {
             ),
             (4, 1, 1)
         );
+        let bitmap = ir::Asset {
+            path: "Resources/pictures/strip.png".into(),
+            kind: ir::AssetKind::BitmapFont,
+        };
+        assert!(source.load(&bitmap).is_none());
+        assert_eq!(
+            source.take_probes()[0].status,
+            "bitmap_font_metadata_missing"
+        );
+        std::fs::write(pictures.join("strip.txt"), b"Number of Animations: 1").unwrap();
+        std::fs::write(pictures.join("valid.ttf"), super::super::theme::NOTO_SANS).unwrap();
+        // Namespace discovery is a source snapshot; reload after adding files.
+        let mut source = Source::of(&dir.path().join("fixture.nki"));
+        assert!(source.load(&bitmap).is_none());
+        assert_eq!(source.take_probes()[0].status, "bitmap_font_invalid");
+        let font = |name| ir::Asset {
+            path: format!("Resources/pictures/{name}"),
+            kind: ir::AssetKind::TrueTypeFont,
+        };
+        assert!(source.font(&font("valid.ttf")).is_some());
+        let probe = source.take_probes().pop().unwrap();
+        assert_eq!(
+            (probe.kind, probe.status, probe.codec),
+            ("font", "found", Some("font"))
+        );
+        assert_eq!(probe.prepared_bytes, super::super::theme::NOTO_SANS.len());
+        assert!(source.font(&font("absent.ttf")).is_none());
+        assert_eq!(source.take_probes()[0].status, "missing");
+        assert!(source.font(&font("unsupported.bin")).is_none());
+        assert_eq!(source.take_probes()[0].status, "decode_failed");
         for _ in 0..PROBE_LIMIT + 3 {
             source.load(&asset("absent.png", 1));
         }
