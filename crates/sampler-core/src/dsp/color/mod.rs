@@ -17,7 +17,8 @@ mod skreamer;
 mod stereo;
 mod tone;
 
-pub use shaping::{Decimator, Rectifier};
+pub use shaping::Rectifier;
+pub use sampler_ir::fx::color::Decimator;
 pub use stereo::StereoSettings;
 
 use super::{
@@ -83,6 +84,8 @@ pub struct NoiseSettings {
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub gainer: Option<GainerSettings>,
+    /// The RBJ biquad section (before the hold unless `post`).
+    pub filter: Option<sampler_ir::fx::color::Biquad>,
     pub hold: Option<HoldSettings>,
     pub decimator: Option<Decimator>,
     pub quantizer: Option<QuantizerSettings>,
@@ -100,6 +103,7 @@ pub struct Settings {
 impl Settings {
     pub const IDENTITY: Self = Self {
         gainer: None,
+        filter: None,
         hold: None,
         decimator: None,
         quantizer: None,
@@ -126,11 +130,6 @@ impl Settings {
         Self { curve, ..Self::IDENTITY }
     }
 
-    /// A fractional decimator alone.
-    pub fn decimator(decimator: Decimator) -> Self {
-        Self { decimator: Some(decimator), ..Self::IDENTITY }
-    }
-
     pub(super) fn valid(&self) -> bool {
         let shape = |p: &Parameter| {
             p.valid()
@@ -143,7 +142,8 @@ impl Settings {
             None => true,
             Some(HoldSettings::Native(p)) => live_knob(&p),
             Some(HoldSettings::Rate(hz)) => hz.is_finite() && hz >= 1.0,
-        } && self.decimator.is_none_or(|d| d.valid())
+        } && self.decimator.is_none_or(|d| d.hertz.iter().all(|h| h.is_finite() && *h > 0.0) && (0.0..=1.0).contains(&d.blend))
+            && self.filter.is_none_or(|b| b.mode <= 2 && b.hertz.is_finite() && b.hertz > 0.0 && b.q.is_finite() && b.q > 0.0)
             && match self.quantizer {
                 None => true,
                 Some(QuantizerSettings::Native(p)) => live_knob(&p),
@@ -170,6 +170,7 @@ impl Settings {
         self.gainer.is_none()
             && self.hold.is_none()
             && self.decimator.is_none()
+            && self.filter.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
             && self.tone.is_none()
@@ -230,7 +231,8 @@ impl Settings {
                 HoldSettings::Native(p) => Hold::Native(p.compile(bindings)),
                 HoldSettings::Rate(hz) => Hold::Rate((f64::from(rate as f32) / hz) as f32),
             }),
-            decimator: self.decimator,
+            decimator: self.decimator.map(|d| shaping::Decimate::new(d, rate)),
+            filter: self.filter.map(|b| shaping::Biquad::new(b, rate)),
             quantizer: self.quantizer.map(|q| match q {
                 QuantizerSettings::Native(p) => Quantizer::Native(p.compile(bindings)),
                 QuantizerSettings::Floor(bits) => Quantizer::Floor(bits),
@@ -278,7 +280,8 @@ pub(crate) struct Color {
     dc: [f32; 5],
     gainer: Option<(PreparedParameter, f64)>,
     hold: Option<Hold>,
-    decimator: Option<Decimator>,
+    decimator: Option<shaping::Decimate>,
+    filter: Option<shaping::Biquad>,
     quantizer: Option<Quantizer>,
     curve: Curve,
     damping: Option<Damping>,
@@ -295,6 +298,7 @@ pub(super) struct State {
     gain_ready: bool,
     hold: lofi::HoldState,
     decimator: shaping::DecimatorState,
+    biquad: [[f32; 2]; 2],
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
@@ -309,7 +313,8 @@ impl State {
         let f32s = [self.gain, self.hold.held[0], self.hold.held[1], self.hold.phase,
             self.noise.history[0], self.noise.history[1], self.stereo.width, self.stereo.pan];
         f32s.iter().all(|v| v.is_finite())
-            && self.decimator.z.iter().flatten().chain(&self.decimator.delta).chain([&self.decimator.phase]).all(|v| v.is_finite())
+            && self.decimator.finite()
+            && self.biquad.iter().flatten().all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
             && self.skreamer.finite()
@@ -324,6 +329,7 @@ impl Color {
     pub(super) fn batches(&self) -> bool {
         self.hold.is_none()
             && self.decimator.is_none()
+            && self.filter.is_none()
             && self.quantizer.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
@@ -384,8 +390,8 @@ impl Color {
             parameters.push(("color", color));
         }
         if let Some(d) = self.decimator {
-            parameters.push(("period", constant(d.period)));
-            parameters.push(("blend", constant(d.blend)));
+            parameters.push(("period", constant(d.period())));
+            parameters.push(("blend", constant(f64::from(d.blend()))));
         }
         if let Some(s) = &self.stereo {
             parameters.extend(s.trace_parameters());
@@ -468,6 +474,9 @@ impl Color {
             }
             state.gain = current;
         }
+        if let Some(b) = self.filter.as_ref().filter(|b| !b.post) {
+            b.process(&mut state.biquad, block, len);
+        }
         match &self.hold {
             Some(Hold::Native(frequency)) => {
                 let frequency = frequency.value(parameters, at, None) as f32;
@@ -497,6 +506,9 @@ impl Color {
         }
         if let Some(tone) = &self.tone {
             tone.process(&mut state.tone, block, len);
+        }
+        if let Some(b) = self.filter.as_ref().filter(|b| b.post) {
+            b.process(&mut state.biquad, block, len);
         }
         if let Some([level, color]) = self.noise {
             let [level, color] = [level, color].map(|p| p.value(parameters, at, None) as f32);

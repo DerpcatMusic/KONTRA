@@ -335,3 +335,78 @@ fn only_stateless_units_batch() {
     let held = ColorSettings { hold: Some(HoldSettings::Native(knob(0.5))), ..ColorSettings::IDENTITY };
     assert!(!color(held).batches());
 }
+
+/// UVI color units configured through their IR presets against the emulated native
+/// (uvicolor vectors, 48 kHz, 64-frame calls): impulse 0.5 on the left (both channels
+/// checked) and a 440 Hz sine on both.
+fn uvi_unit(name: &str, preset: impl Fn(&serde_json::Value) -> sampler_ir::fx::color::Config, tolerance: f64) {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!("tables/uvi_color_vectors.json")).unwrap();
+    let series = |v: &serde_json::Value| -> Vec<f64> { v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect() };
+    let mut failures = Vec::new();
+    for case in vectors[name].as_array().unwrap() {
+        let p = &case["params"];
+        let unit = color(crate::lower::color_settings(preset(p)));
+        let impulse: Vec<Vec<f64>> = case["impulse"].as_array().unwrap().iter().map(series).collect();
+        let sine_out = series(&case["sine_out"]);
+        let sine: Vec<f64> =
+            (0..256).map(|i| 0.8 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 48_000.0).sin()).collect();
+        let pulse: Vec<f64> = (0..256).map(|i| if i == 0 { 0.5 } else { 0.0 }).collect();
+        for (label, input, native) in [
+            ("impulse", [pulse, vec![0.0; 256]], [impulse[0].clone(), impulse[1].clone()]),
+            ("sine", [sine.clone(), sine], [sine_out.clone(), sine_out]),
+        ] {
+            let mut state = State::default();
+            let mut out = [vec![], vec![]];
+            for start in (0..256).step_by(64) {
+                let mut block = [[0.; BLOCK]; 2];
+                for c in 0..2 {
+                    for i in 0..64 {
+                        block[c][i] = f64::from(input[c][start + i] as f32);
+                    }
+                }
+                run(&unit, &mut state, &mut block, 64);
+                for c in 0..2 {
+                    out[c].extend_from_slice(&block[c][..64]);
+                }
+            }
+            for c in 0..2 {
+                let scale = native[c].iter().fold(1e-3f64, |m, v| m.max(v.abs()));
+                let (i, err) = out[c]
+                    .iter()
+                    .zip(&native[c])
+                    .map(|(a, b)| (a - b).abs() / scale)
+                    .enumerate()
+                    .fold((0, 0f64), |m, (i, e)| if e > m.1 { (i, e) } else { m });
+                if !(err <= tolerance) {
+                    failures.push(format!("{name} {p} {label} ch{c}: err {err:.3e} at {i}: {} vs {}", out[c][i], native[c][i]));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn param(p: &serde_json::Value, key: &str, default: f64) -> f64 {
+    p[key].as_f64().unwrap_or(default)
+}
+
+#[test]
+fn uvi_formant_crusher_matches_the_native() {
+    // The emulated unit keeps its constructor's Bite 0.2 and FilterB 1 where a case omits them.
+    uvi_unit(
+        "FormantCrusher",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            sampler_ir::fx::color::Config::formant_crusher(
+                f("Morph", 0.0),
+                f("Q", 10.0),
+                f("Formant", 0.0),
+                f("Mix", 1.0),
+                f("Bite", 0.2),
+                f("FilterA", 0.0) as u8,
+                f("FilterB", 1.0) as u8,
+            )
+        },
+        1e-6,
+    );
+}
