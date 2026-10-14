@@ -764,8 +764,11 @@ impl Instrument {
                         continue;
                     }
                     let control = ControlRef(self.controls.len());
+                    // Labels can become more precise without changing a saved
+                    // editor control's identity (the historical key was Threshold).
+                    let key_label = if parameter == ProcessorParameter::Threshold { "Threshold" } else { label };
                     self.controls.push(Control {
-                        key: format!("compressor:{chain}:{index}:{label}"),
+                        key: format!("compressor:{chain}:{index}:{key_label}"),
                         label: label.into(),
                         value: ControlValue::Continuous {
                             min: low.min(default),
