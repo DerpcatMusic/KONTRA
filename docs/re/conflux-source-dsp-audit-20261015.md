@@ -94,6 +94,51 @@ The native constructor, field lifetimes and exact audio consumer still need
 verification before this held-voice harness can be claimed as executed. No new
 native audio calibration or production source kernel was completed here.
 
+A smaller original-byte **preparation-only** probe has now executed
+`0x140ce5fa0`, including its original native callee `0x141a3f2c0`, on detached
+zeroed machine storage. Eight sample rates, each repeated on fresh storage,
+produce identical complete state images. Only CRT `memset` is serviced (16
+calls total); no native DSP/math helper is substituted. The observed prepared
+fields are:
+
+| Rate Hz | Integer at `+0x102a8` | Float at `+0x102ac` |
+| ---: | ---: | ---: |
+| 8,000 / 11,025 / 22,050 / 44,100 | 1 | 0.03125 |
+| 48,000 | 2 | 0.015625 |
+| 88,200 / 96,000 | 3 | 0.010416666977107525 |
+| 192,000 | 6 | 0.0052083334885537624 |
+
+The original preparation uses the f32 constant
+`3.125000148429535e-5`, rounds its rate product by adding f32 0.5 before integer
+conversion, clamps the integer to at least one, and stores its reciprocal
+after multiplication by 32. These are measured fields, **not an assigned
+inharmonic/FM smoothing or render cadence**. Their consuming state transitions
+must still be traced before porting a clock.
+
+The parameter-map initializer is `0x140780c80`, reached by the read-only table
+xref at `0x140468504`. Its strict original-byte probe stops on an unmapped read
+at `0x14098f94a`: the engine metadata owner has not been initialized. No table
+entries are guessed and no helper is skipped to obtain a passing result. The
+typed setter decompilation also leaves the jump table at `0x1408c483d`
+unresolved. Those limitations prevent a claimed C8–C10 setter/domain result.
+
+Direct machine configuration is recovered at `0x140cdaf50`. It clamps three
+source-block floats (`+0x6c`, `+0x68`, `+0xb4`) to [0,1], forwards `+0x84` and
+`+0xbc` without a clamp into machine fields `+0x10178` and `+0x10194`, and
+converts `+0xc0` with helper `0x140ce73f0` into `+0x1019c`. These source-block
+offsets still need independent reader/parameter-name correlation; physical
+labels are not assigned from proximity alone.
+
+Two smaller consumers are now available for the next exact native probe.
+`0x140ce6b00` stores mode at `+0x1018c`, clears nine mix-weight fields beginning
+at `+0x1027c`, and sets the selected one/two weights for modes 1–9, marking an
+update at `+0x102a0/+0x102b0`. `0x140ce73f0` branches on unit field `+0x101a0`:
+one branch forwards the input, one rounds a signed ratio mapping, and one uses
+an exponential polynomial. Recovering these branches does not establish their
+full source/host normalization or oscillator output. The auxiliary waveform
+setter `0x141a3f0e0` stores its selector only. Numeric leaf execution and the
+audio consumers remain separate gates; none was ported to production here.
+
 Raw local receipts live under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261014/`:
 `wavetable-native-string-audit.json`, `wavetable-native-string-xrefs.json`,
@@ -102,3 +147,10 @@ Raw local receipts live under
 and `wavetable-native-rtti-vtables.json`. Failed/unresolved candidate probes are
 retained alongside these files. No native binary, decompiled body or library
 payload is committed with this document.
+Preparation probe source, numeric output and log are
+`wavetable-native-prepare-probe.py/.json/.log`; the explicit failed map probe is
+`wavetable-native-map-probe.py/.log`. The initializer/typed-dispatch slices are
+`wavetable-native-parameter-map-and-source-setter.txt` and
+`wavetable-native-typed-dispatch.txt`.
+Direct machine/helper slices are `wavetable-native-machine-consumers.txt` and
+`wavetable-native-auxiliary-helpers.txt`.
