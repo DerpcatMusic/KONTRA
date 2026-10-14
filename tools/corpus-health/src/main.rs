@@ -605,10 +605,7 @@ fn fresh_runtime(path: &Path, key: u8, ccs: &[(u8, u8)]) -> Option<Runtime> {
         ..Default::default()
     };
     let loaded = sampler_kontakt::load(path, &options, |_| {}).ok()?;
-    let limits = limits_for(
-        loaded.plan.behavior_local_count(),
-        loaded.plan.note_cell_count(),
-    );
+    let limits = limits_for(&loaded.plan);
     let mut rt = Runtime::new(loaded.plan, limits).ok()?;
     let mut ingress = new_ingress();
     for &(cc, v) in ccs {
@@ -642,20 +639,17 @@ fn mpe_probe(path: &Path, pick: Pick, ccs: &[(u8, u8)]) -> Value {
     }
 }
 
-fn limits_for(behavior_locals: usize, note_cells: usize) -> Limits {
+/// Notes held at once, as the plugin host (`INITIAL_NOTE_PARAMS` in
+/// src/sound/v2.rs). Fixed 64 notes and 16 callbacks faulted scripts the
+/// host plays: ensemble layers (play_note) and controller-write bursts.
+const NOTES: usize = 4096;
+
+/// The host's sizing: `Limits::for_plan` with families and decisions per note.
+fn limits_for(plan: &sampler_core::Prepared) -> Limits {
     Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 64,
-        decisions: 256,
-        voices: 512,
-        commands: 256,
-        behaviors: 16,
-        behavior_fuel: 1 << 20,
-        behavior_cells: behavior_locals.saturating_mul(16),
-        note_cells: note_cells.saturating_mul(64),
+        families: NOTES,
+        decisions: NOTES,
+        ..Limits::for_plan(plan, NOTES, 512)
     }
 }
 
@@ -846,18 +840,10 @@ fn take_json(t: &Take) -> Value {
 
 fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
     stage("prepare");
-    let (rate, locals, cells) = match &subject {
-        Subject::Plan(l) => (
-            l.plan.sample_rate(),
-            l.plan.behavior_local_count(),
-            l.plan.note_cell_count(),
-        ),
-        Subject::Streamed(s) => (
-            s.loaded.plan.sample_rate(),
-            s.loaded.plan.behavior_local_count(),
-            s.loaded.plan.note_cell_count(),
-        ),
-        Subject::Scripted(p) => (p.plan.sample_rate(), 0, 0),
+    let (rate, limits) = match &subject {
+        Subject::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
+        Subject::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),
+        Subject::Scripted(p) => (p.plan.sample_rate(), limits_for(&p.plan)),
         Subject::Ir(_) => return Err("prepare: no plan".into()),
     };
     let stream_info = match &subject {
@@ -875,7 +861,6 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         Subject::Streamed(s) => s.loaded.scripts.clone(),
         _ => Vec::new(),
     };
-    let limits = limits_for(locals, cells);
     let build = |plan, cache: Option<sampler_core::StreamCache>| -> Result<Box<Runtime>, String> {
         let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
         if let Some(cache) = cache {
