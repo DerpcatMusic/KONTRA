@@ -21,6 +21,7 @@
 
 use anyhow::{Context, ensure};
 mod uvi_meters;
+mod control_diagnostics;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -971,6 +972,8 @@ impl ControlIngress {
             if let Ok((_, revision)) = reply.result {
                 self.revision = revision;
             }
+            // Capture metadata before returning owned buffers to their pools.
+            let rejection = control_diagnostics::rejection(&reply);
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self
@@ -1025,12 +1028,12 @@ impl ControlIngress {
                 }
                 self.captures.push_back(output);
             }
-            if let Err(error) = reply.result {
+            if let Some(details) = rejection {
                 crate::diagnostics::event(
                     crate::diagnostics::LogLevel::Warning,
                     "ui",
                     "control_rejected",
-                    serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}),
+                    details,
                 );
             }
         }
@@ -2911,6 +2914,8 @@ impl Core for V2Core {
             underruns: stats.stream_underruns,
             cold_starts: stats.cold_starts,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
+            voice_pool_refusals: stats.voice_pool_refusals,
+            waiting_voice_replacements: stats.waiting_voice_replacements,
             stream_capacity: p.problems.stream_capacity + stats.stream_capacity_refusals,
             stream_disconnected: p.problems.stream_disconnected
                 + stats.stream_disconnected_refusals,

@@ -364,7 +364,7 @@ impl RuntimeLog {
     pub(crate) fn counters(&mut self, p: crate::sound::report::RuntimeProblems) -> bool {
         let mut changed = false;
         for (reason, subject, count) in [
-            ("CapacityDrops", "VoicePool", p.capacity_drops),
+            ("CapacityDrops", "RuntimeAdmission", p.capacity_drops),
             ("Underruns", "Stream", p.underruns),
             ("ColdStarts", "SampleStart", p.cold_starts),
             ("StreamCapacity", "PagePool", p.stream_capacity),
@@ -384,8 +384,14 @@ impl RuntimeLog {
             let delta = count.saturating_sub(*old);
             *old = count;
             if delta > 0 {
-                let detail = (reason == "ColdStarts").then(||
-                    "Sample starts waited silently because their first source frames were not resident".into());
+                let detail = match reason {
+                    "ColdStarts" => Some("Sample starts waited silently because their first source frames were not resident".into()),
+                    "CapacityDrops" => Some(format!(
+                        "Runtime admission capacity drops; voice-pool refusals: {}; stream page-capacity refusals: {}. Silent waiting-voice replacements: {} (separate observation).",
+                        p.voice_pool_refusals, p.stream_capacity, p.waiting_voice_replacements,
+                    )),
+                    _ => None,
+                };
                 self.add("RuntimeCounter", reason, subject, None, delta, detail);
                 changed = true;
             }
@@ -529,6 +535,9 @@ mod tests {
         assert!(log.collector.groups().iter().any(|group|
             group.key.reason == "ColdStarts" && group.counts.enabled == 3));
         assert!(!log.collector.groups().iter().any(|group| group.key.reason == "Underruns"));
+        assert!(log.collector.groups().iter().any(|group|
+            group.key.reason == "CapacityDrops" && group.key.subject == "RuntimeAdmission"
+                && group.counts.enabled == 2));
         let mut lua = sampler_uvi::script::FaultCounts::default();
         lua.runtime
             .insert(sampler_uvi::script::FaultCategory::Lua, 3);
