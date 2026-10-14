@@ -54,6 +54,11 @@ pub enum Topology {
     /// input ring (early reflections and line injection), 16 lines through
     /// per-line two-shelf biquads and a Hadamard matrix, four panned groups.
     KontaktPlate,
+    /// The exact Kontakt Raum (0x65) core, driven by [`Network::raum`]: a
+    /// predelay with a filtered feedback path, the 31-line
+    /// `GaloisReverbExtended` kernel (Grounded, Airy) or the Cosmic allpass
+    /// chain, then a low shelf, a high cut and Raum's own mix.
+    Raum,
 }
 
 /// UVI's legacy reverb controls (node `0x141312050`) in native units.
@@ -200,6 +205,12 @@ pub struct Network {
     /// Kontakt Plate controls (decay, low shelf, high damp, predelay,
     /// stereo; each `0..=1`) for [`Topology::KontaktPlate`].
     pub kontakt_plate: Option<[f32; 5]>,
+    /// Kontakt Raum core controls by core index (`0..=1` each) for
+    /// [`Topology::Raum`]: 0 mix, 1 predelay, 6 feedback, 7 high cut, 8 low
+    /// shelf, 9 type (`int(3x)`: Grounded, Airy, Cosmic), 10 decay, 11 size,
+    /// 12 damping, 13 modulation, 14 rate, 15 diffusion, 16 freeze, 17
+    /// reverb, 18 sparse, 19 input gain.
+    pub raum: Option<[f32; 20]>,
 }
 
 impl Network {
@@ -226,6 +237,7 @@ impl Network {
         spark: None,
         uvi_reverb: None,
         kontakt_plate: None,
+        raum: None,
     };
 }
 
@@ -265,6 +277,7 @@ impl Config {
                 && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
                 && n.uvi_reverb.is_none_or(|u| [u.decay_time, u.high_damp, u.cutoff].iter().all(|v| v.is_finite()))
                 && n.kontakt_plate.is_none_or(|p| p.iter().all(|v| v.is_finite()))
+                && n.raum.is_none_or(|p| p.iter().all(|v| v.is_finite()))
                 && n.spark.is_none_or(|s| {
                     let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
                     [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]

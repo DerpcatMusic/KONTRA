@@ -97,6 +97,12 @@ pub(super) enum Modulation {
     /// sampled every [`GLIDE_BLOCK`] frames and glided across the block (the
     /// step clamped to the block length).
     Glide,
+    /// Two quadrature f64 phasors (`w` radians per frame each); line `i`
+    /// adds `depth_i · m[sel_i]`, `m = [sin₁, cos₁, sin₂, cos₂]` (f32), shaped
+    /// by the odd polynomial `P` when `shape` (Kontakt Raum Airy). With
+    /// `reverse`, every `period` frames an LCG (`x·0x19fb4787 + 0x16d1b86b`,
+    /// seed 0) reverses each phasor with probability 1/4.
+    Dual { w: [f64; 2], shape: bool, reverse: Option<u32> },
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +189,49 @@ impl Unit {
     }
 }
 
+/// A stereo pair of three-line orthogonal units cross-rotated after each
+/// state update (Kontakt Raum `GaloisReverbExtended`): per channel
+/// `v = Aᵀu + b·x`, `y = c·u₀ + d·x`; then `w_L = cos φ·v_L + sin φ·v_R`,
+/// `w_R = -sin φ·v_L + cos φ·v_R` written to the lines, and `u_j` read
+/// `n_j - 2` frames behind the write.
+#[derive(Clone)]
+pub(super) struct Coupled {
+    pub(super) a: [f32; 9],
+    pub(super) b: [f32; 3],
+    pub(super) c: f32,
+    pub(super) d: f32,
+    pub(super) rot: (f32, f32),
+    pub(super) n: [usize; 3],
+    pub(super) u: [[f32; 3]; 2],
+    pub(super) rings: [[Ring; 3]; 2],
+}
+
+impl Coupled {
+    #[inline(always)]
+    fn tick(&mut self, w: usize, x: [f32; 2]) -> [f32; 2] {
+        let a = &self.a;
+        let mut v = [[0f32; 3]; 2];
+        let mut y = [0f32; 2];
+        for ch in 0..2 {
+            let u = self.u[ch];
+            for j in 0..3 {
+                v[ch][j] = a[j] * u[0] + a[3 + j] * u[1] + a[6 + j] * u[2] + self.b[j] * x[ch];
+            }
+            y[ch] = self.c * u[0] + self.d * x[ch];
+        }
+        let (c, s) = self.rot;
+        for j in 0..3 {
+            let (l, r) = (v[0][j], v[1][j]);
+            self.rings[0][j].put(w, c * l + s * r);
+            self.rings[1][j].put(w, -s * l + c * r);
+            for ch in 0..2 {
+                self.u[ch][j] = self.rings[ch][j].at(w, self.n[j] - 2);
+            }
+        }
+        y
+    }
+}
+
 /// The per-channel output chain.
 #[derive(Clone)]
 pub(super) enum Chain {
@@ -190,6 +239,7 @@ pub(super) enum Chain {
     Schroeder([Vec<Allpass>; 2]),
     Jezar([Vec<Allpass>; 2]),
     Units([Vec<Unit>; 2]),
+    Coupled(Vec<Coupled>),
 }
 
 /// A trapezoidal state-variable low shelf (Kontakt `0x140d947a0`).
@@ -266,6 +316,9 @@ pub(super) struct Spec {
     pub(super) read_biquad: bool,
     /// A tapped input ring feeding the matrix input and the output.
     pub(super) feed: Option<Feed>,
+    /// Freeze: the matrix takes the raw reads (taps still see the read
+    /// filter).
+    pub(super) freeze: bool,
     pub(super) tap_from: TapFrom,
     /// Two groups of `(line, coefficient)`, summed in order.
     pub(super) taps: [Vec<(u8, f32)>; 2],
@@ -292,6 +345,7 @@ impl Spec {
             input_bq: Vec::new(),
             read_biquad: false,
             feed: None,
+            freeze: false,
             predelay: [0.0; 2],
             pre_cap: 1,
             echo: 0.0,
@@ -324,10 +378,9 @@ struct Lanes {
     /// Unmodulated reads: whole and fractional delay.
     j: [usize; MAX_LINES],
     f: [f32; MAX_LINES],
-    /// Quadrature reads: `cos·dc + sin·ds + base` in f32 (one of dc/ds is 0).
+    /// Modulated reads: `Σ lfo_k·dm_k + base` in f32 (one `dm_k` is nonzero).
     base: [f32; MAX_LINES],
-    dc: [f32; MAX_LINES],
-    ds: [f32; MAX_LINES],
+    dm: [[f32; MAX_LINES]; 4],
     /// Read filter, diagonal gain, injection per channel.
     a: [f32; MAX_LINES],
     b: [f32; MAX_LINES],
@@ -365,6 +418,11 @@ pub(super) struct Network {
     df1: [[[f32; 4]; 2]; MAX_INPUT_BQ],
     phasor: (f64, f64),
     rot: (f64, f64),
+    /// [`Modulation::Dual`]'s second phasor, its countdown and LCG.
+    phasor2: (f64, f64),
+    rot2: (f64, f64),
+    count: u32,
+    lcg: u32,
     /// Glide: current delay per line, and this block's start and step.
     cur: [f64; MAX_LINES],
     glide: [(f64, f64); MAX_LINES],
@@ -380,11 +438,12 @@ impl Network {
     pub(super) fn new(spec: Spec) -> Self {
         let n = spec.lines.len();
         assert!(n <= MAX_LINES);
-        let rot = match spec.modulation {
-            Modulation::Quad { w } => (w.cos(), w.sin()),
-            _ => (1.0, 0.0),
+        let (rot, rot2) = match spec.modulation {
+            Modulation::Quad { w } => ((w.cos(), w.sin()), (1.0, 0.0)),
+            Modulation::Dual { w, .. } => ((w[0].cos(), w[0].sin()), (w[1].cos(), w[1].sin())),
+            _ => ((1.0, 0.0), (1.0, 0.0)),
         };
-        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dc: ZERO, ds: ZERO, a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5] };
+        let mut k = Lanes { j: [0; MAX_LINES], f: ZERO, base: ZERO, dm: [ZERO; 4], a: ZERO, b: ZERO, g: ZERO, inj: [ZERO; 2], bq: [ZERO; 5] };
         let gains = match &spec.matrix {
             Matrix::Permutation { g, .. } => *g,
             _ => [1.0; MAX_LINES],
@@ -393,11 +452,7 @@ impl Network {
             k.j[i] = l.base as usize;
             k.f[i] = (l.base - k.j[i] as f64) as f32;
             k.base[i] = l.base as f32;
-            if l.sel == 0 {
-                k.dc[i] = l.depth as f32;
-            } else {
-                k.ds[i] = l.depth as f32;
-            }
+            k.dm[usize::from(l.sel.min(3))][i] = l.depth as f32;
             (k.a[i], k.b[i], k.g[i]) = (l.a, l.b, gains[i]);
             k.inj[usize::from(l.inject.0.min(1))][i] = l.inject.1;
             for c in 0..5 {
@@ -411,7 +466,7 @@ impl Network {
             v: ZERO,
             pre_on: spec.predelay != [0.0; 2] || spec.echo != 0.0,
             diagonal,
-            parallel: diagonal && !spec.read_biquad && spec.feed.is_none(),
+            parallel: diagonal && !spec.read_biquad && spec.feed.is_none() && !spec.freeze,
             n,
             rings: spec.lines.iter().map(|l| Ring::new(l.cap)).collect(),
             pre: [Ring::new(spec.pre_cap), Ring::new(spec.pre_cap)],
@@ -419,6 +474,10 @@ impl Network {
             df1: [[[0.0; 4]; 2]; MAX_INPUT_BQ],
             phasor: (1.0, 0.0),
             rot,
+            phasor2: (1.0, 0.0),
+            rot2,
+            count: 0,
+            lcg: 0,
             cur: [0.0; MAX_LINES],
             glide: [(0.0, 0.0); MAX_LINES],
             phase: [0; MAX_LINES],
@@ -449,6 +508,12 @@ impl Network {
                     u.rings.iter_mut().for_each(|r| r.buf.fill(0.0));
                 }
             }
+            Chain::Coupled(c) => {
+                for u in c {
+                    u.u = [[0.0; 3]; 2];
+                    u.rings.iter_mut().flatten().for_each(|r| r.buf.fill(0.0));
+                }
+            }
         }
         for (i, l) in s.lines.iter().enumerate() {
             self.cur[i] = l.base;
@@ -460,6 +525,11 @@ impl Network {
         }
         *self.st = State { s0: ZERO, s1: ZERO, dc: ZERO };
         (self.phasor, self.left, self.shelf, self.cut) = ((1.0, 0.0), 0, [[0.0; 2]; 2], [0.0; 2]);
+        (self.phasor2, self.lcg) = ((1.0, 0.0), 0);
+        if let Modulation::Dual { w, reverse, .. } = s.modulation {
+            (self.rot, self.rot2) = ((w[0].cos(), w[0].sin()), (w[1].cos(), w[1].sin()));
+            self.count = reverse.unwrap_or(0);
+        }
     }
 
     /// Replace `l`/`r` with the network's output.
@@ -477,7 +547,8 @@ impl Network {
         run!(0 0 false, 0 0 true, 0 1 false, 0 1 true, 0 2 false, 0 2 true,
              1 0 false, 1 0 true, 1 1 false, 1 1 true, 1 2 false, 1 2 true,
              2 0 false, 2 0 true, 2 1 false, 2 1 true, 2 2 false, 2 2 true,
-             3 0 false, 3 0 true, 3 1 false, 3 1 true, 3 2 false, 3 2 true);
+             3 0 false, 3 0 true, 3 1 false, 3 1 true, 3 2 false, 3 2 true,
+             0 3 false, 1 3 false, 2 3 false, 3 3 false);
     }
 
     fn mod_kind(&self) -> u8 {
@@ -485,6 +556,7 @@ impl Network {
             Modulation::None => 0,
             Modulation::Quad { .. } => 1,
             Modulation::Glide => 2,
+            Modulation::Dual { .. } => 3,
         }
     }
 
@@ -537,12 +609,45 @@ impl Network {
 
     /// Advance the quadrature phasor: this frame's `[cos, sin]`.
     #[inline(always)]
-    fn lfo(&mut self) -> [f32; 2] {
+    fn lfo(&mut self) -> [f32; 4] {
         let (c, si) = self.phasor;
         let (cw, sw) = self.rot;
         let (nc, ns) = (c * cw - sw * si, c * sw + si * cw);
         self.phasor = (nc, ns);
-        [nc as f32, ns as f32]
+        [nc as f32, ns as f32, 0.0, 0.0]
+    }
+
+    /// [`Modulation::Dual`]: the random reversals, then both phasors.
+    #[inline(always)]
+    fn lfo2(&mut self) -> [f32; 4] {
+        let Modulation::Dual { shape, reverse, .. } = self.spec.modulation else { return [0.0; 4] };
+        if let Some(period) = reverse {
+            self.count -= 1;
+            if self.count == 0 {
+                self.count = period;
+                for rot in [&mut self.rot, &mut self.rot2] {
+                    let x1 = self.lcg.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
+                    let x2 = x1.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
+                    self.lcg = x2;
+                    if (f64::from(x2) * 4_294_967_296.0 + f64::from(x1)) * 5.421_010_862_427_522e-20 < 0.25 {
+                        rot.1 = -rot.1;
+                    }
+                }
+            }
+        }
+        let step = |(a, b): (f64, f64), (c, s): (f64, f64)| (a * c - s * b, a * s + b * c);
+        self.phasor = step(self.phasor, self.rot);
+        self.phasor2 = step(self.phasor2, self.rot2);
+        let m = [self.phasor.1 as f32, self.phasor.0 as f32, self.phasor2.1 as f32, self.phasor2.0 as f32];
+        if shape {
+            // Odd asin-like series with P(1) = 1.
+            m.map(|v| {
+                let v2 = v * v;
+                v * (0.759_479_3 + v2 * (0.126_579_9 + v2 * (0.056_960_95 + v2 * (0.033_905_33 + v2 * 0.023_074_46))))
+            })
+        } else {
+            m
+        }
     }
 
     /// The input stage for one frame at write position `w`.
@@ -591,7 +696,11 @@ impl Network {
         let n = self.n;
         let w = self.w;
         self.w = w.wrapping_add(1);
-        let lfo = if M == 1 { self.lfo() } else { [0.0; 2] };
+        let lfo = match M {
+            1 => self.lfo(),
+            3 => self.lfo2(),
+            _ => [0.0; 4],
+        };
         let x = self.input(inl, inr, w);
         let s = &mut self.spec;
         // Lines.
@@ -635,7 +744,7 @@ impl Network {
                 }
                 apply(&s.matrix, &m, n, &mut u);
             } else {
-                apply(&s.matrix, v, n, &mut u);
+                apply(&s.matrix, if s.freeze { &rd } else { v }, n, &mut u);
             }
             for (i, ring) in self.rings.iter_mut().enumerate() {
                 write::<F>(k, st, one, i, ring, w, at, u[i], x);
@@ -666,11 +775,13 @@ impl Network {
         let len = l.len();
         let w0 = self.w;
         let mut xs = [[0f32; 2]; BLOCK];
-        let mut lfo = [[0f32; 2]; BLOCK];
+        let mut lfo = [[0f32; 4]; BLOCK];
         for j in 0..len {
-            if M == 1 {
-                lfo[j] = self.lfo();
-            }
+            lfo[j] = match M {
+                1 => self.lfo(),
+                3 => self.lfo2(),
+                _ => [0.0; 4],
+            };
             xs[j] = self.input(l[j], r[j], w0.wrapping_add(j));
         }
         let mut src = [[0f32; BLOCK]; MAX_LINES];
@@ -726,6 +837,9 @@ impl Network {
                     o[ch] = c[ch].iter_mut().fold(o[ch], |v, u| u.tick(w, v));
                 }
             }
+            Chain::Coupled(c) => {
+                o = c.iter_mut().fold(o, |v, u| u.tick(w, v));
+            }
         }
         if let Some(sh) = s.shelf {
             for ch in 0..2 {
@@ -753,11 +867,16 @@ impl Network {
 
 /// Line `i`'s whole and fractional delay this frame.
 #[inline(always)]
-fn position<const M: u8>(k: &Lanes, i: usize, lfo: [f32; 2], glide: (f64, f64), step: f64) -> (usize, f32) {
+fn position<const M: u8>(k: &Lanes, i: usize, lfo: [f32; 4], glide: (f64, f64), step: f64) -> (usize, f32) {
     match M {
         0 => (k.j[i], k.f[i]),
         1 => {
-            let d = lfo[0] * k.dc[i] + lfo[1] * k.ds[i] + k.base[i];
+            let d = lfo[0] * k.dm[0][i] + lfo[1] * k.dm[1][i] + k.base[i];
+            let whole = d as i32;
+            (whole as usize, d - whole as f32)
+        }
+        3 => {
+            let d = lfo[0] * k.dm[0][i] + lfo[1] * k.dm[1][i] + lfo[2] * k.dm[2][i] + lfo[3] * k.dm[3][i] + k.base[i];
             let whole = d as i32;
             (whole as usize, d - whole as f32)
         }

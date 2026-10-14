@@ -27,6 +27,7 @@ pub(super) fn spec(n: &Network, rate: u32) -> Result<Spec, Error> {
         Topology::Galois => galois(&n.galois.ok_or(Error::InvalidInput)?, r),
         Topology::Freeverb => freeverb(n, &n.freeverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::SparkVerb => spark(&n.spark.ok_or(Error::InvalidInput)?, r),
+        Topology::Raum => raum::spec(&n.raum.ok_or(Error::InvalidInput)?, rate)?,
         Topology::KontaktPlate => kontakt_plate(&n.kontakt_plate.ok_or(Error::InvalidInput)?, r),
         Topology::Jezar => jezar(n, &n.uvi_reverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::Diffuser => diffusion(n.diffusion as f32, n.diffusion_start_ms as f32, r),
@@ -164,7 +165,11 @@ pub(super) mod galois_law {
     /// Index maps turning `S[i][j] = (-1)^c[(j-i) mod 31]` into a
     /// Walsh–Hadamard transform: `S[i][j] = (-1)^popcount(row[i] & col[j])`.
     pub(crate) fn hadamard_maps() -> ([u8; LINES], [u8; LINES]) {
-        let c = sequence();
+        hadamard_maps_of(sequence())
+    }
+
+    /// The same for any 31-long m-sequence `c`.
+    pub(crate) fn hadamard_maps_of(c: [u8; LINES]) -> ([u8; LINES], [u8; LINES]) {
         let col: [u8; LINES] = std::array::from_fn(|j| (0..5).map(|k| c[(j + k) % LINES] << k).sum());
         let row = std::array::from_fn(|i| {
             (1..32u8)
@@ -740,6 +745,7 @@ fn generic_plate(n: &Network, rate: f64) -> Spec {
 }
 
 mod plate;
+pub(super) mod raum;
 
 #[cfg(test)]
 mod tests;
