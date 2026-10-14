@@ -2363,6 +2363,8 @@ pub(super) fn menu_popup(
         rows.push(
             caption(item.text.clone())
                 .pad((TIGHT * scale, SPACE * scale))
+                .h(CONTROL * scale)
+                .w(Len::Pct(100.))
                 .fill(Role::Ink)
                 .focusable()
                 .a11y(A11y::Button)
