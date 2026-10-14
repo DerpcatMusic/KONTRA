@@ -940,6 +940,48 @@ impl Line<'_> {
         let k = self.k;
         let mut y: [f32; N] = std::array::from_fn(|c| v[c]);
         let mut rings = rings.map(Ring::view);
+        let len = self.len;
+        // Fixed delays of at least a block (+2 for the widest read) never
+        // read what this block writes: read the block's span out, run the
+        // filters on arrays, write the span back. Same arithmetic per frame.
+        if M == 0 && self.off == 0 && (0..N).all(|c| k.j[i0 + c] >= len + 2 && k.j[i0 + c] + 2 < rings[c].buf.len()) {
+            let mut rd = [[0f32; BLOCK]; N];
+            for c in 0..N {
+                rings[c].read_block::<I>(self.w0, k.j[i0 + c], k.f[i0 + c], &mut rd[c][..len]);
+            }
+            let (a, b, g) = (std::array::from_fn::<f32, N, _>(|c| k.a[i0 + c]), std::array::from_fn::<f32, N, _>(|c| k.b[i0 + c]), std::array::from_fn::<f32, N, _>(|c| k.g[i0 + c]));
+            let inj: [[f32; N]; 2] = std::array::from_fn(|q| std::array::from_fn(|c| k.inj[q][i0 + c]));
+            let mut out = [[0f32; BLOCK]; N];
+            for j in 0..len {
+                let x = self.xs[j];
+                for c in 0..N {
+                    let i = i0 + c;
+                    let r = rd[c][j];
+                    y[c] = r * a[c] + b[c] * y[c];
+                    let u = y[c] * g[c];
+                    let mut z = u;
+                    if F {
+                        let [b0, b1, b2, a1, a2] = &k.bq;
+                        let q = b0[i] * z + st.s0[i];
+                        st.s0[i] = b1[i] * z - a1[i] * q + st.s1[i];
+                        st.s1[i] = b2[i] * z - a2[i] * q;
+                        st.dc[i] += self.one * (q - st.dc[i]);
+                        z = q - st.dc[i];
+                    }
+                    out[c][j] = z + (x[0] * inj[0][c] + x[1] * inj[1][c]);
+                    src[c][j] = match self.tap {
+                        TapFrom::Read => r,
+                        TapFrom::Filtered => y[c],
+                        TapFrom::Mixed => u,
+                    };
+                }
+            }
+            for c in 0..N {
+                rings[c].write_block(self.w0, &out[c][..len]);
+            }
+            v[..N].copy_from_slice(&y);
+            return;
+        }
         for j in 0..self.len {
             let w = self.w0.wrapping_add(j);
             for c in 0..N {
@@ -998,6 +1040,53 @@ impl Tape for Ring {
     #[inline(always)]
     fn add(&mut self, w: usize, v: f32) {
         Ring::add(self, w, v);
+    }
+}
+
+impl View<'_> {
+    /// `out[t] = x[w0 + t - k]` (contiguous, wrapping once at most).
+    #[inline(always)]
+    fn span(&self, w0: usize, k: usize, out: &mut [f32]) {
+        let n = self.buf.len();
+        let at = w0.wrapping_add(self.skew).wrapping_sub(k) & (n - 1);
+        let first = out.len().min(n - at);
+        out[..first].copy_from_slice(&self.buf[at..at + first]);
+        let rest = out.len() - first;
+        out[first..].copy_from_slice(&self.buf[..rest]);
+    }
+    /// [`read`] for frames `w0..w0 + out.len()` at a fixed `j + f`.
+    #[inline(always)]
+    fn read_block<const I: u8>(&self, w0: usize, j: usize, f: f32, out: &mut [f32]) {
+        let len = out.len();
+        self.span(w0, j, out);
+        if I == 0 {
+            return;
+        }
+        let mut b = [0f32; BLOCK];
+        self.span(w0, j + 1, &mut b[..len]);
+        match I {
+            1 => out.iter_mut().zip(&b).for_each(|(a, b)| *a = *a + (*b - *a) * f),
+            2 => out.iter_mut().zip(&b).for_each(|(a, b)| *a = (1.0 - f) * *a + f * *b),
+            _ => {
+                let (mut m, mut c) = ([0f32; BLOCK], [0f32; BLOCK]);
+                self.span(w0, j - 1, &mut m[..len]);
+                self.span(w0, j + 2, &mut c[..len]);
+                let (fm, fp, f2) = (f - 1.0, f + 1.0, f - 2.0);
+                for t in 0..len {
+                    out[t] = -f * fm * f2 / 6.0 * m[t] + fp * fm * f2 / 2.0 * out[t] - fp * f * f2 / 2.0 * b[t] + fp * f * fm / 6.0 * c[t];
+                }
+            }
+        }
+    }
+    /// `x[w0 + t] = v[t]`.
+    #[inline(always)]
+    fn write_block(&mut self, w0: usize, v: &[f32]) {
+        let n = self.buf.len();
+        let at = w0.wrapping_add(self.skew) & (n - 1);
+        let first = v.len().min(n - at);
+        self.buf[at..at + first].copy_from_slice(&v[..first]);
+        let rest = v.len() - first;
+        self.buf[..rest].copy_from_slice(&v[first..]);
     }
 }
 
