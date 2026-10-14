@@ -18,11 +18,14 @@ pub use transfer::{
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "cache", serde(try_from = "String", into = "String"))]
+/// 8-byte aligned: a u128 forces 16, padding every enum that holds one
+/// (script instructions and saved-state addresses grow from 24 to 32 bytes).
+#[repr(packed(8))]
 pub struct ControlId(pub u128);
 #[cfg(feature = "cache")]
 impl From<ControlId> for String {
     fn from(id: ControlId) -> Self {
-        format!("{:032x}", id.0)
+        format!("{:032x}", { id.0 })
     }
 }
 #[cfg(feature = "cache")]
