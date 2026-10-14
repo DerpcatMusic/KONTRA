@@ -111,7 +111,7 @@ fn main() {
     assert_eq!(
         args.len(),
         4,
-        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump"
+        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump|held-stress"
     );
     let block: usize = args[2].parse().unwrap();
     assert!([32, 64, 256].contains(&block));
