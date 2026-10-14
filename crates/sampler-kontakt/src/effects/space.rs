@@ -290,6 +290,25 @@ mod tests {
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
     }
 
+    #[test]
+    fn legacy_reverb_lanes_round_trip_through_the_setter() {
+        let mut c = legacy(&[90.0, 0.5, 0.25, 0.5, 0.75], &mut Notes::new());
+        c.address = Some(sampler_ir::SlotAddress { group: -1, slot: 7, generic: 1003 });
+        let lanes = c.lanes();
+        let stored: Vec<f64> = lanes.iter().map(|l| (l.value * 1e4).round() / 1e4).collect();
+        assert_eq!(stored, [90.0, 0.5, 0.25, 0.5, 0.75]);
+        let mut rebuilt = c;
+        for lane in &lanes {
+            rebuilt.set(lane.role, lane.value);
+        }
+        let (a, b) = (rebuilt.network.unwrap(), c.network.unwrap());
+        assert!((a.predelay_seconds - b.predelay_seconds).abs() < 1e-9 && (a.input_cutoff_hz / b.input_cutoff_hz - 1.).abs() < 1e-5);
+        assert_eq!(a.freeverb, b.freeverb);
+        // RV_SIZE at 1: comb feedback 0.95.
+        rebuilt.set(sampler_ir::ProcessorParameter::Size, 1.0);
+        assert!((rebuilt.network.unwrap().freeverb.unwrap().feedback - 0.95).abs() < 1e-6);
+    }
+
     /// CConvolver's filter vectors (`0x1419b7fb0`/`0x1419b77f0`, 48 kHz, 4.8 kHz).
     #[test]
     fn early_late_filters_match_native_vectors() {

@@ -203,6 +203,9 @@ impl Network {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
+    /// The script slot whose `ENGINE_PAR_*` writes reach [`Config::lanes`].
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<crate::SlotAddress>,
     pub network: Option<Network>,
     /// The impulse response (already shaped by the importing profile) the
     /// input is convolved with; adds no latency.
@@ -216,12 +219,47 @@ pub struct Config {
 impl Config {
     /// A network alone, wet only (the dry path is the bus's other send).
     pub const fn network(network: Network) -> Self {
-        Self { network: Some(network), impulse: None, dry: 0.0, wet: 1.0 }
+        Self { address: None, network: Some(network), impulse: None, dry: 0.0, wet: 1.0 }
     }
 
     /// A convolution alone, mixed `dry * x + wet * (x * impulse)`.
     pub const fn convolution(impulse: ImpulseRef, dry: f64, wet: f64) -> Self {
-        Self { network: None, impulse: Some(impulse), dry, wet }
+        Self { address: None, network: None, impulse: Some(impulse), dry, wet }
+    }
+
+    /// Live knobs of a script-addressed Kontakt legacy Reverb (0x15), each
+    /// holding its stored value (fx_legacy_delay_reverb_mod.tsv: predelay ms
+    /// by table, the rest identity); [`Config::set`] applies the setter.
+    pub fn lanes(&self) -> Vec<super::Lane> {
+        use super::{Lane, Law, tables};
+        use crate::ProcessorParameter as P;
+        let (Some(_), Some(n)) = (self.address, self.network) else { return Vec::new() };
+        let (Topology::Freeverb, Some(f)) = (n.topology, n.freeverb) else { return Vec::new() };
+        let cutoff = (n.input_cutoff_hz / 20.).log(1000.);
+        vec![
+            Lane::new("ENGINE_PAR_RV_PREDELAY", P::Predelay, n.predelay_seconds * 1e3, Law::Table(&tables::RV_PREDELAY)),
+            Lane::new("ENGINE_PAR_RV_SIZE", P::Size, (f.feedback - 0.65) / 0.3, Law::Identity),
+            Lane::new("ENGINE_PAR_RV_STEREO", P::Width, f.width * 2. - 1., Law::Identity),
+            Lane::new("ENGINE_PAR_RV_COLOUR", P::Colour, 1. - (1. - f.damp) / 0.35, Law::Identity),
+            Lane::new("ENGINE_PAR_RV_DAMPING", P::Damping, 1. - (cutoff - 0.25) / 0.75, Law::Identity),
+        ]
+    }
+
+    /// Write the stored value of lane `role` through the legacy Reverb setter
+    /// (case 0x3e of 0x1409619b0; sampler-kontakt `effects::space::legacy`).
+    pub fn set(&mut self, role: crate::ProcessorParameter, stored: f64) {
+        use crate::ProcessorParameter as P;
+        let Some(n) = &mut self.network else { return };
+        let Some(f) = &mut n.freeverb else { return };
+        let v = f64::from((stored as f32).clamp(0., 1.));
+        match role {
+            P::Predelay => n.predelay_seconds = stored.clamp(0., 180.) * 1e-3,
+            P::Size => f.feedback = f64::from(v as f32 * 0.3 + 0.65),
+            P::Width => f.width = f64::from((v as f32 + 1.) * 0.5),
+            P::Colour => f.damp = f64::from(1. - (1. - v as f32) * 0.35),
+            P::Damping => n.input_cutoff_hz = 20. * 1000f64.powf(f64::from((1. - v as f32) * 0.75 + 0.25)),
+            _ => {}
+        }
     }
 
     /// Whether any field is NaN or infinite.

@@ -25,11 +25,11 @@ fn lfo(hz: f64) -> Lfo {
 
 fn mod_config(line: Line, speed: f64, mix: f64) -> Config {
     // Chorus / flanger family: the unprocessed signal always passes.
-    Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed), dry: 1., wet: mix }
+    Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(speed), dry: 1., wet: mix }
 }
 
 fn delay_config(line: Line, mix: f64) -> Config {
-    Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0.), dry: 1. - mix, wet: mix }
+    Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0.), dry: 1. - mix, wet: mix }
 }
 
 fn feedback(line: &mut Line, fb: f64) {
@@ -217,6 +217,7 @@ impl Translation {
                 let f = number(node, "Freq", 1000.)?.clamp(20., 20000.) as f32;
                 self.not_modeled(at, node, tag, &[("KeyTracking", 0.), ("CutoffMode", 0.)])?;
                 Config {
+                    address: None,
                     line: None,
                     allpass: Some(Allpass {
                         stages: number(node, "Order", 3.)?.clamp(1., 12.) as u8,
@@ -301,7 +302,7 @@ impl Translation {
                 line.voice_phase = 1.;
                 line.voice_delay_ms = 4.;
                 // The voice bank averages its voices; UVI sums them.
-                Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(UviWave::Triangle, false, 0.25), dry: 1., wet: 2. * mix }
+                Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(UviWave::Triangle, false, 0.25), dry: 1., wet: 2. * mix }
             }
             "Flanger" => {
                 // 0x1412eeec0: one triangle LFO for both channels, Catmull-Rom read of
@@ -318,7 +319,7 @@ impl Translation {
                 line.taps[0].depth_ms = depth * 10.;
                 line.interpolation = Interpolation::Hermite;
                 line.feedback.matrix = [[fb, 0.], [0., fb]];
-                Config { line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(UviWave::Triangle, true, 0.), dry: 1., wet: mix }
+                Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(UviWave::Triangle, true, 0.), dry: 1., wet: mix }
             }
             "Phaser" | "CrossPhaser" => {
                 // 0x1412f0ec0 / 0x1412e4c90: six allpasses on a linear w sweep, sine
@@ -328,6 +329,7 @@ impl Translation {
                 let depth = number_any(node, &["Depth", &legacy("Depth")], 0.8)?.clamp(0., 1.);
                 let fb = number_any(node, &["Feedback", &legacy("FeedBack")], 0.7)?.clamp(0., 0.999);
                 Config {
+                    address: None,
                     line: None,
                     allpass: Some(Allpass { stages: 6, law: SweepLaw::Linear { min_hz: min_hz as f32, max_hz: max_hz as f32 }, feedback: fb as f32 }),
                     order: Order::LineThenAllpass,
@@ -355,6 +357,7 @@ impl Translation {
                 let spread = number(node, "Spread", 1.)?.clamp(0., 1.);
                 let norm = (depth * depth + 1.).sqrt();
                 Config {
+                    address: None,
                     line: None,
                     allpass: Some(Allpass {
                         stages: 2 * order,
