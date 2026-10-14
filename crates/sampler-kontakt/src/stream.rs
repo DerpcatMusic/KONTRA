@@ -1036,6 +1036,10 @@ fn decode(
     };
     // Linear LRU is bounded at 128 readers per worker; keep it off audio.
     let mut readers = ReaderCache::new(reader_byte_limit);
+    if let Some(audit) = &mut audit {
+        audit.reader_budget_bytes = reader_byte_limit;
+        audit.peak_retained_reader_bytes = readers.peak_retained_bytes;
+    }
     let mut tick = 0u64;
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
