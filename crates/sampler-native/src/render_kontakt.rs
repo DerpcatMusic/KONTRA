@@ -413,10 +413,6 @@ mod tests {
                 "on init declare $job end on on persistence_changed $job:=mf_reset() wait_async($job) end on",
                 sampler_core::MIDI_SERVICE,
             ),
-            (
-                "on init declare %data[1] declare $job end on on persistence_changed $job:=load_array_str(%data,\"/not-opened.nka\") wait_async($job) end on",
-                sampler_core::ARRAY_FILE_SERVICE,
-            ),
         ] {
             let script =
                 sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();

@@ -172,9 +172,9 @@ pub use midi_object::{
 };
 mod script;
 pub use ops::{
-    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
+    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RANDOM_SEED, RealBinary,
     RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
-    real, real_bits,
+    random, real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
