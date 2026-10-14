@@ -2338,6 +2338,11 @@ impl Lowering<'_> {
                 ir::fx::filter::Topology::FormantII => {
                     Processor::FormantII([c.cutoff as f32, c.resonance as f32, c.extra as f32])
                 }
+                ir::fx::filter::Topology::Cascade
+                    if let ir::fx::filter::Variant::Kontakt(k) = c.variant =>
+                {
+                    Processor::Filter(crate::FilterSettings::Kontakt(k))
+                }
                 ir::fx::filter::Topology::Cascade => {
                     let class = cascade_class(&c)
                         .ok_or_else(|| unsupported(owner, Feature::Controls))?;
@@ -3062,6 +3067,7 @@ fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
         V::Ladder => return Some(L::Ladder),
         V::Versatile(v) => return Some(L::Versatile(v)),
         V::Uvi(u) => return Some(L::Uvi(u)),
+        V::Kontakt(_) => return None,
         V::MultiSv { mode, bandwidth } => return Some(L::Sv(crate::SvFilter::Multi { mode, bandwidth })),
         V::Sv => {
             use crate::SvFilter as S;
