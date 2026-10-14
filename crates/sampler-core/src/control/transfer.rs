@@ -47,6 +47,10 @@ pub struct ControlRequest {
 pub struct ControlReply {
     pub request: u64,
     pub behavior: Option<crate::BehaviorId>,
+    /// The first refused callback preflight in this rejected operation, captured
+    /// before subsequent audio work can change its owners. Other Capacity causes
+    /// and successful operations leave this empty.
+    pub admission_failure: Option<super::BehaviorAdmissionFailure>,
     pub command: ControlRequest,
     /// (written/captured count, coherent revision), or an explicit rejection.
     /// Capture writes only the returned prefix. Error leaves its buffer untouched.
@@ -78,6 +82,8 @@ pub(crate) struct ControlQueues {
     pending: Consumer<ControlReply>,
     replies: Producer<ControlReply>,
     retained: Option<ControlReply>,
+    record_admission: bool,
+    admission_failure: Option<super::BehaviorAdmissionFailure>,
 }
 impl ControlClient {
     #[allow(
@@ -103,6 +109,7 @@ impl ControlClient {
         match self.pending.push(ControlReply {
             request,
             behavior: None,
+            admission_failure: None,
             command,
             result: Err(Error::InvalidInput),
         }) {
@@ -137,6 +144,8 @@ impl Runtime {
             pending: incoming,
             replies,
             retained: None,
+            record_admission: false,
+            admission_failure: None,
         });
         Ok((
             self,
@@ -176,6 +185,9 @@ impl Runtime {
         let command = &mut reply.command;
         // Share ordering with direct controls and the native musical timeline.
         self.apply_due();
+        let queues = self.control_queues.as_mut().unwrap();
+        queues.admission_failure = None;
+        queues.record_admission = true;
         reply.result = match &mut command.operation {
             ControlOperation::ArrayFileCapture(output) => self
                 .capture_array_file(command.plan, output)
@@ -227,6 +239,11 @@ impl Runtime {
         };
         let request = reply.request;
         let queues = self.control_queues.as_mut().unwrap();
+        queues.record_admission = false;
+        let failure = queues.admission_failure.take();
+        if reply.result == Err(Error::Capacity) {
+            reply.admission_failure = failure;
+        }
         // A consumer only frees slots. Retain even on an unexpected queue failure
         // so neither a rejected edit nor a successful one is freed/repeated here.
         if let Err(PushError::Full(reply)) = queues.replies.push(reply) {
@@ -234,5 +251,79 @@ impl Runtime {
             return Err(ControlQueueError::Capacity);
         }
         Ok(Some(request))
+    }
+
+    /// Called only at a refused behavior-room preflight. There is no periodic
+    /// scan and no diagnostic retention outside an in-flight queued operation.
+    pub(crate) fn record_control_admission_failure(&mut self, needed: usize) {
+        if !self
+            .control_queues
+            .as_ref()
+            .is_some_and(|queues| queues.record_admission && queues.admission_failure.is_none())
+        {
+            return;
+        }
+        const SCAN_LIMIT: usize = 4096;
+        let mut failure = super::BehaviorAdmissionFailure {
+            required_callbacks: needed,
+            used: self.behaviors.count(),
+            capacity: self.behaviors.slots.len(),
+            available: self.behaviors.available(),
+            reserved: self.behaviors.reserved,
+            scanned: 0,
+            scan_truncated: false,
+            note_owned: 0,
+            plan_owned: 0,
+            waiting: 0,
+            preempted: 0,
+            terminal: 0,
+            finished: 0,
+            yielded_queue: self.yielded.len(),
+            pending_commands: self.commands.len(),
+            reserved_commands: self.reserved_commands,
+            stalled_effects: self.ops.stalled_effects,
+            outbox_used: self.ops.effects.len(),
+            outbox_capacity: crate::ops::EFFECT_CAPACITY,
+            owners: [None; 8],
+            owners_omitted: 0,
+        };
+        let mut next = self.behaviors.first;
+        while let Some(index) = next {
+            if failure.scanned == SCAN_LIMIT {
+                failure.scan_truncated = true;
+                break;
+            }
+            let slot = &self.behaviors.slots[index];
+            next = slot.next;
+            let c = slot.value.as_ref().expect("occupied callback list");
+            match c.owner {
+                crate::BehaviorOwner::Note(_) => failure.note_owned += 1,
+                crate::BehaviorOwner::Plan(_) => failure.plan_owned += 1,
+            }
+            failure.waiting += usize::from(c.waiting);
+            failure.preempted += usize::from(c.yielded_at.is_some());
+            failure.terminal += usize::from(c.outcome.is_some());
+            failure.finished += usize::from(c.outcome == Some(crate::Outcome::Finished));
+            if failure.scanned < failure.owners.len() {
+                let plan = self.behavior_plan(c.owner).expect("retained callback plan");
+                failure.owners[failure.scanned] = Some(super::BehaviorAdmissionOwner {
+                    owner: c.owner,
+                    plan,
+                    program: c.program,
+                    source_slot: self.plans.get(plan.0).unwrap().prepared.programs[c.program]
+                        .source_slot,
+                    stage: self
+                        .behavior_stage(crate::BehaviorId(self.behaviors.id(index)))
+                        .expect("retained callback stage"),
+                    pc: c.pc,
+                    waiting: c.waiting,
+                    preempted: c.yielded_at.is_some(),
+                    outcome: c.outcome,
+                });
+            }
+            failure.scanned += 1;
+        }
+        failure.owners_omitted = failure.used.saturating_sub(failure.owners.len());
+        self.control_queues.as_mut().unwrap().admission_failure = Some(failure);
     }
 }
