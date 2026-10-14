@@ -24,7 +24,9 @@ pub enum ScriptStateValue {
     Control(ControlValue),
     /// Reals retain their exact IEEE-754 bits. The source schema owns the type.
     Cell(i64),
-    Text(Text),
+    /// Index into [`ScriptStateBuffer::texts`]: texts are rare and 320 bytes,
+    /// so entries stay small (Areia keeps ~1.3M cell entries).
+    Text(u32),
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -52,6 +54,127 @@ pub struct ScriptStateCallback {
 pub struct ScriptStateBuffer {
     pub values: Vec<ScriptStateEntry>,
     pub callbacks: Vec<ScriptStateCallback>,
+    /// Text values, one slot per text entry; see [`ScriptStateValue::Text`].
+    pub texts: Vec<Text>,
+}
+
+impl ScriptStateBuffer {
+    /// A new text slot holding `text`, as a value for one text entry.
+    pub fn push_text(&mut self, text: Text) -> ScriptStateValue {
+        self.texts.push(text);
+        ScriptStateValue::Text(self.texts.len() as u32 - 1)
+    }
+
+    /// The text a [`ScriptStateValue::Text`] value names.
+    pub fn text(&self, value: ScriptStateValue) -> Option<&Text> {
+        match value {
+            ScriptStateValue::Text(slot) => self.texts.get(slot as usize),
+            _ => None,
+        }
+    }
+
+    /// Address order keeping each address's first entry (a stable sort, then
+    /// dedup). Loads emit rows mostly in order, so the sort runs only when an
+    /// entry is out of order.
+    pub fn sort_dedup(&mut self) {
+        if !self.values.is_sorted_by_key(|entry| entry.address) {
+            self.values.sort_by_key(|entry| entry.address);
+        }
+        self.values.dedup_by_key(|entry| entry.address);
+    }
+
+    /// As pushing `rows` then [`Self::sort_dedup`] (existing entries win on
+    /// an equal address), without re-sorting the ordered values or copying
+    /// them: only rows at new addresses are added, merged in place from the end.
+    /// Text rows name slots in `self.texts`. Returns the added addresses, sorted.
+    pub fn merge(&mut self, mut rows: Vec<ScriptStateEntry>) -> Vec<ScriptStateAddress> {
+        rows.sort_by_key(|entry| entry.address);
+        rows.dedup_by_key(|entry| entry.address);
+        let mut addresses = rows.iter().map(|row| row.address).collect();
+        self.merge_addresses(&mut addresses, |address, _| {
+            rows[rows
+                .binary_search_by_key(&address, |row| row.address)
+                .expect("row address")]
+            .value
+        });
+        addresses
+    }
+
+    /// As [`Self::merge`] for rows whose value follows from their address;
+    /// `value` runs once per added address and may add text slots. Leaves
+    /// only the added addresses in `addresses`.
+    pub fn merge_addresses(
+        &mut self,
+        addresses: &mut Vec<ScriptStateAddress>,
+        mut value: impl FnMut(ScriptStateAddress, &mut Vec<Text>) -> ScriptStateValue,
+    ) {
+        self.sort_dedup();
+        addresses.sort_unstable();
+        addresses.dedup();
+        addresses.retain(|address| {
+            self.values
+                .binary_search_by_key(address, |entry| entry.address)
+                .is_err()
+        });
+        let (mut old, mut new) = (self.values.len(), addresses.len());
+        self.values.reserve_exact(new);
+        // Placeholders, overwritten below: every slot past `old` is written.
+        self.values.extend(addresses.iter().map(|&address| ScriptStateEntry {
+            address,
+            value: ScriptStateValue::Cell(0),
+        }));
+        // Addresses are distinct now: fill from the back, largest first.
+        while new > 0 {
+            let write = old + new - 1;
+            if old > 0 && self.values[old - 1].address > addresses[new - 1] {
+                self.values[write] = self.values[old - 1];
+                old -= 1;
+            } else {
+                let address = addresses[new - 1];
+                self.values[write] = ScriptStateEntry {
+                    address,
+                    value: value(address, &mut self.texts),
+                };
+                new -= 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merge_matches_push_then_stable_sort_dedup() {
+        let cell = |index, value| ScriptStateEntry {
+            address: ScriptStateAddress::Cell { instance: ScriptInstanceId(0), index },
+            value: ScriptStateValue::Cell(value),
+        };
+        let base = vec![cell(1, 10), cell(3, 30), cell(5, 50)];
+        let rows = vec![cell(4, 41), cell(3, 31), cell(0, 1), cell(4, 42), cell(9, 91)];
+        let mut pushed = ScriptStateBuffer { values: base.clone(), ..Default::default() };
+        pushed.values.extend(rows.iter().copied());
+        pushed.values.sort_by_key(|entry| entry.address);
+        pushed.values.dedup_by_key(|entry| entry.address);
+        let mut merged = ScriptStateBuffer { values: base, ..Default::default() };
+        merged.merge(rows);
+        assert_eq!(merged.values, pushed.values);
+    }
+
+    /// Persistent arrays reach millions of entries; texts live in a side table.
+    #[test]
+    fn entries_stay_small() {
+        use std::mem::size_of;
+        eprintln!(
+            "SIZES address={} entry={} instruction={}",
+            size_of::<ScriptStateAddress>(),
+            size_of::<ScriptStateEntry>(),
+            size_of::<crate::Instruction>()
+        );
+        assert!(size_of::<ScriptStateAddress>() <= 24);
+        assert!(size_of::<ScriptStateEntry>() <= 40);
+    }
 }
 
 impl Runtime {
@@ -215,9 +338,25 @@ impl Runtime {
                 ScriptStateValue::Cell(self.script_cell(plan, instance, index)?)
             }
             ScriptStateAddress::Text { instance, index } => {
-                ScriptStateValue::Text(self.script_text(plan, instance, index)?)
+                self.script_text(plan, instance, index)?;
+                ScriptStateValue::Text(u32::MAX)
             }
         })
+    }
+
+    /// A text entry's value must name one of `texts`' slots.
+    fn script_state_slot(entry: &ScriptStateEntry, texts: &[Text]) -> Result<(), Error> {
+        match (entry.address, entry.value) {
+            (ScriptStateAddress::Text { .. }, ScriptStateValue::Text(slot))
+                if (slot as usize) < texts.len() =>
+            {
+                Ok(())
+            }
+            (ScriptStateAddress::Text { .. }, _) | (_, ScriptStateValue::Text(_)) => {
+                Err(Error::InvalidInput)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// One audio-owner operation captures live values and callback outcomes.
@@ -230,12 +369,18 @@ impl Runtime {
         let revision = self.control_revision(plan)?;
         for entry in &output.values {
             self.script_state_value(plan, entry.address)?;
+            Self::script_state_slot(entry, &output.texts)?;
         }
         for callback in &output.callbacks {
             self.script_state_callback_outcome(plan, callback)?;
         }
         for entry in &mut output.values {
-            entry.value = self.script_state_value(plan, entry.address)?;
+            match (entry.address, entry.value) {
+                (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(slot)) => {
+                    output.texts[slot as usize] = self.script_text(plan, instance, index)?;
+                }
+                (address, _) => entry.value = self.script_state_value(plan, address)?,
+            }
         }
         for callback in &mut output.callbacks {
             if callback.behavior.is_some() {
@@ -274,6 +419,7 @@ impl Runtime {
         next.checked_add(generation.controls.pending as u64)
             .ok_or(Error::ArithmeticOverflow)?;
         for entry in &state.values {
+            Self::script_state_slot(entry, &state.texts)?;
             let old = self.script_state_value(plan, entry.address)?;
             match (old, entry.value, entry.address) {
                 (
@@ -361,8 +507,9 @@ impl Runtime {
                     bank.cells[index as usize] = value;
                     bank.mark_captured_cell(index as usize, changed);
                 }
-                (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(value)) => {
-                    generation.scripts[usize::from(instance.0)].texts[index as usize] = value
+                (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(slot)) => {
+                    generation.scripts[usize::from(instance.0)].texts[index as usize] =
+                        state.texts[slot as usize]
                 }
                 _ => unreachable!("preflighted script-state type"),
             }

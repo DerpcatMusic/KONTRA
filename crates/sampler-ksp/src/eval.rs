@@ -6,6 +6,9 @@ use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Saved scalars and arrays by variable name.
+pub type SavedValues = (BTreeMap<String, Value>, BTreeMap<String, Vec<Value>>);
+
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
@@ -23,6 +26,11 @@ pub struct Environment {
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
+    /// A snapshot load: the instrument's own saved values (`persisted` holds the
+    /// snapshot's). Kontakt loads the instrument, runs `on persistence_changed`,
+    /// then applies the snapshot and runs it again; scripts tell the passes
+    /// apart (ANALOG STRINGS re-routes its double-buffered buses on the second).
+    pub instrument_persisted: Option<SavedValues>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
     pub engine_values: BTreeMap<[i32; 4], i32>,
@@ -38,6 +46,43 @@ pub struct Environment {
     /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
     /// empty entry is a folder the host does not have.
     pub folders: [String; 4],
+    /// Host transport values for `$DURATION_*`, `$SIGNATURE_*` and `$NI_BPM`. The
+    /// manual makes them tempo dependent, so with `None` `on init` reading one
+    /// is a fault; no fixed 120 BPM / 4/4 is invented.
+    pub transport: Option<Transport>,
+}
+
+/// Host-provided transport values, in the units of the matching KSP variables.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transport {
+    pub quarter: i32,
+    pub eighth: i32,
+    pub sixteenth: i32,
+    pub quarter_triplet: i32,
+    pub eighth_triplet: i32,
+    pub sixteenth_triplet: i32,
+    pub bar: i32,
+    pub signature_num: i32,
+    pub signature_denom: i32,
+    pub tempo: i32,
+}
+
+impl Transport {
+    /// A host with no playing transport: 120 BPM in 4/4. A loader that has no
+    /// DAW transport at load time passes this explicitly (reads are warned),
+    /// instead of every script that reads `$SIGNATURE_NUM` failing to initialize.
+    pub const STANDALONE: Self = Self {
+        quarter: 500_000,
+        eighth: 250_000,
+        sixteenth: 125_000,
+        quarter_triplet: 333_333,
+        eighth_triplet: 166_666,
+        sixteenth_triplet: 83_333,
+        bar: 2_000_000,
+        signature_num: 4,
+        signature_denom: 4,
+        tempo: 120,
+    };
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -204,6 +249,7 @@ impl V {
 }
 
 /// Initial state after `on init`.
+#[derive(Clone)]
 pub struct Initial {
     pub midi_object: sampler_core::MidiObject,
     pub cells: Vec<i64>,
@@ -245,6 +291,8 @@ struct Eval<'h, const TRACK: bool> {
     async_depth: u8,
     current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
+    /// `random()`'s stream, seeded as the runtime's.
+    random: u64,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -258,9 +306,16 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
 fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initial> {
     let mut model = model::Model::default();
     model.interface.keys = vec![Key::default(); 128];
+    // A snapshot load first runs as the instrument, with its own saved values.
+    let instrument = env.instrument_persisted.as_ref().map(|(persisted, arrays)| Environment {
+        persisted: persisted.clone(),
+        persisted_arrays: arrays.clone(),
+        instrument_persisted: None,
+        ..env.clone()
+    });
     let mut e = Eval::<TRACK> {
         hir,
-        env,
+        env: instrument.as_ref().unwrap_or(env),
         st: Initial {
             midi_object: env.midi_object.clone(),
             cells: vec![0; hir.cells as usize],
@@ -283,6 +338,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         async_depth: 0,
         current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
+        random: sampler_core::RANDOM_SEED,
     };
     #[cfg(feature = "scan")]
     crate::scan::present(
@@ -307,23 +363,30 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
-    for (i, var) in hir.vars.iter().enumerate() {
-        if !e.consumed.contains(&VarId(i as u32))
-            && (e.st.persistence[i] != Persistence::None
-                || matches!(var.home, Home::Control(_))
-                    && e.env
-                        .control_values
-                        .contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
-        {
-            e.restore(VarId(i as u32));
-        }
-    }
+    e.restore_saved(false);
     e.callback_type = b::cb::PERSISTENCE_CHANGED;
-    if let Some(cb) = hir
+    let persistence_changed = hir
         .callbacks
         .iter()
-        .find(|c| c.kind == CallbackKind::PersistenceChanged)
-    {
+        .find(|c| c.kind == CallbackKind::PersistenceChanged);
+    if instrument.is_some() {
+        // The instrument's pass runs to its end state here, waits elapsed as
+        // in init; a pass that fails leaves no trace (the single-pass load).
+        // ponytail: shares init's fuel, so a polling loop spends it before
+        // the rollback; give the pass its own budget if a library hits that.
+        if let Some(cb) = persistence_changed {
+            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone());
+            let ok = e.block(&cb.body).is_ok();
+            e.st.warnings.truncate(before.0.warnings.len());
+            if !ok {
+                (e.st, e.fuel, e.consumed, e.pending_menus) = before;
+            }
+        }
+        // Then the snapshot: every saved value, read in init or not.
+        e.env = env;
+        e.restore_saved(true);
+    }
+    if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
             e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
             #[cfg(feature = "scan")]
@@ -533,6 +596,23 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
     }
 
     /// Applies the saved value of a persistent variable, if the file has one.
+    /// Restore every persistent variable (and host-saved control) from the
+    /// environment; `all` includes those `read_persistent_var` already read.
+    fn restore_saved(&mut self, all: bool) {
+        for (i, var) in self.hir.vars.iter().enumerate() {
+            if (all || !self.consumed.contains(&VarId(i as u32)))
+                && (self.st.persistence[i] != Persistence::None
+                    || matches!(var.home, Home::Control(_))
+                        && self
+                            .env
+                            .control_values
+                            .contains_key(&crate::derived_control_id(self.env.slot, &var.name)))
+            {
+                self.restore(VarId(i as u32));
+            }
+        }
+    }
+
     fn restore(&mut self, var: VarId) {
         let v = &self.hir.vars[var.0 as usize];
         let conv = |value: &Value| match value {
@@ -671,7 +751,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 if matches!(sys, EventId | EventNote | EventVelocity | NoteHeld | CcNum) {
                     self.warn(e.span, format!("{sys:?} has no event in on init; reads 0"));
                 }
-                V::I(self.sys(*sys))
+                V::I(self.sys(*sys, e.span)?)
             }
             ExprKind::SysElem(array, i) => {
                 let i = self.expr(i)?.int();
@@ -737,26 +817,40 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         })
     }
 
-    fn sys(&self, sys: b::SysVar) -> i32 {
+    fn sys(&mut self, sys: b::SysVar, span: Span) -> Result<i32> {
         use b::SysVar::*;
-        match sys {
+        if matches!(
+            sys,
+            DurationQuarter | DurationEighth | DurationSixteenth | DurationQuarterTriplet
+                | DurationEighthTriplet | DurationSixteenthTriplet | DurationBar
+                | SignatureNum | SignatureDenom | Tempo
+        ) {
+            let Some(t) = self.env.transport else {
+                return fault(span, format!("{sys:?} depends on host transport, which `on init` does not have"));
+            };
+            self.warn(span, format!("{sys:?} read in on init takes the host transport the loader supplied"));
+            return Ok(match sys {
+                DurationQuarter => t.quarter,
+                DurationEighth => t.eighth,
+                DurationSixteenth => t.sixteenth,
+                DurationQuarterTriplet => t.quarter_triplet,
+                DurationEighthTriplet => t.eighth_triplet,
+                DurationSixteenthTriplet => t.sixteenth_triplet,
+                DurationBar => t.bar,
+                SignatureNum => t.signature_num,
+                SignatureDenom => t.signature_denom,
+                _ => t.tempo,
+            });
+        }
+        Ok(match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
             AsyncId => self.async_result.map_or(0, |v| v.0),
             AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
-            DurationQuarter => 500_000,
-            DurationEighth => 250_000,
-            DurationSixteenth => 125_000,
-            DurationQuarterTriplet => 333_333,
-            DurationEighthTriplet => 166_666,
-            DurationSixteenthTriplet => 83_333,
-            DurationBar => 2_000_000,
-            SignatureNum | SignatureDenom => 4,
-            Tempo => 120,
             NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
-        }
+        })
     }
 
     fn arg(&mut self, args: &[Arg], i: usize) -> Result<V> {
@@ -1133,10 +1227,11 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (a, n) = (self.int(args, 0)?, self.int(args, 1)?);
                 V::I(a.wrapping_shr(n as u32))
             }
+            // The documented range law with the runtime's own stream: Kontakt's seed is
+            // unproved, and any value in range is one it may draw.
             Random => {
-                // Deterministic during init; scripts only see an in-range value.
-                let (lo, hi) = (self.int(args, 0)?, self.int(args, 1)?);
-                V::I(lo.min(hi))
+                let (a, b) = (self.int(args, 0)?, self.int(args, 1)?);
+                V::I(sampler_core::random(&mut self.random, a, b) as i32)
             }
             IntToReal | Real => V::R(f64::from(self.int(args, 0)?)),
             RealToInt | Int => V::I(real_to_int(self.arg(args, 0)?.real())),

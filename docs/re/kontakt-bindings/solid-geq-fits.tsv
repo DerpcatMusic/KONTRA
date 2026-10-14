@@ -1,0 +1,149 @@
+run	step	name	kind	fit_f0_hz	fit_gain_db	fit_q	fit_rms_db	table_f0_hz	table_gain_db	table_gain_bank16_db	table_q
+dlf	1	LF dense freq=0 gain=max	low	133.8	13.11	0.605	0.175	40.4	20.50	20.50	nan
+dlf	2	LF dense freq=100000 gain=max	low	144.3	13.77	0.607	0.200	44.6	20.50	20.50	nan
+dlf	3	LF dense freq=200000 gain=max	low	164.7	15.39	0.606	0.251	63.4	20.50	20.50	nan
+dlf	4	LF dense freq=300000 gain=max	low	226.3	17.08	0.630	0.390	101.4	20.50	20.50	nan
+dlf	5	LF dense freq=400000 gain=max	low	282.9	18.21	0.644	0.495	140.2	20.50	20.50	nan
+dlf	6	LF dense freq=500000 gain=max	low	334.8	18.62	0.664	0.555	183.7	20.50	20.50	nan
+dlf	7	LF dense freq=600000 gain=max	low	432.0	18.70	0.701	0.664	245.2	20.50	20.50	nan
+dlf	8	LF dense freq=700000 gain=max	low	566.9	19.23	0.718	0.793	351.6	20.50	20.50	nan
+dlf	9	LF dense freq=800000 gain=max	low	726.7	19.22	0.747	0.974	513.3	20.50	20.50	nan
+dlf	10	LF dense freq=900000 gain=max	low	805.7	19.18	0.742	0.973	614.7	20.50	20.50	nan
+dlf	11	LF dense freq=1000000 gain=max	low	859.0	19.17	0.749	0.990	697.3	20.50	20.50	nan
+dlf	12	LF dense gain=0 freq=mid	low	333.5	-18.76	0.658	0.529	183.7	-20.50	-20.50	nan
+dlf	13	LF dense gain=100000 freq=mid	low	366.4	-14.42	0.682	0.464	183.7	-18.00	-18.00	nan
+dlf	14	LF dense gain=200000 freq=mid	low	393.8	-9.86	0.700	0.346	183.7	-11.00	-11.00	nan
+dlf	15	LF dense gain=300000 freq=mid	low	408.7	-5.84	0.694	0.194	183.7	-6.00	-6.00	nan
+dlf	16	LF dense gain=400000 freq=mid	low	428.7	-2.18	0.753	0.094	183.7	-2.00	-2.00	nan
+dlf	18	LF dense gain=600000 freq=mid	low	435.3	2.07	0.799	0.121	183.7	2.00	2.00	nan
+dlf	19	LF dense gain=700000 freq=mid	low	411.7	5.72	0.712	0.221	183.7	6.00	6.00	nan
+dlf	20	LF dense gain=800000 freq=mid	low	395.8	9.74	0.711	0.373	183.7	11.00	11.00	nan
+dlf	21	LF dense gain=900000 freq=mid	low	368.0	14.29	0.690	0.491	183.7	18.00	18.00	nan
+dlf	22	LF dense gain=1000000 freq=mid	low	334.8	18.62	0.664	0.555	183.7	20.50	20.50	nan
+dlf	23	LF dense bell freq=0 gain=max	peak	40.5	19.47	1.090	0.024	40.4	20.50	20.50	nan
+dlf	24	LF dense bell freq=250000 gain=max	peak	81.1	19.14	1.087	0.023	81.1	20.50	20.50	nan
+dlf	25	LF dense bell freq=500000 gain=max	peak	183.7	18.65	1.087	0.021	183.7	20.50	20.50	nan
+dlf	26	LF dense bell freq=750000 gain=max	peak	433.3	18.99	1.084	0.012	433.3	20.50	20.50	nan
+dlf	27	LF dense bell freq=1000000 gain=max	peak	697.5	18.87	1.081	0.004	697.3	20.50	20.50	nan
+dlf	28	LF dense bell gain=0 freq=mid	peak	183.7	-18.65	1.072	0.025	183.7	-20.50	-20.50	nan
+dlf	29	LF dense bell gain=250000 freq=mid	peak	170.7	-7.12	0.701	0.024	183.7	-8.23	-8.23	nan
+dlf	30	LF dense bell gain=750000 freq=mid	peak	170.6	7.09	0.719	0.022	183.7	8.21	8.21	nan
+dlf	31	LF dense bell gain=1000000 freq=mid	peak	183.7	18.65	1.087	0.021	183.7	20.50	20.50	nan
+dlf	32	LMF dense freq=0 gain=max	peak	223.0	21.16	0.400	0.002	223.0	19.50	19.50	0.400
+dlf	33	LMF dense freq=100000 gain=max	peak	239.0	21.09	0.400	0.005	239.0	19.50	19.50	0.400
+dlf	34	LMF dense freq=200000 gain=max	peak	323.1	20.70	0.399	0.023	323.0	19.50	19.50	0.400
+dlf	35	LMF dense freq=300000 gain=max	peak	494.3	19.99	0.395	0.065	494.0	19.50	19.50	0.400
+dlf	36	LMF dense freq=400000 gain=max	peak	668.8	19.90	0.391	0.118	668.0	19.50	19.50	0.400
+dlf	37	LMF dense freq=500000 gain=max	peak	810.5	19.88	0.388	0.166	809.0	19.50	19.50	0.400
+dlf	38	LMF dense freq=600000 gain=max	peak	1053.2	19.86	0.381	0.251	1050.0	19.50	19.50	0.400
+dlf	39	LMF dense freq=700000 gain=max	peak	1487.9	19.61	0.369	0.391	1479.0	19.50	19.50	0.400
+dlf	40	LMF dense freq=800000 gain=max	peak	1858.0	19.79	0.360	0.505	1841.0	19.50	19.50	0.400
+dlf	41	LMF dense freq=900000 gain=max	peak	2107.3	19.69	0.354	0.561	2083.0	19.50	19.50	0.400
+dlf	42	LMF dense freq=1000000 gain=max	peak	2228.4	19.65	0.351	0.585	2200.0	19.50	19.50	0.400
+dlf	43	LMF dense gain=0 freq=mid	peak	810.5	-19.91	0.384	0.195	809.0	-19.50	-19.50	0.400
+dlf	44	LMF dense gain=100000 freq=mid	peak	798.8	-16.66	0.331	0.176	809.0	-16.00	-16.00	0.400
+dlf	45	LMF dense gain=200000 freq=mid	peak	788.1	-10.17	0.252	0.130	809.0	-10.00	-10.00	0.400
+dlf	46	LMF dense gain=300000 freq=mid	peak	765.3	-5.55	0.222	0.080	809.0	-5.30	-5.30	0.400
+dlf	47	LMF dense gain=400000 freq=mid	peak	754.0	-1.86	0.217	0.035	809.0	-2.00	-2.00	0.400
+dlf	49	LMF dense gain=600000 freq=mid	peak	753.6	1.84	0.233	0.006	809.0	2.00	2.00	0.400
+dlf	50	LMF dense gain=700000 freq=mid	peak	765.3	5.53	0.227	0.051	809.0	5.30	5.30	0.400
+dlf	51	LMF dense gain=800000 freq=mid	peak	788.0	10.15	0.256	0.101	809.0	10.00	10.00	0.400
+dlf	52	LMF dense gain=900000 freq=mid	peak	798.7	16.64	0.334	0.147	809.0	16.00	16.00	0.400
+dlf	53	LMF dense gain=1000000 freq=mid	peak	810.5	19.88	0.388	0.166	809.0	19.50	19.50	0.400
+dlf	54	LMF dense q=0 gain=max	peak	809.5	20.26	0.642	0.068	809.0	19.50	19.50	0.650
+dlf	55	LMF dense q=100000 gain=max	peak	809.6	20.25	0.612	0.076	809.0	19.50	19.50	0.620
+dlf	56	LMF dense q=200000 gain=max	peak	809.7	20.17	0.571	0.086	809.0	19.50	19.50	0.580
+dlf	57	LMF dense q=300000 gain=max	peak	809.9	20.06	0.490	0.114	809.0	19.50	19.50	0.500
+dlf	58	LMF dense q=400000 gain=max	peak	810.1	19.92	0.439	0.136	809.0	19.50	19.50	0.450
+dlf	59	LMF dense q=500000 gain=max	peak	810.5	19.88	0.388	0.166	809.0	19.50	19.50	0.400
+dlf	60	LMF dense q=600000 gain=max	peak	810.7	19.81	0.357	0.188	809.0	19.50	19.50	0.370
+dlf	61	LMF dense q=700000 gain=max	peak	811.6	19.95	0.285	0.264	809.0	19.50	19.50	0.300
+dlf	62	LMF dense q=800000 gain=max	peak	812.7	19.96	0.233	0.341	809.0	19.50	19.50	0.250
+dlf	63	LMF dense q=900000 gain=max	peak	814.2	20.27	0.192	0.435	809.0	19.50	19.50	0.210
+dlf	64	LMF dense q=1000000 gain=max	peak	814.8	20.28	0.182	0.460	809.0	19.50	19.50	0.200
+dlf	65	LMF cross q=0 gain=100000	peak	797.6	-16.98	0.548	0.093	809.0	-16.00	-16.00	0.650
+dlf	66	LMF cross q=0 gain=300000	peak	763.0	-5.66	0.368	0.048	809.0	-5.30	-5.30	0.650
+dlf	67	LMF cross q=0 gain=700000	peak	763.0	5.64	0.378	0.013	809.0	5.30	5.30	0.650
+dlf	68	LMF cross q=0 gain=900000	peak	797.6	16.96	0.554	0.059	809.0	16.00	16.00	0.650
+dlf	69	LMF cross q=500000 gain=100000	peak	798.8	-16.66	0.331	0.176	809.0	-16.00	-16.00	0.400
+dlf	70	LMF cross q=500000 gain=300000	peak	765.3	-5.55	0.222	0.080	809.0	-5.30	-5.30	0.400
+dlf	71	LMF cross q=500000 gain=700000	peak	765.3	5.53	0.227	0.051	809.0	5.30	5.30	0.400
+dlf	72	LMF cross q=500000 gain=900000	peak	798.7	16.64	0.334	0.147	809.0	16.00	16.00	0.400
+dlf	73	LMF cross q=1000000 gain=100000	peak	804.7	-16.98	0.155	0.428	809.0	-16.00	-16.00	0.200
+dlf	74	LMF cross q=1000000 gain=300000	peak	775.3	-5.64	0.103	0.177	809.0	-5.30	-5.30	0.200
+dlf	75	LMF cross q=1000000 gain=700000	peak	776.0	5.62	0.105	0.159	809.0	5.30	5.30	0.200
+dlf	76	LMF cross q=1000000 gain=900000	peak	804.3	16.95	0.156	0.410	809.0	16.00	16.00	0.200
+dhf	1	HMF dense freq=0 gain=max	peak	693.3	19.76	0.403	0.118	692.5	21.50	21.50	0.400
+dhf	2	HMF dense freq=100000 gain=max	peak	731.7	19.55	0.402	0.127	730.7	21.50	21.50	0.400
+dhf	3	HMF dense freq=200000 gain=max	peak	1025.3	19.50	0.395	0.222	1022.5	21.50	21.50	0.400
+dhf	4	HMF dense freq=300000 gain=max	peak	1625.5	19.81	0.380	0.423	1614.7	21.50	21.50	0.400
+dhf	5	HMF dense freq=400000 gain=max	peak	2136.1	19.54	0.369	0.544	2112.5	21.50	21.50	0.400
+dhf	6	HMF dense freq=500000 gain=max	peak	2662.1	19.61	0.359	0.640	2619.3	21.50	21.50	0.400
+dhf	7	HMF dense freq=600000 gain=max	peak	3369.6	19.38	0.348	0.700	3291.5	21.50	21.50	0.400
+dhf	8	HMF dense freq=700000 gain=max	peak	4666.0	19.65	0.415	0.919	4544.3	21.50	21.50	0.400
+dhf	9	HMF dense freq=800000 gain=max	peak	62.3	-24.83	0.713	12.433	5634.4	21.50	21.50	0.400
+dhf	10	HMF dense freq=900000 gain=max	peak	6540.9	19.36	0.440	1.508	6444.7	21.50	21.50	0.400
+dhf	11	HMF dense freq=1000000 gain=max	peak	6957.5	19.29	0.436	1.175	6892.6	21.50	21.50	0.400
+dhf	12	HMF dense gain=0 freq=mid	peak	2662.3	-19.65	0.357	0.651	2619.3	-21.50	-21.50	0.400
+dhf	13	HMF dense gain=100000 freq=mid	peak	2657.3	-17.17	0.316	0.597	2619.3	-18.00	-18.00	0.400
+dhf	14	HMF dense gain=200000 freq=mid	peak	2662.1	-10.77	0.258	0.406	2619.3	-11.00	-9.20	0.400
+dhf	15	HMF dense gain=300000 freq=mid	peak	2640.5	-5.88	0.235	0.230	2619.3	-6.00	-5.00	0.400
+dhf	16	HMF dense gain=400000 freq=mid	peak	2568.2	-1.97	0.233	0.079	2619.3	-2.00	-1.80	0.400
+dhf	18	HMF dense gain=600000 freq=mid	peak	2565.7	1.94	0.244	0.067	2619.3	2.00	1.80	0.400
+dhf	19	HMF dense gain=700000 freq=mid	peak	2639.7	5.85	0.238	0.218	2619.3	6.00	5.00	0.400
+dhf	20	HMF dense gain=800000 freq=mid	peak	2661.7	10.74	0.260	0.395	2619.3	11.00	9.20	0.400
+dhf	21	HMF dense gain=900000 freq=mid	peak	2657.1	17.13	0.318	0.587	2619.3	18.00	18.00	0.400
+dhf	22	HMF dense gain=1000000 freq=mid	peak	2662.1	19.61	0.359	0.640	2619.3	21.50	21.50	0.400
+dhf	23	HMF dense q=0 gain=max	peak	2637.3	19.93	0.600	0.436	2619.3	21.50	21.50	0.650
+dhf	24	HMF dense q=100000 gain=max	peak	2638.8	19.90	0.573	0.455	2619.3	21.50	21.50	0.620
+dhf	25	HMF dense q=200000 gain=max	peak	2642.5	19.89	0.519	0.499	2619.3	21.50	21.50	0.580
+dhf	26	HMF dense q=300000 gain=max	peak	2648.7	19.77	0.452	0.555	2619.3	21.50	21.50	0.500
+dhf	27	HMF dense q=400000 gain=max	peak	2653.6	19.65	0.412	0.588	2619.3	21.50	21.50	0.450
+dhf	28	HMF dense q=500000 gain=max	peak	2662.1	19.61	0.359	0.640	2619.3	21.50	21.50	0.400
+dhf	29	HMF dense q=600000 gain=max	peak	2670.6	19.54	0.319	0.676	2619.3	21.50	21.50	0.370
+dhf	30	HMF dense q=700000 gain=max	peak	2682.5	19.64	0.280	0.600	2619.3	21.50	21.50	0.310
+dhf	31	HMF dense q=800000 gain=max	peak	2685.9	19.96	0.262	0.444	2619.3	21.50	21.50	0.260
+dhf	32	HMF dense q=900000 gain=max	peak	2670.5	20.20	0.238	0.661	2619.3	21.50	21.50	0.220
+dhf	33	HMF dense q=1000000 gain=max	peak	2667.7	20.23	0.239	0.661	2619.3	21.50	21.50	0.220
+dhf	34	HMF cross q=0 gain=100000	peak	2627.0	-17.44	0.523	0.425	2619.3	-18.00	-18.00	0.650
+dhf	35	HMF cross q=0 gain=300000	peak	2590.8	-5.97	0.379	0.170	2619.3	-6.00	-5.00	0.650
+dhf	36	HMF cross q=0 gain=700000	peak	2590.2	5.95	0.386	0.152	2619.3	6.00	5.00	0.650
+dhf	37	HMF cross q=0 gain=900000	peak	2626.9	17.41	0.527	0.407	2619.3	18.00	18.00	0.650
+dhf	38	HMF cross q=500000 gain=100000	peak	2657.3	-17.17	0.316	0.597	2619.3	-18.00	-18.00	0.400
+dhf	39	HMF cross q=500000 gain=300000	peak	2640.5	-5.88	0.235	0.230	2619.3	-6.00	-5.00	0.400
+dhf	40	HMF cross q=500000 gain=700000	peak	2639.7	5.85	0.238	0.218	2619.3	6.00	5.00	0.400
+dhf	41	HMF cross q=500000 gain=900000	peak	2657.1	17.13	0.318	0.587	2619.3	18.00	18.00	0.400
+dhf	42	HMF cross q=1000000 gain=100000	peak	2733.3	-17.70	0.158	0.663	2619.3	-18.00	-18.00	0.220
+dhf	43	HMF cross q=1000000 gain=300000	peak	2748.7	-6.09	0.121	0.223	2619.3	-6.00	-5.00	0.220
+dhf	44	HMF cross q=1000000 gain=700000	peak	2749.1	6.05	0.122	0.219	2619.3	6.00	5.00	0.220
+dhf	45	HMF cross q=1000000 gain=900000	peak	2698.6	17.52	0.201	0.476	2619.3	18.00	18.00	0.220
+dhf	46	HF dense freq=0 gain=max	high	33.5	12.78	1.377	0.698	1539.0	20.00	20.00	nan
+dhf	47	HF dense freq=100000 gain=max	high	31.5	12.92	1.183	0.571	1710.0	20.00	20.00	nan
+dhf	48	HF dense freq=200000 gain=max	high	11.9	12.81	0.227	0.299	2400.0	20.00	20.00	nan
+dhf	49	HF dense freq=300000 gain=max	high	307.5	13.16	0.101	0.237	3980.0	20.00	20.00	nan
+dhf	50	HF dense freq=400000 gain=max	high	2668.4	13.44	0.419	0.350	5460.0	20.00	20.00	nan
+dhf	51	HF dense freq=500000 gain=max	high	4419.4	13.19	0.578	1.135	6820.0	20.00	20.00	nan
+dhf	52	HF dense freq=600000 gain=max	high	20698.8	-33.33	7.274	8.365	9160.0	20.00	20.00	nan
+dhf	53	HF dense freq=700000 gain=max	high	8263.5	12.97	0.734	1.661	13100.0	20.00	20.00	nan
+dhf	54	HF dense freq=800000 gain=max	high	9980.5	13.86	0.697	0.637	17813.0	20.00	20.00	nan
+dhf	55	HF dense freq=900000 gain=max	high	11022.7	14.63	0.671	0.627	21000.0	20.00	20.00	nan
+dhf	56	HF dense freq=1000000 gain=max	high	11545.7	15.09	0.655	0.737	21800.0	20.00	20.00	nan
+dhf	57	HF dense gain=0 freq=mid	high	3782.1	-19.74	0.504	0.479	6820.0	-20.00	-20.00	nan
+dhf	58	HF dense gain=100000 freq=mid	high	3404.2	-17.80	0.520	0.429	6820.0	-17.50	-16.80	nan
+dhf	59	HF dense gain=200000 freq=mid	high	2672.8	-10.89	0.573	0.320	6820.0	-11.00	-9.00	nan
+dhf	60	HF dense gain=300000 freq=mid	high	2403.1	-5.95	0.599	0.193	6820.0	-6.00	-4.50	nan
+dhf	61	HF dense gain=400000 freq=mid	high	2395.0	-2.00	0.605	0.068	6820.0	-2.00	-1.80	nan
+dhf	63	HF dense gain=600000 freq=mid	high	2443.1	1.95	0.613	0.077	6820.0	2.00	1.80	nan
+dhf	64	HF dense gain=700000 freq=mid	high	2419.8	5.90	0.602	0.202	6820.0	6.00	4.50	nan
+dhf	65	HF dense gain=800000 freq=mid	high	3011.6	9.87	0.658	1.088	6820.0	11.00	9.00	nan
+dhf	66	HF dense gain=900000 freq=mid	high	3252.2	13.30	0.461	0.182	6820.0	17.50	16.80	nan
+dhf	67	HF dense gain=1000000 freq=mid	high	4419.4	13.19	0.578	1.135	6820.0	20.00	20.00	nan
+dhf	68	HF dense bell freq=0 gain=max	peak	1540.1	20.41	1.185	0.075	1539.0	20.00	20.00	nan
+dhf	69	HF dense bell freq=250000 gain=max	peak	3139.1	22.05	1.187	0.284	3130.8	20.00	20.00	nan
+dhf	70	HF dense bell freq=500000 gain=max	peak	6889.9	23.04	1.073	0.643	6820.0	20.00	20.00	nan
+dhf	71	HF dense bell freq=750000 gain=max	peak	100.5	-27.03	0.223	12.386	15496.8	20.00	20.00	nan
+dhf	72	HF dense bell freq=1000000 gain=max	peak	17895.5	13.88	0.708	1.448	21800.0	20.00	20.00	nan
+dhf	73	HF dense bell gain=0 freq=mid	peak	6890.0	-23.08	1.067	0.650	6820.0	-20.00	-20.00	nan
+dhf	74	HF dense bell gain=250000 freq=mid	peak	6857.9	-9.23	0.630	0.322	6820.0	-8.28	-6.29	nan
+dhf	75	HF dense bell gain=750000 freq=mid	peak	6856.4	9.18	0.636	0.314	6820.0	8.26	6.27	nan
+dhf	76	HF dense bell gain=1000000 freq=mid	peak	6889.9	23.04	1.073	0.643	6820.0	20.00	20.00	nan

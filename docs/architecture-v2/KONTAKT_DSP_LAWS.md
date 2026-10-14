@@ -141,8 +141,16 @@ counter cases establish state transitions, not the host's audio tail metadata.
 coefficient generator `0x1409591c0`, update mask 7 (225 cases);
 all eight partial-update masks (24 cases); one-band scalar sample kernel and
 local reset (32 cases); one-band wrapper control cadence (9 sequences).
-**Open:** optimized SIMD kernel, multi-band sample/control paths, modulation
-buffer cadence, initial dirty-state handling, full reset, host latency and tail. This is not Solid or Pro EQ.
+**Wrapper lifecycle (decompiled `0x140918420`, constants by radare2):** the
+dirty flag `+0x1a1` snaps current cutoff/gain to target and generates
+coefficients once. A band with no modulation buffer whose cutoff and gain are
+within 1e-4 / 1e-5 (f64 compare of the f32 difference) of target runs the
+whole call on held coefficients with the 32-frame countdown frozen. With a
+modulation buffer (`+0x308` cutoff, `+0x310` bandwidth, `+0x318` gain) the
+call is chunked at the countdown; on reload the cutoff snaps to the buffer
+value, bandwidth applies and gain becomes the smoothing target. Smoothing
+(×0.01) steps only while either control is outside its threshold.
+**Open:** optimized SIMD kernel, multi-band sample paths. This is not Solid or Pro EQ.
 
 The normalized frequency conversion uses a float-bit logarithm approximation.
 Define u = clamp(F(F(hz − 20) × F(0.000050050050049321726)),0,1),

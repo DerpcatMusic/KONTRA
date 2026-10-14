@@ -40,6 +40,18 @@ pub const BUSES: usize = 16;
 /// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
 pub use crate::plugin::automation_ids::HOST_AUTOMATION_SLOTS;
+/// A host automation slot's route into one control, from the plan's bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostBinding {
+    pub address: u16,
+    /// The bound widget and its control, in UI IR identities.
+    pub widget: sampler_ui_ir::ControlId,
+    pub control: sampler_ui_ir::ControlId,
+    /// The normalized window the host value is mapped through.
+    pub low: f64,
+    pub high: f64,
+    pub domain: sampler_core::ControlDomain,
+}
 /// How far a part tunes, in semitones either way.
 pub const TUNE_RANGE: f32 = 36.0;
 /// One stereo block: `[left, right]`.
@@ -258,6 +270,9 @@ pub struct KeyLook {
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
+    /// The resolved instrument owning these resources, including when the
+    /// selected preset is a snapshot rather than an instrument file.
+    pub resource_path: Option<std::path::PathBuf>,
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
     pub uvi_revision: u64,
     pub uvi_source: Option<(String, u32, String)>,

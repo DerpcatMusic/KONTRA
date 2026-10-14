@@ -1,0 +1,356 @@
+id	file:line	native_thing	verdict
+CORE-EFFECTS-001	crates/sampler-core/src/dsp/enhanced_compressor.rs:6-75	Enhanced compressor mode 1 detector/envelope	PROVED
+CORE-EFFECTS-002	crates/sampler-core/src/dsp/compressor.rs:6-15,120-160	Classic compressor mode 0	UNPROVEN
+CORE-EFFECTS-003	crates/sampler-core/src/dsp.rs:536-539; crates/sampler-core/src/dsp/compressor.rs:120-249	Pro compressor mode 2	DEBUNKED
+CORE-EFFECTS-004	crates/sampler-core/src/dsp/lofi.rs:18-24,58-69	LoFi quantizer	DEBUNKED
+CORE-EFFECTS-005	crates/sampler-core/src/dsp/lofi.rs:18-27,50-64	LoFi sample hold cadence	DEBUNKED
+CORE-EFFECTS-006	crates/sampler-core/src/dsp/lofi.rs:27-39,50-88	LoFi noise generator/color	DEBUNKED
+CORE-EFFECTS-007	crates/sampler-core/src/dsp.rs:1256-1258; crates/sampler-core/src/dsp/lofi.rs:18-39	Live LoFi control timing	UNPROVEN
+CORE-EFFECTS-008	crates/sampler-core/src/dsp/distortion.rs:4-52,128-195	Tube/transistor distortion transfer	PROVED
+CORE-EFFECTS-009	crates/sampler-core/src/dsp/distortion.rs:55-125,168-195	Distortion damping/DC filters	UNPROVEN
+CORE-EFFECTS-010	crates/sampler-core/src/dsp/distortion.rs:274-323	Live distortion modulation cadence	UNPROVEN
+CORE-EFFECTS-011	crates/sampler-core/src/dsp/phaser.rs:55-145	Legacy phaser four allpass core	PROVED
+CORE-EFFECTS-012	crates/sampler-core/src/dsp/phaser.rs:97-108	Legacy phaser tempo sync	PROVED
+CORE-EFFECTS-013	crates/sampler-core/src/dsp/phaser.rs:1-51	Filter Phaser mapping	PROVED
+CORE-EFFECTS-014	crates/sampler-core/src/dsp/stereo.rs:98-133	Stereo Modeller matrix	PROVED
+CORE-EFFECTS-015	crates/sampler-core/src/dsp/stereo.rs:65-95,107-120	Stereo Modeller width/pan slew	PROVED
+CORE-EFFECTS-016	crates/sampler-core/src/dsp/stereo.rs:47-95	Stereo pseudo delay	PROVED
+CORE-EFFECTS-017	crates/sampler-core/src/dsp.rs:600-604; crates/sampler-core/src/dsp/reverb.rs:9-18,121-149,206-255	Reverb modern Galois lowering	UNPROVEN
+CORE-EFFECTS-018	crates/sampler-core/src/dsp/reverb.rs:1-4,121-149	Legacy Reverb identity	UNPROVEN
+CORE-EFFECTS-019	crates/sampler-core/src/dsp/reverb.rs:59-64,121-146	Reverb predelay/tail contract	UNPROVEN
+CORE-EFFECTS-020	crates/sampler-core/src/dsp/convolution.rs:1-25,231-285	Convolution direct/FFT topology	UNPROVEN
+CORE-EFFECTS-021	crates/sampler-core/src/dsp/convolution.rs:347-377	Convolution dry/wet order	UNPROVEN
+CORE-EFFECTS-022	crates/sampler-core/src/dsp/convolution.rs:316-377	Convolution auto-gain/IR preparation	UNPROVEN
+CORE-EFFECTS-023	crates/sampler-core/src/dsp/delay.rs:4-85	Delay recurrence/mix	UNPROVEN
+CORE-EFFECTS-024	crates/sampler-core/src/dsp.rs:584-588,1320-1335; crates/sampler-core/src/dsp/kernels.rs:23-26	Gainer smoothing	PROVED
+CORE-EFFECTS-025	crates/sampler-core/src/dsp/shaping.rs:28-47	WaveShaper rectifier	PROVED
+CORE-EFFECTS-026	crates/sampler-core/src/dsp/shaping.rs:7-26; crates/sampler-core/src/dsp.rs:1313-1318	Classic saturation curve	UNPROVEN
+CORE-EFFECTS-027	crates/sampler-core/src/dsp/shaping.rs:52-89	Formant Crusher decimator	UNPROVEN
+CORE-EFFECTS-028	crates/sampler-core/src/dsp/control.rs:165-220	Live control ramp	UNPROVEN
+CORE-EFFECTS-029	crates/sampler-core/src/dsp.rs:1125-1191; crates/sampler-core/src/dsp/kernels.rs:28-36	Generic Mix bypass	UNPROVEN
+CORE-EFFECTS-030	crates/sampler-core/src/dsp.rs:513-515,600-608,1197-1229	Bus-only Reverb/Convolution placement	UNPROVEN
+CORE-EFFECTS-031	crates/sampler-core/src/dsp/taps.rs:17-43,100-147	Voice send tap position/gain	UNPROVEN
+CORE-EFFECTS-032	crates/sampler-core/src/dsp/lanes.rs:272-294	Lane batching exclusions	UNPROVEN
+CORE-EFFECTS-033	crates/sampler-core/src/dsp/live.rs:1-5,30-149	LiveFilter shape dispatch	UNPROVEN
+CORE-EFFECTS-034	crates/sampler-core/src/dsp/live.rs:165-182; crates/sampler-core/src/dsp.rs:1371-1372	Live control matrix	UNPROVEN
+CORE-EFFECTS-035	crates/sampler-uvi/src/inserts.rs:142-160,224-246,376-447; crates/sampler-core/src/dsp.rs:5-18,53-151	UVI scripted OnePole/DigitalEq/ThreeBand mapping	UNPROVEN
+CORE-FILTERS-001	crates/sampler-core/src/dsp/ar.rs:18	AR mode domain	PROVED
+CORE-FILTERS-002	crates/sampler-core/src/dsp/ar.rs:19-24	AR cutoff/resonance normalized domain	PROVED
+CORE-FILTERS-003	crates/sampler-core/src/dsp/ar.rs:6,138-145	AR control cadence	PROVED
+CORE-FILTERS-004	crates/sampler-core/src/dsp/ar.rs:33	AR ramp duration	PROVED
+CORE-FILTERS-005	crates/sampler-core/src/dsp/ar.rs:56-66	AR tiny-step snapping	PROVED
+CORE-FILTERS-006	crates/sampler-core/src/dsp/ar.rs:68-75	AR pending target priority	PROVED
+CORE-FILTERS-007	crates/sampler-core/src/dsp/ar.rs:110-135	AR worker state layout	PROVED
+CORE-FILTERS-008	crates/sampler-core/src/dsp/ar.rs:146-163	AR enabled modulation re-request	PROVED
+CORE-FILTERS-009	crates/sampler-core/src/dsp/ar.rs:174-179	AR static/ramping dispatch	PROVED
+CORE-FILTERS-010	crates/sampler-core/src/dsp/ar_kernel.rs:6-18	AR exponential lookup table	PROVED
+CORE-FILTERS-011	crates/sampler-core/src/dsp/ar_kernel.rs:21-33	AR signed second Hz lookup guard	PROVED
+CORE-FILTERS-012	crates/sampler-core/src/dsp/ar_kernel.rs:35-45	AR cutoff law and pole coefficient	PROVED
+CORE-FILTERS-013	crates/sampler-core/src/dsp/ar_kernel.rs:48-50	AR state clamp and soft saturation	PROVED
+CORE-FILTERS-014	crates/sampler-core/src/dsp/ar_kernel.rs:69-84	AR section topology and output weights	PROVED
+CORE-FILTERS-015	crates/sampler-core/src/dsp/ar_kernel.rs:97-116	AR topology-family constants	PROVED
+CORE-FILTERS-016	crates/sampler-core/src/dsp/ar_kernel.rs:141-150	AR shared stereo detector	PROVED
+CORE-FILTERS-017	crates/sampler-core/src/dsp/ar_kernel.rs:153-159	AR adaptive cap during ramps	PROVED
+CORE-FILTERS-018	crates/sampler-core/src/dsp/ar_kernel.rs:160-165	AR adaptation/feedback level law	PROVED
+CORE-FILTERS-019	crates/sampler-core/src/dsp/ar_kernel.rs:1-3,86-167	AR complete native-kernel equivalence	UNPROVEN
+CORE-FILTERS-020	crates/sampler-core/src/dsp/daft.rs:53-57,106-113	Daft normalized parameter admission	PROVED
+CORE-FILTERS-021	crates/sampler-core/src/dsp/daft.rs:109	Daft leading-gain law	PROVED
+CORE-FILTERS-022	crates/sampler-core/src/dsp/daft.rs:110	Daft cutoff law	PROVED
+CORE-FILTERS-023	crates/sampler-core/src/dsp/daft.rs:111	Daft resonance law	PROVED
+CORE-FILTERS-024	crates/sampler-core/src/dsp/daft.rs:112	Daft response mode law	PROVED
+CORE-FILTERS-025	crates/sampler-core/src/dsp/daft.rs:62-65	Daft doubled processing rate and ramp length	PROVED
+CORE-FILTERS-026	crates/sampler-core/src/dsp/daft.rs:193-200	Daft absolute 32-frame control cadence	PROVED
+CORE-FILTERS-027	crates/sampler-core/src/dsp/daft.rs:166-179	Daft four-lane ramp law	PROVED
+CORE-FILTERS-028	crates/sampler-core/src/dsp/daft.rs:116-127	Daft feedback scale law	PROVED
+CORE-FILTERS-029	crates/sampler-core/src/dsp/daft.rs:228-235	Daft saturation law	UNPROVEN
+CORE-FILTERS-030	crates/sampler-core/src/dsp/daft.rs:130-218	Daft complete audio-kernel equivalence	UNPROVEN
+CORE-FILTERS-031	crates/sampler-core/src/dsp/daft.rs:202-218	Daft resampling/interpolation mapping	UNPROVEN
+CORE-FILTERS-032	crates/sampler-core/src/dsp/eq.rs:1-3,13-27	PeakingEq native frequency law	DEBUNKED
+CORE-FILTERS-033	crates/sampler-core/src/dsp/eq.rs:29-51	PeakingEq displayed bandwidth law (parameter-only)	PROVED
+CORE-FILTERS-034	crates/sampler-core/src/dsp/eq.rs:21-22,94-104	PeakingEq claimed native state/coeff topology identity	DEBUNKED
+CORE-FILTERS-035	crates/sampler-core/src/dsp/eq.rs:193-200	PeakingEq scalar/SIMD kernel equivalence	UNPROVEN
+CORE-FILTERS-036	crates/sampler-core/src/dsp/eq.rs:114-118	PeakingEq flat-band bypass/state suspension	UNPROVEN
+CORE-FILTERS-037	crates/sampler-core/src/dsp/eq.rs:153-183	PeakingEq live per-frame retune	UNPROVEN
+CORE-FILTERS-038	crates/sampler-core/src/dsp/formant.rs:7-20	Formant I native frequency/radius/amplitude tables	PROVED
+CORE-FILTERS-039	crates/sampler-core/src/dsp/formant.rs:29-35	Formant Talk interpolation	PROVED
+CORE-FILTERS-040	crates/sampler-core/src/dsp/formant.rs:37-40	Formant Size/Sharp parameter laws	PROVED
+CORE-FILTERS-041	crates/sampler-core/src/dsp/formant.rs:41-63	Formant coefficient polynomial	PROVED
+CORE-FILTERS-042	crates/sampler-core/src/dsp/formant.rs:70-85	Formant parallel three-band audio topology	PROVED
+CORE-FILTERS-043	crates/sampler-core/src/dsp/formant.rs:28-29	Formant live control ramp/cadence	UNPROVEN
+CORE-FILTERS-044	crates/sampler-core/src/dsp/ladder.rs:11-13,28-38	Ladder saved morphology selector domain/mapping	PROVED
+CORE-FILTERS-045	crates/sampler-core/src/dsp/ladder_kernel.rs:87-101	Ladder normalized cutoff law	UNPROVEN
+CORE-FILTERS-046	crates/sampler-core/src/dsp/ladder_kernel.rs:281-286	Ladder gain/resonance parameter laws	UNPROVEN
+CORE-FILTERS-047	crates/sampler-core/src/dsp/ladder_kernel.rs:49-82,350-369	Ladder control clock and ramp	UNPROVEN
+CORE-FILTERS-048	crates/sampler-core/src/dsp/ladder_kernel.rs:213-231	Ladder record-version instant cutoff	UNPROVEN
+CORE-FILTERS-049	crates/sampler-core/src/dsp/ladder_kernel.rs:233-238	Ladder enabled modulation semantics	UNPROVEN
+CORE-FILTERS-050	crates/sampler-core/src/dsp/ladder_kernel.rs:158-173	Ladder morphology weights	PROVED
+CORE-FILTERS-051	crates/sampler-core/src/dsp/ladder_kernel.rs:112-151,165-192	Ladder selector-specific compensation curves	PROVED
+CORE-FILTERS-052	crates/sampler-core/src/dsp/ladder_kernel.rs:374-413	Ladder nonlinear four-stage kernel	UNPROVEN
+CORE-FILTERS-053	crates/sampler-core/src/dsp/ladder.rs:22-25	Ladder magnitude preview versus playback implementation	UNPROVEN
+CORE-FILTERS-054	crates/sampler-core/src/dsp/ladder.rs:35-37,92-98	Ladder gain range and enabled-route clamp	UNPROVEN
+CORE-FILTERS-055	crates/sampler-core/src/dsp/native_eq.rs:17-29	Legacy EQ saved gain conversion	PROVED
+CORE-FILTERS-056	crates/sampler-core/src/dsp/native_eq.rs:17-23	Legacy EQ inverse frequency conversion	PROVED
+CORE-FILTERS-057	crates/sampler-core/src/dsp/native_eq.rs:24-25	Legacy EQ bandwidth conversion	PROVED
+CORE-FILTERS-058	crates/sampler-core/src/dsp/native_eq.rs:65-88	Legacy EQ coefficient generator	PROVED
+CORE-FILTERS-059	crates/sampler-core/src/dsp/native_eq.rs:113-131	Legacy EQ coefficient update masks	PROVED
+CORE-FILTERS-060	crates/sampler-core/src/dsp/native_eq.rs:209-216	Legacy EQ scalar sample recurrence/order	PROVED
+CORE-FILTERS-061	crates/sampler-core/src/dsp/native_eq.rs:155-205	Legacy EQ wrapper cadence	PROVED
+CORE-FILTERS-062	crates/sampler-core/src/dsp/native_eq.rs:155-160	Legacy EQ saved initialization	UNPROVEN
+CORE-FILTERS-063	crates/sampler-core/src/dsp/native_eq.rs:406-415	Legacy EQ local reset/voice reuse	PROVED
+CORE-FILTERS-064	crates/sampler-core/src/dsp/native_eq.rs:1-3,91-216	Legacy EQ checked one-band scalar and wrapper equivalence	PROVED
+CORE-FILTERS-065	crates/sampler-core/src/dsp/svf.rs:31-58	SVF cutoff/Q validation domain	UNPROVEN
+CORE-FILTERS-066	crates/sampler-core/src/dsp/svf.rs:164-182	SVF TPT coefficient law	UNPROVEN
+CORE-FILTERS-067	crates/sampler-core/src/dsp/svf.rs:358-381	SVF mode output mixes	UNPROVEN
+CORE-FILTERS-068	crates/sampler-core/src/dsp/svf.rs:164-182,289-356	SVF state recurrence	UNPROVEN
+CORE-FILTERS-069	crates/sampler-core/src/dsp/svf.rs:164-171	OnePole cutoff coefficient law	UNPROVEN
+CORE-FILTERS-070	crates/sampler-core/src/dsp/svf.rs:69-85,88-125	OutputLowPass cutoff/default/bypass mapping	UNPROVEN
+CORE-FILTERS-071	crates/sampler-core/src/dsp/svf.rs:186-255	SVF coefficient cache cadence	UNPROVEN
+CORE-FILTERS-072	crates/sampler-core/src/dsp/svf.rs:552-568	SVF modulation midpoint adaptation	UNPROVEN
+CORE-FILTERS-073	crates/sampler-core/src/dsp/ar.rs:369-418	AR LP2/4 host recording acceptance	UNPROVEN
+CORE-FILTERS-074	crates/sampler-core/src/dsp/daft.rs:17-35	Daft exponential table/interpolation	PROVED
+CORE-FILTERS-075	crates/sampler-core/src/dsp/ladder_kernel.rs:8-15,85-96	Ladder exponential table preparation	UNPROVEN
+CORE-FILTERS-076	crates/sampler-core/src/dsp/ladder_kernel.rs:103-106	Ladder pole polynomial	UNPROVEN
+CORE-FILTERS-077	crates/sampler-core/src/dsp/formant.rs:29-40	Formant control domain	UNPROVEN
+CORE-FILTERS-078	crates/sampler-core/src/dsp/native_eq.rs:30-33,65-68	Legacy EQ forward frequency law and bit exp	PROVED
+CORE-FILTERS-079	crates/sampler-core/src/dsp/native_eq.rs:35-46	Legacy EQ settings parameter ranges	PROVED
+CORE-FILTERS-080	crates/sampler-core/src/dsp/svf.rs:552-563	SVF modulation clamp/floor	UNPROVEN
+CORE-FILTERS-081	crates/sampler-core/src/dsp/ladder_kernel.rs:281-286	Ladder resonance shaping law	PROVED
+CORE-FILTERS-082	crates/sampler-core/src/dsp/ladder_kernel.rs:281-286	Ladder saved selector/output-row mapping	PROVED
+CORE-FILTERS-083	crates/sampler-core/src/dsp/ladder_kernel.rs:281-286	Ladder morphology compensation interpolation	PROVED
+CORE-FILTERS-084	crates/sampler-core/src/dsp/ladder_kernel.rs:281-286	Ladder output weighted-sum order	PROVED
+CORE-FILTERS-085	crates/sampler-core/src/dsp/ar.rs:110-113	AR initial state/defaults	UNPROVEN
+CORE-FILTERS-086	crates/sampler-core/src/dsp/ar_kernel.rs:100-116	AR family floor/gain constants	PROVED
+CORE-FILTERS-087	crates/sampler-core/src/dsp/daft.rs:117-127	Daft cutoff coefficient guard	UNPROVEN
+CORE-FILTERS-088	crates/sampler-core/src/dsp/formant.rs:22-25,70-85	Formant state layout and stereo scope	PROVED
+CORE-FILTERS-089	crates/sampler-core/src/dsp/eq.rs:54-61	PeakingEq gain/control domain	UNPROVEN
+CORE-FILTERS-090	crates/sampler-core/src/dsp/svf.rs:13-19,164-171	SVF OnePole default Q/unused-Q policy	UNPROVEN
+CORE-KSP-001	crates/sampler-ksp/src/eval.rs:747-755; crates/sampler-ksp/src/lower.rs:77-100,1092-1100	`$DURATION_*`, `$SIGNATURE_*`, `$NI_BPM` system values	DEBUNKED
+CORE-KSP-002	crates/sampler-ksp/src/eval.rs:1163-1166; crates/sampler-ksp/src/lower.rs:1904-1910; crates/sampler-core/src/ops.rs:1336-1351	$MS_TO_TICKS`/`$TICKS_TO_MS` conversion	UNPROVEN
+CORE-KSP-003	crates/sampler-ksp/src/lower.rs:383-444	listener driver topology, beat conversion and zero-period behavior	UNPROVEN
+CORE-KSP-004	crates/sampler-ksp/src/lower.rs:397-444	listener driver address/topology	UNPROVEN
+CORE-KSP-005	crates/sampler-ksp/src/eval.rs:1136-1140; crates/sampler-ksp/src/lower.rs:1837-1841	random(lo,hi)	DEBUNKED
+CORE-KSP-006	crates/sampler-ksp/src/builtins.rs:704-726; crates/sampler-ksp/src/lower.rs:3605-3631	get_scale scale-index table	UNPROVEN
+CORE-KSP-007	crates/sampler-ksp/src/eval.rs:1741-1758; crates/sampler-ksp/src/lower.rs:3006-3020	$ENGINE_PAR_VOLUME/PAN/TUNE` neutral reads and target detection	UNPROVEN
+CORE-KSP-008	crates/sampler-ksp/src/lower.rs:3056-3072,3165-3212,3214-3258	$ENGINE_PAR_*` unit conversion formulas	UNPROVEN
+CORE-KSP-009	crates/sampler-ksp/src/lower.rs:3100-3163	AHDSR sustain/time engine-unit conversions	UNPROVEN
+CORE-KSP-010	crates/sampler-ksp/src/eval.rs:1734-1775	get_engine_par_disp/get_engine_par_disp_ext	UNPROVEN
+CORE-KSP-011	crates/sampler-ksp/src/model.rs:64-77; crates/sampler-ksp/src/sema.rs:529-537	Unbound performance controls (`PerformanceControl::assumed`)	UNPROVEN
+CORE-KSP-012	crates/sampler-ksp/src/ui.rs:87-88,333-335	Default instrument width/height	UNPROVEN
+CORE-KSP-013	crates/sampler-ksp/src/ui.rs:350-365,371-403	Scalar UI range/default/display mapping	UNPROVEN
+CORE-KSP-014	crates/sampler-ksp/src/ui.rs:404-432	Table declaration/range and cells	UNPROVEN
+CORE-KSP-015	crates/sampler-ksp/src/ui.rs:434-442	XY cursor/sensitivity mapping	UNPROVEN
+CORE-KSP-016	crates/sampler-ksp/src/ui.rs:449-465	Level-meter orientation/range and file-selector enum mapping	UNPROVEN
+CORE-KSP-017	crates/sampler-ksp/src/ui.rs:77-84	KSP color integer to RGBA	UNPROVEN
+CORE-KSP-018	crates/sampler-ksp/src/ui.rs:186-214	Font/style numeric mapping	UNPROVEN
+CORE-KSP-019	crates/sampler-ksp/src/ui.rs:470-527	Position/grid placement and hide semantics	UNPROVEN
+CORE-KSP-020	crates/sampler-ksp/src/ui.rs:560-580	Implicit captions from variable names	UNPROVEN
+CORE-KSP-021	crates/sampler-ksp/src/ui.rs:582-607	Automation defaults/style state	UNPROVEN
+CORE-KSP-022	crates/sampler-ksp/src/eval.rs:819-870; crates/sampler-ksp/src/lower.rs:3996-4131	Control property storage/getter fallback	UNPROVEN
+CORE-KSP-023	crates/sampler-ksp/src/eval.rs:1722-1775; crates/sampler-ksp/src/lower.rs:2436-2449	set/get_engine_par address tuple and write result	UNPROVEN
+CORE-KSP-024	crates/sampler-ksp/src/builtins.rs:525-698	Valued constant ordinals (`$NI_*`, widget/file units, callbacks/signals)	UNPROVEN
+CORE-KSP-025	crates/sampler-ksp/src/builtins.rs:704-726	Scale names/interval vectors	UNPROVEN
+CORE-KSP-026	crates/sampler-ksp/src/builtins.rs:439-441; crates/sampler-ksp/src/builtins.rs:453-460; crates/sampler-ksp/src/eval.rs:1049-1053	System array lengths/defaults and DND arrays	UNPROVEN
+CORE-KSP-027	crates/sampler-ksp/src/lower.rs:3285-3286,3705-3748,3775-3815	MIDI range/clamp and play_note sentinels	UNPROVEN
+CORE-KSP-028	crates/sampler-ksp/src/eval.rs:819-833,1352-1382; crates/sampler-ksp/src/lower.rs:4134-4215	Menu selected index/value and invalid-index returns	UNPROVEN
+CORE-KSP-031	crates/sampler-ksp/src/lower.rs:420-436	Beat listener period conversion	UNPROVEN
+CORE-KSP-032	crates/sampler-ksp/src/ui.rs:517-526	Grid coordinate semantics	UNPROVEN
+CORE-KSP-033	crates/sampler-ksp/src/ui.rs:404-429	Table bipolar sign conversion	UNPROVEN
+CORE-KSP-034	crates/sampler-ksp/src/ui.rs:77-84; crates/sampler-ksp/src/eval.rs:880-892	KSP color packing across control and global UI setters	UNPROVEN
+CORE-KSP-035	crates/sampler-ksp/src/ui.rs:459-463	File selector unknown file type	UNPROVEN
+CORE-KSP-036	crates/sampler-ksp/src/ui.rs:379-383,450-454	Orientation sign/boolean mapping	UNPROVEN
+CORE-KSP-037	crates/sampler-ksp/src/vendor_constants.txt:525-698; crates/sampler-ksp/src/builtins.rs:492-515	Valued vendor enums and callback/signal ordinals	UNPROVEN
+CORE-KSP-038	crates/sampler-ksp/src/vendor_constants.txt:1-1409; crates/sampler-ksp/src/builtins.rs:700-750; crates/sampler-ksp/src/sema.rs:1090-1107	Vendor catalog acceptance and host-reindexed opaque symbols	UNPROVEN
+CORE-KSP-039	crates/sampler-ksp/src/builtins.rs:807-826; crates/sampler-ksp/src/vendor_constants.txt:1-90; crates/sampler-ksp/src/ui.rs:1-120	UI control-type and control-parameter numeric mapping	UNPROVEN
+CORE-KSP-040	crates/sampler-ksp/src/builtins.rs:761-775,914-936; crates/sampler-core/src/ops.rs:1-80	MIDI command/event parameter ordinals	UNPROVEN
+CORE-KSP-041	crates/sampler-ksp/src/sema.rs:1269-1278; crates/sampler-ksp/src/lower.rs:383-444	$NI_SIGNAL_TIMER_MS`/`$NI_SIGNAL_TIMER_BEAT` parameter contract	PROVED
+CORE-KSP-042	crates/sampler-ksp/src/lower.rs:2114-2124; crates/sampler-ksp/src/eval.rs:1680-1690	wait_ticks and MIDI tick unit	PROVED
+CORE-LOWER-PREPARE-001	crates/sampler-core/src/lower.rs:149-162	Time Machine source kind enum → runtime StretchMode	PROVED
+CORE-LOWER-PREPARE-002	crates/sampler-core/src/lower.rs:222-225	Variation random seed and bus-tail fallback	UNPROVEN
+CORE-LOWER-PREPARE-003	crates/sampler-core/src/lower.rs:490-509	MPE default pressure/timbre and activation	UNPROVEN
+CORE-LOWER-PREPARE-004	crates/sampler-core/src/lower.rs:523-541	Zone/group gain-pan merge and clamping	UNPROVEN
+CORE-LOWER-PREPARE-005	crates/sampler-core/src/lower.rs:545-565	Implicit fallback envelope admission	UNPROVEN
+CORE-LOWER-PREPARE-006	crates/sampler-core/src/lower.rs:623-632	Group tap gain converted to dB for script GroupParams	UNPROVEN
+CORE-LOWER-PREPARE-007	crates/sampler-core/src/lower.rs:732-748	VelocityResponse enum → Constant/Linear/Power amplitude curve	UNPROVEN
+CORE-LOWER-PREPARE-008	crates/sampler-core/src/lower.rs:774-796	Articulation default index remap to native key table	UNPROVEN
+CORE-LOWER-PREPARE-009	crates/sampler-core/src/lower.rs:801-818	Pitch-bend route depth → plan bend range	UNPROVEN
+CORE-LOWER-PREPARE-010	crates/sampler-core/src/lower.rs:943-947	Time→frames conversion	UNPROVEN
+CORE-LOWER-PREPARE-011	crates/sampler-core/src/engine_parameters.rs:110-129,388-398; crates/sampler-core/src/blocks/envelope.rs:180-198	Native AHDSR stage law vs generic live-write binding	UNPROVEN
+CORE-LOWER-PREPARE-012	crates/sampler-core/src/engine_parameters.rs:220-230,923-929	AHDSR native curve decode and sustain display	UNPROVEN
+CORE-LOWER-PREPARE-013	crates/sampler-core/src/engine_parameters.rs:164-175,238-242	Wavetable form ordinal and form-mode range	UNPROVEN
+CORE-LOWER-PREPARE-014	crates/sampler-core/src/lower.rs:185-219	Wavetable physical group identity and 5-lane address mapping	UNPROVEN
+CORE-LOWER-PREPARE-015	crates/sampler-core/src/lower.rs:33-118	Live effect lane defaults, domains, roles and native address identity	UNPROVEN
+CORE-LOWER-PREPARE-016	crates/sampler-core/src/lower.rs:122-129,1267-1272	Effect parameter role table and native lane lookup	UNPROVEN
+CORE-LOWER-PREPARE-017	crates/sampler-core/src/lower.rs:984-993,2865-2876	Balance pan law enum → native bus matrix	PROVED
+CORE-LOWER-PREPARE-018	crates/sampler-core/src/lower.rs:1102-1158	Loop range mode/shape and slot semantics	UNPROVEN
+CORE-LOWER-PREPARE-019	crates/sampler-core/src/lower.rs:1160-1165,crates/sampler-core/src/prepare.rs:730-739	Root-key and tuning composition	UNPROVEN
+CORE-LOWER-PREPARE-020	crates/sampler-core/src/lower.rs:2865-2876	Equal-power pan curve	UNPROVEN
+CORE-LOWER-PREPARE-021	crates/sampler-core/src/lower.rs:133-146,1891-1944	Processor control binding role→runtime field	UNPROVEN
+CORE-LOWER-PREPARE-022	crates/sampler-core/src/lower.rs:2171-2191	Four-pole filter → two cascaded two-pole processors	UNPROVEN
+CORE-LOWER-PREPARE-023	crates/sampler-core/src/lower.rs:2380-2437	Filter resonance and kind mappings	UNPROVEN
+CORE-LOWER-PREPARE-024	crates/sampler-core/src/lower.rs:2490-2498	Bus gain and send gain linearization	UNPROVEN
+CORE-LOWER-PREPARE-025	crates/sampler-core/src/lower.rs:2500-2519	Bus tail fallback by processor category	UNPROVEN
+CORE-LOWER-PREPARE-026	crates/sampler-core/src/lower.rs:2571-2651	Probability intervals→uniform random take sequence	UNPROVEN
+CORE-LOWER-PREPARE-027	crates/sampler-core/src/lower.rs:2619-2624	CounterScope→sequence capacity	UNPROVEN
+CORE-LOWER-PREPARE-028	crates/sampler-core/src/lower.rs:2684-2785	Articulation IDs and switching drivers	UNPROVEN
+CORE-LOWER-PREPARE-029	crates/sampler-core/src/lower.rs:2818-2845	7-bit controller interval expansion to 32-bit	UNPROVEN
+CORE-LOWER-PREPARE-030	crates/sampler-core/src/lower.rs:2852-2862	Trigger First/Legato/Transition→PREVIOUS_KEY intervals	UNPROVEN
+CORE-LOWER-PREPARE-031	crates/sampler-core/src/engine_parameter_names.rs:1-681; crates/sampler-core/src/engine_parameters.rs:58-67	Engine parameter name→numeric ID mapping	UNPROVEN
+CORE-LOWER-PREPARE-032	crates/sampler-core/src/engine_parameters.rs:70-104,192-233	EngineParameterLaw normalized decode/encode families	UNPROVEN
+CORE-LOWER-PREPARE-033	crates/sampler-core/src/engine_parameters.rs:107-129,388-409	Envelope stage service domains versus native values	UNPROVEN
+CORE-LOWER-PREPARE-034	crates/sampler-core/src/engine_parameters.rs:879-929	Engine parameter display numeric mappings	UNPROVEN
+CORE-LOWER-PREPARE-035	crates/sampler-core/src/engine_parameters.rs:367-415	Envelope binding physical address and generic slot	UNPROVEN
+CORE-LOWER-PREPARE-036	crates/sampler-core/src/engine_parameters.rs:701-710,784-790	Wavetable-form offsets rejected and ordinal clamped	UNPROVEN
+CORE-LOWER-PREPARE-037	crates/sampler-core/src/engine_parameters.rs:447-464	Layer volume/pan/pitch integer scales	UNPROVEN
+CORE-LOWER-PREPARE-038	crates/sampler-core/src/parameter_registry.rs:69-111,189-208	Parameter registry address/law/default validation and native alias clocks	UNPROVEN
+CORE-LOWER-PREPARE-039	crates/sampler-core/src/parameter_registry.rs:23-39,48-60	ParameterUnit and ParameterLaw metadata	UNPROVEN
+CORE-LOWER-PREPARE-040	crates/sampler-core/src/lower.rs:2880-2919	Load-time sample/IR rate conversion	UNPROVEN
+CORE-PARENT-001	crates/sampler-core/src/integer.rs:3-38	KSP signed integer boundary arithmetic	UNPROVEN
+CORE-PARENT-002	crates/sampler-core/src/script_params.rs:85-171	Script layer physical units and combination	UNPROVEN
+CORE-PARENT-003	crates/sampler-core/src/script_params.rs:175-223	Script fade curves and time-mirrored fade-out	UNPROVEN
+CORE-PARENT-004	crates/sampler-core/src/script_params.rs:525-580	Falcon direct note modulation clamps and smoothing	UNPROVEN
+CORE-PARENT-005	crates/sampler-core/src/midi_object.rs:1-79	MIDI object event schema, selectors and capacity	UNPROVEN
+CORE-PARENT-006	crates/sampler-core/src/note_event.rs:67-89; crates/sampler-core/src/gate.rs:135-155	System script pedal/release flags and gate policy	UNPROVEN
+CORE-PARENT-007	crates/sampler-core/src/behavior.rs:1471-1498; crates/sampler-core/src/prepare/selection.rs:175-189	Closed-event and generated-note callback policy	UNPROVEN
+CORE-PARENT-008	crates/sampler-core/src/controller_event.rs:75-103; crates/sampler-core/src/stages.rs:12-54	Controller interception, downstream pedal state and stage lifecycle	UNPROVEN
+CORE-PARENT-009	crates/sampler-core/src/waveform.rs:1-83	Waveform property admission, bounds and defaults	UNPROVEN
+CORE-PARENT-010	crates/sampler-ksp/src/nckp.rs:1-8,35-98	NCKP control identity and view discovery	UNPROVEN
+CORE-PARENT-011	crates/sampler-core/src/allocation.rs:1-83	Plan-generation allocation domains and fade accounting	UNPROVEN
+CORE-RUNTIME-001	crates/sampler-core/src/ownership.rs:65-70	Instrument/bus stereo balance pan law	PROVED
+CORE-RUNTIME-002	crates/sampler-core/src/lib.rs:1234-1249; crates/sampler-core/src/bus.rs:548-554	Live bus pan/fader update	UNPROVEN
+CORE-RUNTIME-003	crates/sampler-core/src/digital_fade.rs:22-46	Saved Digital Multi fade curve/rate	PROVED
+CORE-RUNTIME-004	crates/sampler-core/src/performance.rs:131-136	Virtual PREVIOUS_KEY controller encoding	UNPROVEN
+CORE-RUNTIME-005	crates/sampler-core/src/native_start.rs:24,34-42,88-90	Native round-robin start position	UNPROVEN
+CORE-RUNTIME-006	crates/sampler-core/src/native_start.rs:91-100	Native random start-group choice	UNPROVEN
+CORE-RUNTIME-007	crates/sampler-core/src/native_start.rs:73-86	Controller start criterion quantization	UNPROVEN
+CORE-RUNTIME-008	crates/sampler-core/src/ops.rs:1185-1196	Script random builtin	UNPROVEN
+CORE-RUNTIME-009	crates/sampler-core/src/steal.rs:237-249	Voice-group released-victim priority	DEBUNKED
+CORE-RUNTIME-010	crates/sampler-core/src/steal.rs:120-125	Default voice-stealing fade/headroom	UNPROVEN
+CORE-RUNTIME-011	crates/sampler-core/src/steal.rs:241-247	Kill mode victim ordering (Any/Oldest/Newest/Highest/Lowest)	UNPROVEN
+CORE-RUNTIME-012	crates/sampler-core/src/lib.rs:1542-1545; crates/sampler-core/src/native_start.rs:118-125	Native cycle tick scope/advancement	UNPROVEN
+CORE-RUNTIME-013	crates/sampler-core/src/release.rs:75-79,91-103	Release counter elapsed-frame law	UNPROVEN
+CORE-RUNTIME-014	crates/sampler-core/src/schedule.rs:61-64,123-145	Equal-time event scheduling order	UNPROVEN
+CORE-RUNTIME-015	crates/sampler-core/src/automation.rs:148-159	Automation integer-domain quantization	UNPROVEN
+CORE-RUNTIME-016	crates/sampler-core/src/modulation.rs:86-101	Expression gain/pan modulation interpolation	UNPROVEN
+CORE-RUNTIME-017	crates/sampler-core/src/whole_voice.rs:20-35,347-351	AHDSR attack-curve and release coefficient constants	PROVED
+CORE-RUNTIME-018	crates/sampler-core/src/bus.rs:578-603	Bus send/fader gain composition	UNPROVEN
+CORE-RUNTIME-019	crates/sampler-core/src/lib.rs:1116-1121	Initial controller/reset state	UNPROVEN
+CORE-RUNTIME-020	crates/sampler-core/src/trace.rs:713-720	Effect output-gain control law	UNPROVEN
+CORE-RUNTIME-021	crates/sampler-core/src/ops.rs:117-120	KSP real-to-integer truncation in the ordinary finite in-range domain	PROVED
+CORE-RUNTIME-022	crates/sampler-core/src/ops.rs:106-113	Integer shift and min/max semantics	UNPROVEN
+CORE-RUNTIME-023	crates/sampler-core/src/widget.rs:301-346	Widget table/edit capacity and atomic writes	UNPROVEN
+CORE-RUNTIME-024	crates/sampler-core/src/variation.rs:96-104,272-294	Native sequence bounded draw and no-repeat/random law	UNPROVEN
+CORE-RUNTIME-025	crates/sampler-core/src/performance.rs:154-174; crates/sampler-core/src/lib.rs:1114-1123	Controller reset defaults and performance state sharing	UNPROVEN
+CORE-RUNTIME-026	crates/sampler-core/src/trace.rs:713-720; crates/sampler-core/src/engine_parameters.rs:232-255	CC7/cubic engine parameter law	UNPROVEN
+CORE-RUNTIME-027	crates/sampler-core/src/whole_voice.rs:20-35,161-172,347-351	AHDSR release floor/normalized recurrence applicability	UNPROVEN
+CORE-RUNTIME-028	crates/sampler-core/src/ops.rs:117-120	KSP real-to-integer overflow/NaN edge behavior	UNPROVEN
+CORE-SOUND-001	src/sound/mix.rs:124-132	Stereo balance/pan gain law	PROVED
+CORE-SOUND-002	src/sound/mix.rs:136-140	Fader dB-to-linear conversion and bounds	UNPROVEN
+CORE-SOUND-003	src/sound/mix.rs:104-122	Mixer defaults	UNPROVEN
+CORE-SOUND-004	src/sound/mod.rs:37-44	Bus count and block/rack constants	UNPROVEN
+CORE-SOUND-005	src/sound/mix.rs:19-31	Part tuning and bend-range defaults	UNPROVEN
+CORE-SOUND-006	src/sound/v2.rs:1420-1433	Expression normalization and per-note ±48 semitone bend	UNPROVEN
+CORE-SOUND-007	src/sound/v2.rs:1519-1523,1559-1563	MIDI2 note velocity and pressure projection	PROVED
+CORE-SOUND-008	src/sound/v2.rs:1569-1578	Channel-mode/program fallback	UNPROVEN
+CORE-SOUND-009	src/sound/v2/host_transport.rs:9-67	KSP transport units and slots	UNPROVEN
+CORE-SOUND-010	src/sound/v2.rs:2290-2311	Behavior callback fuel/time constants and publication order	UNPROVEN
+CORE-SOUND-011	src/sound/v2.rs:1354-1384	Host packet wire remapping	UNPROVEN
+CORE-SOUND-012	src/sound/v2.rs:1599-1601	Articulation-driver velocity projection	UNPROVEN
+CORE-SOUND-013	src/sound/v2.rs:1630-1654	Audio velocity mapping	UNPROVEN
+CORE-SOUND-014	src/sound/v2.rs:1932-1962	Output tone low-pass	UNPROVEN
+CORE-SOUND-015	src/sound/v2.rs:2019-2043	Aux send law and placement	UNPROVEN
+CORE-SOUND-016	src/sound/v2.rs:2045-2084	Bus port count/order and solo/mute lifecycle	UNPROVEN
+CORE-SOUND-017	src/sound/v2.rs:2552-2567	Fallback envelope/tone ranges	UNPROVEN
+CORE-SOUND-018	src/sound/v2.rs:3392-3410	WAV defaults	UNPROVEN
+CORE-SOUND-019	src/sound/v2.rs:3361-3379	Multichannel WAV handling	UNPROVEN
+CORE-SOUND-020	src/sound/v2.rs:2849-2867	Streaming RAM/preload policy	UNPROVEN
+CORE-SOUND-021	src/sound/v2.rs:3537-3553	Cold-start fade and stream horizon	UNPROVEN
+CORE-SOUND-022	src/sound/v2.rs:3556-3559	Voice stealing order	UNPROVEN
+CORE-SOUND-023	src/sound/v2.rs:287-295,2885-2924	Runtime capacity ceilings	UNPROVEN
+CORE-SOUND-024	src/sound/mics.rs:7-151	Microphone token dictionary and >=half-group inference	UNPROVEN
+CORE-SOUND-025	src/sound/v2.rs:2997-3091	Per-group bus rewrite and inferred mic topology	UNPROVEN
+CORE-SOUND-026	src/sound/articulation.rs:76-86	Persisted driver enum mapping	UNPROVEN
+CORE-SOUND-027	src/sound/articulation.rs:174-181	Automatic velocity split defaults	UNPROVEN
+CORE-SOUND-028	src/sound/articulation.rs:303-346	Default articulation numbering and behavior tap	UNPROVEN
+CORE-SOUND-029	src/sound/edits.rs:101-172	Engine parameter address mapping	UNPROVEN
+CORE-SOUND-030	src/sound/edits.rs:34-43	Universal editor normalization	UNPROVEN
+CORE-SOUND-031	src/sound/effect_controls.rs:31-73	Effect scope conversion	UNPROVEN
+CORE-SOUND-032	src/sound/v2/effect_controls.rs:31-75	Effect control range/domain admission	UNPROVEN
+CORE-SOUND-033	src/sound/v2.rs:3468-3478	MPE default expression preparation	UNPROVEN
+CORE-SOUND-034	src/sound/event.rs:28-35	HostPattern wildcard and exact-note identity	UNPROVEN
+CORE-SOUND-035	src/sound/tree.rs:79-123	NodeOutput and node fader units	UNPROVEN
+CORE-SOUND-036	src/sound/tree.rs:126-163	Solo audible-path law	UNPROVEN
+CORE-SOUND-037	src/sound/v2.rs:2999-3017,3050-3077	Source bus parent mapping	UNPROVEN
+CORE-SOUND-038	src/sound/v2.rs:3283-3347	UVI layers/scripts to Kontakt-style group tree and script thread	UNPROVEN
+CORE-SOURCE-MOD-001	crates/sampler-core/src/blocks/envelope.rs:4-32	Kontakt AHDSR/DBD/FM7 stage curve	UNPROVEN
+CORE-SOURCE-MOD-002	crates/sampler-core/src/blocks/envelope.rs:180-190	Native AHDSR engine-parameter write	UNPROVEN
+CORE-SOURCE-MOD-003	crates/sampler-core/src/blocks/envelope.rs:195-239	Native AHDSR stage/sustain writes	UNPROVEN
+CORE-SOURCE-MOD-004	crates/sampler-core/src/blocks/envelope.rs:220-233	AHDSR attack-curve equation constants only	PROVED
+CORE-SOURCE-MOD-005	crates/sampler-core/src/blocks/envelope.rs:346-385	Native AHDSR decay/release output	UNPROVEN
+CORE-SOURCE-MOD-006	crates/sampler-core/src/blocks/envelope.rs:388-409	Native note-off/release ownership	UNPROVEN
+CORE-SOURCE-MOD-007	crates/sampler-core/src/blocks/envelope.rs:412-428	Native choke/finite fade	UNPROVEN
+CORE-SOURCE-MOD-008	crates/sampler-core/src/blocks/envelope.rs:496-560	Native 32-frame control cadence	UNPROVEN
+CORE-SOURCE-MOD-009	crates/sampler-core/src/blocks/envelope.rs:614-635	Native DBD/Flex point construction	UNPROVEN
+CORE-SOURCE-MOD-010	crates/sampler-core/src/v1_voice_controls.rs:848-873	Native AHDSR duration and rate	UNPROVEN
+CORE-SOURCE-MOD-011	crates/sampler-core/src/v1_voice_controls.rs:869-873	Native decay/release coefficient constant only	PROVED
+CORE-SOURCE-MOD-012	crates/sampler-core/src/v1_voice_controls.rs:880	Native sustain knob decode	UNPROVEN
+CORE-SOURCE-MOD-013	crates/sampler-core/src/v1_voice_controls.rs:37-55	Saved AHDSR millisecond-to-seconds conversion	UNPROVEN
+CORE-SOURCE-MOD-014	crates/sampler-core/src/v1_voice_controls.rs:76-110	Kontakt Flex point admission/curve	UNPROVEN
+CORE-SOURCE-MOD-015	crates/sampler-core/src/v1_voice_controls.rs:96-105	Native Flex segment time	UNPROVEN
+CORE-SOURCE-MOD-016	crates/sampler-core/src/v1_voice_controls.rs:296-323	Native/ Kontakt attack curve	UNPROVEN
+CORE-SOURCE-MOD-017	crates/sampler-core/src/blocks/lfo.rs:186-199	Native rectangle kernel	UNPROVEN
+CORE-SOURCE-MOD-018	crates/sampler-core/src/blocks/lfo.rs:217-223	Native held-noise reset seed	DEBUNKED
+CORE-SOURCE-MOD-019	crates/sampler-core/src/blocks/lfo.rs:235-246	Native normalized-frequency increment	PROVED
+CORE-SOURCE-MOD-020	crates/sampler-core/src/blocks/lfo.rs:235-246	LFO reciprocal-rate physical unit	UNPROVEN
+CORE-SOURCE-MOD-021	crates/sampler-core/src/blocks/lfo.rs:271-285	Digital Multi claimed native mix law (not admission certification)	DEBUNKED
+CORE-SOURCE-MOD-022	crates/sampler-core/src/blocks/lfo.rs:113-127	Native LFO delay/fade	UNPROVEN
+CORE-SOURCE-MOD-023	crates/sampler-core/src/blocks/lfo.rs:97-105	Tempo-beat LFO rate	UNPROVEN
+CORE-SOURCE-MOD-024	crates/sampler-core/src/source/time_machine.rs:31-39	Kontakt TM2/Pro backend	DEBUNKED
+CORE-SOURCE-MOD-025	crates/sampler-core/src/source/time_machine.rs:75-99	TM2/Pro grain/search constants	UNPROVEN
+CORE-SOURCE-MOD-026	crates/sampler-core/src/source/time_machine.rs:445-478	TM1 grain and smooth conversion	PROVED
+CORE-SOURCE-MOD-027	crates/sampler-core/src/source.rs:154-163	Sample pitch/rate step	UNPROVEN
+CORE-SOURCE-MOD-028	crates/sampler-core/src/source.rs:183-185	Resampler step admission	UNPROVEN
+CORE-SOURCE-MOD-029	crates/sampler-core/src/source.rs:24-38	Native loop crossfade/ping-pong topology	UNPROVEN
+CORE-SOURCE-MOD-030	crates/sampler-core/src/source.rs:745-767	Until-release exit policy	UNPROVEN
+CORE-SOURCE-MOD-031	crates/sampler-core/src/source.rs:820-843	Missing-page fade	UNPROVEN
+CORE-SOURCE-MOD-032	crates/sampler-core/src/resample.rs:6-16	Native resampler step/radius	UNPROVEN
+CORE-SOURCE-MOD-033	crates/sampler-core/src/resample.rs:30-97	Native high-quality sinc	UNPROVEN
+CORE-SOURCE-MOD-034	crates/sampler-core/src/resample.rs:129-140	Native realtime cubic	UNPROVEN
+CORE-SOURCE-MOD-035	crates/sampler-core/src/wavetable.rs:9-15	Kontakt wavetable cycle length	PROVED
+CORE-SOURCE-MOD-036	crates/sampler-core/src/wavetable.rs:16-79	WT_FORM_MODE amount/form laws	PROVED
+CORE-SOURCE-MOD-037	crates/sampler-core/src/wavetable.rs:16-18	Wavetable amount clamp	UNPROVEN
+CORE-SOURCE-MOD-038	crates/sampler-core/src/wavetable.rs:97-141	Native wavetable readout	UNPROVEN
+CORE-SOURCE-MOD-039	crates/sampler-core/src/blocks/follower.rs:17-25	Kontakt envelope follower 0x0A	UNPROVEN
+CORE-SOURCE-MOD-040	crates/sampler-core/src/blocks/arp.rs:1-145	Kontakt stored Arp	UNPROVEN
+CORE-SOURCE-MOD-041	crates/sampler-core/src/blocks/step_table.rs:30-45	Native BArp32Step phase/one-shot	UNPROVEN
+CORE-SOURCE-MOD-042	crates/sampler-core/src/blocks/glide.rs:30-63	Kontakt Glide stored-to-ramp mapping	UNPROVEN
+CORE-SOURCE-MOD-043	crates/sampler-core/src/voice_mod.rs:36-71	Native shaping/table interpolation	UNPROVEN
+CORE-SOURCE-MOD-044	crates/sampler-core/src/voice_mod.rs:900-910	Native inversion	UNPROVEN
+CORE-SOURCE-MOD-045	crates/sampler-core/src/voice_mod.rs:915-917	Native bipolar conversion	PROVED
+CORE-SOURCE-MOD-046	crates/sampler-core/src/voice_mod.rs:843-853	Native intensity lag/evaluator	UNPROVEN
+CORE-SOURCE-MOD-047	crates/sampler-core/src/voice_mod.rs:886-890	Native lag units	UNPROVEN
+CORE-SOURCE-MOD-048	crates/sampler-core/src/voice_mod.rs:1573-1600	Native target units/gain/pan/pitch	UNPROVEN
+CORE-SOURCE-MOD-049	crates/sampler-core/src/voice_mod.rs:1446-1490	Native LFO phase/fade scheduling	UNPROVEN
+CORE-SOURCE-MOD-050	crates/sampler-core/src/voice_mod.rs:162-180	Native parameter-index→destination mapping	UNPROVEN
+CORE-SOURCE-MOD-051	crates/sampler-core/src/pitch.rs:52-57	Native pitch semitone ratio	UNPROVEN
+CORE-SOURCE-MOD-052	crates/sampler-core/src/source/demand.rs:104-137	Native demand/read-radius prediction	UNPROVEN
+CORE-SOURCE-MOD-053	crates/sampler-core/src/blocks/envelope.rs:243-249	SourceAhdsr→native Primary admission	UNPROVEN
+CORE-SOURCE-MOD-054	crates/sampler-core/src/blocks/envelope.rs:297-300	Native setter admission after v1 control	UNPROVEN
+CORE-SOURCE-MOD-055	crates/sampler-core/src/blocks/lfo.rs:163-184	Native constant-level optimization	UNPROVEN
+CORE-SOURCE-MOD-056	crates/sampler-core/src/blocks/lfo.rs:163-184	Native LFO table provenance/interpolation	PROVED
+CORE-SOURCE-MOD-057	crates/sampler-core/src/blocks/tables/lfo-sine.f32le	Embedded native sine table file	PROVED
+CORE-SOURCE-MOD-058	crates/sampler-core/src/blocks/tables/lfo-saw.f32le	Embedded native saw table file	PROVED
+CORE-SOURCE-MOD-059	crates/sampler-core/src/blocks/tables/lfo-triangle.f32le	Embedded native triangle table file	PROVED
+CORE-SOURCE-MOD-060	crates/sampler-core/src/blocks/tables/lfo-pulse.f32le	Embedded native near-half pulse table file	PROVED
+CORE-SOURCE-MOD-061	crates/sampler-core/src/wavetable_native_vectors.json:1-200	Native wavetable phase-form vector receipt	PROVED
+CORE-SOURCE-MOD-062	crates/sampler-core/src/wavetable.rs:144-152	Wavetable Hermite readout arithmetic	UNPROVEN
+CORE-SOURCE-MOD-063	crates/sampler-core/src/source/time_machine.rs:286-290	TM2/Pro periodic-Hann overlap-add	UNPROVEN
+CORE-SOURCE-MOD-064	crates/sampler-core/src/source.rs:923-963	Loop crossfade gain law	UNPROVEN
+CORE-SOURCE-MOD-065	crates/sampler-core/src/source.rs:107-110	Loop-control crossfade saved field	UNPROVEN
+CORE-SOURCE-MOD-066	crates/sampler-core/src/source.rs:154-163	Wavetable fundamental/rate mapping	UNPROVEN
+CORE-SOURCE-MOD-067	crates/sampler-core/src/source/demand.rs:201-279	Native DFD reservation bound	UNPROVEN
+CORE-SOURCE-MOD-068	crates/sampler-core/src/voice_mod.rs:5-9	Modulation cadence	UNPROVEN
+CORE-SOURCE-MOD-069	crates/sampler-core/src/voice_mod.rs:145-148	Native SourceRate integration	UNPROVEN
+CORE-SOURCE-MOD-070	crates/sampler-core/src/voice_mod.rs:1573-1580	Native filter/tone target formulas	UNPROVEN
+CORE-SOURCE-MOD-071	crates/sampler-core/src/v1_voice_controls.rs:1095-1109	Native positive LFO-volume lag	PROVED
+CORE-SOURCE-MOD-072	crates/sampler-core/src/v1_voice_controls.rs:1117-1135	Native volume target combination	PROVED
+CORE-SOURCE-MOD-073	crates/sampler-core/src/v1_voice_controls.rs:1471-1503	Native volume/pitch modulation outputs	UNPROVEN

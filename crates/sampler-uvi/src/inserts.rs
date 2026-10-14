@@ -86,13 +86,24 @@ impl Translation {
         // `engine_parameters::lanes` addresses.
         let scripted = !self.ir.behaviors.is_empty();
         let live = scripted && !voice;
-        for node in inserts.children().filter(|n| n.is_element()) {
+        // An `.fxps` effect preset (`<FXPreset><Effect/></FXPreset>`) stands for its effect.
+        let nodes: Vec<Node> = inserts
+            .children()
+            .filter(|n| n.is_element())
+            .flat_map(|n| {
+                if n.has_tag_name("FXPreset") { n.children().filter(|c| c.is_element()).collect() } else { vec![n] }
+            })
+            .collect();
+        for node in nodes {
             let slot = out.len();
             let id = node.id().get_usize();
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
             let mix = scripted && engine_parameters::bypassable(node);
             if bypassed && !mix {
+                // Exactly silent: nothing to translate (a script that enables it
+                // reports its write).
                 placed.push((id, slot, 0));
+                self.used.insert(node.id());
                 continue;
             }
             if mix {
@@ -139,25 +150,8 @@ impl Translation {
                     }
                 }
                 "DigitalEq" => self.digital_eq(node, &at, live, &mut out)?,
-                "ThreeBandShelves" => {
-                    let middle = number(node, "GainMid", 0.0)?;
-                    out.push(ir::Processor::Gain(db(middle)));
-                    for (name, frequency, default, low) in [
-                        ("GainLow", "FreqLowMid", 200.0, true),
-                        ("GainHigh", "FreqMidHigh", 4000.0, false),
-                    ] {
-                        let gain = db(number(node, name, 0.0)? - middle);
-                        out.push(ir::Processor::Filter(ir::Filter {
-                            kind: if low {
-                                ir::FilterKind::FirstOrderLowShelf { gain }
-                            } else {
-                                ir::FilterKind::FirstOrderHighShelf { gain }
-                            },
-                            cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
-                            resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
-                        }));
-                    }
-                }
+                "ThreeBandShelves" => self.three_band_shelves(node, &mut out)?,
+                "TwoBandEq" | "ThreeBandEq" | "ParametricEQ" | "Parametric" => self.legacy_eq(node, &at, &mut out)?,
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
                     // internal modes 6 (full) and 7 (half). Public numbering
@@ -186,115 +180,171 @@ impl Translation {
                         }
                     }
                     out.push(ir::Processor::Gain(db(number(node, "InputGain", 0.0)?)));
-                    out.push(ir::Processor::Rectify(rectifier));
+                    out.push(ir::Processor::Color(ir::fx::color::Config::rectifier(rectifier)));
                     out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
                 }
-                "CompExp" => {
-                    // Falcon manual, Compressor Expander: threshold dB, ratio,
-                    // attack/release ms, manual makeup dB. The compressor law is
-                    // the shared textbook one (ir::Compressor); UVI's own is not
-                    // recovered, and the module has no stereo-link control.
-                    for (name, why, off) in [
-                        ("AutoMakeUp", "CompExp auto makeup", 0.0),
-                        ("GateRatio", "CompExp gate (expander)", 1.0),
-                    ] {
-                        let v = number(node, name, off)?;
-                        if v != off
-                            && (name != "GateRatio"
-                                || number(node, "GateThreshold", -130.0)? > -130.0)
-                        {
-                            self.unsupported(&at, why, v);
+                "BitCrusher" => {
+                    // Kernel 0x1412d1770; the public fields are the kernel's
+                    // members unchanged (ctor defaults 22050, 16, 0, 1; setters
+                    // 0x141041710.., Cutoff 0x1412d1730 -> tilt filter).
+                    let hertz = number(node, "EffectiveSampleRate", 22050.0)?;
+                    let bits = number(node, "BitSize", 16.0)?;
+                    let drive = number(node, "Drive", 0.0)?;
+                    let cutoff = number(node, "Cutoff", 0.0)?;
+                    let mix = number(node, "Mix", 1.0)?;
+                    if !(hertz >= 1.0
+                        && (1.0..=32.0).contains(&bits)
+                        && (0.0..=1.0).contains(&drive)
+                        && (-1.0..=1.0).contains(&cutoff)
+                        && (0.0..=1.0).contains(&mix))
+                    {
+                        self.unsupported(&at, "BitCrusher value outside its public range", "");
+                        out.truncate(slot);
+                        placed.push((id, slot, 0));
+                        continue;
+                    }
+                    out.push(ir::Processor::Color(ir::fx::color::Config::bit_crusher(
+                        hertz,
+                        bits,
+                        drive,
+                        cutoff as f32,
+                        mix,
+                    )));
+                }
+                "FormantCrusher" => {
+                    out.push(ir::Processor::Color(ir::fx::color::Config::formant_crusher(
+                        number(node, "Morph", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Q", 10.0)?.clamp(10.0, 20.0) as f32,
+                        number(node, "Formant", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "Bite", 0.0)?.clamp(0.0, 1.0) as f32,
+                        number(node, "FilterA", 0.0)?.clamp(0.0, 10.0) as u8,
+                        number(node, "FilterB", 2.0)?.clamp(0.0, 10.0) as u8,
+                    )));
+                }
+                "DiodeClipper" => {
+                    use ir::fx::color::{Config, Curve, Diode};
+                    let diode = Diode {
+                        drive: number(node, "Drive", 0.0)?.clamp(0.0, 30.0) as f32,
+                        tone: number(node, "Tone", 20_000.0)?.clamp(100.0, 20_000.0) as f32,
+                        high_pass: number(node, "HighPass", 1.0)?.clamp(1.0, 20_000.0) as f32,
+                        asymmetry: number(node, "Asymmetry", 0.0)?.clamp(0.0, 1.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Diode(diode), ..Config::IDENTITY }));
+                }
+                "ToneStack" => {
+                    use ir::fx::color::{Config, Curve, ToneStack};
+                    let unit = |name, default| -> Result<f32, String> { Ok(number(node, name, default)?.clamp(0.0, 1.0) as f32) };
+                    let stack = ToneStack {
+                        bass: unit("Bass", 0.5)?,
+                        mid: unit("Mid", 0.5)?,
+                        treble: unit("Treble", 0.5)?,
+                        gain: unit("Gain", 0.3)?,
+                        model: number(node, "Model", 0.0)?.clamp(0.0, 25.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::ToneStack(stack), ..Config::IDENTITY }));
+                }
+                "Exciter" => {
+                    use ir::fx::color::{Config, Curve, Exciter};
+                    let exciter = Exciter {
+                        mode: number(node, "Mode", 1.0)?.clamp(0.0, 1.0) as u8,
+                        input_gain: number(node, "InputGain", 0.0)?.clamp(-30.0, 20.0) as f32,
+                        amount: number(node, "Amount", 0.0)?.clamp(0.0, 15.0) as f32,
+                        mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                        oversampling: number(node, "Oversampling", 0.0)?.clamp(0.0, 4.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Exciter(exciter), ..Config::IDENTITY }));
+                }
+                "Widener" => {
+                    use ir::fx::color::{Config, Widener};
+                    let widener = Widener {
+                        delay: number(node, "Delay", 0.0)?.clamp(-15.0, 15.0) as f32,
+                        width: number(node, "Width", 0.0)?.clamp(-1.0, 1.0) as f32,
+                        shelf_hertz: number(node, "HighShelfFreqSide", 10_000.0)?.clamp(2000.0, 20_000.0) as f32,
+                        shelf_db: number(node, "HighSelfGainSide", 0.0)?.clamp(-15.0, 15.0) as f32,
+                    };
+                    out.push(ir::Processor::Color(Config { widener: Some(widener), ..Config::IDENTITY }));
+                }
+                "Redux2" => {
+                    use ir::fx::color::{Config, Redux};
+                    let redux = Redux {
+                        frequency: number(node, "Frequency", 44_100.0)?.clamp(200.0, 44_100.0) as f32,
+                        bits: number(node, "Bits", 32.0)?.clamp(1.0, 32.0) as f32,
+                        jitter: number(node, "Jitter", 0.0)?.clamp(0.0, 1.0) as f32,
+                        dither: number(node, "Dither", 0.0)?.clamp(0.0, 2.0) as f32,
+                        mu_law: number(node, "QuantizeLaw", 0.0)? != 0.0,
+                        // Type is registered inline (not in the parameter table); 1 holds.
+                        impulses: number(node, "Type", 1.0)? == 0.0,
+                        antialias: number(node, "Antialiasing", 1.0)? != 0.0,
+                        band_limit: number(node, "BandLimitFreq", 20_000.0)?.clamp(200.0, 20_000.0) as f32,
+                    };
+                    let position = number(node, "FilterPosition", 0.0)?.clamp(0.0, 2.0) as u8;
+                    let filter = (position != 0).then_some(()).map(|()| -> Result<_, String> {
+                        Ok((
+                            number(node, "FilterMode", 0.0)?.clamp(0.0, 2.0) as u8,
+                            number(node, "FilterFreq", 10_000.0)?.clamp(20.0, 20_000.0) as f32,
+                            number(node, "FilterRes", 0.0)?.clamp(0.0, 1.0) as f32,
+                            position == 2,
+                        ))
+                    }).transpose()?;
+                    let mix = number(node, "Mix", 1.0)?.clamp(0.0, 1.0) as f32;
+                    out.push(ir::Processor::Color(Config::redux(redux, filter, mix)));
+                }
+                "GarageFuzz" | "SmoothOverdrive" | "StraightFuzz" => {
+                    // Native drive engines (color chain Curve::Drive with the HIIR stage).
+                    use ir::fx::color::{Config, Curve, Drive, DriveKind};
+                    let drive = Drive {
+                        kind: match node.tag_name().name() {
+                            "GarageFuzz" => DriveKind::Garage,
+                            "SmoothOverdrive" => DriveKind::Smooth,
+                            _ => DriveKind::Straight,
+                        },
+                        input_gain: number(node, "InputGain", 0.0)?.clamp(-30.0, 20.0) as f32,
+                        overdrive: number(node, "Overdrive", 0.0)?.clamp(0.0, 10.0) as f32,
+                        trash: number(node, "Trash", 0.0)?.clamp(0.0, 1.0) as f32,
+                        mix: number(node, "Mix", 100.0)?.clamp(0.0, 100.0) as f32,
+                        output_gain: number(node, "OutputGain", 0.0)?.clamp(-40.0, 10.0) as f32,
+                        oversampling: number(node, "Oversampling", 0.0)?.clamp(0.0, 4.0) as u8,
+                    };
+                    out.push(ir::Processor::Color(Config { curve: Curve::Drive(drive), ..Config::IDENTITY }));
+                }
+                k if crate::fx::dynamics::handles(k) => {
+                    crate::fx::dynamics::translate(self, node, &at, &mut out)?;
+                }
+                tag if super::fx::filter::handles(tag) => {
+                    match super::fx::filter::translate(node, key, |name, default| {
+                        number(node, name, default)
+                    })? {
+                        Ok(done) => {
+                            out.extend(done.processors);
+                            for (feature, value) in done.unsupported {
+                                self.unsupported(&at, feature, value);
+                            }
+                        }
+                        Err(gap) => {
+                            self.unsupported(&at, &format!("{} ({})", gap.name, gap.reason), "");
+                            out.truncate(slot);
+                            placed.push((id, slot, 0));
+                            continue;
                         }
                     }
-                    let mix = number(node, "Mix", 1.0)?;
-                    if mix != 1.0 {
-                        self.unsupported(&at, "CompExp mix", mix);
-                    }
-                    out.push(ir::Processor::Compressor(ir::Compressor {
-                        threshold_db: number(node, "CompThreshold", 0.0)?,
-                        ratio: number(node, "CompRatio", 10.0)?.max(1.0),
-                        attack: ir::Time::Milliseconds(number(node, "CompAttack", 10.0)?.max(0.0)),
-                        release: ir::Time::Milliseconds(
-                            number(node, "CompRelease", 100.0)?.max(0.0),
-                        ),
-                        makeup: db(number(node, "MakeUpGain", 0.0)?),
-                        link: true,
-                    }));
-                }
-                "OnePole" => {
-                    let tracking = number(node, "KeyTracking", 0.0)?;
-                    let key = key.map_or(60.0, f64::from);
-                    let hz = (number(node, "Freq", 1000.0)?
-                        * 2f64.powf(tracking * (key - 60.0) / 12.0))
-                    .clamp(20.0, 20000.0);
-                    if tracking != 0.0 {
-                        self.unsupported(
-                            &at,
-                            "OnePole key tracking (keygroup middle key)",
-                            tracking,
-                        );
-                    }
-                    let poles = 1;
-                    out.push(ir::Processor::Filter(ir::Filter {
-                        kind: if number(node, "Mode", 0.0)? == 0.0 {
-                            ir::FilterKind::LowPass { poles }
-                        } else {
-                            ir::FilterKind::HighPass { poles }
-                        },
-                        cutoff: ir::Frequency::Hertz(hz),
-                        resonance: ir::Resonance::Decibels(0.0),
-                    }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
-                    // No file (or an unreadable one) leaves a unit impulse: the
-                    // processor stays, so a script can swap an impulse in.
-                    let asset = node
-                        .attribute("SamplePath")
-                        .filter(|p| !p.is_empty())
-                        .and_then(|sample| self.asset(&at, sample));
-                    self.ir.impulses.push(ir::Impulse {
-                        rate: 48000,
-                        left: vec![1.0],
-                        right: vec![1.0],
-                        asset,
-                    });
-                    let mut shape = crate::reverb::neutral();
-                    shape.normalize = number(node, "NormalizePower", 1.0)? != 0.0;
-                    if node.has_tag_name("SampledReverb") {
-                        shape.sampled_reverb = true;
-                        shape.time = number(node, "Time", 1.0)?;
-                        shape.damping_low = number(node, "DampingLow", 0.0)?;
-                        shape.damping_high = number(node, "DampingHigh", 0.0)?;
-                        shape.pre_delay_ms = number(node, "PreDelay", 50.0)?;
-                        shape.width = number(node, "Width", 0.0)?;
-                    }
-                    self.ir.impulse_shapes.resize(self.ir.impulses.len() - 1, None);
-                    self.ir.impulse_shapes.push(Some(shape));
-                    if shape.damping_low > 0.0 || shape.damping_high > 0.0 {
-                        self.ir.unsupported.push(ir::Unsupported {
-                            location: at.clone(),
-                            feature: "positive SampledReverb damping".into(),
-                            value: String::new(),
-                            reason: ir::Reason::UnknownLaw,
-                        });
-                    }
-                    out.push(ir::Processor::Convolution {
-                        impulse: ir::ImpulseRef(self.ir.impulses.len() - 1),
-                        dry: number(node, "Dry", 0.0)?,
-                        wet: number(node, "Wet", 1.0)?,
-                    });
+                    let processor = self.impulse_player(node, &at)?;
+                    out.push(processor);
                 }
-                "TrackDelay" => {
-                    let time = number(node, "DelayTime", 0.0)?;
-                    if number(node, "SyncToHost", 0.0)? != 0.0 {
-                        self.unsupported(&at, "TrackDelay host sync", time);
-                    }
-                    if time > 0.0 {
-                        out.push(ir::Processor::Delay {
-                            time: ir::Time::Seconds(time),
-                            feedback: 0.0,
-                            mix: 1.0,
-                        });
+                "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+                    if !voice =>
+                {
+                    out.extend(self.algorithmic_reverb(node, &at)?);
+                }
+                "TrackDelay" | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DiffuseDelay"
+                | "DualDelayX" | "TapeEcho" | "DiffuseDelayNested" | "Buzz" | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger"
+                | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter" => {
+                    if let Some(config) = self.timemod(node, &at)? {
+                        out.push(ir::Processor::TimeMod(config));
                     }
                 }
                 "EffectRack" => {
@@ -351,10 +401,19 @@ impl Translation {
                         out.extend(inner);
                     }
                 }
-                _ => {
+                other => {
+                    if let Some(why) = crate::fx::color::unproved(other) {
+                        self.unsupported(&at, other, why);
+                    }
                     out.truncate(slot);
                     placed.push((id, slot, 0));
                     continue;
+                }
+            }
+            if live && engine_parameters::lane_family(node) {
+                // Each unit of the element listens at its own lane slot.
+                for (k, p) in out[first..].iter_mut().enumerate() {
+                    *p = p.at(engine_parameters::lane_slot(id, k));
                 }
             }
             let count = out.len() - first;
@@ -371,81 +430,6 @@ impl Translation {
             self.used.insert(node.id());
         }
         Ok((out, placed))
-    }
-
-    fn digital_eq(
-        &mut self,
-        node: Node,
-        at: &str,
-        live: bool,
-        out: &mut Vec<ir::Processor>,
-    ) -> Result<(), String> {
-        for (name, why) in [
-            ("StereoMode", "DigitalEq M/S mode"),
-            ("Transpose", "DigitalEq transpose"),
-            ("KeyTracking", "DigitalEq key tracking"),
-        ] {
-            let v = number(node, name, 0.0)?;
-            if v != 0.0 {
-                self.unsupported(at, why, v);
-            }
-        }
-        let scale = number(node, "GainScale", 1.0)?;
-        let mut unproven = false;
-        for band in 1..=16 {
-            let get = |name: &str, default| number(node, &format!("{name}{band}"), default);
-            // A scripted bus keeps all 16 bands and the overall level so
-            // each one is a control (`engine_parameters::lanes`).
-            if get("Enabled", 0.0)? == 0.0 && !live {
-                continue;
-            }
-            let gain = db(get("Gain", 0.0)? * scale);
-            let shape = get("Type", 6.0)? as i64;
-            // Installed libraries only show types 5 (gain, high-shelf-like
-            // frequencies) and 6 (peak); 0 to 4 follow the manual's order.
-            unproven |= (0..=4).contains(&shape);
-            let kind = match shape {
-                0 => ir::FilterKind::LowPass { poles: 2 },
-                1 => ir::FilterKind::HighPass { poles: 2 },
-                2 => ir::FilterKind::BandPass { poles: 2 },
-                3 => ir::FilterKind::Notch { poles: 2 },
-                4 => ir::FilterKind::LowShelf { gain },
-                5 => ir::FilterKind::HighShelf { gain },
-                _ => ir::FilterKind::Peak { gain },
-            };
-            let flat = matches!(
-                kind,
-                ir::FilterKind::Peak { gain: g }
-                    | ir::FilterKind::LowShelf { gain: g }
-                    | ir::FilterKind::HighShelf { gain: g }
-                    if (g.linear() - 1.0).abs() < 1e-9
-            );
-            if flat && !live {
-                continue;
-            }
-            out.push(ir::Processor::Filter(ir::Filter {
-                kind,
-                cutoff: ir::Frequency::Hertz(get("Freq", 1000.0)?),
-                resonance: ir::Resonance::Q(engine_parameters::band_q(
-                    |n| node.attribute(n).and_then(|v| v.parse().ok()),
-                    band,
-                )),
-            }));
-        }
-        let overall = number(node, "OverallGain", 0.0)?;
-        if overall != 0.0 || live {
-            out.push(ir::Processor::Gain(db(overall)));
-        }
-        // The manual lists the seven shapes but not their numbering; types 5
-        // and 6 are evidenced by the installed banks, 0 to 4 are its order.
-        if unproven {
-            self.unsupported(
-                at,
-                "DigitalEq band type numbering (manual order assumed)",
-                "",
-            );
-        }
-        Ok(())
     }
 }
 
@@ -469,7 +453,7 @@ pub(super) fn fill_impulses(
                 impulse.left = frames.iter().map(|f| f[0]).collect();
                 impulse.right = frames.iter().map(|f| f[1]).collect();
                 if let Some(Some(shape)) = instrument.impulse_shapes.get(index) {
-                    let (left, right) = crate::reverb::shape(rate, &impulse.left, &impulse.right, shape);
+                    let (left, right) = sampler_core::shape_impulse(rate, &impulse.left, &impulse.right, shape);
                     (impulse.left, impulse.right) = (left, right);
                 }
             }

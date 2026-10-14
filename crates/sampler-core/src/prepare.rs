@@ -1732,7 +1732,7 @@ impl Prepared {
 }
 
 impl Prepared {
-    /// The impulse responses [`super::Processor::Convolution`] indexes; set
+    /// The impulse responses [`super::Processor::Space`] indexes; set
     /// before [`Prepared::with_buses`].
     pub fn with_impulses(mut self, impulses: Vec<super::Impulse>) -> Self {
         self.impulses = impulses.into_iter().map(std::sync::Arc::new).collect();

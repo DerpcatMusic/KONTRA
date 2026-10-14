@@ -87,8 +87,12 @@ pub struct Part {
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
+    pub(crate) host_bindings: Arc<[super::HostBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
+    /// Script pitch bend (controller 128) and mono pressure (129) last applied
+    /// to the zone: see [`script_controllers`].
+    script_controllers: [u32; 2],
     force_articulation_once: bool,
     /// Internal wire identities keep distinct physical host tuples independent
     /// after a part maps their channels to its single musical domain.
@@ -214,6 +218,37 @@ impl Drop for Grower {
     }
 }
 
+/// The plan's host-parameter routes, resolved to their controls.
+fn host_bindings(
+    runtime: &Runtime,
+    plan: sampler_core::PlanId,
+    widgets: &[sampler_core::WidgetDefinition],
+) -> Arc<[super::HostBinding]> {
+    let bindings = runtime.automation_bindings(plan).unwrap_or_default();
+    bindings
+        .iter()
+        .filter_map(|b| {
+            let sampler_core::AutomationSource::HostParameter(address) = b.source else {
+                return None;
+            };
+            let w = widgets
+                .iter()
+                .find(|w| w.source_slot == b.source_slot && w.ui_id == b.ui_id)?;
+            let sampler_core::WidgetStorage::Control(control) = w.storage else {
+                return None;
+            };
+            Some(super::HostBinding {
+                address,
+                widget: sampler_ui_ir::ControlId(w.id.0),
+                control: sampler_ui_ir::ControlId(control.0),
+                low: b.low,
+                high: b.high,
+                domain: runtime.control_definition(plan, control).ok()?.domain,
+            })
+        })
+        .collect()
+}
+
 impl Part {
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
@@ -245,6 +280,7 @@ impl Part {
             .widget_definitions(plan)
             .unwrap_or_default()
             .to_vec();
+        let host_bindings = host_bindings(&runtime, plan, &widgets);
         let widget_values = widgets
             .iter()
             .filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_)))
@@ -273,6 +309,7 @@ impl Part {
         Ok(Self {
             epoch: 0,
             engine_bindings,
+            host_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress {
                 client,
@@ -305,6 +342,7 @@ impl Part {
             editor_offsets: None,
             persistence: None,
             mpe,
+            script_controllers: [0x8000_0000, 0],
             force_articulation_once: false,
             next_host_id: 0,
             tune: 0.0,
@@ -1260,6 +1298,41 @@ impl V2Core {
             part.runtime.visit_behavior_progress(visit);
         }
     }
+    /// The engine parameters the loaded plan binds to controls (parity harness).
+    #[cfg(test)]
+    pub(crate) fn widget_gate_engine_bindings(
+        &self,
+        part: usize,
+    ) -> Vec<sampler_core::EngineParameterBinding> {
+        let Some(Some(p)) = self.parts.get(part) else {
+            return Vec::new();
+        };
+        p.runtime
+            .engine_parameter_bindings(p.runtime.active_plan())
+            .map(<[_]>::to_vec)
+            .unwrap_or_default()
+    }
+    /// Same random draws and round-robin position for every parity take, so
+    /// two takes differ only by the control under test.
+    #[cfg(test)]
+    pub(crate) fn widget_gate_reseed(&mut self, part: usize) {
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.runtime.seed_random(1);
+            p.runtime.reset_native_cycles(1);
+        }
+    }
+    /// Script `set_engine_par`/`get_engine_par` outcomes since the last call
+    /// (parity harness: which writes reached a bound engine parameter).
+    #[cfg(test)]
+    pub(crate) fn widget_gate_engine_outcomes(&mut self, part: usize) -> Vec<sampler_core::EngineParameterOutcome> {
+        let mut out = Vec::new();
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            while let Some(o) = p.runtime.take_engine_parameter_outcome() {
+                out.push(o);
+            }
+        }
+        out
+    }
     #[cfg(test)]
     pub(crate) fn widget_gate_preemptions(&self, part: usize) -> u64 {
         self.parts
@@ -1351,6 +1424,28 @@ fn peak(x: &[f32]) -> f32 {
 
 /// A MIDI 1.0 channel voice message into `part`'s zone, on its manager
 /// channel, or in an MPE zone on its own.
+/// A KSP `set_controller($VCC_PITCH_BEND | $VCC_MONO_AT, v)` is the channel's
+/// bend or pressure, as if it came in as MIDI: sounding voices and later notes
+/// follow it (Conflux's Bend wheel only forwards its value this way). The core
+/// keeps scripts' controller 128/129 apart from the zone's per-note expression,
+/// which only MIDI ingress set before.
+fn script_controllers(part: &mut Part) {
+    let Ok(performance) = part.runtime.performance(0) else { return };
+    for (at, number) in [(0, 128), (1, 129)] {
+        let Ok(value) = part.runtime.controller(performance, number) else { continue };
+        if std::mem::replace(&mut part.script_controllers[at], value) == value {
+            continue;
+        }
+        let channel = part.mpe.manager_channel();
+        if number == 128 {
+            let bend = value >> 18;
+            wire_event(part, 0xe0 | channel, (bend & 127) as u8, (bend >> 7) as u8);
+        } else {
+            wire_event(part, 0xd0 | channel, (value >> 25) as u8, 0);
+        }
+    }
+}
+
 fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
     wire_packet(
         part,
@@ -1898,6 +1993,7 @@ impl V2Core {
                     wire_event(part, out.status, out.a, out.b);
                 }
             }
+            script_controllers(part);
             #[cfg(test)]
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[1] += t.elapsed().as_nanos() as u64;
@@ -2462,6 +2558,9 @@ impl Core for V2Core {
     }
 
     fn end_block(&mut self, _frames: usize, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
+        // The host allowance lasts one block; a later render without
+        // begin_block gets the render-driven cap, not a spent allowance.
+        self.host_block = false;
         let Self {
             parts, held, align, ..
         } = self;
@@ -2963,29 +3062,26 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
-            ir::Processor::Gainer { .. } => "Gainer",
-            ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
-            ir::Processor::LoFi { .. } | ir::Processor::LiveLoFi { .. } => "LoFi",
             ir::Processor::LiveFormant { .. } => "Formant",
-            ir::Processor::Saturation(_) | ir::Processor::LiveSaturation { .. } => "Saturation",
-            ir::Processor::Distortion { .. } | ir::Processor::LiveDistortion { .. } => "Distortion",
             ir::Processor::StereoMatrix(_) => "Stereo",
-            ir::Processor::Reverb(_) => "Reverb",
-            ir::Processor::KontaktEnhancedCompressor { .. } => "Compressor (Enhanced)",
-            ir::Processor::KontaktLegacyEq(_) => "Kontakt Legacy EQ",
-            ir::Processor::Compressor(_) => "Compressor",
-            ir::Processor::Rectify(_) => "Rectify",
+            ir::Processor::Space(c) => if c.impulse.is_some() { "Convolution" } else { "Reverb" },
+            ir::Processor::Eq(_) => "EQ",
+            ir::Processor::Dynamics(_) => "Compressor",
+            ir::Processor::Color(c) => c.label(),
             ir::Processor::Daft(_) => "Daft",
             ir::Processor::LadderLP4(d) => ["Ladder LP1", "Ladder LP2", "Ladder LP3", "Ladder LP4", "Ladder HP1", "Ladder HP2", "Ladder HP3", "Ladder HP4", "Ladder BP2", "Ladder BP4", "Ladder Peak", "Ladder Notch"]
                 [usize::from(d.taps.clamp(1, 12)) - 1],
             ir::Processor::Ar(_) => "AR filter",
-            ir::Processor::LegacyPhaser { .. } => "Legacy Phaser",
+            ir::Processor::TimeMod(_) => "Delay / modulation",
             ir::Processor::Phaser(_) => "Phaser filter",
             ir::Processor::Formant(_) => "Formant I",
+            ir::Processor::FilterBank(c) => match c.topology {
+                ir::fx::filter::Topology::FormantII => "Formant II",
+                _ => "Filter",
+            },
             ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
-            ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
             ir::Processor::Delay { .. } => "Delay",
             ir::Processor::Mix { .. } => "Mix",
@@ -3219,13 +3315,15 @@ fn kontakt(
         control_values,
         ..Default::default()
     };
+    // Every stage reports: headers open (cold: seconds) through 700, script
+    // UI and lowering at 750, the runtime at 900 (`prepare_on_worker`).
     let progress = |p: sampler_kontakt::Progress<'_>| {
         progress(Progress(match p {
             sampler_kontakt::Progress::Translated { .. } => 50,
             sampler_kontakt::Progress::Decoding { done, total, .. } => {
-                (100 + 800 * done / total.max(1)) as u16
+                (100 + 600 * done.min(total) / total.max(1)) as u16
             }
-            sampler_kontakt::Progress::Lowering => 950,
+            sampler_kontakt::Progress::Lowering => 750,
         }))
     };
     if canceled() {
@@ -3270,6 +3368,7 @@ fn kontakt(
         scripts: ScriptUi {
             views: loaded.scripts,
             resources: loaded.resources,
+            resource_path: Some(path.clone()),
             ..Default::default()
         },
         stream: Some(Arc::new(Stream {
@@ -3282,11 +3381,15 @@ fn kontakt(
 
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
 /// stream from the bank or file; its Lua scripts run on their own thread.
-fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
+fn uvi(
+    request: &LoadRequest,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     drop(span);
+    progress(Progress(300));
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let config = sampler_uvi::script::Config::realtime();
@@ -3299,6 +3402,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
         .attach_script_with_ui_state(rate, config, request.uvi_state.clone())
         .map_err(|e| load(&e))?;
     drop(span);
+    progress(Progress(600));
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     if let Some(a) = &attached {
         report.uvi_faults = a.driver.ui().fault_counts();
@@ -3454,7 +3558,7 @@ impl V2Loader {
         } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_uvi(&request.path) {
-            uvi(request)?
+            uvi(request, progress)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -3463,6 +3567,7 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        progress(Progress(900));
         let _span = sampler_kontakt::audit::Span::new("runtime_alloc_init");
         let mut timbre = None;
         if request.mpe {
@@ -3706,8 +3811,10 @@ mod tests {
             let buses = (0..3)
                 .map(|b| sampler_core::Bus {
                     processors: if b == 1 {
-                        vec![sampler_core::Processor::Rectify(
-                            sampler_core::Rectifier::Full,
+                        vec![sampler_core::Processor::Color(
+                            sampler_core::ColorSettings::curve(sampler_core::CurveSettings::Rectifier(
+                                sampler_core::Rectifier::Full,
+                            )),
                         )]
                     } else {
                         vec![]
@@ -4470,6 +4577,64 @@ mod tests {
         assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(10000),
             "host callback allowance must be installed before MIDI, not after its first preemption");
         assert_eq!(runtime.preemptions(), 0);
+    }
+
+    /// Conflux's Bend wheel: `set_controller($VCC_PITCH_BEND, v)` bends the
+    /// sounding note as a MIDI bend would (default range 2 semitones).
+    #[test]
+    fn script_pitch_bend_bends_the_sounding_note() {
+        let render = |bend: bool| {
+            let source = format!("on init end on on note {} end on",
+                if bend { "set_controller($VCC_PITCH_BEND, -8192)" } else { "" });
+            let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let pcm = sampler_core::Pcm::new(48000, (0..96000).map(|i| {
+                let phase = f64::from(i) * std::f64::consts::TAU * 0.017;
+                [phase.cos() as f32, phase.sin() as f32]
+            }).collect()).unwrap();
+            let region = sampler_core::Region {
+                sample: 0, key_low: 60, key_high: 61, root_key: None, velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+                envelope: sampler_core::Envelope::new(0, 0, 0, 1.0, 256).unwrap(), playback: Default::default(),
+            };
+            let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 2).unwrap()).unwrap();
+            let limits = Limits::for_plan(&plan, 32, 8);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("test")).unwrap())));
+            core.begin_block(&BlockInfo { frames: 256, offline: true, ..Default::default() });
+            core.play(0, Event::midi1(0x90, 60, 100));
+            let mut out = Vec::new();
+            for _ in 0..128 {
+                core.begin_block(&BlockInfo { frames: MAX_BLOCK, offline: true, ..Default::default() });
+                let r = core.render(MAX_BLOCK);
+                let bus = &r.buses[0];
+                out.extend((0..MAX_BLOCK).map(|i| [bus[0][i], bus[1][i]]));
+                core.end_block(MAX_BLOCK, &mut |_| true);
+            }
+            out[4096..4096 + 8192].to_vec()
+        };
+        let ratio = sampler_midi::spectral_ratio(&render(false), &render(true));
+        assert!((ratio - 2f64.powf(-2. / 12.)).abs() < 0.03, "bend ratio {ratio}");
+    }
+
+    #[test]
+    fn render_driven_blocks_refill_after_a_host_block_ends() {
+        // Parity harness: host-block takes, then editor frames rendered without begin_block.
+        let source = "on init\n declare $saved\n end on\n on note\n while ($saved < 200000)\n inc($saved)\n end while\n end on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = Limits::for_plan(&plan, 32, 8);
+        let runtime = Runtime::new(plan, limits).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("test")).unwrap())));
+        core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
+        core.play(0, Event::midi1(0x90, 60, 100));
+        core.render(64);
+        core.end_block(64, &mut |_| true);
+        for _ in 0..200 {
+            core.render(512);
+        }
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(200000),
+            "a callback preempted in a host block must keep running on render-driven blocks");
     }
 
     #[test]
@@ -5416,6 +5581,33 @@ mod tests {
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
+    }
+
+    /// Conflux's MW wheel: `on ui_control` forwards the knob with set_controller.
+    #[test]
+    fn a_widget_set_controller_reaches_the_performance_controller() {
+        let source = "on init declare ui_knob $mw(0, 127, 1) end on \
+                      on ui_control($mw) set_controller(1, $mw) set_controller($VCC_PITCH_BEND, -8192) end on";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mw = script.controls().iter().find(|c| c.variable.ends_with("$mw")).unwrap().definition.id.0;
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0,
+            gain: 1.0, envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan).0;
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap())));
+        assert!(core.set_control(0, sampler_ui_ir::ControlId(mw), 127.0));
+        core.render(16);
+        core.render(16);
+        let part = core.parts[0].as_mut().unwrap();
+        let performance = part.runtime.performance(0).unwrap();
+        assert_eq!(
+            (part.runtime.controller(performance, 1).unwrap(), part.runtime.controller(performance, 128).unwrap()),
+            (u32::MAX, 0)
+        );
     }
 
     #[test]

@@ -249,11 +249,11 @@ impl EnvelopeFlex {
             return Err(Error::Static("Flex envelope indices out of range"));
         }
         if !matches!(self.unknown_tail.len(), FLEX_TAIL | FLEX_TAIL_V12)
+            // Raw finite values are retained: the native setter 0x140ae5a10 applies
+            // its own piecewise curve law, 1 ms duration floor and level
+            // neighbourhood clamp rather than rejecting out-of-range input.
             || !self.points.iter().all(|p| {
-                p.time_ms.is_finite()
-                    && p.time_ms >= 0.0
-                    && (0.0..=1.0).contains(&p.level)
-                    && (0.0..=1.0).contains(&p.curve)
+                p.time_ms.is_finite() && p.level.is_finite() && p.curve.is_finite()
             })
         {
             return Err(Error::Static("Flex envelope values out of range"));
@@ -356,6 +356,28 @@ impl TryFrom<&Chunk> for EnvelopeFlex {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+    #[test]
+    fn flex_keeps_raw_finite_values_and_rejects_only_non_finite() {
+        let mut flex = EnvelopeFlex {
+            points: vec![FlexPoint {
+                time_ms: -3.0,
+                level: 1.5,
+                curve: -2.0,
+            }],
+            sustain: 0,
+            unknown_index: 0,
+            unknown_tail: vec![0; FLEX_TAIL],
+        };
+        let chunk = flex.to_chunk().unwrap();
+        let back = EnvelopeFlex::try_from(&chunk).unwrap();
+        assert_eq!(
+            (back.points[0].time_ms, back.points[0].level, back.points[0].curve),
+            (-3.0, 1.5, -2.0)
+        );
+        flex.points[0].curve = f32::NAN;
+        assert!(flex.to_chunk().is_err());
+    }
+
     #[test]
     fn packed_timing_records_preserve_unassigned_words_and_flags() {
         let mut tail = Vec::new();

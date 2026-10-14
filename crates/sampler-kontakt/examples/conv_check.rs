@@ -22,8 +22,10 @@ fn render(path: &Path, wet: bool) -> Option<(Vec<[f32; 2]>, u8)> {
                 .iter_mut()
                 .chain(&mut chain.post_amplitude)
             {
-                if let ir::Processor::Convolution { wet, .. } = p {
-                    *wet = 0.0;
+                if let ir::Processor::Space(c) = p
+                    && c.impulse.is_some()
+                {
+                    c.wet = 0.0;
                 }
             }
         }

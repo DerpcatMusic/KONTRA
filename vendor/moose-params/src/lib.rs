@@ -160,6 +160,11 @@ pub struct ParameterPresentation {
     /// Whether formats with a dynamic parameter list should enumerate it.
     /// The parameter ID and storage remain fixed for other formats.
     pub available: bool,
+    /// Only the integer plain values of the static range occur (e.g. a
+    /// 0..1 on/off). CLAP publishes it as `CLAP_PARAM_IS_STEPPED` from the
+    /// next deactivation (requesting a restart while active); VST3 keeps
+    /// the static step count.
+    pub stepped: bool,
 }
 
 impl Default for ParameterPresentation {
@@ -169,6 +174,7 @@ impl Default for ParameterPresentation {
             group: String::new(),
             hidden: false,
             available: true,
+            stepped: false,
         }
     }
 }

@@ -84,8 +84,8 @@ fn authored_range_colors_preserve_piano_faces_and_unmapped_grey() {
             "a coloured range does not turn unmapped keys into controls: {grey:?}"
         );
         assert!(
-            control[0] > control[1] * 2,
-            "explicit control keys keep their authored colour: {control:?}"
+            control[0] > control[1] && control[0] > control[2],
+            "explicit control keys keep their authored hue as a tint: {control:?}"
         );
     }
 }

@@ -12,6 +12,7 @@ translation error shows up as one large count instead of one anecdote.
 import argparse
 import json
 import math
+import os
 from collections import Counter, defaultdict
 
 TOL_DB = 0.05
@@ -178,7 +179,7 @@ def report(d):
     print(f"\n{total} mismatches across {sum(d.checked.values())} checked values")
 
 
-IR_JSON = "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-t3-41d67f01/debug/examples/ir_json"
+IR_JSON = os.environ.get("IR_JSON", "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-t3-41d67f01/debug/examples/ir_json")
 
 
 def ours_for(native_input):

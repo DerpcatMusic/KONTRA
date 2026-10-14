@@ -313,7 +313,22 @@ pub fn load_read_streamed_cancelable(
         );
     }
     drop(span);
-    let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
+    let opened = crate::stream::Streamer::open(
+        registry,
+        options.rate,
+        policy,
+        32,
+        canceled,
+        &mut |done, total| {
+            if let Some(&sample) = listed.get(done.min(total.saturating_sub(1))) {
+                progress(Progress::Decoding {
+                    done,
+                    total,
+                    sample,
+                })
+            }
+        },
+    )?;
     if !hit && !canceled() {
         if let Some(preset) = options.library.as_deref() {
             crate::header_cache::store(preset, &listed, &sources, &opened.assets);
@@ -349,7 +364,8 @@ pub fn stream_instrument(
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false)?;
+    let opened =
+        crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false, &mut |_, _| ())?;
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
@@ -638,6 +654,23 @@ pub fn prepare(
     prepare_inner(instrument, pcm, options, None).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
+/// A behavior's saved state as the KSP evaluator's scalar and array values.
+fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
+    let (mut scalars, mut arrays) = sampler_ksp::SavedValues::default();
+    for (name, saved) in state {
+        let name = name.clone();
+        match saved {
+            ir::Saved::Int(n) => _ = scalars.insert(name, Value::Int(*n as i32)),
+            ir::Saved::Real(r) => _ = scalars.insert(name, Value::Real(*r)),
+            ir::Saved::Text(t) => _ = scalars.insert(name, Value::Text(t.clone())),
+            ir::Saved::Ints(v) => _ = arrays.insert(name, v.iter().map(|n| Value::Int(*n as i32)).collect()),
+            ir::Saved::Reals(v) => _ = arrays.insert(name, v.iter().map(|r| Value::Real(*r)).collect()),
+            ir::Saved::Texts(v) => _ = arrays.insert(name, v.iter().cloned().map(Value::Text).collect()),
+        }
+    }
+    (scalars, arrays)
+}
+
 /// What a script may query while its `on init` runs.
 pub(crate) fn script_environment(
     behavior: &ir::Behavior,
@@ -647,9 +680,11 @@ pub(crate) fn script_environment(
     zones: &[ir::Zone],
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
+    let (persisted, persisted_arrays) = saved_values(&behavior.state);
     sampler_ksp::Environment {
         evaluation_budget: None,
         coverage: None,
+        transport: Some(sampler_ksp::Transport::STANDALONE),
         groups,
         engine_values: source
             .engine_values
@@ -688,32 +723,9 @@ pub(crate) fn script_environment(
             .collect(),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
-        persisted: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let value = match saved {
-                    ir::Saved::Int(n) => Value::Int(*n as i32),
-                    ir::Saved::Real(r) => Value::Real(*r),
-                    ir::Saved::Text(t) => Value::Text(t.clone()),
-                    _ => return None,
-                };
-                Some((name.clone(), value))
-            })
-            .collect(),
-        persisted_arrays: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let values = match saved {
-                    ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
-                    ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
-                    ir::Saved::Texts(v) => v.iter().cloned().map(Value::Text).collect(),
-                    _ => return None,
-                };
-                Some((name.clone(), values))
-            })
-            .collect(),
+        persisted,
+        persisted_arrays,
+        instrument_persisted: None,
         performance_view,
         midi_object: Default::default(),
         folders: Default::default(),
@@ -802,6 +814,8 @@ pub(crate) fn initialize_scripts(
                 performance_view,
             );
             environment.midi_object = midi_object.clone();
+            environment.instrument_persisted =
+                instrument.snapshot_base_state.get(index).map(|state| saved_values(state));
             environment.folders = script_folders(library);
             environment.control_values.extend(
                 control_values
@@ -1101,6 +1115,7 @@ fn prepare_inner(
             });
         }
     }
+    automation.extend(fixed_automation(&compiled, &automation));
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lower_span = crate::audit::Span::new("core_lower_bindings");
     let lowered =
@@ -1257,9 +1272,71 @@ mod dynamics_tests {
     }
 }
 
+/// Host slots a script fixes with `$CONTROL_PAR_AUTOMATION_ID` (set in `on init` or by a
+/// performance view's `hostAutomation`): Kontakt exposes the control at that host address
+/// without any saved assignment. A saved assignment of the same control or address wins.
+// ponytail: init-time ids only; a later set_control_par(AUTOMATION_ID) rebind isn't followed.
+fn fixed_automation(
+    compiled: &[sampler_ksp::Script],
+    saved: &[sampler_core::AutomationBinding],
+) -> Vec<sampler_core::AutomationBinding> {
+    let mut out: Vec<sampler_core::AutomationBinding> = Vec::new();
+    for script in compiled {
+        for w in &script.model().interface.widgets {
+            let Some(id) = w.int("$CONTROL_PAR_AUTOMATION_ID").and_then(|n| u16::try_from(n).ok()).filter(|n| *n < 2048) else {
+                continue;
+            };
+            let source = sampler_core::AutomationSource::HostParameter(id);
+            let taken = |b: &sampler_core::AutomationBinding| {
+                b.source == source || (b.source_slot == script.slot() && b.ui_id == w.ui_id)
+            };
+            if w.unresolved
+                || w.control.is_none()
+                || w.int("$CONTROL_PAR_ALLOW_AUTOMATION") == Some(0)
+                || saved.iter().chain(&out).any(taken)
+            {
+                continue;
+            }
+            out.push(sampler_core::AutomationBinding {
+                source,
+                source_slot: script.slot(),
+                ui_id: w.ui_id,
+                low: 0.,
+                high: 1.,
+                soft_takeover: false,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod automation_tests {
     use super::*;
+    #[test]
+    fn automation_id_binds_the_host_slot_and_runs_the_callback() {
+        let mut instrument = ir::Instrument::default();
+        instrument.behaviors.push(ir::Behavior {
+            name: "fixed".into(), language: ir::Language::Ksp, slot: Some(1), state: vec![], requires: vec![],
+            source: "on init declare ui_slider $a(0,100) declare ui_slider $b(0,100) declare $seen \
+                     set_control_par(get_ui_id($a),$CONTROL_PAR_AUTOMATION_ID,5) \
+                     set_control_par(get_ui_id($b),$CONTROL_PAR_AUTOMATION_ID,6) \
+                     set_control_par(get_ui_id($b),$CONTROL_PAR_ALLOW_AUTOMATION,0) end on \
+                     on ui_control($a) $seen := $a end on on ui_control($b) $seen := 1000 end on".into(),
+        });
+        let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
+        let bound: Vec<_> = loaded.plan.automation_bindings().iter().map(|b| b.source).collect();
+        assert_eq!(bound, [sampler_core::AutomationSource::HostParameter(5)]);
+        let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 8);
+        let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+        let context = sampler_core::ControlContext {
+            performance: rt.performance(0).unwrap(),
+            origin: sampler_core::ChannelAddress { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0 },
+            channels: 1,
+        };
+        rt.dispatch_host_parameter(context, 5, 0.5).unwrap();
+        assert_eq!(rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(50));
+    }
     #[test]
     fn saved_target_counts_only_sliders_in_its_physical_slot() {
         let mut instrument = ir::Instrument::default();

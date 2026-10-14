@@ -39,15 +39,12 @@ fn player(envelope: Envelope, voices: usize) -> (Runtime, StreamWorker) {
             VoiceChain::new(
                 vec![],
                 vec![
-                    Processor::Gainer {
-                        dry: 0.,
-                        gain: parameter,
-                    },
-                    Processor::StereoModeller(StereoSettings {
+                    Processor::Color(ColorSettings::gainer(parameter, 0.)),
+                    Processor::Color(ColorSettings::stereo(StereoSettings {
                         width: parameter,
                         pan: parameter,
                         pseudo: false,
-                    }),
+                    })),
                     Processor::Biquad(
                         Biquad::new(48000, FilterKind::LowPass, 3000., 0.707).unwrap(),
                     ),

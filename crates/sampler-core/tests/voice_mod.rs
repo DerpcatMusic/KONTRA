@@ -57,6 +57,7 @@ fn program(sources: Vec<ModSource>, routes: Vec<ModRoute>) -> ModProgram {
         sources,
         routes,
         shapes: vec![],
+        envelope_controls: vec![],
     }
 }
 fn modulated(plan: Prepared, program: ModProgram, start: u32) -> Prepared {
@@ -546,6 +547,7 @@ fn measure_modulation_cost_per_voice() {
             },
         ],
         shapes: vec![vec![(0., -1.), (0.5, 0.), (1., 0.)]],
+        envelope_controls: vec![],
     };
     let full = ModProgram {
         controls: vec![],
@@ -562,6 +564,7 @@ fn measure_modulation_cost_per_voice() {
             ModRoute::new(0, ModTarget::Pan, 0.2),
         ],
         shapes: vec![],
+        envelope_controls: vec![],
     };
     let base = looped(None, false);
     let rest_mpe = {
@@ -600,6 +603,7 @@ fn a_second_source_scales_route_depth() {
             ..ModRoute::new(0, ModTarget::Decibels, 6.)
         }],
         shapes: vec![vec![(0., 0.), (0.25, 0.25), (1., 1.75)]],
+        envelope_controls: vec![],
     };
     let mut rt = Runtime::new(
         modulated(plan(64, Envelope::default()), program, 0),
@@ -737,6 +741,7 @@ fn breakpoint_envelope_glides_holds_at_sustain_and_releases() {
         points: vec![point(64, 1.), point(128, 0.)],
         sustain: Some(0),
         loop_range: None,
+        flex_release: false,
     }];
     let mut rt = Runtime::new(
         modulated(
@@ -873,15 +878,12 @@ fn native_lanes_with_script_and_gain_pitch_ramps_match_forced_scalar_without_hea
         let chain = || {
             VoiceChain::new(
                 vec![
-                    Processor::Gainer {
-                        dry: 0.125,
-                        gain: Parameter::Constant(0.8),
-                    },
-                    Processor::StereoModeller(StereoSettings {
+                    Processor::Color(ColorSettings::gainer(Parameter::Constant(0.8), 0.125)),
+                    Processor::Color(ColorSettings::stereo(StereoSettings {
                         width: Parameter::Constant(0.7),
                         pan: Parameter::Constant(-0.2),
                         pseudo: false,
-                    }),
+                    })),
                 ],
                 vec![Processor::StateVariable(StateVariableFilter {
                     mode: SvfMode::LowPass,

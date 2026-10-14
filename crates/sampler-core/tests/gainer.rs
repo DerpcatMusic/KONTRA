@@ -53,15 +53,15 @@ fn plan() -> Prepared {
         vec![
             VoiceChain::new(
                 vec![],
-                vec![Processor::Gainer {
-                    dry: DRY,
-                    gain: Parameter::Control(ControlRange {
+                vec![Processor::Color(ColorSettings::gainer(
+                    Parameter::Control(ControlRange {
                         control: LEVEL,
                         low: 0.,
                         high: 1.,
                         ramp_frames: 0,
                     }),
-                }],
+                    DRY,
+                ))],
                 0,
             )
             .unwrap(),

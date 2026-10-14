@@ -136,11 +136,7 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
                 super::menu::open(ui, cx, super::menu::Target::Key(note));
             }
             let heard = cx.p.shared.heard[note as usize].load(Ordering::Relaxed);
-            let lit = if cx.p.shared.engine_keys.load(Ordering::Acquire) {
-                heard
-            } else {
-                heard.max(cx.p.shared.played[note as usize].load(Ordering::Relaxed))
-            };
+            let lit = heard.max(cx.p.shared.played[note as usize].load(Ordering::Relaxed));
             key(ui, cx.p, note, black, looks[note as usize], lit)
         };
         let whites =
@@ -594,6 +590,19 @@ fn key_under(ui: &Ui, notes: std::ops::Range<u8>) -> Option<(u8, u8)> {
     })
 }
 
+fn key_face(look: Look, black: bool) -> Color {
+    match (look, black) {
+        (Look::Mapped(color), false) => Color::oklch(0.93, 0.035, color.hue()),
+        (Look::Mapped(color), true) => Color::oklch(0.33, 0.075, color.hue()),
+        (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
+        (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
+        (Look::Switch(color, on, outlined), false) =>
+            Color::oklch(if on { 0.89 } else { 0.93 }, if outlined { 0.015 } else if on { 0.065 } else { 0.035 }, color.hue()),
+        (Look::Switch(color, on, outlined), true) =>
+            Color::oklch(if on { 0.40 } else { 0.33 }, if outlined { 0.03 } else if on { 0.10 } else { 0.075 }, color.hue()),
+    }
+}
+
 fn key(ui: &mut Ui, p: &SamplerParams, note: u8, black: bool, look: Look, lit: u8) -> El {
     let id = format!("key-{note}");
     if ui.get(id.as_str()).key_activated {
@@ -604,21 +613,8 @@ fn key(ui: &mut Ui, p: &SamplerParams, note: u8, black: bool, look: Look, lit: u
     // (and so MUI's hover) after the pointer has moved on.
     let over = ui.get(id.as_str()).hovered;
     let name = note_name(note);
-    let face = match (look, black) {
-        // A key that plays is tinted in its part's hue: faintly on white, deeper on black.
-        (Look::Mapped(color), false) => Color::oklch(0.93, 0.035, color.hue()),
-        (Look::Mapped(color), true) => Color::oklch(0.33, 0.075, color.hue()),
-        (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
-        (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
-        (Look::Switch(color, on, outlined), _) => color.with_alpha(if outlined {
-            0.25
-        } else if on {
-            1.
-        } else {
-            0.8
-        }),
-    };
-    // A sounding key lights like an LED under its top edge: neutral, strong
+    let face = key_face(look, black);
+    // A physically held key lights like an LED under its top edge: neutral, strong
     // there and fading down the key, stronger the harder it is played. Dark
     // on a light key, light on a dark one, so it reads on any key's color.
     let v = f32::from(lit) / 127.;
@@ -635,12 +631,8 @@ fn key(ui: &mut Ui, p: &SamplerParams, note: u8, black: bool, look: Look, lit: u
             ],
         ))
         .opacity(if held { 1. } else { 0. })
-        // Lit at once, fading out when let go.
-        .animate_with(if held {
-            Spring::instant()
-        } else {
-            Spring::new(0.35, 1.)
-        });
+        // Key-up is a physical event, not an audio release envelope.
+        .animate_with(Spring::instant());
     let mut parts = vec![spacer()];
     if note.is_multiple_of(12) {
         parts.push(
@@ -692,6 +684,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn released_key_returns_to_its_unpressed_pixels_on_the_next_frame() {
+        let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
+        let mut h = super::super::tests::Harness::new(&p, 900., 640.);
+        let sample = |h: &super::super::tests::Harness| {
+            let frame = h.ui.scene().unwrap().surface("key-60").unwrap().frame;
+            let pixels = super::super::tests::pixels(&h.ui, 900, 640);
+            let x = (frame.x + frame.size.width * 0.25) as usize;
+            let y = (frame.y + frame.size.height * 0.75) as usize;
+            let at = (y * 900 + x) * 4;
+            pixels[at..at + 4].to_vec()
+        };
+        let idle = sample(&h);
+        p.shared.heard[60].store(100, Ordering::Relaxed);
+        h.idle(1);
+        assert_ne!(sample(&h), idle);
+        p.shared.heard[60].store(0, Ordering::Relaxed);
+        h.idle(1);
+        assert_eq!(sample(&h), idle, "key release has no visual tail");
+    }
+
+    #[test]
     fn keyswitch_keyboard_preserves_authored_colours_without_mapped_samples() {
         let p = std::sync::Arc::new(crate::plugin::SamplerParams::new());
         p.selection
@@ -739,10 +752,12 @@ mod tests {
             for key in [24, 25] {
                 let rgb = pixel(key);
                 assert!(
-                    u16::from(rgb[0]) > u16::from(rgb[1]) + 40,
-                    "v1 paints explicit authored key colours even without mapped sample zones: key {key}, RGB {rgb:?}"
+                    rgb[0] > rgb[1],
+                    "authored red remains a tint: key {key}, RGB {rgb:?}"
                 );
             }
+            assert!(pixel(24).iter().all(|&v| v > 180), "white key stays light");
+            assert!(pixel(25).iter().all(|&v| v < 150), "black key stays dark");
             for key in [26, 27, 28, 29, 30] {
                 let rgb = pixel(key);
                 assert!(

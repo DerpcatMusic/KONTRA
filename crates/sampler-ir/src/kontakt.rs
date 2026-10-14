@@ -284,7 +284,8 @@ pub struct ModulationTarget {
     pub param: String,
     /// Saved magnitude; flags bit 1 stores depth sign independently of invert.
     pub intensity: f32,
-    pub lag_ms: u16,
+    /// Signed native lag; negative values have no proved smoothing law.
+    pub lag_ms: i16,
     pub name: String,
     /// Physical owning module slot, never a dense processor index.
     pub slot: Option<u8>,

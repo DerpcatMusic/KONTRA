@@ -1,5 +1,5 @@
 //! Print a line range of one instrument script (RAM only, to the terminal).
-//! Usage: show_script PATH PROGRAM|- BEHAVIOR FROM TO [GREP]
+//! Usage: show_script PATH PROGRAM|- BEHAVIOR FROM|state TO [GREP]
 //! `PROGRAM` is the multi program index, `-` for an .nki. With GREP, prints
 //! every line containing it (with its number) instead of a range.
 use std::path::Path;
@@ -18,6 +18,13 @@ fn main() {
         println!("behaviors: {names:?}");
         return;
     };
+    // `state 0 GREP`: the persisted values whose variable name contains GREP.
+    if a[4] == "state" {
+        for (name, saved) in behavior.state.iter().filter(|(n, _)| a.get(6).is_none_or(|g| n.contains(g.as_str()))) {
+            println!("{name} = {saved:?}");
+        }
+        return;
+    }
     let (from, to): (usize, usize) = (a[4].parse().unwrap(), a[5].parse().unwrap());
     for (i, line) in behavior.source.lines().enumerate() {
         let n = i + 1;
