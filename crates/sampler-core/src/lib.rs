@@ -152,7 +152,7 @@ pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
     DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision, SampleControl,
     SampleRevisionLimits, SampleTarget, SampleTargetId, SampleTask, SampleTransaction,
-    ResidencyRanges, ResidentFrames, HeadBudget, HeadBudgetStatus, HeadPreparer, HeadRangeBuilder,
+    ResidencyRanges, ResidentFrames, ResidentBuffer, HeadBudget, HeadBudgetStatus, HeadPreparer, HeadRangeBuilder,
     AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, PreparedRanges, Ranges, Region,
     Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };

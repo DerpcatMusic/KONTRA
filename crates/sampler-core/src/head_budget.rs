@@ -1,4 +1,4 @@
-//! Control-owned packed attack storage. A lease follows the physical immutable
+//! Control-owned PCM payload storage. A lease follows the physical immutable
 //! generation through preparation, publication and retirement, until reclamation.
 use crate::Error;
 use std::sync::{
@@ -21,8 +21,9 @@ pub struct HeadBudgetStatus {
     pub peak_bytes: usize,
 }
 impl HeadBudget {
-    /// Construct off audio. This cap covers packed PCM payloads, not page pools,
-    /// source metadata or the separately bounded decoder/staging workspaces.
+    /// Construct off audio. Explicitly bound packed heads and ResidentBuffers
+    /// share this payload cap. Page pools, source metadata, octave levels and
+    /// separately bounded decoder workspaces are outside it.
     pub fn new(limit_bytes: usize) -> Self {
         Self(Arc::new(State {
             limit: limit_bytes,
