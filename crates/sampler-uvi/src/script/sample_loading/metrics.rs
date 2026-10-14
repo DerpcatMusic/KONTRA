@@ -26,6 +26,7 @@ pub struct SampleLoadTimings {
     pub reader_open: StageTiming,
     pub file_metadata: StageTiming,
     pub prepare_decode: StageTiming,
+    pub worker_delivery: StageTiming,
     pub ready_submit: StageTiming,
     pub commit_ack: StageTiming,
     pub total: StageTiming,

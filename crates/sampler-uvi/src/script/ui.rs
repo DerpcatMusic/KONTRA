@@ -307,7 +307,8 @@ impl ScriptHost {
         let element_id = unsigned(&element, "__id").ok_or("invalid promoted element identity")?;
         let id = element_id as usize;
         let element_node = self.shared.nodes.borrow().get(id)
-            .and_then(|&(node, _)| u32::try_from(node).ok())
+            .and_then(|&(node, _)| node)
+            .and_then(|node| u32::try_from(node).ok())
             .ok_or("exact XML element identity is unavailable")?;
         let scope = match self.shared.scopes.borrow().get(id).copied().flatten() {
             Some(Scope::Program) => ui::UviMeterScope::Program,
