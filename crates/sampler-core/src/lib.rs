@@ -181,7 +181,7 @@ mod schedule;
 mod variation;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
-pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, MAX_EXPRESSION_GAIN};
+pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, InputSelector, MAX_EXPRESSION_GAIN};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
@@ -478,6 +478,8 @@ enum AttackStatus {
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
+    /// Physical provenance when an adapter maps host identities onto a wire.
+    input_source: Option<Input>,
     input_down: bool,
     address: ChannelAddress,
     plan: PlanId,
@@ -1491,6 +1493,7 @@ impl Runtime {
         let id = match self.notes.insert_below(
             Note {
                 input,
+                input_source: input,
                 input_down: input.is_some(),
                 address,
                 plan,

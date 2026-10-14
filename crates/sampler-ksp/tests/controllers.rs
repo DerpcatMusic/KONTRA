@@ -152,6 +152,37 @@ fn poly_aftertouch_forwarding_counts_matching_expression_owners_only() {
 }
 
 #[test]
+fn mapped_host_pressure_retains_physical_recipients_across_callback_waits() {
+    let mut rt = runtime("on init declare $calls end on on poly_at inc($calls) wait(1000) end on");
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let execution = Input { protocol: Protocol::Midi1, port: 1, group: 2, channel: 3, key: 60, external_id: Some(1) };
+        let first = rt.trigger(execution, 60, 1.).unwrap();
+        let overlap = rt.trigger(Input { external_id: Some(2), ..execution }, 60, 1.).unwrap();
+        let elsewhere = rt.trigger(Input { external_id: Some(3), ..execution }, 60, 1.).unwrap();
+        let source = Input { protocol: Protocol::Clap, port: 4, group: 0, channel: 9, key: 60, external_id: Some(101) };
+        rt.set_input_source(first, source).unwrap();
+        rt.set_input_source(overlap, Input { external_id: Some(102), ..source }).unwrap();
+        rt.set_input_source(elsewhere, Input { channel: 10, external_id: Some(103), ..source }).unwrap();
+        let recipients = InputSelector { protocol: Some(Protocol::Clap), port: Some(4), group: Some(0), channel: Some(9), key: Some(60), external_id: None };
+        rt.dispatch_poly_pressure_selected(domain, origin(), 60, u32::MAX, Some(recipients)).unwrap();
+        let pressure = |rt: &Runtime, note| rt.expression(rt.expression_id(note).unwrap()).unwrap().pressure;
+        assert_eq!(pressure(&rt, first), u32::MAX, "KSP forwards an unconsumed event before wait");
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(pressure(&rt, first), u32::MAX);
+        assert_eq!(pressure(&rt, overlap), u32::MAX);
+        assert_eq!(pressure(&rt, elsewhere), 0, "mapped wire channel must not broaden physical recipients");
+        assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0), Ok(1));
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+        rt.dispatch_poly_pressure_selected(domain, origin(), 60, 123, Some(InputSelector { external_id: Some(102), ..recipients })).unwrap();
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(pressure(&rt, first), u32::MAX);
+        assert_eq!(pressure(&rt, overlap), 123, "exact host note ID survives the wait");
+        assert_eq!(pressure(&rt, elsewhere), 0);
+    });
+}
+
+#[test]
 fn source_controller_modules_keep_ordered_cc_views_globals_and_ui_bindings() {
     let first = "on init declare $value := 11 end on
         on controller

@@ -1418,6 +1418,14 @@ fn host_input(note: HostNote, mpe: bool, execution_id: i32) -> Input {
     }
 }
 
+fn host_source(note: HostNote) -> Input {
+    Input {
+        protocol: if note.clap { sampler_core::Protocol::Clap } else { sampler_core::Protocol::Vst3 },
+        port: u16::from(note.port), group: 0, channel: note.channel & 15,
+        key: note.key, external_id: Some(note.id),
+    }
+}
+
 fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |p, x| p.max(x.abs()))
 }
@@ -1526,6 +1534,30 @@ fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
         NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
         NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
     })
+}
+
+/// One pressure callback per physical address/key, even for overlapping host
+/// note IDs mapped onto the same internal wire. Captured recipients remain
+/// exact if a script waits or consumes the pressure event.
+fn host_pressure(
+    part: &mut Part, index: usize, held: &[Held], value: u32,
+    matches: impl Fn(HostNote) -> bool, external_id: Option<i32>,
+) {
+    let Ok(performance) = part.runtime.performance(0) else { return };
+    for (at, h) in held.iter().enumerate() {
+        if h.part != index || !matches(h.note) { continue; }
+        if held[..at].iter().any(|previous| previous.part == index && matches(previous.note)
+            && previous.note.clap == h.note.clap && previous.note.port == h.note.port
+            && previous.note.channel == h.note.channel && previous.note.key == h.note.key) { continue; }
+        let source = host_source(h.note);
+        let selector = sampler_core::InputSelector {
+            protocol: Some(source.protocol), port: Some(source.port), group: Some(source.group),
+            channel: Some(source.channel), key: Some(source.key), external_id,
+        };
+        if let Err(sampler_core::Error::Capacity) = part.runtime.dispatch_poly_pressure_selected(
+            performance, h.input.channel_address(), h.note.key, value, Some(selector),
+        ) { part.problems.capacity_drops += 1; }
+    }
 }
 
 /// Controllers, bend, pressure and program changes reach the part's scripts
@@ -1651,11 +1683,17 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
     };
     tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
-        (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
-        (4, 0xa0) => per_note(
-            part,
-            NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX)),
-        ),
+        (2 | 4, 0xa0) => {
+            let port = ((word >> 24) & 15) as u8;
+            let value = if kind == 4 { data } else { unit_scale(f64::from(b) / 127.0) };
+            if held.iter().any(|h| h.part == index && h.note.port == port
+                && h.note.channel == channel && h.note.key == a) {
+                host_pressure(part, index, held, value,
+                    |note| note.port == port && note.channel == channel && note.key == a, None);
+            } else {
+                wire_packet(part, &words[..if kind == 4 { 2 } else { 1 }]);
+            }
+        }
         // Per-note pitch bend: centre 2^31, ±48 semitones full scale.
         (4, 0x60) => per_note(
             part,
@@ -1725,6 +1763,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 let velocity = velocity.clamp(0.0, 1.0);
                 match part.runtime.note_on(input, note.key, velocity) {
                     Ok(id) => {
+                        let _ = part.runtime.set_input_source(id, host_source(note));
                         held.push(Held {
                             part: index,
                             note,
@@ -1754,6 +1793,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 Err(_) => return,
             };
+            let _ = part.runtime.set_input_source(id, host_source(note));
             held.push(Held {
                 part: index,
                 note,
@@ -1801,6 +1841,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             }
         }
         Event::Expression(pattern, expression) => {
+            if let NoteExpression::Pressure(value) = expression {
+                host_pressure(part, index, held, unit_scale(value), |note| pattern.matches(note),
+                    (pattern.id != -1).then_some(pattern.id));
+                return;
+            }
             for h in held
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
@@ -3197,73 +3242,8 @@ pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::Scr
 
 /// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
 /// folder above the snapshot, named by its metadata or by the snapshot's folder.
-fn snapshot_parent(snapshot: &Path, name: &str) -> anyhow::Result<Option<PathBuf>> {
-    let identity = snapshot_instrument(snapshot)?;
-    let mut wanted = vec![identity];
-    if name != "Kontakt" && !name.is_empty() { wanted.push(name.to_owned()); }
-    // Snapshots/<instrument>/<category>/...: category names are not base identities.
-    if let Some(folder) = snapshot.ancestors().find(|p| {
-        p.parent().and_then(Path::file_name).is_some_and(|s| s.eq_ignore_ascii_case("Snapshots"))
-    }).and_then(Path::file_name) {
-        wanted.push(folder.to_string_lossy().into_owned());
-    }
-    find_snapshot_base(snapshot, &wanted, |base| validate_snapshot_base(snapshot, base))
-}
-
-fn find_snapshot_base(
-    snapshot: &Path,
-    wanted: &[String],
-    validate: impl Fn(&Path) -> anyhow::Result<()>,
-) -> anyhow::Result<Option<PathBuf>> {
-    fn find(dir: &Path, wanted: &[String], depth: usize, left: &mut usize, found: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-        let mut folders = Vec::new();
-        for entry in std::fs::read_dir(dir)? {
-            ensure!(*left > 0, "Snapshot base search exceeded its directory budget");
-            *left -= 1;
-            let entry = entry?;
-            let path = entry.path();
-            let kind = entry.file_type()?;
-            // Do not follow directory symlinks out of this library or around cycles.
-            if kind.is_dir() {
-                folders.push(path);
-            } else if kind.is_file() && path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-                && path
-                    .file_stem()
-                    .is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
-            {
-                found.push(path);
-            }
-        }
-        if depth == 0 {
-            return Ok(());
-        }
-        folders.sort();
-        for dir in folders { find(&dir, wanted, depth - 1, left, found)?; }
-        Ok(())
-    }
-    let library = snapshot.ancestors().find(|p| {
-        p.file_name().is_some_and(|s| s.eq_ignore_ascii_case("Snapshots"))
-    }).and_then(Path::parent);
-    let mut left = 16_384;
-    let directories: Vec<_> = if let Some(library) = library {
-        snapshot.ancestors().skip(1).take_while(|dir| dir.starts_with(library)).collect()
-    } else {
-        snapshot.ancestors().skip(1).take(4).collect()
-    };
-    for dir in directories {
-        let mut found = Vec::new();
-        find(dir, wanted, 3, &mut left, &mut found)?;
-        found.sort();
-        found.dedup();
-        ensure!(found.len() <= 1, "Snapshot base is ambiguous; select its NKI explicitly");
-        if let Some(base) = found.pop() {
-            validate(&base)?;
-            return Ok(Some(base));
-        }
-    }
-    Ok(None)
+fn snapshot_parent(snapshot: &Path, _name: &str) -> anyhow::Result<Option<PathBuf>> {
+    sampler_kontakt::resolve_snapshot_base(snapshot)
 }
 
 fn kontakt(
@@ -5432,6 +5412,43 @@ mod tests {
     }
 
     #[test]
+    fn host_poly_pressure_reaches_ksp_once_and_respects_physical_note_recipients() {
+        let source = "on init declare $calls end on on poly_at inc($calls) if (%POLY_AT[$POLY_AT_NUM] = 127) ignore_controller end if end on";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let pcm = Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
+        let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+            velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default() };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan).0;
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("pressure")).unwrap())));
+        let note = HostNote { port: 0, channel: 3, key: 60, id: 11, clap: true };
+        for note in [note, HostNote { id: 12, ..note }, HostNote { channel: 4, id: 13, ..note }] {
+            core.event(0, on(note));
+        }
+        let values = |core: &V2Core| {
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            core.held.iter().map(|h| runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure).collect::<Vec<_>>()
+        };
+        let calls = |core: &V2Core| {
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0).unwrap()
+        };
+        core.event(0, Event::Ump([0x40a3_3c00, u32::MAX]));
+        assert_eq!(calls(&core), 1, "overlapping host IDs share one physical pressure callback");
+        assert_eq!(values(&core), [0, 0, 0], "ignore_controller suppresses downstream pressure");
+        core.event(0, Event::Ump([0x40a3_3c00, 0x4000_0000]));
+        assert_eq!(calls(&core), 2);
+        assert_eq!(values(&core), [0x4000_0000, 0x4000_0000, 0], "physical channel survives wire mapping");
+        core.event(0, Event::Expression(super::super::event::HostPattern {
+            port: -1, channel: -1, key: -1, id: 12, clap: true,
+        }, NoteExpression::Pressure(0.5)));
+        assert_eq!(calls(&core), 3);
+        assert_eq!(values(&core), [0x4000_0000, unit_scale(0.5), 0], "CLAP exact ID reaches the same callback path");
+    }
+
+    #[test]
     fn midi2_per_note_pitch_bend_tunes_the_held_note() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.wav");
@@ -7487,121 +7504,17 @@ mod keyswitch_tests;
 #[path = "envelope_init_tests.rs"]
 mod envelope_init_tests;
 
-// Port from v1 0cb7a8a0:src/import.rs; v2 containers retain native metadata.
-/// Container identity only, for the off-thread snapshot catalog. Snapshot
-/// metadata names its base instrument, not the snapshot itself; the latter's
-/// authored name is its file stem (as in `read_snapshot`).
+/// Snapshot identity shared by playback, catalog and offline inspection.
 pub(crate) fn snapshot_instrument(path: &Path) -> anyhow::Result<String> {
-    std::panic::catch_unwind(|| {
-        let c = sampler_kontakt::read_chunks(path)?;
-        c.find_first(0x4f).context("Snapshot state missing")?;
-        let names = ni_file::kontakt::objects::snapshot_metadata_names(
-            c.find_first(0x51).context("Snapshot metadata missing")?,
-        )?;
-        Ok(snapshot_binding_name(&names, None)?.to_owned())
-    })
-    .map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+    sampler_kontakt::snapshot_identity(path)
 }
 
-/// The same exact base identity used by snapshot validation, without loading
-/// zones, samples, scripts or artwork.
 pub(crate) fn snapshot_base_name(path: &Path) -> anyhow::Result<String> {
-    std::panic::catch_unwind(|| {
-        let c = sampler_kontakt::read_chunks(path)?;
-        let program = ni_file::kontakt::objects::Program::try_from(
-            c.find_first(0x28).context("Base program missing")?,
-        )?;
-        Ok(program.params()?.name)
-    })
-    .map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
+    sampler_kontakt::snapshot_base_name(path)
 }
 
-/// Both direct snapshot loads and explicit base selection use the same metadata
-/// contract. Generic template names require the second name to identify the file,
-/// and the native program must still match either of the embedded identities.
 fn validate_snapshot_base(snapshot: &Path, base: &Path) -> anyhow::Result<()> {
-    let chunks = sampler_kontakt::read_chunks(snapshot)?;
-    let names = ni_file::kontakt::objects::snapshot_metadata_names(
-        chunks.find_first(0x51).context("Snapshot metadata missing")?,
-    )?;
-    let wanted = snapshot_binding_name(&names, Some(base))?;
-    let actual = snapshot_base_name(base)?;
-    ensure!(actual == wanted || (names.0 == "Kontakt" && actual == names.0),
-        "Snapshot requires base instrument {wanted:?}, got {actual:?}");
-    Ok(())
-}
-
-// A factory snapshot may retain Kontakt's generic template name. Only use
-// its second embedded name when it also exactly names the supplied NKI file;
-// the program name, group/source/slot identities are still validated below.
-fn snapshot_binding_name<'a>(
-    names: &'a (String, String),
-    base: Option<&Path>,
-) -> anyhow::Result<&'a str> {
-    if names.0 != "Kontakt" || names.1.is_empty() {
-        return Ok(&names.0);
-    }
-    if let Some(base) = base {
-        ensure!(
-            base.file_stem().and_then(|s| s.to_str()) == Some(names.1.as_str()),
-            "Generic snapshot requires base filename {:?}",
-            names.1
-        );
-    }
-    Ok(&names.1)
-}
-
-#[cfg(test)]
-mod snapshot_resolution_tests {
-    use super::*;
-
-    #[test]
-    fn generic_template_uses_embedded_content_identity_and_checks_selected_file() {
-        let names = ("Kontakt".into(), "Example Orchestra".into());
-        assert_eq!(snapshot_binding_name(&names, None).unwrap(), "Example Orchestra");
-        assert!(snapshot_binding_name(&names, Some(Path::new("Example Orchestra.nki"))).is_ok());
-        assert!(snapshot_binding_name(&names, Some(Path::new("Kontakt.nki"))).is_err());
-        let ordinary = ("Named Program".into(), "Other Content".into());
-        assert_eq!(snapshot_binding_name(&ordinary, None).unwrap(), "Named Program");
-    }
-
-    #[test]
-    fn nested_categories_find_base_and_ambiguity_is_never_guessed() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let snapshots = root.join("Snapshots/Example Orchestra/Category/More/Deep");
-        std::fs::create_dir_all(&snapshots).unwrap();
-        let snapshot = snapshots.join("Preset.nksn");
-        std::fs::write(&snapshot, []).unwrap();
-        let instruments = root.join("Instruments");
-        std::fs::create_dir(&instruments).unwrap();
-        let base = instruments.join("Example Orchestra.NKI");
-        std::fs::write(&base, []).unwrap();
-        let wanted = ["Example Orchestra".into()];
-        assert_eq!(find_snapshot_base(&snapshot, &wanted, |_| Ok(())).unwrap(), Some(base));
-        std::fs::create_dir(root.join("Other")).unwrap();
-        std::fs::write(root.join("Other/Example Orchestra.nki"), []).unwrap();
-        assert!(find_snapshot_base(&snapshot, &wanted, |_| Ok(())).unwrap_err().to_string().contains("ambiguous"));
-    }
-
-    #[test]
-    fn base_identity_validation_errors_are_preserved() {
-        let directory = tempfile::tempdir().unwrap();
-        let snapshot = directory.path().join("Preset.nksn");
-        std::fs::write(&snapshot, []).unwrap();
-        std::fs::write(directory.path().join("Named.nki"), []).unwrap();
-        assert!(find_snapshot_base(&snapshot, &["Named".into()], |_| anyhow::bail!("wrong identity"))
-            .unwrap_err().to_string().contains("wrong identity"));
-    }
-
-    #[test]
-    #[ignore = "installed library: set KONTRA_SNAPSHOT_FIXTURE to a native snapshot"]
-    fn installed_snapshot_resolves_and_applies_state() {
-        let snapshot = PathBuf::from(std::env::var_os("KONTRA_SNAPSHOT_FIXTURE").expect("snapshot fixture"));
-        let state = sampler_kontakt::read_snapshot(&snapshot).unwrap();
-        let base = snapshot_parent(&snapshot, &state.instrument).unwrap().expect("installed base");
-        sampler_kontakt::read_with_snapshot(&base, &state).unwrap();
-    }
+    sampler_kontakt::validate_snapshot_base(snapshot, base)
 }
 
 #[cfg(test)]
