@@ -42,6 +42,7 @@ fn main() {
     };
     let workload = arg("--workload", "plain");
     let residency = arg("--residency", "resident");
+    let sources = arg("--sources", "shared");
     let voices: usize = arg("--voices", "100").parse().unwrap();
     let threads: usize = arg("--threads", "1").parse().unwrap();
     let block: usize = arg("--block", "256").parse().unwrap();
@@ -52,6 +53,7 @@ fn main() {
         "plain" | "fractional" | "filtered" | "modulated" | "eq-stereo"
     ));
     assert!(matches!(residency.as_str(), "resident" | "pages"));
+    assert!(matches!(sources.as_str(), "shared" | "distinct" | "phase"));
     assert!(voices <= 4096 && blocks > 1 && block > 0);
     let (mut rt, _decoder) = fixture(
         rate,
@@ -59,6 +61,7 @@ fn main() {
         residency == "pages",
         voices.max(1),
         threads,
+        &sources,
     );
     let mut output = vec![[0.; 2]; block];
     // Independent physical note owners; one source per note. Gain differences
@@ -74,7 +77,7 @@ fn main() {
                 external_id: Some(id as i32),
             },
             60,
-            0.5 + id as f64 / if voices <= 256 { 512. } else { voices as f64 * 2. },
+            velocity(id, voices),
         )
         .unwrap();
     }
@@ -127,6 +130,7 @@ fn main() {
         "{}",
         json!({
             "workload": workload, "residency": residency, "voices": voices,
+            "sources": sources, "prepared_assets": if sources == "distinct" { voices.max(1) } else { 1 },
             "threads": threads, "parallel_chunks": rt.parallel_blocks(),
             "sample_rate": rate, "block": block, "blocks": blocks,
             "wall": metric(wall), "audio_thread_cpu": metric(caller_cpu),
@@ -138,12 +142,17 @@ fn main() {
     );
 }
 
+fn velocity(id: usize, voices: usize) -> f64 {
+    0.5 + id as f64 / if voices <= 256 { 512. } else { voices as f64 * 2. }
+}
+
 fn fixture(
     rate: u32,
     workload: &str,
     pages: bool,
     capacity: usize,
     threads: usize,
+    sources: &str,
 ) -> (Runtime, StreamWorker) {
     let mut random = 0x1234_5678_u32;
     let data: Box<[Frame]> = (0..PAGE_FRAMES * 4)
@@ -156,23 +165,31 @@ fn fixture(
             [sine * 0.25 + noise, sine * 0.18 - noise]
         })
         .collect();
-    let pcm = if pages {
-        Pcm::streamed(rate, data.len()).unwrap()
-    } else {
-        Pcm::new(rate, data.clone()).unwrap()
-    };
+    let asset_count = if sources == "distinct" { capacity } else { 1 };
+    let mut assets = Vec::with_capacity(asset_count);
     // Admission reserves each voice's maximum demand independently, even when
     // all voices share pages. Size for that contract instead of silently stealing.
     let (mut cache, mut worker) = StreamCache::new(4 * capacity).unwrap();
-    if pages {
-        for page in 0..4 {
-            assert_eq!(cache.request(&pcm, page, 0), Ok(PageStatus::Pending));
-            let mut job = worker.next_job().unwrap();
-            let range = job.range();
-            job.frames_mut().copy_from_slice(&data[range]);
-            worker.complete(job, Ok(())).unwrap();
-            assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+    for asset in 0..asset_count {
+        // Distinct immutable source bodies, not aliases of one shared snapshot.
+        let body: Box<[Frame]> = if asset == 0 { data.clone() } else {
+            data.iter().enumerate().map(|(i, frame)| {
+                let extra = (i as f32 * (0.007 + asset as f32 * 0.00013)).sin() * 0.01;
+                [frame[0] + extra, frame[1] - extra]
+            }).collect()
+        };
+        let pcm = if pages { Pcm::streamed(rate, body.len()).unwrap() } else { Pcm::new(rate, body.clone()).unwrap() };
+        if pages {
+            for page in 0..4 {
+                assert_eq!(cache.request(&pcm, page, 0), Ok(PageStatus::Pending));
+                let mut job = worker.next_job().unwrap();
+                let range = job.range();
+                job.frames_mut().copy_from_slice(&body[range]);
+                worker.complete(job, Ok(())).unwrap();
+                assert!(matches!(cache.poll(), Some(PageUpdate::Loaded(_))));
+            }
         }
+        assets.push(pcm);
     }
     let playback = Playback {
         transpose_semitones: if workload == "plain" { 0. } else { 3.17 },
@@ -185,20 +202,25 @@ fn fixture(
         }),
         ..Playback::default()
     };
-    let mut plan = Prepared::new(
-        rate,
-        vec![pcm],
-        vec![Region {
-            sample: 0,
-            key_low: 60,
-            key_high: 60,
-            root_key: None,
-            velocity_low: 0.,
-            velocity_high: 1.,
+    let region_count = if sources == "shared" { 1 } else { capacity };
+    let regions = (0..region_count).map(|id| {
+        let mut playback = playback;
+        if sources == "phase" { playback.transpose_semitones += id as f64 * 0.001; }
+        let half_width = if capacity <= 256 { 1. / 2048. } else { 0.25 / capacity as f64 };
+        Region {
+            sample: if sources == "distinct" { id } else { 0 },
+            key_low: 60, key_high: 60, root_key: None,
+            velocity_low: if sources == "shared" { 0. } else { velocity(id, capacity) - half_width },
+            velocity_high: if sources == "shared" { 1. } else { velocity(id, capacity) + half_width },
             gain: 0.008,
             envelope: Envelope::new(256, 0, 1024, 0.8, 4096).unwrap(),
             playback,
-        }],
+        }
+    }).collect();
+    let mut plan = Prepared::new(
+        rate,
+        assets,
+        regions,
         capacity,
     )
     .unwrap();
@@ -217,7 +239,7 @@ fn fixture(
                     )
                     .unwrap(),
                 ],
-                vec![Some(0)],
+                vec![Some(0); region_count],
             )
             .unwrap();
     }
@@ -239,7 +261,7 @@ fn fixture(
         plan = plan
             .with_voice_chains(
                 vec![VoiceChain::new(vec![], stages, 128).unwrap()],
-                vec![Some(0)],
+                vec![Some(0); region_count],
             )
             .unwrap();
     }
@@ -269,7 +291,7 @@ fn fixture(
             envelope_controls: vec![],
         };
         plan = plan
-            .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
+            .with_voice_modulation(vec![program], vec![Some(0); region_count], vec![0; region_count])
             .unwrap();
     }
     let mut rt = Runtime::new(
