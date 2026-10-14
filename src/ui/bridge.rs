@@ -268,6 +268,10 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
             p.underruns,
             lr::Runtime::StreamUnderruns { count: p.underruns },
         ),
+        (
+            p.cold_starts,
+            lr::Runtime::ColdStarts { count: p.cold_starts },
+        ),
         (p.nonfinite, lr::Runtime::NonFinite { count: p.nonfinite }),
         (
             p.narrowed_input,

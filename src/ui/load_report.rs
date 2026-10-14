@@ -216,6 +216,9 @@ pub enum Runtime {
     StreamUnderruns {
         count: u64,
     },
+    ColdStarts {
+        count: u64,
+    },
     NonFinite {
         count: u64,
     },
@@ -246,7 +249,11 @@ impl Runtime {
             ),
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),
-                "The disk did not keep up; those notes played silent for a moment.".into(),
+                "Sample data was not ready; those notes played silent for a moment.".into(),
+            ),
+            Self::ColdStarts { count } => (
+                format!("{count} sample starts waited for data"),
+                "The first sample frames were not resident when those voices began.".into(),
             ),
             Self::NonFinite { count } => (
                 "Invalid audio silenced".into(),
