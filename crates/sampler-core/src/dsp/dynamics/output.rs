@@ -72,7 +72,7 @@ pub(super) struct Mix(pub Shared);
 impl Stage for Mix {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.out = [0, 1].map(|ch| f.heard[ch] * self.0.factor(f.gain[ch]));
+        f.out = [f.heard[0] * self.0.factor(f.gain[0]), f.heard[1] * self.0.factor(f.gain[1])];
     }
 }
 
@@ -83,7 +83,8 @@ pub(super) struct F32Apply(pub Shared);
 impl Stage for F32Apply {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.out = [0, 1].map(|ch| f64::from(f.gain[ch] as f32 * f.audio[ch] as f32) * self.0.factor(1.));
+        let out = |ch: usize| f64::from(f.gain[ch] as f32 * f.audio[ch] as f32) * self.0.factor(1.);
+        f.out = [out(0), out(1)];
     }
 }
 
@@ -192,6 +193,7 @@ impl Stage for FeedbackOut {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[4 + i] = f64::from(*v);
@@ -225,6 +227,7 @@ impl Stage for DcBlock {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         for (i, v) in self.f.iter().enumerate() {
             state.aux[12 + i] = f64::from(*v);
@@ -245,10 +248,11 @@ impl Stage for BusOut {
     fn tick(&mut self, f: &mut Frame) {
         let low = f.gain[0].min(f.gain[1]);
         let (wet, dry) = (self.wet, 1. - self.wet);
-        f.out = [0, 1].map(|ch| {
+        let out = |ch: usize| {
             let x = f.audio[ch];
             let w = x * if self.link { low } else { f.gain[ch] } * self.makeup;
             f64::from((x * dry + w * wet) as f32)
-        });
+        };
+        f.out = [out(0), out(1)];
     }
 }
