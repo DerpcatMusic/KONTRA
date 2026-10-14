@@ -2507,6 +2507,10 @@ impl Translation {
                 (ir::Processor::LiveFormant { .. }, "formantTalk") => P::FormantTalk,
                 (ir::Processor::LiveFormant { .. }, "formantSharp") => P::FormantSharp,
                 (ir::Processor::LiveFormant { .. }, "formantSize") => P::FormantSize,
+                (ir::Processor::TimeMod(config), "filterCutoff" | "filterQ") => {
+                    let role = if target.param == "filterQ" { P::Resonance } else { P::Cutoff };
+                    config.lanes().iter().any(|lane| lane.role == role).then_some(role)?
+                }
                 (ir::Processor::Color(config), name) => {
                     let role = match name {
                         "shaper" => P::Shape,
