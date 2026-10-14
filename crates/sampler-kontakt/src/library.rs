@@ -4865,6 +4865,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,
@@ -4918,6 +4919,7 @@ mod modulation {
                 taps: 4,
             }),
             ir::Processor::Daft(ir::Daft {
+                address: None,
                 gain: 0.,
                 cutoff: 0.5,
                 resonance: 0.,

@@ -62,6 +62,7 @@ fn modulated(sources: Vec<ModSource>, routes: Vec<ModRoute>) -> Prepared {
                 sources,
                 routes,
                 shapes: vec![],
+                envelope_controls: vec![],
             }],
             vec![Some(0)],
             vec![0],
@@ -184,6 +185,7 @@ fn intensity_scale_admits_shaped_signed_assignments_and_lagged_routes() {
             ..ModRoute::new(0, ModTarget::Attenuate, 0.8)
         }],
         shapes: vec![vec![(0., 0.5), (1., 0.5)]],
+        envelope_controls: vec![],
     };
     let p = plan(8192)
         .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
@@ -221,6 +223,7 @@ fn intensity_assignments_chain_on_the_lane() {
             ..ModRoute::new(0, ModTarget::Attenuate, 0.8)
         }],
         shapes: vec![vec![(0., 0.5), (1., 0.5)], vec![(0., 0.2), (1., 0.2)]],
+        envelope_controls: vec![],
     };
     let p = plan(8192)
         .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
@@ -244,6 +247,7 @@ fn intensity_assignment_lag_smooths_its_source() {
                 ..ModRoute::new(0, ModTarget::Attenuate, 1.)
             }],
             shapes: vec![],
+            envelope_controls: vec![],
         };
         let p = plan(8192)
             .with_voice_modulation(vec![program], vec![Some(0)], vec![0])
@@ -271,6 +275,7 @@ fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
             sources: vec![ModSource::Constant],
             routes: vec![ModRoute { shape, invert, native, ..ModRoute::new(0, ModTarget::Attenuate, 0.8) }],
             shapes: vec![table.clone()],
+            envelope_controls: vec![],
         };
         let p = plan(8192).with_voice_modulation(vec![program], vec![Some(0)], vec![0]).unwrap();
         gains(&mut start(p, 0), 1024, 0)[900]
