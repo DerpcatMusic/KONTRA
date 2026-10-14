@@ -291,6 +291,8 @@ struct Eval<'h, const TRACK: bool> {
     async_depth: u8,
     current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
+    /// `random()`'s stream, seeded as the runtime's.
+    random: u64,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -336,6 +338,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         async_depth: 0,
         current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
+        random: sampler_core::RANDOM_SEED,
     };
     #[cfg(feature = "scan")]
     crate::scan::present(
@@ -1224,9 +1227,12 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (a, n) = (self.int(args, 0)?, self.int(args, 1)?);
                 V::I(a.wrapping_shr(n as u32))
             }
-            // The native generator's seed and sequence are unproved, and the lowered runtime
-            // draws from its own xorshift stream, so init cannot honestly produce a value.
-            Random => return fault(span, "random() during on init has no native-proved value"),
+            // The documented range law with the runtime's own stream: Kontakt's seed is
+            // unproved, and any value in range is one it may draw.
+            Random => {
+                let (a, b) = (self.int(args, 0)?, self.int(args, 1)?);
+                V::I(sampler_core::random(&mut self.random, a, b) as i32)
+            }
             IntToReal | Real => V::R(f64::from(self.int(args, 0)?)),
             RealToInt | Int => V::I(real_to_int(self.arg(args, 0)?.real())),
             Round => real(self.arg(args, 0)?.real().round()),
