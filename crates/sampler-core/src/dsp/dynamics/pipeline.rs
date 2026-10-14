@@ -52,6 +52,7 @@ macro_rules! chain {
             fn after(&mut self, f: &Frame) {
                 $(self.$i.after(f);)+
             }
+            #[inline(always)]
             fn store(&mut self, state: &mut ProcessorState) {
                 $(self.$i.store(state);)+
             }
@@ -128,6 +129,7 @@ impl Stage for Delay<'_> {
         }
     }
 
+    #[inline(always)]
     fn store(&mut self, state: &mut ProcessorState) {
         state.delay_position = self.at as u32;
     }
@@ -154,19 +156,22 @@ impl<'a> Window<'a> {
     #[inline(always)]
     pub fn push(&mut self, v: f64) -> f64 {
         let w = self.ring.len();
-        while self.count > 0 && v > self.ring[(self.head + self.count - 1) % w][1] {
+        // `head + k` wrapped, k < 2w, without a division.
+        let at = |k: usize| if k >= w { k - w } else { k };
+        while self.count > 0 && v > self.ring[at(self.head + self.count - 1)][1] {
             self.count -= 1;
         }
         while self.count > 0 && self.ring[self.head][0] + w as f64 <= self.frame {
-            self.head = (self.head + 1) % w;
+            self.head = at(self.head + 1);
             self.count -= 1;
         }
-        self.ring[(self.head + self.count) % w] = [self.frame, v];
+        self.ring[at(self.head + self.count)] = [self.frame, v];
         self.count += 1;
         self.frame += 1.;
         self.ring[self.head][1]
     }
 
+    #[inline(always)]
     pub fn store(&self, state: &mut ProcessorState) {
         state.aux[self.slot..self.slot + 3].copy_from_slice(&[self.head as f64, self.count as f64, self.frame]);
     }
@@ -209,13 +214,19 @@ pub(super) fn high_pass_1(rate: u32, w: f32) -> [f32; 3] {
     [b, -b, (t - 1.) * b]
 }
 
+/// `[f(a0), f(a1)]`, always inlined (`array::map` is not).
+#[inline(always)]
+pub(super) fn each<T: Copy, U>(a: [T; 2], f: impl Fn(T) -> U) -> [U; 2] {
+    [f(a[0]), f(a[1])]
+}
+
 /// Input stage: the core reads f32 audio.
 pub(super) struct Quantize;
 
 impl Stage for Quantize {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(v as f32));
+        f.audio = each(f.x, |v| f64::from(v as f32));
     }
 }
 
@@ -225,7 +236,7 @@ pub(super) struct Scale(pub f32);
 impl Stage for Scale {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(v as f32 * self.0));
+        f.audio = each(f.x, |v| f64::from(v as f32 * self.0));
     }
 }
 
@@ -238,6 +249,6 @@ pub(super) struct Drive {
 impl Stage for Drive {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.audio = f.x.map(|v| f64::from(self.gain * v as f32 + self.offset));
+        f.audio = each(f.x, |v| f64::from(self.gain * v as f32 + self.offset));
     }
 }
