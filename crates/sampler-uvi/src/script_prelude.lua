@@ -248,7 +248,9 @@ widget = function(kind, ...)
   elseif kind == "Button" or kind == "OnOffButton" then
     d.value = value == true; if kind == "Button" then d.persistent=false end
   elseif kind == "AudioMeter" then
-    d.meter_element,d.stereo,d.channel,d.vertical,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
+    -- Native constructor: element, isVertical, busId, useOutput. The bus id is
+    -- not a channel index, and input/output selection cannot set orientation.
+    d.meter_element,d.vertical,d.busId,d.useOutput,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
   elseif kind == "XY" then
     d.paramX,d.paramY,d.value = name,value,0
   elseif kind == "Image" or kind == "SVG" then d.image = native.resourcePath(name)

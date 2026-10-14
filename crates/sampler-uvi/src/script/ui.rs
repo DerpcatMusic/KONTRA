@@ -102,6 +102,14 @@ fn flag(t: &Table, key: &str, default: bool) -> bool {
         _ => default,
     }
 }
+
+fn unsigned(t: &Table, key: &str) -> Option<u32> {
+    match t.raw_get::<Value>(key).ok()? {
+        Value::Integer(n) => u32::try_from(n).ok(),
+        Value::Number(n) if n.is_finite() && n.fract() == 0. && (0. ..=u32::MAX as f64).contains(&n) => Some(n as u32),
+        _ => None,
+    }
+}
 fn widgets(host: &ScriptHost) -> Vec<Table> {
     host.lua
         .globals()
@@ -287,6 +295,40 @@ fn color(value: &str) -> Option<ui::Rgba> {
 }
 
 impl ScriptHost {
+    fn meter_request(&self, widget: &Table) -> Result<ui::UviMeterRequest, &'static str> {
+        use super::Scope;
+        let element = widget.raw_get::<Table>("meter_element")
+            .map_err(|_| "meter element is unavailable")?;
+        let class = self.lua.globals().raw_get::<Table>("__element_mt")
+            .map_err(|_| "element class identity is unavailable")?;
+        if element.metatable().is_none_or(|mt| mt.to_pointer() != class.to_pointer()) {
+            return Err("meter target is not a promoted element");
+        }
+        let element_id = unsigned(&element, "__id").ok_or("invalid promoted element identity")?;
+        let id = element_id as usize;
+        let element_node = self.shared.nodes.borrow().get(id)
+            .and_then(|&(node, _)| u32::try_from(node).ok())
+            .ok_or("exact XML element identity is unavailable")?;
+        let scope = match self.shared.scopes.borrow().get(id).copied().flatten() {
+            Some(Scope::Program) => ui::UviMeterScope::Program,
+            Some(Scope::Layer(ordinal)) => ui::UviMeterScope::Layer { ordinal },
+            Some(Scope::Keygroup(node)) if u32::try_from(node).ok() == Some(element_node) => ui::UviMeterScope::Keygroup,
+            Some(Scope::Oscillator(node)) if u32::try_from(node).ok() == Some(element_node) => ui::UviMeterScope::Oscillator,
+            _ => return Err("exact meter element scope is unavailable"),
+        };
+        let bus_id = unsigned(widget, "busId").ok_or("invalid meter bus identity")?;
+        let use_output = match widget.raw_get::<Value>("useOutput") {
+            Ok(Value::Boolean(value)) => value,
+            _ => return Err("invalid meter input/output selection"),
+        };
+        let display_as_mono = match widget.raw_get::<Value>("displayAsMono") {
+            Ok(Value::Boolean(value)) => value,
+            Ok(Value::Nil) => false,
+            _ => return Err("invalid mono display policy"),
+        };
+        Ok(ui::UviMeterRequest {element_id, element_node, scope, bus_id, use_output, display_as_mono})
+    }
+
     /// Property names/classes only; no proprietary script values.
     pub fn ui_properties(&self) -> BTreeMap<String, usize> {
         let mut out = BTreeMap::new();
@@ -620,19 +662,20 @@ impl ScriptHost {
                     .map(ui::Binding::Control)
                     .unwrap_or_default();
             } else if kind == "AudioMeter" {
-                wd.binding = ui::Binding::Meter {
-                    bus: None,
-                    channel: num(w, "channel").unwrap_or(0.) as u8,
+                // Falcon's element bus/input selection is not a Kontakt output
+                // channel. Keep its exact request for the dedicated tap bridge.
+                let detail = match self.meter_request(w) {
+                    Ok(request) => {
+                        wd.uvi_meter_request = Some(request);
+                        "exact element input/output meter tap unavailable"
+                    }
+                    Err(reason) => reason,
                 };
-                if let Ok(element) = w.get::<Table>("meter_element")
-                    && text(&element, "type").as_deref() != Some("Program")
-                {
-                    out.unsupported.push(ui::Unsupported {
-                        widget: Some(ui::WidgetRef(index)),
-                        feature: "AudioMeter element".into(),
-                        value: "non-program bus metering unavailable".into(),
-                    });
-                }
+                out.unsupported.push(ui::Unsupported {
+                    widget: Some(ui::WidgetRef(index)),
+                    feature: "AudioMeter element".into(),
+                    value: detail.into(),
+                });
             }
             for (key, role) in [
                 ("image", ui::Role::Background),
@@ -777,6 +820,8 @@ impl ScriptHost {
                 "parameter",
                 "bound",
                 "meter_element",
+                "busId",
+                "useOutput",
                 "stereo",
                 "channel",
             ];
