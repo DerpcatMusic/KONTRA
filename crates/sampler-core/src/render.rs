@@ -12,8 +12,15 @@ pub struct RuntimeStats {
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
     pub v1_control_starts: u64,
     pub v1_control_blocks: u64,
-    /// Voice starts rejected because every voice was busy and audible.
+    /// Aggregate rejected voice starts: stream admission and unavailable slots.
+    /// Preserved for compatibility; use the reason counters below for diagnosis.
     pub voice_drops: u64,
+    /// Starts rejected by unavailable voice slots after no silent waiting
+    /// victim could be replaced. Separate from page-pool admission failures.
+    pub voice_pool_refusals: u64,
+    /// A full voice pool replaced a started voice already waiting silently for
+    /// source data. Includes cold onset holds and faded-out stream starvation.
+    pub waiting_voice_replacements: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
     /// Time-stretch voices that found no free engine and played as a sampler.
@@ -72,6 +79,8 @@ impl Runtime {
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
+            voice_pool_refusals: self.voice_pool_refusals,
+            waiting_voice_replacements: self.waiting_voice_replacements,
             refused_starts: self.refused_starts,
             stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
