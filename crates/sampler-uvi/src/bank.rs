@@ -27,9 +27,13 @@ static RECENT: Mutex<Vec<Recent>> = Mutex::new(Vec::new());
 /// Large banks hold ~100k member records; keep the last few only.
 const RECENT_BANKS: usize = 2;
 
-fn recent<T>(ufs: &Ufs, f: impl FnOnce(&mut Recent) -> T) -> Option<T> {
+fn recent_in<T>(
+    cache: &Mutex<Vec<Recent>>,
+    ufs: &Ufs,
+    f: impl FnOnce(&mut Recent) -> T,
+) -> Option<T> {
     let start = std::env::var_os("KONTRA_AUDIT_UFS_DIRECTORY").map(|_| std::time::Instant::now());
-    let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    let mut recent = cache.lock().unwrap_or_else(|e| e.into_inner());
     let wait_ns = start.map_or(0, |start| {
         start.elapsed().as_nanos().min(u64::MAX as u128) as u64
     });
@@ -131,10 +135,14 @@ impl Bank {
 
     /// Open a bank for programs, scripts and samples, preparing content access.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
-        let mut bank = Self::open_metadata(path)?;
+        Self::open_in(path, &RECENT)
+    }
+
+    fn open_in(path: &Path, cache: &Mutex<Vec<Recent>>) -> Result<Self, AccessError> {
+        let mut bank = Self::open_metadata_in(path, cache)?;
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
-        let cached = recent(&bank.ufs, |r| r.content_key).flatten();
+        let cached = recent_in(cache, &bank.ufs, |r| r.content_key).flatten();
         // Only banks with encrypted members need a content state prepared.
         let content_key = if cached.is_some() {
             cached
@@ -152,7 +160,7 @@ impl Bank {
             None
         };
         drop(span);
-        recent(&bank.ufs, |r| r.content_key = content_key);
+        recent_in(cache, &bank.ufs, |r| r.content_key = content_key);
         bank.content_key = content_key;
         Ok(bank)
     }
@@ -160,6 +168,10 @@ impl Bank {
     /// Open directory metadata without preparing content access. Content-protected
     /// members remain unavailable; clear and metadata members can be read.
     pub fn open_metadata(path: &Path) -> Result<Self, AccessError> {
+        Self::open_metadata_in(path, &RECENT)
+    }
+
+    fn open_metadata_in(path: &Path, cache: &Mutex<Vec<Recent>>) -> Result<Self, AccessError> {
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let span = sampler_kontakt::audit::Span::new("uvi_ufs_header");
         let ufs = Ufs::open(path).map_err(bank_error)?;
@@ -167,7 +179,7 @@ impl Bank {
         let span = sampler_kontakt::audit::Span::new("uvi_directory_namespace");
         let namespaces = Namespaces::native();
         let program_namespace = namespaces.program;
-        if let Some((ufs, directory, paths)) = recent(&ufs, |r| {
+        if let Some((ufs, directory, paths)) = recent_in(cache, &ufs, |r| {
             (r.ufs.clone(), r.directory.clone(), r.paths.clone())
         }) {
             return Ok(Self {
@@ -205,7 +217,7 @@ impl Bank {
         let directory = Arc::new(directory);
         let paths = Arc::new(paths);
         let ufs = Arc::new(ufs);
-        let mut recent = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut recent = cache.lock().unwrap_or_else(|e| e.into_inner());
         recent.retain(|r| !r.ufs.same_bank(&ufs));
         recent.insert(
             0,
@@ -873,6 +885,9 @@ mod tests {
     /// Reopening reuses the recent bank's directory; a rewritten file never does.
     #[test]
     fn recent_bank_metadata_is_reused_only_for_the_same_file() {
+        // Other bank tests may evict the global two-bank LRU between opens.
+        // Exercise the identical cache implementation with private ownership.
+        let cache = Mutex::new(Vec::new());
         let path = std::env::temp_dir().join(format!(
             "kontra-recent-bank-{}-{}.ufs",
             std::process::id(),
@@ -885,9 +900,9 @@ mod tests {
         let (first, first_xml) =
             clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"One\"/></UVI4>");
         std::fs::write(&path, first).unwrap();
-        let first = Bank::open(&path).unwrap();
+        let first = Bank::open_in(&path, &cache).unwrap();
         assert_eq!(text(&first).as_bytes(), first_xml);
-        let reopened = Bank::open(&path).unwrap();
+        let reopened = Bank::open_in(&path, &cache).unwrap();
         assert!(
             Arc::ptr_eq(&first.directory, &reopened.directory),
             "warm readers share the whole immutable namespace"
@@ -897,14 +912,14 @@ mod tests {
             "warm readers share the immutable lookup map"
         );
         assert!(
-            recent(&reopened.ufs, |_| ()).is_some(),
+            recent_in(&cache, &reopened.ufs, |_| ()).is_some(),
             "reopen hits the recent bank"
         );
         assert_eq!(text(&reopened).as_bytes(), first_xml);
         let (second, second_xml) =
             clear_bank_fixture_with_xml(b"<UVI4><Program Name=\"Second program\"/></UVI4>");
         std::fs::write(&path, second).unwrap();
-        let rewritten = Bank::open(&path).unwrap();
+        let rewritten = Bank::open_in(&path, &cache).unwrap();
         assert_eq!(text(&rewritten).as_bytes(), second_xml);
         assert!(
             !Arc::ptr_eq(&first.directory, &rewritten.directory),
