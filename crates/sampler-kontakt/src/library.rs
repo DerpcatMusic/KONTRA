@@ -28,6 +28,9 @@ const FILE_TABLE: u16 = 0x4b;
 const LEGACY_FILE_TABLE: u16 = 0x3d;
 const SCRIPT: u16 = 6;
 
+mod impulse_namespace;
+use impulse_namespace::EffectFileOrigins;
+
 /// A translated instrument and the resolver of the samples its assets name.
 pub struct Kontakt {
     pub instrument: ir::Instrument,
@@ -247,19 +250,7 @@ fn translate(
     control_values: &[(sampler_core::ControlId, i32)],
     cache_program: Option<u32>,
 ) -> Result<Kontakt, LoadError> {
-    if let Some(snapshot) = snapshot {
-        // The snapshot's racks and buses are the program's own, in the same order.
-        let mut saved = snapshot.effects.iter();
-        for kind in [crate::effects::RACK, crate::effects::BUS] {
-            let mut theirs = saved.clone().filter(|(id, _)| *id == kind);
-            for child in program.0.children.iter_mut().filter(|c| c.id == kind) {
-                if let Some((_, data)) = theirs.next() {
-                    child.data = data.clone();
-                }
-            }
-        }
-        let _ = saved.next();
-    }
+    let effect_files = EffectFileOrigins::overlay(&mut program, snapshot);
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -552,16 +543,13 @@ fn translate(
     let mut impulse_params = Vec::new();
     {
         // Convolution impulse responses are named by the other-files table.
-        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
-            let name = u32::try_from(index)
-                .ok()
-                .and_then(|i| others.get(&i))
-                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+        let mut load = |request: crate::effects::ImpulseRequest| -> Result<crate::effects::Decoded, String> {
+            let name = effect_files.name(request, &others, snapshot)?;
             let at = samples
                 .resolve_impulse(parent, name, &containers)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
-            impulse_sources.insert(index, at.clone());
+            impulse_sources.insert(request, at.clone());
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
@@ -677,9 +665,9 @@ fn translate(
     };
     let recipes = impulse_params
         .into_iter()
-        .map(|params| {
+        .map(|(request, params)| {
             Some(crate::cache::ImpulseRecipe {
-                source: impulse_sources.get(&params.ir_index)?.clone(),
+                source: impulse_sources.get(&request)?.clone(),
                 params,
             })
         })
