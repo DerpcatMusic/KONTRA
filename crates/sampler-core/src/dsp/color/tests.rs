@@ -335,3 +335,187 @@ fn only_stateless_units_batch() {
     let held = ColorSettings { hold: Some(HoldSettings::Native(knob(0.5))), ..ColorSettings::IDENTITY };
     assert!(!color(held).batches());
 }
+
+/// UVI color units configured through their IR presets against the emulated native
+/// (uvicolor vectors, 48 kHz, 64-frame calls): impulse 0.5 on the left (both channels
+/// checked) and a 440 Hz sine on both.
+fn uvi_unit(name: &str, preset: impl Fn(&serde_json::Value) -> sampler_ir::fx::color::Config, tolerance: f64) {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!("tables/uvi_color_vectors.json")).unwrap();
+    let series = |v: &serde_json::Value| -> Vec<f64> { v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect() };
+    let mut failures = Vec::new();
+    for case in vectors[name].as_array().unwrap() {
+        let p = &case["params"];
+        let unit = color(crate::lower::color_settings(preset(p)));
+        let impulse: Vec<Vec<f64>> = case["impulse"].as_array().unwrap().iter().map(series).collect();
+        let sine_out = series(&case["sine_out"]);
+        let sine: Vec<f64> =
+            (0..256).map(|i| 0.8 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 48_000.0).sin()).collect();
+        let pulse: Vec<f64> = (0..256).map(|i| if i == 0 { 0.5 } else { 0.0 }).collect();
+        for (label, input, native) in [
+            ("impulse", [pulse, vec![0.0; 256]], [impulse[0].clone(), impulse[1].clone()]),
+            ("sine", [sine.clone(), sine], [sine_out.clone(), sine_out]),
+        ] {
+            let mut state = State::default();
+            let mut ring = vec![[0f64; 2]; 4096];
+            let mut out = [vec![], vec![]];
+            for start in (0..256).step_by(64) {
+                let mut block = [[0.; BLOCK]; 2];
+                for c in 0..2 {
+                    for i in 0..64 {
+                        block[c][i] = f64::from(input[c][start + i] as f32);
+                    }
+                }
+                unit.process(&mut state, &[], &mut block, 64, 0, &mut ring);
+                for c in 0..2 {
+                    out[c].extend_from_slice(&block[c][..64]);
+                }
+            }
+            for c in 0..2 {
+                let scale = native[c].iter().fold(1e-3f64, |m, v| m.max(v.abs()));
+                let (i, err) = out[c]
+                    .iter()
+                    .zip(&native[c])
+                    .map(|(a, b)| (a - b).abs() / scale)
+                    .enumerate()
+                    .fold((0, 0f64), |m, (i, e)| if e > m.1 { (i, e) } else { m });
+                if !(err <= tolerance) {
+                    failures.push(format!("{name} {p} {label} ch{c}: err {err:.3e} at {i}: {} vs {}", out[c][i], native[c][i]));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn param(p: &serde_json::Value, key: &str, default: f64) -> f64 {
+    p[key].as_f64().unwrap_or(default)
+}
+
+#[test]
+fn uvi_formant_crusher_matches_the_native() {
+    // The emulated unit keeps its constructor's Bite 0.2 and FilterB 1 where a case omits them.
+    uvi_unit(
+        "FormantCrusher",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            sampler_ir::fx::color::Config::formant_crusher(
+                f("Morph", 0.0),
+                f("Q", 10.0),
+                f("Formant", 0.0),
+                f("Mix", 1.0),
+                f("Bite", 0.2),
+                f("FilterA", 0.0) as u8,
+                f("FilterB", 1.0) as u8,
+            )
+        },
+        1e-6,
+    );
+}
+
+#[test]
+fn uvi_diode_clipper_matches_the_native() {
+    uvi_unit(
+        "DiodeClipper",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let d = sampler_ir::fx::color::Diode {
+                drive: f("Drive", 0.0),
+                tone: f("Tone", 20_000.0),
+                high_pass: f("HighPass", 1.0),
+                asymmetry: f("Asymmetry", 0.0),
+                output_gain: f("OutputGain", 0.0),
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::Diode(d), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
+    );
+}
+
+#[test]
+fn uvi_tone_stack_matches_the_native() {
+    uvi_unit(
+        "ToneStack",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let s = sampler_ir::fx::color::ToneStack {
+                bass: f("Bass", 0.5),
+                mid: f("Mid", 0.5),
+                treble: f("Treble", 0.5),
+                gain: f("Gain", 0.3),
+                model: f("Model", 0.0) as u8,
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::ToneStack(s), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
+    );
+}
+
+#[test]
+fn uvi_exciter_matches_the_native() {
+    // Tape runs the native vector sinf; ours is the scalar libm one (about 1 ulp).
+    uvi_unit(
+        "Exciter",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let e = sampler_ir::fx::color::Exciter {
+                mode: f("Mode", 1.0) as u8,
+                input_gain: f("InputGain", 0.0),
+                amount: f("Amount", 0.0),
+                mix: f("Mix", 100.0),
+                output_gain: f("OutputGain", 0.0),
+                oversampling: f("Oversampling", 0.0) as u8,
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::Exciter(e), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        2e-6,
+    );
+}
+
+#[test]
+fn uvi_widener_matches_the_native() {
+    uvi_unit(
+        "Widener",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let w = sampler_ir::fx::color::Widener {
+                delay: f("Delay", 0.0),
+                width: f("Width", 0.0),
+                shelf_hertz: f("HighShelfFreqSide", 10_000.0),
+                shelf_db: f("HighSelfGainSide", 0.0),
+            };
+            sampler_ir::fx::color::Config { widener: Some(w), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        1e-6,
+    );
+}
+
+#[test]
+fn uvi_redux2_matches_the_native() {
+    uvi_unit(
+        "Redux2",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let redux = sampler_ir::fx::color::Redux {
+                frequency: f("Frequency", 44_100.0),
+                bits: f("Bits", 32.0),
+                jitter: f("Jitter", 0.0),
+                dither: f("Dither", 0.0),
+                mu_law: f("QuantizeLaw", 0.0) != 0.0,
+                impulses: f("Type", 1.0) == 0.0,
+                antialias: f("Antialiasing", 1.0) != 0.0,
+                band_limit: f("BandLimitFreq", 20_000.0),
+            };
+            let position = f("FilterPosition", 0.0) as u8;
+            let filter = (position != 0).then(|| (f("FilterMode", 0.0) as u8, f("FilterFreq", 10_000.0), f("FilterRes", 0.0), position == 2));
+            sampler_ir::fx::color::Config::redux(redux, filter, f("Mix", 1.0))
+        },
+        1e-5,
+    );
+}
+
+/// Every processor stage of every voice carries a color state: shapers share one slot, so
+/// adding a shaper must not grow it past the largest (2.9 KB when written).
+#[test]
+fn color_state_holds_one_shaper_at_a_time() {
+    assert!(std::mem::size_of::<State>() <= 3072, "{}", std::mem::size_of::<State>());
+}

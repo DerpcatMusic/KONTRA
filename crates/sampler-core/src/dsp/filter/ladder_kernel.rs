@@ -105,6 +105,21 @@ pub(crate) fn exponential(index: f32) -> f32 {
     a + (entries[integer + 1] - a) * (index - integer as f32)
 }
 
+/// The effektrig lookup (`L`, inlined in the Bite/Dirt cores): `(short)(int)index`, zero
+/// below the table, the last entry from 2400 up.
+pub(crate) fn exponential_effektrig(index: f32) -> f32 {
+    let entries = EXPONENTIAL.get().expect("Ladder table must be worker-prepared");
+    let i = index as i32 as i16;
+    if i >= 2400 {
+        entries[2400]
+    } else if i < 0 {
+        0.0
+    } else {
+        let i = i as usize;
+        (index - i as f32) * (entries[i + 1] - entries[i]) + entries[i]
+    }
+}
+
 pub(crate) fn cutoff(value: f32) -> f32 {
     exponential(1481.8816 + 575.0 * value.clamp(0.0, 1.0))
 }

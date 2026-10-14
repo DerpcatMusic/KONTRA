@@ -173,8 +173,15 @@ impl Check<'_> {
             None => {}
         }
         if let Some(d) = c.decimator {
-            self.within(d.period, 1.0..=f64::MAX, "decimator period")?;
-            self.finite(d.blend, "decimator blend")?;
+            for hz in d.hertz {
+                self.within(hz, 1.0..=f64::MAX, "decimator hertz")?;
+            }
+            self.within(f64::from(d.blend), 0.0..=1.0, "decimator blend")?;
+        }
+        if let Some(b) = c.filter {
+            self.within(f64::from(b.mode), 0.0..=2.0, "color filter mode")?;
+            self.within(b.hertz, 1.0..=f64::MAX, "color filter hertz")?;
+            self.within(b.q, 1e-3..=f64::MAX, "color filter q")?;
         }
         match c.quantizer {
             Some(Quantizer::Native { bits }) => unit(bits, "color bits")?,
@@ -197,11 +204,38 @@ impl Check<'_> {
                     self.within(f64::from(v), range, field)?;
                 }
             }
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Diode(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::ToneStack(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Exciter(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Tape(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Bite(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Dirt(_) | Curve::Freak(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Tubescreamer(_) => {}
             Curve::Skreamer(knobs) => {
                 for knob in knobs {
                     unit(knob, "skreamer control")?;
                 }
             }
+        }
+        if let Some(r) = c.redux {
+            self.within(f64::from(r.frequency), 1.0..=f64::MAX, "redux frequency")?;
+            self.within(f64::from(r.bits), 1.0..=32.0, "redux bits")?;
+            self.within(f64::from(r.jitter), 0.0..=1.0, "redux jitter")?;
+            self.within(f64::from(r.dither), 0.0..=2.0, "redux dither")?;
+            self.within(f64::from(r.band_limit), 1.0..=f64::MAX, "redux band limit")?;
+        }
+        if let Some(w) = c.widener {
+            self.within(f64::from(w.delay), -15.0..=15.0, "widener delay")?;
+            self.within(f64::from(w.width), -1.0..=1.0, "widener width")?;
+            self.within(f64::from(w.shelf_hertz), 1.0..=f64::MAX, "widener shelf hertz")?;
+            self.within(f64::from(w.shelf_db), -15.0..=15.0, "widener shelf gain")?;
         }
         if let Some(tone) = c.tone {
             self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;

@@ -22,6 +22,7 @@ pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
 pub(crate) mod daft;
 pub(crate) mod formant;
+pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
 pub(crate) mod svf;
@@ -36,6 +37,8 @@ pub enum Settings {
     Ladder(ladder::LadderSettings),
     Ar(ar::ArSettings),
     Daft(daft::DaftSettings),
+    /// Kontakt KONTAKTFX Simple LP/HP, Dual SKF, Monark with their stored knobs.
+    Kontakt(sampler_ir::fx::filter::KontaktFx),
 }
 
 /// A knob of the engine a control can bind.
@@ -54,6 +57,7 @@ impl Settings {
             Self::Ladder(s) => s.valid(),
             Self::Ar(s) => s.valid(),
             Self::Daft(s) => s.valid(),
+            Self::Kontakt(_) => true,
         }
     }
 
@@ -77,22 +81,13 @@ impl Settings {
         true
     }
 
-    /// `[f64; 2]` state cells the prepared engine owns in the chain's delay storage.
-    pub(crate) fn cells(&self) -> usize {
-        match self {
-            Self::Cascade(_) => cascade::CELLS,
-            Self::Ladder(_) => ladder::CELLS,
-            Self::Ar(_) => ar::CELLS,
-            Self::Daft(_) => 0,
-        }
-    }
-
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Engine {
         let core = match self {
             Self::Cascade(s) => Core::Cascade(s.compile(rate, bindings)),
             Self::Ladder(s) => Core::Ladder(s.compile(rate, bindings)),
             Self::Ar(s) => Core::Ar(s.compile(rate, bindings)),
             Self::Daft(s) => Core::Daft(s.compile(rate, bindings)),
+            Self::Kontakt(k) => Core::Kontakt(kontaktfx::KontaktFilter::new(k, rate)),
         };
         Engine { core, modulation_index: usize::MAX }
     }
@@ -103,6 +98,7 @@ enum Core {
     Ladder(ladder::Ladder),
     Ar(ar::Ar),
     Daft(daft::Daft),
+    Kontakt(kontaktfx::KontaktFilter),
 }
 
 /// The prepared engine.
@@ -113,12 +109,13 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
+    /// `[f64; 2]` state cells the prepared engine owns in the chain's delay storage.
     pub(crate) fn cells(&self) -> usize {
         match &self.core {
-            Core::Cascade(_) => cascade::CELLS,
+            Core::Cascade(c) => c.cells(),
             Core::Ladder(_) => ladder::CELLS,
             Core::Ar(_) => ar::CELLS,
-            Core::Daft(_) => 0,
+            Core::Daft(_) | Core::Kontakt(_) => 0,
         }
     }
 
@@ -129,6 +126,7 @@ impl Engine {
             Core::Ladder(c) => ("ladder_lp4", c.trace_parameters().to_vec()),
             Core::Ar(c) => ("ar", c.trace_parameters().to_vec()),
             Core::Daft(c) => ("daft", c.trace_parameters().to_vec()),
+            Core::Kontakt(_) => ("kontaktfx", Vec::new()),
         }
     }
 
@@ -152,6 +150,7 @@ impl Engine {
                 c.process(state, parameters, block, len, at, modulation);
                 false
             }
+            Core::Kontakt(c) => c.process(state, block, len, at, modulation),
         }
     }
 }

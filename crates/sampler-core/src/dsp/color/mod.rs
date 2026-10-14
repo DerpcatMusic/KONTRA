@@ -10,14 +10,25 @@
 //! per-frame order because no stage reads another stage's state.
 mod distortion;
 mod drive;
+mod tubescreamer;
+mod dirt;
+mod freak;
+mod bite;
+mod tape;
+mod exciter;
+mod tonestack;
+mod diode;
 mod lofi;
+mod redux;
 mod saturator;
 mod shaping;
 mod skreamer;
 mod stereo;
 mod tone;
+mod widener;
 
-pub use shaping::{Decimator, Rectifier};
+pub use shaping::Rectifier;
+pub use sampler_ir::fx::color::Decimator;
 pub use stereo::StereoSettings;
 
 use super::{
@@ -71,6 +82,14 @@ pub enum CurveSettings {
     Skreamer([f32; 5]),
     /// A UVI drive engine.
     Drive(sampler_ir::fx::color::Drive),
+    Tubescreamer(sampler_ir::fx::color::Tubescreamer),
+    Dirt(sampler_ir::fx::color::Dirt),
+    Freak(sampler_ir::fx::color::Freak),
+    Bite(sampler_ir::fx::color::Bite),
+    Tape(sampler_ir::fx::color::Tape),
+    Exciter(sampler_ir::fx::color::Exciter),
+    ToneStack(sampler_ir::fx::color::ToneStack),
+    Diode(sampler_ir::fx::color::Diode),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,8 +102,12 @@ pub struct NoiseSettings {
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub gainer: Option<GainerSettings>,
+    /// The RBJ biquad section (before the hold unless `post`).
+    pub filter: Option<sampler_ir::fx::color::Biquad>,
     pub hold: Option<HoldSettings>,
     pub decimator: Option<Decimator>,
+    /// UVI Redux2's clocked reduction.
+    pub redux: Option<sampler_ir::fx::color::Redux>,
     pub quantizer: Option<QuantizerSettings>,
     pub curve: CurveSettings,
     /// Normalized damping of the Kontakt Distortion low-pass (plus DC blocker).
@@ -95,13 +118,17 @@ pub struct Settings {
     /// Wet share, 0..=1.
     pub mix: f64,
     pub stereo: Option<StereoSettings>,
+    /// UVI Widener, after the mix.
+    pub widener: Option<sampler_ir::fx::color::Widener>,
 }
 
 impl Settings {
     pub const IDENTITY: Self = Self {
         gainer: None,
+        filter: None,
         hold: None,
         decimator: None,
+        redux: None,
         quantizer: None,
         curve: CurveSettings::Identity,
         damping: None,
@@ -109,6 +136,7 @@ impl Settings {
         tone: None,
         mix: 1.0,
         stereo: None,
+        widener: None,
     };
 
     /// A Gainer: `x * (dry + g)`, `g` slewing to `gain`.
@@ -126,11 +154,6 @@ impl Settings {
         Self { curve, ..Self::IDENTITY }
     }
 
-    /// A fractional decimator alone.
-    pub fn decimator(decimator: Decimator) -> Self {
-        Self { decimator: Some(decimator), ..Self::IDENTITY }
-    }
-
     pub(super) fn valid(&self) -> bool {
         let shape = |p: &Parameter| {
             p.valid()
@@ -143,7 +166,8 @@ impl Settings {
             None => true,
             Some(HoldSettings::Native(p)) => live_knob(&p),
             Some(HoldSettings::Rate(hz)) => hz.is_finite() && hz >= 1.0,
-        } && self.decimator.is_none_or(|d| d.valid())
+        } && self.decimator.is_none_or(|d| d.hertz.iter().all(|h| h.is_finite() && *h > 0.0) && (0.0..=1.0).contains(&d.blend))
+            && self.filter.is_none_or(|b| b.mode <= 2 && b.hertz.is_finite() && b.hertz > 0.0 && b.q.is_finite() && b.q > 0.0)
             && match self.quantizer {
                 None => true,
                 Some(QuantizerSettings::Native(p)) => live_knob(&p),
@@ -155,6 +179,14 @@ impl Settings {
                 CurveSettings::Tube(p) | CurveSettings::Transistor(p) => live_knob(p),
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
                 CurveSettings::Skreamer(k) => k.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Diode(d) => [d.drive, d.tone, d.high_pass, d.asymmetry, d.output_gain].iter().all(|v| v.is_finite()),
+                CurveSettings::ToneStack(d) => [d.bass, d.mid, d.treble, d.gain].iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Exciter(d) => [d.input_gain, d.amount, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
+                CurveSettings::Tape(d) => [d.gain, d.warmth, d.rolloff].iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Bite(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Dirt(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Freak(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Tubescreamer(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Drive(d) => [d.input_gain, d.overdrive, d.trash, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
             }
             && self.damping.as_ref().is_none_or(live_knob)
@@ -163,6 +195,8 @@ impl Settings {
             && self.mix.is_finite()
             && (0.0..=1.0).contains(&self.mix)
             && self.stereo.is_none_or(StereoSettings::valid)
+            && self.redux.is_none_or(|r| [r.frequency, r.bits, r.jitter, r.dither, r.band_limit].iter().all(|v| v.is_finite() && *v >= 0.0) && r.frequency > 0.0)
+            && self.widener.is_none_or(|w| [w.delay, w.width, w.shelf_hertz, w.shelf_db].iter().all(|v| v.is_finite()) && w.delay.abs() <= 15.0)
     }
 
     /// Whether the unit leaves no tail: no stage keeps history.
@@ -170,16 +204,20 @@ impl Settings {
         self.gainer.is_none()
             && self.hold.is_none()
             && self.decimator.is_none()
+            && self.redux.is_none()
+            && self.filter.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
             && self.tone.is_none()
             && self.stereo.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_))
+            && self.widener.is_none()
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_))
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
-    pub(super) fn ring_frames(&self) -> usize {
-        if self.stereo.is_some_and(|s| s.pseudo) { 1024 } else { 0 }
+    pub(super) fn ring_frames(&self, rate: u32) -> usize {
+        let widener = self.widener.map_or(0, |w| widener::Engine::frames(w, rate));
+        if self.stereo.is_some_and(|s| s.pseudo) { 1024.max(widener) } else { widener }
     }
 
     pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Color {
@@ -202,7 +240,15 @@ impl Settings {
             CurveSettings::Rectifier(mode) => Curve::Rectifier(mode),
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
             CurveSettings::Skreamer(knobs) => Curve::Skreamer(skreamer::Skreamer::new(knobs, rate)),
-            CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d)),
+            CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
+            CurveSettings::Tubescreamer(d) => Curve::Tubescreamer(tubescreamer::Engine::new(d, rate)),
+            CurveSettings::Dirt(d) => Curve::Dirt(dirt::Engine::new(d, rate)),
+            CurveSettings::Freak(d) => Curve::Freak(freak::Engine::new(d, rate)),
+            CurveSettings::Bite(d) => Curve::Bite(bite::Engine::new(d, rate)),
+            CurveSettings::Tape(d) => Curve::Tape(tape::Engine::new(d, rate)),
+            CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
+            CurveSettings::ToneStack(d) => Curve::ToneStack(tonestack::Engine::new(d, rate)),
+            CurveSettings::Diode(d) => Curve::Diode(diode::Engine::new(d, rate)),
             CurveSettings::Tube(p) | CurveSettings::Transistor(p) => {
                 let transistor = matches!(self.curve, CurveSettings::Transistor(_));
                 let p = p.compile(bindings);
@@ -230,7 +276,9 @@ impl Settings {
                 HoldSettings::Native(p) => Hold::Native(p.compile(bindings)),
                 HoldSettings::Rate(hz) => Hold::Rate((f64::from(rate as f32) / hz) as f32),
             }),
-            decimator: self.decimator,
+            decimator: self.decimator.map(|d| shaping::Decimate::new(d, rate)),
+            filter: self.filter.map(|b| shaping::Biquad::new(b, rate)),
+            redux: self.redux.map(|r| Box::new(redux::Engine::new(r, rate))),
             quantizer: self.quantizer.map(|q| match q {
                 QuantizerSettings::Native(p) => Quantizer::Native(p.compile(bindings)),
                 QuantizerSettings::Floor(bits) => Quantizer::Floor(bits),
@@ -241,6 +289,7 @@ impl Settings {
             tone: self.tone.and_then(|cutoff| tone::Tone::new(cutoff, rate)),
             mix: self.mix as f32,
             stereo: self.stereo.map(|s| s.compile(rate, bindings)),
+            widener: self.widener.map(|w| widener::Engine::new(w, rate)),
         }
     }
 }
@@ -266,6 +315,14 @@ enum Curve {
     Destructor(lofi::Destructor),
     Skreamer(skreamer::Skreamer),
     Drive(drive::Engine),
+    Tubescreamer(tubescreamer::Engine),
+    Dirt(dirt::Engine),
+    Freak(freak::Engine),
+    Bite(bite::Engine),
+    Tape(tape::Engine),
+    Exciter(exciter::Engine),
+    ToneStack(tonestack::Engine),
+    Diode(diode::Engine),
 }
 enum Damping {
     Fixed(distortion::Damper),
@@ -278,7 +335,9 @@ pub(crate) struct Color {
     dc: [f32; 5],
     gainer: Option<(PreparedParameter, f64)>,
     hold: Option<Hold>,
-    decimator: Option<Decimator>,
+    decimator: Option<shaping::Decimate>,
+    filter: Option<shaping::Biquad>,
+    redux: Option<Box<redux::Engine>>,
     quantizer: Option<Quantizer>,
     curve: Curve,
     damping: Option<Damping>,
@@ -286,6 +345,57 @@ pub(crate) struct Color {
     tone: Option<tone::Tone>,
     mix: f32,
     stereo: Option<stereo::Stereo>,
+    widener: Option<widener::Engine>,
+}
+
+/// The prepared shaper's history. Only one shaper runs per unit, so the state is the
+/// largest shaper's, not their sum.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Shaper {
+    #[default]
+    None,
+    Skreamer(skreamer::State),
+    Drive(drive::State),
+    Tubescreamer(tubescreamer::State),
+    Dirt(dirt::State),
+    Freak(freak::State),
+    Bite(bite::State),
+    Tape(tape::State),
+    Exciter(exciter::State),
+    ToneStack(tonestack::State),
+    Diode(diode::State),
+    /// A Kontakt KONTAKTFX filter stage's history: a filter stage runs no shaper.
+    KontaktFilter(super::filter::kontaktfx::State),
+}
+
+impl Shaper {
+    fn finite(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Skreamer(s) => s.finite(),
+            Self::Drive(s) => s.finite(),
+            Self::Tubescreamer(s) => s.finite(),
+            Self::Dirt(s) => s.finite(),
+            Self::Freak(s) => s.finite(),
+            Self::Bite(s) => s.finite(),
+            Self::Tape(s) => s.finite(),
+            Self::Exciter(s) => s.finite(),
+            Self::ToneStack(s) => s.finite(),
+            Self::Diode(s) => s.finite(),
+            Self::KontaktFilter(s) => s.finite(),
+        }
+    }
+}
+
+/// The shaper state for `variant`, reset when the unit's shaper differs.
+macro_rules! slot {
+    ($state:expr, $variant:ident) => {{
+        if !matches!($state.shaper, Shaper::$variant(_)) {
+            $state.shaper = Shaper::$variant(Default::default());
+        }
+        let Shaper::$variant(s) = &mut $state.shaper else { unreachable!() };
+        s
+    }};
 }
 
 /// Every stage's history; a stage the unit lacks leaves its field untouched.
@@ -295,25 +405,35 @@ pub(super) struct State {
     gain_ready: bool,
     hold: lofi::HoldState,
     decimator: shaping::DecimatorState,
+    biquad: [[f32; 2]; 2],
+    redux: redux::State,
     damper: [[f64; 5]; 2],
     noise: lofi::NoiseState,
     saturator: saturator::State,
-    skreamer: skreamer::State,
-    drive: drive::State,
+    shaper: Shaper,
     tone: tone::ToneState,
     stereo: stereo::StereoState,
+    widener: widener::State,
 }
 
 impl State {
+    /// The Kontakt filter core's history in the shaper slot.
+    pub(in crate::dsp) fn kontakt_filter(&mut self) -> &mut super::filter::kontaktfx::State {
+        slot!(self, KontaktFilter)
+    }
+
     pub(super) fn finite(&self) -> bool {
         let f32s = [self.gain, self.hold.held[0], self.hold.held[1], self.hold.phase,
             self.noise.history[0], self.noise.history[1], self.stereo.width, self.stereo.pan];
         f32s.iter().all(|v| v.is_finite())
-            && self.decimator.z.iter().flatten().chain(&self.decimator.delta).chain([&self.decimator.phase]).all(|v| v.is_finite())
+            && self.decimator.finite()
+            && self.biquad.iter().flatten().all(|v| v.is_finite())
             && self.damper.iter().flatten().all(|v| v.is_finite())
             && self.saturator.finite()
-            && self.skreamer.finite()
+            && self.shaper.finite()
             && self.tone.finite()
+            && self.widener.finite()
+            && self.redux.finite()
     }
 }
 
@@ -323,6 +443,8 @@ impl Color {
     pub(super) fn batches(&self) -> bool {
         self.hold.is_none()
             && self.decimator.is_none()
+            && self.redux.is_none()
+            && self.filter.is_none()
             && self.quantizer.is_none()
             && self.damping.is_none()
             && self.noise.is_none()
@@ -330,6 +452,7 @@ impl Color {
             && self.mix == 1.0
             && matches!(self.curve, Curve::Identity | Curve::Classic(_) | Curve::Rectifier(_))
             && self.stereo.as_ref().is_none_or(stereo::Stereo::batches)
+            && self.widener.is_none()
     }
 
     /// The dominant stage's trace name, and every knob as a parameter.
@@ -383,8 +506,8 @@ impl Color {
             parameters.push(("color", color));
         }
         if let Some(d) = self.decimator {
-            parameters.push(("period", constant(d.period)));
-            parameters.push(("blend", constant(d.blend)));
+            parameters.push(("period", constant(d.period())));
+            parameters.push(("blend", constant(f64::from(d.blend()))));
         }
         if let Some(s) = &self.stereo {
             parameters.extend(s.trace_parameters());
@@ -437,8 +560,16 @@ impl Color {
                 curve(&shape, block, len);
             }
             Curve::Destructor(d) => d.process(block, len),
-            Curve::Skreamer(s) => s.process(&mut state.skreamer, block, len),
-            Curve::Drive(d) => d.process(&mut state.drive, block, len),
+            Curve::Skreamer(s) => s.process(slot!(state, Skreamer), block, len),
+            Curve::Drive(d) => d.process(slot!(state, Drive), block, len),
+            Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
+            Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),
+            Curve::Freak(d) => d.process(slot!(state, Freak), block, len),
+            Curve::Bite(d) => d.process(slot!(state, Bite), block, len),
+            Curve::Tape(d) => d.process(slot!(state, Tape), block, len),
+            Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
+            Curve::ToneStack(d) => d.process(slot!(state, ToneStack), block, len),
+            Curve::Diode(d) => d.process(slot!(state, Diode), block, len),
         }
     }
 
@@ -467,6 +598,9 @@ impl Color {
             }
             state.gain = current;
         }
+        if let Some(b) = self.filter.as_ref().filter(|b| !b.post) {
+            b.process(&mut state.biquad, block, len);
+        }
         match &self.hold {
             Some(Hold::Native(frequency)) => {
                 let frequency = frequency.value(parameters, at, None) as f32;
@@ -479,6 +613,9 @@ impl Color {
         }
         if let Some(decimator) = &self.decimator {
             decimator.process(&mut state.decimator, block, len);
+        }
+        if let Some(r) = &self.redux {
+            r.process(&mut state.redux, block, len);
         }
         match &self.quantizer {
             Some(Quantizer::Native(bits)) => {
@@ -497,6 +634,9 @@ impl Color {
         if let Some(tone) = &self.tone {
             tone.process(&mut state.tone, block, len);
         }
+        if let Some(b) = self.filter.as_ref().filter(|b| b.post) {
+            b.process(&mut state.biquad, block, len);
+        }
         if let Some([level, color]) = self.noise {
             let [level, color] = [level, color].map(|p| p.value(parameters, at, None) as f32);
             let (active, gain, alpha) = lofi::native_noise(level, color);
@@ -511,6 +651,9 @@ impl Color {
                     *y = f64::from((*y as f32) * wet + dry * (*x as f32));
                 }
             }
+        }
+        if let Some(w) = &self.widener {
+            w.process(&mut state.widener, block, len, ring);
         }
         if let Some(stereo) = &self.stereo {
             stereo.process(&mut state.stereo, parameters, block, len, at, ring);
