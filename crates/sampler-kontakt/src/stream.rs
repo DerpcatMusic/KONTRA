@@ -890,6 +890,9 @@ pub struct Streamer {
     pinned_wavetables: HashSet<AssetId>,
     sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
     ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
+    /// Authored onsets without the complete possible start-offset interval.
+    /// The full table above remains authoritative for reload/coverage reporting.
+    onset_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
@@ -913,6 +916,11 @@ impl Streamer {
     pub fn head_readiness(&self, assets: &[Pcm]) -> HeadReadiness {
         self.head_readiness_matching(assets, |_| true)
     }
+    /// Base authored forward/reverse starts. Complete onset coverage is distinct
+    /// from covering every possible sample-start modulation offset.
+    pub fn onset_readiness(&self, assets: &[Pcm]) -> HeadReadiness {
+        self.ranges_readiness_matching(assets, |_| true, true)
+    }
     /// Coverage of every authored range belonging to the selected asset IDs.
     /// This does not infer script/group/round-robin reachability.
     pub fn head_readiness_matching(
@@ -920,6 +928,16 @@ impl Streamer {
         assets: &[Pcm],
         include: impl Fn(AssetId) -> bool,
     ) -> HeadReadiness {
+        self.ranges_readiness_matching(assets, include, false)
+    }
+    fn ranges_readiness_matching(
+        &self,
+        assets: &[Pcm],
+        include: impl Fn(AssetId) -> bool,
+        onsets: bool,
+    ) -> HeadReadiness {
+        let table = if onsets { self.onset_ranges.as_deref().unwrap_or(&self.ranges) }
+            else { &self.ranges };
         let mut state = HeadReadiness {
             budget_bytes: self.head_budget,
             ..Default::default()
@@ -928,7 +946,7 @@ impl Streamer {
             if !include(pcm.asset_id()) {
                 continue;
             }
-            let Some(ranges) = self.ranges.get(&pcm.asset_id()).filter(|r| !r.is_empty()) else {
+            let Some(ranges) = table.get(&pcm.asset_id()).filter(|r| !r.is_empty()) else {
                 continue;
             };
             state.assets += 1;
@@ -1132,10 +1150,27 @@ impl Streamer {
             &|| false,
         )
     }
+    #[cfg(test)]
     fn start_cancelable(
         sources: HashMap<AssetId, Arc<dyn AssetSource>>,
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
+        Self::start_with_onsets_cancelable(sources, assets, ranges, None, worker, decoders,
+            lazy, head_budget, pinned_wavetables, allow_cold_fallback, canceled)
+    }
+    fn start_with_onsets_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        onsets: Option<Vec<Vec<Range<usize>>>>,
         worker: StreamWorker,
         decoders: usize,
         lazy: bool,
@@ -1157,6 +1192,21 @@ impl Streamer {
             .zip(ranges)
             .map(|(pcm, ranges)| (pcm.asset_id(), ranges))
             .collect();
+        let onset_table = onsets.map(|onsets| {
+            if onsets.len() != assets.len() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "onset asset/range count mismatch"));
+            }
+            let mut table_onsets = HashMap::new();
+            for (pcm, onsets) in assets.iter().zip(onsets) {
+                range_bounds(pcm, &onsets)?;
+                if onsets.iter().any(|r| !table[&pcm.asset_id()].iter()
+                    .any(|full| full.start <= r.start && full.end >= r.end)) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "onset range outside requested attack coverage"));
+                }
+                table_onsets.insert(pcm.asset_id(), onsets);
+            }
+            Ok(table_onsets)
+        }).transpose()?;
         if pinned_wavetables.iter().any(|id| !table.contains_key(id)) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1166,13 +1216,16 @@ impl Streamer {
         if canceled() {
             return Err(canceled_head());
         }
-        let select = |lazy: bool| {
+        let select = |lazy: bool, onset: bool| {
             let mut read = HashSet::new();
             assets
                 .iter()
                 .filter(|pcm| read.insert(pcm.asset_id()))
                 .filter_map(|pcm| {
-                    let ranges = &table[&pcm.asset_id()];
+                    let ranges = if onset && !pcm.requires_resident()
+                        && !pinned_wavetables.contains(&pcm.asset_id()) {
+                        &onset_table.as_ref().expect("onset fallback table")[&pcm.asset_id()]
+                    } else { &table[&pcm.asset_id()] };
                     ((!lazy || pinned_wavetables.contains(&pcm.asset_id()) || pcm.requires_resident())
                         && (!ranges.is_empty() || pcm.requires_resident())
                         && !(pcm.requires_resident() && pcm.resident_frames().is_some()))
@@ -1180,7 +1233,7 @@ impl Streamer {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut selected = select(lazy);
+        let mut selected = select(lazy, false);
         let residency_budget = HeadBudget::new(head_budget);
         // Binding and publication serialize on each Pcm's control mutation lock.
         // Escaped unbudgeted recipes can never publish into a bound asset.
@@ -1221,8 +1274,21 @@ impl Streamer {
                 if let Some(reason) = reason.filter(|_| allow_cold_fallback && !lazy) {
                     // Failed preparation publishes nothing and releases every
                     // staging lease before this retry, over the same sources.
-                    selected = select(true);
-                    let staged = prepare(&selected)?;
+                    let onset_staged = if onset_table.is_some() {
+                        selected = select(false, true);
+                        match prepare(&selected) {
+                            Ok(staged) => Some(staged),
+                            Err(error) if error.get_ref().is_some_and(|e| e.is::<HeadBudgetExceeded>()) => None,
+                            Err(error) => return Err(error),
+                        }
+                    } else { None };
+                    let staged = match onset_staged {
+                        Some(staged) => staged,
+                        None => {
+                            selected = select(true, false);
+                            prepare(&selected)?
+                        }
+                    };
                     head_fallback = Some(reason);
                     staged
                 } else {
@@ -1297,6 +1363,7 @@ impl Streamer {
             pinned_wavetables,
             sources,
             ranges: Arc::new(table),
+            onset_ranges: onset_table.map(Arc::new),
             stop,
             threads: Vec::new(),
             reloader: None,
@@ -1898,10 +1965,13 @@ impl Streamed {
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
         audit_start_ranges(&loaded.instrument, &kept, &ranges, &pinned_wavetables, rate, head, &policy);
-        let (streamer, bytes) = Streamer::start_cancelable(
+        let onsets = policy.allow_cold_fallback.then(||
+            start_ranges_with_offsets(&loaded.instrument, &kept, rate, head, &policy, false));
+        let (streamer, bytes) = Streamer::start_with_onsets_cancelable(
             sources,
             &kept,
             ranges,
+            onsets,
             worker,
             policy.decoders,
             policy.lazy,
@@ -2314,6 +2384,80 @@ mod tests {
                 assert!(result.err().unwrap().get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
                 assert!(assets.iter().all(|p|p.head_bytes()==0));
             }
+        }
+    }
+
+    #[test]
+    fn onset_fallback_keeps_reverse_ranges_and_mandatory_sources_atomic() {
+        for (budget, allowed, expected) in [(672, true, Some(true)), (671, true, Some(false)),
+            (575, true, None), (672, false, None)] {
+            for decoders in [1, 4] {
+                let assets = vec![Pcm::streamed(48000,8192).unwrap(), Pcm::streamed(48000,8192).unwrap(),
+                    Pcm::streamed(48000,8192).unwrap(), Pcm::pending_resident(48000,64).unwrap()];
+                let sources = assets.iter().map(|pcm| (pcm.asset_id(), Arc::new(HeadFixture {
+                    opens: Arc::new(AtomicU64::new(0)), cancel: None, frames: pcm.frame_count(), wide: false,
+                }) as Arc<dyn AssetSource>)).collect();
+                let ranges = vec![vec![0..2048],vec![2000..4096,6000..8192],vec![0..32],vec![0..64]];
+                // Two distinct authored starts of one asset, including a reverse
+                // suffix. This is not a generic prefix truncation of its union.
+                let onsets = vec![vec![0..16],vec![2000..2016,8176..8192],vec![0..4],vec![0..64]];
+                let (_,worker) = StreamCache::new(4).unwrap();
+                let result = Streamer::start_with_onsets_cancelable(sources,&assets,ranges,Some(onsets),
+                    worker,decoders,false,budget,HashSet::from([assets[2].asset_id()]),allowed,&||false);
+                if let Some(onset_ready) = expected {
+                    let (streamer,bytes) = result.unwrap();
+                    assert_eq!(bytes,if onset_ready {672} else {576});
+                    assert!(streamer.head_fallback().is_some());
+                    assert!(streamer.head_budget_status().held_bytes<=budget);
+                    assert!(streamer.head_budget_status().peak_bytes<=budget);
+                    assert_eq!(streamer.onset_readiness(&assets).complete(),onset_ready);
+                    assert!(!streamer.head_readiness(&assets).complete(),"full offset request remains truthful");
+                    assert!(assets[2].resident_covers(0..32),"wavetable ignores shortened onset alternative");
+                    assert_eq!(assets[3].resident_frames().unwrap().len(),64);
+                    assert_eq!(assets[0].resident_covers(0..16),onset_ready);
+                    assert_eq!(assets[1].resident_covers(2000..2016),onset_ready);
+                    assert_eq!(assets[1].resident_covers(8176..8192),onset_ready);
+                    assert!(!assets[0].resident_covers(0..2048));
+                    assert!(!assets[1].resident_covers(6000..8192));
+                    // An expanded reload cannot replace an admitted attack with
+                    // a partial/over-budget generation or lose its quota lease.
+                    assets[0].mark_cold();
+                    assert!(streamer.reload(&assets).is_err());
+                    assert_eq!(assets[0].resident_covers(0..16),onset_ready);
+                    assert!(streamer.head_budget_status().held_bytes<=budget);
+                } else {
+                    let error = result.err().unwrap();
+                    assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+                    assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()),
+                        "no optional or mandatory source publishes on total startup failure");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn onset_retry_never_converts_source_failure_or_cancellation_to_cold_success() {
+        for cancel in [false,true] {
+            let flag = Arc::new(AtomicBool::new(false));
+            let pcm = Pcm::streamed(48000,8192).unwrap();
+            struct Failure { cancel: bool, flag: Arc<AtomicBool> }
+            impl AssetSource for Failure {
+                fn open(&self)->io::Result<SampleReader> {
+                    let (cancel,flag) = (self.cancel,self.flag.clone());
+                    Ok(SampleReader::custom(48000,8192,move|_,out| {
+                        if !cancel {return Err(io::Error::new(io::ErrorKind::InvalidData,"authored source failure"));}
+                        out.fill([0.5;2]);flag.store(true,Ordering::Release);Ok(())
+                    }))
+                }
+            }
+            let sources = HashMap::from([(pcm.asset_id(),Arc::new(Failure{cancel,flag:flag.clone()}) as Arc<dyn AssetSource>)]);
+            let (_,worker) = StreamCache::new(1).unwrap();
+            let result = Streamer::start_with_onsets_cancelable(sources,std::slice::from_ref(&pcm),
+                vec![vec![0..8192]],Some(vec![vec![0..16]]),worker,1,false,32,HashSet::new(),true,
+                &||flag.load(Ordering::Acquire));
+            let error = result.err().expect("source/cancel failure must propagate");
+            assert_eq!(error.kind(),if cancel {io::ErrorKind::Interrupted}else{io::ErrorKind::InvalidData});
+            assert_eq!(pcm.head_bytes(),0);
         }
     }
 
@@ -2731,6 +2875,7 @@ mod tests {
                     .map(|pcm| (pcm.asset_id(), vec![0..32]))
                     .collect(),
             ),
+            onset_ranges: None,
             stop: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),
             reloader: None,

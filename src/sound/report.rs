@@ -234,6 +234,9 @@ pub struct LoadReport {
 pub struct StreamStartup {
     pub ranges: usize,
     pub covered_ranges: usize,
+    /// Base forward/reverse attacks, excluding the full possible offset union.
+    pub onset_ranges: usize,
+    pub covered_onset_ranges: usize,
     pub packed_head_bytes: usize,
     pub head_budget_bytes: usize,
     pub required_resident_assets: usize,
@@ -246,9 +249,12 @@ pub struct StreamStartup {
 impl StreamStartup {
     pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm], report: &sampler_kontakt::StreamReport) -> Self {
         let readiness = streamer.head_readiness(assets);
+        let onsets = streamer.onset_readiness(assets);
         Self {
             ranges: readiness.ranges,
             covered_ranges: readiness.covered_ranges,
+            onset_ranges: onsets.ranges,
+            covered_onset_ranges: onsets.covered_ranges,
             packed_head_bytes: readiness.packed_bytes,
             head_budget_bytes: readiness.budget_bytes,
             required_resident_assets: report.required_resident_assets,
@@ -260,8 +266,8 @@ impl StreamStartup {
 
     pub fn warning(&self) -> Option<String> {
         self.fallback.as_ref().map(|why| format!(
-            "Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. First notes may wait for disk reads.",
-            self.covered_ranges, self.ranges))
+            "Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}. Uncached starts may wait for disk reads.",
+            self.covered_ranges, self.ranges, self.covered_onset_ranges, self.onset_ranges))
     }
 }
 
