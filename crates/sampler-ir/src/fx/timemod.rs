@@ -523,6 +523,21 @@ impl Config {
         Self { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet }
     }
 
+    /// Kontakt filter type 13 (Phaser filter): four fixed allpass stages from the
+    /// normalized cutoff and resonance, half dry, half wet. With `address`, its
+    /// cutoff and resonance are lanes (`ENGINE_PAR_CUTOFF`/`_RESONANCE`, modulation).
+    pub fn phaser_filter(cutoff: f32, resonance: f32, address: Option<crate::SlotAddress>) -> Self {
+        Self {
+            address,
+            line: None,
+            allpass: Some(Allpass { stages: 4, law: SweepLaw::Filter { cutoff }, feedback: (f64::from(resonance) * 0.85) as f32 }),
+            order: Order::LineThenAllpass,
+            lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. },
+            dry: 0.5,
+            wet: 0.5,
+        }
+    }
+
     /// Live knobs of a script-addressed Kontakt legacy Delay, Chorus, Flanger
     /// or Phaser, each holding its stored value (fx_legacy_delay_reverb_mod.tsv);
     /// [`Config::set`] applies the native setter. A synced time or speed has
@@ -568,6 +583,10 @@ impl Config {
                 lanes.extend(speed("ENGINE_PAR_PH_SPEED"));
                 lanes.push(phase("ENGINE_PAR_PH_PHASE"));
             }
+            (None, Some(Allpass { law: SweepLaw::Filter { cutoff }, feedback, .. })) => {
+                lanes.push(Lane::new("ENGINE_PAR_CUTOFF", P::Cutoff, f64::from(cutoff), Law::Identity));
+                lanes.push(Lane::new("ENGINE_PAR_RESONANCE", P::Resonance, f64::from(feedback) / 0.85, Law::Identity));
+            }
             _ => {}
         }
         lanes
@@ -585,12 +604,18 @@ impl Config {
             P::Phase => self.lfo.phase = v * 0.25,
             _ => {}
         }
-        if let Some(Allpass { law: SweepLaw::Legacy { depth }, feedback, .. }) = &mut self.allpass {
-            match role {
+        match &mut self.allpass {
+            Some(Allpass { law: SweepLaw::Legacy { depth }, feedback, .. }) => match role {
                 P::Depth => *depth = v,
                 P::Feedback => *feedback = (stored * 0.85) as f32,
                 _ => {}
-            }
+            },
+            Some(Allpass { law: SweepLaw::Filter { cutoff }, feedback, .. }) => match role {
+                P::Cutoff => *cutoff = v.clamp(0., 1.),
+                P::Resonance => *feedback = (stored.clamp(0., 1.) * 0.85) as f32,
+                _ => {}
+            },
+            _ => {}
         }
         let Some(line) = &mut self.line else { return };
         match (&mut line.native, role) {

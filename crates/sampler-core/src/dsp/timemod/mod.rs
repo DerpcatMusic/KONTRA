@@ -347,21 +347,8 @@ impl TimeMod {
     /// Phaser filter (Kontakt filter type 13): four fixed allpass stages from
     /// the normalized cutoff and resonance, half dry, half wet.
     pub(crate) fn phaser_filter([cutoff, resonance]: [f32; 2]) -> Result<Self, Error> {
-        let cfg = Config {
-            address: None,
-            line: None,
-            allpass: Some(Allpass {
-                stages: 4,
-                law: SweepLaw::Filter { cutoff },
-                feedback: (f64::from(resonance) * 0.85) as f32,
-            }),
-            order: Order::LineThenAllpass,
-            lfo: sampler_ir::fx::timemod::Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. },
-            dry: 0.5,
-            wet: 0.5,
-        };
         // The rate only sizes unused LFO tables.
-        Self::compile(cfg, 48_000)
+        Self::compile(Config::phaser_filter(cutoff, resonance, None), 48_000)
     }
 
     pub(crate) fn config(&self) -> Config {

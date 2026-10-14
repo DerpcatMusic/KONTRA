@@ -399,3 +399,18 @@ fn floor_and_ceil_reads_land_on_whole_frames() {
         assert_eq!(hits, [frame], "{kind:?}");
     }
 }
+
+#[test]
+fn addressed_phaser_filter_exposes_cutoff_and_resonance_lanes() {
+    use sampler_ir::ProcessorParameter as P;
+    let address = sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 };
+    let mut cfg = Config::phaser_filter(0.25, 0.5, Some(address));
+    let lanes = cfg.lanes();
+    assert_eq!(lanes.iter().map(|l| l.role).collect::<Vec<_>>(), [P::Cutoff, P::Resonance]);
+    assert!((lanes[0].value - 0.25).abs() < 1e-7 && (lanes[1].value - 0.5).abs() < 1e-7);
+    cfg.set(P::Cutoff, 0.75);
+    cfg.set(P::Resonance, 1.);
+    let fixed = TimeMod::phaser_filter([0.75, 1.]).unwrap().config();
+    assert_eq!(cfg.allpass, fixed.allpass);
+    assert!(Config::phaser_filter(0.25, 0.5, None).lanes().is_empty());
+}
