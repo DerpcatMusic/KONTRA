@@ -822,9 +822,30 @@ including candidate plain maxima 2,193.811 us at 64 frames and 5,963.261 us
 at 256 frames in round two. Those cannot be hidden by improved medians or
 assigned to a cause from this receipt alone. Candidate plain 256-frame mean
 meter is 1.707 / 1.733%, fractional 18.401 / 18.247%, and distinct EQ
-38.987 / 39.884%; none meets 1%. A bounded compiler-free repeat is still
-needed before promoting a numeric performance claim. The source correction
+38.987 / 39.884%; none meets 1%. This contended window alone does not promote
+a numeric performance claim. The source correction
 and its exact output/state oracles are checkpointed in `aa054145c`.
+
+The subsequent bounded `cursor-step-plain-repeat-paired.json` repeats only the
+plain 64/256-frame controls with the same frozen executables, two alternating
+rounds and all the same callback/PCM/heap checks. Its 250 ms monitor records
+zero compiler observations; the four busy-process records are filesystem
+`bees` background work. Ordinary desktop/VM/DAW activity remains. All eight
+runs have zero wall deadline misses and exact paired PCM hash/energy.
+
+| Frames | Before / after p50 us, round 0 | Before / after p50 us, round 1 | Before / after mean meter %, rounds 0 and 1 |
+| --- | ---: | ---: | ---: |
+| 64 | 43.801 / 37.231 | 44.041 / 37.760 | 3.342 / 2.841; 3.390 / 2.898 |
+| 256 | 98.672 / 85.872 | 98.632 / 85.531 | 1.895 / 1.649; 1.913 / 1.644 |
+
+This accepts the narrow in-place update as a measured plain whole-callback
+improvement: p50 falls 14.3–15.0% at 64 frames and 13.0–13.3% at 256 frames.
+The 256-frame mean meter is still 1.64–1.65%, not 1%. Pitched/EQ gains remain
+limited to the earlier contended evidence; no universal percentage is claimed.
+All repeat tails are retained, including the first 256-frame candidate maximum
+of 272.466 us versus 218.464 us before, despite better median and p99. These
+short unpaced measurements establish a compute improvement, not isolated-host
+deadline reliability or an authored streamed-instrument acceptance.
 
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
