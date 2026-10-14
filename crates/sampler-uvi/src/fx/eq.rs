@@ -8,9 +8,9 @@
 //!   poles, steeper slopes are reported and run at 24 dB. Per-band `Channels` other than 0 is
 //!   reported. UVI's own band laws are not recovered: bands use the generic RBJ law.
 //! - `ThreeBandShelves`: level plus two first-order shelves relative to it (generic RBJ law).
-//! - `FXPreset` EQs (TwoBandEq, ThreeBandEq, Parametric) are not reachable: the translator has no
-//!   FXPreset container, and their attribute ranges, corner frequencies and band types are
-//!   UNPROVED in uvi-elements.tsv. `BiquadFilter` belongs to the filter family.
+//! - TwoBandEq, ThreeBandEq, ParametricEQ (alias Parametric), also inside an `FXPreset` wrapper:
+//!   fixed band types under `Law::Cookbook` ([`Translation::legacy_eq`]). ParametricEQ's shelf
+//!   slope constants are unread and reported. `BiquadFilter` belongs to the filter family.
 use crate::{Translation, engine_parameters, number};
 use ir::fx::eq::{Band, Config, Kind};
 use roxmltree::Node;
@@ -82,6 +82,68 @@ impl Translation {
         let overall = number(node, "OverallGain", 0.0)?;
         if overall != 0.0 || live {
             out.push(ir::Processor::Gain(ir::Gain::Linear(10f64.powf(overall / 20.0))));
+        }
+        Ok(())
+    }
+
+    /// TwoBandEq, ThreeBandEq and ParametricEQ: fixed band types under the cookbook law (their
+    /// coefficient routines, checked under emulation). Two/ThreeBandEq shelves have Q 0.5
+    /// (`alpha = sin w0 / (8 * 0 + 1)`), the ThreeBandEq bell `Q = (8 MidQ + 1) / 2`; shelves sit at
+    /// 80 Hz and 10 kHz there. ParametricEQ bands are HP, low shelf, four bells, high shelf, LP; its
+    /// shelves are `A = 10^(dB/20)` (twice the cookbook gain) with slope `S` remapped from Q.
+    pub(crate) fn legacy_eq(&mut self, node: Node, at: &str, out: &mut Vec<ir::Processor>) -> Result<(), String> {
+        let cook = |kind, hz: f64, q: f64, db: f64, on| Band { law: ir::fx::eq::Law::Cookbook, ..one(kind, hz, q, db, on) };
+        let bands = match node.tag_name().name() {
+            "TwoBandEq" => vec![
+                cook(Kind::LowShelf, number(node, "LowFreq", 80.0)?, 0.5, number(node, "LowGain", 0.0)?, true),
+                cook(Kind::HighShelf, number(node, "HighFreq", 10000.0)?, 0.5, number(node, "HighGain", 0.0)?, true),
+            ],
+            "ThreeBandEq" => vec![
+                cook(Kind::LowShelf, 80.0, 0.5, number(node, "LowGain", 0.0)?, true),
+                cook(
+                    Kind::Peak,
+                    number(node, "MidFreq", 2500.0)?,
+                    (8.0 * number(node, "MidQ", 0.0)? + 1.0) / 2.0,
+                    number(node, "MidGain", 0.0)?,
+                    true,
+                ),
+                cook(Kind::HighShelf, 10000.0, 0.5, number(node, "HighGain", 0.0)?, true),
+            ],
+            _ => {
+                let kinds = [
+                    Kind::HighPass,
+                    Kind::LowShelf,
+                    Kind::Peak,
+                    Kind::Peak,
+                    Kind::Peak,
+                    Kind::Peak,
+                    Kind::HighShelf,
+                    Kind::LowPass,
+                ];
+                let hz = [30.0, 70.0, 180.0, 520.0, 1870.0, 3900.0, 7400.0, 16000.0];
+                let mut bands = Vec::new();
+                for (i, kind) in kinds.into_iter().enumerate() {
+                    let get = |name: &str, default| number(node, &format!("{name}{}", i + 1), default);
+                    if get("Enable", 0.0)? == 0.0 {
+                        continue;
+                    }
+                    let q = get("Q", if i == 1 || i == 6 { 12.0 } else { 0.7 })?;
+                    let gain = get("Gain", 0.0)?;
+                    let band = if matches!(kind, Kind::LowShelf | Kind::HighShelf) {
+                        // ponytail: slope S = lerp((Q - 0.2) / 11.8) between two doubles in the
+                        // encrypted .data (0x14258c150/158); runs at S = 1 until they are read.
+                        self.unsupported(at, "ParametricEQ shelf slope (Q to S constants unread, runs at S 1)", q);
+                        cook(kind, get("Freq", hz[i])?, std::f64::consts::FRAC_1_SQRT_2, 2.0 * gain, true)
+                    } else {
+                        cook(kind, get("Freq", hz[i])?, q, gain, true)
+                    };
+                    bands.push(band);
+                }
+                bands
+            }
+        };
+        if let Some(config) = Config::new(&bands) {
+            out.push(ir::Processor::Eq(config));
         }
         Ok(())
     }
