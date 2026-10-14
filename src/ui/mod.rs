@@ -33,6 +33,8 @@ mod editor;
 mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod health;
+#[cfg(feature = "shots")]
+pub(crate) mod offline_preview;
 mod inside;
 mod ir_view;
 #[allow(dead_code)]

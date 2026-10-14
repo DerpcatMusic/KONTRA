@@ -27,12 +27,57 @@ For a program inside a UFS bank:
 python3 tools/library-inspector.py '/path/to/Bank.ufs::Presets/Piano.uvip' --source
 ```
 
+For UI diagnosis without a plugin, DAW, window or audio device, build the optional
+production renderer and use the UI-focused path:
+
+```sh
+/home/derpcat/.cache/kontakto-heavy cargo build --locked --profile ci -p corpus-health --features ui-render
+python3 tools/library-inspector.py '/path/to/Piano.nki' --render --ui-only
+python3 tools/library-inspector.py '/path/to/Preset.nksn' --render --ui-only
+```
+
+`--ui-only` skips the separate static source inventory, parity classification and
+placeholder audio plan. It still runs the production parser and script initializer
+once, then shares that initialized model with the renderer. It cannot be combined
+with `--source`. Omit it for the complete source/conversion audit, including stage
+timings that distinguish audit overhead from product initialization.
+
+Snapshots use the same base-NKI resolver and identity check as playback. Saved
+snapshot state is applied before initialization; UI resources belong to the base
+NKI. If no unambiguous base is found, supply `--base ORIGINAL.nki`. A mismatched
+base is rejected, rather than previewing another instrument's interface.
+
+`--render` implies `--initialize`. UI projection gains original-bitmap and Kontra
+vector CPU witnesses, page/presentation selectors, an optional bounds overlay,
+widget visibility and binding filters, asset/font request outcomes, and timing
+records. Hidden-parent visibility comes from the shared UI IR query; resolved
+coordinates come from the production layout. An asset that was never requested is
+shown separately from a missing, ambiguous, failed-read or failed-decode request.
+Recorded requests span all rendered pages and both presentations; bounded traces
+retain aggregate counts when detailed records overflow.
+
+Legacy NativeUI requests use the actual production package, Session and view with
+the already-initialized control seeds. They retain the evaluated composition in
+both presentations. Evaluated NativeUI element geometry is reported separately
+from classic IR binding coordinates. A loading/error caption is never returned as
+an authored UI witness. This executes NativeUI's own module entry point, without
+rerunning KSP `on init` or creating an audio Runtime.
+
+CPU witnesses are Kontra renderer evidence, not native Kontakt/Falcon pixel
+equivalence. They do not execute gestures or supply live waveform/meter services.
+Pages are limited to 16 per interface and 2048 pixels per side; larger pages are
+downscaled with the scale recorded. Resource preparation has a 30-second bound;
+pending requests and failures keep a witness partial. Original artwork and PNG
+pixels remain in process memory and private loopback routes with `no-store`.
+
 Add `--initialize` to inspect actual product conversion and the initialized UI
 model. For an NKM, `--program 2` selects the third embedded program for conversion;
 the source inspection still includes all physical programs and script slots.
 The default selected program is zero. Multiple input paths open together in the
-workbench. `--binary` selects another corpus-health build; the default locates this
-worktree's CI binary on the configured cargo-target volume.
+workbench. `--binary` selects another corpus-health build; the default selects the
+newest available optimized `dsp-dev`, `ci` or `release` binary on the configured
+shared cargo-target volume. Rebuild this checkout before measuring; the launcher
+does not silently fall back to a slow debug binary.
 
 The Problems view lists recorded unsupported features, stubs, approximations,
 faults and conversion gaps. Selecting a script problem opens its coordinates
@@ -40,7 +85,8 @@ alongside the frontend's lowering records and implementation/spec references.
 Original code appears when `--source` was requested or the opened report includes it.
 Converted structure exposes groups, zones, processors, modulators, routes,
 controls and physical ownership. UI projection exposes model widget coordinates,
-bindings and omissions; it does not substitute a generated skin for native pixels.
+bindings and omissions. Optional CPU witnesses retain authored bitmap/native
+composition; the bounds overlay draws measured geometry, not invented controls.
 
 ## Evidence boundaries
 
@@ -49,6 +95,7 @@ bindings and omissions; it does not substitute a generated skin for native pixel
 | Kontakt default | Decoded chunk structure, every physical script slot, frontend reports and NCKP resource/field gaps | Product initialization, IR admission, sample binding, audio and live callbacks |
 | Falcon default | Program XML hierarchy, script bindings, actual compiler-only Luau syntax checks and production XML-to-IR translation | Native Lua 5.1 semantics, script initialization, sample binding, audio and live callbacks |
 | Optional initialization | Product initializer and UI model; Falcon IR includes `onLoad` parameter overlays through the shared scripted-loader path; Kontakt also attempts binding against zero-payload assets with deliberately fictitious sample metadata | Real sample admission, musical callbacks, rendered pixels, gestures and native equivalence |
+| Optional `--render` | Production layout, selected-program asset worker, requested fonts/frames and CPU-rendered initial pixels; NativeUI uses the evaluated production composition | Native Kontakt/Falcon fidelity, GPU output, live waveform/meter services, user gestures and musical callbacks |
 
 An available binding is not evidence that it executed. A successful stage means
 that particular inspection completed, not that the whole library is compatible.
@@ -96,7 +143,8 @@ The `corpus-health` binary also exposes:
 
 ```text
 corpus-health inspect INPUT [--program INDEX|BANK_MEMBER]
-    [--initialize] [--ephemeral-source] [--summary]
+    [--base ORIGINAL.nki] [--initialize] [--ephemeral-source] [--summary]
+    [--ui-only] [--ephemeral-render]
 corpus-health inspect-list MANIFEST
 ```
 
@@ -126,16 +174,30 @@ measurements. Empty-cache "cold" does not mean OS page-cache eviction.
 
 Full reports use `format: kontra-library-inspector`, `schema: 1`. They contain
 separate `stages`, `scripts`, `converted`, `ui`, `diagnostics` and `evidence`
-sections. Script reports reuse `sampler-parity` coordinates, construct status,
+sections, plus additive `performance` records. Script reports reuse `sampler-parity` coordinates, construct status,
 owners and lowering records. A source-free report can be opened through the
 workbench's Open reports action or `--report-json FILE`.
+
+Load timings include process wall time and launcher time including the heavy-job
+queue, sandbox and JSON transfer. Asset preparation includes worker wait,
+discovery, reads, decoding and cache admission. CPU paint/PNG time includes image
+encoding. Nested phases overlap; do not sum them as exclusive costs. OS cache
+state, native-host first-frame timing and DAW/audio latency are separate evidence.
+Falcon initializer reports also identify unavailable script sample-loading services
+separately from missing UI assets. UI image dimensions share production resource
+authority; audio/impulse decoders and sample binding are absent in this preview.
+A failed resource task consequently does not establish that its bank member is
+missing, or that every resource-dependent `onLoad` branch matches plugin startup.
+`--ephemeral-render` puts protected PNG pixels in the returned JSON: use the
+memory-only launcher, rather than redirecting that output to a report file.
 
 ## Validation
 
 Authored backend fixtures cover physical empty/bypassed multi slots, source
 opt-in, malformed typed input, initialization refusal, compact evidence and
-bank-member identities. Five launcher tests cover read-only mounts, unsafe
-initialization refusal, report schema, memory-only serving and manifest IDs.
+bank-member identities. Eight launcher tests cover read-only mounts, unsafe
+initialization/render refusal, report schema, memory-only report/PNG serving,
+snapshot base arguments, manifest IDs and source-free timeout progress.
 The shared browser exercised problem navigation, lowering, source escaping,
 conversion records, UI omissions and clearing. Final desktop and narrow previews
 had no page overflow or console errors.

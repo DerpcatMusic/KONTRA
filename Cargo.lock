@@ -837,6 +837,7 @@ dependencies = [
 name = "corpus-health"
 version = "0.1.0"
 dependencies = [
+ "kontakto",
  "ni-file",
  "sampler-core",
  "sampler-ir",

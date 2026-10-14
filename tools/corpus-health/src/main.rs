@@ -325,7 +325,10 @@ impl Pick {
 
 /// [`auto_pick`], at `key` instead when given (a retry at another covered key).
 fn pick_key(ir: &sampler_ir::Instrument, key: Option<u8>) -> Option<Pick> {
-    auto_pick(ir).map(|p| Pick { key: key.unwrap_or(p.key), ..p })
+    auto_pick(ir).map(|p| Pick {
+        key: key.unwrap_or(p.key),
+        ..p
+    })
 }
 
 /// Other plain keys zones cover at the pick's velocity, an octave apart
@@ -333,12 +336,17 @@ fn pick_key(ir: &sampler_ir::Instrument, key: Option<u8>) -> Option<Pick> {
 /// mapping (an articulation's playable range), so one silent key is not a
 /// silent instrument.
 fn other_keys(ir: &sampler_ir::Instrument, pick: Pick) -> Vec<u8> {
-    let switch: HashSet<u8> = ir.articulations.iter().flat_map(|a| a.switch_keys.iter().copied()).collect();
+    let switch: HashSet<u8> = ir
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.iter().copied())
+        .collect();
     let covered: Vec<u8> = (0..=127u8)
         .filter(|k| *k != pick.key && !switch.contains(k))
         .filter(|k| {
             ir.zones.iter().any(|z| {
-                (z.keys.low..=z.keys.high).contains(k) && (z.velocities.low..=z.velocities.high).contains(&pick.velocity)
+                (z.keys.low..=z.keys.high).contains(k)
+                    && (z.velocities.low..=z.velocities.high).contains(&pick.velocity)
             })
         })
         .collect();
@@ -1830,10 +1838,12 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             let played = Instant::now();
             let ccs = musical_ccs(subject.instrument(), &dynamics);
             let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
-            let reload_at = |key: Option<u8>, ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx, key) {
-                (_, Some((s, p))) => play(s, p, diagnose, ccs).ok(),
-                _ => None,
-            };
+            let reload_at =
+                |key: Option<u8>, ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx, key)
+                {
+                    (_, Some((s, p))) => play(s, p, diagnose, ccs).ok(),
+                    _ => None,
+                };
             let reload = |ccs: &[(u8, u8)], diagnose: bool| reload_at(None, ccs, diagnose);
             let others = other_keys(subject.instrument(), pick);
             let first = play(subject, pick, false, &[]);
@@ -1842,8 +1852,15 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             let first = match first {
                 Ok(s) if silent(&s) => Ok(others
                     .iter()
-                    .find_map(|&k| reload_at(Some(k), &[], false).filter(|x| !silent(x)).map(|x| (k, x)))
-                    .map(|(k, x)| Sound { retried_key: Some(k), ..x })
+                    .find_map(|&k| {
+                        reload_at(Some(k), &[], false)
+                            .filter(|x| !silent(x))
+                            .map(|x| (k, x))
+                    })
+                    .map(|(k, x)| Sound {
+                        retried_key: Some(k),
+                        ..x
+                    })
                     .unwrap_or(s)),
                 other => other,
             };
@@ -3070,7 +3087,8 @@ fn main() {
                 "usage: corpus-health run OUT.jsonl [--tier parse|full|quick] [--shard I/N] [--only GLOB]\n\
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
-                 \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--initialize] [--ephemeral-source]"
+                 \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
+                 \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render]"
             );
             2
         }
