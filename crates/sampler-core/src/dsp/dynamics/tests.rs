@@ -168,7 +168,7 @@ fn sine(amp: f64, hz: f64, frames: usize) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// The kemu native-vector stimulus (tools/re: dynemu): 1024-frame bursts.
+/// The kemu native-vector stimulus (`tools/re/dynemu.py NAME` prints each core's vectors): 1024-frame bursts.
 fn stimulus() -> Vec<[f64; 2]> {
     (0..4096)
         .map(|n| {
@@ -615,7 +615,7 @@ mod feedback {
             out.extend((0..chunk.len()).map(|i| [block[0][i], block[1][i]]));
         }
         let native: [(usize, f32, f32); 10] = [
-            (0, 0.0, 0.7715567946434021),
+            (0, 1.2859280009385184e-19, 0.7715567946434021),
             (1, 0.08883419632911682, 1.190497875213623),
             (10, 1.1349705457687378, 0.29483091831207275),
             (100, -0.8551082611083984, 0.7469831109046936),
