@@ -67,6 +67,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x68, "Freak"),
     (0x69, "Vibrato Chorus"),
     (0x6a, "Wow / Flutter"),
+    (0x6b, "Twin Delay"),
     (0x72, "Gater"),
     (0x74, "Reverse Grain"),
 ];
@@ -352,6 +353,7 @@ impl Slot {
         let mut r = Reader(&self.public);
         let params = match self.module {
             0x10..=0x12 | 0x14 => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
+            0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
                 let bits = r.f32()?;
