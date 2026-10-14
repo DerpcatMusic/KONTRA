@@ -12,8 +12,6 @@ mod common;
 mod convolver;
 mod design;
 mod network;
-#[cfg(test)]
-mod old;
 mod shape;
 
 pub use convolver::{Impulse, MAX_IMPULSE_FRAMES};
@@ -320,46 +318,33 @@ mod tests {
         ]
     }
 
-    /// CPU per instance against the engine each preset replaced, timed
-    /// interleaved in one process (best of several rounds):
+    /// CPU per instance:
     /// `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
+    /// Before the one-network engine (same machine, ns/frame at 48 kHz):
+    /// fdn 46, comb 26, plate 29, diffuser 12, freeverb 28, Galois room 234 /
+    /// hall 218, SparkVerb q3 70 / q5 250.
     #[test]
     #[ignore]
     fn cpu_per_instance() {
-        use super::old;
         const RATE: u32 = 48_000;
         let frames = 10 * RATE as usize;
-        let time = |f: &mut dyn FnMut(&mut [f32], &mut [f32])| {
-            let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
-            let t = std::time::Instant::now();
-            for b in 0..frames / 64 {
-                for k in 0..64 {
-                    let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 1e-3 * ((b * 64 + k) as f32 * 0.01).sin() };
-                    (l[k], r[k]) = (v, -v);
-                }
-                f(&mut l, &mut r);
-            }
-            std::hint::black_box(&l);
-            t.elapsed().as_secs_f64() * 1e9 / frames as f64
-        };
-        let only = std::env::var("SPACE_CPU").unwrap_or_default();
-        for (name, net) in presets().into_iter().filter(|(n, _)| n.contains(only.as_str())) {
-            let mut new = Net::new(&net, RATE).unwrap();
-            let mut old: Box<dyn FnMut(&mut [f32], &mut [f32])> = match net.topology {
-                Topology::Fdn => { let mut o = old::fdn::Fdn::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::CombAllpass => { let mut o = old::comb::CombAllpass::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::Diffuser => { let mut o = old::comb::Diffuser::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::Plate => { let mut o = old::plate::Plate::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::Freeverb => { let mut o = old::freeverb::Freeverb::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::Galois => { let mut o = old::galois::GaloisCore::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-                Topology::SparkVerb => { let mut o = old::sparkverb::Spark::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
-            };
-            let (mut a, mut b) = (f64::MAX, f64::MAX);
+        for (name, net) in presets() {
+            let mut net = Net::new(&net, RATE).unwrap();
+            let mut best = f64::MAX;
             for _ in 0..5 {
-                a = a.min(time(&mut *old));
-                b = b.min(time(&mut |l, r| new.process(l, r)));
+                let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+                let t = std::time::Instant::now();
+                for b in 0..frames / 64 {
+                    for k in 0..64 {
+                        let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 1e-3 * ((b * 64 + k) as f32 * 0.01).sin() };
+                        (l[k], r[k]) = (v, -v);
+                    }
+                    net.process(&mut l, &mut r);
+                }
+                std::hint::black_box(&l);
+                best = best.min(t.elapsed().as_secs_f64() * 1e9 / frames as f64);
             }
-            println!("cpu {name:12} before {a:6.1} ns/frame  after {b:6.1} ns/frame  ({:+.0} %)", (b / a - 1.0) * 100.0);
+            println!("cpu {name:12} {best:6.1} ns/frame");
         }
     }
 
