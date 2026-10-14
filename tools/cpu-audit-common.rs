@@ -162,6 +162,9 @@ fn main() {
     );
     let (mut allocations, mut event_allocations) = (0u64, 0u64);
     let mut miss_detail = Vec::with_capacity(6000);
+    // At least one event belongs to every recorded callback, so the input
+    // schedule bounds this control-side allocation. Store after timing ends.
+    let mut event_detail = Vec::with_capacity(events.len());
     let (io0, rchar0) = (
         proc_value("/proc/self/io", "read_bytes:"),
         proc_value("/proc/self/io", "rchar:"),
@@ -201,6 +204,7 @@ fn main() {
         let cpu_start = thread_cpu_ns();
         let process_start = process_cpu_ns();
         let t = Instant::now();
+        let events_before = next;
         p.begin(block);
         while next < events.len() && events[next].0 < begin + block {
             let (_, s, a, b) = events[next];
@@ -229,6 +233,9 @@ fn main() {
             None
         };
         COUNT.set(false);
+        if next != events_before {
+            event_detail.push((begin, next - events_before, event_ns, ns, cpu_ns, v));
+        }
         if ns > block as u64 * 1_000_000_000 / 48000 {
             miss_detail.push((
                 begin,
@@ -281,6 +288,10 @@ fn main() {
     info["all_workers_cpu_mean_percent_core"] = json!(process_cpu.iter().map(|n| *n as f64).sum::<f64>() / audio_ns * 100.);
     info["begin_and_events"] = quantiles(event_times);
     info["render_and_finish"] = quantiles(render_times);
+    info["event_callback_detail"] = json!(event_detail.into_iter().map(|(frame, count, events_ns, callback_ns, caller_ns, voices)| json!({
+        "frame":frame, "events":count, "begin_and_events_wall_us":events_ns as f64 / 1000.,
+        "callback_wall_us":callback_ns as f64 / 1000., "callback_caller_cpu_us":caller_ns as f64 / 1000., "voices":voices,
+    })).collect::<Vec<_>>());
     info["timing_scope"] = json!(format!("{} core adapter callback including witness PCM observation/probes; excludes outer plugin process, UI and host; whole-phase CPU includes pacing/harness/decoder work", info["engine"].as_str().unwrap_or("unknown")));
     if !steady.is_empty() {
         info["steady_voices_min"] = json!(steady_voices_min);
