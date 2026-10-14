@@ -4017,6 +4017,10 @@ fn compressor_editors_use_each_laws_physical_domain_without_invalidating_loads()
         i.register_compressor_controls();
         i.register_compressor_controls();
         assert_eq!(i.controls.len(), expected_controls, "{law:?}");
+        if matches!(law, Law::KontaktFeedback { .. } | Law::KontaktLimiter(_)) {
+            assert_eq!(i.controls[0].label, "Input gain");
+            assert_eq!(i.controls[0].key, "compressor:0:0:Threshold");
+        }
         let plan = lower(&i, 48000, vec![constant(0.8)], no_behaviors).unwrap();
         let descriptors: Vec<_> = plan.parameter_registry().descriptors().collect();
         assert_eq!(descriptors.len(), expected_controls, "{law:?}");
