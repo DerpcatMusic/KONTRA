@@ -1779,7 +1779,7 @@ mod tests {
         use sampler_ir as ir;
         let mut instrument = ir::Instrument::default();
         instrument.groups.push(ir::Group::default());
-        instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.keys = ir::KeyRange { low: 60, high: 60 };
         zone.group = Some(ir::GroupRef(0));
@@ -2801,7 +2801,7 @@ mod tests {
             let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
             assert!(built.notes.is_empty(), "{:?}", built.notes);
             let mut instrument = ir::Instrument::default();
-            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
             instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
             let mut zone = ir::Zone::new(ir::AssetRef(0));
             zone.keys = ir::KeyRange { low: 60, high: 60 };
@@ -2822,7 +2822,7 @@ mod tests {
 
     fn fx_runtime(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> sampler_core::Runtime {
         let mut instrument = sampler_ir::Instrument::default();
-        instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
         instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
         zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
@@ -2994,6 +2994,7 @@ mod tests {
             let mut instrument = ir::Instrument::default();
             instrument.assets.push(ir::Asset {
                 location: ir::AssetLocation::Path("probe".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),

@@ -1200,6 +1200,7 @@ mod volume_tests {
         let mut ir = ir::Instrument::default();
         ir.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("x".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),
@@ -1418,6 +1419,7 @@ mod native_lookup_tests {
         let mut instrument = ir::Instrument::default();
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
