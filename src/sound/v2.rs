@@ -2476,6 +2476,9 @@ impl Core for V2Core {
     }
 
     fn end_block(&mut self, _frames: usize, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
+        // The host allowance lasts one block; a later render without
+        // begin_block gets the render-driven cap, not a spent allowance.
+        self.host_block = false;
         let Self {
             parts, held, align, ..
         } = self;
@@ -4492,6 +4495,28 @@ mod tests {
         assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(10000),
             "host callback allowance must be installed before MIDI, not after its first preemption");
         assert_eq!(runtime.preemptions(), 0);
+    }
+
+    #[test]
+    fn render_driven_blocks_refill_after_a_host_block_ends() {
+        // Parity harness: host-block takes, then editor frames rendered without begin_block.
+        let source = "on init\n declare $saved\n end on\n on note\n while ($saved < 200000)\n inc($saved)\n end while\n end on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap();
+        let limits = Limits::for_plan(&plan, 32, 8);
+        let runtime = Runtime::new(plan, limits).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("test")).unwrap())));
+        core.begin_block(&BlockInfo { frames: 64, ..Default::default() });
+        core.play(0, Event::midi1(0x90, 60, 100));
+        core.render(64);
+        core.end_block(64, &mut |_| true);
+        for _ in 0..200 {
+            core.render(512);
+        }
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(200000),
+            "a callback preempted in a host block must keep running on render-driven blocks");
     }
 
     #[test]
