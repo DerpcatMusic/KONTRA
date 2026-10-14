@@ -1,20 +1,24 @@
 //! UVI `eq` effects onto `sampler_ir::fx::eq`.
 //!
 //! - `DigitalEq` (16 bands, seven band types, GainScale, OverallGain): every band is a one-band
-//!   `Config` so a scripted bus keeps one live lane set per band. Type numbering is the order of
-//!   the type names in Workstation 4.0.9's literal pool (0x141e73028: Low Pass, High Pass, Band
-//!   Pass, Notch, Low Shelf, High Shelf, Peak), which the installed banks confirm for 5 and 6.
-//!   `Slope` 0..=7 is 6/12/18/24/36/48/72/96 dB (the list that follows): 6..=24 dB are 1..=4
-//!   poles, steeper slopes are reported and run at 24 dB. Per-band `Channels` other than 0 is
-//!   reported. UVI's own band laws are not recovered: bands use the generic RBJ law.
+//!   `Config` under `Law::UviDigital` (the native band design 0x1412840f0) so a scripted bus keeps
+//!   one live lane set per band. Type numbering is the order of the type names in Workstation
+//!   4.0.9's literal pool (0x141e73028: Low Pass, High Pass, Band Pass, Notch, Low Shelf, High
+//!   Shelf, Peak). `Slope` 0..=7 is order 1, 2, 3, 4, 6, 8, 12, 16 for every type; Q and Bandwidth
+//!   are separate native fields. Per-band `Channels`, M/S mode and key tracking are reported.
 //! - `ThreeBandShelves`: level plus two first-order shelves relative to it (generic RBJ law).
 //! - TwoBandEq, ThreeBandEq, ParametricEQ (alias Parametric), also inside an `FXPreset` wrapper:
 //!   fixed band types under `Law::Cookbook` ([`Translation::legacy_eq`]). ParametricEQ's shelf
 //!   slope constants are unread and reported. `BiquadFilter` belongs to the filter family.
-use crate::{Translation, engine_parameters, number};
+use crate::{Translation, number};
 use ir::fx::eq::{Band, Config, Kind};
 use roxmltree::Node;
 use sampler_ir as ir;
+
+/// DigitalEq `Slope` 0..=7 to the band order (6..96 dB/oct, table 0x141e731a8).
+fn digital_order(slope: f64) -> u8 {
+    [1, 2, 3, 4, 6, 8, 12, 16][(slope as usize).min(7)]
+}
 
 fn one(kind: Kind, frequency: f64, q: f64, gain_db: f64, enabled: bool) -> Band {
     let mut band = Band::new(kind, frequency as f32, q as f32, gain_db as f32);
@@ -30,15 +34,16 @@ impl Translation {
         live: bool,
         out: &mut Vec<ir::Processor>,
     ) -> Result<(), String> {
-        for (name, why) in [
-            ("StereoMode", "DigitalEq M/S mode"),
-            ("Transpose", "DigitalEq transpose"),
-            ("KeyTracking", "DigitalEq key tracking"),
-        ] {
+        for (name, why) in [("StereoMode", "DigitalEq M/S mode"), ("KeyTracking", "DigitalEq key tracking")] {
             let v = number(node, name, 0.0)?;
             if v != 0.0 {
                 self.unsupported(at, why, v);
             }
+        }
+        // Native band frequency: Freq * 2^(Transpose + KeyTracking (key - 60) / 12), key 60 here.
+        let transpose = number(node, "Transpose", 0.0)?;
+        if transpose != 0.0 && live {
+            self.unsupported(at, "DigitalEq transpose on live band frequencies", transpose);
         }
         let scale = number(node, "GainScale", 1.0)?;
         for band in 1..=16 {
@@ -64,22 +69,19 @@ impl Translation {
             if flat && !live {
                 continue;
             }
-            let q = engine_parameters::band_q(|n| node.attribute(n).and_then(|v| v.parse().ok()), band);
-            let mut b = one(kind, get("Freq", 1000.0)?, q, gain_db, enabled);
-            if matches!(kind, Kind::LowPass | Kind::HighPass) {
-                let slope = get("Slope", 1.0)? as i64;
-                if slope > 3 {
-                    self.unsupported(at, "DigitalEq slope steeper than 24 dB/oct (runs at 24)", slope);
-                }
-                b.poles = slope.clamp(0, 3) as u8 + 1;
-            }
+            let hz = get("Freq", 1000.0)? * if live { 1.0 } else { transpose.exp2() };
+            let mut b = one(kind, hz, get("Q", std::f64::consts::FRAC_1_SQRT_2)?, gain_db, enabled);
+            b.law = ir::fx::eq::Law::UviDigital;
+            b.poles = digital_order(get("Slope", 1.0)?);
+            b.bandwidth = get("Bandwidth", 1.0)? as f32;
             let channels = get("Channels", 0.0)?;
             if channels != 0.0 {
                 self.unsupported(at, "DigitalEq per-band channel selection", channels);
             }
             out.push(ir::Processor::Eq(Config::band(b)));
         }
-        let overall = number(node, "OverallGain", 0.0)?;
+        // The overall level is scaled by GainScale too (0x14128b730).
+        let overall = number(node, "OverallGain", 0.0)? * scale;
         if overall != 0.0 || live {
             out.push(ir::Processor::Gain(ir::Gain::Linear(10f64.powf(overall / 20.0))));
         }
