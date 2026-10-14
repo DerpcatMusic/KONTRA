@@ -449,6 +449,7 @@ fn translate(
         .collect::<Result<_, _>>()
         .map_err(|e| decode("source group names", e))?;
     if let Some(snapshot) = snapshot {
+        out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
         for behavior in &mut out.ir.behaviors {
             if let Some(entries) = behavior
                 .slot

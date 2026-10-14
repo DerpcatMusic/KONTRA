@@ -6,6 +6,9 @@ use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Saved scalars and arrays by variable name.
+pub type SavedValues = (BTreeMap<String, Value>, BTreeMap<String, Vec<Value>>);
+
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
@@ -23,6 +26,11 @@ pub struct Environment {
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
+    /// A snapshot load: the instrument's own saved values (`persisted` holds the
+    /// snapshot's). Kontakt loads the instrument, runs `on persistence_changed`,
+    /// then applies the snapshot and runs it again; scripts tell the passes
+    /// apart (ANALOG STRINGS re-routes its double-buffered buses on the second).
+    pub instrument_persisted: Option<SavedValues>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
     pub engine_values: BTreeMap<[i32; 4], i32>,
@@ -241,6 +249,7 @@ impl V {
 }
 
 /// Initial state after `on init`.
+#[derive(Clone)]
 pub struct Initial {
     pub midi_object: sampler_core::MidiObject,
     pub cells: Vec<i64>,
@@ -295,9 +304,16 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
 fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initial> {
     let mut model = model::Model::default();
     model.interface.keys = vec![Key::default(); 128];
+    // A snapshot load first runs as the instrument, with its own saved values.
+    let instrument = env.instrument_persisted.as_ref().map(|(persisted, arrays)| Environment {
+        persisted: persisted.clone(),
+        persisted_arrays: arrays.clone(),
+        instrument_persisted: None,
+        ..env.clone()
+    });
     let mut e = Eval::<TRACK> {
         hir,
-        env,
+        env: instrument.as_ref().unwrap_or(env),
         st: Initial {
             midi_object: env.midi_object.clone(),
             cells: vec![0; hir.cells as usize],
@@ -344,23 +360,30 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
-    for (i, var) in hir.vars.iter().enumerate() {
-        if !e.consumed.contains(&VarId(i as u32))
-            && (e.st.persistence[i] != Persistence::None
-                || matches!(var.home, Home::Control(_))
-                    && e.env
-                        .control_values
-                        .contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
-        {
-            e.restore(VarId(i as u32));
-        }
-    }
+    e.restore_saved(false);
     e.callback_type = b::cb::PERSISTENCE_CHANGED;
-    if let Some(cb) = hir
+    let persistence_changed = hir
         .callbacks
         .iter()
-        .find(|c| c.kind == CallbackKind::PersistenceChanged)
-    {
+        .find(|c| c.kind == CallbackKind::PersistenceChanged);
+    if instrument.is_some() {
+        // The instrument's pass runs to its end state here, waits elapsed as
+        // in init; a pass that fails leaves no trace (the single-pass load).
+        // ponytail: shares init's fuel, so a polling loop spends it before
+        // the rollback; give the pass its own budget if a library hits that.
+        if let Some(cb) = persistence_changed {
+            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone());
+            let ok = e.block(&cb.body).is_ok();
+            e.st.warnings.truncate(before.0.warnings.len());
+            if !ok {
+                (e.st, e.fuel, e.consumed, e.pending_menus) = before;
+            }
+        }
+        // Then the snapshot: every saved value, read in init or not.
+        e.env = env;
+        e.restore_saved(true);
+    }
+    if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
             e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
             #[cfg(feature = "scan")]
@@ -570,6 +593,23 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
     }
 
     /// Applies the saved value of a persistent variable, if the file has one.
+    /// Restore every persistent variable (and host-saved control) from the
+    /// environment; `all` includes those `read_persistent_var` already read.
+    fn restore_saved(&mut self, all: bool) {
+        for (i, var) in self.hir.vars.iter().enumerate() {
+            if (all || !self.consumed.contains(&VarId(i as u32)))
+                && (self.st.persistence[i] != Persistence::None
+                    || matches!(var.home, Home::Control(_))
+                        && self
+                            .env
+                            .control_values
+                            .contains_key(&crate::derived_control_id(self.env.slot, &var.name)))
+            {
+                self.restore(VarId(i as u32));
+            }
+        }
+    }
+
     fn restore(&mut self, var: VarId) {
         let v = &self.hir.vars[var.0 as usize];
         let conv = |value: &Value| match value {
