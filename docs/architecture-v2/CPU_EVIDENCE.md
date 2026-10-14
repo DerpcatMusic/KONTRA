@@ -137,6 +137,32 @@ increase of worker count, voice cap or cache size.
 
 ## Stage attribution and counters
 
+Constant native EQ now has a conservative cross-voice lane path (`5ea5723b3`).
+Eligibility requires constant prepared KontaktLegacy controls and enabled state;
+generic/live/script EQ remains excluded. Per-voice coefficients and histories
+are independent. An inherited state that has not reached its exact constant
+targets keeps the original scalar native cadence. Unequal ends, zero-length
+voices and processor tails rest their own histories. The exact oracle covers
+1/3/8 voices, changing block lengths, distinct coefficients, inherited cadence,
+zeros/denormals, and 192 real source voices against identical separate chain
+owners at 1/2/4 threads with zero heap calls.
+
+Pinned 300-voice EQ pairs, 256 frames, 600 measured blocks each, retain identical
+PCM hashes across four alternating rounds. Typical caller CPU medians change
+2,845.6/2,852.2/2,902.2 us to 2,380.8–2,399.8 us (about 16–18% lower).
+The first before run is an adverse 4,182.7 us caller / 150.35% wall outlier and
+is not discarded. Raw: `eq-lanes-300-paired.json`.
+
+`synthetic-300-final.json` repeats all 25 original cells with exact matching
+hashes and physical counts. It does **not** establish safe tail deadlines:
+resident 256-frame EQ hits p50/p99 73.76/279.21% at one thread (280 misses),
+58.85/471.34% at four threads (470 misses). Caller/process CPU also rises,
+so this cannot be explained solely by caller descheduling. Those bad runs
+remain the final matrix; no selective replacement with cleaner cells is made.
+The 64-frame EQ median is 44.76% resident / 45.81% paged, versus 54.13/55.31%
+before; the paged 256-frame EQ median is 46.25% with zero misses in that cell.
+OS/background variation and the lack of an isolated host limit acceptance.
+
 Leaf cycle sampling is separate from unprofiled timing. The earlier 100-voice
 before profile has 79,286 samples, zero lost: EQ stage 44.32%, sinc source run
 21.99%, Stereo 7.52%, chain render 3.15%, voice render 2.78%, state-finite guard
@@ -297,10 +323,99 @@ Research guides hypotheses rather than overriding sound semantics:
   and multiplexing in the methodology. Intel top-down guidance is not a measured
   AMD PMU categorization.
 
+## Verified production-policy 300-source witness
+
+After `95149e7d4` removes the independent 128-entry transport binding limit,
+the exact typed CLAP-ID schedule through `V2Loader`/`V2Core` verifies **300
+physical voices throughout the settled second** at both 64 and 256 frames.
+The owned stereo WAV lasts five seconds at 48 kHz and contains low-amplitude
+220/330 Hz sines; 300 exact host IDs use 12 overlapping pitched keys and
+distinct velocities. This is a real PCM source through production policy,
+without overriding authored polyphony/scripts, but it is not an authored NKI
+or the outer plugin-process meter. PCM energy/peak are nonzero, and both runs
+have zero capacity drops, steals, stream underruns, nonfinite samples and
+event/render heap calls. Frozen adapter: `v2-cpu-audit-final`; raw:
+`v2-owned-300-final-64.json`, `v2-owned-300-final-256.json`.
+
+| Buffer | Settled voices | Settled p50 us | Settled p99 us | Settled p99.9 us | Settled max us | Settled p50 deadline % | Whole-run wall misses |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 300 | 274.795 | 434.058 | 479.459 | 524.390 | 20.61 | 2 |
+| 256 | 300 | 1155.341 | 1323.395 | 1340.165 | 1517.219 | 21.66 | 1 |
+
+The 64-frame misses are the initial 300-note callback (2,565.9 us wall,
+2,175.6 us caller CPU), and mass key-up at frame 96,000 (5,075.4 us wall,
+5,057.2 us caller CPU). The 256-frame miss is that key-up callback (6,427.6 us
+wall, 6,310.0 us caller CPU). Begin/events peaks at 4,717.0/5,086.2 us;
+render/finish peaks at 1,437.7/2,131.0 us. The steady source-render workload
+fits its deadlines in these receipts, while bulk ownership/event handling
+causes real callback faults. The witness timing includes PCM energy observation
+and probes and is explicitly labeled. Four-second whole-phase process averages
+(12.06/11.25%) include two seconds held and a silent/release phase; they must
+not be substituted for the sustained 300-voice meter target.
+
+Read-only release trace: the V2 host handler already captures exact `Held.id`,
+but calls FIFO `Runtime::note_off(input, velocity)`, which scans all allocated
+4,096 note slots for each of 300 IDs. The parent is implementing an exact-ID
+physical key-up API retaining input-key bookkeeping, pedal policy, velocity,
+generation and release callbacks. `release()` would bypass pedals and is not
+a sound-preserving substitute. Scheduled-command cleanup and per-prepared-stage
+callback trimming remain separate costs to measure after that lookup fix.
+
+The actual Brass saved voice policy permits 512 program voices, prefers released
+voices and has a 10 ms fade; it does not explain the rejected 12-voice witness
+as a 12-voice authored cap. Group metadata contains four mic positions and four
+sustain dynamic layers. Metadata multiplicity still does not prove which layers
+sound. The policy receipt is
+`/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-diagnostic-fixes/brass-saved-voice-policy.json`.
+
+## Wider EQ dispatch experiment: retain rejected evidence
+
+Assembly shows why a broad SIMD claim is premature: the recursive stage
+dispatcher remains an out-of-line baseline function when called by AVX2 render
+closures. Forcing inline on the native EQ methods does not carry target features
+through that boundary. A local dispatch around the nonrecursive recurrence emits
+YMM multiply/add/subtract instructions, but large array-building helpers still
+appear as baseline calls inside the loop. An isolated same-binary recurrence
+receipt regresses from 95.6–98.7 ms to 127.3–128.4 ms per 100,000 calls (30–34%).
+It is rejected as a speed improvement; YMM opcodes alone are insufficient proof.
+Raw: `eq-local-dispatch-stage-clean.log`, `eq-inline-dispatch-calls.asm`,
+`eq-local-dispatch.asm`.
+
+Combined local-dispatch plus scoped-validation runtime pairs have typical caller
+medians 2,372–2,392 us before and 2,180–2,193 us after, but one candidate is
+2,399.9 us. Hashes remain exact. This is a **combined** receipt and does not
+attribute improvement to width; the parent has a separate same-binary guard
+witness. Raw: `eq-local-guard-combined-paired.json`. A small register-blocked
+recurrence prototype is under oracle/timing validation; no slower wider kernel
+is accepted by default.
+
 Remaining acceptance gap: a verified 300-source real instrument or owned real
-PCM fixture through production policy, complete plugin-process meter timing,
+PCM fixture through production policy has now been obtained for owned WAV
+sources; an authored 300-source instrument and complete plugin-process meter timing,
 zero starvation/nonfinite/drops/steals attributable to capacity, and stable
 deadline tails under host integration. A 1% whole-callback target implies only
 13.33 us at 64 frames or 53.33 us at 256 frames, shared by all 300 source/DSP
 voices and frontend work. The measured pitched/effected workloads exceed that
 budget by large factors; no universal promise follows from the completed gains.
+
+## Measurement coverage and limits
+
+| Stage or cost | Evidence | Remaining gap |
+| --- | --- | --- |
+| Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners and phase-specific faults | Named helper-level release/admission cycle attribution and authored script events |
+| Script/controllers | Real Afflatus MIDI/script path, error/fuel/service counters; offline UI initialization profiles in companion evidence | Separate sustained audio-script/controller stage CPU under a verified 300-source authored patch |
+| Source/interpolation | Leaf cycle shares, 100/300 plain versus pitched controls, exact seam stage pairs | Direct four-frame kernel experiment and broad distinct-asset/phase matrix |
+| Native modulation/filter | Separate sounding filtered/modulated workloads with wall/caller/worker tails | Inclusive cycle stacks or bounded direct stage clocks for individual envelope/LFO/filter components |
+| EQ/color FX | Cycle shares, exact recurrence/state tests, sounding 192/300 scalar/batch/parallel comparisons, rejected wider kernel | Moving/script EQ batching and other authored effects under real 300-source load |
+| Summation/lifecycle/state guards | Render/finish cycle shares and parent same-binary validation witness | Summation alone versus cache/ownership work; parent exact-ID release receipt |
+| Master gain | [Isolated parent evidence](MASTER_GAIN_EVIDENCE.md), exact smoothing/automation parity | Whole plugin-process measured gain contribution; isolated stage is only about 0.003% at 128 frames |
+| Decoder/cache/storage | Job/open/eviction/capacity totals, first-128 job latency, phase underrun deltas | Cold production-policy 300-distinct-source demand, storage queue/wait and onset-deadline proof |
+| Worker scheduling | 1/2/4-thread wall versus caller/total CPU, bad-tail receipts retained | Isolated host/worker wake-to-run latency and adaptive policy validated against real deadlines |
+| Outer plugin/UI/host | Actual meter formula traced; companion offline UI/resource stage profiles | A measured 300-voice entire plugin callback with a representative host and UI refresh enabled |
+
+This coverage table deliberately distinguishes completed counters from unresolved
+stage attribution. Flat sampled shares, isolated stage timers, paced process CPU
+and whole plugin wall time have different denominators and cannot be added into
+a fabricated complete callback breakdown. [AMD's SIMD validation guidance](https://www.amd.com/en/blogs/2026/understanding-avx-512---validating-usage-on-amd-epyc-.html)
+also distinguishes ISA capability, emitted instructions and executed workload;
+its EPYC generation-specific events are not assigned to this Zen 4 Ryzen host.
