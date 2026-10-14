@@ -6,6 +6,7 @@ mod cabinet;
 mod cat;
 mod crywah;
 mod dstortion;
+mod fuzz;
 mod twang;
 
 use super::super::Planar;
@@ -14,6 +15,7 @@ use sampler_ir::fx::color::{Amp, AmpModel};
 pub(super) enum Engine {
     Cabinet(cabinet::Engine),
     CryWah(crywah::Engine),
+    Fuzz(fuzz::Engine),
     Twang(twang::Engine),
     AcBox(acbox::Engine),
     Cat(cat::Engine),
@@ -26,6 +28,7 @@ pub(super) enum State {
     None,
     Cabinet(cabinet::State),
     CryWah(crywah::State),
+    Fuzz(fuzz::State),
     Twang(twang::State),
     AcBox(acbox::State),
     Cat(cat::State),
@@ -38,6 +41,7 @@ impl State {
             Self::None => true,
             Self::Cabinet(s) => s.finite(),
             Self::CryWah(s) => s.finite(),
+            Self::Fuzz(s) => s.finite(),
             Self::Twang(s) => s.finite(),
             Self::AcBox(s) => s.finite(),
             Self::Cat(s) => s.finite(),
@@ -63,6 +67,7 @@ impl Engine {
         match a.model {
             AmpModel::Cabinet => Self::Cabinet(cabinet::Engine::new(k[4], k[0], k[1], k[2], k[3], rate)),
             AmpModel::CryWah => Self::CryWah(crywah::Engine::new(k[0], k[1] != 0.0, rate)),
+            AmpModel::Fuzz => Self::Fuzz(fuzz::Engine::new([k[0], k[1], k[2], k[3]], rate)),
             AmpModel::Twang => Self::Twang(twang::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5]], rate)),
             AmpModel::AcBox => Self::AcBox(acbox::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]], rate)),
             AmpModel::Cat => Self::Cat(cat::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]], rate)),
@@ -74,6 +79,7 @@ impl Engine {
         match self {
             Self::Cabinet(e) => e.process(slot!(s, Cabinet), block, len, ring),
             Self::CryWah(e) => e.process(slot!(s, CryWah), block, len),
+            Self::Fuzz(e) => e.process(slot!(s, Fuzz), block, len),
             Self::Twang(e) => e.process(slot!(s, Twang), block, len),
             Self::AcBox(e) => e.process(slot!(s, AcBox), block, len),
             Self::Cat(e) => e.process(slot!(s, Cat), block, len),
@@ -86,7 +92,7 @@ impl Engine {
 pub(super) fn frames(a: Amp, rate: u32) -> usize {
     match a.model {
         AmpModel::Cabinet => cabinet::frames(rate),
-        AmpModel::CryWah | AmpModel::DStortion | AmpModel::Cat | AmpModel::AcBox | AmpModel::Twang => 0,
+        AmpModel::CryWah | AmpModel::DStortion | AmpModel::Cat | AmpModel::AcBox | AmpModel::Twang | AmpModel::Fuzz => 0,
     }
 }
 
