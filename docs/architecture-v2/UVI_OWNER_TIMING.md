@@ -153,3 +153,49 @@ The timed owner CPU establishes full export as this run's dominant measured
 consumer; it does not identify which export substage is expensive. The
 [incremental export plan](UVI_UI_EXPORT_PLAN.md) therefore measures those parts
 before introducing a cache or changing publication policy.
+
+## Coarse export substages
+
+The [follow-up numeric receipt](receipts/ao-export-substages-20261015.json) uses
+clock commit `84beb030d` and immutable helper SHA
+`0651288702df0cc39fdff8fa18d5f3047b99e4bfbed114601fb5e768d9f3859d`.
+Five optional brackets split registry collection, topology, the complete widget
+loop, page construction and validation. No field reads, getters or publication
+policy were changed. The authored full-interface/command/fault off/on fixtures
+passed 3/3 and ordinary all-target compilation passed before this run.
+
+One normal unseeded LayerNext gesture produced 77 full exports over a
+17,438.136 ms owner window:
+
+| Disjoint substage inside export | Wall ms | Owner CPU ms |
+| --- | ---: | ---: |
+| Registry collection | 93.095 | 92.009 |
+| Topology/paint traversal | 1,087.193 | 1,072.774 |
+| Widget conversion/property inventory | 15,161.213 | 14,958.815 |
+| Page extents/construction | 14.421 | 14.011 |
+| Final validation | 31.099 | 30.533 |
+| Complete export, including ungrouped work | 16,397.543 | 16,178.703 |
+
+The widget loop consumed 92.46% of measured export CPU; topology consumed 6.63%.
+Repeated page/validation ancestor walks have a deep-graph complexity risk, but
+they are not the dominant consumer in this AO observation. The loop still
+contains multiple operations: these coarse clocks do not distinguish raw field
+readout, live parameter getters, conversion, assets/styles and unsupported-key
+inventory. Further sampling or an exact authored micro-oracle must establish
+which smaller change merits optimization.
+
+The 77 exports visited 781,165 widgets and 428,043 bindings; 76 faces changed.
+All 1,746 tasks succeeded with no pending/failed/canceled task, script/core error
+or stream underrun. Independent PCM checking again compared 4,656 windows /
+1,191,936 frames across 1,746 changed assets with zero mismatch and aggregate
+fingerprint `2777464607603900197` on both sides. There was one command, zero
+command-ring backpressure and 1,746 deferred completion resumes.
+
+The process took 25.768 s. The monitor observed zero compiler samples and zero
+named external `pure_va` workload; other desktop work and OS cache effects were
+not excluded. The publication count differs from the earlier 104-export run,
+and static assembly/cache conditions differ. Neither the lower total nor the
+per-export difference establishes a clock-induced gain, an overhead estimate or
+an optimization speedup. No export optimization or new full real-bank UI/pixel
+parity claim accompanies this diagnostic. Further changes were deferred for the
+requested production build and installed-binary replacement.
