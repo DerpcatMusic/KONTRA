@@ -306,6 +306,10 @@ pub struct ModProgram {
     pub routes: Vec<ModRoute>,
     /// Piecewise-linear transfer curves over 0..=1 as ascending (x, y) points.
     pub shapes: Vec<Vec<(f64, f64)>>,
+    /// Envelope source index -> its stage controls (attack, hold, decay,
+    /// sustain, release, attack curve; KSP `ENGINE_PAR_ATTACK`.. on the
+    /// modulator's slot). Read when a voice starts, like the amplitude envelope.
+    pub envelope_controls: Vec<(usize, [Option<crate::ControlId>; 6])>,
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +347,8 @@ struct Program {
     fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
+    /// Per envelope: control indices of its stages ([`ModProgram::envelope_controls`]).
+    envelope_controls: Box<[[Option<usize>; 6]]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
     /// Per route: the native law when its identity and table are proved.
@@ -406,6 +412,9 @@ impl VoiceModulation {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
             }
+            for index in program.envelope_controls.iter().flatten().flatten() {
+                resolve(*index)?;
+            }
             if let Some((_,Some(indices))) = program.native_flex_control {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
@@ -417,6 +426,9 @@ impl VoiceModulation {
             }
             for (indices, _) in program.native_controls.iter_mut().flatten() {
                 *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            }
+            for index in program.envelope_controls.iter_mut().flatten().flatten() {
+                *index = resolve(*index)?;
             }
             if let Some((_,Some(indices))) = &mut program.native_flex_control {
                 *indices = [resolve(indices[0])?,resolve(indices[1])?];
@@ -662,6 +674,15 @@ impl VoiceModulation {
                 .collect();
             filter_indices.sort_unstable();
             filter_indices.dedup();
+            let mut envelope_controls = vec![[None; 6]; envelopes.len()];
+            for &(source, ids) in &program.envelope_controls {
+                let Some(Prepared::Envelope(e)) = sources.get(source) else {
+                    return Err(Error::InvalidInput);
+                };
+                for (slot, id) in envelope_controls[*e].iter_mut().zip(ids) {
+                    *slot = id.map(&control).transpose()?;
+                }
+            }
             let mut controls = program
                 .controls
                 .iter()
@@ -689,9 +710,10 @@ impl VoiceModulation {
                 return Err(Error::InvalidInput);
             }
             let fades = sources.iter().map(|s| match s {
-                Prepared::Lfo(Lfo { shape: LfoShape::DigitalSine { fade, .. }, .. }) => {
-                    Some(fade.gains())
-                }
+                Prepared::Lfo(Lfo {
+                    shape: LfoShape::DigitalSine { fade, .. } | LfoShape::NativeFaded { fade, .. },
+                    ..
+                }) => Some(fade.gains()),
                 _ => None,
             }).collect();
             let native_program = native.next().flatten();
@@ -790,6 +812,7 @@ impl VoiceModulation {
                 rate_routes: rate_routes.into_iter().map(Vec::into_boxed_slice).collect(),
                 rate_lane: rate_lane.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
+                envelope_controls: envelope_controls.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
@@ -1388,8 +1411,18 @@ impl VoiceModState {
                 self.phase[voice * self.sources + i] = lfo.phase;
             }
         }
-        for (i, envelope) in p.envelopes.iter().enumerate() {
-            self.envelope[voice * self.envelopes + i] = EnvelopeState::new(*envelope);
+        for (i, (envelope, controls)) in p.envelopes.iter().zip(&p.envelope_controls).enumerate() {
+            // A stage moved off its authored value by a lane write (host or script).
+            let mut live = *envelope;
+            for (stage, index) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
+                if let Some(index) = index
+                    && let crate::ControlValue::Real(value) = inputs.controls[*index]
+                    && value != envelope.control_value(stage)
+                {
+                    live = live.with_control(stage, value);
+                }
+            }
+            self.envelope[voice * self.envelopes + i] = EnvelopeState::new(live);
         }
         for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
             *segment = Segment::default();

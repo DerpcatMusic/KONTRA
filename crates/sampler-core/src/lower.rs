@@ -13,7 +13,7 @@ use crate::{
     slot_control,
 };
 use sampler_ir as ir;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Retain native lookup identity independently of which DSP nodes were lowered.
@@ -49,18 +49,6 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ],
             )
         }
-        ir::Processor::Color(c) => {
-            let Some(slot) = c.address else {
-                return Vec::new();
-            };
-            let law = |l| match l {
-                ir::fx::color::LaneLaw::Unit => unit,
-                ir::fx::color::LaneLaw::Signed => Linear { low: -1., high: 1. },
-                ir::fx::color::LaneLaw::Cubic => crate::EngineParameterLaw::CubicGain { unity: 1e6 },
-                ir::fx::color::LaneLaw::OutputGain => crate::EngineParameterLaw::CubicGain { unity: 396851. },
-            };
-            (slot, c.lanes().into_iter().map(|l| (l.name, l.value, law(l.law))).collect())
-        }
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], address } => (
             address,
             vec![
@@ -69,7 +57,10 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 ("ENGINE_PAR_FORMANT_SIZE", f64::from(size), unit),
             ],
         ),
-        _ => return Vec::new(),
+        _ => match p.lanes() {
+            Some((slot, lanes)) => (slot, lanes.into_iter().map(|l| (l.name, l.value, lane_law(l.law))).collect()),
+            None => return Vec::new(),
+        },
     };
     lanes
         .into_iter()
@@ -81,16 +72,12 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
                 generic: slot.generic,
             };
             let id = crate::engine_parameter_control(address);
-            let low = if matches!(law, SignedNormalized | Linear { low: -1., .. }) {
-                -1.
-            } else {
-                0.
-            };
+            // The law's values at both write ends (16 at the top of an output gain).
+            let (a, b) = (law.decode(if law == SignedNormalized { -1_000_000 } else { 0 }), law.decode(1_000_000));
             (
                 ControlDefinition {
                     id,
-                    // The DSP value at the top of the native range (16 for an output gain).
-                    domain: ControlDomain::Real { min: low, max: law.decode(1_000_000).max(1.) },
+                    domain: ControlDomain::Real { min: a.min(b), max: a.max(b) },
                     default: ControlValue::Real(value),
                 },
                 crate::EngineParameterBinding {
@@ -103,14 +90,50 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
         .collect()
 }
 
+/// The lanes of a unit whose family applies its own setter (timemod, space):
+/// each role with the stored value it follows. `None` without lanes.
+fn live_knobs(p: ir::Processor) -> Option<crate::dsp::LiveKnobs> {
+    let lanes = native_lanes(p);
+    let roles = lane_roles(p);
+    (!lanes.is_empty() && lanes.len() <= crate::dsp::LIVE_KNOBS)
+        .then(|| std::array::from_fn(|i| roles.get(i).map(|r| (*r, lane_parameter(p, &lanes, i)))))
+}
+
+/// The engine law of a measured lane law (kontakt-bindings, raw -> stored).
+fn lane_law(law: ir::fx::Law) -> crate::EngineParameterLaw {
+    use crate::EngineParameterLaw as E;
+    use ir::fx::Law;
+    match law {
+        Law::Identity => E::Linear { low: 0., high: 1. },
+        Law::Linear { a, b } => E::Linear { low: a, high: a + b },
+        Law::Exp { a, r } => E::Exponential { low: a, high: a * r },
+        // Every measured power law is a cube (output gains, noise level); unity is
+        // the first write reaching gain 1 (396851 for the a = 16 output gains).
+        Law::Pow { a, .. } => E::CubicGain { unity: (1e6 / a.cbrt()).ceil() },
+        Law::Table(points) => E::Table(points),
+        Law::LegacyEqFrequency => E::LegacyEqFrequency,
+    }
+}
+
 /// What each lane of [`native_lanes`] is, in the same order.
 fn lane_roles(p: ir::Processor) -> Vec<ir::ProcessorParameter> {
     use ir::ProcessorParameter as P;
     match p {
-        ir::Processor::Color(c) => c.lanes().into_iter().map(|l| l.role).collect(),
         ir::Processor::LiveFormant { .. } => vec![P::FormantTalk, P::FormantSharp, P::FormantSize],
-        _ => Vec::new(),
+        _ => p.lanes().map_or_else(Vec::new, |(_, l)| l.into_iter().map(|l| l.role).collect()),
     }
+}
+
+/// Lane `index` of [`native_lanes`] as the stage reads it: the stored value,
+/// or its linear rescale (ms to seconds) where the lane declares one.
+fn lane_parameter(p: ir::Processor, lanes: &[(ControlDefinition, crate::EngineParameterBinding)], index: usize) -> Parameter {
+    let Parameter::Control(range) = native_parameter(lanes, index) else { unreachable!() };
+    let scale = p.lanes().and_then(|(_, l)| l.get(index)?.scale);
+    let Some([at_low, at_high]) = scale else { return Parameter::Control(range) };
+    // `scale` names the stage's values at writes 0 and 1e6; the domain is sorted.
+    let law = lanes[index].1.law;
+    let (low, high) = if law.decode(0) <= law.decode(1_000_000) { (at_low, at_high) } else { (at_high, at_low) };
+    Parameter::Control(ControlRange { low, high, ..range })
 }
 
 fn native_parameter(
@@ -141,7 +164,13 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
         roles
             .iter()
             .position(|r| *r == role)
-            .map_or(Parameter::Constant(f64::from(value)), |k| native_parameter(&lanes, k))
+            .map_or(Parameter::Constant(f64::from(value)), |k| lane_parameter(ir::Processor::Color(c), &lanes, k))
+    };
+    let knob64 = |role, value: f64| {
+        roles
+            .iter()
+            .position(|r| *r == role)
+            .map_or(Parameter::Constant(value), |k| lane_parameter(ir::Processor::Color(c), &lanes, k))
     };
     crate::ColorSettings {
         gainer: c.gainer.map(|g| crate::GainerSettings {
@@ -192,8 +221,8 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
         widener: c.widener,
         mix: c.mix,
         stereo: c.stereo.map(|s| crate::StereoSettings {
-            width: Parameter::Constant(s.width),
-            pan: Parameter::Constant(s.pan),
+            width: knob64(P::Width, s.width),
+            pan: knob64(P::Pan, s.pan),
             pseudo: s.pseudo,
         }),
     }
@@ -523,6 +552,7 @@ pub fn switching(
         pcm: &[],
         mpe: None,
         amplitude_sources: HashMap::new(),
+        route_envelopes: Vec::new(),
     }
     .switching(switching)
 }
@@ -561,6 +591,7 @@ pub fn lower_with(
             .mpe
             .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
         amplitude_sources: amplitude_sources(instrument),
+        route_envelopes: route_envelopes(instrument),
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
@@ -633,6 +664,10 @@ pub fn lower_with(
     let mut slots = lowering.slot_controls();
     slots.extend(lowering.controls()?);
     let mut wave_bindings = Vec::new();
+    for (control, binding) in lowering.envelope_lanes()? {
+        slots.push(control);
+        wave_bindings.push(binding);
+    }
     let mut wave_controls = if instrument.groups.iter().any(|g| g.wavetable.is_some()) {
         vec![None; instrument.groups.len()]
     } else {
@@ -882,7 +917,11 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
-    engine_bindings.extend(wave_bindings);
+    // An envelope that is also a group's amplitude keeps that binding.
+    // One binding per native address: family lanes, then envelope lanes, then
+    // aliases, each skipping an address an earlier source already owns.
+    let mut bound: std::collections::BTreeSet<_> = engine_bindings.iter().map(|b| b.address).collect();
+    engine_bindings.extend(wave_bindings.into_iter().filter(|b| bound.insert(b.address)));
     // One pass over route controls: per-alias scans of routes x zones were
     // quadratic (ANALOG STRINGS spent ~90 s here at 95% load progress).
     let mut zone_routes = vec![false; instrument.routes.len()];
@@ -909,13 +948,17 @@ pub fn lower_with(
         };
         let parameter = crate::engine_parameter_id(&alias.parameter)
             .ok_or_else(|| unsupported(&control.key, Feature::Controls))?;
+        let address = crate::EngineParameterAddress {
+            parameter,
+            group: alias.address.group,
+            slot: alias.address.slot,
+            generic: alias.address.generic,
+        };
+        if !bound.insert(address) {
+            continue;
+        }
         engine_bindings.push(crate::EngineParameterBinding {
-            address: crate::EngineParameterAddress {
-                parameter,
-                group: alias.address.group,
-                slot: alias.address.slot,
-                generic: alias.address.generic,
-            },
+            address,
             control: ir_control_id(&control.key),
             // Kontakt's modulator intensity is signed cubic for every target:
             // ANALOG STRINGS' phase table writes 500000*(cbrt(p)+1) for phase p.
@@ -923,7 +966,16 @@ pub fn lower_with(
                 alias.parameter.as_str(),
                 "ENGINE_PAR_INTMOD_INTENSITY" | "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"
             ) {
-                crate::EngineParameterLaw::SignedCubic
+                // An internal route's depth control spans -unit..unit (v1: INTMOD
+                // 1e6 at the target's generic is depth 1, MP 750000 is 0.125).
+                if max == 1. {
+                    crate::EngineParameterLaw::SignedCubic
+                } else {
+                    crate::EngineParameterLaw::ScaledSignedCubic { scale: max }
+                }
+            } else if alias.parameter == "ENGINE_PAR_MOD_TARGET_INTENSITY" {
+                // The target knob: 0..1e6 is 0..100% of the route's unit.
+                crate::EngineParameterLaw::Linear { low: 0., high: max }
             } else if alias.parameter == "ENGINE_PAR_INTMOD_BYPASS" {
                 crate::EngineParameterLaw::Switch
             } else {
@@ -1001,6 +1053,29 @@ struct Lowering<'a> {
     mpe: Option<MpeDefaults>,
     /// [`amplitude_sources`], built once rather than scanned per zone.
     amplitude_sources: HashMap<(ir::GroupRef, ir::ModulatorRef), &'a ir::SourceAhdsr>,
+    /// [`route_envelopes`], built once: per-modulator scans of routes were
+    /// modulators^2 x routes (minutes on ANALOG STRINGS in a debug build).
+    route_envelopes: Vec<(&'a ir::SourceModulator, ir::ModulatorRef)>,
+}
+
+/// Kontakt modulation envelopes (internal AHDSR modulators that drive
+/// routes) and the slot each was saved in, first saved slot first.
+fn route_envelopes(ir: &ir::Instrument) -> Vec<(&ir::SourceModulator, ir::ModulatorRef)> {
+    let indices = &ir.source_indices;
+    let ahdsrs: HashSet<_> = indices.ahdsrs.iter().map(|a| (a.group, a.slot)).collect();
+    let routed: HashSet<_> = ir.routes.iter().map(|r| r.source).collect();
+    indices
+        .modulators
+        .iter()
+        .filter_map(|source| {
+            let modulator = source.runtime?;
+            (matches!(ir.modulators[modulator.0].source, ir::ModulationSource::Envelope(_))
+                && !source.external
+                && ahdsrs.contains(&(source.group, source.slot))
+                && routed.contains(&modulator))
+                .then_some((source, modulator))
+        })
+        .collect()
 }
 
 /// The native AHDSR behind each (group, amplitude modulator): its one
@@ -1303,6 +1378,57 @@ impl Lowering<'_> {
         Ok(envelope)
     }
 
+    fn route_envelopes(&self) -> impl Iterator<Item = (&ir::SourceModulator, ir::ModulatorRef, &ir::Envelope)> + '_ {
+        self.route_envelopes.iter().filter_map(|&(source, modulator)| match &self.ir.modulators[modulator.0].source {
+            ir::ModulationSource::Envelope(e) => Some((source, modulator, e)),
+            _ => None,
+        })
+    }
+
+    fn envelope_address(source: &ir::SourceModulator, stage: usize) -> crate::EngineParameterAddress {
+        const NAMES: [&str; 6] =
+            ["ENGINE_PAR_ATTACK", "ENGINE_PAR_HOLD", "ENGINE_PAR_DECAY", "ENGINE_PAR_SUSTAIN", "ENGINE_PAR_RELEASE", "ENGINE_PAR_ATK_CURVE"];
+        crate::EngineParameterAddress {
+            parameter: crate::engine_parameter_id(NAMES[stage]).unwrap(),
+            group: source.group as i32,
+            slot: source.slot as i32,
+            generic: -1,
+        }
+    }
+
+    /// Stage lanes of every modulation envelope, on the amplitude envelope's
+    /// laws (`with_group_envelope_parameters_batch`); defaults are authored.
+    fn envelope_lanes(&self) -> Result<Vec<(ControlDefinition, crate::EngineParameterBinding)>, LowerError> {
+        let mut lanes = std::collections::BTreeMap::new();
+        for (source, _, e) in self.route_envelopes() {
+            let authored = self.adsr("modulation envelope", e, false)?;
+            for (index, stage) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().enumerate() {
+                let address = Self::envelope_address(source, index);
+                let id = crate::engine_parameter_control(address);
+                let (min, max) = match stage {
+                    crate::EnvelopeStage::Sustain => (0., 1.),
+                    crate::EnvelopeStage::AttackCurve => (-32., 32.),
+                    _ => (0., u32::MAX as f64),
+                };
+                let control = ControlDefinition {
+                    id,
+                    domain: ControlDomain::Real { min, max },
+                    default: ControlValue::Real(authored.control_value(stage)),
+                };
+                let law = crate::EngineParameterLaw::envelope(stage, self.rate);
+                lanes.entry(id).or_insert((control, crate::EngineParameterBinding { address, control: id, law }));
+            }
+        }
+        Ok(lanes.into_values().collect())
+    }
+
+    /// The stage controls a modulation envelope's voices read at start.
+    fn envelope_lane_ids(&self, modulator: ir::ModulatorRef) -> Option<[Option<crate::ControlId>; 6]> {
+        // ponytail: one saved slot per runtime envelope; a deduplicated twin's slot is not read.
+        let (source, ..) = self.route_envelopes().find(|(_, m, _)| *m == modulator)?;
+        Some(std::array::from_fn(|i| Some(crate::engine_parameter_control(Self::envelope_address(source, i)))))
+    }
+
     fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
         let curve = |curve: ir::Curve| match curve {
             ir::Curve::Linear => Ok(EnvelopeCurve::default()),
@@ -1571,6 +1697,9 @@ impl Lowering<'_> {
                 }
                 program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
+                if let Some(ids) = self.envelope_lane_ids(modulator) {
+                    program.envelope_controls.push((program.sources.len() - 1, ids));
+                }
                 Ok(program.sources.len() - 1)
             };
             let target = match (route.target, route.depth) {
@@ -1908,6 +2037,11 @@ impl Lowering<'_> {
                     ir::LfoShape::Triangle => LfoShape::Triangle,
                     ir::LfoShape::Square => LfoShape::Square,
                     ir::LfoShape::Native(wave) => LfoShape::Native(wave),
+                    ir::LfoShape::NativeFaded { wave, fade_ms } => LfoShape::NativeFaded {
+                        wave,
+                        fade: crate::KontaktLfoFade::from_saved(fade_ms, self.rate as f32)
+                            .map_err(core(Stage::Modulation, owner))?,
+                    },
                     ir::LfoShape::Rectangle(width) => LfoShape::Rectangle(width),
                     ir::LfoShape::Multi { weights, width, normalize } => {
                         LfoShape::Multi { weights, width, normalize }
@@ -2010,20 +2144,31 @@ impl Lowering<'_> {
             high: max,
             ramp_frames: self.frames(binding.ramp),
         };
-        let parameter = Parameter::Control(range);
+        Ok(bind_role(processor, binding.parameter, Parameter::Control(range)))
+    }
+}
+
+/// Point `role` of a lowered stage at `parameter`: the one place script
+/// lanes and IR processor controls reach a family's knobs. False when the
+/// stage has no such knob.
+fn bind_role(processor: &mut Processor, role: ir::ProcessorParameter, parameter: Parameter) -> bool {
+    {
         use ir::ProcessorParameter::*;
-        match (processor, binding.parameter) {
-            (p @ Processor::Gain(_), Gain) => *p = Processor::ControlGain(range),
+        match (processor, role) {
+            (p @ Processor::Gain(_), Gain) => {
+                let Parameter::Control(range) = parameter else { return false };
+                *p = Processor::ControlGain(range)
+            }
             (Processor::StateVariable(filter), Cutoff) => filter.cutoff_hz = parameter,
             (Processor::StateVariable(filter), Resonance) => filter.q = parameter,
             (Processor::Filter(filter), Gain | Cutoff | Resonance | Response) => {
-                let knob = match binding.parameter {
+                let knob = match role {
                     Gain => crate::dsp::FilterKnob::Gain,
                     Cutoff => crate::dsp::FilterKnob::Cutoff,
                     Resonance => crate::dsp::FilterKnob::Resonance,
                     _ => crate::dsp::FilterKnob::Response,
                 };
-                return Ok(filter.bind(knob, parameter));
+                return filter.bind(knob, parameter);
             }
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
@@ -2042,10 +2187,13 @@ impl Lowering<'_> {
             (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
             (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
             (Processor::ControlMatrix(cells), CellRR) => cells[3] = parameter,
-            _ => return Ok(false),
+            _ => return false,
         }
-        Ok(true)
+        true
     }
+}
+
+impl Lowering<'_> {
 
     /// Whether a live parameter (frequency, quality, decibels, enable or a
     /// matrix cell) binds the processor at `index` of `chain`.
@@ -2209,6 +2357,16 @@ impl Lowering<'_> {
             {
                 return Err(unsupported(owner, Feature::Controls));
             }
+            // Script lanes of a family unit (Color binds its own in `color_settings`).
+            if matches!(**p, ir::Processor::Dynamics(_) | ir::Processor::Eq(_) | ir::Processor::Ar(_) | ir::Processor::Daft(_)) {
+                let lanes = native_lanes(**p);
+                for (k, role) in lane_roles(**p).into_iter().enumerate() {
+                    let parameter = lane_parameter(**p, &lanes, k);
+                    if !stages.iter_mut().fold(false, |found, stage| bind_role(stage, role, parameter) | found) {
+                        return Err(unsupported(owner, Feature::Controls));
+                    }
+                }
+            }
             for binding in self
                 .ir
                 .processor_controls
@@ -2279,7 +2437,10 @@ impl Lowering<'_> {
             ir::Processor::Color(c) => Processor::Color(color_settings(c)),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
-            ir::Processor::Space(config) => Processor::Space(config),
+            ir::Processor::Space(config) => match live_knobs(processor) {
+                Some(knobs) => Processor::LiveSpace(config, knobs),
+                None => Processor::Space(config),
+            },
             ir::Processor::Dynamics(c) => Processor::Dynamics(DynamicsSettings {
                 law: c.law,
                 link: c.link,
@@ -2338,7 +2499,10 @@ impl Lowering<'_> {
                 let lanes = native_lanes(processor);
                 Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
             }
-            ir::Processor::TimeMod(config) => Processor::TimeMod(config),
+            ir::Processor::TimeMod(config) => match live_knobs(processor) {
+                Some(knobs) => Processor::LiveTimeMod(config, knobs),
+                None => Processor::TimeMod(config),
+            },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::FilterBank(c) => match c.topology {
@@ -2523,7 +2687,7 @@ impl Lowering<'_> {
                     | Processor::ControlMatrix(_)
                     | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
-                    Processor::Space(config) => crate::dsp::space::tail_frames(
+                    Processor::Space(config) | Processor::LiveSpace(config, _) => crate::dsp::space::tail_frames(
                         config,
                         self.rate,
                         config.impulse.map(|i| &impulses[i.0]),

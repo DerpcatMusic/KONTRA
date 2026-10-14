@@ -226,6 +226,8 @@ impl Net {
 
 /// One reverb or convolution unit's state.
 pub(crate) struct Space {
+    config: Config,
+    rate: u32,
     net: Option<Net>,
     conv: Option<Conv>,
     dry: f32,
@@ -238,6 +240,8 @@ impl Space {
             return Err(Error::InvalidInput);
         }
         Ok(Self {
+            config: *c,
+            rate,
             net: c.network.as_ref().map(|n| Net::new(n, rate)).transpose()?,
             conv: c
                 .impulse
@@ -246,6 +250,28 @@ impl Space {
             dry: c.dry as f32,
             wet: c.wet as f32,
         })
+    }
+
+    pub(crate) fn config(&self) -> Config {
+        self.config
+    }
+
+    /// Take `config`'s knobs (a lane write); the network keeps its state.
+    pub(crate) fn retune(&mut self, config: Config) {
+        if config == self.config {
+            return;
+        }
+        // Every topology retunes through its design; the early taps, gate and
+        // Raum outer core keep their load-time settings.
+        if let (Some(net), Some(n)) = (&mut self.net, &config.network)
+            && self.config.network.is_some_and(|o| o.topology == n.topology)
+        {
+            let rate = net.pair.as_ref().map_or(self.rate, |_| self.rate / (self.rate as f32 * f32::from_bits(0x37be_37c6)) as u32);
+            if let Ok(spec) = design::spec(n, rate) {
+                net.core.retune(spec);
+            }
+        }
+        self.config = config;
     }
 
     pub(crate) fn clear(&mut self) {
@@ -457,7 +483,7 @@ mod tests {
     fn convolution_and_network_sum() {
         let ir = Arc::new(Impulse::new(vec![1.0], vec![1.0]).unwrap());
         let net = Network::DEFAULT;
-        let both = Config { network: Some(net), impulse: Some(ImpulseRef(0)), dry: 0.0, wet: 1.0 };
+        let both = Config { address: None, network: Some(net), impulse: Some(ImpulseRef(0)), dry: 0.0, wet: 1.0 };
         let (a, _) = run(&both, &[ir.clone()], 4800);
         let (b, _) = run(&Config::network(net), &[], 4800);
         // A unit impulse response adds the input itself to the network's tail.
@@ -478,7 +504,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_out_of_range() {
-        assert!(!valid(&Config { network: None, impulse: None, dry: 0.0, wet: 1.0 }));
+        assert!(!valid(&Config { address: None, network: None, impulse: None, dry: 0.0, wet: 1.0 }));
         assert!(!valid(&Config::network(Network { size: 0.0, ..Network::DEFAULT })));
         assert!(Space::new(&Config::convolution(ImpulseRef(3), 0.0, 1.0), 48_000, &[]).is_err());
     }

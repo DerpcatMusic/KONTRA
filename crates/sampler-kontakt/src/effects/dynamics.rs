@@ -42,6 +42,7 @@ pub(super) fn compressor(
         ));
     }
     Ok(Processor::Dynamics(Config {
+        address: None,
         law,
         attack: Time::Milliseconds(f64::from(attack_ms)),
         release: Time::Milliseconds(f64::from(release_ms)),
@@ -68,6 +69,7 @@ pub(super) fn limiter(input_gain: f32, release_ms: f32) -> Result<Processor, Not
         ));
     }
     Ok(Processor::Dynamics(Config {
+        address: None,
         law: Law::KontaktLimiter(Native { threshold_db: f64::from(input_gain), ratio: 0.0 }),
         attack: Time::Milliseconds(0.0),
         release: Time::Milliseconds(f64::from(release_ms)),
@@ -96,6 +98,7 @@ pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -
     }
     let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
     Ok(Processor::Dynamics(Config {
+        address: None,
         law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }),
         attack: Time::Milliseconds(0.0),
         release: Time::Seconds(unit(release)),
@@ -122,6 +125,7 @@ pub(super) fn feedback(v: [f32; 7], [quality, link, sidechain]: [bool; 3]) -> Re
     let attack = attack * f32::from_bits(0x3d4c_6061) + f32::from_bits(0x38d8_d874);
     let release = release * f32::from_bits(0x3f93_3334) + 0.05;
     Ok(Processor::Dynamics(Config {
+        address: None,
         law: Law::KontaktFeedback {
             native: Native {
                 threshold_db: f64::from(10f32.powf(input * 2.5 - 0.5)),
@@ -150,6 +154,7 @@ pub(super) fn transient(attack: f32, sustain: f32, gain: f32, clip: i32) -> Resu
         ));
     }
     Ok(Processor::Dynamics(Config {
+        address: None,
         law: Law::KontaktTransient {
             attack: f64::from(attack),
             sustain: f64::from(sustain),
@@ -179,6 +184,7 @@ pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<
     }
     let [threshold, makeup, attack, release, ratio, mix] = v.map(f64::from);
     Ok(Processor::Dynamics(Config {
+        address: None,
         law: Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link },
         attack: Time::Milliseconds(0.0),
         release: Time::Milliseconds(0.0),

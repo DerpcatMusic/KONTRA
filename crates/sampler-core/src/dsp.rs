@@ -164,6 +164,9 @@ pub enum Processor {
     Delay(Delay),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
     TimeMod(sampler_ir::fx::timemod::Config),
+    /// A time-modulation unit whose stored knobs follow lanes (`Config::set`
+    /// at block rate; KSP `ENGINE_PAR_DL_*`, `CH_*`, `FL_*`, `PH_*`).
+    LiveTimeMod(sampler_ir::fx::timemod::Config, LiveKnobs),
     /// Every compressor, limiter, gate and expander (`dsp/dynamics/`).
     Dynamics(DynamicsSettings),
     /// One parallel branch of an effect rack: the next `count` processors run
@@ -197,6 +200,8 @@ pub enum Processor {
     /// state). `impulse` indexes the table given to
     /// [`crate::Prepared::with_impulses`].
     Space(sampler_ir::fx::space::Config),
+    /// A reverb whose stored knobs follow lanes (`Config::set`, `ENGINE_PAR_RV_*`).
+    LiveSpace(sampler_ir::fx::space::Config, LiveKnobs),
     /// The next `count` processors run in parallel with the unprocessed
     /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
     /// bypass control (0..=1). All three are ramped controls.
@@ -210,6 +215,16 @@ pub enum Processor {
 
 
 /// A normalized effect knob: a constant or a lane without a ramp, within 0..=1.
+/// Stored-value knobs of a unit whose family applies its own setter: each
+/// lane's role and the parameter it follows.
+pub type LiveKnobs = [Option<(sampler_ir::ProcessorParameter, Parameter)>; LIVE_KNOBS];
+pub const LIVE_KNOBS: usize = 5;
+type PreparedKnobs = [Option<(sampler_ir::ProcessorParameter, control::PreparedParameter)>; LIVE_KNOBS];
+
+fn live_valid(knobs: &LiveKnobs) -> bool {
+    knobs.iter().flatten().all(|(_, p)| p.valid() && !matches!(p, Parameter::Expression { .. }))
+}
+
 fn live_knob(p: &Parameter) -> bool {
     p.valid()
         && matches!(p, Parameter::Constant(_) | Parameter::Control(ControlRange { ramp_frames: 0, .. }))
@@ -228,6 +243,8 @@ impl Processor {
                 .iter()
                 .all(|c| c.valid() && !matches!(c, Parameter::Expression { .. })),
             Processor::Space(config) => space::valid(config),
+            Processor::LiveSpace(config, knobs) => space::valid(config) && live_valid(knobs),
+            Processor::LiveTimeMod(config, knobs) => config.check().is_ok() && live_valid(knobs),
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
@@ -292,6 +309,7 @@ pub(super) enum PreparedProcessor {
     TimeMod {
         timemod: timemod::TimeMod,
         offset: usize,
+        live: PreparedKnobs,
     },
     Dynamics(dynamics::Dynamics),
     LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
@@ -314,7 +332,7 @@ pub(super) enum PreparedProcessor {
     },
     StateVariable(usize),
     /// Index into the bus graph's spaces.
-    Space(usize),
+    Space(usize, PreparedKnobs),
     /// `count` following stages in parallel with the dry signal; the lanes are
     /// dry, wet and bypass.
     Mix {
@@ -441,10 +459,10 @@ pub(super) fn compile_processors(
                     filters.push(filter.compile(rate, bindings)?);
                     PreparedProcessor::StateVariable(index)
                 }
-                Processor::Delay(_) | Processor::TimeMod(_) | Processor::Phaser(_) => {
+                Processor::Delay(_) | Processor::TimeMod(_) | Processor::LiveTimeMod(..) | Processor::Phaser(_) => {
                     let timemod = match stage {
                         Processor::Delay(delay) => timemod::TimeMod::compile(delay.config(), rate)?,
-                        Processor::TimeMod(config) => timemod::TimeMod::compile(config, rate)?,
+                        Processor::TimeMod(config) | Processor::LiveTimeMod(config, _) => timemod::TimeMod::compile(config, rate)?,
                         Processor::Phaser(knobs) => timemod::TimeMod::phaser_filter(knobs)?,
                         _ => unreachable!(),
                     };
@@ -452,7 +470,11 @@ pub(super) fn compile_processors(
                     *delay_frames = offset
                         .checked_add(timemod.frames())
                         .ok_or(Error::Capacity)?;
-                    PreparedProcessor::TimeMod { timemod, offset }
+                    let live = match stage {
+                        Processor::LiveTimeMod(_, knobs) => knobs.map(|k| k.map(|(r, p)| (r, p.compile(bindings)))),
+                        _ => [None; LIVE_KNOBS],
+                    };
+                    PreparedProcessor::TimeMod { timemod, offset, live }
                 }
                 Processor::Dynamics(settings) => {
                     PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
@@ -487,10 +509,14 @@ pub(super) fn compile_processors(
                         offset,
                     }
                 }
-                Processor::Space(config) => {
+                Processor::Space(config) | Processor::LiveSpace(config, _) => {
                     let spaces = spaces.as_deref_mut().ok_or(Error::InvalidInput)?;
                     spaces.push(config);
-                    PreparedProcessor::Space(spaces.len() - 1)
+                    let live = match stage {
+                        Processor::LiveSpace(_, knobs) => knobs.map(|k| k.map(|(r, p)| (r, p.compile(bindings)))),
+                        _ => [None; LIVE_KNOBS],
+                    };
+                    PreparedProcessor::Space(spaces.len() - 1, live)
                 }
                 Processor::Mix {
                     count,
@@ -1057,7 +1083,15 @@ pub(super) fn process<const TRACE: bool>(
             PreparedProcessor::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
-            PreparedProcessor::Space(index) => {
+            PreparedProcessor::Space(index, live) => {
+                if live[0].is_some() {
+                    let space = &mut filters.spaces[*index];
+                    let mut config = space.config();
+                    for (role, knob) in live.iter().flatten() {
+                        config.set(*role, knob.value(parameters, at, None));
+                    }
+                    space.retune(config);
+                }
                 let mut wet = [[0f32; BLOCK]; 2];
                 for (w, v) in wet.iter_mut().zip(block.iter()) {
                     w[..len]
@@ -1074,7 +1108,19 @@ pub(super) fn process<const TRACE: bool>(
                         .for_each(|(v, w)| *v = f64::from(*w));
                 }
             }
-            PreparedProcessor::TimeMod { timemod, offset } => {
+            PreparedProcessor::TimeMod { timemod, offset, live } => {
+                // Event-rate lanes: the unit re-derives from its stored knobs; the ring persists.
+                let retuned;
+                let timemod = if live[0].is_some() {
+                    let mut config = timemod.config();
+                    for (role, knob) in live.iter().flatten() {
+                        config.set(*role, knob.value(parameters, at, None));
+                    }
+                    retuned = timemod.retuned(config);
+                    &retuned
+                } else {
+                    timemod
+                };
                 fault |= timemod.process(
                     state,
                     &mut delay_samples[*offset..*offset + timemod.frames()],

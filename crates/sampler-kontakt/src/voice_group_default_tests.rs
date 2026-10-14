@@ -49,6 +49,7 @@ fn omitted_voice_group_override_still_binds_its_native_shared_limit() {
         eq_mod_slots: HashMap::new(),
         cutoff_octaves: HashMap::new(),
         route_intensity: HashMap::new(),
+        alias_claims: HashMap::new(),
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         send_taps: vec![],

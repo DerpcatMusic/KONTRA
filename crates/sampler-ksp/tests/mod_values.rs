@@ -44,6 +44,7 @@ fn from_script_modulator_values_drive_voice_modulation() {
                 sources: vec![ModSource::Script(1)],
                 routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
                 shapes: vec![],
+                envelope_controls: vec![],
             }],
             vec![Some(0)],
             vec![0],

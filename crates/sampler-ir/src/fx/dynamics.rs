@@ -166,6 +166,9 @@ pub struct Maximizer {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
+    /// The script slot whose `set_engine_par` writes drive [`Config::lanes`].
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<crate::SlotAddress>,
     pub law: Law,
     pub attack: Time,
     pub release: Time,
@@ -181,6 +184,7 @@ impl Config {
     /// A configuration with the generic law and no extras.
     pub fn generic(threshold_db: f64, ratio: f64, attack: Time, release: Time) -> Self {
         Self {
+            address: None,
             law: Law::Generic(Generic {
                 threshold_db,
                 ratio,
@@ -226,6 +230,35 @@ impl Config {
             | Law::KontaktLimiter(n)
             | Law::KontaktHilbert(n)
             | Law::KontaktFeedback { native: n, .. } => n.ratio,
+        }
+    }
+
+    /// The live knobs of a script-addressed Kontakt compressor or limiter
+    /// (laws: kontakt-bindings fx_dynamics_dist_tape.tsv, limiter-dynamics.tsv;
+    /// times in ms there, seconds in the stage).
+    pub fn lanes(&self) -> Vec<super::Lane> {
+        use super::{Lane, Law as L, tables};
+        use crate::ProcessorParameter as P;
+        if self.address.is_none() {
+            return Vec::new();
+        }
+        let ms = |t: crate::Time| t.seconds() * 1e3;
+        let seconds = |table: &[f64]| [table[0] * 1e-3, table[table.len() - 1] * 1e-3];
+        match self.law {
+            Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => vec![
+                Lane::new("ENGINE_PAR_THRESHOLD", P::Threshold, n.threshold_db, L::Linear { a: -68., b: 65. }),
+                Lane::new("ENGINE_PAR_RATIO", P::Ratio, n.ratio, L::Exp { a: 1., r: 0.04 }),
+                Lane::new("ENGINE_PAR_COMP_ATTACK", P::Attack, ms(self.attack), L::Table(&tables::COMP_ATTACK))
+                    .scaled(seconds(&tables::COMP_ATTACK)),
+                Lane::new("ENGINE_PAR_COMP_DECAY", P::Release, ms(self.release), L::Table(&tables::COMP_DECAY))
+                    .scaled(seconds(&tables::COMP_DECAY)),
+            ],
+            Law::KontaktLimiter(n) => vec![
+                Lane::new("ENGINE_PAR_LIM_IN_GAIN", P::Threshold, n.threshold_db, L::Linear { a: -24., b: 48. }),
+                Lane::new("ENGINE_PAR_LIM_RELEASE", P::Release, ms(self.release), L::Table(&tables::LIM_RELEASE))
+                    .scaled(seconds(&tables::LIM_RELEASE)),
+            ],
+            _ => Vec::new(),
         }
     }
 

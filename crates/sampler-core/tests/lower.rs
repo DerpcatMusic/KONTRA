@@ -1012,6 +1012,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         unit: ir::ControlUnit::None,
     };
     instrument.chains[0].pre_amplitude[0] = ir::Processor::Daft(ir::Daft {
+        address: None,
         gain: 0.,
         cutoff: 0.,
         resonance: 0.,
@@ -1571,6 +1572,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                         })
                     } else {
                         ir::Processor::Daft(ir::Daft {
+                            address: None,
                             gain: 0.,
                             cutoff,
                             resonance: 0.1,
@@ -1709,6 +1711,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                     })
                 } else {
                     ir::Processor::Daft(ir::Daft {
+                        address: None,
                         gain,
                         cutoff: 0.5,
                         resonance,
@@ -2727,6 +2730,124 @@ fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
         assert!(ir.validate().is_err());
         assert!(lower(&ir, 48000, vec![], no_behaviors).is_err());
     }
+}
+
+/// A routed (non-amplitude) Kontakt envelope's stages are engine lanes at its
+/// saved slot; a voice reads them when it starts (ANALOG STRINGS ENV_Filter 88/2).
+#[test]
+fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("mod-env")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::ZERO,
+                decay: ir::Time::Milliseconds(1.),
+                sustain: 0.,
+                ..Default::default()
+            }),
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Amplitude,
+            depth: ir::Depth::Gain(ir::Gain::Decibels(-40.)),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
+        ..Default::default()
+    };
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0, slot: 2, external: false, name: "ENV_Filter".into(),
+        runtime: Some(ir::ModulatorRef(0)), settings: None,
+    });
+    ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0, slot: 2, attack_ms: 0., attack_curve: 0., hold_ms: 0., decay_ms: 1.,
+        sustain: 0., release_ms: 0., ahd_only: false, native_amplitude: false,
+    });
+    let sustain = sampler_core::EngineParameterAddress {
+        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap(),
+        group: 0, slot: 2, generic: -1,
+    };
+    let level = |write: Option<i32>| {
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        if let Some(value) = write {
+            rt.set_engine_parameter(sustain, value).unwrap();
+        }
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 512];
+        rt.render(&mut out).unwrap();
+        out[511][0]
+    };
+    let (authored, held) = (level(None), level(Some(1_000_000)));
+    // The envelope sits at sustain after 1 ms: 0 applies none of the route's
+    // -40 dB, sustain 1 all of it.
+    assert!((authored / held).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
+}
+
+/// A native Multi LFO with a saved fade starts silent and reaches full depth
+/// on the native fade law (ANALOG STRINGS LFO_P2, 98.8 ms).
+#[test]
+fn native_multi_lfo_fade_runs_the_saved_fade_law() {
+    let wave = ir::NativeWave::Multi { weights: [1., 0., 0., 0., 0.], width: 0.5, normalize: true, digital: false };
+    let level = |shape: ir::LfoShape| {
+        let ir = ir::Instrument {
+            assets: vec![asset("multi-fade")],
+            groups: vec![ir::Group::default()],
+            zones: vec![ir::Zone {
+                group: Some(ir::GroupRef(0)),
+                routes: vec![ir::RouteRef(0)],
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            modulators: vec![ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Lfo(ir::Lfo {
+                    shape,
+                    rate: ir::Frequency::Hertz(0.01),
+                    delay: ir::Time::ZERO,
+                    fade_in: ir::Time::ZERO,
+                    phase: 0.25,
+                    retrigger: true,
+                }),
+            }],
+            routes: vec![ir::Route {
+                source: ir::ModulatorRef(0),
+                target: ir::Target::Amplitude,
+                depth: ir::Depth::Gain(ir::Gain::Decibels(-20.)),
+                invert: false,
+                shape: None,
+                smoothing: ir::Time::ZERO,
+                scale: None,
+            }],
+            ..Default::default()
+        };
+        let pcm = Pcm::new(48000, vec![[1.; 2]; 12000].into_boxed_slice()).unwrap();
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![pcm], no_behaviors).unwrap(), limits()).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = vec![[0.; 2]; 9600];
+        for block in out.chunks_mut(128) {
+            rt.render(block).unwrap();
+        }
+        // Depth in dB away from the unmodulated level.
+        let db = |x: f32| (20. * x.log10()).abs();
+        (db(out[64][0]), db(out[9599][0]))
+    };
+    let (plain_start, plain_end) = level(ir::LfoShape::Native(wave));
+    let (faded_start, faded_end) = level(ir::LfoShape::NativeFaded { wave, fade_ms: 100. });
+    assert!(plain_start > 19. && (plain_start - plain_end).abs() < 0.1, "{plain_start} {plain_end}");
+    assert!(faded_start < 1., "the fade starts at no depth: {faded_start} dB");
+    assert!((faded_end - plain_end).abs() < 0.2, "full depth by 200 ms: {faded_end} vs {plain_end}");
 }
 
 fn native_primary_fixture() -> ir::Instrument {
