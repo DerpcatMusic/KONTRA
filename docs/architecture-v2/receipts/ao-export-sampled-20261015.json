@@ -1,0 +1,392 @@
+{
+  "schema": 1,
+  "sampled_stage_source_commit": "fae3f896e",
+  "binary_sha256": "847d6a1d21527d472b36890fbf2fb4a82c7e3aa8b0fd826309ebc5188b797075",
+  "observed_source_revision": "fae3f896e099d8039c298f99345fea4daab36136",
+  "mode": "fresh unseeded normal owner, authentic visible LayerNext control; optional rotating declaration-index sample stride128; no plugin/DAW/audio device",
+  "owner_window_ns": 26092844515,
+  "before_active_stage": "advance_scheduled_callbacks",
+  "after_active_stage": "advance_data_poll",
+  "scope": "completed intervals may cross endpoints; independent concurrent snapshots; nested intervals not additive; instrumentation included; subset ratios are not whole-loop estimates",
+  "stages": [
+    {
+      "name": "loading",
+      "scope": "startup; excluded from owner-turn sum",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "initial_snapshot",
+      "scope": "startup; excluded from owner-turn sum",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "events",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 3557524,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 2486476
+    },
+    {
+      "name": "ui_requests",
+      "scope": "owner turn; includes nested audit_barrier work in seeded mode",
+      "calls": 2048,
+      "wall_ns": 3309669,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 2275901
+    },
+    {
+      "name": "advance",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 43223098,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 41789831
+    },
+    {
+      "name": "ui_publish",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 107,
+      "wall_ns": 24754165183,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 24524436357
+    },
+    {
+      "name": "findings_publish",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "scan_snapshot",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 2485778,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 1346634
+    },
+    {
+      "name": "commands_collect",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 2177035,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 1159932
+    },
+    {
+      "name": "commands_push",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 2067560,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 1051076
+    },
+    {
+      "name": "command_backpressure",
+      "scope": "nested in commands_push; includes UI requests and retry sleep",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "park",
+      "scope": "owner turn; disjoint except explicitly nested stages",
+      "calls": 2048,
+      "wall_ns": 1277976856,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 7685768
+    },
+    {
+      "name": "advance_scheduled_callbacks",
+      "scope": "nested in advance",
+      "calls": 2048,
+      "wall_ns": 11813267,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 10640208
+    },
+    {
+      "name": "advance_data_poll",
+      "scope": "nested in advance",
+      "calls": 2048,
+      "wall_ns": 2014143,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 999212
+    },
+    {
+      "name": "advance_sample_poll",
+      "scope": "nested in advance",
+      "calls": 2048,
+      "wall_ns": 16721534,
+      "caller_cpu_samples": 2048,
+      "caller_cpu_ns": 15470297
+    },
+    {
+      "name": "deferred_callback_cycle",
+      "scope": "nested in caller; includes deferred callbacks recursively",
+      "calls": 2250,
+      "wall_ns": 10290262,
+      "caller_cpu_samples": 2250,
+      "caller_cpu_ns": 9050807
+    },
+    {
+      "name": "interface_export",
+      "scope": "nested in ui_publish",
+      "calls": 107,
+      "wall_ns": 24572492555,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 24344408803
+    },
+    {
+      "name": "control_value_mirror",
+      "scope": "nested in ui_publish",
+      "calls": 107,
+      "wall_ns": 29955853,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 29643405
+    },
+    {
+      "name": "face_mutex_wait",
+      "scope": "nested in ui_publish",
+      "calls": 107,
+      "wall_ns": 101972,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 51681
+    },
+    {
+      "name": "face_equality",
+      "scope": "nested in ui_publish",
+      "calls": 107,
+      "wall_ns": 2079824,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 2010648
+    },
+    {
+      "name": "face_replace_and_retire",
+      "scope": "nested in ui_publish",
+      "calls": 107,
+      "wall_ns": 145006736,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 143536441
+    },
+    {
+      "name": "backpressure_ui_requests",
+      "scope": "nested in command_backpressure",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "audit_barrier_events",
+      "scope": "nested in ui_requests only in seeded audit-barrier mode",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "audit_barrier_advance",
+      "scope": "nested in ui_requests only in seeded audit-barrier mode",
+      "calls": 0,
+      "wall_ns": 0,
+      "caller_cpu_samples": 0,
+      "caller_cpu_ns": null
+    },
+    {
+      "name": "export_registry",
+      "scope": "nested in interface_export or initial_snapshot; five export substages are disjoint",
+      "calls": 107,
+      "wall_ns": 144243425,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 142902586
+    },
+    {
+      "name": "export_topology",
+      "scope": "nested in interface_export or initial_snapshot; five export substages are disjoint",
+      "calls": 107,
+      "wall_ns": 1623652614,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 1608302311
+    },
+    {
+      "name": "export_widgets",
+      "scope": "nested in interface_export or initial_snapshot; five export substages are disjoint",
+      "calls": 107,
+      "wall_ns": 22716252127,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 22505187272
+    },
+    {
+      "name": "export_page",
+      "scope": "nested in interface_export or initial_snapshot; five export substages are disjoint",
+      "calls": 107,
+      "wall_ns": 22985451,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 22761823
+    },
+    {
+      "name": "export_validate",
+      "scope": "nested in interface_export or initial_snapshot; five export substages are disjoint",
+      "calls": 107,
+      "wall_ns": 50353902,
+      "caller_cpu_samples": 107,
+      "caller_cpu_ns": 50011922
+    },
+    {
+      "name": "export_widget_sample",
+      "scope": "1/128 rotating widget sample; nested in export_widgets; includes value and inventory samples",
+      "calls": 8485,
+      "wall_ns": 208763202,
+      "caller_cpu_samples": 8485,
+      "caller_cpu_ns": 201062679
+    },
+    {
+      "name": "export_value_sample",
+      "scope": "nested in export_widget_sample; sampled value and inventory intervals are disjoint",
+      "calls": 8485,
+      "wall_ns": 14127572,
+      "caller_cpu_samples": 8485,
+      "caller_cpu_ns": 9225324
+    },
+    {
+      "name": "export_inventory_sample",
+      "scope": "nested in export_widget_sample; sampled value and inventory intervals are disjoint",
+      "calls": 8485,
+      "wall_ns": 73881412,
+      "caller_cpu_samples": 8485,
+      "caller_cpu_ns": 68518250
+    }
+  ],
+  "counters": [
+    {
+      "name": "owner_turns",
+      "aggregation": "sum",
+      "value": 2048
+    },
+    {
+      "name": "events_popped",
+      "aggregation": "sum",
+      "value": 1
+    },
+    {
+      "name": "ui_requests_popped",
+      "aggregation": "sum",
+      "value": 113
+    },
+    {
+      "name": "commands_collected",
+      "aggregation": "sum",
+      "value": 1
+    },
+    {
+      "name": "commands_pushed",
+      "aggregation": "sum",
+      "value": 1
+    },
+    {
+      "name": "queue_full_retries",
+      "aggregation": "sum",
+      "value": 0
+    },
+    {
+      "name": "snapshot_widgets_total",
+      "aggregation": "sum",
+      "value": 1085515
+    },
+    {
+      "name": "snapshot_bindings_total",
+      "aggregation": "sum",
+      "value": 594813
+    },
+    {
+      "name": "face_changes",
+      "aggregation": "sum",
+      "value": 106
+    },
+    {
+      "name": "scheduled_resumes",
+      "aggregation": "sum",
+      "value": 201
+    },
+    {
+      "name": "deferred_resumes",
+      "aggregation": "sum",
+      "value": 1746
+    },
+    {
+      "name": "coroutine_resumes",
+      "aggregation": "sum",
+      "value": 1948
+    },
+    {
+      "name": "backlog_high_water",
+      "aggregation": "maximum",
+      "value": 83
+    },
+    {
+      "name": "export_sample_passes",
+      "aggregation": "sum",
+      "value": 107
+    },
+    {
+      "name": "export_bound_value_reads",
+      "aggregation": "sum",
+      "value": 0
+    },
+    {
+      "name": "export_sampled_bound_value_reads",
+      "aggregation": "sum",
+      "value": 0
+    }
+  ],
+  "final_tasks": {
+    "cancelled": 0,
+    "conserved": true,
+    "failed": 0,
+    "pending": 0,
+    "queued_metadata": 0,
+    "ready": 0,
+    "requested": 1746,
+    "submitted": 0,
+    "successful_after_owner_ack": 1746,
+    "worker_active": 0
+  },
+  "pcm_verification": {
+    "assets": 1746,
+    "duration_ms": 386.612284,
+    "failures": 0,
+    "frame_mismatches": 0,
+    "frames": 1191936,
+    "header_mismatches": 0,
+    "independent_reopen_fnv64": 2777464607603900197,
+    "installed_fnv64": 2777464607603900197,
+    "missing_registry": 0,
+    "scope": "up to4096changedassets,three256framewindows each when resident; fresh admitted authority reader; no full sample/native audio equivalence",
+    "truncated": false,
+    "windows": 4656
+  },
+  "script_fault_counts": {
+    "init": {},
+    "runtime": {}
+  },
+  "stream_underruns": 0,
+  "core_render_errors": 0,
+  "core_wake_errors": 0,
+  "measurement": {
+    "elapsed_s": 33.66207716200006,
+    "rustc_observations": 66,
+    "max_rustc_cpu": 98.8,
+    "max_external_dsp_cpu": 0,
+    "contended": true
+  },
+  "payload_written": false
+}
