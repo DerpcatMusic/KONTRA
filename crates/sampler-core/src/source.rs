@@ -1423,6 +1423,7 @@ impl Cursor {
                 (self, output, envelope),
                 #[inline(always)]
                 |(this, output, envelope)| {
+                    // Retain the established baseline on unmeasured targets.
                     this.run(
                         span,
                         width,
@@ -1436,15 +1437,14 @@ impl Cursor {
                 },
                 #[inline(always)]
                 |(this, output, envelope)| {
-                    this.run(
+                    this.run_polyphase_four::<true>(
                         span,
                         width,
                         output,
                         envelope,
                         gain,
                         gains,
-                        #[inline(always)]
-                        |f, w| bank.dot::<true>(f, w),
+                        bank,
                     )
                 },
             ),
@@ -1509,6 +1509,50 @@ impl Cursor {
             gains,
             |f, w| kernel.sample_window(f, step, w),
         );
+    }
+
+    /// Bank-only four-output run. Every phase recurrence, envelope advance and
+    /// mix association is identical to `run`; incomplete groups use that loop.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run_polyphase_four<const FUSED: bool>(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        bank: &crate::resample::Polyphase,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (chunks, tail) = output.as_chunks_mut::<4>();
+        for chunk in chunks {
+            let mut phases = [0.; 4];
+            let mut windows = [&span[..0]; 4];
+            for i in 0..4 {
+                phases[i] = fraction;
+                windows[i] = &span[offset..offset + width];
+                let phase = fraction + step;
+                let whole = phase as i64;
+                fraction = phase - whole as f64;
+                offset += whole as usize;
+            }
+            let sources = bank.dot_four::<FUSED>(phases, windows);
+            for (frame, source) in chunk.iter_mut().zip(sources) {
+                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
+                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+            }
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+        self.run(&span[offset..], width, tail, envelope, gain, gains,
+            #[inline(always)]
+            |f, w| bank.dot::<FUSED>(f, w));
     }
 
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
@@ -2108,6 +2152,51 @@ mod tests {
             ),
             (400, 1000)
         );
+    }
+
+    #[test]
+    fn polyphase_columns_preserve_output_cursor_envelope_and_partial_tails() {
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let span: Vec<Frame> = (0..256).map(|i| {
+            match i % 19 {
+                0 => [-0., 0.], 1 => [f32::from_bits(1), -f32::from_bits(1)],
+                _ => [(i as f32 * 0.173).sin(), -(i as f32 * 0.319).cos()],
+            }
+        }).collect();
+        for step in [1.000000001, 1.03, 1.17, 1.3, 1.5, 1.7, 1.9, 2.] {
+            let bank = kernel.polyphase(step).unwrap();
+            for fraction in [0., 0.123456789, 0.999999999] {
+                for len in 0..=65 {
+                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                        EnvelopeCurve::exponential(2.).unwrap(), EnvelopeCurve::exponential(-3.).unwrap(), EnvelopeCurve::default())] {
+                        let mut old = Playback::default().cursor(256, 48000, 48000).unwrap();
+                        old.step = step; old.fraction = fraction;
+                        let mut new = old;
+                        let mut old_env = EnvelopeState::new(shape);
+                        let mut new_env = old_env;
+                        let mut expected = vec![[0.123, -0.567]; len];
+                        let mut actual = expected.clone();
+                        sampler_simd::dispatch_fused((&mut old, &mut expected[..], &mut old_env),
+                            #[inline(always)]
+                            |(old, out, env)| old.run(&span, bank.width(), out, env, 0.731, [0.7, -0.2], |f,w| bank.dot::<false>(f,w)),
+                            #[inline(always)]
+                            |(old, out, env)| old.run(&span, bank.width(), out, env, 0.731, [0.7, -0.2], |f,w| bank.dot::<true>(f,w)));
+                        sampler_simd::dispatch_fused((&mut new, &mut actual[..], &mut new_env),
+                            #[inline(always)]
+                            |(new, out, env)| new.run_polyphase_four::<false>(&span, bank.width(), out, env, 0.731, [0.7, -0.2], bank),
+                            #[inline(always)]
+                            |(new, out, env)| new.run_polyphase_four::<true>(&span, bank.width(), out, env, 0.731, [0.7, -0.2], bank));
+                        assert_eq!(actual.iter().map(|x| x.map(f32::to_bits)).collect::<Vec<_>>(), expected.iter().map(|x| x.map(f32::to_bits)).collect::<Vec<_>>());
+                        assert_eq!(new.position, old.position);
+                        assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
+                        assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
+                        assert_eq!(new_env.remaining(), old_env.remaining());
+                        for _ in 0..64 { assert_eq!(new_env.next().to_bits(), old_env.next().to_bits()); }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
