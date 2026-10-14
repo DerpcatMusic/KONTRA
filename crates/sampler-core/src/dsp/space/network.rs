@@ -31,31 +31,37 @@ pub(super) const MAX_LINES: usize = 32;
 /// Frames per modulation update of [`Modulation::Glide`].
 pub(super) const GLIDE_BLOCK: usize = 64;
 
-/// A power-of-two delay ring.
+/// A power-of-two delay ring. Each ring stores frame `w` at a different
+/// offset (`skew`), so rings of one size written at the same `w` do not
+/// all land in one cache set.
 #[derive(Clone)]
 pub(super) struct Ring {
     pub(super) buf: Vec<f32>,
     mask: usize,
+    skew: usize,
 }
 
 impl Ring {
     pub(super) fn new(min_len: usize) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = min_len.next_power_of_two().max(2);
-        Self { buf: vec![0.0; n], mask: n - 1 }
+        // 17 cache lines (16 floats each) apart.
+        let skew = NEXT.fetch_add(17 * 16, std::sync::atomic::Ordering::Relaxed);
+        Self { buf: vec![0.0; n], mask: n - 1, skew }
     }
     #[inline(always)]
     pub(super) fn at(&self, w: usize, k: usize) -> f32 {
-        self.buf[w.wrapping_sub(k) & self.mask]
+        self.buf[w.wrapping_add(self.skew).wrapping_sub(k) & self.mask]
     }
     #[inline(always)]
     pub(super) fn put(&mut self, w: usize, v: f32) {
         let m = self.mask;
-        self.buf[w & m] = v;
+        self.buf[w.wrapping_add(self.skew) & m] = v;
     }
     #[inline(always)]
     fn add(&mut self, w: usize, v: f32) {
         let m = self.mask;
-        self.buf[w & m] += v;
+        self.buf[w.wrapping_add(self.skew) & m] += v;
     }
     /// `(1-f)·x[w-i] + f·x[w-i-1]`, `d = i + f`.
     #[inline(always)]
@@ -309,7 +315,6 @@ struct Lanes {
 /// Per-line state.
 #[derive(Clone, Copy)]
 struct State {
-    v: [f32; MAX_LINES],
     s0: [f32; MAX_LINES],
     s1: [f32; MAX_LINES],
     dc: [f32; MAX_LINES],
@@ -321,8 +326,8 @@ pub(super) struct Network {
     spec: Spec,
     k: Box<Lanes>,
     st: Box<State>,
+    v: [f32; MAX_LINES],
     n: usize,
-    lanes: usize,
     /// Whether the predelay stage runs (a predelay or an echo).
     pre_on: bool,
     /// A permutation matrix that is the identity: parallel lines.
@@ -373,8 +378,8 @@ impl Network {
         }
         let mut s = Self {
             k: Box::new(k),
-            st: Box::new(State { v: ZERO, s0: ZERO, s1: ZERO, dc: ZERO }),
-            lanes: n.next_multiple_of(8),
+            st: Box::new(State { s0: ZERO, s1: ZERO, dc: ZERO }),
+            v: ZERO,
             pre_on: spec.predelay != [0.0; 2] || spec.echo != 0.0,
             diagonal: matches!(&spec.matrix, Matrix::Permutation { p, .. } if p[..n].iter().enumerate().all(|(i, &k)| usize::from(k) == i)),
             n,
@@ -418,8 +423,8 @@ impl Network {
             self.cur[i] = l.base;
             self.phase[i] = l.phase;
         }
-        self.lp = [0.0; 2];
-        *self.st = State { v: ZERO, s0: ZERO, s1: ZERO, dc: ZERO };
+        (self.lp, self.v) = ([0.0; 2], ZERO);
+        *self.st = State { s0: ZERO, s1: ZERO, dc: ZERO };
         (self.phasor, self.left, self.shelf, self.cut) = ((1.0, 0.0), 0, [[0.0; 2]; 2], [0.0; 2]);
     }
 
@@ -528,10 +533,8 @@ impl Network {
             }
             x[c] = v;
         }
-        // Lines. Positions and arithmetic run over `lanes` (n rounded up to
-        // a vector width; the padding is zero); reads and writes touch the
-        // n rings.
-        let (k, st, ln) = (&*self.k, &mut *self.st, self.lanes);
+        // Lines.
+        let (k, st) = (&*self.k, &mut *self.st);
         let mut rd = [0f32; MAX_LINES];
         for (i, ring) in self.rings.iter().enumerate() {
             let (j, f) = match M {
@@ -561,45 +564,45 @@ impl Network {
                 }
             };
         }
-        for i in 0..ln {
-            st.v[i] = rd[i] * k.a[i] + k.b[i] * st.v[i];
-        }
+        // Scalar per line: mixing vector and scalar passes over the same
+        // arrays stalls on store forwarding.
         let mut u = [0f32; MAX_LINES];
-        if self.diagonal {
-            for i in 0..ln {
-                u[i] = st.v[i] * k.g[i];
-            }
-        } else {
-            apply(&s.matrix, &st.v, n, &mut u);
-        }
-        let mut y = u;
-        if F {
-            let one = s.write_filter.unwrap_or(0.0);
-            let [b0, b1, b2, a1, a2] = &k.bq;
-            for i in 0..ln {
-                let z = b0[i] * y[i] + st.s0[i];
-                st.s0[i] = b1[i] * y[i] - a1[i] * z + st.s1[i];
-                st.s1[i] = b2[i] * y[i] - a2[i] * z;
+        let one = s.write_filter.unwrap_or(0.0);
+        let at = w.wrapping_sub(s.inject_offset);
+        let mut put = |i: usize, ring: &mut Ring, mut y: f32| {
+            if F {
+                let [b0, b1, b2, a1, a2] = &k.bq;
+                let z = b0[i] * y + st.s0[i];
+                st.s0[i] = b1[i] * y - a1[i] * z + st.s1[i];
+                st.s1[i] = b2[i] * y - a2[i] * z;
                 st.dc[i] += one * (z - st.dc[i]);
-                y[i] = z - st.dc[i];
+                y = z - st.dc[i];
             }
-        }
-        let mut inj = [0f32; MAX_LINES];
-        for i in 0..ln {
-            inj[i] = x[0] * k.inj[0][i] + x[1] * k.inj[1][i];
-        }
-        if s.inject_offset == 0 {
+            let inj = x[0] * k.inj[0][i] + x[1] * k.inj[1][i];
+            if at == w {
+                ring.put(w, y + inj);
+            } else {
+                ring.put(w, y);
+                ring.add(at, inj);
+            }
+        };
+        let v = &mut self.v;
+        if self.diagonal {
             for (i, ring) in self.rings.iter_mut().enumerate() {
-                ring.put(w, y[i] + inj[i]);
+                v[i] = rd[i] * k.a[i] + k.b[i] * v[i];
+                u[i] = v[i] * k.g[i];
+                put(i, ring, u[i]);
             }
         } else {
-            let at = w.wrapping_sub(s.inject_offset);
+            for i in 0..n {
+                v[i] = rd[i] * k.a[i] + k.b[i] * v[i];
+            }
+            apply(&s.matrix, v, n, &mut u);
             for (i, ring) in self.rings.iter_mut().enumerate() {
-                ring.put(w, y[i]);
-                ring.add(at, inj[i]);
+                put(i, ring, u[i]);
             }
         }
-        let v = &st.v;
+        let v = &self.v;
         // Output.
         let src: &[f32; MAX_LINES] = match s.tap_from {
             TapFrom::Read => &rd,
