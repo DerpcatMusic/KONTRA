@@ -140,6 +140,42 @@ fn every_law_matches_its_golden_output_bits() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// ns/frame per golden case; run optimized with `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_every_law() {
+    let only = std::env::var("BENCH_ONLY").unwrap_or_default();
+    for (name, s, rate) in cases().into_iter().filter(|c| c.0.starts_with(only.as_str())) {
+        let mut cells = 0;
+        let d = s.prepare(rate, &mut vec![], &mut cells).unwrap();
+        let mut slab = vec![[0.; 2]; cells];
+        let mut state = ProcessorState::default();
+        let input: Vec<[[f64; BLOCK]; 2]> = (0..94)
+            .map(|b| {
+                std::array::from_fn(|ch| {
+                    std::array::from_fn(|i| {
+                        let n = (b * BLOCK + i) as f64;
+                        let env = if (b * BLOCK + i) % 3000 < 1500 { 1.2 } else { 0.05 };
+                        env * if ch == 0 { (n * 0.0576).sin() } else { 0.5 * (n * 0.1305).cos() }
+                    })
+                })
+            })
+            .collect();
+        let frames = 500_000usize;
+        let mut best = f64::MAX;
+        for _ in 0..6 {
+            let t = std::time::Instant::now();
+            for b in 0..frames / BLOCK {
+                let mut block = input[b % input.len()];
+                d.process(&mut state, &mut slab, &[], &mut block, BLOCK, (b * BLOCK) as u64);
+                std::hint::black_box(&block);
+            }
+            best = best.min(t.elapsed().as_nanos() as f64 / frames as f64);
+        }
+        eprintln!("{name:24} {best:6.2} ns/frame");
+    }
+}
+
 const NATIVE: Native = Native { threshold_db: 0., ratio: 0. };
 
 /// `input` through `law` (make-up 1, fully wet) in whole blocks.
