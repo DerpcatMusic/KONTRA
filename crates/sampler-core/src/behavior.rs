@@ -1356,6 +1356,7 @@ impl Runtime {
             })
             .count();
         if available + finished < needed {
+            self.record_control_admission_failure(needed);
             return false;
         }
         let mut i = 0;
