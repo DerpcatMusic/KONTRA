@@ -227,14 +227,28 @@ impl LineSpec {
     }
 }
 
+pub(super) const MAX_INPUT_BQ: usize = 4;
+
+/// A tapped ring of the input stage's left output (Kontakt Plate's
+/// injection and early-reflection taps): each frame writes the input, then
+/// `inject` adds `c·x[w - d]` to line `i`'s matrix input and `early` adds
+/// `[cL, cR]·x[w - d]` to the output groups.
+#[derive(Clone)]
+pub(super) struct Feed {
+    pub(super) ring: Ring,
+    pub(super) inject: Vec<(usize, u8, f32)>,
+    pub(super) early: Vec<(usize, [f32; 2])>,
+}
+
 /// Everything the engine runs, at one sample rate.
 #[derive(Clone)]
 pub(super) struct Spec {
     pub(super) mix: f32,
     pub(super) gain: f32,
     pub(super) input_lp: Option<f32>,
-    /// Direct-form-I input biquad `b0 b1 b2 a1 a2`.
-    pub(super) input_bq: Option<[f32; 5]>,
+    /// Direct-form-I input biquads `b0 b1 b2 a1 a2`, in series (at most
+    /// [`MAX_INPUT_BQ`]).
+    pub(super) input_bq: Vec<[f32; 5]>,
     /// Predelay per channel in frames (fractional) and the ring length.
     pub(super) predelay: [f32; 2],
     pub(super) pre_cap: usize,
@@ -247,6 +261,11 @@ pub(super) struct Spec {
     /// The write biquad and the DC blocker pole (`None`: neither).
     pub(super) write_filter: Option<f32>,
     pub(super) inject_offset: usize,
+    /// The lines' biquads filter the reads (TDF-II) instead of the writes;
+    /// the read filter `a`/`b` is then unused.
+    pub(super) read_biquad: bool,
+    /// A tapped input ring feeding the matrix input and the output.
+    pub(super) feed: Option<Feed>,
     pub(super) tap_from: TapFrom,
     /// Two groups of `(line, coefficient)`, summed in order.
     pub(super) taps: [Vec<(u8, f32)>; 2],
@@ -270,7 +289,9 @@ impl Spec {
             mix: 0.0,
             gain: 1.0,
             input_lp: None,
-            input_bq: None,
+            input_bq: Vec::new(),
+            read_biquad: false,
+            feed: None,
             predelay: [0.0; 2],
             pre_cap: 1,
             echo: 0.0,
@@ -341,7 +362,7 @@ pub(super) struct Network {
     rings: Vec<Ring>,
     pre: [Ring; 2],
     lp: [f32; 2],
-    df1: [[f32; 4]; 2],
+    df1: [[[f32; 4]; 2]; MAX_INPUT_BQ],
     phasor: (f64, f64),
     rot: (f64, f64),
     /// Glide: current delay per line, and this block's start and step.
@@ -390,12 +411,12 @@ impl Network {
             v: ZERO,
             pre_on: spec.predelay != [0.0; 2] || spec.echo != 0.0,
             diagonal,
-            parallel: diagonal,
+            parallel: diagonal && !spec.read_biquad && spec.feed.is_none(),
             n,
             rings: spec.lines.iter().map(|l| Ring::new(l.cap)).collect(),
             pre: [Ring::new(spec.pre_cap), Ring::new(spec.pre_cap)],
             lp: [0.0; 2],
-            df1: [[0.0; 4]; 2],
+            df1: [[[0.0; 4]; 2]; MAX_INPUT_BQ],
             phasor: (1.0, 0.0),
             rot,
             cur: [0.0; MAX_LINES],
@@ -433,7 +454,10 @@ impl Network {
             self.cur[i] = l.base;
             self.phase[i] = l.phase;
         }
-        (self.lp, self.v, self.df1) = ([0.0; 2], ZERO, [[0.0; 4]; 2]);
+        (self.lp, self.v, self.df1) = ([0.0; 2], ZERO, [[[0.0; 4]; 2]; MAX_INPUT_BQ]);
+        if let Some(f) = &mut s.feed {
+            f.ring.buf.fill(0.0);
+        }
         *self.st = State { s0: ZERO, s1: ZERO, dc: ZERO };
         (self.phasor, self.left, self.shelf, self.cut) = ((1.0, 0.0), 0, [[0.0; 2]; 2], [0.0; 2]);
     }
@@ -533,10 +557,10 @@ impl Network {
         }
         for c in 0..2 {
             let mut v = x[c] * s.gain;
-            if let Some([b0, b1, b2, a1, a2]) = s.input_bq {
-                let [x1, x2, y1, y2] = self.df1[c];
+            for (q, [b0, b1, b2, a1, a2]) in s.input_bq.iter().enumerate() {
+                let [x1, x2, y1, y2] = self.df1[q][c];
                 let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-                self.df1[c] = [v, x1, y, y1];
+                self.df1[q][c] = [v, x1, y, y1];
                 v = y;
             }
             if let Some(k) = s.input_lp {
@@ -585,10 +609,29 @@ impl Network {
                 write::<F>(k, st, one, i, ring, w, at, u[i], x);
             }
         } else {
-            for i in 0..n {
-                v[i] = rd[i] * k.a[i] + k.b[i] * v[i];
+            if s.read_biquad {
+                let [b0, b1, b2, a1, a2] = &k.bq;
+                for i in 0..n {
+                    let z = b0[i] * rd[i] + st.s0[i];
+                    st.s0[i] = b1[i] * rd[i] - a1[i] * z + st.s1[i];
+                    st.s1[i] = b2[i] * rd[i] - a2[i] * z;
+                    v[i] = z;
+                }
+            } else {
+                for i in 0..n {
+                    v[i] = rd[i] * k.a[i] + k.b[i] * v[i];
+                }
             }
-            apply(&s.matrix, v, n, &mut u);
+            if let Some(f) = &mut s.feed {
+                f.ring.put(w, x[0]);
+                let mut m = *v;
+                for &(d, i, c) in &f.inject {
+                    m[usize::from(i)] += c * f.ring.at(w, d);
+                }
+                apply(&s.matrix, &m, n, &mut u);
+            } else {
+                apply(&s.matrix, v, n, &mut u);
+            }
             for (i, ring) in self.rings.iter_mut().enumerate() {
                 write::<F>(k, st, one, i, ring, w, at, u[i], x);
             }
@@ -599,7 +642,13 @@ impl Network {
             TapFrom::Filtered => v,
             TapFrom::Mixed => &u,
         };
-        let g = s.taps.each_ref().map(|t| t.iter().fold(0f32, |acc, &(i, c)| acc + c * src[usize::from(i)]));
+        let mut g = s.taps.each_ref().map(|t| t.iter().fold(0f32, |acc, &(i, c)| acc + c * src[usize::from(i)]));
+        if let Some(f) = &s.feed {
+            for &(d, [cl, cr]) in &f.early {
+                let e = f.ring.at(w, d);
+                g = [g[0] + cl * e, g[1] + cr * e];
+            }
+        }
         self.output(g, x, inl, inr, w)
     }
 

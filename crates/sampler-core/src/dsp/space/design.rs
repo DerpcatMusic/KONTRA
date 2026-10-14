@@ -565,7 +565,7 @@ fn jezar(n: &Network, u: &UviReverb, rate: f32) -> Spec {
     let mut s = Spec::new(lines, Matrix::Permutation { p: std::array::from_fn(|i| i as u8), g: [feedback(u.decay_time); MAX_LINES] });
     s.mix = 1.0;
     s.gain = f32::from_bits(0x3c75c28f);
-    s.input_bq = cutoff(u.cutoff, rate);
+    s.input_bq = cutoff(u.cutoff, rate).into_iter().collect();
     let pre = (n.predelay_seconds as f32 * rate) as usize;
     s.predelay = [pre as f32; 2];
     s.pre_cap = pre + 2;
