@@ -167,8 +167,10 @@ they do not verify a body supplied with that label. Authored fixtures cover live
 field replacement, duplicate first-match behavior, defaults/boolean parsing,
 allocation failure, record bounds, and named-module privacy. Default-feature unit
 tests and scan-enabled initialization/interface oracles each pass four tests.
-Real-bank distributions and aggregate probe overhead still require a newly
-frozen executable; the preceding seeded receipt predates these counters.
+The subsequent [real-bank lookup receipt](UVI_PARAMETER_LOOKUP_EVIDENCE.md)
+accounts for every getter call, preserves full model/pixel hashes and directly
+clocks record collection. It rejects long-schema indexing for this workload;
+the preceding seeded receipt predates these counters.
 
 A separate [current Morphology snapshot witness](receipts/morphology-current-ui-20261015.json)
 uses the same executable and the single-constructor production lifecycle path.
