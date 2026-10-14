@@ -15,9 +15,11 @@ struct Data {
     started: Instant,
     stages: RefCell<BTreeMap<&'static str, (u64, Duration)>>,
     next_sample: Cell<Instant>,
-    samples: RefCell<BTreeMap<(String, Option<usize>, Option<String>, String), u64>>,
+    samples: RefCell<BTreeMap<(String, Option<usize>, Option<String>, String), (u64, u64)>>,
     sample_count: Cell<u64>,
     dropped: Cell<u64>,
+    dropped_self: Cell<u64>,
+    unavailable_top: Cell<u64>,
     sampling_ns: Cell<u128>,
 }
 
@@ -43,6 +45,8 @@ impl Profile {
                 samples: RefCell::new(BTreeMap::new()),
                 sample_count: Cell::new(0),
                 dropped: Cell::new(0),
+                dropped_self: Cell::new(0),
+                unavailable_top: Cell::new(0),
                 sampling_ns: Cell::new(0),
             })
         }))
@@ -102,13 +106,21 @@ impl Profile {
                     info.what.to_owned(),
                 )
             }) else {
+                if level == 0 {
+                    data.unavailable_top.set(data.unavailable_top.get() + 1);
+                }
                 break;
             };
             let mut samples = data.samples.borrow_mut();
             if samples.len() < 512 || samples.contains_key(&frame) {
-                *samples.entry(frame).or_default() += 1;
+                let record = samples.entry(frame).or_default();
+                record.0 += 1;
+                record.1 += u64::from(level == 0);
             } else {
                 data.dropped.set(data.dropped.get() + 1);
+                if level == 0 {
+                    data.dropped_self.set(data.dropped_self.get() + 1);
+                }
             }
         }
         data.sampling_ns
@@ -119,9 +131,11 @@ impl Profile {
             return Value::Null;
         };
         let stages:Vec<_>=data.stages.borrow().iter().map(|(phase,(calls,elapsed))|json!({"phase":phase,"calls":calls,"elapsed_ms":elapsed.as_secs_f64()*1000.})).collect();
-        let samples:Vec<_>=data.samples.borrow().iter().map(|((source,line,name,what),samples)|json!({"source":source,"defined_line":line,"function":name,"kind":what,"inclusive_samples":samples})).collect();
+        let samples:Vec<_>=data.samples.borrow().iter().map(|((source,line,name,what),(inclusive,own))|json!({"source":source,"defined_line":line,"function":name,"kind":what,"inclusive_samples":inclusive,"self_samples":own})).collect();
         json!({"coverage":coverage,"collection_window_ms":data.started.elapsed().as_secs_f64()*1000.,"stages":stages,
             "lua_samples":samples,"sample_count":data.sample_count.get(),"dropped_frames":data.dropped.get(),"sampling_overhead_ms":data.sampling_ns.get() as f64/1_000_000.,
+            "dropped_self_samples":data.dropped_self.get(),"unavailable_top_frames":data.unavailable_top.get(),
+            "self_sample_scope":"Topmost frame at an observed VM safepoint (Lua or C). Retained self samples plus dropped self samples plus unavailable top frames equal sample_count. These are not exclusive CPU time; a blocking/native callback may be absent from VM safepoint samples",
             "sample_scope":"Opportunistic VM safepoint stacks, at most 500Hz; up to four inclusive frames. Counts do not measure exclusive CPU time or time spent blocked in native callbacks",
             "timing_scope":"Inclusive wall clocks; nested compilation/require/body/API phases overlap. Collection window extends through any UI export/render before this report; host_create measures initializer construction. No script text, argument values, stack bytes or heap contents are retained"})
     }
