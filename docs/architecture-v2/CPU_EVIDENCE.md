@@ -738,6 +738,37 @@ own-child call-chain capture is the next attribution step, with fixture
 observers distinguished from `Sampler::process` callers. No new production
 fast path is accepted from these observations alone.
 
+The bounded follow-up user-only call-chain capture is
+`whole-callback-plain-user-callers.{data,json,txt}` with its command script and
+run log. `cycles:u --call-graph dwarf,8192` initially failed at event opening
+because the default call-chain request includes kernel frames. Explicit
+`--user-callchains` succeeds with the same `perf_event_paranoid=2`, without
+changing host permissions. The failed attempt is retained separately as
+`whole-callback-plain-callers*`. The successful capture samples the unchanged
+group companion with auditing disabled, CPU 5, 20,000 plain callbacks and the
+same warmup/setup/observer/release caveats. It records 3,591 samples and zero
+lost samples. Recording stack data adds overhead; its timings are diagnostic.
+
+The recovered immediate caller of two libc-copy leaf locations is
+`prepare_voice`: those leaves account for 4.50% and 2.97% of whole-fixture
+sampled cycles in this capture. `render_voice` is 30.55% self / 50.07%
+inclusive, `prepare_voice` 8.28% self and source mixing 23.62% self. These
+inclusive and self shares overlap and must not be added. Several outer chains
+truncate with invalid frames, including the audible-count callers; an 8 KiB
+stack snapshot is not a complete callback caller census. The measured actual
+voice-readback clock group remains the inside-callback evidence for telemetry.
+
+Disassembly identifies a concrete repeated-copy candidate in the recovered
+path: `Voice::set_step` assigns `self.cursor = self.cursor.with_step(...)`.
+The generated plain path copies the 728-byte cursor to temporary storage and
+back around its step update. This is distinct from the scratch `memset`.
+An approved narrow experiment replaces that assignment with a mutable cursor
+step setter, retaining the same validation, pitch arithmetic and stretch
+clock behavior. The existing value-returning builder remains available.
+It still needs independent cursor/PCM/state oracles and a controlled current
+layout before/after callback pair; the sampled copy share is not an accepted
+whole-callback speedup or proof of the 1% target.
+
 | Stage or cost | Evidence | Remaining gap |
 | --- | --- | --- |
 | Host admission/key-up | V2 begin/events wall and caller/process CPU; exact 300 source owners, fixed mass key-up faults, [isolated admission lookup attribution](ADMISSION_CPU_EVIDENCE.md) | Authored script events and layered host-end ownership cost |
