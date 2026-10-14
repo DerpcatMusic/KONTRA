@@ -501,7 +501,7 @@ impl BusState {
                     && block
                         .iter()
                         .all(|c| c[..produced].iter().all(|v| (*v as f32).is_finite()))
-                    && states.iter().all(ProcessorState::finite);
+                    && crate::dsp::finite_states(&node.processors, states);
                 if finite {
                     for (i, frame) in buffer.samples[..produced].iter_mut().enumerate() {
                         *frame = [block[0][i], block[1][i]]
