@@ -217,8 +217,53 @@ cache state was uncontrolled. Neither this duration nor the earlier 75.89-second
 scan-based successful run is an isolated speed comparison. The stage clocks
 instead expose that source preparation spans account for much less wall time
 than the serialized task queue/acknowledgment path under these conditions. Owner
-callback/UI/command scheduling attribution remains separate work. No notes were
+callback/UI/command scheduling attribution was not enabled in that receipt. No notes were
 played, so zero reported stream underruns is not a disk-deadline receipt.
+
+A separate final owner-clock receipt (`ao-layer-next-owner-phase-evidence.json`)
+uses the same normal visible gesture, after the initialization-recipe and synthetic
+Part-identity fixes. All **1,746 tasks again succeeded after owner acknowledgment**,
+with zero failed, canceled or pending work; 1,746 source identities changed and all
+6,984 targets remained covered. The independent check again matched 4,656 windows /
+1,191,936 frames and both hashes above, without truncation or missing registrations.
+Dynamic physical held/peak bytes remained 28,785,138. No init/runtime script faults
+were recorded. These are source-service and bounded PCM receipts, not native audio
+or sounding-voice parity.
+
+The owner-clock snapshots bracket the gesture and task settlement, excluding startup
+and subsequent independent PCM verification. Their 25.307-second window contains
+2,026 owner turns, 1,746 deferred task callbacks and 104 UI publications. Those
+publications exported 1,055,080 widgets in total. The largest measured owner cost
+is the repeated full interface export:
+
+| Owner snapshot delta | Calls | Wall time | Owner thread CPU |
+| --- | ---: | ---: | ---: |
+| UI publication | 104 | 24,019.44 ms | 23,733.58 ms |
+| Interface export, nested in publication | 104 | 23,851.48 ms | 23,567.82 ms |
+| Face equality, nested in publication | 104 | 1.93 ms | 1.83 ms |
+| All advance work | 2,027 | 41.06 ms | 39.37 ms |
+| Sample poll, nested in advance | 2,027 | 16.24 ms | 14.76 ms |
+
+The export and equality rows are nested substages and must not be added to UI
+publication. There were no command-queue-full retries. The normal owner ran without
+a seeded audit barrier; diagnostic clocks are opt-in and absent from ordinary plugin
+builds. A source manifest records the frozen helper's Rust/Cargo inputs and binary
+SHA256 `ec30d253dfdc4e2cbc00b417455abdbca78d7ed1b27a9120e6b492bbb9e45d83`.
+
+Across the 1,746 worker jobs, resolution including headers totaled 593.67 ms and
+preparation/decode totaled 299.58 ms. The newly measured completed-worker-to-owner
+delivery span totaled **22.926 seconds** (mean 13.13 ms, maximum 287.03 ms).
+Commit-submit-to-owner-ack spans totaled 523.88 seconds across overlapping tasks
+(maximum 793.03 ms); they include transport, core commit and owner scheduling,
+not just acknowledgment computation. Metadata queue spans likewise overlap:
+22,607.87 seconds summed, maximum 23.90 seconds. Repeated full UI export now has
+direct thread-CPU attribution as the dominant measured owner bottleneck; it is
+not inferred from aggregate task wait alone.
+
+The complete process took 33.145 seconds. Compiler activity appeared in all 65
+process observations, so this is not an isolated speed comparison or a deadline
+margin result. The original failed, zero-request, successful pre-clock and final
+owner-clock receipts remain separate; no vendor script, artwork or PCM was saved.
 
 Independent path fixtures cover nested-module raw context, exact ordered roots,
 explicit volumes, ASCII case folding with unchanged Unicode names, extension
