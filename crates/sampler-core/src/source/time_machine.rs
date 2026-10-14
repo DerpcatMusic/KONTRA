@@ -72,6 +72,13 @@ pub struct ModeConfig {
 }
 
 impl Mode {
+    /// Whether the backend is the recovered native algorithm. TM2 (PSOLA) and Pro
+    /// (Elastique) are WSOLA stand-ins, not native (audit CORE-SOURCE-MOD-024);
+    /// the Kontakt importer reports them as NotModeled for that reason.
+    pub fn is_native_backend(self) -> bool {
+        matches!(self, Mode::TimeMachine)
+    }
+
     /// PROVISIONAL constants, see the module docs.
     pub fn config(self, hq: bool) -> ModeConfig {
         match self {
@@ -713,6 +720,12 @@ fn catmull_rom(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_time_machine_one_is_a_native_backend() {
+        assert!(Mode::TimeMachine.is_native_backend());
+        assert!(!Mode::TimeMachine2.is_native_backend() && !Mode::TimeMachinePro.is_native_backend());
+    }
+
     use super::*;
 
     const RATE: u32 = 44100;

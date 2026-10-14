@@ -727,6 +727,63 @@ fn editor_with_a_real_instrument() {
     shot(&h, "report");
 }
 
+/// Exercise the plugin loader, including a snapshot's resolved resource owner.
+#[cfg(feature = "shots")]
+#[test]
+#[ignore = "set KONTRA_UI_IR_PATCH to a locally owned native instrument or snapshot"]
+fn native_interface_through_the_plugin_loader() {
+    use moose::prelude::BackgroundTask;
+    use std::time::{Duration, Instant};
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").unwrap());
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {
+        path: path.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    crate::plugin::Load.run(&p);
+    {
+        let v = p.shared.view.lock().unwrap();
+        let part = &v.parts[0];
+        assert!(part.instrument.is_some(), "{}", part.status);
+        assert!(part.interfaces.iter().any(|f| f.native_ui.is_some()));
+        let resource_path = part.resource_path.as_ref().expect("resolved resource owner");
+        assert!(resource_path.extension().is_some_and(|ext| ext == "nki"));
+        if path.extension().is_some_and(|ext| ext == "nksn") {
+            assert_ne!(resource_path, &path, "snapshot must use its base NKI resources");
+        }
+    }
+    for (width, height) in [(900, 640), (1180, 780)] {
+        let mut h = Harness::new(&p, f64::from(width), f64::from(height));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            h.idle(1);
+            let diagnostics = super::native_ui::gate_diagnostics();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            if !super::native_ui::gate_targets(0).is_empty() { break; }
+            assert!(Instant::now() < deadline, "native interface did not become interactive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.idle(40);
+        assert!(h.ui.scene().unwrap().surface("view-0-Interface").is_some());
+        let scene = h.ui.scene().unwrap();
+        let viewport = scene.surface("rack-view").unwrap().frame;
+        for surface in scene.surfaces().filter(|s| s.key.as_str().starts_with("nui-")
+            && s.key.as_str().ends_with("-root/component")) {
+            assert!(surface.frame.y + surface.frame.size.height <= viewport.y + viewport.size.height + 1.,
+                "fitted native interface must remain inside the rack: {:?}, {viewport:?}", surface.frame);
+        }
+        if let Some(out) = std::env::var_os("KONTRA_NATIVE_LOAD_SHOTS") {
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            moose::core::screenshot::save_png(
+                &out.join(format!("native-{width}x{height}.png")),
+                &pixels(&h.ui, width, height), u32::from(width), u32::from(height),
+            );
+        }
+    }
+}
+
 fn kind_name(k: &ir::Kind) -> String {
     let s = format!("{k:?}");
     s.chars().take(60).collect()
@@ -869,13 +926,40 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
         v.parts[0].active = "Strings".into();
         v.parts[0].instrument = Some(Arc::new(inst));
         v.parts[0].report = Some(Arc::new(report));
+        let mut shelf = crate::library::Shelf::default();
+        shelf.snapshots.insert(
+            std::path::PathBuf::from("/x/Strings.nki"),
+            crate::library::Snapshots {
+                instrument: "Strings".into(),
+                paths: vec!["/x/Presets/A.nksn".into(), "/x/Presets/B.nksn".into()],
+            },
+        );
+        v.shelf = Arc::new(shelf);
     }
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(4);
     let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
-    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0"] {
+    for id in ["perf-art-0", "perf-needs-0"] {
         assert!(there(&h, id), "{id}");
     }
+    // One two-row header (bar, then views + performance), the old full-width
+    // strips gone, the preset picker in row 1.
+    assert!(!there(&h, "perf-0"), "no separate CC7 row");
+    assert!(!there(&h, "perf-vol-0"), "CC7 is information on the gain control, not a row");
+    let scene = h.ui.scene().unwrap();
+    let one = scene.surface("header-0").unwrap().frame;
+    let two = scene.surface("header2-0").unwrap().frame;
+    let pick = scene.surface("snapshot-0").expect("preset picker").frame;
+    assert!(two.y >= one.y + one.size.height - 0.5, "row 2 under row 1");
+    assert!(pick.y >= one.y && pick.y + pick.size.height <= one.y + one.size.height + 0.5, "picker in row 1");
+    assert!((two.size.height - one.size.height).abs() < 0.5, "rows share one height");
+    for id in ["snapshot-next-0"] {
+        assert!(there(&h, id), "{id}");
+    }
+    assert!(
+        scene.surface("volume-0").unwrap().tip.as_deref().unwrap().contains("CC7 -6.0 dB"),
+        "instrument volume remains available on the main gain control"
+    );
     assert_eq!(
         p.selection.read().unwrap().parts[0].dynamics,
         -1,
@@ -1085,7 +1169,7 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     };
     assert_eq!(
         header_text(&h),
-        "Articulation Legato · C#0",
+        "Legato · C#0",
         "header uses the row's effective trigger after a swap"
     );
     for n in 3..5 {
@@ -1266,7 +1350,7 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
         h.idle(3);
         assert_eq!(
             header_text(&h),
-            format!("Articulation Legato · {label}"),
+            format!("Legato · {label}"),
             "header follows the effective input family"
         );
         assert_eq!(
@@ -1799,8 +1883,7 @@ fn v1_menu_rack_edit_sound_selects_the_requested_part() {
 fn v1_menu_mixer_edit_sound_selects_the_requested_part() {
     let (p, mut h) = v1_menu_fixture();
     h.press("collapse-1");
-    h.press("view-1-Sound");
-    h.press("sound-tab-1-Effects");
+    h.press("view-1-Info");
     h.press("collapse-1");
     v1_strip_menu(&mut h, 131072);
     h.press("menu-item-5");
@@ -5082,9 +5165,9 @@ fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
     );
 }
 
-/// Sound's Mapping is the same read-only IR view as the chrome shortcut.
+/// The Mapping view is a read-only IR view: zones keep their identity.
 #[test]
-fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
+fn mapping_view_preserves_zone_identity_and_ir() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument {
         name: "Layered strings (synthetic RR fixture)".into(),
@@ -5139,12 +5222,7 @@ fn mapping_sound_tabs_preserve_zone_identity_and_ir() {
     }
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        assert!(
-            ui.ui.scene().unwrap().surface("sound-tabs-0").is_some(),
-            "Sound exposes its shared tab strip"
-        );
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
         ui.press("map-group-0-0");
         ui.press("map-zone-0-1");
@@ -5285,8 +5363,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     );
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         ui.press("map-group-0-0");
         ui.press("map-zone-0-0");
         for _ in 0..15 {
@@ -5550,8 +5627,7 @@ fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
     assert!(envelope.frames > 0 && envelope.peaks.iter().any(|(lo, hi)| hi - lo > 0.0001));
     let before = (*inst).clone();
     let mut ui = Harness::new(&p, 1180., 780.);
-    ui.press("view-0-Sound");
-    ui.press("sound-tab-0-Mapping");
+    ui.press("view-0-Mapping");
     assert!(ui.ui.scene().unwrap().surface("map-0").is_some());
     assert_eq!(*inst, before);
 }
@@ -5787,9 +5863,13 @@ fn mapping_navigation_reaches_late_takes_and_restores_fitted_keys() {
         };
         ui.tick(held());
         ui.tick(held());
-        assert_eq!(
-            p.shared.keyboard.pop(),
-            Some((0, crate::plugin::Play::Note(64, 64))),
+        // Velocity follows the pointer's height in the map: the middle of an odd
+        // or even pixel height is 63 or 64.
+        assert!(
+            matches!(
+                p.shared.keyboard.pop(),
+                Some((0, crate::plugin::Play::Note(64, 63 | 64)))
+            ),
             "zoomed hit testing auditions the shown key and velocity"
         );
         ui.tick(Input::default());
@@ -6106,8 +6186,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     );
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         for _ in 0..100 {
             ui.idle(1);
             if ui
@@ -6237,8 +6316,7 @@ fn mapping_group_search_keeps_selection_and_offers_empty_recovery() {
     let before = (*source).clone();
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
-        ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Mapping");
+        ui.press("view-0-Mapping");
         assert!(
             ui.ui.scene().unwrap().surface("map-search-0").is_some(),
             "Mapping needs its own group/articulation search"
@@ -6442,17 +6520,12 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
             I::Scope::Group(I::GroupRef(0)),
             I::Processor::Gain(I::Gain::Decibels(-6.)),
         ),
-        (I::Scope::Master, I::Processor::Rectify(I::Rectifier::Full)),
+        (I::Scope::Master, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Full))),
         (
             I::Scope::Bus(I::BusRef(0)),
-            I::Processor::LoFi {
-                bits: 8.,
-                frequency: 12000.,
-                noise: 0.,
-                color: 0.5,
-            },
+            I::Processor::Color(I::fx::color::Config::lofi(0.5, 0.5, 0., 0.5)),
         ),
-        (I::Scope::Voice, I::Processor::Rectify(I::Rectifier::Half)),
+        (I::Scope::Voice, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Half))),
         (
             I::Scope::Voice,
             I::Processor::Daft(I::Daft {
@@ -6460,6 +6533,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
                 cutoff: 0.5,
                 resonance: 0.2,
                 highpass: true,
+                address: None,
             }),
         ),
     ] {
@@ -7277,7 +7351,6 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         );
         ui.press("map-zone-0-1");
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Controls");
         assert!(
             ui.ui
                 .scene()
@@ -7332,7 +7405,6 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         assert!(scene.surface("map-inspector-0-188").is_some());
         assert!(scene.surfaces().filter(|s| s.key.starts_with("map-group-0-")).count() < 48);
         ui.press("view-0-Sound");
-        ui.press("sound-tab-0-Controls");
         ui.press("view-0-Mapping");
         assert!(ui.ui.scene().unwrap().surface("map-inspector-0-188").is_some());
     }

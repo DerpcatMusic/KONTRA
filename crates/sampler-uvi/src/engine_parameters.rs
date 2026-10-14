@@ -14,6 +14,113 @@ pub(crate) fn bus_scope(node: roxmltree::Node) -> bool {
     !node.ancestors().any(|a| a.has_tag_name("Keygroup"))
 }
 
+/// Lane slots of a family element start here, clear of the catalog-position
+/// slots below and of the Mix at slot -1.
+const LANE_SLOTS: i32 = 1000;
+
+/// Where the `k`-th processor of scripted bus element `node` listens.
+pub(crate) fn lane_slot(node: usize, k: usize) -> ir::SlotAddress {
+    ir::SlotAddress {
+        group: -1,
+        slot: LANE_SLOTS + i32::try_from(k).unwrap_or(0),
+        generic: i32::try_from(node).unwrap_or(-1),
+    }
+}
+
+/// Delay, modulation and reverb elements on a bus: they translate to family
+/// units (`Processor::TimeMod`/`Space`) whose lanes take script writes.
+pub(crate) fn lane_family(node: roxmltree::Node) -> bool {
+    lane_kind(node.tag_name().name()) && bus_scope(node)
+}
+
+pub(crate) fn lane_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DiffuseDelay"
+            | "DualDelayX" | "TapeEcho" | "DiffuseDelayNested" | "Buzz" | "Chorus" | "Flanger" | "AnalogChorus"
+            | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser" | "Phasor" | "PhasorFilter"
+            | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion"
+    )
+}
+
+/// A script's write of `name` on a family element (`lane_family`), as the
+/// lane writes that move its units from the old configuration to the new
+/// one. The element is translated alone from its retained fields, before and
+/// after the write. `None` when anything but lanes would change: a field
+/// with no lane, a value outside its lane, a new report or another layout.
+pub(crate) fn retune(
+    node: usize,
+    kind: &str,
+    params: &[(String, String)],
+    name: &str,
+    value: f64,
+) -> Option<Vec<(EngineParameterAddress, i32)>> {
+    let alone = |written: Option<f64>| -> Option<(Vec<ir::Processor>, Vec<String>)> {
+        let escape = |v: &str| v.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+        let mut xml = format!("<UVI4><Program><Inserts><{kind}");
+        // Bypass is the element's Mix, outside its units.
+        for (k, v) in params.iter().filter(|(k, _)| k != "Bypass" && (written.is_none() || k != name)) {
+            xml += &format!(" {k}=\"{}\"", escape(v));
+        }
+        if let Some(v) = written {
+            xml += &format!(" {name}=\"{v}\"");
+        }
+        xml += "/></Inserts></Program></UVI4>";
+        let (ir, _, _, inserts) = crate::translate_full(&xml, crate::Source::Bank).ok()?;
+        let at = inserts.iter().find(|i| i.count > 0)?;
+        let units = ir.chains[at.chain.0].pre_amplitude.get(at.first..at.first + at.count)?.to_vec();
+        Some((units, ir.unsupported.into_iter().map(|u| u.feature).collect()))
+    };
+    let (old, old_reports) = alone(None)?;
+    let (new, new_reports) = alone(Some(value))?;
+    if old.len() != new.len() || new_reports.iter().any(|r| !old_reports.contains(r)) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (k, (old, new)) in old.into_iter().zip(new).enumerate() {
+        let slot = lane_slot(node, k);
+        let (old, new) = (old.at(slot), new.at(slot));
+        if old == new {
+            continue;
+        }
+        let (Some((_, before)), Some((_, after))) = (old.lanes(), new.lanes()) else {
+            return None;
+        };
+        if before.iter().map(|l| l.role).ne(after.iter().map(|l| l.role)) {
+            return None;
+        }
+        // The new configuration must be the old one with the new lane values.
+        let mut moved = old;
+        for lane in &after {
+            match &mut moved {
+                ir::Processor::TimeMod(c) => c.set(lane.role, lane.value),
+                ir::Processor::Space(c) => c.set(lane.role, lane.value),
+                _ => return None,
+            }
+        }
+        if moved != new {
+            return None;
+        }
+        for (b, a) in before.iter().zip(&after).filter(|(b, a)| b.value != a.value) {
+            let _ = b;
+            let law = match a.law {
+                ir::fx::Law::Identity => EngineParameterLaw::Linear { low: 0., high: 1. },
+                ir::fx::Law::Linear { a: low, b } => EngineParameterLaw::Linear { low, high: low + b },
+                ir::fx::Law::Exp { a: low, r } => EngineParameterLaw::Exponential { low, high: low * r },
+                _ => return None,
+            };
+            let address = EngineParameterAddress {
+                parameter: sampler_core::engine_parameter_id(a.name)?,
+                group: slot.group,
+                slot: slot.slot,
+                generic: slot.generic,
+            };
+            out.push((address, law.normalized_value(a.value).ok()?));
+        }
+    }
+    Some(out)
+}
+
 /// Processors of the insert (offset from its first) that follow `name`. Pure
 /// in the kind and name; the translator emits the same fixed layouts:
 /// ThreeBandShelves is [level, low shelf, high shelf] with the shelves
@@ -43,7 +150,8 @@ pub(crate) fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
             match (field, digits.parse::<usize>()) {
                 ("Enabled", Ok(n @ 1..=16)) => vec![(n - 1, P::Enabled)],
                 ("Freq", Ok(n @ 1..=16)) => vec![(n - 1, P::Frequency)],
-                ("Q" | "Bandwidth", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Q", Ok(n @ 1..=16)) => vec![(n - 1, P::Quality)],
+                ("Bandwidth", Ok(n @ 1..=16)) => vec![(n - 1, P::Bandwidth)],
                 ("Gain", Ok(n @ 1..=16)) => vec![(n - 1, P::GainDecibels)],
                 _ => Vec::new(),
             }
@@ -75,7 +183,8 @@ pub(crate) fn bypassable(node: roxmltree::Node) -> bool {
         "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole"
         | "TrackDelay" | "EffectRack" => true,
         "WaveShaper" => matches!(number("Mode", 0.) as i64, 6 | 7),
-        "Convolver" | "SampledReverb" => bus_scope(node),
+        "Convolver" | "SampledReverb" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb"
+        | "SparkVerb" | "Bloom" | "Diffusion" => bus_scope(node),
         // A program aux wraps its inserts; a rack chain's bypass is its gain.
         "AuxEffect" => node.parent().is_some_and(|p| p.has_tag_name("Auxs")),
         _ => false,
@@ -95,6 +204,14 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
         .filter(|p| !node_lanes(node, p.name).is_empty())
         .map(|p| p.name)
         .collect();
+    if lane_family(node) {
+        // Any field: `retune` decides whether its write is lanes only.
+        for name in parameters::definitions(kind).iter().map(|p| p.name) {
+            if name != "Bypass" && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
     if bypassable(node) {
         out.push("Bypass");
     } else if kind == "AuxEffect"
@@ -192,10 +309,6 @@ pub(crate) fn register(
         };
         let kind = node.tag_name().name();
         for p in parameters::definitions(kind) {
-            // Bandwidth is the same band parameter as Q: it writes through Q's control.
-            if p.name.starts_with("Bandwidth") {
-                continue;
-            }
             let lanes: Vec<_> = node_lanes(node, p.name)
                 .into_iter()
                 .filter(|(offset, _)| *offset < insert.count)
@@ -206,11 +319,9 @@ pub(crate) fn register(
             let read = |n: &str| node.attribute(n).and_then(|v| v.parse::<f64>().ok());
             let mut default = read(p.name).unwrap_or(p.default);
             if kind == "DigitalEq" {
-                default = match band_field(p.name) {
-                    Some(("Q", band)) => band_q(read, band),
-                    Some(("Gain", _)) => default * read("GainScale").unwrap_or(1.),
-                    _ => default,
-                };
+                if p.name == "OverallGain" || matches!(band_field(p.name), Some(("Gain", _))) {
+                    default *= read("GainScale").unwrap_or(1.);
+                }
             }
             // A bypassed rack chain starts silent: its gain is what bypass is.
             if kind == "AuxEffect"
@@ -263,26 +374,8 @@ fn band_field(name: &str) -> Option<(&str, usize)> {
     Some((&name[..name.len() - digits.len()], digits.parse().ok()?))
 }
 
-/// Q for a band's width in octaves (RBJ), within the catalog's Q range.
-fn q_for_octaves(octaves: f64) -> f64 {
-    (0.5 / (std::f64::consts::LN_2 / 2. * octaves).sinh()).clamp(0.018, 28.284)
-}
-
-/// A DigitalEq band's Q. Q and Bandwidth are one parameter saved twice; a
-/// program whose Q is still the default but whose Bandwidth was edited (the
-/// English Horn formant EQs) was authored by bandwidth.
-pub(crate) fn band_q(read: impl Fn(&str) -> Option<f64>, band: usize) -> f64 {
-    let q = read(&format!("Q{band}")).unwrap_or(std::f64::consts::FRAC_1_SQRT_2);
-    match read(&format!("Bandwidth{band}")) {
-        Some(octaves) if (octaves - 1.).abs() > 1e-6 && (q - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6 => {
-            q_for_octaves(octaves)
-        }
-        _ => q,
-    }
-}
-
 /// The control name and value a script's write of `name` reaches the DSP as:
-/// DigitalEq band gains are scaled by GainScale, and a Bandwidth is Q.
+/// DigitalEq band gains are scaled by GainScale (Q and Bandwidth are separate native fields).
 pub(crate) fn effective(
     kind: &str,
     name: &str,
@@ -292,7 +385,7 @@ pub(crate) fn effective(
     if kind == "DigitalEq" {
         match band_field(name) {
             Some(("Gain", _)) => return (name.into(), value * read("GainScale").unwrap_or(1.)),
-            Some(("Bandwidth", band)) => return (format!("Q{band}"), q_for_octaves(value)),
+            _ if name == "OverallGain" => return (name.into(), value * read("GainScale").unwrap_or(1.)),
             _ => {}
         }
     }
@@ -425,22 +518,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn digital_eq_bandwidth_is_q_and_gain_follows_the_scale() {
-        // One octave is Q 1.414; Q stays inside the catalog range.
-        let (name, q) = effective("DigitalEq", "Bandwidth2", 1., |_| None);
-        assert_eq!(name, "Q2");
-        assert!((q - std::f64::consts::SQRT_2).abs() < 1e-3, "{q}");
-        assert!((0.018..0.04).contains(&q_for_octaves(10.)) && q_for_octaves(0.01) == 28.284);
+    fn digital_eq_gain_follows_the_scale_and_bandwidth_is_its_own_lane() {
         let (name, gain) = effective("DigitalEq", "Gain3", 6., |n| (n == "GainScale").then_some(0.5));
         assert_eq!((name.as_str(), gain), ("Gain3", 3.));
-        // Q still at its default with an edited Bandwidth: authored by bandwidth.
-        let read = |n: &str| match n {
-            "Q1" => Some(std::f64::consts::FRAC_1_SQRT_2),
-            "Bandwidth1" => Some(0.4),
-            _ => None,
-        };
-        assert!((band_q(read, 1) - q_for_octaves(0.4)).abs() < 1e-9);
-        assert!((band_q(|_| None, 1) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
+        assert_eq!(effective("DigitalEq", "Bandwidth2", 0.4, |_| None), ("Bandwidth2".into(), 0.4));
+        assert_eq!(lanes("DigitalEq", "Bandwidth2"), vec![(1, P::Bandwidth)]);
     }
 
     #[test]
@@ -466,7 +548,7 @@ pub(crate) fn convolver_slots(
         let processors = &instrument.chains[chain.0];
         let all = processors.pre_amplitude.iter().chain(&processors.post_amplitude);
         for (index, processor) in all.enumerate() {
-            if matches!(processor, ir::Processor::Convolution { .. }) {
+            if matches!(processor, ir::Processor::Space(c) if c.impulse.is_some()) {
                 if let Some(insert) = inserts
                     .iter()
                     .find(|n| n.chain == chain && (n.first..n.first + n.count).contains(&index))

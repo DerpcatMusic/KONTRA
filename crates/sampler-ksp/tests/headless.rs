@@ -7,10 +7,6 @@ fn headless_external_jobs_stay_in_the_outbox_until_a_real_host_accepts_them() {
             "on init declare $job end on on persistence_changed $job:=mf_reset() wait_async($job) end on",
             sampler_core::MIDI_SERVICE,
         ),
-        (
-            "on init declare %data[1] declare $job end on on persistence_changed $job:=load_array_str(%data,\"/not-opened.nka\") wait_async($job) end on",
-            sampler_core::ARRAY_FILE_SERVICE,
-        ),
     ] {
         let script =
             sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
@@ -36,5 +32,29 @@ fn headless_external_jobs_stay_in_the_outbox_until_a_real_host_accepts_them() {
             retained, 1,
             "unsupported jobs retain their owner and request"
         );
+    }
+}
+
+#[test]
+fn headless_array_file_jobs_complete_read_only() {
+    // A load of an absent file and any save complete as failed; nothing is
+    // retained and nothing is written.
+    for call in ["load_array_str(%data,\"/not-opened.nka\")", "save_array_str(%data,\"/tmp/never-written.nka\")"] {
+        let source = format!(
+            "on init declare %data[1] declare $job declare $done end on on persistence_changed $job:={call} wait_async($job) $done:=1 end on"
+        );
+        let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let mut views = vec![script.view()];
+        let plan = script.bind(Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+        let limits = Limits::for_plan(&plan, 4, 4);
+        let mut runtime = Runtime::new(plan, limits).unwrap();
+        sampler_ksp::service_ui_effects(&mut runtime, &mut views).unwrap();
+        let mut retained = 0;
+        runtime.drain_effects(|_| {
+            retained += 1;
+            true
+        });
+        assert_eq!(retained, 0, "{call}");
+        assert!(!std::path::Path::new("/tmp/never-written.nka").exists());
     }
 }

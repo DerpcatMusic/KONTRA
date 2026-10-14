@@ -160,6 +160,101 @@ impl Check<'_> {
         }
     }
 
+    fn color(&self, c: &crate::fx::color::Config) -> Result<(), ValidationError> {
+        use crate::fx::color::{Curve, Hold, Quantizer};
+        let unit = |v: f32, field| self.within(f64::from(v), 0.0..=1.0, field);
+        if let Some(g) = c.gainer {
+            self.gain(g.gain, "gainer gain")?;
+            self.finite(g.dry, "gainer dry")?;
+        }
+        match c.hold {
+            Some(Hold::Native { frequency }) => unit(frequency, "color hold frequency")?,
+            Some(Hold::Rate { hertz }) => self.within(hertz, 1.0..=f64::MAX, "color hold rate")?,
+            None => {}
+        }
+        if let Some(d) = c.decimator {
+            for hz in d.hertz {
+                self.within(hz, 1.0..=f64::MAX, "decimator hertz")?;
+            }
+            self.within(f64::from(d.blend), 0.0..=1.0, "decimator blend")?;
+        }
+        if let Some(b) = c.filter {
+            self.within(f64::from(b.mode), 0.0..=2.0, "color filter mode")?;
+            self.within(b.hertz, 1.0..=f64::MAX, "color filter hertz")?;
+            self.within(b.q, 1e-3..=f64::MAX, "color filter q")?;
+        }
+        match c.quantizer {
+            Some(Quantizer::Native { bits }) => unit(bits, "color bits")?,
+            Some(Quantizer::Floor { bits }) => self.within(bits, 1.0..=32.0, "color bits")?,
+            None => {}
+        }
+        match c.curve {
+            Curve::Identity | Curve::Rectifier(_) => {}
+            Curve::Classic { shape } | Curve::Enhanced { shape } | Curve::Drums { shape } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
+            Curve::Tube { drive } | Curve::Transistor { drive } => unit(drive, "distortion drive")?,
+            Curve::Destructor { drive } => self.within(drive, 0.0..=1.0, "bit crusher drive")?,
+            Curve::Drive(d) => {
+                for (v, range, field) in [
+                    (d.input_gain, -30.0..=20.0, "drive input gain"),
+                    (d.overdrive, 0.0..=10.0, "overdrive"),
+                    (d.trash, 0.0..=1.0, "drive trash"),
+                    (d.mix, 0.0..=100.0, "drive mix"),
+                    (d.output_gain, -40.0..=10.0, "drive output gain"),
+                ] {
+                    self.within(f64::from(v), range, field)?;
+                }
+            }
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Diode(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::ToneStack(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Exciter(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Tape(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Bite(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Dirt(_) | Curve::Freak(_) | Curve::Amp(_) => {}
+            // Translators clamp to the native ranges; the runtime checks finiteness.
+            Curve::Tubescreamer(_) => {}
+            Curve::Skreamer(knobs) => {
+                for knob in knobs {
+                    unit(knob, "skreamer control")?;
+                }
+            }
+        }
+        if let Some(r) = c.redux {
+            self.within(f64::from(r.frequency), 1.0..=f64::MAX, "redux frequency")?;
+            self.within(f64::from(r.bits), 1.0..=32.0, "redux bits")?;
+            self.within(f64::from(r.jitter), 0.0..=1.0, "redux jitter")?;
+            self.within(f64::from(r.dither), 0.0..=2.0, "redux dither")?;
+            self.within(f64::from(r.band_limit), 1.0..=f64::MAX, "redux band limit")?;
+        }
+        if let Some(w) = c.widener {
+            self.within(f64::from(w.delay), -15.0..=15.0, "widener delay")?;
+            self.within(f64::from(w.width), -1.0..=1.0, "widener width")?;
+            self.within(f64::from(w.shelf_hertz), 1.0..=f64::MAX, "widener shelf hertz")?;
+            self.within(f64::from(w.shelf_db), -15.0..=15.0, "widener shelf gain")?;
+        }
+        if let Some(tone) = c.tone {
+            self.within(f64::from(tone), -1.0..=1.0, "bit crusher cutoff")?;
+        }
+        if let Some(damping) = c.damping {
+            unit(damping, "distortion damping")?;
+        }
+        if let Some(n) = c.noise {
+            unit(n.level, "lofi noise")?;
+            unit(n.color, "lofi color")?;
+        }
+        self.within(c.mix, 0.0..=1.0, "color mix")?;
+        if let Some(s) = c.stereo {
+            self.within(s.width, 0.0..=1.0, "stereo width")?;
+            self.within(s.pan, -1.0..=1.0, "stereo pan")?;
+        }
+        Ok(())
+    }
+
     fn pitch(&self, pitch: Pitch, field: &'static str) -> Result<(), ValidationError> {
         match pitch {
             Pitch::Ratio(ratio) => self.within(ratio, f64::MIN_POSITIVE..=f64::MAX, field),
@@ -204,48 +299,34 @@ impl Check<'_> {
         for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
-                Processor::Gainer { gain, dry } => {
-                    self.gain(gain, "gainer gain")?;
-                    self.finite(dry, "gainer dry")?;
-                }
-                Processor::StereoModeller { width, pan, .. } => {
-                    self.within(width, 0.0..=1.0, "stereo width")?;
-                    self.within(pan, -1.0..=1.0, "stereo pan")?;
-                }
+                Processor::Color(c) => self.color(&c)?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
-                Processor::KontaktLegacyEq(eq) => {
-                    self.within(f64::from(eq.frequency), 0.0..=1.0, "legacy EQ frequency")?;
-                    self.within(f64::from(eq.bandwidth), 0.0..=1.0, "legacy EQ bandwidth")?;
-                    self.within(f64::from(eq.gain_db), -18.0..=18.0, "legacy EQ gain")?;
-                }
-                Processor::LoFi {
-                    bits,
-                    frequency,
-                    noise,
-                    color,
-                } => {
-                    for (v, field) in [
-                        (bits, "lofi bits"),
-                        (frequency, "lofi frequency"),
-                        (noise, "lofi noise"),
-                        (color, "lofi color"),
-                    ] {
-                        self.within(f64::from(v), 0.0..=1.0, field)?;
-                    }
-                }
-                Processor::LiveLoFi { bits, frequency, noise, color, .. } => {
-                    for (v, field) in [(bits, "lofi bits"), (frequency, "lofi frequency"), (noise, "lofi noise"), (color, "lofi color")] {
-                        self.within(f64::from(v), 0.0..=1.0, field)?;
+                Processor::Eq(eq) => {
+                    self.finite(f64::from(eq.output_gain_db), "EQ output gain")?;
+                    self.within(f64::from(eq.count), 1.0..=crate::fx::eq::MAX_BANDS as f64, "EQ band count")?;
+                    for band in eq.bands() {
+                        self.finite(f64::from(band.gain_db), "EQ gain")?;
+                        self.finite(f64::from(band.proportional_q), "EQ proportional Q")?;
+                        match band.law {
+                            crate::fx::eq::Law::Rbj | crate::fx::eq::Law::Cookbook | crate::fx::eq::Law::UviDigital => {
+                                self.within(f64::from(band.frequency), 1e-3..=1e6, "EQ frequency")?;
+                                self.within(f64::from(band.q), 1e-3..=1e3, "EQ Q")?;
+                            }
+                            crate::fx::eq::Law::KontaktLegacy => {
+                                self.within(f64::from(band.frequency), 0.0..=1.0, "legacy EQ frequency")?;
+                                self.within(f64::from(band.q), 0.0..=1.0, "legacy EQ bandwidth")?;
+                                self.within(f64::from(band.gain_db), -18.0..=18.0, "legacy EQ gain")?;
+                            }
+                            crate::fx::eq::Law::Solid(_) => {
+                                self.within(f64::from(band.frequency), 0.0..=1.0, "Solid EQ frequency")?;
+                                self.within(f64::from(band.q), 0.0..=1.0, "Solid EQ Q")?;
+                                self.within(f64::from(band.gain_db), 0.0..=1.0, "Solid EQ gain")?;
+                            }
+                        }
                     }
                 }
                 Processor::LiveFormant { knobs, .. } => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
-                }
-                Processor::Rectify(_) => {}
-                Processor::Saturation(shape) | Processor::LiveSaturation { shape, .. } => self.within(f64::from(shape), -1.0..=1.0, "saturation shape")?,
-                Processor::Distortion { drive, damping, .. } | Processor::LiveDistortion { drive, damping, .. } => {
-                    self.within(f64::from(drive), 0.0..=1.0, "distortion drive")?;
-                    self.within(f64::from(damping), 0.0..=1.0, "distortion damping")?;
                 }
                 Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
@@ -256,10 +337,24 @@ impl Check<'_> {
                 }
                 Processor::Formant(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
-                }                Processor::LegacyPhaser { depth, feedback, phase, speed, period_unit } => {
-                    for knob in [depth, feedback, phase] { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
-                    self.within(f64::from(speed), 0.0..=f64::MAX, "phaser speed")?;
-                    if let Some(unit) = period_unit { self.within(f64::from(unit), f64::MIN_POSITIVE..=f64::MAX, "phaser period")?; }
+                }
+                Processor::FilterBank(c) => {
+                    for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
+                        self.within(v, 0.0..=1.0, field)?;
+                    }
+                    if let crate::fx::filter::Variant::Versatile(v) = c.variant {
+                        let knobs = v.shift.iter().chain(&v.resonance).chain(&v.types).chain(&v.wet);
+                        for &knob in knobs.chain([&v.gain]) {
+                            self.within(f64::from(knob), 0.0..=1.0, "versatile control")?;
+                        }
+                    }
+                }
+                Processor::TimeMod(config) => {
+                    config.check().map_err(|field| ValidationError::OutOfRange {
+                        owner: self.owner.clone(),
+                        field,
+                        value: f64::NAN,
+                    })?;
                 }
                 Processor::Phaser(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
@@ -275,38 +370,68 @@ impl Check<'_> {
                     self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
                     self.within(f64::from(d.taps), 1.0..=12.0, "ladder taps")?;
                 }
-                Processor::Reverb(r) => {
-                    for (v, field) in [
-                        (r.decay_seconds, "reverb decay"),
-                        (r.size, "reverb size"),
-                        (r.damping_hz, "reverb damping"),
-                        (r.modulation_seconds, "reverb modulation"),
-                        (r.diffusion, "reverb diffusion"),
-                        (r.predelay_seconds, "reverb predelay"),
-                        (r.input_cutoff_hz, "reverb input cutoff"),
-                        (r.low_shelf_db, "reverb low shelf"),
-                        (r.width, "reverb width"),
-                    ] {
-                        self.finite(v, field)?;
+                Processor::Space(c) => {
+                    self.finite(c.dry, "space dry")?;
+                    self.finite(c.wet, "space wet")?;
+                    if !c.finite() {
+                        self.finite(f64::NAN, "space parameter")?;
+                    }
+                    if let Some(impulse) = c.impulse {
+                        self.exists(Reference::Impulse(impulse.0))?;
                     }
                 }
-                Processor::KontaktEnhancedCompressor { knobs: [threshold, ratio, attack, release], .. } => {
-                    self.finite(f64::from(threshold), "compressor threshold")?;
-                    self.within(f64::from(ratio), 0.0..=1.0, "compressor ratio")?;
-                    self.within(f64::from(attack), f64::MIN_POSITIVE..=f64::MAX, "compressor attack")?;
-                    self.within(f64::from(release), 0.0..=f64::MAX, "compressor release")?;
-                }
-                Processor::Compressor(c) => {
-                    self.finite(c.threshold_db, "compressor threshold")?;
-                    self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;
-                    self.time(c.attack, "compressor attack")?;
-                    self.time(c.release, "compressor release")?;
-                    self.gain(c.makeup, "compressor makeup")?;
-                }
-                Processor::Convolution { impulse, dry, wet } => {
-                    self.exists(Reference::Impulse(impulse.0))?;
-                    self.finite(dry, "convolution dry")?;
-                    self.finite(wet, "convolution wet")?;
+                Processor::Dynamics(c) => {
+                    use crate::fx::dynamics::{Detector, Law};
+                    self.finite(c.threshold(), "dynamics threshold")?;
+                    self.time(c.attack, "dynamics attack")?;
+                    self.time(c.release, "dynamics release")?;
+                    self.gain(c.makeup, "dynamics makeup")?;
+                    self.within(c.mix, 0.0..=1.0, "dynamics mix")?;
+                    match c.law {
+                        Law::Generic(g) => {
+                            self.within(g.ratio, 1.0..=f64::MAX, "dynamics ratio")?;
+                            self.within(g.knee_db, 0.0..=f64::MAX, "dynamics knee")?;
+                            self.time(g.lookahead, "dynamics lookahead")?;
+                            self.within(g.sidechain_highpass_hz, 0.0..=f64::MAX, "dynamics side-chain")?;
+                            self.within(g.range_db, 0.0..=f64::MAX, "dynamics range")?;
+                            if let Detector::Rms { window } = g.detector {
+                                self.time(window, "dynamics rms window")?;
+                            }
+                        }
+                        Law::KontaktClassic(n) | Law::KontaktEnhanced(n) | Law::KontaktPro(n) => {
+                            self.within(n.ratio, 0.0..=1.0, "dynamics ratio")?;
+                        }
+                        Law::KontaktLimiter(_) => {}
+                        Law::KontaktFeedback { native: n, .. } => {
+                            self.within(n.threshold_db, 0.0..=1000.0, "dynamics drive")?;
+                            self.within(n.ratio, 1.0..=20.0, "dynamics ratio")?;
+                        }
+                        Law::KontaktTransient { attack, sustain, gain, .. } => {
+                            for v in [attack, sustain, gain] {
+                                self.within(v, 0.0..=1.0, "transient control")?;
+                            }
+                        }
+                        Law::KontaktBusComp { threshold, makeup, attack, release, ratio, .. } => {
+                            for v in [threshold, makeup, attack, release, ratio] {
+                                self.within(v, 0.0..=1.0, "bus comp control")?;
+                            }
+                        }
+                        Law::UviMaximizer(m) => {
+                            self.within(m.threshold_db, -40.0..=0.0, "maximizer threshold")?;
+                            self.within(m.attack_ms, 0.0..=20.0, "maximizer attack")?;
+                            self.within(m.lookahead_ms, 1.0..=20.0, "maximizer lookahead")?;
+                            self.within(m.release_ms, 0.1..=1000.0, "maximizer release")?;
+                            self.within(m.ceiling_db, -20.0..=0.0, "maximizer ceiling")?;
+                            self.within(m.knee_db, 0.0..=10.0, "maximizer knee")?;
+                            self.within(m.release_blend, 0.0..=1.0, "maximizer release blend")?;
+                            self.within(m.slew_ms, 0.0..=200.0, "maximizer slew")?;
+                            self.within(f64::from(m.mode), 0.0..=2.0, "maximizer mode")?;
+                        }
+                        Law::KontaktHilbert(n) => {
+                            self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
+                            self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;
+                        }
+                    }
                 }
                 Processor::Mix { dry, wet, .. } => {
                     self.within(dry, 0.0..=16.0, "mix dry")?;
@@ -497,6 +622,18 @@ impl Instrument {
                     {
                         check.within(level, -1.0..=1.0, "sine level")?;
                     }
+                    if let crate::LfoShape::NativeFaded { fade_ms, .. } = lfo.shape {
+                        check.within(f64::from(fade_ms), 0.0..=5000.0, "native fade")?;
+                    }
+                    if let crate::LfoShape::Native(crate::NativeWave::Multi { weights, width, .. })
+                    | crate::LfoShape::NativeFaded { wave: crate::NativeWave::Multi { weights, width, .. }, .. } =
+                        lfo.shape
+                    {
+                        for weight in weights {
+                            check.within(f64::from(weight), f64::MIN..=f64::MAX, "multi weight")?;
+                        }
+                        check.within(f64::from(width), 0.0..=1.0, "multi pulse width")?;
+                    }
                     if let crate::LfoShape::DigitalSine { fade_ms, .. } = lfo.shape {
                         check.within(f64::from(fade_ms), 0.0..=5000.0, "digital fade")?;
                         if modulator.scope != Scope::Voice
@@ -570,16 +707,16 @@ impl Instrument {
                 Depth::Normalized(value) => check.finite(value, "depth")?,
             }
         }
+        // Sets, not rescans of earlier entries: these lists reach thousands
+        // on large instruments and validation runs on every load.
+        let mut routes = std::collections::HashSet::new();
         for (i, &(route, depth, bypass)) in self.source_indices.route_controls.iter().enumerate() {
             check.owner = format!("source route controls {i}");
             check.exists(Reference::Route(route.0))?;
             for control in [depth, bypass] {
                 check.exists(Reference::Control(control.0))?;
             }
-            if self.source_indices.route_controls[..i]
-                .iter()
-                .any(|b| b.0 == route)
-            {
+            if !routes.insert(route) {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "duplicate source route controls",
@@ -587,13 +724,10 @@ impl Instrument {
                 });
             }
         }
+        let mut processors = std::collections::HashSet::new();
         for (i, binding) in self.processor_controls.iter().enumerate() {
             check.owner = format!("processor control {i}");
-            if self.processor_controls[..i].iter().any(|p| {
-                p.chain == binding.chain
-                    && p.index == binding.index
-                    && p.parameter == binding.parameter
-            }) {
+            if !processors.insert((binding.chain, binding.index, binding.parameter)) {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "duplicate processor control",
@@ -607,6 +741,10 @@ impl Instrument {
             })?;
             check.time(binding.ramp, "ramp")?;
         }
+        let bound: std::collections::HashSet<_> = (self.processor_controls.iter())
+            .map(|binding| binding.control)
+            .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
+            .collect();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
             check.owner = format!("source control alias {i}");
             check.exists(Reference::Control(alias.control.0))?;
@@ -618,15 +756,7 @@ impl Instrument {
             if !matches!(
                 self.controls[alias.control.0].value,
                 crate::ControlValue::Continuous { .. }
-            ) || !(self
-                .processor_controls
-                .iter()
-                .any(|binding| binding.control == alias.control)
-                || self
-                    .source_indices
-                    .route_controls
-                    .iter()
-                    .any(|b| b.1 == alias.control || b.2 == alias.control))
+            ) || !bound.contains(&alias.control)
             {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),

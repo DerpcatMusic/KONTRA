@@ -749,6 +749,9 @@ impl Session {
             mlua::LuaOptions::default(),
         )?;
         lua.set_memory_limit(128 * 1024 * 1024)?;
+        // This VM is built on the editor thread at the first frame showing the
+        // instrument; native-compiling every chunk there added ~70 ms to Conflux.
+        lua.enable_jit(false);
         lua.globals().set(
             "print",
             lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,

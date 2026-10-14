@@ -1,4 +1,4 @@
-//! Compare visual ownership to actual voices; synthetic PCM stays in memory.
+//! Physical key display stays independent of sounding voices and script gates.
 use super::*;
 use crate::sound::event::{HostNote, HostPattern};
 use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
@@ -155,12 +155,15 @@ fn host_stop_runs_release_callback_and_clears_sustain() {
 }
 
 #[test]
-fn exact_note_off_clears_visual_after_real_voice_ends() {
+fn exact_note_off_clears_visual_before_release_tail_ends() {
     let (p, mut dsp) = fixture(None);
     exact(&mut dsp, &p, on(60));
     dsp.core.render(64);
     assert!(p.shared.heard[60].load(Ordering::Relaxed) > 0);
     exact(&mut dsp, &p, off(60));
+    process(&mut dsp, &p, false);
+    assert_eq!(p.shared.heard[60].load(Ordering::Relaxed), 0);
+    assert_eq!(dsp.core.voices().active, 1, "the tail still sounds after key-up");
     drain(&mut dsp, &p);
     assert_eq!(
         dsp.core.voices().active,
@@ -176,13 +179,14 @@ fn exact_note_off_clears_visual_after_real_voice_ends() {
 }
 
 #[test]
-fn sustain_off_clears_visual_after_real_voice_ends() {
+fn key_up_clears_visual_while_sustain_keeps_the_voice() {
     let (p, mut dsp) = fixture(None);
     exact(&mut dsp, &p, on(60));
     dsp.core.play(0, CoreEvent::midi1(0xb0, 64, 127));
     dsp.core.render(64);
     exact(&mut dsp, &p, off(60));
     drain(&mut dsp, &p);
+    assert_eq!(p.shared.heard[60].load(Ordering::Relaxed), 0, "pedal is not a physical key press");
     assert_eq!(
         dsp.core.voices().active,
         1,
@@ -203,14 +207,17 @@ fn all_notes_off_clears_visual_after_real_voice_ends() {
     let (p, mut dsp) = fixture(None);
     exact(&mut dsp, &p, on(60));
     dsp.core.render(64);
-    dsp.core.play(0, CoreEvent::midi1(0xb0, 123, 0));
+    let mut out = EventList::with_capacity(8);
+    let transport = TransportInfo::default();
+    let mut cx = ProcessContext::new(&transport, 48000., 64, &mut out);
+    feed_typed_input(&mut dsp, &p, &Event::new(0, EventBody::ControlChange { group: 0, channel: 0, cc: 123, value: 0 }), &mut cx, false);
     drain(&mut dsp, &p);
     assert_eq!(dsp.core.voices().active, 0);
     assert_eq!(p.shared.heard[60].load(Ordering::Relaxed), 0);
 }
 
 #[test]
-fn script_generated_note_release_clears_both_visual_keys() {
+fn script_generated_notes_do_not_replace_the_physical_key_display() {
     let (p, mut dsp) = fixture(Some(
         "on init declare $child end on on note $child := play_note(64,100,0,-1) end on on release note_off($child) end on",
     ));
@@ -218,10 +225,9 @@ fn script_generated_note_release_clears_both_visual_keys() {
     dsp.core.render(64);
     assert!(dsp.core.voices().active > 0);
     process(&mut dsp, &p, false);
-    assert!(
-        p.shared.heard[64].load(Ordering::Relaxed) > 0,
-        "generated gate must light its actual key"
-    );
+    assert_eq!(p.shared.heard[64].load(Ordering::Relaxed), 0,
+        "the transposed child is sounding, not physically pressed");
+    assert!(p.shared.heard[60].load(Ordering::Relaxed) > 0);
     exact(&mut dsp, &p, off(60));
     drain(&mut dsp, &p);
     assert_eq!(dsp.core.voices().active, 0);
@@ -231,6 +237,36 @@ fn script_generated_note_release_clears_both_visual_keys() {
             .iter()
             .all(|v| v.load(Ordering::Relaxed) == 0)
     );
+}
+
+#[test]
+fn ignored_release_does_not_hold_the_physical_key_display() {
+    let (p, mut dsp) = fixture(Some(
+        "on release ignore_event($EVENT_ID) end on",
+    ));
+    exact(&mut dsp, &p, on(60));
+    process(&mut dsp, &p, false);
+    exact(&mut dsp, &p, off(60));
+    process(&mut dsp, &p, false);
+    assert!(dsp.core.voices().active > 0, "script intentionally holds the audio gate");
+    assert_eq!(p.shared.heard[60].load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn same_key_on_distinct_host_notes_releases_only_the_matching_press() {
+    let (p, mut dsp) = fixture(None);
+    let mut other = note(60);
+    other.id = 999;
+    other.channel = 1;
+    exact(&mut dsp, &p, on(60));
+    exact(&mut dsp, &p, CoreEvent::NoteOn { note: other, velocity: 0.9, tune: 0. });
+    exact(&mut dsp, &p, off(60));
+    assert!(p.shared.heard[60].load(Ordering::Relaxed) > 0);
+    exact(&mut dsp, &p, CoreEvent::NoteOff(HostPattern {
+        port: -1, channel: -1, key: -1, id: 999, clap: true,
+    }));
+    process(&mut dsp, &p, false);
+    assert_eq!(p.shared.heard[60].load(Ordering::Relaxed), 0);
 }
 
 #[cfg(feature = "shots")]
@@ -260,7 +296,7 @@ fn pointer_release(drag: bool) {
             process(&mut dsp, &p, false);
         }
         assert!(dsp.core.voices().active > 0);
-        assert!(p.shared.heard[note].load(Ordering::Relaxed) > 0);
+        assert!(p.shared.played[note].load(Ordering::Relaxed) > 0);
     }
     for _ in 0..3 {
         h.tick(Input {

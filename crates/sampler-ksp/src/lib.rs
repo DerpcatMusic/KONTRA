@@ -37,7 +37,7 @@ pub mod ui;
 mod waveform;
 
 pub use diag::{Error, Kind};
-pub use eval::Environment;
+pub use eval::{Environment, SavedValues, Transport};
 pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
 pub const PROFILE: &str = "ksp-8.12-v2";
@@ -595,6 +595,20 @@ pub fn persistent_state_buffer(
 ) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
     use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
     let mut state = sampler_core::ScriptStateBuffer::default();
+    // Arrays reach a million cells: reserve once instead of doubling, and
+    // sort only when out of order.
+    state.values.reserve(
+        views
+            .iter()
+            .flat_map(|view| &view.model.persistent)
+            .map(|p| match p.location {
+                model::Location::Control(_) => 1,
+                model::Location::Cells { len, .. } | model::Location::Texts { len, .. } => {
+                    len as usize
+                }
+            })
+            .sum(),
+    );
     let mut base = 0;
     for (i, view) in views.iter().enumerate() {
         let instance =
@@ -623,9 +637,10 @@ pub fn persistent_state_buffer(
                             .checked_add(len)
                             .ok_or(sampler_core::Error::Capacity)?
                     {
+                        let value = state.push_text(sampler_core::Text::new(""));
                         state.values.push(sampler_core::ScriptStateEntry {
                             address: A::Text { instance, index },
-                            value: V::Text(sampler_core::Text::new("")),
+                            value,
                         });
                     }
                 }
@@ -644,8 +659,7 @@ pub fn persistent_state_buffer(
         }
         base += view.programs;
     }
-    state.values.sort_by_key(|entry| entry.address);
-    state.values.dedup_by_key(|entry| entry.address);
+    state.sort_dedup();
     Ok(state)
 }
 

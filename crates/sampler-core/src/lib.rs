@@ -81,10 +81,11 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    ArSettings, FilterKind, Impulse, LadderSettings, LoFiSettings, MAX_IMPULSE_FRAMES, OutputLowPass,
-    LiveFilter, LiveShape, Parameter, PeakingEq, KontaktLegacyEqSettings, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter,
+    Biquad, DynamicsSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    ArSettings, CascadeSettings, ColorSettings, FilterSettings, LegacyFilter, SvFilter, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
+    MAX_IMPULSE_FRAMES, NoiseSettings, OutputLowPass, QuantizerSettings,
+    EqBand, Parameter, KontaktLegacyEqSettings, Processor, Rectifier,
+    StateVariableFilter, neutral_impulse_shape, shape_impulse,
     StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod whole_voice;
@@ -100,7 +101,7 @@ mod plan_programs;
 mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
-    EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
+    BUS_VOLUME_LAW, EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
     EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,
     engine_parameter_display, engine_parameter_id, engine_parameter_name,
 };
@@ -113,11 +114,12 @@ pub use parameter_registry::{
 mod digital_fade;
 pub use digital_fade::KontaktLfoFade;
 mod voice_mod;
+pub use voice_mod::laws as native_mod_laws;
 pub use plan_programs::{ParameterKind, ParameterProgram, PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
-    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
+    Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModNative, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
     ModTarget, MORE_SCALES,
 };
 mod ownership;
@@ -170,9 +172,9 @@ pub use midi_object::{
 };
 mod script;
 pub use ops::{
-    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
+    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RANDOM_SEED, RealBinary,
     RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
-    real, real_bits,
+    random, real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
