@@ -281,7 +281,7 @@ fn main() {
     info["all_workers_cpu_mean_percent_core"] = json!(process_cpu.iter().map(|n| *n as f64).sum::<f64>() / audio_ns * 100.);
     info["begin_and_events"] = quantiles(event_times);
     info["render_and_finish"] = quantiles(render_times);
-    info["timing_scope"] = json!("V2 core adapter callback including witness PCM energy/probes; excludes outer plugin process, UI and host; whole-phase CPU includes pacing/harness/decoder work");
+    info["timing_scope"] = json!(format!("{} core adapter callback including witness PCM observation/probes; excludes outer plugin process, UI and host; whole-phase CPU includes pacing/harness/decoder work", info["engine"].as_str().unwrap_or("unknown")));
     if !steady.is_empty() {
         info["steady_voices_min"] = json!(steady_voices_min);
         info["steady_voices_max"] = json!(steady_voices_max);
