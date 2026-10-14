@@ -143,6 +143,48 @@ times were 16.627 s / 5.587 s / 261 ms; the four workers' sums were 312 / 177 /
 differences; dividing the wall times would misattribute those differences to
 parallelism. A clean repeated comparison with equal geometry remains needed.
 
+## Generation-owned packed-head quota
+
+The later `HeadBudget` closes the prepare-before-admit gap for packed payloads.
+Every page first analyzes the immutable decoded frames for exact lossless width,
+reserves those bytes atomically, then allocates/encodes the packed payload. The
+same lease follows the prepared, published, and retired immutable generation.
+Dropping the last audio read guard does not destroy storage or release quota;
+control-side snapshot collection does both. Current, staged, and retired packed
+head payloads therefore share one cap across startup workers, cold reloads, and
+explicit KSP residency reloads. `Streamer::head_budget_status()` reports held and
+peak bytes, including retired storage, separately from visible current coverage.
+
+Decoder staging is separately bounded to one 4,096-frame stereo workspace per
+head worker (32 KiB; 1–8 workers), plus the codec/source reader workspace and
+range metadata. Workers reuse that page between source jobs. Explicit-residency
+recipes share one further control-side page; cold reloads use one page per batch. There is no complete decoded attack-range staging buffer.
+Packing no longer creates a temporary f32 sample copy. The quota covers requested
+packed PCM payload bytes; it is not a cap on allocator overhead, process RSS,
+the independent page pool, octave levels, encoded readers, or full-resident PCM.
+Dynamic sample revisions retain their separate revision admission budget.
+
+Initial budget binding serializes with publication. It can adopt an existing
+current immutable head without copying it, after reserving its exact bytes.
+Unaccounted retired generations must first be reclaimed. A recipe prepared
+before binding cannot publish uncharged payloads afterwards; wrong-budget and
+wrong-asset publications fail without changing the current source.
+
+`StreamPolicy::allow_cold_fallback` defaults to false. When explicitly enabled,
+only a typed `HeadBudgetExceeded` from eager preparation permits retrying cold
+starts over the same admitted sources and worker endpoint. No failed staged
+batch is published. Mandatory wavetable ranges are prepared again and must fit;
+source/metadata failures, cancellation, and mandatory-residency failures remain
+errors. `StreamReport::head_fallback` retains the typed reason, and exact coverage
+continues to distinguish cold/partial heads from complete readiness. The default
+production V2 Auto policy has not been changed by this hook. Faster GUI publication
+and a complete-head policy still require a separately measured product decision.
+
+A canceled or KSP-purged in-flight reload now contributes zero committed reloads
+rather than the former attempted-job count. Source bytes stay purged. Exact
+packed admission also allows lawful mono heads that the earlier conservative
+8-bytes-per-frame estimate skipped, while retaining the same configured cap.
+
 ## Worker ownership and source changes
 
 Completion queue backpressure now retries only publication. The worker retains
@@ -188,6 +230,18 @@ directions and 1/4/32 requested-worker limits. Zero/exact/over-cap admission was
 also rerun with both one and four requested workers; failure publishes no asset
 from the staged batch. The actual 40,000-frame dynamic streamed-source fixture
 passed after shared admission authority was finalized.
+The generation lease then passed five integration tests (including heap-guarded
+retained-reader destruction, zero/exact/over-cap admission, concurrent staging,
+wrong-budget/stale builders, exact allocation sizing, and independently generated
+PCM across 4,096-frame boundaries with forward/reverse wrap/ping-pong loops).
+Four core publication tests passed, including explicit-residency budget-pressure
+retry and cancellation before publication. Kontakt streaming passed 25 active
+tests (one pre-existing ignored), including typed opt-in fallback and mandatory
+residency. The earlier 16-asset parallel preparation oracle was strengthened to
+use immediate triggers, a stream cache, live-voice and nonzero-PCM assertions;
+all requested 1/4/32-worker cases passed exact resident comparisons. UVI's actual
+40,000-frame streamed dynamic-source fixture and all four source/identity tests
+passed again. These are correctness receipts, not deadline-margin claims.
 
 Numeric receipts are retained privately under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-asset-audit-20261014/dfd-auto`.
