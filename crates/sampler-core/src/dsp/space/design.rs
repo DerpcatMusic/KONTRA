@@ -15,6 +15,7 @@ use super::network::{Allpass, Chain, Interp, LineSpec, MAX_LINES, Matrix, Modula
 use crate::Error;
 use sampler_ir::fx::space::{Freeverb, Galois, Network, SparkVerb, Topology, UviReverb};
 use std::f64::consts::PI;
+use plate::kontakt_plate;
 
 /// The spec of `n` at `rate`.
 pub(super) fn spec(n: &Network, rate: u32) -> Result<Spec, Error> {
@@ -26,6 +27,7 @@ pub(super) fn spec(n: &Network, rate: u32) -> Result<Spec, Error> {
         Topology::Galois => galois(&n.galois.ok_or(Error::InvalidInput)?, r),
         Topology::Freeverb => freeverb(n, &n.freeverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::SparkVerb => spark(&n.spark.ok_or(Error::InvalidInput)?, r),
+        Topology::KontaktPlate => kontakt_plate(&n.kontakt_plate.ok_or(Error::InvalidInput)?, r),
         Topology::Jezar => jezar(n, &n.uvi_reverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::Diffuser => diffusion(n.diffusion as f32, n.diffusion_start_ms as f32, r),
         Topology::Fdn => generic_fdn(n, r),
@@ -736,6 +738,8 @@ fn generic_plate(n: &Network, rate: f64) -> Spec {
     tone(&mut s, n, rate);
     s
 }
+
+mod plate;
 
 #[cfg(test)]
 mod tests;

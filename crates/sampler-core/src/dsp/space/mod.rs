@@ -58,6 +58,7 @@ fn network_valid(n: &Network) -> bool {
                 within(f.feedback, 0.0, 0.999) && within(f.damp, 0.0, 1.0) && within(f.allpass, 0.0, 0.99) && within(f.input_gain, 0.0, 4.0) && within(f.width, 0.0, 1.0)
             }))
         && (n.topology != Topology::Jezar || n.uvi_reverb.is_some_and(|u| within(f64::from(u.decay_time), 0.0, 100.0) && within(f64::from(u.cutoff), -1.0, 1.0)))
+        && (n.topology != Topology::KontaktPlate || n.kontakt_plate.is_some_and(|p| p.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::Galois || n.galois.is_some_and(|g| g.controls.iter().all(|v| (0.0..=1.0).contains(v))))
         && (n.topology != Topology::SparkVerb
             || n.spark.is_some_and(|s| {
@@ -159,7 +160,7 @@ impl Net {
         let core = network::Network::new(design::spec(n, core_rate)?);
         let rate = rate as f32;
         // The native engines have no early taps; only Jezar (UVI) gates.
-        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar);
+        let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb | Topology::Jezar | Topology::KontaktPlate);
         Ok(Self {
             core,
             pair,
@@ -328,6 +329,7 @@ mod tests {
             ("fdn", Network::DEFAULT),
             ("comb", Network { topology: Topology::CombAllpass, ..Network::DEFAULT }),
             ("plate", Network { topology: Topology::Plate, ..Network::DEFAULT }),
+            ("kontakt plate", Network { topology: Topology::KontaktPlate, kontakt_plate: Some([0.5, 0.5, 0.5, 0.0, 1.0]), ..Network::DEFAULT }),
             ("diffuser", Network { topology: Topology::Diffuser, ..Network::DEFAULT }),
             (
                 "freeverb",

@@ -10,8 +10,8 @@
 //!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
 //!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
 //!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
-//! - 0x57 Plate: framing and field order (decay, low shelf, high damp,
-//!   predelay, stereo; measured). Topology and laws unproved: generic plate.
+//! - 0x57 Plate: the native core (`sampler_core` `dsp/space/design/plate.rs`),
+//!   matched to the emulated core's impulse response.
 //! - 0x16 Convolution: Reverse, early/late filters and composition, the
 //!   volume envelope, predelay and the wrapper's Auto Gain (`0x140ab6740`) are
 //!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
@@ -146,23 +146,17 @@ pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
     })
 }
 
-/// Plate Reverb 0x57: decay, low shelf, high damp, predelay, stereo, each 0..1.
-pub(super) fn plate(v: &[f32; 5], notes: &mut Notes) -> Config {
-    let [decay, low_shelf, damping, predelay, stereo] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
-    notes.push((
-        "plate reverb algorithm".into(),
-        format!("normalized {v:?}: generic plate, topology and laws unproved"),
-        UnknownLaw,
-    ));
+/// Plate Reverb 0x57: decay, low shelf, high damp, predelay, stereo, each
+/// 0..1, drive the native core ([`Topology::KontaktPlate`], `sampler_core`
+/// `dsp/space/design/plate.rs`). The physical fields only describe it.
+pub(super) fn plate(v: &[f32; 5], _notes: &mut Notes) -> Config {
+    let c = v.map(|x| x.clamp(0.0, 1.0));
     Config::network(Network {
-        topology: Topology::Plate,
-        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(decay),
-        size: 1.0,
-        predelay_seconds: predelay * 0.25,
-        damping_hz: 18_000.0 * 0.05f64.powf(damping),
-        modulation_seconds: 0.0005,
-        low_shelf_db: -12.0 * low_shelf,
-        width: stereo,
+        topology: Topology::KontaktPlate,
+        decay_seconds: f64::from(2.993 * c[0] + 1.007),
+        predelay_seconds: f64::from(c[3]) * 0.25,
+        width: f64::from(c[4]),
+        kontakt_plate: Some(c),
         ..Network::DEFAULT
     })
 }
