@@ -630,6 +630,39 @@ mod bus {
         assert!((k.makeup - 1.).abs() < 1e-8);
     }
 
+    /// Native `G_BusComp` (ctor 0x141a7fc80, prepare 0x141aa1ea0, setter
+    /// 0x141ac69e0, process 0x141aaa1e0) under tools/re/kemu.py, 48 kHz,
+    /// controls .2 .4 .5 .5 .6, link on, mix 1, 64-frame blocks.
+    #[test]
+    fn matches_the_native_core() {
+        let law = Law::KontaktBusComp { threshold: 0.2, makeup: 0.4, attack: 0.5, release: 0.5, ratio: 0.6, link: true };
+        let input: Vec<[f64; 2]> = (0..4096)
+            .map(|n| {
+                let env = if (n / 1024) % 2 == 0 { 1.2 } else { 0.05 };
+                let n = n as f64;
+                [env * (n * 0.0576).sin(), env * 0.5 * (n * 0.1305).cos()]
+            })
+            .collect();
+        let out = run_law(law, Link::Off, [0.; 4], &input);
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 1.0981236696243286),
+            (1, 0.12437347322702408, 1.0710428953170776),
+            (10, 1.033585548400879, 0.24923169612884521),
+            (100, -0.308159738779068, 0.2730134129524231),
+            (1000, 0.09638936072587967, 0.006861408706754446),
+            (1500, -0.005180184729397297, 0.0014615225372835994),
+            (2047, -0.005944662727415562, -0.0029721420723944902),
+            (2500, -0.054362811148166656, 0.04921232908964157),
+            (3000, -0.0012858589179813862, -0.018826641142368317),
+            (4095, -0.001422968809492886, 0.0026967115700244904),
+        ];
+        for (n, l, r) in native {
+            for (got, want) in out[n].iter().zip([l, r]) {
+                assert!((got - f64::from(want)).abs() <= 1e-6 * f64::from(want.abs()).max(1e-3), "{n}: {:?} vs {l} {r}", out[n]);
+            }
+        }
+    }
+
     #[test]
     fn feedback_detector_reaches_the_ratio() {
         // Ratio 10 (x = 1), threshold well below the signal: 20 dB more input
