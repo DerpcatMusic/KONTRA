@@ -900,9 +900,12 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             );
             let text = format!("{} · {}", a.name, inside::input_label(&input));
             items.push(
-                row![caption(text.clone()).lines(1).flex(1).min_w(0)]
-                .align(Align::Center).flex(1).min_w(0)
-                .tip(text)
+                caption(text.clone())
+                    .fill(secondary())
+                    .lines(1)
+                    .min_w(0)
+                    .shrink(1)
+                    .tip(text)
                 .named("Articulation")
                 .id(format!("perf-art-{slot}")),
             );
@@ -955,37 +958,41 @@ fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
             row![
                 badge
                     .lines(1)
-                    .flex(1)
                     .min_w(0)
+                    .shrink(1)
                     .id(format!("perf-needs-{slot}")),
                 segmented(tabs).shrink(0)
             ]
             .gap(SPACE)
             .align(Align::Center)
-            .flex(1)
-            .min_w(0),
+            .min_w(0)
+            .shrink(1),
         );
     }
     items
 }
 
 /// The header's second row: the view switch (interface, articulations,
-/// mapping, sound, info) then compact performance chips, on one line.
-/// The row is `None` when the part has neither.
+/// mapping, sound, info) at the left, the performance context (articulation,
+/// controller needs, dynamics start) right-aligned; the context gives way
+/// first, truncating behind tooltips. The row is `None` when the part has neither.
 pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Option<El>) {
     let (view, tabs) = inside::bar(ui, cx, slot);
-    let items: Vec<El> = tabs.into_iter().chain(performance(ui, cx, slot)).collect();
-    let row2 = (!items.is_empty()).then(|| {
-        row(items)
-            .gap(SPACE)
-            .line_gap(TIGHT)
-            .align(Align::Center)
-            .pad((INSET, 2.))
-            .w(Len::Pct(100.))
-            .shrink(0)
-            .id(format!("header2-{slot}"))
-    });
-    (view, row2)
+    let context = performance(ui, cx, slot);
+    if tabs.is_none() && context.is_empty() {
+        return (view, None);
+    }
+    let items: Vec<El> = tabs
+        .into_iter()
+        .chain([spacer().flex(1).min_w(0)])
+        .chain(context)
+        .collect();
+    let row2 = row(items)
+        .gap(SPACE * 2.)
+        .align(Align::Center)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.));
+    (view, Some(row2))
 }
 
 /// The picked view's body: its interface, articulations, mapping, sound or info.
