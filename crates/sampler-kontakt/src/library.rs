@@ -2255,7 +2255,11 @@ impl Translation {
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ]
         .into_iter()
-        .find_map(|name| self.script_par(name, group as i32, slot as i32, ordinal as i32));
+        .find_map(|name| {
+            self.script_par(name, group as i32, slot as i32, ordinal as i32).or_else(|| {
+                (ordinal == 0).then(|| self.script_par(name, group as i32, slot as i32, -1))?
+            })
+        });
         let saved = raw.map_or(saved, |v| {
             sampler_core::EngineParameterLaw::SignedCubic.decode(v)
         });
@@ -2271,22 +2275,28 @@ impl Translation {
             },
             automation: ir::Automation::None,
         });
+        // Generic -1 is the modulator's own intensity: scripts address a
+        // one-target modulator that way (ANALOG STRINGS Phase_P1/P2, Loop_Start).
+        // ponytail: -1 aliases the first target only; multi-target -1 semantics unmeasured.
+        let generics = [Some(ordinal as i32), (ordinal == 0).then_some(-1)];
         for parameter in [
             "ENGINE_PAR_INTMOD_INTENSITY",
             "ENGINE_PAR_MOD_TARGET_MP_INTENSITY",
         ] {
-            self.ir
-                .source_indices
-                .control_aliases
-                .push(ir::SourceControlAlias {
-                    control: depth,
-                    parameter: parameter.into(),
-                    address: ir::SlotAddress {
-                        group: group as i32,
-                        slot: slot as i32,
-                        generic: ordinal as i32,
-                    },
-                });
+            for generic in generics.into_iter().flatten() {
+                self.ir
+                    .source_indices
+                    .control_aliases
+                    .push(ir::SourceControlAlias {
+                        control: depth,
+                        parameter: parameter.into(),
+                        address: ir::SlotAddress {
+                            group: group as i32,
+                            slot: slot as i32,
+                            generic,
+                        },
+                    });
+            }
         }
         let bypass = ir::ControlRef(self.ir.controls.len());
         self.ir.controls.push(ir::Control {
@@ -2328,7 +2338,10 @@ impl Translation {
     /// ranges, LFO rates and script-addressed effect knobs (not filters).
     fn script_depth_target(&self, route: ir::RouteRef) -> bool {
         match self.ir.routes[route.0].target {
-            ir::Target::LoopStart | ir::Target::LoopLength | ir::Target::SourceRate(_) => true,
+            ir::Target::LoopStart
+            | ir::Target::LoopLength
+            | ir::Target::SourceRate(_)
+            | ir::Target::SourcePhase(_) => true,
             ir::Target::Processor { parameter, .. } => !matches!(
                 parameter,
                 ir::ProcessorParameter::Gain

@@ -259,3 +259,61 @@ fn every_kind_matches_its_analogue_prototype() {
         assert!(*error < 3.5, "{kind:?} {error} dB at {at} Hz");
     }
 }
+
+/// UVI ParametricEQ coefficient routines run under emulation at 48 kHz: peak 0x1416403e0 (1 kHz,
+/// +6 dB, Q 0.7), low pass 0x14163fd30 (16 kHz, Q 0.7), high pass 0x14163fe30 (30 Hz, Q 2) and high
+/// shelf 0x141640220 (7.4 kHz, -4 dB at A = 10^(dB/20), slope 1: cookbook -8 dB, Q 1/sqrt 2).
+#[test]
+fn cookbook_is_the_uvi_parametric_eq_law() {
+    let cases = [
+        (Kind::Peak, 1000., 0.7, 6., [1.0616237889328701, -1.8601148764443352, 0.814541945454859, -1.8601148764443352, 0.8761657343877289]),
+        (Kind::LowPass, 16000., 0.7, 0., [0.46336638514573497, 0.9267327702914699, 0.46336638514573497, 0.6178218468609797, 0.2356436937219601]),
+        (Kind::HighPass, 30., 2., 0., [0.9990153661693021, -1.9980307323386042, 0.9990153661693021, -1.998023029282513, 0.9980384353946954]),
+        (Kind::HighShelf, 7400., std::f64::consts::FRAC_1_SQRT_2, -8., [0.5355857724005818, -0.25310761134475296, 0.11318659779714484, -0.9348776648168456, 0.33054242366981945]),
+    ];
+    for (kind, hz, q, db, native) in cases {
+        let f = kernel::cookbook(kind, 48_000, hz, q, db).unwrap();
+        let got = [f.b[0], f.b[1], f.b[2], f.a[0], f.a[1]];
+        for (g, n) in got.iter().zip(native) {
+            assert!((g - n).abs() < 1e-12, "{kind:?} {got:?} vs {native:?}");
+        }
+    }
+}
+
+/// UVI DigitalEq bands (design 0x1412840f0 run under emulation, band at 0.03 of the rate): the
+/// cascade of `digital::section`s has the native magnitude in dB at 0.005, 0.025, 0.031, 0.04 and
+/// 0.2 of the rate. Cases: (kind, order, Q, bandwidth octaves, gain dB, native dB).
+#[test]
+fn uvi_digital_bands_match_the_native_design() {
+    #[rustfmt::skip]
+    let cases = [
+        (Kind::LowPass, 16, 0.707, 1.0, 0.0, [-0.0, -0.012463, -5.882805, -40.302723, -283.424431]),
+        (Kind::LowPass, 3, 2.0, 1.0, 0.0, [0.109116, 5.141362, 5.439655, -3.698343, -53.07619]),
+        (Kind::HighPass, 6, 0.3, 1.0, 0.0, [-93.529325, -15.724999, -9.613235, -4.199574, -0.000192]),
+        (Kind::HighPass, 1, 0.707, 1.0, 0.0, [-15.706399, -3.878554, -2.869384, -1.930968, -0.072901]),
+        (Kind::BandPass, 8, 0.707, 0.5, 0.0, [-196.043872, -5.397914, -0.0, -36.405667, -213.8112]),
+        (Kind::BandPass, 3, 3.0, 2.0, 0.0, [-35.173084, 0.269756, 0.007962, 0.777403, -41.960655]),
+        (Kind::Notch, 4, 1.5, 1.0, 0.0, [0.001441, -22.139856, -82.397559, -3.252279, 0.000518]),
+        (Kind::LowShelf, 12, 0.707, 1.0, 9.0, [9.0, 8.870528, 2.926321, 0.010227, 0.0]),
+        (Kind::LowShelf, 1, 0.707, 1.0, -6.0, [-5.826741, -3.523617, -2.904812, -2.183326, -0.107571]),
+        (Kind::HighShelf, 6, 2.5, 1.0, -9.0, [0.000182, 3.758496, -8.714174, -10.76938, -9.000043]),
+        (Kind::Peak, 2, 0.707, 0.4, 6.0, [3.7e-05, 1.514287, 5.979415, 0.305949, 1.4e-05]),
+        (Kind::Peak, 16, 0.4, 2.0, -12.0, [-0.0, -12.0, -12.0, -11.999992, -0.0]),
+        (Kind::Peak, 3, 5.0, 1.0, 9.0, [-0.045827, 10.640866, 9.026842, 19.062124, -0.026992]),
+        (Kind::HighShelf, 3, 0.2, 1.0, 6.0, [0.507624, 2.700421, 3.054053, 3.47268, 5.662092]),
+    ];
+    for (kind, order, q, bw, gain, native) in cases {
+        let count = digital::sections(kind, order);
+        assert!(digital::section(kind, order, 0.03, gain, q, bw, count).is_none());
+        for (probe, want) in [0.005, 0.025, 0.031, 0.04, 0.2].into_iter().zip(native) {
+            let db: f64 = (0..count)
+                .map(|i| {
+                    let f = digital::section(kind, order, 0.03, gain, q, bw, i).unwrap();
+                    20. * kernel::magnitude(&f, RATE, probe * f64::from(RATE)).log10()
+                })
+                .sum();
+            let close = if want < -150. { db < -140. } else { (db - want).abs() < 2e-3 };
+            assert!(close, "{kind:?} order {order} at {probe}: {db} vs native {want}");
+        }
+    }
+}

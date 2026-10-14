@@ -86,7 +86,15 @@ impl Translation {
         // `engine_parameters::lanes` addresses.
         let scripted = !self.ir.behaviors.is_empty();
         let live = scripted && !voice;
-        for node in inserts.children().filter(|n| n.is_element()) {
+        // An `.fxps` effect preset (`<FXPreset><Effect/></FXPreset>`) stands for its effect.
+        let nodes: Vec<Node> = inserts
+            .children()
+            .filter(|n| n.is_element())
+            .flat_map(|n| {
+                if n.has_tag_name("FXPreset") { n.children().filter(|c| c.is_element()).collect() } else { vec![n] }
+            })
+            .collect();
+        for node in nodes {
             let slot = out.len();
             let id = node.id().get_usize();
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
@@ -140,6 +148,7 @@ impl Translation {
                 }
                 "DigitalEq" => self.digital_eq(node, &at, live, &mut out)?,
                 "ThreeBandShelves" => self.three_band_shelves(node, &mut out)?,
+                "TwoBandEq" | "ThreeBandEq" | "ParametricEQ" | "Parametric" => self.legacy_eq(node, &at, &mut out)?,
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
                     // internal modes 6 (full) and 7 (half). Public numbering

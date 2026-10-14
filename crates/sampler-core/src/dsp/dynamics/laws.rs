@@ -49,22 +49,24 @@ pub(super) fn process(
                 Detector::Rms { window } => window.seconds(),
                 Detector::Peak | Detector::TruePeak => 0.,
             };
-            let mut sc = Sidechain::new(state, true_peak);
-            sc.feedback = feedback;
-            sc.link = shared.link;
-            sc.detector = g.detector;
-            sc.rms = pole(window, rate);
-            sc.highpass = if g.sidechain_highpass_hz > 0. {
+            let highpass = if g.sidechain_highpass_hz > 0. {
                 let fs = f64::from(rate);
                 (-std::f64::consts::TAU * g.sidechain_highpass_hz.min(fs / 2.) / fs).exp()
             } else {
                 0.
             };
+            let set = (highpass, shared.link, g.detector, pole(window, rate));
             let ratio = generic_ratio(&g, knobs, if linked { 1 } else { 2 });
             let [attack, release] = [knobs[2], knobs[3]].map(|s| pole(s, rate));
             let ballistics = SmoothBranch::new(attack, release, linked, g.direction == Direction::Upward, state);
             let delay = Delay::new(ring, state);
-            run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            if feedback {
+                let sc = Sidechain::<true>::new(state, true_peak).with(set);
+                run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            } else {
+                let sc = Sidechain::<false>::new(state, true_peak).with(set);
+                run((sc, ratio, ballistics, delay, Mix(*shared)), state, block, len);
+            }
         }
         Law::KontaktClassic(_) => {
             let c = Classic::new(knobs, rate);
@@ -125,9 +127,15 @@ pub(super) fn process(
             let c = Feedback::new(knobs, high_quality, rate);
             let detector = HighPassed::new(c.hp, linked, state);
             let k = [c.attack, c.release, c.couple, c.floor];
-            let ballistics = FeedbackLoop::new(c.curve, k, c.steps, linked, c.bypass, cells, state);
             let out = FeedbackOut::new(c.lp, c.hp, shared, state);
-            run((Drive { gain: c.drive, offset: EPS_18 }, detector, ballistics, out), state, block, len);
+            let input = Drive { gain: c.drive, offset: EPS_18 };
+            if c.steps == 4 {
+                let ballistics = FeedbackLoop::<4>::new(c.curve, k, linked, c.bypass, cells);
+                run((input, detector, ballistics, out), state, block, len);
+            } else {
+                let ballistics = FeedbackLoop::<2>::new(c.curve, k, linked, c.bypass, cells);
+                run((input, detector, ballistics, out), state, block, len);
+            }
         }
         Law::KontaktTransient { attack, sustain, gain, clip } => {
             let c = Transient::new([attack, sustain, gain].map(|v| v as f32), rate);
@@ -139,9 +147,17 @@ pub(super) fn process(
         Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link } => {
             let c = Bus::new([threshold, makeup, attack, release, ratio], rate);
             let curve = BusRatio { threshold: c.threshold, slope: c.slope };
-            let ballistics = BusEnvelope::new(c.attack, c.release, c.auto, state);
             let out = BusOut { link, makeup: c.makeup, wet: shared.mix.clamp(0., 1.) };
-            run((Quantize, BusTap::new(state), curve, ballistics, out), state, block, len);
+            match c.auto {
+                Some(auto) => {
+                    let ballistics = BusEnvelope::<true>::new(curve, c.attack, c.release, auto, state);
+                    run((Quantize, BusTap::new(state), ballistics, out), state, block, len);
+                }
+                None => {
+                    let ballistics = BusEnvelope::<false>::new(curve, c.attack, c.release, [0.; 2], state);
+                    run((Quantize, BusTap::new(state), ballistics, out), state, block, len);
+                }
+            }
         }
         Law::UviMaximizer(m) => {
             let m = Maximizer::from(&m);
@@ -497,7 +513,8 @@ impl Feedback {
             drive: drive as f32,
             attack: one_pole(attack as f32),
             release: one_pole(release as f32),
-            couple: 1. - table_exp(-((f32::from_bits(0x4332_d8b3) / fs) * sub * TABLE_PER_NEPER)),
+            // 0x141a92370: table index units, not nepers (no TABLE_PER_NEPER).
+            couple: 1. - table_exp(-((f32::from_bits(0x4332_d8b3) / fs) * sub)),
             steps,
             curve: FeedbackCurve { threshold, knee_top: threshold * knee, slope, g0, quartic },
             floor,

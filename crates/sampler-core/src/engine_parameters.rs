@@ -479,40 +479,53 @@ fn layer_encode(target: ModTarget, value: i64) -> i32 {
     .round()
     .clamp(0., 1e6) as i32
 }
-/// An instrument bus fader (`$ENGINE_PAR_VOLUME`, group and slot -1, generic
-/// the bus): 0 dB at 2^(346768.234/18000), cubic like the group volume.
+/// An instrument bus fader: +12 dB at 1e6, cubic like the group volume.
 pub const BUS_VOLUME_LAW: EngineParameterLaw = EngineParameterLaw::CubicGain {
     unity: 629_960.524_947_436_1,
 };
-/// The plan-owned slot control an engine parameter writes, and the gain law
-/// of a non-bypass value: insert/send slot Output, Dry and Bypass, and the
-/// instrument bus fader (the dynamic bus's volume Mix block).
+/// The slot control behind a slot parameter write, and its law.
+/// `$ENGINE_PAR_VOLUME` at (-1, -1, `$NI_BUS_OFFSET` + bus) is an instrument
+/// bus volume: the bus's Mix block at [`crate::BUS_VOLUME_SLOT`], on Kontakt's
+/// volume law (18000·log2(v) − 346768 mB, 2^(dB/6)) = (v/unity)^3 with +12 dB at 1e6.
 fn slot_parameter(
     name: &str,
     a: EngineParameterAddress,
 ) -> Option<(SlotKind, ControlId, EngineParameterLaw)> {
-    let slot = |kind| {
-        let law = EngineParameterLaw::CubicGain { unity: 396851. };
-        Some((kind, crate::slot_control(kind, a.group, a.slot, a.generic), law))
-    };
-    match name {
-        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => slot(SlotKind::Bypass),
-        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
-            slot(SlotKind::Output)
+    let effect = EngineParameterLaw::CubicGain { unity: 396851. };
+    let (kind, slot, law) = match name {
+        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+            (SlotKind::Bypass, a.slot, effect)
         }
-        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => slot(SlotKind::Dry),
-        "$ENGINE_PAR_VOLUME" if a.group == -1 && a.slot == -1 && a.generic >= 0 => Some((
+        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+            (SlotKind::Output, a.slot, effect)
+        }
+        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => (SlotKind::Dry, a.slot, effect),
+        "$ENGINE_PAR_VOLUME" if a.group == -1 && a.slot == -1 && a.generic >= 1000 => (
             SlotKind::Output,
-            crate::slot_control(SlotKind::Output, -1, crate::BUS_VOLUME_SLOT, a.generic),
+            crate::BUS_VOLUME_SLOT,
             BUS_VOLUME_LAW,
-        )),
-        _ => None,
-    }
+        ),
+        _ => return None,
+    };
+    Some((kind, crate::slot_control(kind, a.group, slot, a.generic), law))
 }
 
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn bus_volume_reaches_the_bus_mix_on_the_kontakt_volume_law() {
+        let id = engine_parameter_id("ENGINE_PAR_VOLUME").unwrap();
+        let at = |generic| EngineParameterAddress { parameter: id, group: -1, slot: -1, generic };
+        assert!(slot_parameter("$ENGINE_PAR_VOLUME", at(-1)).is_none());
+        let (kind, control, law) = slot_parameter("$ENGINE_PAR_VOLUME", at(1002)).unwrap();
+        assert_eq!(kind, SlotKind::Output);
+        assert_eq!(control, crate::slot_control(kind, -1, crate::BUS_VOLUME_SLOT, 1002));
+        for v in [1000, 250_000, 629_961, 1_000_000] {
+            let db = layer_decode(ModTarget::Decibels, v) as f64 / 1000.;
+            assert!((law.decode(v) - (db / 6.).exp2()).abs() < 1e-4 * law.decode(v).max(1e-3), "{v}");
+        }
+    }
     #[test]
     fn display_is_the_bare_number_because_scripts_append_the_unit() {
         let show = |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);

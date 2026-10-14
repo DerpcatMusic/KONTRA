@@ -121,8 +121,8 @@ const GOLDEN: &[(&str, u64)] = &[
     ("limiter mix", 0xbd8b804e64b8526b),
     ("hilbert", 0x6881215429ca8cac),
     ("hilbert 96k mix", 0x96a80d7003f8ddc0),
-    ("feedback", 0xce0595ad975b01d7),
-    ("feedback hq off", 0xfa906825c5df7ba5),
+    ("feedback", 0x8edb73e29bd4bbce),
+    ("feedback hq off", 0x8db678df6125aacd),
     ("transient", 0x853f08b0665bdaae),
     ("transient clip", 0x0971909af8d5158a),
     ("bus", 0xac9e7ba00aaebf2e),
@@ -136,8 +136,43 @@ const GOLDEN: &[(&str, u64)] = &[
 fn every_law_matches_its_golden_output_bits() {
     let got: Vec<_> = cases().into_iter().map(|(name, s, rate)| (name, fingerprint(s, rate))).collect();
     assert_eq!(got.len(), GOLDEN.len());
-    for ((name, h), (gn, gh)) in got.iter().zip(GOLDEN) {
-        assert_eq!((name, h), (gn, gh));
+    let bad: Vec<_> = got.iter().zip(GOLDEN).filter(|(g, w)| g.1 != w.1).map(|(g, _)| format!("{} {:#018x}", g.0, g.1)).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// ns/frame per golden case; run optimized with `--ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_every_law() {
+    let only = std::env::var("BENCH_ONLY").unwrap_or_default();
+    for (name, s, rate) in cases().into_iter().filter(|c| c.0.starts_with(only.as_str())) {
+        let mut cells = 0;
+        let d = s.prepare(rate, &mut vec![], &mut cells).unwrap();
+        let mut slab = vec![[0.; 2]; cells];
+        let mut state = ProcessorState::default();
+        let input: Vec<[[f64; BLOCK]; 2]> = (0..94)
+            .map(|b| {
+                std::array::from_fn(|ch| {
+                    std::array::from_fn(|i| {
+                        let n = (b * BLOCK + i) as f64;
+                        let env = if (b * BLOCK + i) % 3000 < 1500 { 1.2 } else { 0.05 };
+                        env * if ch == 0 { (n * 0.0576).sin() } else { 0.5 * (n * 0.1305).cos() }
+                    })
+                })
+            })
+            .collect();
+        let frames = 500_000usize;
+        let mut best = f64::MAX;
+        for _ in 0..6 {
+            let t = std::time::Instant::now();
+            for b in 0..frames / BLOCK {
+                let mut block = input[b % input.len()];
+                d.process(&mut state, &mut slab, &[], &mut block, BLOCK, (b * BLOCK) as u64);
+                std::hint::black_box(&block);
+            }
+            best = best.min(t.elapsed().as_nanos() as f64 / frames as f64);
+        }
+        eprintln!("{name:24} {best:6.2} ns/frame");
     }
 }
 
@@ -167,6 +202,27 @@ fn sine(amp: f64, hz: f64, frames: usize) -> Vec<[f64; 2]> {
             [v, v]
         })
         .collect()
+}
+
+/// The kemu native-vector stimulus (`tools/re/dynemu.py NAME` prints each core's vectors): 1024-frame bursts.
+fn stimulus() -> Vec<[f64; 2]> {
+    (0..4096)
+        .map(|n| {
+            let env = if (n / 1024) % 2 == 0 { 1.2 } else { 0.05 };
+            let n = n as f64;
+            [env * (n * 0.0576).sin(), env * 0.5 * (n * 0.1305).cos()]
+        })
+        .collect()
+}
+
+/// `out` at the native core's sampled frames, to f32 precision.
+fn assert_native(out: &[[f64; 2]], native: &[(usize, f32, f32)]) {
+    for &(n, l, r) in native {
+        for (got, want) in out[n].iter().zip([l, r]) {
+            let tol = 1e-6 * f64::from(want.abs()).max(1e-3);
+            assert!((got - f64::from(want)).abs() <= tol, "{n}: {:?} vs {l} {r}", out[n]);
+        }
+    }
 }
 
 fn peak(out: &[[f64; 2]]) -> f64 {
@@ -501,6 +557,27 @@ mod hilbert {
         assert!(peak > ceiling * 0.9, "{peak}");
     }
 
+    /// Native `NI::DSP::HilbertLimiter` (ctor 0x141adbea0, prepare 0x141ae23a0,
+    /// setter 0x141aea680, process 0x141ae3400) under tools/re/kemu.py, 48 kHz,
+    /// controls drive .5, release .05, ceiling 1.
+    #[test]
+    fn matches_the_native_core() {
+        let out = run([0.5, 1., 0., 0.05], &stimulus());
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 0.0),
+            (1, 0.0, 0.0),
+            (10, 0.0, 0.0),
+            (100, 0.0, 0.0),
+            (1000, 0.01855362020432949, 0.3244099020957947),
+            (1500, -0.02422836422920227, -0.02323775552213192),
+            (2047, -0.0468631274998188, 0.028381407260894775),
+            (2500, -0.9601988196372986, -0.10931152105331421),
+            (3000, 0.8182634711265564, -0.22763866186141968),
+            (4095, 0.05741879716515541, -0.03505796566605568),
+        ];
+        assert_native(&out, &native);
+    }
+
     #[test]
     fn hilbert_pair_is_ninety_degrees_apart_mid_band() {
         // A 1 kHz sine: the envelope magnitude settles flat (no ripple at 2f).
@@ -546,6 +623,46 @@ mod feedback {
             assert!((knee - c.g0).abs() < 1e-3 * c.g0, "{x}: {knee} {}", c.g0);
             assert!(c.threshold > 0. && l > 1. && c.slope > 1.);
         }
+    }
+
+    /// Native `NI::DSP::FBComp` (vtable 0x1479aad18, prepare 0x141aa1280,
+    /// setter 0x141ac56d0, process 0x141aa80d0) under tools/re/kemu.py, 48 kHz,
+    /// controls 0..5 = .6 .5 .3 .4 .5 1, 6 (high quality) on, 8 on.
+    #[test]
+    fn matches_the_native_core() {
+        let [input, output, attack, release, ratio] = [0.6f32, 0.5, 0.3, 0.4, 0.5];
+        let knobs = [
+            f64::from(10f32.powf(input * 2.5 - 0.5)),
+            f64::from(ratio * 19. + 1.),
+            f64::from(attack * f32::from_bits(0x3d4c_6061) + f32::from_bits(0x38d8_d874)),
+            f64::from(release * f32::from_bits(0x3f93_3334) + 0.05),
+        ];
+        let law = Law::KontaktFeedback { native: NATIVE, high_quality: true };
+        let mut state = ProcessorState::default();
+        let mut cells = vec![[0.; 2]; laws::cells(&law, 48_000).unwrap()];
+        let shared = Shared { link: Link::Max, makeup: f64::from(10f32.powf(output * 2.5 - 2.)), mix: 1. };
+        let mut out = vec![];
+        for chunk in stimulus().chunks(BLOCK) {
+            let mut block = [[0.; BLOCK]; 2];
+            for (i, f) in chunk.iter().enumerate() {
+                (block[0][i], block[1][i]) = (f[0], f[1]);
+            }
+            laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, chunk.len());
+            out.extend((0..chunk.len()).map(|i| [block[0][i], block[1][i]]));
+        }
+        let native: [(usize, f32, f32); 10] = [
+            (0, 1.2859280009385184e-19, 0.7715567946434021),
+            (1, 0.08883419632911682, 1.190497875213623),
+            (10, 1.1349705457687378, 0.29483091831207275),
+            (100, -0.8551082611083984, 0.7469831109046936),
+            (1000, 0.3325933814048767, 0.021470604464411736),
+            (1500, -0.027021536603569984, 0.0051622469909489155),
+            (2047, -0.0297965370118618, -0.013756771571934223),
+            (2500, -0.1530163437128067, 0.13874685764312744),
+            (3000, -0.010451612062752247, -0.06928698718547821),
+            (4095, -0.006039154715836048, 0.013333257287740707),
+        ];
+        assert_native(&out, &native);
     }
 
     #[test]
@@ -607,6 +724,29 @@ mod transient {
         assert!(tail([0.5, 0., 0.5]) < tail([0.5; 3]) * 0.9);
     }
 
+    /// Native Transient Master core (ctor 0x141a83550, reset 0x141aa0b80,
+    /// prepare 0x141aa27a0, setter 0x141ac87b0, process 0x141aaac90) under
+    /// tools/re/kemu.py, 48 kHz, controls .9 .2 .6, no clip; output scale
+    /// (+0x70) 1 and the runtime 2^(i/60-20) table seeded.
+    #[test]
+    fn matches_the_native_core() {
+        let law = Law::KontaktTransient { attack: 0.9, sustain: 0.2, gain: 0.6, clip: false };
+        let out = run_law(law, Link::Off, [0.; 4], &stimulus());
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 3.302320718765259),
+            (1, 0.3693881332874298, 3.176668167114258),
+            (10, 3.2479841709136963, 0.7567840218544006),
+            (100, -2.6673171520233154, 2.3343536853790283),
+            (1000, 3.002772569656372, 0.22991815209388733),
+            (1500, -0.11723051965236664, 0.009873159229755402),
+            (2047, -0.07166774570941925, -0.028402572497725487),
+            (2500, -0.9919859170913696, 0.9227460026741028),
+            (3000, -0.08136296272277832, -0.3886581361293793),
+            (4095, -0.008966117165982723, 0.02501962147653103),
+        ];
+        assert_native(&out, &native);
+    }
+
     #[test]
     fn table_matches_powf_inside_its_range() {
         for x in [0.001f32, 0.25, 1., 2.9] {
@@ -628,6 +768,28 @@ mod bus {
         assert_eq!(k.attack, 0.998451592027297);
         assert_eq!(k.release, 0.9999070278424647);
         assert!((k.makeup - 1.).abs() < 1e-8);
+    }
+
+    /// Native `G_BusComp` (ctor 0x141a7fc80, prepare 0x141aa1ea0, setter
+    /// 0x141ac69e0, process 0x141aaa1e0) under tools/re/kemu.py, 48 kHz,
+    /// controls .2 .4 .5 .5 .6, link on, mix 1, 64-frame blocks.
+    #[test]
+    fn matches_the_native_core() {
+        let law = Law::KontaktBusComp { threshold: 0.2, makeup: 0.4, attack: 0.5, release: 0.5, ratio: 0.6, link: true };
+        let out = run_law(law, Link::Off, [0.; 4], &stimulus());
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 1.0981236696243286),
+            (1, 0.12437347322702408, 1.0710428953170776),
+            (10, 1.033585548400879, 0.24923169612884521),
+            (100, -0.308159738779068, 0.2730134129524231),
+            (1000, 0.09638936072587967, 0.006861408706754446),
+            (1500, -0.005180184729397297, 0.0014615225372835994),
+            (2047, -0.005944662727415562, -0.0029721420723944902),
+            (2500, -0.054362811148166656, 0.04921232908964157),
+            (3000, -0.0012858589179813862, -0.018826641142368317),
+            (4095, -0.001422968809492886, 0.0026967115700244904),
+        ];
+        assert_native(&out, &native);
     }
 
     #[test]
