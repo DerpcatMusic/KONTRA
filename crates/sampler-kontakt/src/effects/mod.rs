@@ -230,6 +230,9 @@ pub(crate) fn apply_writes(
             parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
                 fx.apply_drive_parameter(parameter, w.value)
             }
+            parameter if color::skreamer_parameter(parameter).is_some() => {
+                fx.apply_skreamer_parameter(parameter, w.value)
+            }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
@@ -324,6 +327,22 @@ pub(crate) enum Params {
 pub(crate) use space::Convolution;
 
 impl Slot {
+    fn apply_skreamer_parameter(&mut self, parameter: &str, value: i32) {
+        if self.module != 0x21 {
+            return;
+        }
+        let Some(index) = color::skreamer_parameter(parameter) else { return };
+        let Some(Params::Fields(fields)) = self.params() else { return };
+        if fields.len() != 5 || !fields.iter().all(|f| {
+            matches!(f.value, ni_file::kontakt::objects::EffectValue::Float(v) if (0.0..=1.0).contains(&v))
+        }) {
+            return;
+        }
+        let stored = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }.decode(value) as f32;
+        let at = index * 4;
+        self.public[at..at + 4].copy_from_slice(&stored.to_le_bytes());
+    }
+
     fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
         let (at, low, high) = match (parameter, self.params()) {
             ("ENGINE_PAR_SHAPE", Some(Params::Saturation { .. })) => (0, -1., 1.),
@@ -981,11 +1000,8 @@ pub(crate) fn chain_with(
                     .collect();
                 match color::skreamer(&knobs) {
                     Some(config) => {
-                        out.processors.push(sampler_ir::Processor::Color(config));
+                        push_color(&mut out, fx.slot, dynamic, config);
                         combined = gain;
-                        if dynamic.is_some() {
-                            notes.push(("Skreamer live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
-                        }
                     }
                     None => modelled = false,
                 }
@@ -2745,6 +2761,52 @@ mod tests {
             assert!(out.notes.is_empty(), "{:?}", out.notes);
             assert!(!out.processors.is_empty(), "Lo-Fi cannot disappear");
         }
+    }
+
+    #[test]
+    fn skreamer_init_writes_validate_module_record_and_complete_physical_address() {
+        let source = "on init\nset_engine_par($ENGINE_PAR_SK_TONE,100000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_DRIVE,900000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_BASS,200000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_BRIGHT,800000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_MIX,300000,-1,3,$NI_INSERT_BUS)\nend on";
+        let initialized = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &Default::default()).unwrap();
+        let writes = initialized.engine_pars();
+        let payload: Vec<_> = [0.5f32; 5].into_iter().flat_map(f32::to_le_bytes).collect();
+        let mut fx = slot(0x21, payload.clone(), 0.25);
+        fx.slot = 3;
+        apply_writes(std::slice::from_mut(&mut fx), &writes, 0, -1);
+        assert_eq!(fx.public, payload);
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 2);
+        assert_eq!(fx.public, payload);
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, [0.1f32, 0.9, 0.2, 0.8, 0.3].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>());
+        assert_eq!(fx.output_gain, 0.25);
+        fx.module = 0x42;
+        fx.version = 0x10;
+        fx.public = [0.5f32; 3].into_iter().flat_map(f32::to_le_bytes).chain([0]).collect();
+        let tape = fx.public.clone();
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, tape, "SK controls cannot edit Tape");
+        fx.module = 0x21;
+        fx.version = 0x50;
+        fx.public = payload[..16].to_vec();
+        let invalid = fx.public.clone();
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, invalid, "a truncated record cannot be repaired by a guessed write");
+    }
+
+    #[test]
+    fn skreamer_live_lanes_keep_bypass_output_mix_and_tape_limit_distinct() {
+        let mut fx = slot(0x21, [0.5f32; 5].into_iter().flat_map(f32::to_le_bytes).collect(), 0.25);
+        fx.slot = 3;
+        fx.bypass = true;
+        let built = chain_with(&[fx], Scope::Bus, None, Some((-1, 1)), (-1, 1), &[]);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        assert!(matches!(built.processors[0], sampler_ir::Processor::Mix { count: 1, address: sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 }, dry: 0., wet: 0.25, bypass: true }));
+        let sampler_ir::Processor::Color(config) = built.processors[1] else { panic!("missing Skreamer") };
+        assert_eq!(config.lanes().len(), 5);
+        assert_eq!(built.lane_slots, [(3, 1)]);
+        let mut tape = slot(0x42, [0.5f32; 3].into_iter().flat_map(f32::to_le_bytes).chain([0]).collect(), 1.);
+        tape.version = 0x10;
+        let tape = chain_with(&[tape], Scope::Bus, None, Some((-1, 1)), (-1, 1), &[]);
+        assert!(tape.notes.iter().any(|(_, feature, value, _)| feature.contains("live controls") && value == "knobs are constants"));
     }
 
     #[test]

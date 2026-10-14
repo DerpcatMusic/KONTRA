@@ -1721,6 +1721,11 @@ pub enum ProcessorParameter {
     Shape,
     Drive,
     Damping,
+    /// Kontakt Skreamer's normalized tone, bass, brightness and internal mix.
+    Tone,
+    Bass,
+    Bright,
+    Mix,
     FormantTalk,
     FormantSharp,
     FormantSize,

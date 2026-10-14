@@ -200,7 +200,10 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
-            fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
+            fx::Curve::Skreamer([tone, drive, bass, bright, mix]) => Curve::Skreamer([
+                knob(P::Tone, tone), knob(P::Drive, drive), knob(P::Bass, bass),
+                knob(P::Bright, bright), knob(P::Mix, mix),
+            ]),
             fx::Curve::Drive(d) => Curve::Drive(d),
             fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
             fx::Curve::Dirt(d) => Curve::Dirt(d),
@@ -2191,6 +2194,17 @@ fn bind_role(processor: &mut Processor, role: ir::ProcessorParameter, parameter:
                 return filter.bind(knob, parameter);
             }
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer(knobs), .. }), Tone | Drive | Bass | Bright | Mix) => {
+                let index = match role {
+                    Tone => 0,
+                    Drive => 1,
+                    Bass => 2,
+                    Bright => 3,
+                    Mix => 4,
+                    _ => unreachable!(),
+                };
+                knobs[index] = parameter;
+            }
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
