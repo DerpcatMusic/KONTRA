@@ -13,7 +13,7 @@
 
 use super::network::{Allpass, Chain, Interp, LineSpec, MAX_LINES, Matrix, Modulation, Shelf, Spec, TapFrom, Unit};
 use crate::Error;
-use sampler_ir::fx::space::{Freeverb, Galois, Network, SparkVerb, Topology};
+use sampler_ir::fx::space::{Freeverb, Galois, Network, SparkVerb, Topology, UviReverb};
 use std::f64::consts::PI;
 
 /// The spec of `n` at `rate`.
@@ -26,6 +26,7 @@ pub(super) fn spec(n: &Network, rate: u32) -> Result<Spec, Error> {
         Topology::Galois => galois(&n.galois.ok_or(Error::InvalidInput)?, r),
         Topology::Freeverb => freeverb(n, &n.freeverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::SparkVerb => spark(&n.spark.ok_or(Error::InvalidInput)?, r),
+        Topology::Jezar => jezar(n, &n.uvi_reverb.ok_or(Error::InvalidInput)?, rate as f32),
         Topology::Diffuser => diffusion(n.diffusion as f32, n.diffusion_start_ms as f32, r),
         Topology::Fdn => generic_fdn(n, r),
         Topology::CombAllpass => generic_comb(n, r),
@@ -483,6 +484,114 @@ fn spark(s: &SparkVerb, rate: f64) -> Spec {
     spec.out = [[out[0], out[1]], [out[1], out[0]]];
     spec.high_cut = (s.rolloff_hz < 19_999.0).then(|| (-2.0 * PI * f64::from(s.rolloff_hz) / rate).exp() as f32);
     spec
+}
+
+// ------------------------------------------------------ UVI legacy reverbs
+
+/// UVI Plain / Gate / Filtered / Delayed Reverb: one Jezar Freeverb node
+/// (`0x141312050`; process variants Plain `0x141319930`, Delayed
+/// `0x1413165f0`, Gate `0x141317bb0`, Filtered `0x141315240`):
+/// - input: the channel mean × 0.015 (`0x3c75c28f`) into both channels,
+///   after the predelay (`PreDelay·rate` frames) and, for Filtered, the
+///   cutoff biquad.
+/// - eight combs per channel, `store = out·(1-d) + store·d`, write
+///   `in + fb·store`, `fb = 0.7 + 0.28·√(0.1·DecayTime)` (`0x141313400`),
+///   `d = 0.4·HighDamp` (`0x1413134a0`); summed in order into four Jezar
+///   allpasses of gain 0.5 (`y = z - x`, write `x + 0.5·z`).
+/// - lengths `(int)(rate·k)` in f32 (prepare `0x141312bb0`), `k` the f32
+///   constants at `0x141e821d8..0x141e82230` and `0x141cfa9dc` (441/44100),
+///   left and right alternating the +23 spread.
+pub(super) mod jezar_law {
+    /// `k·44100` of the comb and allpass constants, L then R.
+    pub(crate) const COMB: [[u32; 8]; 2] = [[1116, 1211, 1277, 1379, 1422, 1514, 1557, 1640], [1139, 1188, 1300, 1356, 1445, 1491, 1580, 1617]];
+    pub(crate) const ALLPASS: [[u32; 4]; 2] = [[556, 464, 341, 248], [579, 441, 364, 225]];
+
+    /// The f32 constant for a tuning (the table at `0x141e821d8`).
+    fn k(len: u32) -> f32 {
+        match len {
+            225 => f32::from_bits(0x3ba72f05),
+            248 => f32::from_bits(0x3bb84608),
+            341 => f32::from_bits(0x3bfd604b),
+            364 => f32::from_bits(0x3c073ba7),
+            441 => f32::from_bits(0x3c23d70a),
+            464 => f32::from_bits(0x3c2c628b),
+            556 => f32::from_bits(0x3c4e9091),
+            579 => f32::from_bits(0x3c571c12),
+            1116 => f32::from_bits(0x3ccf4ec9),
+            1139 => f32::from_bits(0x3cd39489),
+            1188 => f32::from_bits(0x3cdcaeb5),
+            1211 => f32::from_bits(0x3ce0f475),
+            1277 => f32::from_bits(0x3ced370e),
+            1300 => f32::from_bits(0x3cf17cce),
+            1356 => f32::from_bits(0x3cfbe3db),
+            1379 => f32::from_bits(0x3d0014ce),
+            1422 => f32::from_bits(0x3d04133a),
+            1445 => f32::from_bits(0x3d06361a),
+            1491 => f32::from_bits(0x3d0a7bdb),
+            1514 => f32::from_bits(0x3d0c9ebb),
+            1557 => f32::from_bits(0x3d109d27),
+            1580 => f32::from_bits(0x3d12c007),
+            1617 => f32::from_bits(0x3d162fc9),
+            1640 => f32::from_bits(0x3d1852aa),
+            _ => unreachable!("no constant for {len}"),
+        }
+    }
+
+    pub(crate) fn length(len: u32, rate: f32) -> usize {
+        (rate * k(len)) as usize
+    }
+
+    /// Comb feedback (`0x141313400`).
+    pub(crate) fn feedback(decay_time: f32) -> f32 {
+        0.7 + 0.28 * (0.1 * decay_time.max(0.0)).sqrt()
+    }
+
+    /// The legacy cutoff table (`0x14156bbe0`, index `400 + 400·c` at
+    /// `0x142819740`) and the RBJ design with resonance 0 (`0x1412dc110`
+    /// low-pass for `c < 0`, `0x141336700` high-pass for `c > 0`), fixed
+    /// 22050 Hz scale: `b0 b1 b2 a1 a2`, or `None` at 0.
+    pub(crate) fn cutoff(c: f32, rate: f32) -> Option<[f32; 5]> {
+        if c == 0.0 || !c.is_finite() {
+            return None;
+        }
+        let idx = (400 + (400.0 * c.clamp(-1.0, 1.0)) as i32) as f32;
+        let (hz, high) = if c < 0.0 {
+            (22_050.0 * (0.995 * (idx / 400.0).powi(2) + 0.005).clamp(0.001, 0.999), false)
+        } else {
+            (22_050.0 * (0.3 * ((idx - 400.0) / 400.0).powi(4)).clamp(0.001, 0.999), true)
+        };
+        let w = 2.0 * std::f32::consts::PI * (hz / rate).min(0.499);
+        let (sn, cs) = w.sin_cos();
+        let a0 = 1.0 + sn;
+        let (b0, b1) = if high { ((1.0 + cs) / 2.0, -(1.0 + cs)) } else { ((1.0 - cs) / 2.0, 1.0 - cs) };
+        Some([b0 / a0, b1 / a0, b0 / a0, -2.0 * cs / a0, (1.0 - sn) / a0])
+    }
+}
+
+fn jezar(n: &Network, u: &UviReverb, rate: f32) -> Spec {
+    use jezar_law::*;
+    let d = 0.4 * u.high_damp.clamp(0.0, 1.0);
+    let lines = (0..16)
+        .map(|i| {
+            let (c, j) = (i / 8, i % 8);
+            let len = length(COMB[c][j], rate);
+            let mut line = LineSpec::new(len + 1, len as f64);
+            (line.a, line.b) = (1.0 - d, d);
+            line.inject = (c as u8, 1.0);
+            line
+        })
+        .collect();
+    let mut s = Spec::new(lines, Matrix::Permutation { p: std::array::from_fn(|i| i as u8), g: [feedback(u.decay_time); MAX_LINES] });
+    s.mix = 1.0;
+    s.gain = f32::from_bits(0x3c75c28f);
+    s.input_bq = cutoff(u.cutoff, rate);
+    let pre = (n.predelay_seconds as f32 * rate) as usize;
+    s.predelay = [pre as f32; 2];
+    s.pre_cap = pre + 2;
+    s.echo = if pre > 0 { n.echo_feedback as f32 } else { 0.0 };
+    s.taps = [0u8, 8].map(|o| (0..8).map(|k| (k + o, 1.0)).collect());
+    s.chain = Chain::Jezar([0, 1].map(|c| ALLPASS[c].iter().map(|&l| Allpass::new(length(l, rate), 0.5)).collect()));
+    s
 }
 
 // --------------------------------------------------------------- Diffusion

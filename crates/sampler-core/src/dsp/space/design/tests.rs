@@ -162,6 +162,42 @@ fn freeverb_channel_mix_and_spread() {
     assert!(r[1116 + 22] == 0.0);
 }
 
+// ------------------------------------------------------ UVI legacy reverbs
+
+fn jezar_net(decay_time: f32, cutoff: f32) -> Network {
+    Network { topology: Topology::Jezar, uvi_reverb: Some(UviReverb { decay_time, high_damp: 0.0, cutoff }), ..Network::DEFAULT }
+}
+
+/// `(int)(rate·k)` truncates the f32 constants below their tuning at 44.1 kHz.
+#[test]
+fn jezar_lengths_and_feedback_match_native_vectors() {
+    use jezar_law::*;
+    let at = |l| length(l, 44_100.0);
+    assert_eq!([at(1116), at(1580), at(1617), at(464), at(441)], [1116, 1579, 1616, 463, 441]);
+    assert!((feedback(2.0) - 0.825_219_8).abs() < 1e-6, "{}", feedback(2.0));
+}
+
+/// Cutoff -0.5 is a 5595.19 Hz low-pass, 0.5 a 413.44 Hz high-pass.
+#[test]
+fn jezar_cutoff_follows_the_legacy_table() {
+    let hz = |c: [f32; 5]| (((1.0 - c[4]) / (1.0 + c[4])).asin() * 44_100.0 / std::f32::consts::TAU, (c[0] + c[1] + c[2]) / (1.0 + c[3] + c[4]));
+    let (lp, dc) = hz(jezar_law::cutoff(-0.5, 44_100.0).unwrap());
+    assert!((lp - 5595.19).abs() < 0.05 && (dc - 1.0).abs() < 1e-5, "{lp} {dc}");
+    let (hp, dc) = hz(jezar_law::cutoff(0.5, 44_100.0).unwrap());
+    assert!((hp - 413.44).abs() < 0.05 && dc.abs() < 1e-5, "{hp} {dc}");
+    assert!(jezar_law::cutoff(0.0, 44_100.0).is_none());
+}
+
+/// The channel mean × 0.015 reaches the first comb of each side; four
+/// Jezar allpasses pass `-x` straight through.
+#[test]
+fn jezar_first_arrival() {
+    let [l, r] = left_impulse(&jezar_net(2.0, 0.0), 44_100, 2000);
+    assert_eq!(l.iter().position(|v| *v != 0.0), Some(1116));
+    assert_eq!(r.iter().position(|v| *v != 0.0), Some(1139));
+    assert_eq!((l[1116], r[1139]), (0.0075, 0.0075));
+}
+
 // --------------------------------------------------------------- SparkVerb
 
 fn spark_controls() -> SparkVerb {
