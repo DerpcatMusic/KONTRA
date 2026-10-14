@@ -44,12 +44,14 @@ const BUFFER: usize = 16 << 10;
 
 impl Bytes {
     fn open(source: &Source, counted: bool) -> io::Result<Self> {
+        let file = match &source.handle {
+            Some(handle) => handle.clone(),
+            None => Arc::new(File::open(&source.path)?),
+        };
+        source.check_snapshot(&file)?;
         Ok(Self {
             counted,
-            file: match &source.handle {
-                Some(handle) => handle.clone(),
-                None => Arc::new(File::open(&source.path)?),
-            },
+            file,
             source: source.clone(),
             position: 0,
             buffer: Vec::with_capacity(BUFFER),
@@ -82,6 +84,10 @@ impl Read for Bytes {
                 }
             }
             self.buffer.truncate(filled);
+            self.source.check_snapshot(&self.file)?;
+            if filled < len {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
             if let Some(key) = &self.source.key {
                 key.apply_at(self.position, &mut self.buffer);
             }
@@ -559,7 +565,13 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
         Ok(prepared) => prepared,
         // A concurrent KSP purge can remove the final residency owner while
         // this worker reads. That transaction is obsolete, not a source fault.
-        Err(e) if e.get_ref().and_then(|e|e.downcast_ref::<sampler_core::Error>())==Some(&sampler_core::Error::NotReady) => return Ok(0),
+        Err(e)
+            if e.get_ref()
+                .and_then(|e| e.downcast_ref::<sampler_core::Error>())
+                == Some(&sampler_core::Error::NotReady) =>
+        {
+            return Ok(0);
+        }
         Err(e) => return Err(e),
     };
     if !pcm.residency_permitted() {
@@ -569,7 +581,7 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
     match pcm.publish_ranges(prepared) {
         Ok(_) => Ok(bytes),
         Err(sampler_core::Error::NotReady) => Ok(0),
-        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData,e)),
+        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
     }
 }
 
@@ -1677,6 +1689,88 @@ impl Streamed {
 mod tests {
     use super::*;
 
+    fn identity_wav() -> Vec<u8> {
+        let data_bytes = 50000u32 * 4;
+        let mut v = b"RIFF".to_vec();
+        v.extend((36 + data_bytes).to_le_bytes());
+        v.extend(b"WAVEfmt ");
+        v.extend(16u32.to_le_bytes());
+        v.extend(1u16.to_le_bytes());
+        v.extend(2u16.to_le_bytes());
+        v.extend(48000u32.to_le_bytes());
+        v.extend(192000u32.to_le_bytes());
+        v.extend(4u16.to_le_bytes());
+        v.extend(16u16.to_le_bytes());
+        v.extend(b"data");
+        v.extend(data_bytes.to_le_bytes());
+        for i in 0..50000 {
+            v.extend(((i % 30000) as i16).to_le_bytes());
+            v.extend((-(i % 30000) as i16).to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stream_sources_preserve_admission_across_eviction_rewrite_and_retained_handles() {
+        let dir =
+            std::env::temp_dir().join(format!("kontakt-stream-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = identity_wav();
+        let full = crate::decode(&original).unwrap();
+        for (retained, replace) in [(false, false), (false, true), (true, false), (true, true)] {
+            let path = dir.join(format!("{retained}-{replace}.wav"));
+            std::fs::write(&path, &original).unwrap();
+            let mut source = crate::Samples::new(&dir).source(&path).unwrap();
+            if retained {
+                source.handle = Some(Arc::new(File::open(&path).unwrap()));
+            }
+            let mut reader = source.open().unwrap();
+            let mut out = [[0.; 2]; 32];
+            reader.read(0, &mut out).unwrap();
+            assert_eq!(out, full.frames[..32]);
+            let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let mut changed = original.clone();
+            changed[160000..160032].fill(127);
+            let written = if replace {
+                dir.join("replacement.wav")
+            } else {
+                path.clone()
+            };
+            std::fs::write(&written, &changed).unwrap();
+            File::options()
+                .write(true)
+                .open(&written)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(stamp))
+                .unwrap();
+            if replace {
+                std::fs::rename(written, &path).unwrap();
+            }
+            if !retained || !replace {
+                assert!(
+                    source.open_stream().is_err(),
+                    "a reopened revision must reject changed source"
+                );
+                assert!(
+                    reader.read(40000, &mut out).is_err(),
+                    "physical refill must validate its original handle"
+                );
+            } else {
+                // A retained original FD can either fail conservatively on its
+                // change time or return original bytes after a path rename.
+                if let Ok(mut reopened) = source.open_stream() {
+                    reopened.read(40000, &mut out).unwrap();
+                    assert_eq!(out, full.frames[40000..40032]);
+                }
+                if reader.read(40000, &mut out).is_ok() {
+                    assert_eq!(out, full.frames[40000..40032]);
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     struct HeadFixture {
         opens: Arc<AtomicU64>,
         cancel: Option<Arc<AtomicBool>>,
@@ -1807,6 +1901,9 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../vendor/ncw/tests/data/16-bit-mono.ncw");
         let source = Source {
+            identity: Arc::new(
+                crate::FileIdentity::capture(&std::fs::metadata(&path).unwrap()).unwrap(),
+            ),
             size: std::fs::metadata(&path).unwrap().len(),
             path,
             offset: 0,
