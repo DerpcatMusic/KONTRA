@@ -44,6 +44,15 @@ enumerated the ports; they are current whenever it asks again.
 
 Upstream: this is additive and default-off; worth offering to MOOSE as is.
 
+## Parameter presentation reaches CLAP hosts while processing
+
+`Params::parameter_presentation_revision` was compared only in
+`on_main_thread`, which nothing scheduled when the revision moved, so a CLAP
+host saw new parameter names only after some unrelated main-thread callback.
+`process` now compares it (one atomic load) and, once per change, calls
+`clap_host::request_callback`; `on_main_thread` rescans as before. KONTRA
+names its host automation slots after the controls they drive this way.
+
 ## Native editor parent contracts
 
 VST3 attachment now rejects null parents, unsupported or null platform types,

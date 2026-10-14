@@ -321,41 +321,48 @@ pub fn reset(sel: &mut Selection) {
 /// host rescans for each change, and parts load one at a time.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
-/// Host port names as last published, and a change waiting to settle.
-pub struct PortNames {
-    pub published: [String; BUSES],
-    pending: Option<([String; BUSES], Instant)>,
+/// A host-facing value as last published, and a change waiting to settle.
+pub struct Settled<T> {
+    pub published: T,
+    pending: Option<(T, Instant)>,
 }
+
+/// Host port names as last published.
+pub type PortNames = Settled<[String; BUSES]>;
 
 impl Default for PortNames {
     fn default() -> Self {
-        Self {
-            published: std::array::from_fn(|n| format!("st.{}", n + 1)),
-            pending: None,
-        }
+        Self::new(std::array::from_fn(|n| format!("st.{}", n + 1)))
     }
 }
 
-impl PortNames {
-    /// Offer the names as of `now`; true when they are published: they
-    /// differ from the last published and have held for [`SETTLE`].
-    pub fn offer(&mut self, names: [String; BUSES], now: Instant) -> bool {
-        if names == self.published {
+impl<T: PartialEq> Settled<T> {
+    pub fn new(published: T) -> Self {
+        Self {
+            published,
+            pending: None,
+        }
+    }
+
+    /// Offer the value as of `now`; true when it is published: it
+    /// differs from the last published and has held for [`SETTLE`].
+    pub fn offer(&mut self, value: T, now: Instant) -> bool {
+        if value == self.published {
             self.pending = None;
             return false;
         }
         match &self.pending {
-            Some((pending, since)) if *pending == names => {
+            Some((pending, since)) if *pending == value => {
                 if now.duration_since(*since) < SETTLE {
                     return false;
                 }
             }
             _ => {
-                self.pending = Some((names, now));
+                self.pending = Some((value, now));
                 return false;
             }
         }
-        self.published = names;
+        self.published = value;
         self.pending = None;
         true
     }

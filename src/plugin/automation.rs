@@ -1,10 +1,14 @@
 //! Stable normalized host slots. Capacity comes from Kontakt 8.13.1 standalone;
 //! VST3's native published capacity has not been verified.
+use crate::support::MutexExt;
 use moose::params::{
-    FloatParam, ParamFlags, ParamInfo, ParamRange, ParamUnit, ParamValueKind, Params,
-    SmoothingStyle,
+    FloatParam, ParamFlags, ParamInfo, ParamRange, ParamUnit, ParamValueKind, ParameterPresentation,
+    Params, SmoothingStyle,
 };
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 pub(crate) use super::automation_ids::HOST_AUTOMATION_BASE as BASE;
 static INFOS: LazyLock<Vec<ParamInfo>> = LazyLock::new(|| {
@@ -25,8 +29,53 @@ static INFOS: LazyLock<Vec<ParamInfo>> = LazyLock::new(|| {
         .collect()
 });
 
+/// What a bound host slot shows: its control's name.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Slot {
+    pub name: String,
+    pub group: String,
+}
+pub(crate) type Slots = BTreeMap<u16, Slot>;
+
+/// The bound slots across the rack, first part first: each part's plan
+/// routes (saved assignments, script-fixed and NCKP slots) named by the
+/// widget they drive.
+pub(crate) fn slots(parts: &[super::PartView]) -> Slots {
+    let mut slots = Slots::new();
+    for (index, part) in parts.iter().enumerate() {
+        for binding in part.host_bindings.iter() {
+            if slots.contains_key(&binding.address) {
+                continue; // ponytail: first part names a shared slot; join names if racks share slots often.
+            }
+            let widget = part.interfaces.iter().flat_map(|f| &f.widgets).find(|w| {
+                matches!(w.binding, sampler_ui_ir::Binding::Control(id)
+                    if id == binding.widget || id == binding.control)
+            });
+            let name = widget
+                .and_then(|w| {
+                    [w.automation.name.as_deref(), w.text.lines().next(), Some(&w.name)]
+                        .into_iter()
+                        .flatten()
+                        .map(|n| n.trim().trim_start_matches(['$', '%', '~', '?', '@', '!']))
+                        .find(|n| !n.is_empty())
+                })
+                .map_or_else(|| format!("Automation {}", binding.address), str::to_owned);
+            let group = if part.active.is_empty() {
+                format!("Part {}", index + 1)
+            } else {
+                part.active.clone()
+            };
+            slots.insert(binding.address, Slot { name, group });
+        }
+    }
+    slots
+}
+
 pub struct HostAutomation {
     values: Box<[FloatParam]>,
+    /// Bound slots as last told to the host, settling like port names.
+    slots: Mutex<crate::routing::Settled<Slots>>,
+    revision: AtomicU64,
 }
 impl HostAutomation {
     pub fn new() -> Self {
@@ -35,7 +84,36 @@ impl HostAutomation {
                 .iter()
                 .map(|info| FloatParam::new(info, SmoothingStyle::None))
                 .collect(),
+            slots: Mutex::new(crate::routing::Settled::new(Slots::new())),
+            revision: AtomicU64::new(0),
         }
+    }
+    /// Main thread: offer the rack's bound slots; the host hears once they settle.
+    pub(crate) fn offer(&self, slots: Slots, now: Instant) {
+        if self.slots.lock_unpoisoned().offer(slots, now) {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+    /// A bound slot shows its control's name; unbound slots are hidden.
+    pub(crate) fn presentation(&self, id: u32) -> Option<ParameterPresentation> {
+        let address = Self::address(id)?;
+        let slots = self.slots.lock_unpoisoned();
+        Some(match slots.published.get(&address) {
+            Some(slot) => ParameterPresentation {
+                name: slot.name.clone(),
+                group: slot.group.clone(),
+                ..Default::default()
+            },
+            None => ParameterPresentation {
+                name: format!("Automation {address}"),
+                group: "Instrument automation".into(),
+                hidden: true,
+                available: true,
+            },
+        })
     }
     pub fn offset_ids(&mut self, base: u32) {
         for value in &mut self.values {

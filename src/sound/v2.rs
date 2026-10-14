@@ -87,6 +87,7 @@ pub struct Part {
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
+    pub(crate) host_bindings: Arc<[super::HostBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
     /// Script pitch bend (controller 128) and mono pressure (129) last applied
@@ -217,6 +218,37 @@ impl Drop for Grower {
     }
 }
 
+/// The plan's host-parameter routes, resolved to their controls.
+fn host_bindings(
+    runtime: &Runtime,
+    plan: sampler_core::PlanId,
+    widgets: &[sampler_core::WidgetDefinition],
+) -> Arc<[super::HostBinding]> {
+    let bindings = runtime.automation_bindings(plan).unwrap_or_default();
+    bindings
+        .iter()
+        .filter_map(|b| {
+            let sampler_core::AutomationSource::HostParameter(address) = b.source else {
+                return None;
+            };
+            let w = widgets
+                .iter()
+                .find(|w| w.source_slot == b.source_slot && w.ui_id == b.ui_id)?;
+            let sampler_core::WidgetStorage::Control(control) = w.storage else {
+                return None;
+            };
+            Some(super::HostBinding {
+                address,
+                widget: sampler_ui_ir::ControlId(w.id.0),
+                control: sampler_ui_ir::ControlId(control.0),
+                low: b.low,
+                high: b.high,
+                domain: runtime.control_definition(plan, control).ok()?.domain,
+            })
+        })
+        .collect()
+}
+
 impl Part {
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
@@ -248,6 +280,7 @@ impl Part {
             .widget_definitions(plan)
             .unwrap_or_default()
             .to_vec();
+        let host_bindings = host_bindings(&runtime, plan, &widgets);
         let widget_values = widgets
             .iter()
             .filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_)))
@@ -276,6 +309,7 @@ impl Part {
         Ok(Self {
             epoch: 0,
             engine_bindings,
+            host_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress {
                 client,
