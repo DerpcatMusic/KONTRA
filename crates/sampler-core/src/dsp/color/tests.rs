@@ -448,3 +448,24 @@ fn uvi_tone_stack_matches_the_native() {
         1e-6,
     );
 }
+
+#[test]
+fn uvi_exciter_matches_the_native() {
+    // Tape runs the native vector sinf; ours is the scalar libm one (about 1 ulp).
+    uvi_unit(
+        "Exciter",
+        |p| {
+            let f = |k, d| param(p, k, d) as f32;
+            let e = sampler_ir::fx::color::Exciter {
+                mode: f("Mode", 1.0) as u8,
+                input_gain: f("InputGain", 0.0),
+                amount: f("Amount", 0.0),
+                mix: f("Mix", 100.0),
+                output_gain: f("OutputGain", 0.0),
+                oversampling: f("Oversampling", 0.0) as u8,
+            };
+            sampler_ir::fx::color::Config { curve: sampler_ir::fx::color::Curve::Exciter(e), ..sampler_ir::fx::color::Config::IDENTITY }
+        },
+        2e-6,
+    );
+}
