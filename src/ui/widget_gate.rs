@@ -167,7 +167,7 @@ impl Gate {
             core.widget_gate_behavior_progress(0, |p| {
                 let fault = matches!(p.outcome, Some(sampler_core::Outcome::FuelExhausted | sampler_core::Outcome::Fault(_)));
                 if !fault && (p.yielded_at.is_none() || total == self.preemptions) { return; }
-                if self.preemption_observations.len() >= 128 { self.progress_truncated = true; return; }
+                if !fault && self.preemption_observations.len() >= 128 { self.progress_truncated = true; return; }
                 self.preemption_observations.push(serde_json::json!({"frame": self.frame, "target": self.current_target,
                     "phase": self.phase, "sample": sample, "aggregate_preemptions": total,
                     "program": p.program, "callback": atoms.widget_gate_callback(p.program), "pc": p.pc,
