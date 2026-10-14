@@ -574,7 +574,7 @@ impl Stage for SixEnvelopes {
 /// feedback tap), lets a peak follower rise with the attack and relax with
 /// the release toward a floor while two coupled one-poles (178.8 rad/s per
 /// sub-step) average it, and asks the curve for the gain. Cells `[A, D, E,
-/// G]` per detector, f64; `aux[12]` set once started.
+/// G]` per detector, f64, zero from reset (native: no init but bypass).
 pub(super) struct FeedbackLoop<'a> {
     pub curve: FeedbackCurve,
     pub attack: f32,
@@ -599,14 +599,8 @@ impl<'a> FeedbackLoop<'a> {
         linked: bool,
         bypass: bool,
         cells: &'a mut [[f64; 2]],
-        state: &mut ProcessorState,
     ) -> Self {
-        let mut s = std::array::from_fn(|ch| std::array::from_fn(|k| cells[k][ch]));
-        if state.aux[12] == 0. || bypass {
-            let floor = f64::from(floor);
-            s = [[floor, floor, floor, 1.]; 2];
-            state.aux[12] = 1.;
-        }
+        let s = std::array::from_fn(|ch| std::array::from_fn(|k| cells[k][ch]));
         Self { curve, attack, release, couple, floor, steps, linked, bypass, cells, s }
     }
 

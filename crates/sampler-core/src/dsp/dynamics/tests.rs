@@ -121,8 +121,8 @@ const GOLDEN: &[(&str, u64)] = &[
     ("limiter mix", 0xbd8b804e64b8526b),
     ("hilbert", 0x6881215429ca8cac),
     ("hilbert 96k mix", 0x96a80d7003f8ddc0),
-    ("feedback", 0xce0595ad975b01d7),
-    ("feedback hq off", 0xfa906825c5df7ba5),
+    ("feedback", 0x8edb73e29bd4bbce),
+    ("feedback hq off", 0x8db678df6125aacd),
     ("transient", 0x853f08b0665bdaae),
     ("transient clip", 0x0971909af8d5158a),
     ("bus", 0xac9e7ba00aaebf2e),
@@ -136,9 +136,8 @@ const GOLDEN: &[(&str, u64)] = &[
 fn every_law_matches_its_golden_output_bits() {
     let got: Vec<_> = cases().into_iter().map(|(name, s, rate)| (name, fingerprint(s, rate))).collect();
     assert_eq!(got.len(), GOLDEN.len());
-    for ((name, h), (gn, gh)) in got.iter().zip(GOLDEN) {
-        assert_eq!((name, h), (gn, gh));
-    }
+    let bad: Vec<_> = got.iter().zip(GOLDEN).filter(|(g, w)| g.1 != w.1).map(|(g, _)| format!("{} {:#018x}", g.0, g.1)).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 const NATIVE: Native = Native { threshold_db: 0., ratio: 0. };
@@ -522,6 +521,27 @@ mod hilbert {
         assert!(peak > ceiling * 0.9, "{peak}");
     }
 
+    /// Native `NI::DSP::HilbertLimiter` (ctor 0x141adbea0, prepare 0x141ae23a0,
+    /// setter 0x141aea680, process 0x141ae3400) under tools/re/kemu.py, 48 kHz,
+    /// controls drive .5, release .05, ceiling 1.
+    #[test]
+    fn matches_the_native_core() {
+        let out = run([0.5, 1., 0., 0.05], &stimulus());
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 0.0),
+            (1, 0.0, 0.0),
+            (10, 0.0, 0.0),
+            (100, 0.0, 0.0),
+            (1000, 0.01855362020432949, 0.3244099020957947),
+            (1500, -0.02422836422920227, -0.02323775552213192),
+            (2047, -0.0468631274998188, 0.028381407260894775),
+            (2500, -0.9601988196372986, -0.10931152105331421),
+            (3000, 0.8182634711265564, -0.22763866186141968),
+            (4095, 0.05741879716515541, -0.03505796566605568),
+        ];
+        assert_native(&out, &native);
+    }
+
     #[test]
     fn hilbert_pair_is_ninety_degrees_apart_mid_band() {
         // A 1 kHz sine: the envelope magnitude settles flat (no ripple at 2f).
@@ -567,6 +587,46 @@ mod feedback {
             assert!((knee - c.g0).abs() < 1e-3 * c.g0, "{x}: {knee} {}", c.g0);
             assert!(c.threshold > 0. && l > 1. && c.slope > 1.);
         }
+    }
+
+    /// Native `NI::DSP::FBComp` (vtable 0x1479aad18, prepare 0x141aa1280,
+    /// setter 0x141ac56d0, process 0x141aa80d0) under tools/re/kemu.py, 48 kHz,
+    /// controls 0..5 = .6 .5 .3 .4 .5 1, 6 (high quality) on, 8 on.
+    #[test]
+    fn matches_the_native_core() {
+        let [input, output, attack, release, ratio] = [0.6f32, 0.5, 0.3, 0.4, 0.5];
+        let knobs = [
+            f64::from(10f32.powf(input * 2.5 - 0.5)),
+            f64::from(ratio * 19. + 1.),
+            f64::from(attack * f32::from_bits(0x3d4c_6061) + f32::from_bits(0x38d8_d874)),
+            f64::from(release * f32::from_bits(0x3f93_3334) + 0.05),
+        ];
+        let law = Law::KontaktFeedback { native: NATIVE, high_quality: true };
+        let mut state = ProcessorState::default();
+        let mut cells = vec![[0.; 2]; laws::cells(&law, 48_000).unwrap()];
+        let shared = Shared { link: Link::Max, makeup: f64::from(10f32.powf(output * 2.5 - 2.)), mix: 1. };
+        let mut out = vec![];
+        for chunk in stimulus().chunks(BLOCK) {
+            let mut block = [[0.; BLOCK]; 2];
+            for (i, f) in chunk.iter().enumerate() {
+                (block[0][i], block[1][i]) = (f[0], f[1]);
+            }
+            laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, chunk.len());
+            out.extend((0..chunk.len()).map(|i| [block[0][i], block[1][i]]));
+        }
+        let native: [(usize, f32, f32); 10] = [
+            (0, 0.0, 0.7715567946434021),
+            (1, 0.08883419632911682, 1.190497875213623),
+            (10, 1.1349705457687378, 0.29483091831207275),
+            (100, -0.8551082611083984, 0.7469831109046936),
+            (1000, 0.3325933814048767, 0.021470604464411736),
+            (1500, -0.027021536603569984, 0.0051622469909489155),
+            (2047, -0.0297965370118618, -0.013756771571934223),
+            (2500, -0.1530163437128067, 0.13874685764312744),
+            (3000, -0.010451612062752247, -0.06928698718547821),
+            (4095, -0.006039154715836048, 0.013333257287740707),
+        ];
+        assert_native(&out, &native);
     }
 
     #[test]

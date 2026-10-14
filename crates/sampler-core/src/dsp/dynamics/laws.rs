@@ -125,7 +125,7 @@ pub(super) fn process(
             let c = Feedback::new(knobs, high_quality, rate);
             let detector = HighPassed::new(c.hp, linked, state);
             let k = [c.attack, c.release, c.couple, c.floor];
-            let ballistics = FeedbackLoop::new(c.curve, k, c.steps, linked, c.bypass, cells, state);
+            let ballistics = FeedbackLoop::new(c.curve, k, c.steps, linked, c.bypass, cells);
             let out = FeedbackOut::new(c.lp, c.hp, shared, state);
             run((Drive { gain: c.drive, offset: EPS_18 }, detector, ballistics, out), state, block, len);
         }
@@ -497,7 +497,8 @@ impl Feedback {
             drive: drive as f32,
             attack: one_pole(attack as f32),
             release: one_pole(release as f32),
-            couple: 1. - table_exp(-((f32::from_bits(0x4332_d8b3) / fs) * sub * TABLE_PER_NEPER)),
+            // 0x141a92370: table index units, not nepers (no TABLE_PER_NEPER).
+            couple: 1. - table_exp(-((f32::from_bits(0x4332_d8b3) / fs) * sub)),
             steps,
             curve: FeedbackCurve { threshold, knee_top: threshold * knee, slope, g0, quartic },
             floor,
