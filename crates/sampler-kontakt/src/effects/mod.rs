@@ -1630,6 +1630,23 @@ mod tests {
         }
     }
 
+    /// Conflux's Volume knob writes GN_GAIN to its insert Gainer; unity is
+    /// 396851 and full scale +24 dB (16x), the effect output-gain law.
+    #[test]
+    fn live_gainer_gain_reaches_its_slot_with_the_output_gain_law() {
+        let fx = slot(0x13, 1f32.to_le_bytes().to_vec(), 1.);
+        let built = super::chain_with(&[fx], super::Scope::Voice, None, Some((0, -1)), (0, -1), &[]);
+        let mut rt = fx_runtime(built.processors, 120., &[[0., 0.], [0.25, -0.25]]);
+        let address = sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_GN_GAIN").unwrap(),
+            group: 0, slot: 0, generic: -1,
+        };
+        assert_eq!(rt.engine_parameter(address), Ok(396851), "saved unity gain reads back as unity");
+        assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress { slot: 1, ..address }, 0).is_err());
+        rt.set_engine_parameter(address, 1_000_000).unwrap();
+        assert_eq!(rt.engine_parameter(address), Ok(1_000_000));
+    }
+
     #[test]
     fn live_shape_drive_and_damping_reach_only_the_physical_slot() {
         for (module, payload, parameter, value, expected) in [

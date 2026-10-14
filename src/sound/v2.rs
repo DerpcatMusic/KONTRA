@@ -89,6 +89,9 @@ pub struct Part {
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
+    /// Script pitch bend (controller 128) and mono pressure (129) last applied
+    /// to the zone: see [`script_controllers`].
+    script_controllers: [u32; 2],
     force_articulation_once: bool,
     /// Internal wire identities keep distinct physical host tuples independent
     /// after a part maps their channels to its single musical domain.
@@ -305,6 +308,7 @@ impl Part {
             editor_offsets: None,
             persistence: None,
             mpe,
+            script_controllers: [0x8000_0000, 0],
             force_articulation_once: false,
             next_host_id: 0,
             tune: 0.0,
@@ -1377,6 +1381,28 @@ fn peak(x: &[f32]) -> f32 {
 
 /// A MIDI 1.0 channel voice message into `part`'s zone, on its manager
 /// channel, or in an MPE zone on its own.
+/// A KSP `set_controller($VCC_PITCH_BEND | $VCC_MONO_AT, v)` is the channel's
+/// bend or pressure, as if it came in as MIDI: sounding voices and later notes
+/// follow it (Conflux's Bend wheel only forwards its value this way). The core
+/// keeps scripts' controller 128/129 apart from the zone's per-note expression,
+/// which only MIDI ingress set before.
+fn script_controllers(part: &mut Part) {
+    let Ok(performance) = part.runtime.performance(0) else { return };
+    for (at, number) in [(0, 128), (1, 129)] {
+        let Ok(value) = part.runtime.controller(performance, number) else { continue };
+        if std::mem::replace(&mut part.script_controllers[at], value) == value {
+            continue;
+        }
+        let channel = part.mpe.manager_channel();
+        if number == 128 {
+            let bend = value >> 18;
+            wire_event(part, 0xe0 | channel, (bend & 127) as u8, (bend >> 7) as u8);
+        } else {
+            wire_event(part, 0xd0 | channel, (value >> 25) as u8, 0);
+        }
+    }
+}
+
 fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
     wire_packet(
         part,
@@ -1924,6 +1950,7 @@ impl V2Core {
                     wire_event(part, out.status, out.a, out.b);
                 }
             }
+            script_controllers(part);
             #[cfg(test)]
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[1] += t.elapsed().as_nanos() as u64;
@@ -4504,6 +4531,42 @@ mod tests {
         assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(10000),
             "host callback allowance must be installed before MIDI, not after its first preemption");
         assert_eq!(runtime.preemptions(), 0);
+    }
+
+    /// Conflux's Bend wheel: `set_controller($VCC_PITCH_BEND, v)` bends the
+    /// sounding note as a MIDI bend would (default range 2 semitones).
+    #[test]
+    fn script_pitch_bend_bends_the_sounding_note() {
+        let render = |bend: bool| {
+            let source = format!("on init end on on note {} end on",
+                if bend { "set_controller($VCC_PITCH_BEND, -8192)" } else { "" });
+            let script = sampler_ksp::compile(&source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let pcm = sampler_core::Pcm::new(48000, (0..96000).map(|i| {
+                let phase = f64::from(i) * std::f64::consts::TAU * 0.017;
+                [phase.cos() as f32, phase.sin() as f32]
+            }).collect()).unwrap();
+            let region = sampler_core::Region {
+                sample: 0, key_low: 60, key_high: 61, root_key: None, velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+                envelope: sampler_core::Envelope::new(0, 0, 0, 1.0, 256).unwrap(), playback: Default::default(),
+            };
+            let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 2).unwrap()).unwrap();
+            let limits = Limits::for_plan(&plan, 32, 8);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("test")).unwrap())));
+            core.begin_block(&BlockInfo { frames: 256, offline: true, ..Default::default() });
+            core.play(0, Event::midi1(0x90, 60, 100));
+            let mut out = Vec::new();
+            for _ in 0..128 {
+                core.begin_block(&BlockInfo { frames: MAX_BLOCK, offline: true, ..Default::default() });
+                let r = core.render(MAX_BLOCK);
+                let bus = &r.buses[0];
+                out.extend((0..MAX_BLOCK).map(|i| [bus[0][i], bus[1][i]]));
+                core.end_block(MAX_BLOCK, &mut |_| true);
+            }
+            out[4096..4096 + 8192].to_vec()
+        };
+        let ratio = sampler_midi::spectral_ratio(&render(false), &render(true));
+        assert!((ratio - 2f64.powf(-2. / 12.)).abs() < 0.03, "bend ratio {ratio}");
     }
 
     #[test]
