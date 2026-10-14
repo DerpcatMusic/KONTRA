@@ -83,6 +83,9 @@ pub enum Uvi {
     Moog { hertz: f32, q: f32 },
     /// `Rez`: Mode 0 LP, 1 HP, 2 BP; Q 0..1.
     Rez { mode: u8, hertz: f32, q: f32 },
+    /// `XpanderFilter`: Mode 0..=36, Q 0..1, distortion 0 soft / 1 hard / 2 Padé, drive in
+    /// dB, Fat 0..1, algorithm 0 ladder / 1 zero-delay ladder, oversampling 0..=1.
+    Xpander { mode: u8, hertz: f32, q: f32, distortion: u8, drive: f32, fat: f32, algorithm: u8, oversampling: bool },
 }
 
 /// The 3x2 Versatile knobs beyond cutoff and resonance, as stored (0..=1).

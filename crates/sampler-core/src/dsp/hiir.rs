@@ -28,6 +28,11 @@ impl Default for HiirState {
 }
 
 impl HiirState {
+    /// Stage 0's memories `[up, down]`, for engines that keep a 2x stage in their own cells.
+    pub(crate) fn first(&mut self) -> [&mut [[f32; 2]; MAX]; 2] {
+        [&mut self.up[0], &mut self.down[0]]
+    }
+
     pub(crate) fn finite(&self) -> bool {
         self.up.iter().chain(&self.down).flatten().flatten().all(|v| v.is_finite())
     }
