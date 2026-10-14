@@ -11,7 +11,7 @@
 //! BFilterSimpleLP/HP/LPHP, BFilterDualSKF, BFilterBlueMonark, BFilterLadder_legacy,
 //! BFilterVowelA/B, BFilterVersatile.
 
-use sampler_ir::fx::filter::{Config, Fidelity, Gap, Response, Topology, Variant};
+use sampler_ir::fx::filter::{Config, Fidelity, Gap, KontaktFx, Response, Topology, Variant};
 
 /// How a saved type is realised.
 enum Build {
@@ -19,8 +19,6 @@ enum Build {
     Config(Config, Fidelity, &'static str),
     /// Handled by another translation arm (the family named).
     Elsewhere(&'static str),
-    /// Not configurable yet, and why.
-    Gap(&'static str),
 }
 
 const fn cascade(response: Response, poles: u8) -> Config {
@@ -47,10 +45,15 @@ const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Le
 const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
+const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
+const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
+const fn monark(mode: u8) -> KontaktFx {
+    KontaktFx::Monark { mode, variant: 0, knobs: [0.0; 5] }
+}
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; type 91 is measured ($FILTER_TYPE_FORMANT_2)";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
-    use Build::{Config as C, Elsewhere, Gap};
+    use Build::{Config as C, Elsewhere};
     Some(match id {
         2 => ("Legacy LP1", C(cascade(Lp, 1), Exact, LEGACY)),
         3 => ("Legacy HP1", C(cascade(Hp, 1), Exact, LEGACY)),
@@ -112,12 +115,12 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         106 => ("AR LP2/4", C(native(Topology::Ar, Lp, 0), Exact, AR)),
         107 => ("AR BP2/4", C(native(Topology::Ar, Bp, 0), Exact, AR)),
         108 => ("AR HP2/4", C(native(Topology::Ar, Hp, 0), Exact, AR)),
-        120 => ("Simple LP/HP", Gap("BFilterSimpleLPHP (vtable 0x144f11f40) core not extracted")),
-        130 => ("Dual SKF", Gap("BFilterDualSKF (vtable 0x144f12808) core not extracted")),
-        140 => ("Monark LP1", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        141 => ("Monark LP2", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        142 => ("Monark LP4", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
-        143 => ("Monark BP", Gap("BFilterBlueMonark (vtable 0x144f12c30) core not extracted")),
+        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Exact, KFX)),
+        130 => ("Dual SKF", C(variant(Bp, 4, Variant::Kontakt(KontaktFx::DualSkf([0.0; 5]))), Exact, KFX)),
+        140 => ("Monark LP1", C(variant(Lp, 1, Variant::Kontakt(monark(2))), Exact, KFX)),
+        141 => ("Monark LP2", C(variant(Lp, 2, Variant::Kontakt(monark(1))), Exact, KFX)),
+        142 => ("Monark LP4", C(variant(Lp, 4, Variant::Kontakt(monark(0))), Exact, KFX)),
+        143 => ("Monark BP", C(variant(Bp, 2, Variant::Kontakt(monark(3))), Exact, KFX)),
         _ => return None,
     })
 }
@@ -153,7 +156,6 @@ const VERSATILE_UNSET: sampler_ir::fx::filter::Versatile =
 pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result<Mapped, Gap> {
     match build(id) {
         None => Err(Gap { name: "filter type", reason: "type id not in the Kontakt 8 filter table" }),
-        Some((name, Build::Gap(reason))) => Err(Gap { name, reason }),
         Some((name, Build::Elsewhere(_))) => {
             Err(Gap { name, reason: "belongs to another translation arm" })
         }
@@ -176,6 +178,23 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result
                         gain,
                     };
                 }
+                // Record order a, b, then `extra` (Monark's variant last); see the reader.
+                Variant::Kontakt(k) => {
+                    config.extra = 0.0;
+                    let (a, b) = (cutoff, resonance);
+                    let get = |i: usize| extra.get(i).copied().ok_or(Gap { name: "KONTAKTFX filter", reason: "record without its knobs" });
+                    *k = match *k {
+                        KontaktFx::SimpleLpHp { .. } => KontaktFx::SimpleLpHp { lp: a, hp: b },
+                        // record e is the stored 2v - 1 drive
+                        KontaktFx::DualSkf(_) => KontaktFx::DualSkf([b, get(1)?, a, get(0)?, (get(2)? + 1.0) * 0.5]),
+                        // record c is the stored 3v + 1 input gain, e the stored 2v - 1 modulation
+                        KontaktFx::Monark { mode, .. } => KontaktFx::Monark {
+                            mode,
+                            variant: get(3)?.clamp(0.0, 2.0) as u8,
+                            knobs: [a, b, (get(0)? - 1.0) / 3.0, (get(2)? + 1.0) * 0.5, get(1)?],
+                        },
+                    };
+                }
                 _ => {}
             }
             Ok(Mapped { config, fidelity, caveat })
@@ -192,7 +211,6 @@ pub(crate) fn coverage() -> Vec<(i32, &'static str, String)> {
             let status = match b {
                 Build::Config(_, f, caveat) => format!("{f:?}: {caveat}"),
                 Build::Elsewhere(who) => format!("elsewhere: {who}"),
-                Build::Gap(reason) => format!("gap: {reason}"),
             };
             Some((id, name, status))
         })

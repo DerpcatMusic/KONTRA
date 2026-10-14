@@ -22,6 +22,7 @@ pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
 pub(crate) mod daft;
 pub(crate) mod formant;
+pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
 pub(crate) mod svf;
@@ -36,6 +37,8 @@ pub enum Settings {
     Ladder(ladder::LadderSettings),
     Ar(ar::ArSettings),
     Daft(daft::DaftSettings),
+    /// Kontakt KONTAKTFX Simple LP/HP, Dual SKF, Monark with their stored knobs.
+    Kontakt(sampler_ir::fx::filter::KontaktFx),
 }
 
 /// A knob of the engine a control can bind.
@@ -54,6 +57,7 @@ impl Settings {
             Self::Ladder(s) => s.valid(),
             Self::Ar(s) => s.valid(),
             Self::Daft(s) => s.valid(),
+            Self::Kontakt(_) => true,
         }
     }
 
@@ -83,6 +87,7 @@ impl Settings {
             Self::Ladder(s) => Core::Ladder(s.compile(rate, bindings)),
             Self::Ar(s) => Core::Ar(s.compile(rate, bindings)),
             Self::Daft(s) => Core::Daft(s.compile(rate, bindings)),
+            Self::Kontakt(k) => Core::Kontakt(kontaktfx::KontaktFilter::new(k, rate)),
         };
         Engine { core, modulation_index: usize::MAX }
     }
@@ -93,6 +98,7 @@ enum Core {
     Ladder(ladder::Ladder),
     Ar(ar::Ar),
     Daft(daft::Daft),
+    Kontakt(kontaktfx::KontaktFilter),
 }
 
 /// The prepared engine.
@@ -109,7 +115,7 @@ impl Engine {
             Core::Cascade(c) => c.cells(),
             Core::Ladder(_) => ladder::CELLS,
             Core::Ar(_) => ar::CELLS,
-            Core::Daft(_) => 0,
+            Core::Daft(_) | Core::Kontakt(_) => 0,
         }
     }
 
@@ -120,6 +126,7 @@ impl Engine {
             Core::Ladder(c) => ("ladder_lp4", c.trace_parameters().to_vec()),
             Core::Ar(c) => ("ar", c.trace_parameters().to_vec()),
             Core::Daft(c) => ("daft", c.trace_parameters().to_vec()),
+            Core::Kontakt(_) => ("kontaktfx", Vec::new()),
         }
     }
 
@@ -143,6 +150,7 @@ impl Engine {
                 c.process(state, parameters, block, len, at, modulation);
                 false
             }
+            Core::Kontakt(c) => c.process(state, block, len, at, modulation),
         }
     }
 }
