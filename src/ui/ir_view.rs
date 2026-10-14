@@ -68,7 +68,7 @@ impl Picture {
 }
 
 /// The frame of `frames` a control at `value` in `min..=max` shows.
-fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
+pub(super) fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     let span = max - min;
     let t = if span == 0. {
         0.
@@ -79,7 +79,7 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
 }
 
 /// UVI mappers operate on normalized positions, including drag and strip frames.
-fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+pub(super) fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
     if range.max == range.min {
         return if inverse { 0. } else { range.min };
     }

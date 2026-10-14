@@ -39,6 +39,8 @@ struct Request {
     key: Key,
     asset: ir::Asset,
     epoch: u64,
+    #[cfg(feature = "shots")]
+    queued: std::time::Instant,
 }
 struct Result {
     key: Key,
@@ -118,7 +120,13 @@ impl Preparation {
                         if canceled() {
                             continue;
                         }
+                        #[cfg(feature = "shots")]
+                        let queue_ms = request.queued.elapsed().as_secs_f64() * 1000.;
+                        #[cfg(feature = "shots")]
+                        let permit_start = std::time::Instant::now();
                         let _permit = DECODE.get_or_init(|| Mutex::new(())).lock_unpoisoned();
+                        #[cfg(feature = "shots")]
+                        let permit_wait_ms = permit_start.elapsed().as_secs_f64() * 1000.;
                         let (picture, font) = if request.asset.kind == ir::AssetKind::TrueTypeFont {
                             (None, source.font(&request.asset))
                         } else {
@@ -135,6 +143,10 @@ impl Preparation {
                         };
                         drop(_permit);
                         if canceled() {
+                            #[cfg(feature = "shots")]
+                            {
+                                source.take_probes();
+                            }
                             continue;
                         }
                         let bytes = font.as_ref().map_or(0, |f| f.as_ref().len())
@@ -151,7 +163,14 @@ impl Preparation {
                                 #[cfg(feature = "shots")]
                                 scan: source.scan,
                                 #[cfg(feature = "shots")]
-                                probes: source.take_probes(),
+                                probes: {
+                                    let mut probes = source.take_probes();
+                                    for probe in &mut probes {
+                                        probe.queue_ms = Some(queue_ms);
+                                        probe.permit_wait_ms = Some(permit_wait_ms);
+                                    }
+                                    probes
+                                },
                             })
                             .is_err()
                         {
@@ -342,12 +361,8 @@ impl Preparation {
                         ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. }
                             if image.role == ir::Role::Strip =>
                         {
-                            let t = if range.max == range.min {
-                                0.
-                            } else {
-                                ((value - range.min) / (range.max - range.min)).clamp(0., 1.)
-                            };
-                            (t * count.saturating_sub(1) as f64).round() as usize
+                            let t = super::ir_view::mapped(range, w.mapper.as_deref(), value, true);
+                            super::ir_view::frame(t, 0., 1., count)
                         }
                         ir::Kind::Button { .. } | ir::Kind::Switch
                             if image.role == ir::Role::Strip =>
@@ -368,7 +383,32 @@ impl Preparation {
                     1.
                 };
                 let target = size.map(|n| (n as f64 * factor).ceil().max(1.) as u32);
-                add(image.asset, frame, target, None);
+                if image.frame.is_none()
+                    && image.role == ir::Role::Strip
+                    && count >= 6
+                    && matches!(w.kind, ir::Kind::Button { .. } | ir::Kind::Switch)
+                    && matches!(
+                        face.source,
+                        ir::Source::Ksp { .. } | ir::Source::PerformanceView
+                    )
+                {
+                    // The painter selects normal, held and hovered on/off
+                    // pairs. These transient UI states are absent from Values;
+                    // prepare the six authored frames rather than show a stale
+                    // normal frame while hovered or pressed.
+                    for (held, hovered) in [(false, false), (true, false), (false, true)] {
+                        for on in [false, true] {
+                            add(
+                                image.asset,
+                                ir::kontakt_picture_frame(on, held, hovered, count),
+                                target,
+                                None,
+                            );
+                        }
+                    }
+                } else {
+                    add(image.asset, frame, target, None);
+                }
             }
             for s in w
                 .style
@@ -503,6 +543,8 @@ impl Preparation {
                 key: key.clone(),
                 asset: face.assets[key.asset].clone(),
                 epoch,
+                #[cfg(feature = "shots")]
+                queued: std::time::Instant::now(),
             })
             .collect::<Vec<_>>();
         changed |= !batch.is_empty();
@@ -549,6 +591,196 @@ impl Preparation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sparse_strip_requests_follow_authored_mappers_and_fixed_frame_overrides() {
+        let (jobs, requests) = mpsc::sync_channel(1);
+        let (_done, results) = mpsc::channel();
+        let mut worker = Preparation {
+            path: "mapper-fixture.uvip".into(),
+            program: None,
+            jobs,
+            results,
+            epoch: Arc::new(AtomicU64::new(0)),
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+            wanted: Vec::new(),
+            assets: Vec::new(),
+            identities: Vec::new(),
+            presentation: Default::default(),
+            unchanged: false,
+            tick: 0,
+            bytes: 0,
+            #[cfg(feature = "shots")]
+            scan: Default::default(),
+            #[cfg(feature = "shots")]
+            decoded_bytes: HashMap::new(),
+            #[cfg(feature = "shots")]
+            probes: Vec::new(),
+            #[cfg(feature = "shots")]
+            probe_dropped: 0,
+        };
+        let range = ir::Range {
+            min: 1.,
+            max: 10000.,
+            default: 100.,
+            step: None,
+        };
+        let mut widget = ir::Widget::new(
+            "Frequency",
+            ir::PageRef(0),
+            ir::Rect::new(0, 0, 16, 16),
+            ir::Kind::Knob {
+                range,
+                display: Default::default(),
+            },
+        );
+        widget.binding = ir::Binding::Control(ir::ControlId(1));
+        widget.mapper = Some("Exponential".into());
+        widget
+            .images
+            .push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Strip));
+        let mut face = ir::Interface {
+            assets: vec![ir::Asset {
+                path: "frequency.png".into(),
+                kind: ir::AssetKind::Image(ir::ImageMeta {
+                    frames: 101,
+                    ..Default::default()
+                }),
+            }],
+            widgets: vec![widget],
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 16.,
+                    height: 16.,
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut values = Values::default();
+        values.insert(ir::ControlId(1), 100.);
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        assert_eq!(
+            requests.try_recv().unwrap()[0].key.frame,
+            50,
+            "100 Hz is the center of an authored 1..10000 exponential strip"
+        );
+        if let ir::Kind::Knob { range, .. } = &mut face.widgets[0].kind {
+            *range = ir::Range {
+                min: 0.,
+                max: 1.,
+                default: 0.25,
+                step: None,
+            };
+        }
+        face.widgets[0].mapper = Some("Quadratic".into());
+        values.insert(ir::ControlId(1), 0.25);
+        worker.pending.clear();
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        assert_eq!(requests.try_recv().unwrap()[0].key.frame, 50);
+        face.widgets[0].images[0].frame = Some(7);
+        worker.pending.clear();
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        assert_eq!(
+            requests.try_recv().unwrap()[0].key.frame,
+            7,
+            "fixed authored frames take precedence over value mapping"
+        );
+        face.source = ir::Source::PerformanceView;
+        face.widgets[0].kind = ir::Kind::Switch;
+        face.widgets[0].images[0].frame = None;
+        face.assets[0].kind = ir::AssetKind::Image(ir::ImageMeta {
+            frames: 6,
+            ..Default::default()
+        });
+        worker.pending.clear();
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let frames: Vec<_> = requests
+            .try_recv()
+            .unwrap()
+            .iter()
+            .map(|request| request.key.frame)
+            .collect();
+        assert_eq!(
+            frames,
+            [0, 1, 2, 3, 4, 5],
+            "Kontakt's held/hovered on/off pairs must all be ready for the sparse painter"
+        );
+    }
+    #[test]
+    fn selected_program_failure_is_terminal_even_when_generic_art_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let pictures = dir.path().join("Resources/pictures");
+        std::fs::create_dir_all(&pictures).unwrap();
+        let path = dir.path().join("invalid-owner.nki");
+        std::fs::write(&path, b"not a serialized instrument").unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[1, 2, 3, 255])
+                .unwrap();
+        }
+        std::fs::write(pictures.join("generic.png"), bytes).unwrap();
+        let asset = ir::Asset {
+            path: "Resources/pictures/generic.png".into(),
+            kind: ir::AssetKind::Image(Default::default()),
+        };
+        assert!(
+            Source::of(&path).load(&asset).is_some(),
+            "generic art is physically present"
+        );
+        let face = ir::Interface {
+            assets: vec![asset],
+            pages: vec![ir::Page {
+                size: ir::Size {
+                    width: 1.,
+                    height: 1.,
+                },
+                background: ir::Background {
+                    image: Some(ir::AssetRef(0)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut worker = Preparation::new_for_program(&path, 0);
+        let start = std::time::Instant::now();
+        let values = Values::default();
+        loop {
+            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+            if worker.pending() == 0 {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "owner failure must complete, not strand the request"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(worker.bytes(), 0);
+        assert_eq!(worker.cache.len(), 1);
+        assert!(worker.cache.values().all(|cached| cached.picture.is_none()));
+        #[cfg(feature = "shots")]
+        {
+            assert_eq!(worker.probes().len(), 1);
+            assert!(worker.probes()[0].status.starts_with("lookup-"));
+            assert_eq!(worker.scan.lookup_ok, 0);
+            assert_eq!(
+                worker.scan.lookup_missing, 0,
+                "invalid owner is not an absent picture"
+            );
+        }
+        for _ in 0..3 {
+            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        }
+        assert_eq!(worker.pending(), 0);
+    }
     #[test]
     fn stale_completion_preserves_same_key_pending_in_new_epoch() {
         let (jobs, requests) = mpsc::sync_channel(1);
