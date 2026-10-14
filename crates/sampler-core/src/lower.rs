@@ -650,6 +650,10 @@ pub fn lower_with(
     let mut slots = lowering.slot_controls();
     slots.extend(lowering.controls()?);
     let mut wave_bindings = Vec::new();
+    for (control, binding) in lowering.envelope_lanes()? {
+        slots.push(control);
+        wave_bindings.push(binding);
+    }
     let mut wave_controls = if instrument.groups.iter().any(|g| g.wavetable.is_some()) {
         vec![None; instrument.groups.len()]
     } else {
@@ -899,7 +903,9 @@ pub fn lower_with(
         }
     }
     engine_bindings.extend(native.into_values());
-    engine_bindings.extend(wave_bindings);
+    // An envelope that is also a group's amplitude keeps that binding.
+    let bound: std::collections::BTreeSet<_> = engine_bindings.iter().map(|b| b.address).collect();
+    engine_bindings.extend(wave_bindings.into_iter().filter(|b| !bound.contains(&b.address)));
     // One pass over route controls: per-alias scans of routes x zones were
     // quadratic (ANALOG STRINGS spent ~90 s here at 95% load progress).
     let mut zone_routes = vec![false; instrument.routes.len()];
@@ -1320,6 +1326,66 @@ impl Lowering<'_> {
         Ok(envelope)
     }
 
+    /// Kontakt modulation envelopes (internal AHDSR modulators that drive
+    /// routes) and the slot each was saved in.
+    fn route_envelopes(&self) -> impl Iterator<Item = (&ir::SourceModulator, ir::ModulatorRef, &ir::Envelope)> {
+        let indices = &self.ir.source_indices;
+        indices.modulators.iter().filter_map(move |source| {
+            let modulator = source.runtime?;
+            let ir::ModulationSource::Envelope(e) = &self.ir.modulators[modulator.0].source else {
+                return None;
+            };
+            (!source.external
+                && indices.ahdsrs.iter().any(|a| (a.group, a.slot) == (source.group, source.slot))
+                && self.ir.routes.iter().any(|r| r.source == modulator))
+                .then_some((source, modulator, e))
+        })
+    }
+
+    fn envelope_address(source: &ir::SourceModulator, stage: usize) -> crate::EngineParameterAddress {
+        const NAMES: [&str; 6] =
+            ["ENGINE_PAR_ATTACK", "ENGINE_PAR_HOLD", "ENGINE_PAR_DECAY", "ENGINE_PAR_SUSTAIN", "ENGINE_PAR_RELEASE", "ENGINE_PAR_ATK_CURVE"];
+        crate::EngineParameterAddress {
+            parameter: crate::engine_parameter_id(NAMES[stage]).unwrap(),
+            group: source.group as i32,
+            slot: source.slot as i32,
+            generic: -1,
+        }
+    }
+
+    /// Stage lanes of every modulation envelope, on the amplitude envelope's
+    /// laws (`with_group_envelope_parameters_batch`); defaults are authored.
+    fn envelope_lanes(&self) -> Result<Vec<(ControlDefinition, crate::EngineParameterBinding)>, LowerError> {
+        let mut lanes = std::collections::BTreeMap::new();
+        for (source, _, e) in self.route_envelopes() {
+            let authored = self.adsr("modulation envelope", e, false)?;
+            for (index, stage) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().enumerate() {
+                let address = Self::envelope_address(source, index);
+                let id = crate::engine_parameter_control(address);
+                let (min, max) = match stage {
+                    crate::EnvelopeStage::Sustain => (0., 1.),
+                    crate::EnvelopeStage::AttackCurve => (-32., 32.),
+                    _ => (0., u32::MAX as f64),
+                };
+                let control = ControlDefinition {
+                    id,
+                    domain: ControlDomain::Real { min, max },
+                    default: ControlValue::Real(authored.control_value(stage)),
+                };
+                let law = crate::EngineParameterLaw::envelope(stage, self.rate);
+                lanes.entry(id).or_insert((control, crate::EngineParameterBinding { address, control: id, law }));
+            }
+        }
+        Ok(lanes.into_values().collect())
+    }
+
+    /// The stage controls a modulation envelope's voices read at start.
+    fn envelope_lane_ids(&self, modulator: ir::ModulatorRef) -> Option<[Option<crate::ControlId>; 6]> {
+        // ponytail: one saved slot per runtime envelope; a deduplicated twin's slot is not read.
+        let (source, ..) = self.route_envelopes().find(|(_, m, _)| *m == modulator)?;
+        Some(std::array::from_fn(|i| Some(crate::engine_parameter_control(Self::envelope_address(source, i)))))
+    }
+
     fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
         let curve = |curve: ir::Curve| match curve {
             ir::Curve::Linear => Ok(EnvelopeCurve::default()),
@@ -1588,6 +1654,9 @@ impl Lowering<'_> {
                 }
                 program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
+                if let Some(ids) = self.envelope_lane_ids(modulator) {
+                    program.envelope_controls.push((program.sources.len() - 1, ids));
+                }
                 Ok(program.sources.len() - 1)
             };
             let target = match (route.target, route.depth) {
@@ -2241,7 +2310,7 @@ impl Lowering<'_> {
                 return Err(unsupported(owner, Feature::Controls));
             }
             // Script lanes of a family unit (Color binds its own in `color_settings`).
-            if matches!(**p, ir::Processor::Dynamics(_) | ir::Processor::Eq(_)) {
+            if matches!(**p, ir::Processor::Dynamics(_) | ir::Processor::Eq(_) | ir::Processor::Ar(_) | ir::Processor::Daft(_)) {
                 let lanes = native_lanes(**p);
                 for (k, role) in lane_roles(**p).into_iter().enumerate() {
                     let parameter = lane_parameter(**p, &lanes, k);

@@ -949,6 +949,7 @@ fn voice_modulation_gain_is_at_the_amplifier_between_send_taps() {
                     )],
                     routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.0)],
                     shapes: vec![],
+                    envelope_controls: vec![],
                 }],
                 vec![Some(0)],
                 vec![0],
