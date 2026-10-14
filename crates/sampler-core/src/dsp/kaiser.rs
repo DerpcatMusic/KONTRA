@@ -93,6 +93,68 @@ impl Effektrig {
     }
 }
 
+/// The effektrig core wrapper's oversampling (ModulatableDSPCoreWrapper, generic prepare
+/// slot 3): factor `2^round(log2(2^n 44100 / rate))`, at least 1; x2 runs the effektrig pair,
+/// higher factors the polyphase machine.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Wrapper {
+    One,
+    Two(Effektrig),
+    Many(Kaiser),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct WrapperState {
+    two: EffektrigState,
+    up: State,
+    down: State,
+}
+
+impl WrapperState {
+    pub(crate) fn finite(&self) -> bool {
+        self.two.finite() && self.up.finite() && self.down.finite()
+    }
+}
+
+impl Wrapper {
+    pub(crate) fn new(n: i32, rate: u32) -> Self {
+        let e = (2f64.powi(n) * 44_100.0 / f64::from(rate)).log2().round().max(0.0) as u32;
+        match (1usize << e.min(3)).min(MAX) {
+            1 => Self::One,
+            2 => Self::Two(Effektrig::new()),
+            f => Self::Many(Kaiser::new(f)),
+        }
+    }
+
+    pub(crate) fn factor(&self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two(_) => 2,
+            Self::Many(k) => k.factor,
+        }
+    }
+
+    /// One input to `factor` outputs.
+    #[inline(always)]
+    pub(crate) fn up(&self, s: &mut WrapperState, x: f32, out: &mut [f32]) {
+        match self {
+            Self::One => out[0] = x,
+            Self::Two(e) => (out[0], out[1]) = e.up(&mut s.two, x),
+            Self::Many(k) => k.up(&mut s.up, x, out),
+        }
+    }
+
+    /// `factor` inputs to one output.
+    #[inline(always)]
+    pub(crate) fn down(&self, s: &mut WrapperState, frame: &[f32]) -> f32 {
+        match self {
+            Self::One => frame[0],
+            Self::Two(e) => e.down(&mut s.two, frame[0], frame[1]),
+            Self::Many(k) => k.down(&mut s.down, frame),
+        }
+    }
+}
+
 type Block = [f32; 16];
 
 /// One transposed 16-register block (0x140ae35d0 / 0x140ae2f50 lane pattern).

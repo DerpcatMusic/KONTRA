@@ -42,7 +42,7 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 3] = [0x42, 0x66, 0x67];
+pub(super) const TYPED_CORES: [u16; 4] = [0x42, 0x66, 0x67, 0x78];
 
 /// A saved field as its core value (the param setters 0x1409aa540 & co.): f32 clamped to
 /// 0..1, u8 as 0/1, an i32 enum 0..=2 as i/2 (anything else throws in the reader).
@@ -90,6 +90,13 @@ pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::Effec
             let knobs = scatter(&values, &[0, 2, 6, 4, 1, 3, 7, 5, 13, 14, 10, 11, 8, 9, 12], DEFAULTS)?;
             Some(Config::dirt(sampler_ir::fx::color::Dirt { knobs }))
         }
+        // Tubescreamer (BParFXSkreamerDlx, apply 0x140abb9f0): mode, drive, tone, pot a, pot b,
+        // filter, then a u8 that only resets the cores (no param). Level is fixed at 0.5.
+        0x78 => {
+            let (_reset, values) = values.split_last()?;
+            let knobs = scatter(values, &[6, 0, 4, 1, 2, 3], [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0])?;
+            Some(Config::tubescreamer(sampler_ir::fx::color::Tubescreamer { knobs }))
+        }
         _ => None,
     }
 }
@@ -114,7 +121,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x78 | 0x79 => {
+        0x23 | 0x24 | 0x4d | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x58 | 0x61 | 0x6c | 0x6e | 0x6f | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         0x68 => "creative drive module: core not extracted",
@@ -151,6 +158,17 @@ mod tests {
         let mut bad = saved.clone();
         bad[0].value = Integer(3);
         assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn tubescreamer_record_fields_land_on_their_core_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(vec![Integer(2), Float(0.1), Float(0.2), Float(0.3), Float(0.4), Float(0.6), Byte(1)]);
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Tubescreamer(t), .. }) = typed_core(0x78, &saved) else {
+            panic!("Tubescreamer not mapped");
+        };
+        // drive .1, pot a .3, pot b .4, filter .6, tone .2, level fixed .5, circuit 2 (1.0).
+        assert_eq!(t.knobs, [0.1, 0.3, 0.4, 0.6, 0.2, 0.5, 1.0]);
     }
 
     #[test]
