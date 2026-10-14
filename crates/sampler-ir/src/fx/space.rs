@@ -27,7 +27,9 @@ pub enum Topology {
     /// A figure-eight tank of two modulated allpass / delay / damping loops
     /// fed by an input diffuser, crossed over to two output taps.
     Plate,
-    /// Only the input allpass diffuser (no feedback tank): a smearing effect.
+    /// UVI Diffusion: only the input allpass diffuser (no feedback tank),
+    /// gain [`Network::diffusion`] (`0..=1`), lengths from
+    /// [`Network::diffusion_start_ms`].
     Diffuser,
     /// The exact Kontakt legacy Reverb (0x15) network, driven by
     /// [`Network::freeverb`] and `predelay_seconds`/`input_cutoff_hz`.
@@ -149,8 +151,10 @@ pub struct Network {
     /// Rate of that modulation, Hz.
     pub modulation_hz: f64,
     /// Allpass coefficient of the input diffuser (and of the comb layout's
-    /// serial allpasses), `0..=0.75`.
+    /// serial allpasses), `0..=0.75` (`0..=1` for [`Topology::Diffuser`]).
     pub diffusion: f64,
+    /// [`Topology::Diffuser`]'s shortest allpass, ms.
+    pub diffusion_start_ms: f64,
     /// Input lowpass, Hz.
     pub input_cutoff_hz: f64,
     /// Linear level of the early-reflection taps added to the wet signal;
@@ -185,6 +189,7 @@ impl Network {
         modulation_seconds: 0.000_75,
         modulation_hz: 0.7,
         diffusion: 0.375,
+        diffusion_start_ms: 5.0,
         input_cutoff_hz: 20_000.0,
         early: 0.0,
         low_shelf_db: 0.0,
@@ -237,7 +242,7 @@ impl Config {
                         .iter()
                         .all(|v| v.is_finite())
                 })
-                && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
+                && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.diffusion_start_ms, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
                     .iter()
                     .all(|v| v.is_finite())
         });

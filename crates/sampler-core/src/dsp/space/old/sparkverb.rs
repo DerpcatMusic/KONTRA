@@ -1,31 +1,32 @@
-//! The UVI SparkVerb engine (Workstation 4.0.9, init `0x1416799a0`, process
-//! `0x141679c90`), from the binary:
-//! - lines: `2^Quality` (`0x14167b8c0`); lengths `0x14167f190`: with
-//!   `a = (N/2)^Shape`, `r = (2a)^(-1/(N-1))`,
-//!   `x_i = r^i·N(1-r)·RoomSize·rate/340 / (1 - r^(N+1))`, truncated, raised
-//!   to the next odd prime (table `0x14202c3e0`, to 191999), sorted.
-//! - decay (`0x14167b8c0`): `x_i = -600·L_i/(rate·Decay·RoomSize)` dB
-//!   (frozen: `-0.006·L_i/rate`), band gain `10^(x_i/(20·D_band))`; the line
-//!   gain is the mid gain over `√N`, the low/high gains are two first-order
-//!   shelves (`0x141649120`) or a low cut (`0x141649410`) / high cut
-//!   (`0x141649220`) in one TDF-II biquad (`0x1416450c0`), then a 1 Hz DC
-//!   blocker (`0x141641be0`).
-//! - input gain `√((1-ḡ)/(1+ḡ))`, `ḡ` the mean squared mid gain.
-//! - modulation (`0x14167bd80`): per line, a 256-entry sine table read at
-//!   `f_i = ModRate·rate/(16·L_i)`, depth `cents·ln2·rate/(1200·2π·f_i)`
-//!   samples, sampled once per ≤64-frame block and glided across it (step
-//!   clamped to the block length).
-//! - Hadamard feedback (`0x1416864d0`), output taps after it
-//!   (`0x14167c0e0`): `√(2/N)·(cos θ·Σeven + sin θ·Σodd)` and mirrored,
-//!   `θ = (1-Width)·π/4`; line `i` takes input channel `i mod 2`.
-//! - input diffuser (`0x14167e0f0`/`0x14167e420`): four serial allpasses per
-//!   channel, gain Diffusion, lengths `⌊(π/2)^k·rate·DiffusionStart/1000 + ½⌋`
-//!   plus the stereo offsets (`0x14202c2d0`).
-//! - Rolloff: one-pole low-pass `exp(-2π·f/rate)` on each output, off at or
-//!   above 19999 Hz.
-//!
-//! Parameter ramps (the 10 ms gain ramps, the delay glide after a size
-//! change) are not reproduced: controls are constant for a unit's life.
+#![allow(dead_code)]
+// The UVI SparkVerb engine (Workstation 4.0.9, init `0x1416799a0`, process
+// `0x141679c90`), from the binary:
+// - lines: `2^Quality` (`0x14167b8c0`); lengths `0x14167f190`: with
+//   `a = (N/2)^Shape`, `r = (2a)^(-1/(N-1))`,
+//   `x_i = r^i·N(1-r)·RoomSize·rate/340 / (1 - r^(N+1))`, truncated, raised
+//   to the next odd prime (table `0x14202c3e0`, to 191999), sorted.
+// - decay (`0x14167b8c0`): `x_i = -600·L_i/(rate·Decay·RoomSize)` dB
+//   (frozen: `-0.006·L_i/rate`), band gain `10^(x_i/(20·D_band))`; the line
+//   gain is the mid gain over `√N`, the low/high gains are two first-order
+//   shelves (`0x141649120`) or a low cut (`0x141649410`) / high cut
+//   (`0x141649220`) in one TDF-II biquad (`0x1416450c0`), then a 1 Hz DC
+//   blocker (`0x141641be0`).
+// - input gain `√((1-ḡ)/(1+ḡ))`, `ḡ` the mean squared mid gain.
+// - modulation (`0x14167bd80`): per line, a 256-entry sine table read at
+//   `f_i = ModRate·rate/(16·L_i)`, depth `cents·ln2·rate/(1200·2π·f_i)`
+//   samples, sampled once per ≤64-frame block and glided across it (step
+//   clamped to the block length).
+// - Hadamard feedback (`0x1416864d0`), output taps after it
+//   (`0x14167c0e0`): `√(2/N)·(cos θ·Σeven + sin θ·Σodd)` and mirrored,
+//   `θ = (1-Width)·π/4`; line `i` takes input channel `i mod 2`.
+// - input diffuser (`0x14167e0f0`/`0x14167e420`): four serial allpasses per
+//   channel, gain Diffusion, lengths `⌊(π/2)^k·rate·DiffusionStart/1000 + ½⌋`
+//   plus the stereo offsets (`0x14202c2d0`).
+// - Rolloff: one-pole low-pass `exp(-2π·f/rate)` on each output, off at or
+//   above 19999 Hz.
+//
+// Parameter ramps (the 10 ms gain ramps, the delay glide after a size
+// change) are not reproduced: controls are constant for a unit's life.
 
 use crate::Error;
 use sampler_ir::fx::space::{Network, SparkVerb};
@@ -138,7 +139,7 @@ struct Allpass {
     len: usize,
 }
 
-pub(super) struct Spark {
+pub(crate) struct Spark {
     lines: Vec<Line>,
     mode: u8,
     input_gain: f32,
@@ -154,12 +155,12 @@ pub(super) struct Spark {
 }
 
 impl Spark {
-    pub(super) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(n: &Network, rate: u32) -> Result<Self, Error> {
         let s = n.spark.ok_or(Error::InvalidInput)?;
         Ok(Self::with(&s, f64::from(rate)))
     }
 
-    fn with(s: &SparkVerb, rate: f64) -> Self {
+    pub(crate) fn with(s: &SparkVerb, rate: f64) -> Self {
         let n = 1usize << s.quality;
         let lens = lengths(n, f64::from(s.room_m), f64::from(s.shape), rate);
         let (fl, fh) = ((f64::from(s.freq_low) / rate).min(0.499), (f64::from(s.freq_high) / rate).min(0.499));
@@ -225,7 +226,7 @@ impl Spark {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for line in &mut self.lines {
             line.ring.buf.fill(0.0);
             line.cur = line.base;
@@ -244,7 +245,7 @@ impl Spark {
     }
 
     /// Replace `l`/`r` with the wet signal.
-    pub(super) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+    pub(crate) fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
         let n = l.len().min(r.len());
         let mut start = 0;
         while start < n {
@@ -325,96 +326,3 @@ impl Spark {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `0x14167f190` vectors (RoomSize, Shape, rate, N).
-    #[test]
-    fn lengths_match_native_vectors() {
-        assert_eq!(lengths(8, 20.0, 0.0, 48_000.0), [1811, 1993, 2203, 2437, 2683, 2963, 3271, 3613]);
-        assert_eq!(lengths(8, 20.0, 0.0, 44_100.0), [1663, 1831, 2027, 2237, 2467, 2729, 3011, 3319]);
-        assert_eq!(lengths(8, 20.0, 0.3, 48_000.0), [1439, 1693, 1973, 2311, 2711, 3181, 3719, 4357]);
-        assert_eq!(
-            lengths(16, 20.0, 0.0, 48_000.0),
-            [1877, 1973, 2063, 2153, 2267, 2371, 2473, 2591, 2713, 2843, 2999, 3119, 3271, 3433, 3581, 3761]
-        );
-        assert_eq!(lengths(4, 4.0, 0.0, 48_000.0), [347, 431, 541, 683]);
-    }
-
-    /// `0x141649120` vectors and the decay/input-gain/modulation laws at
-    /// 48 kHz, RoomSize 20, Decay 1, N 8.
-    #[test]
-    fn coefficients_match_native_vectors() {
-        let close = |a: f64, b: f64, tol: f64| assert!((a - b).abs() < tol, "{a} vs {b}");
-        let s = shelf(250.0 / 48_000.0, 0.5, 1.0);
-        [0.988_691, -0.966_072, -0.954_763].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
-        let s = shelf(0.25, 1.0, 0.5);
-        [0.707_107, 0.121_320, -0.171_573].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
-        let spark = SparkVerb {
-            quality: 3,
-            room_m: 20.0,
-            shape: 0.0,
-            decay: 1.0,
-            decay_low: 2.0,
-            decay_high: 0.5,
-            freq_low: 250.0,
-            freq_high: 12_000.0,
-            low_cut: false,
-            high_cut: false,
-            mod_cents: 4.0,
-            mod_hz: 1.0,
-            mode: 1,
-            freeze: false,
-            diffuser: Some((0.618, 5.0)),
-            width: 0.5,
-            rolloff_hz: 20_000.0,
-            predelay_seconds: 0.0,
-        };
-        let v = Spark::with(&spark, 48_000.0);
-        close(f64::from(v.input_gain), 0.429_786_3, 1e-6);
-        close(f64::from(v.lines[0].gain) * 8f64.sqrt(), 0.877_822, 1e-6);
-        close(v.lines[0].amp, 10.6552, 1e-4);
-        close(v.lines[7].amp, 21.2575, 1e-4);
-        close(f64::from(v.out[0]), 0.5 * 0.923_88, 1e-6);
-        close(f64::from(v.out[1]), 0.5 * 0.382_683, 1e-6);
-        let (_, d) = v.diffuser.as_ref().unwrap();
-        assert_eq!(d[0].each_ref().map(|a| a.len), [240, 400, 592, 953]);
-        assert_eq!(d[1].each_ref().map(|a| a.len), [263, 377, 615, 930]);
-        // Band gains: the low shelf's DC is g_L/g_M, the high shelf's Nyquist g_H/g_M.
-        let x = -600.0 * 1811.0 / (48_000.0 * 20.0);
-        close(x, -1.131_875, 1e-6);
-        close(10f64.powf(0.05 * x / 2.0), 0.936_921, 1e-6);
-        close(10f64.powf(0.05 * x / 0.5), 0.770_571, 1e-6);
-    }
-
-    #[test]
-    fn decays_and_stays_finite() {
-        let spark = SparkVerb {
-            quality: 4,
-            room_m: 50.0,
-            shape: 1.0,
-            decay: 10.0,
-            decay_low: 10.0,
-            decay_high: 0.1,
-            freq_low: 10.0,
-            freq_high: 20_000.0,
-            low_cut: true,
-            high_cut: true,
-            mod_cents: 20.0,
-            mod_hz: 4.0,
-            mode: 2,
-            freeze: false,
-            diffuser: Some((1.0, 10.0)),
-            width: 0.0,
-            rolloff_hz: 2_000.0,
-            predelay_seconds: 0.1,
-        };
-        let mut v = Spark::with(&spark, 96_000.0);
-        let (mut l, mut r) = (vec![0.0; 96_000], vec![0.0; 96_000]);
-        l[0] = 1.0;
-        v.process(&mut l, &mut r);
-        assert!(l.iter().chain(&r).all(|x| x.is_finite() && x.abs() < 4.0));
-        assert!(l[20_000..].iter().any(|x| x.abs() > 1e-6));
-    }
-}

@@ -1,28 +1,27 @@
 //! Universal `space` DSP (wave 4): every reverb and convolution effect is one
 //! [`Space`], configured by [`sampler_ir::fx::space::Config`].
 //!
-//! A unit runs an algorithmic network (FDN, comb/allpass, plate or diffuser,
-//! with predelay, early reflections, gate and tone), a zero-latency
-//! partitioned convolution, or both summed, then mixes with the dry input.
+//! A unit runs the one algorithmic network engine ([`network`], configured
+//! per reverb by [`design`]) with optional early reflections and gate, a
+//! zero-latency partitioned convolution, or both summed, then mixes with the
+//! dry input.
 //! Everything is allocated by [`Space::new`] on the control side; processing
 //! allocates nothing.
 
-mod comb;
 mod common;
 mod convolver;
-mod fdn;
-mod freeverb;
-mod galois;
-mod plate;
+mod design;
+mod network;
+#[cfg(test)]
+mod old;
 mod shape;
-mod sparkverb;
 
 pub use convolver::{Impulse, MAX_IMPULSE_FRAMES};
 pub use convolver::ConvolutionUpload;
 pub use shape::{neutral_impulse_shape, shape_impulse};
 
 use crate::Error;
-use common::{Early, Tone};
+use common::Early;
 use convolver::Conv;
 use sampler_ir::fx::space::{Config, Network, Topology};
 use std::sync::Arc;
@@ -47,7 +46,8 @@ fn network_valid(n: &Network) -> bool {
         && within(n.damping_hz, 20.0, 192_000.0)
         && within(n.modulation_seconds, 0.0, MAX_MODULATION_SECONDS)
         && within(n.modulation_hz, 0.01, 20.0)
-        && within(n.diffusion, 0.0, 0.75)
+        && within(n.diffusion, 0.0, if n.topology == Topology::Diffuser { 1.0 } else { 0.75 })
+        && within(n.diffusion_start_ms, 0.1, 50.0)
         && within(n.predelay_seconds, 0.0, MAX_PREDELAY_SECONDS)
         && within(n.input_cutoff_hz, 20.0, 192_000.0)
         && within(n.early, 0.0, 4.0)
@@ -105,16 +105,6 @@ pub(crate) fn tail_frames(c: &Config, rate: u32, impulse: Option<&Impulse>) -> u
     net.max(conv).min(f64::from(u32::MAX)) as u32
 }
 
-enum Core {
-    Fdn(fdn::Fdn),
-    Comb(comb::CombAllpass),
-    Plate(plate::Plate),
-    Diffuser(comb::Diffuser),
-    Freeverb(freeverb::Freeverb),
-    Galois(Box<galois::GaloisCore>),
-    Spark(sparkverb::Spark),
-}
-
 /// Closes the wet signal a set time after the input falls silent.
 struct Gate {
     hold: usize,
@@ -125,7 +115,7 @@ struct Gate {
 
 impl Gate {
     fn new(seconds: f64, rate: f32) -> Self {
-        Self { hold: (seconds * f64::from(rate)) as usize, left: 0, gain: 0.0, coef: common::one_pole(50.0, rate) }
+        Self { hold: (seconds * f64::from(rate)) as usize, left: 0, gain: 0.0, coef: design::one_pole(50.0, f64::from(rate)) }
     }
     #[inline(always)]
     fn tick(&mut self, input_peak: f32) -> f32 {
@@ -142,8 +132,7 @@ impl Gate {
 }
 
 struct Net {
-    core: Core,
-    tone: Tone,
+    core: network::Network,
     early: Option<Early>,
     gate: Option<Gate>,
     pos: usize,
@@ -151,21 +140,12 @@ struct Net {
 
 impl Net {
     fn new(n: &Network, rate: u32) -> Result<Self, Error> {
-        let core = match n.topology {
-            Topology::Fdn => Core::Fdn(fdn::Fdn::new(n, rate)?),
-            Topology::CombAllpass => Core::Comb(comb::CombAllpass::new(n, rate)?),
-            Topology::Plate => Core::Plate(plate::Plate::new(n, rate)?),
-            Topology::Diffuser => Core::Diffuser(comb::Diffuser::new(n, rate)?),
-            Topology::Freeverb => Core::Freeverb(freeverb::Freeverb::new(n, rate)?),
-            Topology::Galois => Core::Galois(Box::new(galois::GaloisCore::new(n, rate)?)),
-            Topology::SparkVerb => Core::Spark(sparkverb::Spark::new(n, rate)?),
-        };
+        let core = network::Network::new(design::spec(n, rate)?);
         let rate = rate as f32;
-        // The Galois and SparkVerb cores do their own predelay, width and tone.
+        // The Galois and SparkVerb engines have no early taps or gate.
         let native = matches!(n.topology, Topology::Galois | Topology::SparkVerb);
         Ok(Self {
             core,
-            tone: if native { Tone::new(1.0, 0.0, rate) } else { Tone::new(n.width, n.low_shelf_db, rate) },
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
             gate: n.gate_seconds.filter(|_| !native).map(|g| Gate::new(g, rate)),
             pos: 0,
@@ -173,16 +153,7 @@ impl Net {
     }
 
     fn clear(&mut self) {
-        match &mut self.core {
-            Core::Fdn(c) => c.clear(),
-            Core::Comb(c) => c.clear(),
-            Core::Plate(c) => c.clear(),
-            Core::Diffuser(c) => c.clear(),
-            Core::Freeverb(c) => c.clear(),
-            Core::Galois(c) => c.clear(),
-            Core::Spark(c) => c.clear(),
-        }
-        self.tone.clear();
+        self.core.clear();
         if let Some(e) = &mut self.early {
             e.clear();
         }
@@ -193,33 +164,26 @@ impl Net {
 
     /// Replace `l`/`r` with the wet signal.
     fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if self.early.is_none() && self.gate.is_none() {
+            return self.core.process(l, r);
+        }
         // The early taps and the gate read the dry input.
         let mut input = [[0f32; crate::dsp::BLOCK]; 2];
         let n = l.len().min(crate::dsp::BLOCK);
         input[0][..n].copy_from_slice(&l[..n]);
         input[1][..n].copy_from_slice(&r[..n]);
-        match &mut self.core {
-            Core::Fdn(c) => c.process(l, r),
-            Core::Comb(c) => c.process(l, r),
-            Core::Plate(c) => c.process(l, r),
-            Core::Diffuser(c) => c.process(l, r),
-            Core::Freeverb(c) => c.process(l, r),
-            Core::Galois(c) => c.process(l, r),
-            Core::Spark(c) => c.process(l, r),
-        }
+        self.core.process(l, r);
         for i in 0..n {
             let pos = self.pos;
             self.pos = pos.wrapping_add(1);
-            let (mut a, mut b) = (l[i], r[i]);
             if let Some(e) = &mut self.early {
                 let [ea, eb] = e.tick(pos, 0.5 * (input[0][i] + input[1][i]));
-                (a, b) = (a + ea, b + eb);
+                (l[i], r[i]) = (l[i] + ea, r[i] + eb);
             }
             if let Some(g) = &mut self.gate {
                 let gain = g.tick(input[0][i].abs().max(input[1][i].abs()));
-                (a, b) = (a * gain, b * gain);
+                (l[i], r[i]) = (l[i] * gain, r[i] * gain);
             }
-            [l[i], r[i]] = self.tone.tick(a, b);
         }
     }
 }
@@ -356,30 +320,46 @@ mod tests {
         ]
     }
 
-    /// CPU per instance: `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
+    /// CPU per instance against the engine each preset replaced, timed
+    /// interleaved in one process (best of several rounds):
+    /// `cargo test --release -p sampler-core cpu_per_instance -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn cpu_per_instance() {
+        use super::old;
         const RATE: u32 = 48_000;
-        let seconds = 20;
-        for (name, net) in presets() {
-            let mut s = Space::new(&Config::network(net), RATE, &[]).unwrap();
-            let mut l = vec![0f32; 64];
-            let mut r = vec![0f32; 64];
-            let mut best = f64::MAX;
-            for _ in 0..3 {
-                let t = std::time::Instant::now();
-                for b in 0..(seconds * RATE as usize / 64) {
-                    for (k, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
-                        let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 0.0 };
-                        (*a, *c) = (v, -v);
-                    }
-                    s.process([&mut l, &mut r]);
+        let frames = 10 * RATE as usize;
+        let time = |f: &mut dyn FnMut(&mut [f32], &mut [f32])| {
+            let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+            let t = std::time::Instant::now();
+            for b in 0..frames / 64 {
+                for k in 0..64 {
+                    let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 1e-3 * ((b * 64 + k) as f32 * 0.01).sin() };
+                    (l[k], r[k]) = (v, -v);
                 }
-                std::hint::black_box(&l);
-                best = best.min(t.elapsed().as_secs_f64());
+                f(&mut l, &mut r);
             }
-            println!("cpu {name:12} {:6.3} % of one core at 48 kHz ({:.1} ns/frame)", best / seconds as f64 * 100.0, best * 1e9 / (seconds as f64 * f64::from(RATE)));
+            std::hint::black_box(&l);
+            t.elapsed().as_secs_f64() * 1e9 / frames as f64
+        };
+        let only = std::env::var("SPACE_CPU").unwrap_or_default();
+        for (name, net) in presets().into_iter().filter(|(n, _)| n.contains(only.as_str())) {
+            let mut new = Net::new(&net, RATE).unwrap();
+            let mut old: Box<dyn FnMut(&mut [f32], &mut [f32])> = match net.topology {
+                Topology::Fdn => { let mut o = old::fdn::Fdn::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::CombAllpass => { let mut o = old::comb::CombAllpass::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::Diffuser => { let mut o = old::comb::Diffuser::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::Plate => { let mut o = old::plate::Plate::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::Freeverb => { let mut o = old::freeverb::Freeverb::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::Galois => { let mut o = old::galois::GaloisCore::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+                Topology::SparkVerb => { let mut o = old::sparkverb::Spark::new(&net, RATE).unwrap(); Box::new(move |l, r| o.process(l, r)) }
+            };
+            let (mut a, mut b) = (f64::MAX, f64::MAX);
+            for _ in 0..5 {
+                a = a.min(time(&mut *old));
+                b = b.min(time(&mut |l, r| new.process(l, r)));
+            }
+            println!("cpu {name:12} before {a:6.1} ns/frame  after {b:6.1} ns/frame  ({:+.0} %)", (b / a - 1.0) * 100.0);
         }
     }
 

@@ -1,17 +1,18 @@
-//! A figure-eight plate tank after Dattorro, "Effect Design Part 1: Reverberator
-//! and Other Filters" (JAES 1997): a mono input diffuser of four allpasses
-//! feeds two cross-coupled loops, each a modulated allpass, a delay, a damping
-//! lowpass, a decay gain, a second allpass and a delay. Stereo comes from
-//! taps inside the tank. Delay lengths are the paper's, at 29.761 kHz and
-//! scaled by sample rate and size; the output taps are this module's own
-//! choice among the tank's lines.
-//!
-//! Kontakt's Plate Reverb (0x57) topology is not recovered: this is a
-//! generic plate, not a model of it.
+#![allow(dead_code)]
+// A figure-eight plate tank after Dattorro, "Effect Design Part 1: Reverberator
+// and Other Filters" (JAES 1997): a mono input diffuser of four allpasses
+// feeds two cross-coupled loops, each a modulated allpass, a delay, a damping
+// lowpass, a decay gain, a second allpass and a delay. Stereo comes from
+// taps inside the tank. Delay lengths are the paper's, at 29.761 kHz and
+// scaled by sample rate and size; the output taps are this module's own
+// choice among the tank's lines.
+//
+// Kontakt's Plate Reverb (0x57) topology is not recovered: this is a
+// generic plate, not a model of it.
 
 use super::common::{Allpass, Front, Line, Lfo, one_pole};
 use crate::Error;
-use crate::dsp::kernels::biased_one_pole32;
+use super::common::biased_one_pole32;
 use sampler_ir::fx::space::Network;
 
 const PAPER_RATE: f32 = 29_761.0;
@@ -53,7 +54,7 @@ struct Branch {
     len2: usize,
 }
 
-pub(super) struct Plate {
+pub(crate) struct Plate {
     pos: usize,
     front: Front,
     input: [Allpass; 4],
@@ -67,7 +68,7 @@ pub(super) struct Plate {
 }
 
 impl Plate {
-    pub(super) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn new(s: &Network, rate: u32) -> Result<Self, Error> {
         if rate == 0 {
             return Err(Error::InvalidInput);
         }
@@ -123,7 +124,7 @@ impl Plate {
         })
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.front.clear();
         self.input.iter_mut().for_each(Allpass::clear);
         for b in &mut self.branches {
@@ -135,7 +136,7 @@ impl Plate {
         }
     }
 
-    pub(super) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+    pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let pos = self.pos;
             self.pos = pos.wrapping_add(1);
@@ -182,44 +183,3 @@ impl Plate {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sampler_ir::fx::space::Topology;
-
-    fn network(decay: f64) -> Network {
-        Network { topology: Topology::Plate, decay_seconds: decay, size: 1.0, damping_hz: 12_000.0, ..Network::DEFAULT }
-    }
-
-    #[test]
-    fn decays_at_the_requested_rate() {
-        for target in [1.0, 3.0] {
-            let mut p = Plate::new(&network(target), 48_000).unwrap();
-            let mut l = vec![0.0; 10 * 48_000];
-            let mut r = l.clone();
-            l[0] = 1.0;
-            r[0] = 1.0;
-            for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-                p.process(l, r);
-            }
-            assert!(l.iter().chain(&r).all(|v| v.is_finite()));
-            let got = super::super::common::rt60(&l, 48_000.0);
-            assert!((got / target as f32 - 1.0).abs() < 0.4, "target {target} got {got}");
-        }
-    }
-
-    #[test]
-    fn channels_differ_and_long_decay_is_stable() {
-        let mut p = Plate::new(&network(60.0), 44_100).unwrap();
-        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
-        l[0] = 1.0;
-        for _ in 0..300 {
-            for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-                p.process(l, r);
-            }
-            assert!(l.iter().chain(&r).all(|v| v.is_finite() && v.abs() < 10.0));
-            l.fill(0.0);
-            r.fill(0.0);
-        }
-    }
-}
