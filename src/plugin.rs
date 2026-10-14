@@ -9,6 +9,7 @@
 
 mod automation;
 mod host_probe;
+mod held_keys;
 pub(crate) mod ui_activity;
 use ui_activity::Count as UiCount;
 pub(crate) use host_probe::export_multi_state;
@@ -942,7 +943,6 @@ pub struct Shared {
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
-    pub(crate) engine_keys: AtomicBool,
     pub(crate) learn_target: AtomicU32,
     pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
@@ -1012,6 +1012,7 @@ pub struct Shared {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    pub(crate) resource_path: Option<PathBuf>,
     pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
@@ -1124,7 +1125,6 @@ impl Default for Shared {
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
-            engine_keys: AtomicBool::new(false),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -2540,6 +2540,7 @@ fn load_part_with(
             v.report = Some(Arc::new(loaded.report));
             v.generation = generation;
             v.interfaces = loaded.interfaces.into();
+            v.resource_path = loaded.scripts.resource_path.clone();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
                 v.effects =
@@ -2860,30 +2861,23 @@ fn feed_typed_input(
     }
     relay_typed_input(e, cx, thru);
     let shared = &p.shared;
-    let lit = |note: u8, velocity: u8| {
-        shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed)
-    };
+    s.held_keys.typed(e);
+    s.held_keys.publish(shared);
     match e.body {
         EventBody::NoteOn {
             channel,
             note,
-            velocity,
             ..
         } => {
             shared.record_learn(e.port, channel, note);
-            lit(note, velocity.max(1));
         }
         EventBody::NoteOn2 {
             channel,
             note,
-            velocity,
             ..
         } => {
             shared.record_learn(e.port, channel, note);
-            lit(note, ((velocity >> 9) as u8).max(1));
         }
-        EventBody::NoteOff { note, .. } | EventBody::NoteOff2 { note, .. } => lit(note, 0),
-        EventBody::ControlChange { cc: 120 | 123, .. } => (0..128).for_each(|note| lit(note, 0)),
         EventBody::ControlChange { cc: 1, value, .. } => {
             shared.modulation.store(u32::from(value), Ordering::Relaxed)
         }
@@ -2910,22 +2904,14 @@ fn feed_exact_input(
     offset: u32,
     cx: &mut ProcessContext,
 ) {
-    let heard = &p.shared.heard;
+    s.held_keys.exact(event);
+    s.held_keys.publish(&p.shared);
     s.core.event(port, event);
     match event {
-        CoreEvent::NoteOn { note, velocity, .. } => {
+        CoreEvent::NoteOn { note, .. } => {
             p.shared.record_learn(port, note.channel, note.key);
-            heard[usize::from(note.key)]
-                .store(((velocity * 127.).round() as u8).max(1), Ordering::Relaxed);
             if note.clap && !s.core.owns(note) && !end_host_note(cx, note, offset) {
                 s.end_rejections += 1;
-            }
-        }
-        CoreEvent::NoteOff(pattern) | CoreEvent::NoteOffVelocity(pattern, _) | CoreEvent::Choke(pattern) => {
-            for key in (0..128u8).filter(|key| pattern.key == -1 || pattern.key == i32::from(*key))
-            {
-                let held = (0..16).any(|channel| s.core.key_held(channel, key));
-                heard[usize::from(key)].store(u8::from(held), Ordering::Relaxed);
             }
         }
         _ => {}
@@ -2955,6 +2941,8 @@ fn end_host_note(cx: &mut ProcessContext, note: HostNote, offset: u32) -> bool {
 
 pub struct Dsp {
     core: V2Core,
+    /// Physical host presses, independent of scripts, sustain and voice lifetime.
+    held_keys: held_keys::HeldKeys,
     /// The mix last applied, re-applied to each installed part.
     mix: Mix,
     until_poll: usize,
@@ -2972,6 +2960,7 @@ impl Default for Dsp {
     fn default() -> Self {
         Self {
             core: V2Core::default(),
+            held_keys: held_keys::HeldKeys::default(),
             mix: Mix::default(),
             until_poll: 0,
             audition: vec![(0, 0); RACK_SLOTS],
@@ -3047,9 +3036,9 @@ impl PluginLogic for Sampler {
         s.audition.fill((0, 0));
         s.playing = false;
         p.shared.reset_midi();
+        s.held_keys.clear();
         p.shared.voices.store(0, Ordering::Relaxed);
         p.shared.audible.store(0, Ordering::Relaxed);
-        p.shared.engine_keys.store(false, Ordering::Release);
     }
 
     fn process(
@@ -3152,10 +3141,12 @@ impl PluginLogic for Sampler {
         s.playing = cx.transport.playing;
         if shared.panic.swap(false, Ordering::AcqRel) {
             shared.reset_midi();
+            s.held_keys.clear();
             s.core.panic();
             s.audition.fill((0, 0));
         } else if stopped {
             shared.reset_midi();
+            s.held_keys.clear();
             s.core.release_all_notes();
             s.audition.fill((0, 0));
         }
@@ -3335,12 +3326,6 @@ impl PluginLogic for Sampler {
             .core
             .end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
-        let mut keys = [0; 128];
-        let loaded = s.core.pressed_keys(&mut keys);
-        for (cell, value) in shared.heard.iter().zip(keys) {
-            cell.store(value, Ordering::Relaxed);
-        }
-        shared.engine_keys.store(loaded, Ordering::Release);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {

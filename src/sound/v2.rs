@@ -3269,6 +3269,7 @@ fn kontakt(
         scripts: ScriptUi {
             views: loaded.scripts,
             resources: loaded.resources,
+            resource_path: Some(path.clone()),
             ..Default::default()
         },
         stream: Some(Arc::new(Stream {

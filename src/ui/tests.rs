@@ -389,10 +389,10 @@ fn selected_slot(p: &SamplerParams) -> usize {
     p.shared.selected.load(Ordering::Relaxed) as usize
 }
 
-/// Every header is the one compact line, open or folded, narrow or wide:
+/// Every header has compact name/actions and routing/mix rows at every width:
 /// the name shrinks before anything leaves the rack.
 #[test]
-fn a_header_is_one_line_at_any_width() {
+fn a_header_has_two_compact_rows_at_any_width() {
     for width in [900., 1180., 1920.] {
         let p = Arc::new(SamplerParams::new());
         p.selection.write().unwrap().parts.push(Part {
@@ -435,8 +435,8 @@ fn a_header_is_one_line_at_any_width() {
             "the title remains meaningful at {width}: {name:?}, {header:?}"
         );
         assert!(
-            port.y < name.y + name.size.height && name.y < port.y + port.size.height,
-            "at {width}"
+            port.y >= name.y + name.size.height - 0.5,
+            "routing belongs below the readable name at {width}: {port:?}, {name:?}"
         );
         for id in [
             "name-0",

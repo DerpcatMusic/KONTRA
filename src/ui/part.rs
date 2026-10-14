@@ -277,7 +277,7 @@ impl Face {
     }
 }
 
-fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> bool {
+pub(super) fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> bool {
     patch.and_then(|p| p.performance).unwrap_or(face.performance)
         || patch.and_then(|p| p.native_ui.as_ref()).unwrap_or(&face.native_ui).is_some()
         || patch.and_then(|p| p.widget_count).unwrap_or(face.widgets.len()) > 0
@@ -369,8 +369,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let projection = activity.span(Phase::UiProjectionSync);
     let from = cx.view.parts.get(slot)?.interfaces.clone();
     let main = main_face(&from, &cx.view.parts[slot].updates)?;
-    let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
     let published = &cx.view.parts[slot];
+    let path = published.resource_path.clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(&cx.selection.parts[slot].path));
     let generation = published.generation;
     let mode = mode(cx, slot);
     let presentation = if mode == crate::library::ViewMode::Original {
@@ -995,7 +996,7 @@ pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Optio
             .gap(SPACE * 2.)
             .line_gap(TIGHT)
             .align(Align::Center)
-            .pad((INSET, TIGHT))
+            .pad((INSET, 2.))
             .w(Len::Pct(100.))
             .shrink(0)
             .id(format!("header2-{slot}"))
@@ -1344,6 +1345,7 @@ mod tests {
             path:dir.path().join("fixture.nki").to_string_lossy().into_owned(), view:1, ..Default::default()
         }];
         let mut raw = projection_fixture(0);
+        raw.widgets.clear();
         raw.native_ui = Some(ir::NativeUi {entry:"main".into()});
         p.shared.view.lock().unwrap().parts[0].interfaces = vec![raw].into();
         let mut h = super::super::tests::Harness::new(&p,1180.,780.);
