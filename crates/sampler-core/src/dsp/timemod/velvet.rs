@@ -68,6 +68,28 @@ pub(super) fn design(v: &UviVelvetDelay, ch: u32, rate: f64, tempo: f64) -> (Vec
     (taps, total as usize)
 }
 
+/// One frame of the nested-allpass network `0x14165af50` on `ring` (frame
+/// `w`, column `ch`), crossfading at `t` from the previous set: `Some(T')`
+/// the same taps at total `T'`, `None` the prepare set (no taps, `T' = 1`).
+/// `t = 1` is the settled set.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn nested(ring: &mut [[f64; 2]], ch: usize, w: usize, mut x: f32, taps: &[(usize, f64)], total: usize, t: f32, old: Option<usize>) -> f32 {
+    let n = ring.len();
+    let at = |pos: usize| (w + n - pos) % n;
+    let (td, ud) = (f64::from(t), f64::from(1.0 - t));
+    for &(pos, g) in taps {
+        let g = td * g + ud * if old.is_some() { g } else { 0.0 };
+        let i = at(pos);
+        let z = ring[i][ch];
+        let y = f64::from(x) - g * z;
+        ring[i][ch] = f64::from((y * g + z) as f32);
+        x = y as f32;
+    }
+    let y = (1.0 - t) * ring[at(old.unwrap_or(1))][ch] as f32 + t * ring[at(total)][ch] as f32;
+    ring[w][ch] = f64::from(x);
+    y
+}
+
 impl TimeMod {
     pub(super) fn uvi_velvet_delay(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, v: UviVelvetDelay) -> bool {
         let n = ring(self.rate);
@@ -83,21 +105,9 @@ impl TimeMod {
         let mut finite = true;
         for f in 0..len {
             let t = k as f32 / fade as f32;
-            let (td, ud) = (f64::from(t), f64::from(1.0 - t));
             for (ch, (taps, total)) in sets.iter().enumerate() {
-                let at = |pos: usize| (w + n - pos) % n;
                 let dry = block[ch][f];
-                let mut x = dry as f32;
-                for &(pos, g) in taps {
-                    let g = td * g + ud * if first { 0.0 } else { g };
-                    let i = at(pos);
-                    let z = slab[i][ch];
-                    let y = f64::from(x) - g * z;
-                    slab[i][ch] = f64::from((y * g + z) as f32);
-                    x = y as f32;
-                }
-                let y = (1.0 - t) * slab[at(if first { 1 } else { *total })][ch] as f32 + t * slab[at(*total)][ch] as f32;
-                slab[w][ch] = f64::from(x);
+                let y = nested(&mut slab[..n], ch, w, dry as f32, taps, *total, t, (!first).then_some(*total));
                 block[ch][f] = f64::from(y) * self.cfg.wet + self.cfg.dry * dry;
                 finite &= y.is_finite();
             }

@@ -11,10 +11,13 @@
 //!   low-cut one-poles `exp(-2π·f/rate)` (`0x141641310`/`0x141641420`), into
 //!   the ring; output `Mout·delayed`. `W(w) = [[1+w, 1-w], [1-w, 1+w]]/2`,
 //!   `Min = R(in_rot·π/4)·W(in_w)`, `Mout = W(out_w)·R(out_rot·π/4)`.
+//! DualDelayX adds the loop stages of `dual_x.rs` (gain after the chain, ±4
+//! clamp, reflected rotation `0x14165df70`, latency compensation).
 //! The peaking filter and the delay smoother's glide after a time change are
 //! not reproduced (the mapper reports a set PeakGain).
 
-use super::{Planar, ProcessorState, TimeMod, flush, read};
+use super::dual_x::Stages;
+use super::{GUARD, Planar, ProcessorState, TimeMod, flush, read};
 use sampler_ir::fx::timemod::{DualDelay, Interpolation};
 use std::f64::consts::PI;
 
@@ -44,7 +47,7 @@ fn apply(m: [[f64; 2]; 2], v: [f64; 2]) -> [f64; 2] {
 impl TimeMod {
     pub(super) fn dual_delay(&self, state: &mut ProcessorState, slab: &mut [[f64; 2]], block: &mut Planar, len: usize, tempo: f64, d: DualDelay) -> bool {
         let rate = self.rate;
-        let cap = self.cap;
+        let cap = ring(rate) + GUARD;
         let kind = self.cfg.line.map_or(Interpolation::Linear, |l| l.interpolation);
         let nmax = ((rate * 0.0005 - 2.).floor() as usize).max(1);
         let n_block = nmax.min(64);
@@ -53,10 +56,27 @@ impl TimeMod {
         let seconds = if d.synced { f32::from_bits(0x426f_ffff) / tempo as f32 * d.time } else { d.time }.min(5.);
         let full = f64::from(seconds * rate as f32);
         let r = f64::from(d.delay_ratio);
-        let base = if r <= 0. { [(1. + r) * full, full] } else { [full, (1. - r) * full] }.map(|v| v.max(nmax as f64 + 1.).min((cap - 8) as f64));
+        let mut base = if r <= 0. { [(1. + r) * full, full] } else { [full, (1. - r) * full] };
+        if let Some(x) = d.x {
+            // Latency compensation (on by default).
+            if let Some((_, spread)) = x.diffusion {
+                base = base.map(|v| (v - f64::from(spread) * 0.001 * rate).max(nmax as f64));
+            }
+            if x.dispersion.is_some() {
+                base = base.map(|v| (v - 64.).max(nmax as f64));
+            }
+        }
+        let base = base.map(|v| v.max(nmax as f64 + 1.).min((cap - 8) as f64));
+        let stages = d.x.map(|x| Stages::new(&x, rate));
+        let (ring_part, extra) = slab.split_at_mut(cap);
+        let slab = ring_part;
         let (f, q) = (f64::from(d.feedback), f64::from(d.feedback_ratio));
         let gain = if q <= 0. { [(1. + q) * f, f] } else { [f, (1. - q) * f] };
-        let loop_m = rotation(f64::from(d.rotation) * f64::from(f32::from_bits(0x3c8e_fa35)));
+        let mut loop_m = rotation(f64::from(d.rotation) * f64::from(f32::from_bits(0x3c8e_fa35)));
+        if d.x.is_some_and(|x| x.reflection) {
+            // 0x14165df70: the rotation's rows swapped.
+            loop_m.swap(0, 1);
+        }
         let input = mul(rotation(f64::from(d.input[1]) * PI / 4.), width(f64::from(d.input[0])));
         let output = mul(width(f64::from(d.output[0])), rotation(f64::from(d.output[1]) * PI / 4.));
         let hc = (-2. * PI * f64::from(d.high_cut_hz) / rate).exp();
@@ -93,16 +113,32 @@ impl TimeMod {
             for k in start..start + n {
                 let x = [left[k], right[k]];
                 let i = (k - start) as f64;
-                let delayed: [f64; 2] = std::array::from_fn(|c| read(slab, cap, w, usize::MAX, glide[c].0 + i * glide[c].1, kind, c));
+                let mut delayed: [f64; 2] = std::array::from_fn(|c| read(slab, cap, w, usize::MAX, glide[c].0 + i * glide[c].1, kind, c));
+                if let Some(st) = &stages {
+                    for c in 0..2 {
+                        delayed[c] = f64::from(st.deemphasis(extra, c, delayed[c] as f32));
+                    }
+                }
                 let fb = apply(loop_m, delayed);
-                let inp = apply(input, x);
-                let mut v = [(fb[0] + inp[0]) * gain[0], (fb[1] + inp[1]) * gain[1]];
+                let drive = stages.as_ref().map_or(1., |st| f64::from(st.drive));
+                let inp = apply(input, x.map(|v| v * drive));
+                let mut v = if stages.is_some() { [fb[0] + inp[0], fb[1] + inp[1]] } else { [(fb[0] + inp[0]) * gain[0], (fb[1] + inp[1]) * gain[1]] };
+                if let Some(st) = &stages {
+                    for c in 0..2 {
+                        v[c] = f64::from(st.crush(extra, c, v[c] as f32));
+                    }
+                }
                 if d.filters {
                     for c in 0..2 {
                         state.aux[4 + c] += (v[c] - state.aux[4 + c]) * (1. - hc);
                         v[c] = state.aux[4 + c];
                         state.aux[8 + c] += (v[c] - state.aux[8 + c]) * (1. - lc);
                         v[c] -= state.aux[8 + c];
+                    }
+                }
+                if let Some(st) = &stages {
+                    for c in 0..2 {
+                        v[c] = f64::from(st.tail(extra, c, v[c] as f32).clamp(-4., 4.)) * gain[c];
                     }
                 }
                 slab[w] = v.map(flush);
@@ -146,6 +182,7 @@ mod tests {
         mod_cents: 0.,
         mod_hz: 1.,
         mod_offset: 1.,
+        x: None,
     };
 
     /// Feedback scales the input too: the first echo is `f·x` and at
