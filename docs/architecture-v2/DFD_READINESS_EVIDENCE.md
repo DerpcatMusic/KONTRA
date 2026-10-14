@@ -100,6 +100,49 @@ from source errors. Reads check cancellation between source-page chunks.
 An in-flight cold reload superseded by KSP purge discards its prepared head and
 preserves the original no-publication contract.
 
+The explicit 128 MiB eager experiment subsequently prepared every one of those
+15,008 assets and 17,059 ranges, with **86,342,178 B** of packed attack payloads
+(82.34 MiB). Its 14,499,834,880 B full sample set remained streamed, with a
+separate 96 MiB page pool. This was an explicit production Kontakt-loader policy
+override in `examples/dfd_eager.rs`; default V2 Auto was unchanged.
+The initial sequential preparation took 16.817 s (17.375 s total load), read
+432,115,712 physical bytes, and reached 201,440 KiB process high-water RSS.
+The verified source volume is NVMe/ntfs3; these timings describe the complete
+filesystem/codec/packing path, not an assumed mechanical disk. OS caches were
+uncontrolled, so subsequent warm-process timings cannot be compared as a clean
+cold-storage speedup.
+
+That receipt's zero read-latency estimate came from a separate bug: persistent
+numeric header hits skipped the bounded physical latency probes. Cached headers
+now still probe up to the configured number of sources, validate their numeric
+metadata, and measure open plus first-page reads. `latency_samples == 0` explicitly
+means unmeasured. A header cache hit is no longer presented as a known zero-latency
+disk.
+
+Startup head preparation now uses a worker count clamped to 1–8 (shared with
+the tail-decoder policy), a bounded result channel, and exact atomic packed-byte
+admission. Source reads/packing finish before the complete initial batch is
+published. Any source error, budget failure or cancellation discards that batch.
+Reader initialization, combined seek/read/decode, validation/packing, startup
+batch wait and publication have separate optional probes. All-job histograms
+continue beyond the first 64 detailed jobs per worker. Reader initialization
+includes its encoded header/buffer reads; it is not presented as pure OS-open
+latency. The then-current prepare-before-admit path can transiently hold one
+unadmitted prepared buffer per worker; it is not a total-RSS cap. The subsequent
+generation-budget/preallocation work must close that ownership gap.
+
+The first same-binary one/four-worker stage pair is **contended and unsuitable
+for a speedup claim**. An external DSP test was observed at roughly six CPU
+cores, the first process incurred about 444 MB physical reads and the next only
+40 kB, and measured latency changed the head geometry. Both runs covered all
+15,008 assets. The first measured 912 output head frames, 123,336,036 packed
+bytes and 22.603 s preparation; the second measured 618 frames, 87,473,304 packed
+bytes and 212 ms. The first worker's summed initialization/read-decode/pack
+times were 16.627 s / 5.587 s / 261 ms; the four workers' sums were 312 / 177 /
+146 ms. These sums identify where work occurred and preserve cache/adaptation
+differences; dividing the wall times would misattribute those differences to
+parallelism. A clean repeated comparison with equal geometry remains needed.
+
 ## Worker ownership and source changes
 
 Completion queue backpressure now retries only publication. The worker retains
@@ -139,6 +182,12 @@ short source, cancellation before/during reads and the unchanged in-flight KSP
 purge fixture. After sharing source identity, Kontakt stream tests passed 21
 (one ignored), file-identity tests 2/2, and UVI stream tests 4/4. Core packed-publication tests passed 2/2. The optimized production
 readiness example compiled before the subsequent budget change.
+Parallel preparation then passed the complete stream suite (23 tests, one
+ignored), including independently generated distinct-asset PCM in both playback
+directions and 1/4/32 requested-worker limits. Zero/exact/over-cap admission was
+also rerun with both one and four requested workers; failure publishes no asset
+from the staged batch. The actual 40,000-frame dynamic streamed-source fixture
+passed after shared admission authority was finalized.
 
 Numeric receipts are retained privately under
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-asset-audit-20261014/dfd-auto`.

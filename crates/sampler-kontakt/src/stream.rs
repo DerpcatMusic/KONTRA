@@ -22,6 +22,8 @@ use std::{
 };
 
 type Frame = [f32; 2];
+#[path = "head_prepare.rs"]
+mod head_prepare;
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
@@ -339,6 +341,8 @@ pub struct StreamReport {
     pub latency_p50: Duration,
     pub latency_p95: Duration,
     pub latency_p99: Duration,
+    /// Zero means the latency is unmeasured, not a zero-latency disk.
+    pub latency_samples: usize,
     /// Output frames each start keeps resident (times its zone's step in
     /// source frames): the measured latency budget.
     pub head_frames: usize,
@@ -400,7 +404,7 @@ pub struct StreamPolicy {
     pub block_frames: usize,
     /// Voices that can stream at once; each needs a few pool pages.
     pub voices: usize,
-    /// Decode threads.
+    /// Decode/preload threads, clamped to 1..=8.
     pub decoders: usize,
     /// Maximum resident start-range bytes; cold starts load only on demand.
     pub head_budget: usize,
@@ -561,7 +565,7 @@ pub(crate) struct Opened {
 
 /// Read `ranges` of `pcm` from `reader` and make them resident; their bytes.
 fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) -> io::Result<usize> {
-    let prepared = match prepare_head_ranges(pcm, reader, ranges, &|| false) {
+    let prepared = match prepare_head_ranges(pcm, reader, ranges, &|| false, None) {
         Ok(prepared) => prepared,
         // A concurrent KSP purge can remove the final residency owner while
         // this worker reads. That transaction is obsolete, not a source fault.
@@ -645,6 +649,7 @@ fn prepare_head_ranges(
     reader: &mut SampleReader,
     ranges: &[Range<usize>],
     canceled: &(dyn Fn() -> bool + Sync),
+    mut timing: Option<&mut head_prepare::Timing>,
 ) -> io::Result<sampler_core::PreparedRanges> {
     range_bounds(pcm, ranges)?;
     if reader.rate() != pcm.sample_rate() || reader.frames() != pcm.frame_count() {
@@ -663,15 +668,28 @@ fn prepare_head_ranges(
             if canceled() {
                 return Err(canceled_head());
             }
-            reader.read(range.start + page * PAGE_FRAMES, out)?;
+            let read_start = timing.as_ref().map(|_| Instant::now());
+            let result = reader.read(range.start + page * PAGE_FRAMES, out);
+            if let Some(timing) = &mut timing {
+                timing.read_decode_us = timing
+                    .read_decode_us
+                    .saturating_add(read_start.unwrap().elapsed().as_micros() as u64);
+            }
+            result?;
         }
         resident.push((range.start, frames.into_boxed_slice()));
     }
     if canceled() {
         return Err(canceled_head());
     }
-    pcm.prepare_ranges(resident)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let pack_start = timing.as_ref().map(|_| Instant::now());
+    let result = pcm
+        .prepare_ranges(resident)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+    if let Some(timing) = &mut timing {
+        timing.validate_pack_us = pack_start.unwrap().elapsed().as_micros() as u64;
+    }
+    result
 }
 
 /// A bounded registry for sources published after initial plan compilation.
@@ -821,7 +839,7 @@ impl Streamer {
                                     if canceled() {
                                         return Err(LoadError::Canceled);
                                     }
-                                    if let Some((rate, frames)) = source.header() {
+                                    if let Some((rate, frames)) = source.header().filter(|_|i>=probe) {
                                         let pcm = Pcm::streamed(rate, frames).map_err(|e| {
                                             LoadError::Invalid {
                                                 path: (*path).into(),
@@ -833,6 +851,9 @@ impl Streamer {
                                     let begin = Instant::now();
                                     let mut reader =
                                         source.open().map_err(|e| LoadError::io(path, e))?;
+                                    if source.header().is_some_and(|h|h!=(reader.rate(),reader.frames())) {
+                                        return Err(LoadError::Invalid {path:(*path).into(),reason:"cached sample header disagrees with admitted source".into()});
+                                    }
                                     let latency = if i < probe {
                                         let n = reader.frames().min(PAGE_FRAMES);
                                         reader
@@ -899,6 +920,7 @@ impl Streamer {
             latency_p50: at(50),
             latency_p95: at(95),
             latency_p99: at(99),
+            latency_samples: latencies.len(),
             head_frames: head,
             head_bytes: 0,
             head_assets: 0,
@@ -956,6 +978,7 @@ impl Streamer {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
+        let decoders = decoders.clamp(1, 8);
         if assets.len() != ranges.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -988,7 +1011,7 @@ impl Streamer {
                 minimum = minimum
                     .checked_add(min)
                     .ok_or_else(|| io::Error::other("sample head size overflow"))?;
-                selected.push((pcm, ranges));
+                selected.push((pcm, ranges.as_slice()));
             } else {
                 base_bytes = base_bytes
                     .checked_add(pcm.head_bytes())
@@ -1001,32 +1024,25 @@ impl Streamer {
         if min_total > head_budget {
             return Err(head_budget_error(head_budget, min_total));
         }
-        let mut bytes = base_bytes;
-        let mut staged = Vec::with_capacity(selected.len());
-        for (pcm, ranges) in selected {
-            if canceled() {
-                return Err(canceled_head());
-            }
-            let source = sources.get(&pcm.asset_id()).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "missing sample head source")
-            })?;
-            let prepared = prepare_head_ranges(pcm, &mut source.open()?, ranges, canceled)?;
-            bytes = bytes
-                .checked_add(prepared.bytes())
-                .ok_or_else(|| io::Error::other("resident head size overflow"))?;
-            if bytes > head_budget {
-                return Err(head_budget_error(head_budget, bytes));
-            }
-            staged.push((pcm, prepared));
-        }
+        let (staged, bytes) = head_prepare::prepare(
+            &selected,
+            &sources,
+            head_budget,
+            base_bytes,
+            decoders,
+            canceled,
+        )?;
         if canceled() {
             return Err(canceled_head());
         }
         // No source I/O or packing remains. Only this private initial plan is
         // published after exact lossless capacity admission of every head.
-        for (pcm, prepared) in staged {
-            pcm.publish_ranges(prepared)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        {
+            let _publication = crate::audit::Span::new("sample_head_publication");
+            for ((pcm, _), prepared) in selected.into_iter().zip(staged) {
+                pcm.publish_ranges(prepared)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            }
         }
         // Each asset keeps source metadata, never a backup of sample buffers.
         // Explicit KSP reload returns staging ranges to the core's residency worker.
@@ -1688,6 +1704,175 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn cached_numeric_headers_keep_bounded_real_latency_probes() {
+        struct Cached(Arc<AtomicU64>);
+        impl AssetSource for Cached {
+            fn header(&self) -> Option<(u32, usize)> {
+                Some((48000, 64))
+            }
+            fn open(&self) -> io::Result<SampleReader> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(SampleReader::custom(48000, 64, |_, out| {
+                    std::thread::sleep(Duration::from_millis(1));
+                    out.fill([0.5; 2]);
+                    Ok(())
+                }))
+            }
+        }
+        let opens = Arc::new(AtomicU64::new(0));
+        let sources = (0..8)
+            .map(|_| {
+                (
+                    Arc::new(Cached(opens.clone())) as Arc<dyn AssetSource>,
+                    std::path::Path::new("cached-numeric"),
+                )
+            })
+            .collect();
+        let opened = Streamer::open(
+            sources,
+            48000,
+            &StreamPolicy::default(),
+            3,
+            &|| false,
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(opens.load(Ordering::Relaxed), 3);
+        assert_eq!(opened.report.latency_samples, 3);
+        assert!(opened.report.latency_p95 >= Duration::from_millis(1));
+        assert_eq!(opened.assets.len(), 8);
+    }
+
+    #[test]
+    fn parallel_head_preparation_is_bounded_and_preserves_every_authored_asset_and_direction() {
+        struct Numeric {
+            base: f32,
+            active: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+        }
+        impl AssetSource for Numeric {
+            fn open(&self) -> io::Result<SampleReader> {
+                let n = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(n, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(2));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                let base = self.base;
+                Ok(SampleReader::custom(48000, 128, move |start, out| {
+                    for (i, f) in out.iter_mut().enumerate() {
+                        let v = base + (start + i) as f32 / 65536.;
+                        *f = [v, -v];
+                    }
+                    Ok(())
+                }))
+            }
+        }
+        for requested in [1, 4, 32] {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let assets: Vec<_> = (0..16)
+                .map(|_| Pcm::streamed(48000, 128).unwrap())
+                .collect();
+            let sources = assets
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    (
+                        p.asset_id(),
+                        Arc::new(Numeric {
+                            base: i as f32 / 32.,
+                            active: active.clone(),
+                            peak: peak.clone(),
+                        }) as Arc<dyn AssetSource>,
+                    )
+                })
+                .collect();
+            let (_, worker) = StreamCache::new(1).unwrap();
+            let (streamer, _) = Streamer::start(
+                sources,
+                &assets,
+                vec![vec![8..56]; 16],
+                worker,
+                requested,
+                false,
+                16 * 48 * 8,
+                HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(streamer.threads.len(), requested.clamp(1, 8));
+            assert!(peak.load(Ordering::SeqCst) <= requested.clamp(1, 8));
+            if requested > 1 {
+                assert!(peak.load(Ordering::SeqCst) > 1);
+            }
+            assert!(streamer.head_readiness(&assets).complete());
+            for (i, pcm) in assets.iter().enumerate() {
+                let golden = Pcm::new(
+                    48000,
+                    (0..128)
+                        .map(|frame| {
+                            let v = i as f32 / 32. + frame as f32 / 65536.;
+                            [v, -v]
+                        })
+                        .collect(),
+                )
+                .unwrap();
+                let render = |pcm: Pcm| {
+                    let plan = sampler_core::Prepared::new(
+                        48000,
+                        vec![pcm],
+                        vec![sampler_core::Region {
+                            sample: 0,
+                            key_low: 60,
+                            key_high: 60,
+                            root_key: None,
+                            velocity_low: 0.,
+                            velocity_high: 1.,
+                            gain: 1.,
+                            envelope: Default::default(),
+                            playback: sampler_core::Playback {
+                                start: 16,
+                                end: Some(48),
+                                direction: if i % 2 == 1 {
+                                    sampler_core::Direction::Reverse
+                                } else {
+                                    sampler_core::Direction::Forward
+                                },
+                                ..Default::default()
+                            },
+                        }],
+                        1,
+                    )
+                    .unwrap();
+                    let limits = sampler_core::Limits::for_plan(&plan, 2, 1);
+                    let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+                    runtime
+                        .note_on(
+                            sampler_core::Input {
+                                protocol: sampler_core::Protocol::Native,
+                                port: 0,
+                                group: 0,
+                                channel: 0,
+                                key: 60,
+                                external_id: None,
+                            },
+                            60,
+                            1.,
+                        )
+                        .unwrap();
+                    let mut frames = [[0.; 2]; 64];
+                    runtime.render(&mut frames).unwrap();
+                    frames.map(|f| f.map(f32::to_bits))
+                };
+                assert_eq!(
+                    render(pcm.clone()),
+                    render(golden),
+                    "requested={requested} asset={i}"
+                );
+            }
+        }
+    }
 
     fn identity_wav() -> Vec<u8> {
         let data_bytes = 50000u32 * 4;
@@ -1797,60 +1982,62 @@ mod tests {
 
     #[test]
     fn eager_heads_enforce_exact_lossless_budget_without_partial_publication() {
-        for (wide, budget, ok, opens_expected) in [
-            (false, 0, false, 0),
-            (false, 63, false, 0),
-            (false, 64, true, 2),
-            (true, 255, false, 2),
-            (true, 256, true, 2),
-        ] {
-            let assets: Vec<_> = (0..2).map(|_| Pcm::streamed(48000, 64).unwrap()).collect();
-            let opens = Arc::new(AtomicU64::new(0));
-            let sources = assets
-                .iter()
-                .map(|p| {
-                    (
-                        p.asset_id(),
-                        Arc::new(HeadFixture {
-                            opens: opens.clone(),
-                            cancel: None,
-                            frames: 64,
-                            wide,
-                        }) as Arc<dyn AssetSource>,
-                    )
-                })
-                .collect();
-            let (_, worker) = StreamCache::new(1).unwrap();
-            let result = Streamer::start(
-                sources,
-                &assets,
-                vec![vec![8..16, 48..56]; 2],
-                worker,
-                1,
-                false,
-                budget,
-                HashSet::new(),
-            );
-            assert_eq!(result.is_ok(), ok, "wide={wide} budget={budget}");
-            assert_eq!(opens.load(Ordering::Relaxed), opens_expected);
-            if ok {
-                let (streamer, bytes) = result.unwrap();
-                assert_eq!(bytes, if wide { 256 } else { 64 });
-                assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), bytes);
-                assert!(streamer.head_readiness(&assets).complete());
-            } else {
-                let error = result.err().unwrap();
-                let budget_error = error
-                    .get_ref()
-                    .unwrap()
-                    .downcast_ref::<HeadBudgetExceeded>()
-                    .unwrap();
-                assert_eq!(budget_error.budget_bytes, budget);
-                assert!(budget_error.required_at_least_bytes > budget);
-                assert!(
-                    assets.iter().all(|p| p.head_bytes() == 0),
-                    "failure cannot publish an earlier staged asset"
+        for decoders in [1, 4] {
+            for (wide, budget, ok, opens_expected) in [
+                (false, 0, false, 0),
+                (false, 63, false, 0),
+                (false, 64, true, 2),
+                (true, 255, false, 2),
+                (true, 256, true, 2),
+            ] {
+                let assets: Vec<_> = (0..2).map(|_| Pcm::streamed(48000, 64).unwrap()).collect();
+                let opens = Arc::new(AtomicU64::new(0));
+                let sources = assets
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.asset_id(),
+                            Arc::new(HeadFixture {
+                                opens: opens.clone(),
+                                cancel: None,
+                                frames: 64,
+                                wide,
+                            }) as Arc<dyn AssetSource>,
+                        )
+                    })
+                    .collect();
+                let (_, worker) = StreamCache::new(1).unwrap();
+                let result = Streamer::start(
+                    sources,
+                    &assets,
+                    vec![vec![8..16, 48..56]; 2],
+                    worker,
+                    decoders,
+                    false,
+                    budget,
+                    HashSet::new(),
                 );
+                assert_eq!(result.is_ok(), ok, "wide={wide} budget={budget}");
+                assert_eq!(opens.load(Ordering::Relaxed), opens_expected);
+                if ok {
+                    let (streamer, bytes) = result.unwrap();
+                    assert_eq!(bytes, if wide { 256 } else { 64 });
+                    assert_eq!(assets.iter().map(Pcm::head_bytes).sum::<usize>(), bytes);
+                    assert!(streamer.head_readiness(&assets).complete());
+                } else {
+                    let error = result.err().unwrap();
+                    let budget_error = error
+                        .get_ref()
+                        .unwrap()
+                        .downcast_ref::<HeadBudgetExceeded>()
+                        .unwrap();
+                    assert_eq!(budget_error.budget_bytes, budget);
+                    assert!(budget_error.required_at_least_bytes > budget);
+                    assert!(
+                        assets.iter().all(|p| p.head_bytes() == 0),
+                        "failure cannot publish an earlier staged asset"
+                    );
+                }
             }
         }
     }
