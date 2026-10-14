@@ -11,6 +11,9 @@ pub fn layer(domain: &[u8; 4], id: u32, properties: &[u8], inner: &[u8]) -> Vec<
     out
 }
 pub fn item(layers: &[u8], children: &[Vec<u8>]) -> Vec<u8> {
+    item_with_trailing(layers, children, &[0xfe, 0xed])
+}
+pub fn item_with_trailing(layers: &[u8], children: &[Vec<u8>], trailing: &[u8]) -> Vec<u8> {
     let mut out = vec![0; 8];
     out.extend(1u32.to_le_bytes());
     out.extend(b"hsin");
@@ -24,7 +27,7 @@ pub fn item(layers: &[u8], children: &[Vec<u8>]) -> Vec<u8> {
         out.extend([0xaa; 12]); // Deliberately opaque/noncanonical descriptors.
         out.extend(child);
     }
-    out.extend([0xfe, 0xed]);
+    out.extend(trailing);
     let length = out.len() as u64;
     out[..8].copy_from_slice(&length.to_le_bytes());
     out
