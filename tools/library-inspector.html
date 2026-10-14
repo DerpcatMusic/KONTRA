@@ -36,6 +36,10 @@
     border-radius: 1px;
     padding: 7px 10px;
   }
+  select {
+    min-width: 0;
+    max-width: 100%;
+  }
   button {
     cursor: pointer;
   }
@@ -1110,10 +1114,28 @@
       ),
       node(
         "p",
-        "The records come from the library's initialized UI IR. Optional CPU witnesses use Kontra's production layout, asset worker and painter. Native Kontakt/Falcon pixels, live callbacks and gestures remain unverified.",
+        r.mode?.settle_ui
+          ? "The before/after records share one production initialization and the same layout, asset worker and painter. Bounded plan activation uses the real runtime; native Kontakt pixels and later user interactions remain unverified."
+          : "The records come from the library's initialized UI IR. Optional CPU witnesses use Kontra's production layout, asset worker and painter. Native Kontakt/Falcon pixels, live callbacks and gestures remain unverified.",
         "notice",
       ),
     );
+    const lifecycle = r.evidence?.ui_lifecycle;
+    if (lifecycle) {
+      const pending = lifecycle.callback_progress?.pending_plan_callbacks;
+      root.append(node("p", `Plan activation: ${String(lifecycle.status).replaceAll("_", " ")} · ${lifecycle.changed_widgets} changed widgets · ${pending ?? "Unknown"} pending callback${pending === 1 ? "" : "s"} · ${lifecycle.callback_progress?.queued_faults ?? "Unknown"} retained faults`, "notice"));
+      const details = node("details");
+      add(details, node("summary", "Activation limits and runtime evidence"), node("p", lifecycle.input_scope, "notice"), properties({"audio frames advanced": lifecycle.frames,
+        "UI effects applied": lifecycle.effects_applied, "changed widgets": lifecycle.changed_widgets,
+        "pending plan callbacks": lifecycle.callback_progress?.pending_plan_callbacks,
+        "pending finite or unclassified plan callbacks": lifecycle.callback_progress?.pending_non_background_plan_callbacks,
+        "ongoing listener drivers": lifecycle.callback_progress?.observed_pending_listener_drivers,
+        "background observation": lifecycle.background_observation || "Not recorded",
+        "retained callback faults": lifecycle.callback_progress?.queued_faults,
+        "dropped callback faults": lifecycle.callback_progress?.dropped_faults,
+        "service failure": lifecycle.service_failure_kind || "None recorded"}), node("pre", json(lifecycle)));
+      root.append(details);
+    }
     const faces = asArray(u.interfaces);
     if (!faces.length) {
       root.append(
@@ -1138,7 +1160,8 @@
     choosePage.setAttribute("aria-label", "UI page");
     chooseMode.setAttribute("aria-label", "UI presentation");
     faces.forEach((f, index) => {
-      const option = node("option", `Interface ${index} · ${f.source || "Unknown source"}`);
+      const lifecycle = f.lifecycle_state === "compiled_initial" ? " · Before plan activation" : f.lifecycle_state === "after_plan_activation" ? " · After bounded plan activation" : "";
+      const option = node("option", `Interface ${index} · ${f.source || "Unknown source"}${lifecycle}`);
       option.value = index;
       option.selected = index === state.uiFace;
       chooseFace.append(option);

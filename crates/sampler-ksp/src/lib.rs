@@ -121,6 +121,9 @@ pub struct Script {
     midi_object: sampler_core::MidiObject,
     programs: Vec<Program>,
     entries: Vec<Entry>,
+    /// Compiler-generated periodic schedulers, retained independently of the
+    /// authored listener callback entry they dispatch.
+    listener_drivers: Vec<(usize, usize)>,
     /// Programs started when the plan becomes active (listener timers).
     starts: Vec<usize>,
     /// PGS keys this script created, for the plan's shared store.
@@ -216,6 +219,7 @@ impl Script {
             symbols: self.symbols.clone(),
             slot: self.slot,
             entries: self.entries.clone(),
+            listener_drivers: self.listener_drivers.clone(),
             programs: self.programs.len(),
         }
     }
@@ -239,6 +243,7 @@ pub struct ScriptView {
     symbols: Vec<String>,
     slot: u8,
     entries: Vec<Entry>,
+    listener_drivers: Vec<(usize, usize)>,
     programs: usize,
 }
 
@@ -246,6 +251,20 @@ impl ScriptView {
     /// How many programs the script contributed to the plan's program table.
     pub fn program_count(&self) -> usize {
         self.programs
+    }
+
+    /// Authored callback or explicit compiler-generated listener scheduler role.
+    /// Local program indices and execution order remain unchanged.
+    pub fn program_role(&self, local: usize) -> Option<&'static str> {
+        self.callback(local).or_else(|| {
+            self.listener_callback(local).map(|_| "listener driver")
+        })
+    }
+
+    /// The exact authored listener entry dispatched by a generated local driver.
+    pub fn listener_callback(&self, local: usize) -> Option<usize> {
+        self.listener_drivers.iter().find_map(|&(driver, callback)|
+            (driver == local).then_some(callback))
     }
 
     /// The callback of this script's `local` program (`"on note"`...), if it
@@ -1252,6 +1271,7 @@ fn compile_initialized_inner(
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
+    let mut listener_drivers = Vec::new();
     let mut starts = Vec::new();
     let profile_lower = std::env::var_os("KONTRA_AUDIT_LOWER").is_some();
     for callback in &hir.callbacks {
@@ -1327,6 +1347,7 @@ fn compile_initialized_inner(
                     .listener_driver(signal, body, callback.span)
                     .map_err(|f| f.locate(source))?;
                 starts.push(programs.len());
+                listener_drivers.push((programs.len(), body));
                 programs.push(driver);
             }
         }
@@ -1613,6 +1634,7 @@ fn compile_initialized_inner(
             })
             .collect(),
         entries,
+        listener_drivers,
         starts,
         shared,
         rate,

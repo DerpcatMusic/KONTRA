@@ -59,6 +59,41 @@ snapshot state is applied before initialization; UI resources belong to the base
 NKI. If no unambiguous base is found, supply `--base ORIGINAL.nki`. A mismatched
 base is rejected, rather than previewing another instrument's interface.
 
+For Kontakt interfaces that change during a deferred `persistence_changed`
+callback, use the explicit production lifecycle witness:
+
+```sh
+python3 tools/library-inspector.py '/path/to/Preset.nksn' --settle-ui
+```
+
+This mode initializes the production loader once, then compares the compiled
+initial interface with its state after bounded Part/V2Core plan activation.
+It creates the real streaming and DSP runtime, without a plugin, DAW or audio
+device. It injects no note, controller, transport or gesture input. Authored
+startup and listener callbacks may run; any audio output is measured and
+discarded. The shared read-only UI effect handler applies position, visibility
+and other supported writes; unavailable file/MIDI services remain observable.
+This is a diagnostic runtime path. The ordinary `--ui-only --render` path still
+creates no Runtime and explicitly labels deferred persistence work as pending.
+
+Activation stops after 96,000 audio frames at 48 kHz, a five-second stepping
+threshold, or 65,536 applied effects. Wall/effect thresholds are checked between
+bounded blocks and effect drains; the launcher's process timeout supplies the
+outer bound. Reports distinguish completion from pending callbacks, service
+failures, retained callback faults and runtime problems, including faults already
+removed from the active scheduler. Later user interactions and native pixel
+equivalence remain unverified. `--settle-ui` requires the `ui-render` build and
+implies `--ui-only --render`; it cannot be combined with `--source`.
+
+Exact retained compiler roles distinguish a periodic listener driver from finite
+activation work. Readiness and background observation are separate. Early stop
+also requires one completed authored callback from each active driver's exact
+retained mapping, followed by its UI effect drain. This captures timer-delayed
+initial UI writes and reports `background_active` while retaining driver counts.
+Later ticks can still change the UI; one completed cycle does not prove visual
+stability. Unclassified or omitted pending work is conservatively retained; a
+queued fault prevents readiness even when only a listener remains active.
+
 `--render` implies `--initialize`. UI projection gains original-bitmap and Kontra
 vector CPU witnesses, page/presentation selectors, an optional bounds overlay,
 widget visibility and binding filters, asset/font request outcomes, and timing
@@ -122,6 +157,7 @@ composition; the bounds overlay draws measured geometry, not invented controls.
 | Falcon default | Program XML hierarchy, script bindings, actual compiler-only Luau syntax checks and production XML-to-IR translation | Native Lua 5.1 semantics, script initialization, sample binding, audio and live callbacks |
 | Optional initialization | Product initializer and UI model; Falcon IR includes `onLoad` parameter overlays through the shared scripted-loader path; Kontakt also attempts binding against zero-payload assets with deliberately fictitious sample metadata | Real sample admission, musical callbacks, rendered pixels, gestures and native equivalence |
 | Optional `--render` | Production layout, selected-program asset worker, requested fonts/frames and CPU-rendered initial pixels; NativeUI uses the evaluated production composition | Native Kontakt/Falcon fidelity, GPU output, live waveform/meter services, user gestures and musical callbacks |
+| Kontakt `--settle-ui` | Single real loader initialization, initial/activated models, production streaming/DSP scheduler and read-only UI effects, discarded output and explicit lifecycle/fault bounds | Later gestures and musical input, unsupported services, complete instrument parity and native pixel equivalence |
 
 An available binding is not evidence that it executed. A successful stage means
 that particular inspection completed, not that the whole library is compatible.
@@ -136,6 +172,11 @@ establish that the native script is malformed. Omitted NCKP fields and controls
 make UI projection partial. Default frontends retain categorized resource/field
 gaps; optional source inspection adds categorized skipped counts in resource
 metadata, the original NCKP JSON and its path.
+
+Classic KSP painting follows the documented global z-layer, widget-type priority
+and declaration order. Explicit native paint order remains authoritative. Parent
+visibility and relative geometry are queried independently; sorting overlapping
+widgets does not settle deferred callbacks or repair authored layout.
 
 Kontakt product conversion can read sample headers and decode convolution impulse
 resources. It does not audition samples or produce PCM output. The source-only
@@ -170,7 +211,7 @@ The `corpus-health` binary also exposes:
 ```text
 corpus-health inspect INPUT [--program INDEX|BANK_MEMBER]
     [--base ORIGINAL.nki] [--initialize] [--ephemeral-source] [--summary]
-    [--ui-only] [--ephemeral-render] [--profile-init]
+    [--ui-only] [--ephemeral-render] [--profile-init] [--settle-ui]
 corpus-health inspect-list MANIFEST
 ```
 

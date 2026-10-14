@@ -1393,6 +1393,59 @@ impl V2Core {
             .as_ref()
             .map(|s| s.scan_faults())
     }
+
+    /// Service read-only KSP effects during offline UI activation. The shared
+    /// effect handler retains unsupported operations and never writes files.
+    pub fn service_ui_read_only(
+        &mut self,
+        part: usize,
+        scripts: &mut [sampler_ksp::ScriptView],
+    ) -> std::io::Result<usize> {
+        let part = self
+            .parts
+            .get_mut(part)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "UI part is absent"))?;
+        sampler_ksp::service_ui_effects(&mut part.runtime, scripts)
+    }
+
+    /// Numeric owner-thread evidence only. Outcomes remain available to the
+    /// production fault consumer; script source, values and messages are omitted.
+    pub fn ui_lifecycle_progress(&self, part: usize) -> serde_json::Value {
+        let Some(Some(part)) = self.parts.get(part) else {
+            return serde_json::json!({"part_present": false});
+        };
+        let mut rows = Vec::new();
+        let mut callbacks = 0usize;
+        let mut pending_plan = 0usize;
+        let mut failures = 0usize;
+        part.runtime.visit_behavior_progress(|progress| {
+            callbacks += 1;
+            let plan_owner = matches!(progress.owner, sampler_core::BehaviorOwner::Plan(_));
+            pending_plan += usize::from(plan_owner && progress.outcome.is_none());
+            failures += usize::from(matches!(progress.outcome,
+                Some(sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted)));
+            if rows.len() < 256 {
+                let (outcome, error) = match progress.outcome {
+                    None => ("pending", None),
+                    Some(sampler_core::Outcome::Finished) => ("finished", None),
+                    Some(sampler_core::Outcome::Cancelled) => ("cancelled", None),
+                    Some(sampler_core::Outcome::FuelExhausted) => ("fuel_exhausted", None),
+                    Some(sampler_core::Outcome::Fault(error)) => ("fault",
+                        sampler_core::Error::ALL.iter().position(|candidate| *candidate == error)),
+                };
+                rows.push(serde_json::json!({"program": progress.program, "pc": progress.pc,
+                    "owner": if plan_owner {"plan"} else {"note"}, "waiting": progress.waiting,
+                    "yielded_at": progress.yielded_at, "caller_depth": progress.callers.len(),
+                    "outcome": outcome, "error_kind": error}));
+            }
+        });
+        let (queued_faults, dropped_faults) = part.fault_inbox.counts();
+        serde_json::json!({"part_present": true, "callback_count": callbacks,
+            "pending_plan_callbacks": pending_plan, "live_callback_failures": failures,
+            "queued_faults": queued_faults, "dropped_faults": dropped_faults,
+            "rows_omitted": callbacks.saturating_sub(rows.len()), "callbacks": rows})
+    }
 }
 
 fn wire(key: u8, external_id: Option<i32>) -> Input {

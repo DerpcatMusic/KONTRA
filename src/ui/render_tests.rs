@@ -57,6 +57,53 @@ fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
 }
 
 #[test]
+fn kontakt_type_layers_preserve_skin_pixels_and_pointer_target() {
+    let source = r#"on init
+make_perfview
+set_ui_width_px(160)
+set_ui_height_px(120)
+declare ui_button $front
+declare ui_label $back(1,1)
+move_control_px($front,10,10)
+move_control_px($back,10,10)
+set_control_par(get_ui_id($front),$CONTROL_PAR_WIDTH,60)
+set_control_par(get_ui_id($front),$CONTROL_PAR_HEIGHT,30)
+set_control_par(get_ui_id($back),$CONTROL_PAR_WIDTH,60)
+set_control_par(get_ui_id($back),$CONTROL_PAR_HEIGHT,30)
+set_control_par_str(get_ui_id($front),$CONTROL_PAR_PICTURE,"front")
+set_control_par_str(get_ui_id($back),$CONTROL_PAR_PICTURE,"back")
+set_text($front,"")
+set_text($back,"")
+end on"#;
+    let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let mut face = script.ui(&|_| Some(ir::ImageMeta { size: Some(ir::Size { width: 60., height: 30. }), ..Default::default() })).unwrap();
+    let mut assets = Assets::default();
+    assets.sync(&face, Presentation::Bitmap, |asset| {
+        let rgba = if asset.path.contains("front") { [255,0,0,255] } else { [0,0,255,255] };
+        Some(Arc::new(Picture::new(vec![Arc::new(moose::mui::mui::scene::Image::rgba(60,30,rgba.repeat(60*30)).unwrap())])))
+    });
+    let mut ui = super::super::theme::ui();
+    let mut values = Values::default();
+    let mut state = InputState::default();
+    let tick = |ui: &mut Ui, face: &Interface, values: &mut Values, state: &mut InputState, event| {
+        let root=view_state(ui,"order",face,PageRef(0),&assets,Presentation::Bitmap,1.,values,state);
+        ui.frame(root,Some(Size::new(160.,120.)),event,1./60.).unwrap();
+    };
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut state,Input::default()); }
+    let first=super::super::tests::pixels(&ui,160,120);
+    assert_eq!(&first[(20*160+20)*4..(20*160+20)*4+4], &[255,0,0,255], "later label must stay behind the earlier button");
+    let pointer=|down| Input {pointer: PointerInput { pos: Some(Point::new(20.,20.)), buttons: if down {Buttons::PRIMARY} else {Buttons::default()}, ..Default::default() }, ..Default::default()};
+    tick(&mut ui,&face,&mut values,&mut state,pointer(true));
+    tick(&mut ui,&face,&mut values,&mut state,pointer(false));
+    tick(&mut ui,&face,&mut values,&mut state,Input::default());
+    assert!(state.edits.iter().any(|edit| edit.widget==WidgetRef(0)), "the front button must receive the pointer gesture");
+    face.widgets[1].z=1;
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut state,Input::default()); }
+    let foreground=super::super::tests::pixels(&ui,160,120);
+    assert_eq!(&foreground[(20*160+20)*4..(20*160+20)*4+4], &[0,0,255,255], "explicit foreground layer overrides type priority");
+}
+
+#[test]
 fn menu_keeps_authored_selected_caption_when_item_is_hidden() {
     let paint = |visible: i32, value: i32| {
         let source = format!(

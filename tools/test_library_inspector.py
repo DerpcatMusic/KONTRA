@@ -67,6 +67,22 @@ class InspectorTests(unittest.TestCase):
         self.assertIn("--ephemeral-render", args)
         self.assertEqual(args[args.index("--base")+1], "Original.nki")
 
+    def test_lifecycle_requires_read_only_sandbox_and_preserves_selected_program(self):
+        with patch.object(inspector.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "bubblewrap"):
+                inspector.inspect_command(Path("/bin/inspect"), "Authored.nksn",
+                                          initialize=False, source=False, program="2",
+                                          ram=Path("/dev/shm/owned"), settle_ui=True)
+        with patch.object(inspector.shutil, "which", return_value="/bin/bwrap"):
+            args=inspector.inspect_command(Path("/bin/inspect"), "Authored.nksn",
+                                           initialize=False, source=False, program="2",
+                                           ram=Path("/dev/shm/owned"), settle_ui=True,
+                                           base="Original.nki")
+        self.assertIn("--settle-ui",args)
+        self.assertIn("--initialize",args)
+        self.assertEqual(args[args.index("--program")+1],"2")
+        self.assertEqual(args[args.index("--base")+1],"Original.nki")
+
     def test_native_pixels_have_only_private_memory_routes(self):
         report = authored_report()
         pixels = b"\x89PNG\r\n\x1a\nAUTHORED_TEST_PIXELS"

@@ -1,4 +1,6 @@
-//! Offline source and conversion inspection. No plugin, Runtime or audio audition.
+//! Offline source and UI inspection without a plugin, DAW or audio audition.
+//! Default initialization constructs no Runtime; --settle-ui explicitly steps
+//! production streaming/runtime plan activation before painting its UI state.
 use ni_file::kontakt::objects::{BParScript, Bank as NiBank, GroupList, Program, ZoneList};
 use sampler_parity::{Lang, ScriptReport};
 use serde_json::{Value, json};
@@ -22,6 +24,7 @@ struct Options {
     render: bool,
     ui_only: bool,
     profile_init: bool,
+    settle_ui: bool,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -41,6 +44,12 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             "--ui-only" => {
                 opts.ui_only = true;
                 opts.initialize = true;
+            }
+            "--settle-ui" => {
+                opts.settle_ui = true;
+                opts.ui_only = true;
+                opts.initialize = true;
+                opts.render = true;
             }
             "--profile-init" => {
                 opts.profile_init = true;
@@ -176,7 +185,7 @@ fn base(opts: &Options, kind: &str) -> Value {
     json!({
         "format": "kontra-library-inspector", "schema": 1,
         "item": {"path": opts.path, "kind": kind, "program": opts.program},
-        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"lua_coverage":opts.initialize && !opts.ui_only},
+        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"settle_ui":opts.settle_ui,"lua_coverage":opts.initialize && !opts.ui_only},
         "status": "ok", "stages": [], "metadata": {}, "scripts": [],
         "converted": {"status": "not_run", "scope": "No product IR translation requested"},
         "ui": {"status": "not_evaluated", "scope": "Source frontends do not execute authored UI initialization", "interfaces": []},
@@ -400,7 +409,7 @@ fn interfaces(faces: &[sampler_ui_ir::Interface]) -> Value {
         "widgets":face.widgets.iter().enumerate().map(|(n,w)|{
             let interactive=matches!(w.kind,Kind::Knob{..}|Kind::Slider{..}|Kind::ValueEdit{..}|Kind::Button{..}|Kind::Switch|Kind::Menu{..}|Kind::Table{..}|Kind::Xy{..}|Kind::TextEdit|Kind::FileSelector{..}|Kind::MouseArea);
             let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
-            json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()})
+            json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()})
         }).collect::<Vec<_>>(),
         "assets":face.assets.iter().enumerate().map(|(n,a)|json!({"index":n,"path":a.path,"kind":format!("{:?}",a.kind)})).collect::<Vec<_>>(),
         "styles":face.styles.iter().enumerate().map(|(n,s)|json!({"index":n,"font":format!("{:?}",s.font),"size":s.size,"colour":json!([s.color.r,s.color.g,s.color.b,s.color.a]),"align":format!("{:?}",s.align),"render_support":match s.font {sampler_ui_ir::Font::Named(_)=>"Kontra default-face fallback; authored named family is unresolved",sampler_ui_ir::Font::Default=>"Kontra default face",sampler_ui_ir::Font::Stock(_)=>"Kontra stock-font mapping; native glyph fidelity unverified",sampler_ui_ir::Font::File(_)=>"Authored font asset; see requested TrueTypeFont outcome",sampler_ui_ir::Font::Bitmap(_)=>"Authored bitmap glyph asset in bitmap presentation; vector uses the default face"}})).collect::<Vec<_>>(),
@@ -442,7 +451,7 @@ fn render_interface(
             "src/ui/offline_preview.rs",
         );
         timing(report, "ui_render", started);
-        report["evidence"]["ui_render"] = json!({"status":"executed","renderer":"Kontra production UI layout, asset worker and CPU painter","native_equivalence":"unknown","gestures":"not_run","scope":"In-memory initial-state witness; no plugin instance, window, Runtime or audio host"});
+        report["evidence"]["ui_render"] = json!({"status":"executed","renderer":"Kontra production UI layout, asset worker and CPU painter","native_equivalence":"unknown","gestures":"not_run","live_meter_service":"not_observed: CPU witness has no live meter provider; bitmap control strips can contain authored colour independently of audio","scope":if opts.settle_ui {"In-memory production lifecycle state through the same UI painter; bounded Runtime/DSP stepping is reported separately, no plugin/window/DAW/audio device"}else{"In-memory initial-state witness; no plugin instance, window, Runtime or audio host"}});
     }
     #[cfg(not(feature = "ui-render"))]
     {
@@ -651,7 +660,88 @@ fn placeholder_plan(
     }
 }
 
+/// Compilation retains wait-capable persistence work for plan activation.
+/// An initial-state renderer must make that lifecycle boundary observable.
+fn kontakt_persistence(report: &mut Value, scripts: &[sampler_ksp::Script]) -> bool {
+    use sampler_ksp::model::PersistenceCompletion;
+    let mut pending = false;
+    let records = scripts.iter().map(|script| {
+        let completion = script.model().persistence_completion;
+        if completion == PersistenceCompletion::Scheduled {
+            pending = true;
+            diagnostic(report, "ui_projection", "PendingLifecycle",
+                "Wait-capable persistence callback awaits plan activation; later authored UI position/visibility writes are not included in this initial-state witness",
+                "crates/sampler-ksp/src/eval.rs");
+            let entry=report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+            entry["feature"]=json!("on persistence_changed scheduled");
+            entry["slot"]=json!(script.slot());
+        }
+        match completion {
+            PersistenceCompletion::NotPresent => json!({"slot":script.slot(),"status":"not_present"}),
+            PersistenceCompletion::Scheduled => json!({"slot":script.slot(),"status":"scheduled_for_plan_activation"}),
+            PersistenceCompletion::Completed => json!({"slot":script.slot(),"status":"completed"}),
+            PersistenceCompletion::Failed { category, offset, .. } => json!({"slot":script.slot(),"status":"failed","category":format!("{category:?}"),"offset":offset}),
+        }
+    }).collect::<Vec<_>>();
+    report["evidence"]["initialization"]["persistence_callbacks"]=json!(records);
+    pending
+}
+
+#[cfg(feature = "ui-render")]
+fn kontakt_settle(opts: &Options, report: &mut Value) {
+    let program=match opts.program.as_deref().unwrap_or("0").parse::<u32>() {
+        Ok(program)=>program,
+        Err(_)=>{fail(report,"select","ProgramIndex","Kontakt lifecycle program must be a numeric index","tools/corpus-health/src/inspect.rs");return;}
+    };
+    let started=begin_phase("production_ui_lifecycle");
+    let witness=match kontakto::offline_ui_lifecycle(&opts.path,program,opts.base.as_deref()) {
+        Ok(witness)=>witness,
+        Err(error)=>{fail(report,"ui_lifecycle","LifecycleUnavailable",error,"src/ui/offline_lifecycle.rs");return;}
+    };
+    timing(report,"production_ui_lifecycle",started);
+    report["item"]["program"]=json!(program);
+    report["metadata"]["resource_path"]=json!(witness.resource_path);
+    report["metadata"]["initial_interface_count"]=json!(witness.initial.len());
+    report["metadata"]["settled_interface_count"]=json!(witness.settled.len());
+    report["evidence"]["ui_lifecycle"]=witness.report;
+    report["evidence"]["initialization"]=json!({"status":"executed_by_production_loader","scope":"Single production loader initialization and bounded plan activation; see explicit lifecycle limits and runtime outcomes"});
+    report["evidence"]["runtime"]=json!("production plan activation; no host event input");
+    report["evidence"]["audio"]=json!("DSP runtime stepped; output measured and discarded, no audition/native comparison");
+    stage(report,"source_frontend","skipped","Separate source inventory/parity audit not requested","tools/corpus-health/src/inspect.rs");
+    let lifecycle_status=if matches!(report["evidence"]["ui_lifecycle"]["status"].as_str(),Some("completed"|"background_active")) {"ok"}else{"partial"};
+    stage(report,"ui_lifecycle",lifecycle_status,"Production Part/V2Core activation, metadata getters and read-only shared KSP UI outbox; authored startup/listener callbacks may execute","src/ui/offline_lifecycle.rs");
+    if lifecycle_status!="ok" {
+        diagnostic(report,"ui_lifecycle","PendingLifecycle","Production lifecycle remains pending or an actual service was unavailable; inspect numeric limit/service outcomes","src/ui/offline_lifecycle.rs");
+    }
+    if report["evidence"]["ui_lifecycle"]["source_conversion_gap_count"].as_u64().is_some_and(|n|n!=0) {
+        diagnostic(report,"translate","NotModeled","Production loader retained source conversion gaps; this lifecycle witness does not establish full instrument parity","src/sound/v2.rs");
+    }
+    let initial_count=witness.initial.len();
+    let faces: Vec<_>=witness.initial.into_iter().chain(witness.settled).collect();
+    let ui_status=if lifecycle_status!="ok" || faces.iter().any(|f|!f.unsupported.is_empty()) {"partial"}else{"ok"};
+    if faces.iter().any(|f|!f.unsupported.is_empty()) {
+        diagnostic(report,"ui_projection","NotModeled","Compiled UI retains unsupported authored properties; successful lifecycle or asset loading does not establish faithful modeling","crates/sampler-ui-ir/src/lib.rs");
+    }
+    report["ui"]=json!({"status":ui_status,"scope":"Compiled initial state and bounded production lifecycle state; renderer outcomes and native parity are separate","interfaces":interfaces(&faces)});
+    for (index,face) in faces.iter().enumerate() {
+        report["ui"]["interfaces"][index]["lifecycle_state"]=json!(if index<initial_count{"compiled_initial"}else{"after_plan_activation"});
+        let values=if index<initial_count {&witness.initial_values}else{&witness.settled_values};
+        render_interface(report,opts,index,face,&witness.resource_path,values,&faces);
+        report["ui"]["interfaces"][index]["render"]["scope"]=json!(if index<initial_count{"Compiled pre-activation UI model; later persistence writes may change it"}else{"UI model after bounded production plan activation; see lifecycle completion/fault/service bounds. Native pixels and later gestures remain unverified"});
+    }
+}
+
 fn kontakt(opts: &Options, report: &mut Value) {
+    #[cfg(not(feature = "ui-render"))]
+    if opts.settle_ui {
+        fail(report,"ui_lifecycle","LifecycleUnavailable","Rebuild corpus-health with --features ui-render for the explicit production lifecycle witness","src/ui/offline_lifecycle.rs");
+        return;
+    }
+    #[cfg(feature = "ui-render")]
+    if opts.settle_ui {
+        kontakt_settle(opts,report);
+        return;
+    }
     let started = begin_phase("snapshot_or_container");
     let is_snapshot = opts
         .path
@@ -1046,10 +1136,12 @@ fn kontakt(opts: &Options, report: &mut Value) {
                 json!("ephemeral authored diagnostic; omitted from source-free reports");
         }
     }
+    let persistence_pending = kontakt_persistence(report, &scripts);
     let lost_projection = scripts.len() < expected_scripts || faces.len() < scripts.len();
     let ui_status = if expected_scripts != 0 && faces.is_empty() && lost_projection {
         "failed"
-    } else if lost_projection
+    } else if persistence_pending
+        || lost_projection
         || projection_faults != 0
         || projection_gaps != 0
         || resource_gaps != 0
@@ -1480,6 +1572,7 @@ fn inspect(opts: &Options) -> Value {
     }
     match kind {
         "kontakt" | "kontakt-multi" | "kontakt-snapshot" => kontakt(opts, &mut report),
+        _ if opts.settle_ui => fail(&mut report,"ui_lifecycle","LifecycleKind","Bounded production UI lifecycle currently supports Kontakt NKI/NKM/NKSN","src/ui/offline_lifecycle.rs"),
         "uvi-loose" | "uvi-bank" => uvi(opts, &mut report),
         _ => fail(
             &mut report,
@@ -1521,13 +1614,18 @@ fn inspect(opts: &Options) -> Value {
             "Samples were not auditioned or compared to native hosts",
         ),
     ] {
-        stage(
-            &mut report,
-            name,
-            "skipped",
-            scope,
-            "tools/corpus-health/src/inspect.rs",
-        );
+        if opts.settle_ui && report["evidence"]["ui_lifecycle"].is_object() {
+            let ran=name=="runtime" || report["evidence"]["ui_lifecycle"]["frames"].as_u64().is_some_and(|n|n!=0);
+            stage(&mut report,name,if ran {"executed"}else{"not_run"},if name=="runtime" {"Bounded production plan activation; no injected host musical or gesture input"}else{"Production runtime allocated; see actual stepped frame count and measured/discarded output. No device, audition or native comparison"},"src/ui/offline_lifecycle.rs");
+        } else {
+            stage(
+                &mut report,
+                name,
+                "skipped",
+                scope,
+                "tools/corpus-health/src/inspect.rs",
+            );
+        }
     }
     report["performance"]["total_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
     report
@@ -2306,6 +2404,26 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
     }
 
     #[test]
+    fn deferred_persistence_ui_is_reported_without_executing_or_hiding_it() {
+        let source = |wait: &str| format!("on init make_perfview declare ui_label $drawer(1,1) move_control_px($drawer,10,20) end on on persistence_changed {wait} move_control_px($drawer,10,-100) end on");
+        for (wait, pending, y, status) in [("wait(1000)", true, 20., "scheduled_for_plan_activation"), ("", false, -100., "completed")] {
+            let script = sampler_ksp::compile(&source(wait), 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            assert_eq!(script.ui(&|_| None).unwrap().widgets[0].rect.y, y);
+            let opts=Options { path: PathBuf::from("authored.nki"), initialize: true, ..Default::default() };
+            let mut report=base(&opts,"kontakt");
+            report["evidence"]["initialization"]=json!({"status":"ok"});
+            assert_eq!(kontakt_persistence(&mut report, &[script]), pending);
+            assert_eq!(report["evidence"]["initialization"]["persistence_callbacks"][0]["status"],status);
+            assert_eq!(report["evidence"]["initialization"]["status"],"ok");
+            assert_eq!(report["diagnostics"].as_array().unwrap().len(),usize::from(pending));
+            if pending {
+                assert_eq!(report["diagnostics"][0]["category"],"PendingLifecycle");
+                assert_eq!(report["diagnostics"][0]["slot"],0);
+            }
+        }
+    }
+
+    #[test]
     fn physical_empty_and_bypassed_slots_have_unique_multi_coordinates() {
         use ni_file::kontakt::{Chunk, StructuredObject};
         let temp = Temp::new();
@@ -2408,6 +2526,9 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert!(!parsed.initialize);
         let focused = options(&strings(&["a.nki", "--ui-only", "--ephemeral-render"])).unwrap();
         assert!(focused.initialize && focused.ui_only && focused.render);
+        let settled = options(&strings(&["a.nksn", "--settle-ui"])).unwrap();
+        assert!(settled.initialize && settled.ui_only && settled.render && settled.settle_ui);
+        assert!(options(&strings(&["a.nksn", "--settle-ui", "--ephemeral-source"])).is_err());
         assert!(options(&strings(&["a.nki", "--ui-only", "--ephemeral-source"])).is_err());
         assert!(options(&strings(&["a.nki", "--profile-init"])).is_err());
         let profiled = options(&strings(&["a.uvip", "--ui-only", "--profile-init"])).unwrap();
