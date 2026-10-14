@@ -121,6 +121,8 @@ pub enum Curve {
 pub enum AmpModel {
     /// 0x24 Cabinet: size, air, treble, bass (-1..1), type 0..=10.
     Cabinet,
+    /// 0x58 Cry Wah: pedal, mono.
+    CryWah,
 }
 
 /// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
@@ -519,6 +521,7 @@ impl Config {
             Self { curve: Curve::Dirt(_), .. } => "Dirt",
             Self { curve: Curve::Freak(_), .. } => "Freak",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cabinet, .. }), .. } => "Cabinet",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::CryWah, .. }), .. } => "Cry Wah",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
