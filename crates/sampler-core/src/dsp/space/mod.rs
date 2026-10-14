@@ -344,8 +344,14 @@ mod tests {
     fn cpu_per_instance() {
         const RATE: u32 = 48_000;
         let frames = 10 * RATE as usize;
-        for (name, net) in presets() {
+        for (name, net, parallel) in presets().into_iter().flat_map(|(n, net)| [(n, net.clone(), true), (n, net, false)]) {
             let mut net = Net::new(&net, RATE).unwrap();
+            if !parallel {
+                if !net.core.parallel {
+                    continue;
+                }
+                net.core.parallel = false;
+            }
             let mut best = f64::MAX;
             for _ in 0..5 {
                 let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
@@ -360,7 +366,7 @@ mod tests {
                 std::hint::black_box(&l);
                 best = best.min(t.elapsed().as_secs_f64() * 1e9 / frames as f64);
             }
-            println!("cpu {name:12} {best:6.1} ns/frame");
+            println!("cpu {name:12} {best:6.1} ns/frame{}", if parallel { "" } else { " (per-frame path)" });
         }
     }
 
