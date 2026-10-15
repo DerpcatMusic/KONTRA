@@ -2,19 +2,25 @@
 
 struct Arguments<'a> {
     plan: &'a str,
-    artifacts: Option<(&'a std::path::Path, u8, u32)>,
+    artifacts: Option<(&'a std::path::Path, sampler_ui_ir::Source, u32)>,
 }
 
 fn arguments(args: &[String]) -> Result<Arguments<'_>, &'static str> {
     let Some(plan) = args.first().filter(|plan| !plan.starts_with('-')) else {
         return Err("preset-switch requires a plan path");
     };
-    let (mut directory, mut slot, mut page) = (None, None, None);
+    let (mut directory, mut slot, mut page, mut source) = (None, None, None, None);
     let mut options = args[1..].chunks_exact(2);
     for pair in &mut options {
         match pair[0].as_str() {
             "--ui-artifacts" if directory.is_none() => {
                 directory = Some(std::path::Path::new(&pair[1]));
+            }
+            "--ui-source" if source.is_none() => {
+                if !matches!(pair[1].as_str(), "ksp" | "uvi" | "performance-view") {
+                    return Err("UI source must be ksp, uvi or performance-view");
+                }
+                source = Some(pair[1].as_str());
             }
             "--ui-slot" if slot.is_none() => {
                 slot = Some(
@@ -36,13 +42,19 @@ fn arguments(args: &[String]) -> Result<Arguments<'_>, &'static str> {
     if !options.remainder().is_empty() {
         return Err("Every preset-switch capture option requires a value");
     }
-    let artifacts = match (directory, slot, page) {
-        (None, None, None) => None,
-        (Some(directory), Some(slot), Some(page)) if directory.is_absolute() => {
-            Some((directory, slot, page))
+    let artifacts = match (directory, slot, page, source) {
+        (None, None, None, None) => None,
+        (Some(directory), slot, Some(page), source) if directory.is_absolute() => {
+            let source = match (source.unwrap_or("ksp"), slot) {
+                ("ksp", Some(slot)) => sampler_ui_ir::Source::Ksp { slot },
+                ("uvi", None) => sampler_ui_ir::Source::FalconLua,
+                ("performance-view", None) => sampler_ui_ir::Source::PerformanceView,
+                _ => return Err("Only KSP capture requires --ui-slot; other sources refuse it"),
+            };
+            Some((directory, source, page))
         }
         _ => {
-            return Err("Capture requires --ui-artifacts NEW_ABSOLUTE_DIR --ui-slot N --ui-page N");
+            return Err("Capture requires --ui-artifacts NEW_ABSOLUTE_DIR --ui-page N and explicit source selection (KSP also requires --ui-slot N)");
         }
     };
     Ok(Arguments { plan, artifacts })
@@ -54,7 +66,7 @@ pub(super) fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("preset-switch: {error}");
             eprintln!(
-                "preset-switch PLAN.json [--ui-artifacts NEW_ABSOLUTE_DIR --ui-slot N --ui-page N] (requires ui-render; see tools/corpus-health/PRESET_SWITCH.md)"
+                "preset-switch PLAN.json [--ui-artifacts NEW_ABSOLUTE_DIR --ui-page N --ui-slot N | --ui-source uvi|performance-view] (requires ui-render; see tools/corpus-health/PRESET_SWITCH.md)"
             );
             return 2;
         }
@@ -83,9 +95,9 @@ pub(super) fn run(args: &[String]) -> i32 {
             }
         };
         let result = match args.artifacts {
-            Some((directory, slot, page)) => {
-                kontakto::OfflineUiLifecycle::preset_switch_probe_with_ui_artifacts(
-                    &plan, directory, slot, page,
+            Some((directory, source, page)) => {
+                kontakto::OfflineUiLifecycle::preset_switch_probe_with_source_ui_artifacts(
+                    &plan, directory, source, page,
                 )
             }
             None => kontakto::OfflineUiLifecycle::preset_switch_probe(&plan),
@@ -109,7 +121,7 @@ mod tests {
 
     fn parse(
         values: &[&str],
-    ) -> Result<(String, Option<(std::path::PathBuf, u8, u32)>), &'static str> {
+    ) -> Result<(String, Option<(std::path::PathBuf, sampler_ui_ir::Source, u32)>), &'static str> {
         let args: Vec<_> = values.iter().map(|value| value.to_string()).collect();
         let parsed = arguments(&args)?;
         Ok((
@@ -137,7 +149,15 @@ mod tests {
             directory,
         ])
         .unwrap();
-        assert_eq!(selected.1, Some((directory.into(), 2, 3)));
+        assert_eq!(selected.1, Some((directory.into(), sampler_ui_ir::Source::Ksp { slot: 2 }, 3)));
+        for (name, source) in [("uvi", sampler_ui_ir::Source::FalconLua), ("performance-view", sampler_ui_ir::Source::PerformanceView)] {
+            assert_eq!(parse(&["plan.json", "--ui-artifacts", directory, "--ui-page", "0", "--ui-source", name]).unwrap().1,
+                Some((directory.into(), source, 0)));
+            assert!(parse(&["plan.json", "--ui-artifacts", directory, "--ui-page", "0", "--ui-source", name, "--ui-slot", "0"]).is_err());
+        }
+        assert!(parse(&["plan.json", "--ui-source", "unknown"]).is_err());
+        assert!(parse(&["plan.json", "--ui-source", "uvi", "--ui-source", "uvi"]).is_err());
+        assert!(parse(&["plan.json", "--ui-artifacts", directory, "--ui-page", "0", "--ui-source", "ksp"]).is_err());
         for args in [
             vec!["plan.json", "--ui-artifacts", directory],
             vec!["plan.json", "--ui-artifacts", directory, "--ui-slot", "2"],

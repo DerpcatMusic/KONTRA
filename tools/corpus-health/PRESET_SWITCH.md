@@ -145,6 +145,11 @@ attempts and 64 MiB of admitted PNG data are allowed. A partial or refused write
 still consumes its reserved budget. Missing/ambiguous slots, unavailable shots,
 malformed pixel data and exhausted budgets have explicit capture statuses.
 
+KSP capture keeps its explicit physical `--ui-slot`. For a UVI face, use
+`--ui-source uvi --ui-page 0` with the new private `--ui-artifacts` directory
+and omit `--ui-slot`; Creator Tools uses `--ui-source performance-view`.
+A missing or ambiguous source is refused, never replaced by a different face.
+
 Artwork is written only to the requested private directory. JSON retains
 capture status, dimensions, byte counts and SHA-256, without pixels, captions or
 artwork paths. A partial render can be captured, while its render status and
@@ -219,3 +224,15 @@ Plans are limited to 1 MiB, 24 actions and 128..96,000 fresh-note frames per
 publication. The launcher caps each pipe at 16 MiB, numeric audit records at
 4096 and total process time at its explicit timeout. These bounds describe the
 probe; they do not establish real-time host performance.
+
+
+Loader spans now distinguish elapsed wall time from caller-thread CPU when
+supported. `thread_cpu_calls` records actual clock coverage; missing/moved-thread
+or legacy clocks remain unknown. Nested spans overlap and cannot be summed into
+a total. A wall/CPU gap includes scheduling and waiting, without proving I/O.
+`KONTRA_AUDIT_BEGIN=1` optionally adds numeric span IDs before work; the launcher
+enables it, bounds begins and completions separately to 4096 each, and retains
+up to 16 unfinished code-owned stages on a bounded or
+failed process. Matching completion records stay assigned to the phase where
+they began, even if another thread emits them later. Legacy end-only helpers
+remain supported. Truncated/unfinished coverage keeps work counts unknown.
