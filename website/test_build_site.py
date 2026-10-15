@@ -46,5 +46,13 @@ class PublicationTests(unittest.TestCase):
             build_site.tracker.build.target_table()
             self.assertEqual(Path(read.call_args.args[0]).name, 'modulation-targets.tsv')
 
+    def test_changed_code_probe_downgrades_status(self):
+        row = dict(status='exact', note='', probe='example.rs::implemented')
+        with patch.object(build_site.tracker.build, 'probe_ok', return_value=False):
+            status, note = build_site.tracker.derive(row)
+            self.assertEqual(status, 'partial')
+            self.assertIn('re-verification', note)
+            self.assertEqual(build_site.tracker.proof_of(row), 'unproven')
+
 if __name__ == '__main__':
     unittest.main()
