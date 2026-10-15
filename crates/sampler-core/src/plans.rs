@@ -88,6 +88,8 @@ pub(super) struct PlanQueues {
 
 /// Single control-side owner. Prepare, submit, consume retirements and destroy here.
 /// Runtime and this endpoint must be destroyed off audio after processing stops.
+/// A backpressured growth return stays owned by Runtime until control resumes
+/// or that off-audio shutdown, without freeing storage in a callback.
 pub struct PlanControl {
     pending: Producer<PlanTransfer>,
     retired: Consumer<PlanTransfer>,
@@ -384,6 +386,7 @@ impl Runtime {
         runtime.growth = Some(super::grow::GrowthQueues {
             incoming: incoming_growth,
             outgoing: outgoing_growth,
+            pending_return: None,
             waker: None,
         });
         let control = PlanControl {
