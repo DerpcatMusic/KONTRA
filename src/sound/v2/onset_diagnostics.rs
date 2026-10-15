@@ -1,6 +1,7 @@
 //! Explicit shots-only Kontakt onset capture. No library-specific branches.
 //! All observations and reductions execute between production render calls.
 mod capture;
+mod runway;
 pub mod config;
 #[cfg(test)]
 mod tests;
@@ -452,6 +453,7 @@ struct Host {
     service_effects: u64,
     pending_event: Option<Event>,
     last_settlement: SettlementEvidence,
+    runway: runway::Audit,
 }
 impl Host {
     fn block(&mut self, c: &Config, deadline: Instant) -> Result<(), &'static str> {
@@ -468,6 +470,9 @@ impl Host {
             .max_late_us
             .max(late.as_micros().min(u128::from(u64::MAX)) as u64);
         self.pacing_failures += u64::from(late > c.pacing_tolerance);
+        let runway_start = self.owner.check(&self.core)?.runtime.now();
+        let underruns_before = self.owner.check(&self.core)?.runtime.stream_underruns();
+        let runway_before = self.runway.before(&self.owner.check(&self.core)?.runtime, c.block as u32)?;
         // This is the real production effect service; unsupported I/O is refused.
         self.service_effects +=
             self.core
@@ -495,9 +500,12 @@ impl Host {
                 }
             }
         }
+        let callback_elapsed = at.elapsed();
         self.max_callback_us = self
             .max_callback_us
-            .max(at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
+            .max(callback_elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+        self.runway.record(&self.owner.check(&self.core)?.runtime, runway_start, c.block as u32,
+            underruns_before, late, c.pacing_tolerance, callback_elapsed, runway_before)?;
         self.callbacks
             .observe(self.owner.check(&self.core)?, &self.scripts.views);
         self.owner.drain(&self.core, &mut self.capture)?;
@@ -685,6 +693,7 @@ pub fn run(plan: &Value) -> Result<Value, &'static str> {
         .part
         .take()
         .ok_or("Production loader returned no owner")?;
+    let loader_runway = runway::loader(&part, loaded.report.stream_startup.as_ref());
     // Epoch belongs to this fresh diagnostic host; PlanId comes from Runtime.
     part.epoch = 1;
     let owner = Owner {
@@ -710,6 +719,7 @@ pub fn run(plan: &Value) -> Result<Value, &'static str> {
         service_effects: 0,
         pending_event: None,
         last_settlement: SettlementEvidence::default(),
+        runway: runway::Audit::new(),
     };
     let result = capture_run(&mut host, &c, startup_deadline, deadline);
     let error = result.as_ref().err().copied();
@@ -732,6 +742,7 @@ pub fn run(plan: &Value) -> Result<Value, &'static str> {
         "last_settlement":host.last_settlement,"last_callback_observation":host.callbacks.report(),
         "pacing_failures":host.pacing_failures,"max_lateness_us":host.max_late_us,
         "max_callback_us":host.max_callback_us,"ui_effects_serviced":host.service_effects,
+        "loader_runway":loader_runway,"stream_runway":host.runway.report(),
         "missing_apis":["read_only_effective_group_mutes_and_complete_start_route_parameters",
             "complete_stream_worker_pending_and_completion_observation"],
         "native_parity":null,"user_cause":null,"source_acoustic_onset":null,
@@ -811,6 +822,9 @@ fn capture_run(
         }
         let at = host.frames;
         let prior_births = host.capture.birth_count();
+        let problems_before_attack = host.core.problems(0);
+        let pacing_before_attack = host.pacing_failures;
+        host.runway.attack(trial, at);
         host.pending_event = Some(Event::midi1(0x90, c.key, c.velocity));
         while host.frames < at + hold_frames {
             host.block(c, deadline)?;
@@ -818,7 +832,11 @@ fn capture_run(
         host.pending_event = Some(Event::midi1(0x80, c.key, 0));
         trials.push(json!({"trial":trial,"note_on_frame":at,"note_off_frame":host.frames,
             "schedule_rounding_frames":at-due,"birth_start":prior_births,
-            "birth_end":host.capture.birth_count(),"observed_numeric_state_matches_first":matches_first_state}));
+            "birth_end":host.capture.birth_count(),"observed_numeric_state_matches_first":matches_first_state,
+            "runtime_problems_before_attack":problems_before_attack,
+            "runtime_problems_after_hold":host.core.problems(0),
+            "pacing_failures_before_attack":pacing_before_attack,
+            "pacing_failures_after_hold":host.pacing_failures}));
         if trial == 0 {
             host.capture.mark_first_trial(prior_births);
         }
