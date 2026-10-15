@@ -2,8 +2,9 @@
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
+import sys
 
-root = Path(__file__).resolve().parent
+root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
 
 class Page(HTMLParser):
     def __init__(self, path):

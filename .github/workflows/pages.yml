@@ -2,7 +2,6 @@ name: Website
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml', 'tools/coverage/**', 'crates/**', 'vendor/ni-file/**', 'docs/re/kontakt-catalog/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,16 +25,15 @@ jobs:
         run: |
           python3 website/check.py
           node website/test-releases.cjs
+          node website/test-compatibility.cjs
+          python3 website/test_build_site.py
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-      - name: Prepare public files
+      - name: Build site and live compatibility table
         run: |
-          mkdir -p /tmp/kontra-site/assets
-          cp website/*.html website/styles.css website/releases.js /tmp/kontra-site/
-          cp website/assets/* /tmp/kontra-site/assets/
-      - name: Build feature tracker
-        run: python3 tools/coverage/tracker.py /tmp/kontra-site/tracker
+          python3 website/build_site.py "$RUNNER_TEMP/kontra-site"
+          python3 website/check.py "$RUNNER_TEMP/kontra-site"
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: /tmp/kontra-site
+          path: ${{ runner.temp }}/kontra-site
       - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
         id: deployment
