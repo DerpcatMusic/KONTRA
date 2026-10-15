@@ -330,8 +330,13 @@ impl<'h> Unit<'h> {
     pub fn engine_start(
         &mut self,
         writes: &[([i32; 4], i32)],
-        purges: &[(i32, i32)],
     ) -> Result<Program> {
+        let cost=writes.len().checked_mul(6).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
+        self.budget=self.budget.checked_sub(cost).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
         let mut code = Vec::new();
         for &(address, value) in writes {
             for (i, v) in address.into_iter().enumerate() {
@@ -347,21 +352,6 @@ impl<'h> Unit<'h> {
             code.push(I::Op(Op::EngineParameter {
                 address: 0,
                 local: 4,
-                write: true,
-            }));
-        }
-        for &(group, value) in purges {
-            code.push(I::SetLocal {
-                local: 0,
-                value: i64::from(group),
-            });
-            code.push(I::SetLocal {
-                local: 1,
-                value: i64::from(value),
-            });
-            code.push(I::Op(Op::Purge {
-                group: 0,
-                local: 1,
                 write: true,
             }));
         }

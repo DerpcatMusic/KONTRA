@@ -195,6 +195,23 @@ pub struct Request {
     pub args: Vec<Value>,
 }
 
+/// Source-owned pass in which a finite startup residency request was captured.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ResidencyPass { InstrumentPersistence, SnapshotPersistence }
+
+/// Execution metadata, deliberately absent from the frequently cloned UI Model.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct InitialResidencyRequest {
+    pub group: i32,
+    pub reload: bool,
+    pub async_id: i32,
+    pub source_slot: u8,
+    pub pass: ResidencyPass,
+    pub offset: u32,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {

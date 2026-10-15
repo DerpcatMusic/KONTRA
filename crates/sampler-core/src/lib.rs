@@ -130,6 +130,7 @@ mod pitch;
 pub use pitch::NotePitch;
 mod groups;
 mod residency;
+pub use residency::InitialGroupResidency;
 pub use residency::{
     GroupResidencyProgress, ResidencyProgress, ResidencyRejection, ResidencyRejectionReason,
 };
@@ -350,11 +351,13 @@ pub enum Error {
     RevisionConflict,
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
+    /// Candidate preparation was canceled before publication.
+    Canceled,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 12] = [
+    pub const ALL: [Error; 13] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -367,6 +370,7 @@ impl Error {
         Self::ArithmeticOverflow,
         Self::RevisionConflict,
         Self::RandomBudget,
+        Self::Canceled,
     ];
 }
 
@@ -385,6 +389,7 @@ impl std::fmt::Display for Error {
             Self::ArithmeticOverflow => "arithmetic overflow",
             Self::RevisionConflict => "the revision changed",
             Self::RandomBudget => "random selection exceeded its draw budget",
+            Self::Canceled => "candidate preparation was canceled",
         })
     }
 }
@@ -954,13 +959,18 @@ impl Runtime {
     }
 
     pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
-        Self::new_with_note_params(plan, limits, limits.notes)
+        Self::new_cancelable(plan, limits, &||false)
+    }
+
+    pub fn new_cancelable(plan:Prepared,limits:Limits,canceled:&dyn Fn()->bool)->Result<Self,Error> {
+        Self::new_with_note_params(plan, limits, limits.notes,canceled)
     }
 
     fn new_with_note_params(
         mut plan: Prepared,
         limits: Limits,
         initial_notes: usize,
+        canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
@@ -1012,6 +1022,8 @@ impl Runtime {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Error::Capacity)?;
         let rate = plan.rate;
+        let initial_residency=plan.prepare_initial_residency(canceled)?;
+        let initial_callbacks=initial_residency.pending();
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(
             plans.insert(Generation {
@@ -1035,9 +1047,11 @@ impl Runtime {
                 modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
                 script: script_params::EngineLayers::new(&plan),
                 samples: prepare::sample_revision::SampleState::new(&plan),
+                initial_residency,
+                start_cursor: 0,
                 prepared: Box::new(plan),
                 notes: 0,
-                callbacks: 0,
+                callbacks: initial_callbacks,
             })?,
         );
         let signal_trace = plans
@@ -2040,6 +2054,8 @@ impl Runtime {
             }
         }
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            generation.callbacks=generation.callbacks.saturating_sub(generation.initial_residency.cancel());
+            generation.start_cursor=generation.prepared.plan_programs.len();
             generation.callbacks = generation.callbacks.saturating_sub(
                 generation
                     .midi_object

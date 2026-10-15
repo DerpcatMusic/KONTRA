@@ -41,7 +41,7 @@ pub use diag::{Error, Kind};
 pub use eval::{Environment, SavedValues, Transport};
 pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
-pub const PROFILE: &str = "ksp-8.12-v2";
+pub const PROFILE: &str = "ksp-8.12-v3";
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -121,6 +121,7 @@ pub struct Entry {
 pub struct Script {
     setup: std::sync::Arc<setup::SetupLayout>,
     midi_object: sampler_core::MidiObject,
+    initial_residency: Vec<model::InitialResidencyRequest>,
     programs: Vec<Program>,
     entries: Vec<Entry>,
     /// Compiler-generated periodic schedulers, retained independently of the
@@ -697,6 +698,11 @@ pub fn persistent_state_buffer(
 /// Note, release and controller callbacks share native module positions and
 /// retain separate instance state and reached-event projections.
 pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
+    let initial_count=scripts.iter().try_fold(0usize,|n,s|n.checked_add(s.initial_residency.len()))
+        .ok_or(sampler_core::Error::Capacity)?;
+    if initial_count > sampler_core::InitialGroupResidency::MAX_REQUESTS {return Err(sampler_core::Error::Capacity);}
+    let mut initial_residency=Vec::new();
+    initial_residency.try_reserve_exact(initial_count).map_err(|_|sampler_core::Error::Capacity)?;
     let mut programs = Vec::new();
     let mut instances = Vec::new();
     let mut resources = Vec::new();
@@ -724,6 +730,13 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         waveform::validate_prepared_sources(&plan, &script.resources.store)?;
         let instance =
             ScriptInstanceId(u16::try_from(index).map_err(|_| sampler_core::Error::Capacity)?);
+        for r in &script.initial_residency {
+            if r.source_slot != script.slot {return Err(sampler_core::Error::InvalidInput);}
+            initial_residency.push(sampler_core::InitialGroupResidency {
+                source_group:u32::try_from(r.group).map_err(|_|sampler_core::Error::InvalidInput)?,
+                reload:r.reload,async_id:r.async_id,instance,
+            });
+        }
         let base = programs.len();
         stages.push(sampler_core::Stage {
             note: script.routed(EntryKind::Note).map(|p| base + p),
@@ -891,7 +904,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_widgets(widgets)?
         .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
-        .with_shared_store(shared, capacity)
+        .with_shared_store(shared, capacity)?
+        .with_initial_group_residency(initial_residency)
 }
 
 /// Compile with no instrument facts and the default script slot.
@@ -1036,6 +1050,10 @@ impl Initialized {
 
     pub fn midi_object(&self) -> &sampler_core::MidiObject {
         &self.init.midi_object
+    }
+    /// Exact finite execution metadata; absent from UI model snapshots.
+    pub fn initial_residency_requests(&self)->&[model::InitialResidencyRequest] {
+        &self.init.residency
     }
     pub fn engine_pars(&self) -> Vec<EnginePar> {
         let mut writes: Vec<_> = self
@@ -1476,21 +1494,13 @@ fn compile_initialized_inner(
         .map(|(&key, &value)| (key, value))
         .collect();
     start.sort_by_key(|(key, _)| *key);
-    let purges: Vec<_> = init
-        .model
-        .requests
-        .iter()
-        .filter(|r| r.command == "purge_group")
-        .filter_map(|r| match r.args.as_slice() {
-            [Value::Int(group), Value::Int(value)] => Some((*group, *value)),
-            _ => None,
-        })
-        .collect();
-    if !start.is_empty() || !purges.is_empty() {
+    let replay_cost=init.residency.len().checked_mul(3).ok_or_else(||error("startup residency instruction budget exceeded"))?;
+    unit.budget=unit.budget.checked_sub(replay_cost).ok_or_else(||error("startup residency instruction budget exceeded"))?;
+    if !start.is_empty() {
         // Authored init writes must precede live persistence and listener callbacks.
         starts.insert(0, programs.len());
         programs.push(
-            unit.engine_start(&start, &purges)
+            unit.engine_start(&start)
                 .map_err(|f| f.locate(source))?,
         );
     }
@@ -1682,6 +1692,7 @@ fn compile_initialized_inner(
     Ok(Script {
         setup,
         midi_object: init.midi_object,
+        initial_residency: init.residency,
         programs: programs
             .into_iter()
             .map(|p| {
