@@ -10,6 +10,9 @@
 mod automation;
 mod host_probe;
 mod held_keys;
+mod snapshot_reuse;
+#[cfg(test)]
+pub(crate) mod snapshot_reuse_tests;
 pub(crate) mod ui_activity;
 use ui_activity::Count as UiCount;
 pub(crate) use host_probe::export_multi_state;
@@ -481,6 +484,13 @@ impl SamplerParams {
     }
 
     fn reload_ui_controls(&self) {
+        // Invalidate queued same-owner overlays before host recall can change
+        // the desired state, including a recall of the identical source tuple.
+        self.shared.with_parts(|parts| {
+            for part in parts {
+                let _ = part.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1));
+            }
+        });
         // Recall of the same source still needs fresh script initialization.
         let sources: Vec<_> = self
             .selection
@@ -573,7 +583,9 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PartShared {
     ui_activity: Option<Arc<ui_activity::Activity>>,
     effect_controls: Mutex<effect_controls::EffectControls>,
-    pub(crate) generation: AtomicU64,
+    pub(crate) generation: Arc<AtomicU64>,
+    snapshot_sequence: Arc<AtomicU64>,
+    snapshot_pending: Mutex<std::collections::VecDeque<snapshot_reuse::Pending>>,
     pub(crate) scalar_revision: AtomicU64,
     pub(crate) native_revision: AtomicU64,
     ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
@@ -1441,11 +1453,20 @@ impl Shared {
             return false;
         };
         let generation = atoms.generation.load(Ordering::Acquire);
+        // MAX is a permanent exhausted/cancelled sentinel. Host recall must
+        // still be able to invalidate the last admitted sequence (MAX - 1).
+        let Ok(previous) = atoms.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1).filter(|next| *next != u64::MAX)) else {
+            return false;
+        };
+        let recall_revision = self.view.lock_unpoisoned().parts.get(slot).map_or(0, |v| v.recall_revision);
         *request = Some(SnapshotRequest {
             slot,
             source: part.source(),
             path,
             generation,
+            sequence: previous + 1,
+            recall_revision,
+            allow_reuse: true,
         });
         true
     }
@@ -2026,11 +2047,15 @@ impl SavedMulti {
 }
 
 // Port from v1 0cb7a8a0:src/plugin.rs; prepared v2 part stays off audio until validation.
+#[derive(Clone)]
 pub(crate) struct SnapshotRequest {
     slot: usize,
     source: (String, u32, String),
     path: String,
     generation: u64,
+    sequence: u64,
+    recall_revision: u64,
+    allow_reuse: bool,
 }
 
 /// Validate on the loader before replacing any saved or playing state.
@@ -2044,6 +2069,13 @@ fn prepare_snapshot(
     let request = {
         let mut pending = params.shared.snapshot_request.lock_unpoisoned();
         if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize {
+            return None;
+        }
+        // At most two admitted payloads: the current receipt and one newer
+        // request. Further gestures replace the one lightweight request above;
+        // an inactive host cannot accumulate unbounded saved-state buffers.
+        if params.shared.part(pending.as_ref()?.slot)
+            .is_some_and(|part| part.snapshot_pending.lock_unpoisoned().len() >= 2) {
             return None;
         }
         pending.take()?
@@ -2061,22 +2093,7 @@ fn prepare_snapshot(
         "container parsing, explicit base matching and supported state import; audio not installed",
     );
     trace.stage("snapshot_parse_and_validation");
-    let current = || {
-        params
-            .shared
-            .part(request.slot)
-            .unwrap()
-            .generation
-            .load(Ordering::Acquire)
-            == request.generation
-            && params
-                .selection
-                .read_unpoisoned()
-                .parts
-                .get(request.slot)
-                .is_some_and(|p| p.source() == request.source)
-            && params.shared.snapshot_request.lock_unpoisoned().is_none()
-    };
+    let current = || snapshot_reuse::current(params, &request, true);
     if !current() {
         trace.detail(
             "cancellation",
@@ -2085,6 +2102,11 @@ fn prepare_snapshot(
         trace.finish("canceled");
         return None;
     }
+    let (request, mut trace) = match snapshot_reuse::try_submit(params, request, trace) {
+        Ok(()) => return None,
+        Err(ordinary) => ordinary,
+    };
+    let current = || snapshot_reuse::current(params, &request, true);
     params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading preset…".into();
     let part = params.selection.read_unpoisoned().parts[request.slot].clone();
     let rack_streaming = params.selection.read_unpoisoned().streaming;
@@ -2121,6 +2143,7 @@ fn prepare_snapshot(
             let mut selection = params.selection.write_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
             let valid = pending.is_none()
+                && params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
                 && params
                     .shared
                     .part(request.slot)
@@ -2131,7 +2154,7 @@ fn prepare_snapshot(
             let Some(part) = selection
                 .parts
                 .get_mut(request.slot)
-                .filter(|p| valid && p.source() == request.source)
+                .filter(|p| valid && snapshot_reuse::source_current(params, &request, &p.source()))
             else {
                 drop(pending);
                 drop(selection);
@@ -2152,7 +2175,8 @@ fn prepare_snapshot(
         Err(error) => {
             let selection = params.selection.read_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
-            let valid = params
+            let valid = params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
+                && params
                 .shared
                 .part(request.slot)
                 .unwrap()
@@ -2162,7 +2186,7 @@ fn prepare_snapshot(
                 && selection
                     .parts
                     .get(request.slot)
-                    .is_some_and(|p| p.source() == request.source)
+                    .is_some_and(|p| snapshot_reuse::source_current(params, &request, &p.source()))
                 && pending.is_none();
             if !valid {
                 drop(pending);
@@ -2215,6 +2239,7 @@ impl BackgroundTask for Load {
         shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
         service_current_ui(params);
+        snapshot_reuse::poll(params);
         // UVI publication retains its existing source/lock policy. The load
         // heartbeat only services the bounded core effect/control handoff.
         shared.refresh_uvi(params);
@@ -4065,7 +4090,7 @@ pub(crate) mod tests {
             "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
     }
 
-    fn transaction_candidate_with_source(name: &str, source: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+    pub(super) fn transaction_candidate_with_source(name: &str, source: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
         let script = sampler_ksp::compile(
             source,

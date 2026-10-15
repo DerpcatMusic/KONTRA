@@ -30,6 +30,8 @@ pub(super) fn rejection(reply: &ControlReply) -> Option<serde_json::Value> {
             state.values.len().saturating_add(state.callbacks.len()),
             None,
         ),
+        Op::CaptureSnapshotFence(_) => ("capture_snapshot_fence", 0, None),
+        Op::NativeSnapshotOverlay(overlay) => ("native_snapshot_overlay", overlay.state.values.len() + overlay.native.len(), None),
         Op::Edit(edits) => ("edit", edits.len(), edits.first().map(|e| (e.id.0, 0))),
         Op::Recall(edits) => ("recall", edits.len(), edits.first().map(|e| (e.id.0, 0))),
         Op::Capture(edits) => ("capture", edits.len(), edits.first().map(|e| (e.id.0, 0))),

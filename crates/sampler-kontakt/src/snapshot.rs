@@ -104,10 +104,33 @@ pub struct SnapshotState {
     pub groups: Vec<GroupState>,
 }
 
+impl SnapshotState {
+    /// Decode saved rows without initializing scripts or translating DSP.
+    /// Physical slots and duplicate names remain intact for whole-batch
+    /// validation by the existing setup's schema.
+    pub fn saved_values(&self) -> Result<Vec<Vec<(String, sampler_ir::Saved)>>, crate::Error> {
+        self.persistent.iter().map(|rows| crate::library::saved(rows)).collect()
+    }
+}
+
 pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
     let chunks = crate::read_chunks(path).map_err(|e| e.at(crate::Stage::Container))?;
+    decode_snapshot(path, &chunks)
+}
+
+/// Validate identity and decode saved state from the same immutable chunk read.
+/// A path replacement cannot mix one file's binding with another file's rows.
+pub fn read_snapshot_for_base(path: &Path, base: &Path) -> Result<SnapshotState, LoadError> {
+    let chunks = crate::read_chunks(path).map_err(|e| e.at(crate::Stage::Container))?;
+    validate_snapshot_chunks(&chunks, base).map_err(|error| LoadError::Invalid {
+        path: path.into(), reason: error.to_string(),
+    })?;
+    decode_snapshot(path, &chunks)
+}
+
+fn decode_snapshot(path: &Path, chunks: &ni_file::kontakt::KontaktChunks) -> Result<SnapshotState, LoadError> {
     let decode = |what, error| LoadError::decode(path, what, error).at(crate::Stage::Parse);
-    let other_files = other_files(&chunks).map_err(|e| decode("snapshot other-files table", e))?;
+    let other_files = other_files(chunks).map_err(|e| decode("snapshot other-files table", e))?;
     let snapshot =
         Snapshot::try_from(
             chunks
@@ -613,6 +636,10 @@ pub fn snapshot_base_name(path: &Path) -> anyhow::Result<String> {
 /// and the native program must still match either of the embedded identities.
 pub fn validate_snapshot_base(snapshot: &Path, base: &Path) -> anyhow::Result<()> {
     let chunks = crate::read_chunks(snapshot)?;
+    validate_snapshot_chunks(&chunks, base)
+}
+
+fn validate_snapshot_chunks(chunks: &ni_file::kontakt::KontaktChunks, base: &Path) -> anyhow::Result<()> {
     let names = ni_file::kontakt::objects::snapshot_metadata_names(
         chunks
             .find_first(0x51)
