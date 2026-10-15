@@ -621,6 +621,7 @@ impl Runtime {
                         let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
                         let asset=generation.asset(sample);
                         let cursor=cursor.with_offset(offset_micros,asset.sample_rate()).with_step(step);
+                        let cursor = self.stream_start_cursor(plan, cursor);
                         self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
                         count+=1;
                     }

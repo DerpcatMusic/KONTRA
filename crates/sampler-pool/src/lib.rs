@@ -12,7 +12,7 @@
 //!   time; claiming a held unit panics.
 
 mod snapshot;
-pub use snapshot::{Snapshot, SnapshotRead};
+pub use snapshot::{Snapshot, SnapshotPin, SnapshotRead};
 mod claim;
 mod pool;
 mod ring;
