@@ -287,3 +287,128 @@ fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
         assert_eq!(run(id(7), shape, invert), generic);
     }
 }
+
+/// The semantic source identities stay fixed while their dense indices move.
+/// Sine sources do not depend on the index-derived random seed.
+fn rate_scale_graph(order: [usize; 4], additional: bool, chained: bool, transitive: bool, native: bool) -> Prepared {
+    let mut first = match lfo(3., true) {
+        ModSource::Lfo(lfo) => lfo,
+        _ => unreachable!(),
+    };
+    first.phase = 0.25;
+    let mut second = first;
+    second.rate = LfoRate::Hertz(5.);
+    second.phase = 0.75;
+    let semantic = [lfo(2., true), ModSource::Constant, ModSource::Lfo(first), ModSource::Lfo(second)];
+    let index = |identity| order.iter().position(|&i| i == identity).unwrap();
+    let law = if native {
+        ModScaleLaw::KontaktIntensity { depth: 0.35, flags: 0x14, unit: 1. }
+    } else {
+        ModScaleLaw::Multiply
+    };
+    let scale = ModScale { source: index(2), shape: Some(0), lag: 173, law };
+    let mut rate = ModRoute::new(index(1), ModTarget::SourceRate(index(0) as u32), 0.12);
+    if additional {
+        rate.more_scales[0] = Some(scale);
+    } else {
+        rate.scale = Some(scale);
+    }
+    if chained {
+        // A gap before the last additional slot must not hide a dependency.
+        let last = rate.more_scales.len() - 1;
+        rate.more_scales[last] = Some(ModScale { source: index(3), shape: None, lag: 73, law });
+    }
+    let mut routes = vec![ModRoute::new(index(0), ModTarget::Attenuate, 1.), rate];
+    if transitive {
+        let mut rate = ModRoute::new(index(1), ModTarget::SourceRate(index(2) as u32), 0.08);
+        rate.more_scales[7] = Some(ModScale { source: index(3), shape: None, lag: 101, law });
+        routes.push(rate);
+    }
+    plan(8192)
+        .with_voice_modulation(
+            vec![ModProgram {
+                sources: order.map(|i| semantic[i]).to_vec(),
+                routes,
+                shapes: vec![vec![(0., 0.15), (0.5, 0.7), (1., 0.95)]],
+                ..Default::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap()
+}
+
+#[test]
+fn source_rate_scale_dependencies_are_current_under_source_reordering() {
+    for additional in [false, true] {
+        for (chained, transitive) in [(false, false), (true, false), (false, true)] {
+            for native in [false, true] {
+                for partition in [1, 7, 32, 64, 127] {
+                    // The reference places both independent scalers before the destination.
+                    for order in [[0, 1, 2, 3], [0, 3, 1, 2], [3, 0, 2, 1], [1, 2, 3, 0]] {
+                        let mut actual = start(rate_scale_graph(order, additional, chained, transitive, native), 0);
+                        let mut expected = start(rate_scale_graph([3, 2, 1, 0], additional, chained, transitive, native), 0);
+                        let mut a = vec![[0.; 2]; 2048];
+                        let mut b = vec![[0.; 2]; 2048];
+                        for id in [1, 2] {
+                            support::without_heap(|| {
+                                for (a, b) in a.chunks_mut(partition).zip(b.chunks_mut(partition)) {
+                                    actual.render(a).unwrap();
+                                    expected.render(b).unwrap();
+                                }
+                            });
+                            for (frame, (a, b)) in a.iter().zip(&b).enumerate() {
+                                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits),
+                                    "order {order:?}, additional {additional}, chained {chained}, transitive {transitive}, native {native}, partition {partition}, frame {frame}");
+                            }
+                            support::without_heap(|| {
+                                for rt in [&mut actual, &mut expected] {
+                                    rt.note_off(input(id), None).unwrap();
+                                    rt.render(&mut [[0.; 2]; 64]).unwrap();
+                                    assert_eq!(rt.voice_count(), 0);
+                                    if id == 1 { rt.trigger(input(2), 60, 1.).unwrap(); }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_rate_rejects_cycles_through_primary_or_additional_scales() {
+    for additional in [false, true] {
+        for mutual in [false, true] {
+            let mut routes = Vec::new();
+            for target in 0..if mutual { 2 } else { 1 } {
+                let dependency = if mutual { 1 - target } else { target };
+                let scale = ModScale { source: dependency, shape: None, lag: 0, law: ModScaleLaw::Multiply };
+                let mut route = ModRoute::new(2, ModTarget::SourceRate(target as u32), 0.12);
+                if additional { route.more_scales[7] = Some(scale); } else { route.scale = Some(scale); }
+                routes.push(route);
+            }
+            let result = plan(8192).with_voice_modulation(
+                vec![ModProgram { sources: vec![lfo(2., true), lfo(3., true), ModSource::Constant], routes, ..Default::default() }],
+                vec![Some(0)], vec![0],
+            );
+            assert!(matches!(result, Err(Error::InvalidInput)), "additional {additional}, mutual {mutual}");
+        }
+    }
+}
+
+#[test]
+fn source_phase_rejects_every_scale_storage_instead_of_ignoring_it() {
+    // Storage zero is the primary scale; 1..=8 are additional scale slots.
+    for storage in 0..=8 {
+        let mut route = ModRoute::new(1, ModTarget::SourcePhase(0), 0.25);
+        let scale = ModScale { source: 2, shape: None, lag: 0, law: ModScaleLaw::Multiply };
+        if storage == 0 { route.scale = Some(scale); } else { route.more_scales[storage - 1] = Some(scale); }
+        let result = plan(8192).with_voice_modulation(
+            vec![ModProgram { sources: vec![lfo(2., true), ModSource::Constant, ModSource::Constant], routes: vec![route], ..Default::default() }],
+            vec![Some(0)], vec![0],
+        );
+        assert!(matches!(result, Err(Error::InvalidInput)), "phase scale storage {storage}");
+    }
+}

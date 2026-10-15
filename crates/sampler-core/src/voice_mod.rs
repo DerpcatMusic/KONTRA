@@ -622,7 +622,7 @@ impl VoiceModulation {
                     let target = target as usize;
                     if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
                         || route.lag != 0
-                        || route.scale.is_some()
+                        || route.scales().next().is_some()
                     {
                         return Err(Error::InvalidInput);
                     }
@@ -653,7 +653,11 @@ impl VoiceModulation {
                         && phase_routes[i]
                             .iter()
                             .chain(&rate_routes[i])
-                            .all(|&r| emitted[program.routes[r].source])
+                            .all(|&r| {
+                                let route = &program.routes[r];
+                                emitted[route.source]
+                                    && route.scales().all(|scale| emitted[scale.source])
+                            })
                 });
                 let Some(next) = next else {
                     return Err(Error::InvalidInput);
