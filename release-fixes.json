@@ -5101,6 +5101,17 @@
       "category": "Fixed",
       "release_note": "Preserve mandatory resident PCM when optional preload anchors exceed the payload quota.",
       "validation": "Unchanged public UVI residency binary reproduces cap-128 failure; corrected public target passes all three cases, with 61 Kontakt stream cases passing. Exact mandatory boundary, optional anchor admission, source errors and cancellation remain checked."
+    },
+    {
+      "id": "macos-complete-notice-inventory",
+      "summary": "Require the complete bundled notice inventory in macOS archives and universal publication.",
+      "source_commits": [
+        "b5517cc72c8840feda9a0582d8eb02b9f502fa99"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Include the bundled assistant-font and FastLZ notices on macOS and reject missing legal inventory before composing or publishing an installer.",
+      "validation": "Real Mach-O synthetic composition suite passes with missing assistant font, FastLZ, BUFFR license and provenance rejection controls; publication and packaging safety suites pass. Original Apple signing/notarization/native install/rollback gates remain mandatory. This is notice completeness, not clearance of the documented ni-file permission gap."
     }
   ]
 }
