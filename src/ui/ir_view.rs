@@ -1754,6 +1754,8 @@ pub(super) fn widget_state(
             steps_shown,
         } if !wd.components.is_empty() => {
             let shown = steps_shown.unwrap_or(*columns).min(*columns) as usize;
+            let edge = wd.table_inner_edge.filter(|edge| !edge.visible || edge.color.is_some());
+            let mut samples = Vec::with_capacity(shown);
             let bars = (0..shown)
                 .map(|c| {
                     let cid = wd.components.get(c).copied();
@@ -1790,14 +1792,16 @@ pub(super) fn widget_state(
                     if let Some(id) = cid {
                         values.insert(id, value);
                     }
+                    samples.push(value);
                     editor
                         .unwrap_or_else(|| {
-                            super::render_art::table(
-                                vec![value],
-                                *range,
-                                *bipolar,
-                                wd.colors,
-                            )
+                            if edge.is_some() {
+                                // Keep the cell's exact input identity over a
+                                // single continuous table drawing.
+                                block(0., 0.)
+                            } else {
+                                super::render_art::table(vec![value], *range, *bipolar, wd.colors)
+                            }
                         })
                         .flex(1)
                         .h(h)
@@ -1811,7 +1815,16 @@ pub(super) fn widget_state(
                         })
                 })
                 .collect::<Vec<_>>();
-            row(bars).gap(1).w(w).h(h)
+            let cells = row(bars).gap(if edge.is_some() { 0. } else { 1. }).w(w).h(h);
+            if edge.is_some() {
+                stack![
+                    super::render_art::table_with_inner_edge(samples, *range, *bipolar, wd.colors, edge)
+                        .w(w).h(h),
+                    cells
+                ].w(w).h(h)
+            } else {
+                cells
+            }
         }
         Kind::Table {
             columns,
@@ -1888,7 +1901,7 @@ pub(super) fn widget_state(
                 }
             }
             samples.truncate(shown);
-            super::render_art::table(samples, *range, *bipolar, wd.colors)
+            super::render_art::table_with_inner_edge(samples, *range, *bipolar, wd.colors, wd.table_inner_edge)
                 .cursor(Cursor::Crosshair)
                 .focusable()
         }
