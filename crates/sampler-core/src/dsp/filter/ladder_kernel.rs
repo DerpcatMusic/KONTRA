@@ -7,10 +7,10 @@
 //! zero-delay feedback estimate, the +-24 clamp and 1/48 soft clip, the four trapezoidal stages,
 //! the tap weights and the compensation curves of all twelve selectors, and the 4-frame
 //! control advance, and the prepare FUN_140b06180 (feedback correction, 2 ms ramp in 32-frame
-//! ticks). The strict authored-input original-code reference below checks static HQ-off
-//! gain and all twelve selectors. Factory/public gain binding, HQ processing (core flag
-//! 0x30 doubles the internal rate through FUN_140ae2190), and the alternative cutoff path
-//! (flag 0x49) are outside that static comparison. Importer diagnostics remain unchanged.
+//! ticks). Strict authored-input original-code references check static HQ-off gain and all
+//! twelve selectors, plus a test-only static x2 composition. Factory/public gain binding,
+//! production HQ ownership and moving controls, and the alternative cutoff path (flag
+//! 0x49) remain outside those static comparisons. Importer diagnostics remain unchanged.
 
 use std::sync::OnceLock;
 
@@ -283,10 +283,9 @@ impl Ladder {
         let w = (80.0 / r).max(0.0);
         let inv = 1.0 / rate;
         let w8 = inv * inv * 12.987_881;
+        // Original 0x140b0632b..0x140b0633e forms the frequency product first.
         self.correction = ((w8 * w * w + 3.289_868_4) * w * inv * w * inv + 1.0)
-            * w
-            * std::f32::consts::PI
-            * inv;
+            * ((w * std::f32::consts::PI) * inv);
         self.correction_reciprocal = 1.0 / (1.0 + self.correction);
         self.correction_previous = self.correction - 1.0;
         self.correction_gain = r * r - 1.0;
@@ -1012,8 +1011,44 @@ mod tests {
     }
     include!("ladder_native_hq_vectors.rs");
 
+    // Original preparation FUN_140b06180, exact image SHA0fe6356e0879d058...
+    // Synthetic core, captured quality0/1 with explicit internal rates below; no host/admission claim.
+    // Fields: correction, reciprocal, previous, fixed correction gain.
+    // Captured only after the original table initializer; BSS is not a file constant.
+    const NATIVE_PREPARED_COEFFICIENTS: [(f32, [u32; 4]); 12] = [
+        (44_100.0, [0x3bc20b3d, 0x3f7e7e33, 0xbf7e7bea, 0xbd971bb8]),
+        (88_200.0, [0x3b420ace, 0x3f7f3e89, 0xbf7f3df5, 0xbd971bb8]),
+        (48_000.0, [0x3bb2470b, 0x3f7e9d60, 0xbf7e9b72, 0xbd971bb8]),
+        (96_000.0, [0x3b3246b4, 0x3f7f4e36, 0xbf7f4db9, 0xbd971bb8]),
+        (96_000.0, [0x3b3246b4, 0x3f7f4e36, 0xbf7f4db9, 0xbd971bb8]),
+        (192_000.0, [0x3ab2469e, 0x3f7fa6fb, 0xbf7fa6dd, 0xbd971bb8]),
+        (12_000.0, [0x3cb24dcc, 0x3f7a8bf5, 0xbf7a6d92, 0xbd971bb8]),
+        (22_050.0, [0x3c420cfa, 0x3f7d00e2, 0xbf7cf7cc, 0xbd971bb8]),
+        (24_000.0, [0x3c324864, 0x3f7d3e8b, 0xbf7d36de, 0xbd971bb8]),
+        (32_000.0, [0x3c05b5b4, 0x3f7ded7e, 0xbf7de929, 0xbd971bb8]),
+        (88_200.0, [0x3b420ace, 0x3f7f3e89, 0xbf7f3df5, 0xbd971bb8]),
+        (384_000.0, [0x3a324698, 0x3f7fd376, 0xbf7fd36e, 0xbd971bb8]),
+    ];
+
     #[test]
-    #[ignore = "HQ composition research; 47 original native mismatches remain"]
+    fn ladder_original_prepare_coefficient_fields() {
+        prepare();
+        let mut mismatched = 0;
+        for (case_index, (rate, expected)) in NATIVE_PREPARED_COEFFICIENTS.into_iter().enumerate() {
+            let mut filter = Ladder::default();
+            filter.tune([0.5, 0.7, 0.0], rate);
+            let actual = [filter.correction, filter.correction_reciprocal,
+                filter.correction_previous, filter.correction_gain].map(f32::to_bits);
+            if actual != expected {
+                mismatched += 1;
+                eprintln!("native_ladder_prepared_mismatch case_index={case_index} internal_rate={rate} actual={actual:08x?} expected={expected:08x?}");
+            }
+        }
+        eprintln!("native_ladder_prepared_comparison cells={} mismatched={mismatched}", NATIVE_PREPARED_COEFFICIENTS.len());
+        assert_eq!(mismatched, 0, "literal original prepared fields; exact f32 bits");
+    }
+
+    #[test]
     fn ladder_original_hq_static_composition() {
         use crate::dsp::kaiser::{Kaiser, State};
         prepare();
