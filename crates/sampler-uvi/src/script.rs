@@ -23,6 +23,8 @@ pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource, SampleP
 mod sources;
 pub use sources::{ScriptOccurrence, ScriptReadError};
 mod catalog_copy;
+#[cfg(test)]
+mod ui_invalidation_tests;
 #[cfg(feature = "scan")]
 pub mod diagnostics;
 mod modules;

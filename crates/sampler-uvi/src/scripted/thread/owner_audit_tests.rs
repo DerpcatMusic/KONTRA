@@ -104,3 +104,54 @@ fn owner_audit_tracks_backpressure_and_snapshots_do_not_wait_for_owner() {
     assert!(calls(&snapshot, "command_backpressure") > 0);
     assert!(calls(&snapshot, "backpressure_ui_requests") > 0);
 }
+
+#[test]
+fn ui_invalidation_avoids_full_owner_exports_for_identical_scalar_writes() {
+    let audit = Arc::new(OwnerAudit::default());
+    let (mut thread, loaded) = ScriptThread::spawn_owner(
+        xml("local label=Label('State'); label.text='same'; function onController(e) label.text=e.value==1 and 'changed' or 'same'; label.visible=true; label.enabled=true end"),
+        (),
+        Config::default(),
+        None,
+        Some(audit),
+    ).unwrap();
+    loaded.ui.enable_diagnostics();
+    let original = loaded.ui.interface();
+    let exports = calls(&loaded.ui.owner_audit().unwrap(), "ui_publish");
+    let mut commands = Vec::new();
+    for (value, expected_events) in [(0, 8), (1, 9)] {
+        for _ in 0..if value == 0 { 8 } else { 1 } {
+            thread.input(HostInput::Controller {
+                cc: 1,
+                value,
+                channel: 0,
+            });
+        }
+        let mut request = loaded
+            .ui
+            .request_diagnostics(Duration::from_secs(3))
+            .unwrap();
+        let mut acknowledgement = None;
+        until(|| {
+            thread.drain(&mut commands);
+            match request.poll() {
+                DiagnosticPoll::Pending => false,
+                DiagnosticPoll::Complete(reply) => {
+                    acknowledgement = Some(reply);
+                    request.commands_drained()
+                }
+                status => panic!("unexpected diagnostic terminal state {status:?}"),
+            }
+        });
+        assert_eq!(acknowledgement.unwrap().events_executed, expected_events);
+        let audit = loaded.ui.owner_audit().unwrap();
+        if value == 0 {
+            assert_eq!(calls(&audit, "ui_publish"), exports);
+            assert!(Arc::ptr_eq(&loaded.ui.interface(), &original));
+        } else {
+            assert_eq!(calls(&audit, "ui_publish"), exports + 1);
+            assert_eq!(loaded.ui.interface().widgets[0].text, "changed");
+        }
+    }
+    assert!(commands.is_empty());
+}
