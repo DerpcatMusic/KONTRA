@@ -168,6 +168,8 @@ const GROWTH_SHARE: usize = 4;
 struct Grower {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    #[cfg(test)]
+    returned: std::sync::mpsc::Receiver<()>,
 }
 
 impl Grower {
@@ -179,12 +181,23 @@ impl Grower {
         note_ceiling: usize,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let (return_ack, returned) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("sampler-grow".into())
             .spawn({
                 let stop = stop.clone();
                 move || {
                     while !stop.load(Ordering::Relaxed) {
+                        let reclaimed = control.collect_growth_returns();
+                        #[cfg(test)]
+                        if reclaimed {
+                            // Acknowledgement follows actual off-audio destruction.
+                            // An unobserved/full test channel must never block shutdown.
+                            let _ = return_ack.try_send(());
+                        }
+                        #[cfg(not(test))]
+                        let _ = reclaimed;
                         let capacity = control.voice_capacity();
                         let notes = control.note_params_capacity();
                         if control.note_pressure() && notes < note_ceiling {
@@ -214,6 +227,8 @@ impl Grower {
         Ok(Self {
             stop,
             thread: Some(thread),
+            #[cfg(test)]
+            returned,
         })
     }
 }
@@ -3953,6 +3968,47 @@ impl CoreLoader for V2Loader {
 mod tests {
     use super::*;
     use crate::sound::event::HostPattern;
+
+    #[test]
+    fn grower_collects_returned_storage_without_pressure_or_new_request() {
+        for voice in [false, true] {
+            let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+            let limits = Limits::for_plan(&plan, 512, 2);
+            let (mut runtime, mut control) =
+                Runtime::with_plan_updates_and_note_capacity(plan, limits, 2, 1, 128).unwrap();
+            if voice {
+                assert_eq!(control.grow_voices(4), Ok(4));
+            } else {
+                assert_eq!(control.grow_note_params(256), Ok(256));
+            }
+            assert!(!control.voice_pressure() && !control.note_pressure());
+            let grower = Grower::start(&mut runtime, control, 8, 1, 512).unwrap();
+            assert_eq!(crate::plugin::tests::allocations(|| {
+                runtime.render(&mut [[0.; 2]; 1]).unwrap();
+            }), 0);
+            // This acknowledgement is emitted by the real control worker only
+            // after collect_growth_returns has destroyed the returned owner.
+            grower.returned.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("return should be reclaimed without another pressure event");
+            assert_eq!((runtime.voice_capacity(), runtime.note_params_capacity()),
+                if voice { (4, 128) } else { (2, 256) });
+            drop(grower); // stop/join, then both endpoints are destroyed off audio
+            drop(runtime);
+        }
+    }
+
+    #[test]
+    fn grower_can_stop_before_a_queued_growth_is_published() {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 512, 2);
+        let (mut runtime, mut control) =
+            Runtime::with_plan_updates_and_note_capacity(plan, limits, 2, 1, 128).unwrap();
+        assert_eq!(control.grow_voices(4), Ok(4));
+        let grower = Grower::start(&mut runtime, control, 8, 1, 512).unwrap();
+        drop(grower);
+        assert_eq!(runtime.voice_capacity(), 2);
+        drop(runtime);
+    }
 
     #[test]
     fn input_tone_core_skips_post_filter_for_main_and_direct_outputs() {

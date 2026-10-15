@@ -115,6 +115,18 @@ pub struct PlanControl {
 }
 
 impl PlanControl {
+    /// Reclaim one returned growth on this control owner, without requesting
+    /// another growth. Call off audio: this destroys the returned storage.
+    /// Empty returns leave the in-flight gate and capacity accounting untouched.
+    pub fn collect_growth_returns(&mut self) -> bool {
+        let Ok(growth) = self.grown.pop() else {
+            return false;
+        };
+        drop(growth);
+        self.growing = false;
+        true
+    }
+
     pub fn note_params_capacity(&self) -> usize {
         self.note_params
     }
@@ -133,9 +145,7 @@ impl PlanControl {
         if self.growth.is_abandoned() {
             return Err(PlanError::Disconnected);
         }
-        while self.grown.pop().is_ok() {
-            self.growing = false;
-        }
+        self.collect_growth_returns();
         let adopted = self.installed.load(std::sync::atomic::Ordering::Acquire) == self.sequence;
         if self.growing || !adopted {
             return Err(PlanError::Capacity);
@@ -174,9 +184,7 @@ impl PlanControl {
         if self.growth.is_abandoned() {
             return Err(PlanError::Disconnected);
         }
-        while self.grown.pop().is_ok() {
-            self.growing = false;
-        }
+        self.collect_growth_returns();
         let adopted = self.installed.load(std::sync::atomic::Ordering::Acquire) == self.sequence;
         if self.growing || !adopted || voices <= self.voices {
             return Err(PlanError::Capacity);
