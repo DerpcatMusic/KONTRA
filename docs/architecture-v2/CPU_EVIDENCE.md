@@ -1010,3 +1010,52 @@ candidate source hashes stay unchanged throughout these functional checks.
 Raw functional logs, source manifests, assembly, passive compiler-gate records
 and the frozen baseline are in
 `/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261015-render/`.
+
+## Measured Prelude borrowing, 2026-10-15
+
+The render-only candidate keeps the owned Prelude local and borrows its ramp,
+copying only for the existing chain amplifier and by-value mixer. Arithmetic,
+coefficients, source lifetimes, control cadence and retirement stay unchanged.
+Full optimized core unit suites pass (477, 11 existing ignored), including the
+300-distinct-source exact PCM/cursor/envelope partition and release witness;
+relevant fade/modulation/TRACE/realtime/paged/revision integrations also pass.
+
+Fresh same-cohort helpers freeze `e8f92095c` before and after the exact patch;
+only `render.rs` differs. Default-CPU corpus results were small/noisy (the long
+256-frame repeat improved 1.58% relatively; 64-frame pairs were mixed) and were
+not promoted alone. Confirmation uses corpus ThinLTO with explicit
+`RUSTFLAGS=-C target-cpu=x86-64-v3`, fixed epoch, default+shots/library-access.
+Shipping-flags assembly removes 16 unconditional payload moves after
+`prepare_voice`: `render_voice` shrinks 7,308 to 7,059 bytes and its stack
+reservation drops `0x8b8` to `0x8a8`.
+
+Compiler-free CPU5 actual `Sampler::process` comparisons use 300 owned distinct
+resident sources, four balanced alternating pairs per block, 10,000 plain
+callbacks/run and 4,000 fractional-pitch callbacks/run:
+
+| Workload | Frames | Baseline busy/span | Candidate busy/span | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| Plain | 64 | 2.64760% | 2.45999% | -7.09% |
+| Plain | 256 | 1.53365% | 1.41472% | -7.75% |
+| Fractional | 64 | 18.26651% | 18.21195% | -0.30% |
+| Fractional | 256 | 16.71239% | 16.55222% | -0.96% |
+
+All four plain meter and whole-child all-thread CPU pairs improve at both
+buffers; pooled child CPU falls 6.18%/7.20% at 64/256. Child CPU includes setup,
+warmup, observers and release, not just steady workers. Fractional has no
+material regression (child CPU -0.89%/-0.69%); its 64-frame meter has one noisy
+pair. PCM hash/energy, callback heap guards, 33-callback release and runtime
+counters match. Plain deadline misses are zero; fractional baseline misses
+3/11 versus candidate 1/6 at 64/256, with scheduling outliers preserved.
+Performance governor, sampled CPU5 3.929–4.999 GHz and desktop/bees activity are
+recorded; there is no compiler overlap.
+
+The source/flag/binary freezes, assembly and all 32 raw receipts are in
+`/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-prelude-v3-20261015/`.
+Baseline SHA-256 is
+`d49f75203e7d7fb5b44e53c67ff1892300f30bb630d7846252f72a70222ebcc4`;
+candidate is `dfd3be341ab8cdcb2a5606005cddf818835f8a35640a5d2d8f425c0e9d98fa91`.
+These are cfg(test) helper busy/span results with shipping CPU flags, not
+installed CLAP/UI absolute-meter evidence. The installed `e8f92095c` remains
+unchanged by this experiment, and the 300-voice 1% KONTRA meter target remains
+open.
