@@ -837,6 +837,7 @@ dependencies = [
 name = "corpus-health"
 version = "0.1.0"
 dependencies = [
+ "kontakto",
  "ni-file",
  "sampler-core",
  "sampler-ir",
@@ -2128,7 +2129,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kontakto"
-version = "0.3.476"
+version = "0.3.477"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4192,6 +4193,7 @@ dependencies = [
  "dirs",
  "ncw",
  "ni-file",
+ "rustix",
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
@@ -4201,6 +4203,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "symphonia",
+ "tempfile",
 ]
 
 [[package]]
@@ -4208,10 +4211,12 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ir",
  "sampler-parity",
  "sampler-ui-ir",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -4275,11 +4280,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "crc32fast",
+ "dirs",
  "flate2",
  "libc",
  "mlua",
  "roxmltree",
  "rtrb",
+ "rustix",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",

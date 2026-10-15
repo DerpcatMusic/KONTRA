@@ -80,7 +80,7 @@ pub enum CurveSettings {
     /// UVI BitCrusher normalized Drive.
     Destructor(f64),
     /// Kontakt Skreamer `[tone, drive, bass, bright, mix]`.
-    Skreamer([f32; 5]),
+    Skreamer([Parameter; 5]),
     /// A UVI drive engine.
     Drive(sampler_ir::fx::color::Drive),
     Tubescreamer(sampler_ir::fx::color::Tubescreamer),
@@ -181,7 +181,7 @@ impl Settings {
                 CurveSettings::Classic(p) | CurveSettings::Enhanced(p) | CurveSettings::Drums(p) => shape(p),
                 CurveSettings::Tube(p) | CurveSettings::Transistor(p) => live_knob(p),
                 CurveSettings::Destructor(d) => d.is_finite() && (0.0..=1.0).contains(d),
-                CurveSettings::Skreamer(k) => k.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Skreamer(k) => k.iter().all(live_knob),
                 CurveSettings::Amp(a) => a.knobs.iter().all(|v| v.is_finite()),
                 CurveSettings::Diode(d) => [d.drive, d.tone, d.high_pass, d.asymmetry, d.output_gain].iter().all(|v| v.is_finite()),
                 CurveSettings::ToneStack(d) => [d.bass, d.mid, d.treble, d.gain].iter().all(|v| (0.0..=1.0).contains(v)),
@@ -244,7 +244,16 @@ impl Settings {
             }
             CurveSettings::Rectifier(mode) => Curve::Rectifier(mode),
             CurveSettings::Destructor(drive) => Curve::Destructor(lofi::Destructor::new(drive)),
-            CurveSettings::Skreamer(knobs) => Curve::Skreamer(skreamer::Skreamer::new(knobs, rate)),
+            CurveSettings::Skreamer(knobs) => {
+                super::filter::ladder_kernel::prepare();
+                let knobs = knobs.map(|p| p.compile(bindings));
+                match knobs.map(fixed) {
+                    [Some(tone), Some(drive), Some(bass), Some(bright), Some(mix)] => {
+                        Curve::Skreamer(skreamer::Skreamer::new([tone, drive, bass, bright, mix], rate))
+                    }
+                    _ => Curve::LiveSkreamer(knobs),
+                }
+            }
             CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
             CurveSettings::Tubescreamer(d) => Curve::Tubescreamer(tubescreamer::Engine::new(d, rate)),
             CurveSettings::Dirt(d) => Curve::Dirt(dirt::Engine::new(d, rate)),
@@ -320,6 +329,7 @@ enum Curve {
     Rectifier(Rectifier),
     Destructor(lofi::Destructor),
     Skreamer(skreamer::Skreamer),
+    LiveSkreamer([PreparedParameter; 5]),
     Drive(drive::Engine),
     Tubescreamer(tubescreamer::Engine),
     Dirt(dirt::Engine),
@@ -447,6 +457,26 @@ impl State {
 }
 
 impl Color {
+    /// Only prepared subunits can mutate their histories. Live controls alter
+    /// their values, not which subunits this color processor owns. Preserve the
+    /// guards for every owned history, even while a unit is bypassed.
+    pub(super) fn finite_state(&self, state: &State) -> bool {
+        self.gainer.is_none_or(|_| state.gain.is_finite())
+            && self.hold.as_ref().is_none_or(|_| {
+                state.hold.held.iter().all(|v| v.is_finite()) && state.hold.phase.is_finite()
+            })
+            && self.decimator.as_ref().is_none_or(|_| state.decimator.finite())
+            && self.filter.as_ref().is_none_or(|_| state.biquad.iter().flatten().all(|v| v.is_finite()))
+            && self.redux.as_ref().is_none_or(|_| state.redux.finite())
+            && self.damping.as_ref().is_none_or(|_| state.damper.iter().flatten().all(|v| v.is_finite()))
+            && self.noise.as_ref().is_none_or(|_| state.noise.history.iter().all(|v| v.is_finite()))
+            && (!matches!(self.curve, Curve::Enhanced(..) | Curve::Drums(..)) || state.saturator.finite())
+            && state.shaper.finite()
+            && self.tone.as_ref().is_none_or(|_| state.tone.finite())
+            && self.stereo.as_ref().is_none_or(|_| state.stereo.width.is_finite() && state.stereo.pan.is_finite())
+            && self.widener.as_ref().is_none_or(|_| state.widener.finite())
+    }
+
     /// Whether the unit has a voice-lane kernel: only memoryless curves, the
     /// Gainer slew and the non-pseudo Stereo Modeller do.
     pub(super) fn batches(&self) -> bool {
@@ -476,6 +506,8 @@ impl Color {
             "kontakt_classic_saturation"
         } else if matches!(self.curve, Curve::Rectifier(_)) {
             "rectifier"
+        } else if matches!(self.curve, Curve::Skreamer(_) | Curve::LiveSkreamer(_)) {
+            "kontakt_skreamer"
         } else if self.decimator.is_some() {
             "decimator"
         } else if self.gainer.is_some() {
@@ -503,6 +535,9 @@ impl Color {
         match &self.curve {
             Curve::Classic(p) | Curve::Enhanced(p, _) | Curve::Drums(p, _) => parameters.push(("shape", *p)),
             Curve::Driven { drive, .. } => parameters.push(("drive", *drive)),
+            Curve::LiveSkreamer(knobs) => {
+                parameters.extend(["tone", "drive", "bass", "bright", "mix"].into_iter().zip(*knobs));
+            }
             _ => {}
         }
         match &self.damping {
@@ -570,6 +605,9 @@ impl Color {
             }
             Curve::Destructor(d) => d.process(block, len),
             Curve::Skreamer(s) => s.process(slot!(state, Skreamer), block, len),
+            Curve::LiveSkreamer(knobs) => skreamer::process_live(
+                *knobs, self.rate, slot!(state, Skreamer), parameters, block, len, at,
+            ),
             Curve::Drive(d) => d.process(slot!(state, Drive), block, len),
             Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
             Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),

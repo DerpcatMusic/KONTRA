@@ -28,6 +28,9 @@ const FILE_TABLE: u16 = 0x4b;
 const LEGACY_FILE_TABLE: u16 = 0x3d;
 const SCRIPT: u16 = 6;
 
+mod impulse_namespace;
+use impulse_namespace::EffectFileOrigins;
+
 /// A translated instrument and the resolver of the samples its assets name.
 pub struct Kontakt {
     pub instrument: ir::Instrument,
@@ -247,19 +250,7 @@ fn translate(
     control_values: &[(sampler_core::ControlId, i32)],
     cache_program: Option<u32>,
 ) -> Result<Kontakt, LoadError> {
-    if let Some(snapshot) = snapshot {
-        // The snapshot's racks and buses are the program's own, in the same order.
-        let mut saved = snapshot.effects.iter();
-        for kind in [crate::effects::RACK, crate::effects::BUS] {
-            let mut theirs = saved.clone().filter(|(id, _)| *id == kind);
-            for child in program.0.children.iter_mut().filter(|c| c.id == kind) {
-                if let Some((_, data)) = theirs.next() {
-                    child.data = data.clone();
-                }
-            }
-        }
-        let _ = saved.next();
-    }
+    let effect_files = EffectFileOrigins::overlay(&mut program, snapshot);
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -450,6 +441,17 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_, _>>()
         .map_err(|e| decode("source group names", e))?;
+    let zone_data = &program.0.find_first(ZONE_LIST)
+        .ok_or_else(|| invalid("missing zone list"))?.data;
+    // Initializers may query/attach physical zones before effect/group DSP
+    // admission. Read only bounded serialized metadata here, never samples.
+    let span = crate::audit::Span::new("translate_zone_metadata_prepass");
+    let zone_metadata = if out.ir.behaviors.iter().any(|b| b.language == ir::Language::Ksp) {
+        source_zone_metadata(zone_data, group_names.len()).map_err(|reason| invalid(&reason))?
+    } else {
+        Default::default()
+    };
+    drop(span);
     if let Some(snapshot) = snapshot {
         out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
         for behavior in &mut out.ir.behaviors {
@@ -472,8 +474,9 @@ fn translate(
         }
     }
     let span = crate::audit::Span::new("translate_ksp_init");
-    let initialized =
-        crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
+    let mut initialized = crate::load::initialize_scripts_with_zones(
+        &mut out.ir, Some(&path), group_names, control_values, &zone_metadata,
+    );
     out.engine = initialized
         .states
         .iter()
@@ -540,16 +543,13 @@ fn translate(
     let mut impulse_params = Vec::new();
     {
         // Convolution impulse responses are named by the other-files table.
-        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
-            let name = u32::try_from(index)
-                .ok()
-                .and_then(|i| others.get(&i))
-                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+        let mut load = |request: crate::effects::ImpulseRequest| -> Result<crate::effects::Decoded, String> {
+            let name = effect_files.name(request, &others, snapshot)?;
             let at = samples
                 .resolve_impulse(parent, name, &containers)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
-            impulse_sources.insert(index, at.clone());
+            impulse_sources.insert(request, at.clone());
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
@@ -570,11 +570,7 @@ fn translate(
     let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
-    let data = &program
-        .0
-        .find_first(ZONE_LIST)
-        .ok_or_else(|| invalid("missing zone list"))?
-        .data;
+    let data = zone_data;
     let mut r = Cursor::new(data.as_slice());
     let count = u32le(&mut r).map_err(|e| LoadError::io(&path, e))? as usize;
     if count > data.len() / 8 {
@@ -660,6 +656,7 @@ fn translate(
         objects.zones.shrink_to_fit();
     }
     drop(_span);
+    crate::load::admit_initialized_zone_sources(&mut out.ir, &mut initialized);
     let mut kontakt = Kontakt {
         instrument: out.ir,
         locations: out.locations,
@@ -668,9 +665,9 @@ fn translate(
     };
     let recipes = impulse_params
         .into_iter()
-        .map(|params| {
+        .map(|(request, params)| {
             Some(crate::cache::ImpulseRecipe {
-                source: impulse_sources.get(&params.ir_index)?.clone(),
+                source: impulse_sources.get(&request)?.clone(),
                 params,
             })
         })
@@ -1866,7 +1863,7 @@ impl Translation {
                     ModSource::Unassigned => continue,
                     other => {
                         let reason = match other {
-                            ModSource::RandomBipolar => ir::Reason::UnknownLaw,
+                            ModSource::RandomBipolar => ir::Reason::UnknownLawOmitted,
                             _ => not_modeled,
                         };
                         let targets: Vec<_> =
@@ -2381,7 +2378,8 @@ impl Translation {
             ir::Target::LoopStart
             | ir::Target::LoopLength
             | ir::Target::SourceRate(_)
-            | ir::Target::SourcePhase(_) => true,
+            | ir::Target::SourcePhase(_)
+            | ir::Target::Wavetable(_) => true,
             ir::Target::Processor { parameter, .. } => !matches!(
                 parameter,
                 ir::ProcessorParameter::Gain
@@ -2716,6 +2714,19 @@ impl Translation {
                 )
             }
             "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
+            "wavetablePosition" | "warpFactor" | "warpFactor2"
+                if self.ir.source_indices.modulators.iter().find(|m| m.runtime == Some(source))
+                    .and_then(|m| self.ir.source_indices.groups.get(m.group).copied().flatten()
+                        .or_else(|| self.ir.source_indices.groups.is_empty().then_some(ir::GroupRef(m.group))))
+                    .and_then(|group| self.ir.groups.get(group.0))
+                    .is_some_and(|group| group.wavetable.is_some()) =>
+            {
+                (ir::Target::Wavetable(match target.param.as_str() {
+                    "wavetablePosition" => ir::WavetableParameter::Position,
+                    "warpFactor" => ir::WavetableParameter::Form1,
+                    _ => ir::WavetableParameter::Form2,
+                }), ir::Depth::Normalized(i))
+            }
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -2923,6 +2934,7 @@ impl Translation {
                 };
                 self.ir.assets.push(ir::Asset {
                     location: ir::AssetLocation::Path(location.to_string_lossy().into_owned()),
+                    residency: Default::default(),
                     encoding,
                     root_key: None,
                     loops: Vec::new(),
@@ -3092,6 +3104,29 @@ struct RawZone {
     source: ir::kontakt::Zone,
 }
 
+/// Same one-based physical identities used by the later ZoneList admission
+/// pass. No dense group/zone ordinals, sample resolution or payload reads.
+fn source_zone_metadata(
+    data: &[u8],
+    groups: usize,
+) -> Result<std::collections::BTreeMap<u32, [i32; 3]>, String> {
+    let mut reader = Cursor::new(data);
+    let count = u32le(&mut reader).map_err(|e| e.to_string())?;
+    if count as usize > data.len() / 8 {
+        return Err("zone count exceeds the zone list".into());
+    }
+    let mut metadata = std::collections::BTreeMap::new();
+    for index in 0..count {
+        let zone = raw_zone(&mut reader).map_err(|reason| format!("zone {index}: {reason}"))?;
+        if zone.group >= groups {
+            return Err(format!("zone {index} refers to missing group {}", zone.group));
+        }
+        let group = i32::try_from(zone.group).map_err(|_| "source group index exceeds script range")?;
+        metadata.insert(index + 1, [group, i32::from(zone.source.low_key), i32::from(zone.source.high_key)]);
+    }
+    Ok(metadata)
+}
+
 /// A saved automation tag's script slot, widget ordinal and whether it names a `ui_switch`.
 fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
     let (switch, rest) = match tag.strip_prefix("pts_script_slider_") {
@@ -3104,6 +3139,33 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
+    fn zone_record(group: u32, low: i16, high: i16) -> Vec<u8> {
+        let mut public = vec![0; 48];
+        public[16..18].copy_from_slice(&low.to_le_bytes());
+        public[18..20].copy_from_slice(&high.to_le_bytes());
+        let mut record = group.to_le_bytes().to_vec();
+        record.extend([1, 0x9a, 0]);
+        record.extend(0u32.to_le_bytes());
+        record.extend(48u32.to_le_bytes());
+        record.extend(public);
+        record.extend(0u32.to_le_bytes());
+        record
+    }
+
+    #[test]
+    fn initializer_zone_prepass_uses_physical_order_and_needs_no_sample_resolver() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        data.extend(zone_record(2,60,61));
+        data.extend(zone_record(0,36,48));
+        data.extend(zone_record(1,80,90));
+        assert_eq!(super::source_zone_metadata(&data,3).unwrap(),
+            [(1,[2,60,61]),(2,[0,36,48]),(3,[1,80,90])].into());
+        assert!(super::source_zone_metadata(&data,2).is_err());
+        assert!(super::source_zone_metadata(&data[..data.len()-1],3).is_err());
+        data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(super::source_zone_metadata(&data,3).is_err());
+    }
+
     #[test]
     fn automation_tags_name_sliders_and_switches() {
         assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));
@@ -4418,6 +4480,25 @@ mod modulation {
     }
 
     #[test]
+    fn wavetable_targets_bind_to_the_real_source_group_and_keep_normalized_depth() {
+        let mut out = translation();
+        out.ir.groups.push(ir::Group { wavetable: Some(ir::Wavetable::default()), ..Default::default() });
+        out.ir.source_indices.groups = vec![None; 8];
+        out.ir.source_indices.groups[7] = Some(ir::GroupRef(0));
+        out.ir.modulators.push(ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity });
+        out.source_modulator(7, 31, true, String::new(), &[], None);
+        out.ir.source_indices.modulators[0].runtime = Some(ir::ModulatorRef(0));
+        for (name, parameter) in [("wavetablePosition", ir::WavetableParameter::Position),
+            ("warpFactor", ir::WavetableParameter::Form1), ("warpFactor2", ir::WavetableParameter::Form2)] {
+            let route = out.route("source", ir::ModulatorRef(0), true, &target(name, 0.25), None).unwrap();
+            assert_eq!(out.ir.routes[route.0].target, ir::Target::Wavetable(parameter));
+            assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(0.25));
+        }
+        out.ir.groups[0].wavetable = None;
+        assert!(out.route("sample", ir::ModulatorRef(0), true, &target("wavetablePosition", 0.25), None).is_none());
+    }
+
+    #[test]
     fn published_processor_controls_accept_native_modulation_by_physical_slot() {
         let mut out = translation();
         out.source_modulator(7, 31, true, String::new(), &[], None);
@@ -4796,6 +4877,7 @@ mod modulation {
         assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default, .. }
             if default == f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.))));
         t.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.chain = Some(ir::ChainRef(0));

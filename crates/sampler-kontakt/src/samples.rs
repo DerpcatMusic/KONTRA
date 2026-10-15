@@ -29,6 +29,13 @@ pub struct Source {
     pub(crate) key: Option<Arc<dyn LibraryKey>>,
     pub(crate) handle: Option<Arc<File>>,
     pub(crate) header: Option<(u32, usize)>,
+    pub(crate) identity: Arc<crate::FileIdentity>,
+}
+impl Source {
+    pub(crate) fn check_snapshot(&self, file: &File) -> io::Result<()> {
+        self.identity.check_range(self.offset, self.size)?;
+        self.identity.check(file)
+    }
 }
 
 /// Resolves and decodes the samples of one library, opening each archive's
@@ -41,6 +48,9 @@ pub struct Samples {
     archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
     handles: HashMap<PathBuf, Arc<File>>,
+    // Source workers share one admission authority per physical file. Metadata
+    // snapshots are not deep-cloned for each parallel source-resolution lane.
+    identities: Arc<std::sync::Mutex<HashMap<PathBuf, Arc<crate::FileIdentity>>>>,
     /// Virtual `<instrument>/<member>` paths to bounded FileContainer samples.
     embedded: HashMap<PathBuf, Source>,
     /// Numeric headers only; repeated zone trims need no additional disk reads.
@@ -64,6 +74,7 @@ impl Samples {
             archives: HashMap::new(),
             keys: HashMap::new(),
             handles: HashMap::new(),
+            identities: Arc::new(std::sync::Mutex::new(HashMap::new())),
             embedded: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
@@ -76,13 +87,18 @@ impl Samples {
         use std::io::{Read, Seek};
         let mut samples = Self::new(root);
         let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+        let identity = Arc::new(
+            crate::FileIdentity::capture(&file.metadata().map_err(|e| LoadError::io(path, e))?)
+                .map_err(|e| LoadError::io(path, e))?,
+        );
         let mut magic = [0; 16];
         file.read_exact(&mut magic)
             .map_err(|e| LoadError::io(path, e))?;
         if &magic == b"/\\ NI FC MTD  /\\" {
             file.rewind().map_err(|e| LoadError::io(path, e))?;
-            let container = ni_file::file_container::NIFileContainer::read(file)
+            let container = ni_file::file_container::NIFileContainer::read(&mut file)
                 .map_err(|e| LoadError::decode(path, "monolith sample directory", e))?;
+            identity.check(&file).map_err(|e| LoadError::io(path, e))?;
             for item in container.items {
                 let name = item.filename.replace(['|', '\\'], "/");
                 if Path::new(&name).is_absolute() || name.split('/').any(|p| p == "..") {
@@ -94,12 +110,23 @@ impl Samples {
                 let location = path.join(name);
                 let source = Source {
                     path: path.into(),
-                    offset: container.file_section_offset + item.file_start_offset,
+                    offset: container
+                        .file_section_offset
+                        .checked_add(item.file_start_offset)
+                        .ok_or_else(|| LoadError::Invalid {
+                            path: path.into(),
+                            reason: "monolith sample offset overflow".into(),
+                        })?,
                     size: item.file_size,
                     key: None,
                     handle: None,
                     header: None,
+                    identity: identity.clone(),
                 };
+                source
+                    .identity
+                    .check_range(source.offset, source.size)
+                    .map_err(|e| LoadError::io(path, e))?;
                 if samples.embedded.insert(location, source).is_some() {
                     return Err(LoadError::Invalid {
                         path: path.into(),
@@ -329,10 +356,16 @@ impl Samples {
                     reason: "monolith sample exceeds 1 GiB".into(),
                 })?;
             let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+            source
+                .check_snapshot(&file)
+                .map_err(|e| LoadError::io(location, e))?;
             file.seek(SeekFrom::Start(source.offset))
                 .map_err(|e| LoadError::io(location, e))?;
             let mut bytes = vec![0; size];
             file.read_exact(&mut bytes)
+                .map_err(|e| LoadError::io(location, e))?;
+            source
+                .check_snapshot(&file)
                 .map_err(|e| LoadError::io(location, e))?;
             return decode(&bytes).map_err(|reason| LoadError::Invalid {
                 path: location.into(),
@@ -364,9 +397,10 @@ impl Samples {
             return Ok(source.clone());
         }
         let Some((archive, member)) = self.archive_member(location) else {
-            let size = std::fs::metadata(location)
-                .map_err(|e| LoadError::io(location, e))?
-                .len();
+            let identity = self
+                .file_identity(location, None)
+                .map_err(|e| LoadError::io(location, e))?;
+            let size = identity.len();
             return Ok(Source {
                 path: location.into(),
                 offset: 0,
@@ -374,10 +408,17 @@ impl Samples {
                 key: None,
                 handle: None,
                 header: None,
+                identity,
             });
         };
         self.archive(&archive)?;
         let handle = self.handles[&archive].clone();
+        let identity = self
+            .file_identity(&archive, Some(&handle))
+            .map_err(|e| LoadError::io(&archive, e))?;
+        identity
+            .check(&handle)
+            .map_err(|e| LoadError::io(&archive, e))?;
         let entry = self.archives[&archive]
             .member(
                 FileAt {
@@ -392,6 +433,12 @@ impl Samples {
                 path: location.into(),
                 reason: "invalid archive member".into(),
             })?;
+        identity
+            .check(&handle)
+            .map_err(|e| LoadError::io(&archive, e))?;
+        identity
+            .check_range(entry.offset, entry.size)
+            .map_err(|e| LoadError::io(&archive, e))?;
         if entry.encoded && entry.key_index != 0xff && entry.key_index != 0x100 {
             return Err(LoadError::Invalid {
                 path: location.into(),
@@ -411,6 +458,7 @@ impl Samples {
             None
         };
         Ok(Source {
+            identity,
             path: archive,
             offset: entry.offset,
             size: entry.size,
@@ -457,7 +505,10 @@ impl Samples {
         } else {
             None
         };
+        let identity = self.file_identity(file, handle.as_deref()).ok()?;
+        identity.check_range(offset, size).ok()?;
         Some(Source {
+            identity,
             path: file.into(),
             offset,
             size,
@@ -491,6 +542,7 @@ impl Samples {
                         archives: self.archives.clone(),
                         keys: self.keys.clone(),
                         handles: self.handles.clone(),
+                        identities: self.identities.clone(),
                         embedded: self.embedded.clone(),
                         frame_counts: HashMap::new(),
                         loose: None,
@@ -528,8 +580,18 @@ impl Samples {
         let mut head = Vec::new();
         let source = self.source(location)?;
         let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+        source
+            .check_snapshot(&file)
+            .map_err(|e| LoadError::io(location, e))?;
         file.seek(SeekFrom::Start(source.offset))
-            .and_then(|_| file.take(source.size.min(1 << 16)).read_to_end(&mut head))
+            .and_then(|_| {
+                (&mut file)
+                    .take(source.size.min(1 << 16))
+                    .read_to_end(&mut head)
+            })
+            .map_err(|e| LoadError::io(location, e))?;
+        source
+            .check_snapshot(&file)
             .map_err(|e| LoadError::io(location, e))?;
         if let Some(key) = &source.key {
             key.apply(&mut head);
@@ -577,12 +639,40 @@ impl Samples {
     fn archive(&mut self, path: &Path) -> Result<&Archive, LoadError> {
         if !self.archives.contains_key(path) {
             let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+            let identity = self
+                .file_identity(path, Some(&file))
+                .map_err(|e| LoadError::io(path, e))?;
             let index = Archive::read_index(&mut file)
                 .map_err(|e| LoadError::decode(path, "archive directory", e))?;
+            identity.check(&file).map_err(|e| LoadError::io(path, e))?;
             self.handles.insert(path.into(), Arc::new(file));
             self.archives.insert(path.into(), Arc::new(index));
         }
         Ok(&self.archives[path])
+    }
+    fn file_identity(
+        &self,
+        path: &Path,
+        handle: Option<&File>,
+    ) -> io::Result<Arc<crate::FileIdentity>> {
+        if let Some(identity) = self
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(path)
+        {
+            return Ok(identity.clone());
+        }
+        let metadata = match handle {
+            Some(file) => file.metadata()?,
+            None => std::fs::metadata(path)?,
+        };
+        let identity = Arc::new(crate::FileIdentity::capture(&metadata)?);
+        let mut identities = self
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(identities.entry(path.into()).or_insert(identity).clone())
     }
 }
 

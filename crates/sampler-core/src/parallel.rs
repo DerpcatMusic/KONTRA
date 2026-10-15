@@ -392,13 +392,13 @@ impl View<'_> {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get(n.plan.0).unwrap();
-        plan.project_wavetable(&mut v.cursor, v.group);
+        plan.project_wavetable(&mut v.cursor, v.group, i);
         let prelude = self.preps[i];
         // A prepared voice had its step set with its modulation.
         if prelude.is_none() {
             v.set_step(v.base_step * expression.rendered.ratio);
         }
-        let asset = &plan.prepared.pcm[v.sample];
+        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
@@ -504,6 +504,10 @@ impl View<'_> {
         let mut gains = [[0.; 2]; VOICES];
         let mut starved = [false; VOICES];
         let mut plan_id = None;
+        let reuse_mask = super::source::reuse::candidates(
+            slots[..voices.len()].iter().map(|slot| slot.as_ref().unwrap()[0].value.as_ref().unwrap()),
+        );
+        let mut source_reuse = None;
         for k in 0..voices.len() {
             let v = slots[k].as_mut().unwrap()[0].value.as_mut().unwrap();
             let f = self.families.get(v.family.0).unwrap();
@@ -512,10 +516,10 @@ impl View<'_> {
             gains[k] = expression.rendered.gains;
             v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
-            plan.project_wavetable(&mut v.cursor, v.group);
+            plan.project_wavetable(&mut v.cursor, v.group, voices[k]);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = &plan.prepared.pcm[v.sample];
+            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
             let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[k] = v.cursor.starved();
@@ -524,11 +528,17 @@ impl View<'_> {
             begun[k] = if let Some(resident) = asset.resident_frames() {
                 asset.want_levels(v.cursor.step(), self.at);
                 let guard = asset.try_levels();
-                let pcm = super::source::Resident {
-                    frames: &resident,
-                    levels: guard.as_deref().map_or(&[], |l| l),
-                };
-                chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
+                if reuse_mask & (1 << k) != 0 {
+                    source_reuse
+                        .get_or_insert_with(super::source::reuse::ResidentReuse::default)
+                        .begin(chain, v, resident, guard, frames, self.kernel, &mut planar, engine)
+                } else {
+                    let pcm = super::source::Resident {
+                        frames: &resident,
+                        levels: guard.as_deref().map_or(&[], |l| l),
+                    };
+                    chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
+                }
             } else {
                 asset.touch(self.at + frames as u64);
                 let head = asset.try_head();
@@ -546,6 +556,7 @@ impl View<'_> {
             batch.ends[2 * k] = len;
             batch.ends[2 * k + 1] = len;
         }
+        drop(source_reuse);
         batch.len = batch.ends.iter().copied().max().unwrap_or(0);
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;

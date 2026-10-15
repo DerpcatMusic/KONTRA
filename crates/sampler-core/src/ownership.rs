@@ -1,6 +1,29 @@
 //! Musical ownership, independent of host channel reuse and render voice lifetime.
 use super::{Error, Handle, Input, NoteId, Runtime, VoiceId};
 
+/// Captured physical recipients of an input gesture. Absent fields are
+/// wildcards; execution IDs and playback transposition do not affect matching.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InputSelector {
+    pub protocol: Option<super::Protocol>,
+    pub port: Option<u16>,
+    pub group: Option<u8>,
+    pub channel: Option<u8>,
+    pub key: Option<u8>,
+    pub external_id: Option<i32>,
+}
+
+impl InputSelector {
+    fn matches(self, input: Input) -> bool {
+        self.protocol.is_none_or(|v| v == input.protocol)
+            && self.port.is_none_or(|v| v == input.port)
+            && self.group.is_none_or(|v| v == input.group)
+            && self.channel.is_none_or(|v| v == input.channel)
+            && self.key.is_none_or(|v| v == input.key)
+            && self.external_id.is_none_or(|v| Some(v) == input.external_id)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FamilyId(pub(super) Handle);
 
@@ -94,6 +117,18 @@ pub(super) struct Family {
 }
 
 impl Runtime {
+    /// Retain the original physical tuple for later captured gestures while
+    /// preserving the adapter's execution input and note-off ownership.
+    pub fn set_input_source(&mut self, id: NoteId, source: Input) -> Result<(), Error> {
+        if source.group >= 16 || source.channel >= 16 || source.key >= 128 {
+            return Err(Error::InvalidInput);
+        }
+        let note = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
+        if note.input.is_none() { return Err(Error::InvalidInput); }
+        note.input_source = Some(source);
+        Ok(())
+    }
+
     pub fn family_count(&self) -> usize {
         self.families.count()
     }
@@ -168,6 +203,23 @@ impl Runtime {
         key: Option<u8>,
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
+        self.select_input_expressions(None, Some((address, key)), update)
+    }
+
+    pub(super) fn set_source_expressions(
+        &mut self,
+        selector: InputSelector,
+        update: impl Fn(Expression) -> Expression,
+    ) -> Result<usize, Error> {
+        self.select_input_expressions(Some(selector), None, update)
+    }
+
+    fn select_input_expressions(
+        &mut self,
+        source: Option<InputSelector>,
+        execution: Option<(super::ChannelAddress, Option<u8>)>,
+        update: impl Fn(Expression) -> Expression,
+    ) -> Result<usize, Error> {
         self.apply_due();
         self.expression_changes.fill(None);
         let mut pitch_changed = false;
@@ -176,9 +228,12 @@ impl Runtime {
             let Some(note) = &self.notes.slots[i].value else {
                 continue;
             };
-            if !note.input.is_some_and(|input| {
-                input.channel_address() == address && key.is_none_or(|key| input.key == key)
-            }) {
+            let matches = if let Some(selector) = source {
+                note.input_source.is_some_and(|input| selector.matches(input))
+            } else if let Some((address, key)) = execution {
+                note.input.is_some_and(|input| input.channel_address() == address && key.is_none_or(|key| input.key == key))
+            } else { false };
+            if !matches {
                 continue;
             }
             let id = note.expression;
@@ -546,7 +601,7 @@ impl Runtime {
         }
         let engine = free.trailing_zeros();
         generation.dsp.stretch_busy |= 1 << engine;
-        let asset = &generation.prepared.pcm[voice.sample];
+        let asset = generation.samples.asset(&generation.prepared, voice.sample).expect("a live voice pins its immutable source");
         voice.stretch = Some(crate::StretchLink {
             engine: engine as u8,
             spec,
@@ -582,6 +637,8 @@ impl Runtime {
             .stop(id.0.index);
         self.stolen -= usize::from(v.stolen);
         self.stream_reserved -= v.stream_pages;
+        let generation = self.plans.get_mut(v.plan.0).unwrap();
+        generation.samples.unpin(&generation.prepared, v.sample);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;

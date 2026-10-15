@@ -1166,6 +1166,7 @@ mod tests {
         let instrument = ir::Instrument {
             assets: vec![ir::Asset {
                 location: ir::AssetLocation::Path("a".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),

@@ -29,6 +29,15 @@ pub struct NcwReader<R> {
 }
 
 impl<R: Read + Seek> NcwReader<R> {
+    /// Bytes of this decoder's owned heap workspaces, excluding the underlying
+    /// byte reader. Capacities include reusable channel buffers and the seek
+    /// table, so callers can bound persistent decoder caches after a read.
+    pub fn workspace_bytes(&self) -> usize {
+        self.block_offsets.capacity() * std::mem::size_of::<u32>()
+            + self.channels.capacity() * std::mem::size_of::<Vec<i32>>()
+            + self.channels.iter().map(|channel| channel.capacity() * std::mem::size_of::<i32>()).sum::<usize>()
+    }
+
     /// Parse the file header and block offset table.
     pub fn read(mut reader: R) -> Result<Self, Error> {
         let header = NcwHeader::read(&mut reader)?;
@@ -243,4 +252,22 @@ fn validate_offsets(header: &NcwHeader, offsets: &[u32]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    #[test]
+    fn workspace_accounting_keeps_reused_channel_capacity_after_a_partial_block() {
+        let samples: Vec<i32> = (0..513).flat_map(|i| [i * 2, -i * 2]).collect();
+        let data = crate::encode_pcm(&samples, crate::PcmSpec { channels: 2, bits_per_sample: 16, sample_rate: 48000 }, crate::StereoMode::Direct).unwrap();
+        let mut reader = NcwReader::read(std::io::Cursor::new(data)).unwrap();
+        let index_bytes = reader.workspace_bytes();
+        assert!(index_bytes >= reader.block_offsets.len() * 4);
+        assert_eq!(reader.decode_block(0).unwrap()[0].len(), 512);
+        let full = reader.workspace_bytes();
+        assert!(full >= index_bytes + 2 * 512 * 4);
+        assert_eq!(reader.decode_block(1).unwrap()[0].len(), 1);
+        assert_eq!(reader.workspace_bytes(), full);
+    }
 }

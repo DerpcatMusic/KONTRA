@@ -20,6 +20,13 @@
 //! without reloading.
 
 use anyhow::{Context, ensure};
+mod uvi_meters;
+mod control_diagnostics;
+#[cfg(feature = "shots")]
+pub mod uvi_diagnostics;
+#[cfg(feature = "shots")]
+mod residency_diagnostics;
+pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -52,6 +59,7 @@ mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
 mod persistence;
+pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
 #[cfg(test)]
@@ -61,8 +69,6 @@ mod host_contract_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
-/// Notes a part holds at once, sounding or awaiting NOTE_END.
-const NOTES: usize = 128;
 /// [`Held::part`] of a note whose runtime was replaced: ends at the next block.
 const ORPHAN: usize = usize::MAX;
 /// Every input reaches a part's zone as MIDI 1.0 on its manager channel, so a
@@ -87,6 +93,10 @@ pub struct Part {
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
+    uvi_meter_buses: Arc<[sampler_uvi::meters::Binding]>,
+    uvi_meter_plan: Option<sampler_core::PlanId>,
+    uvi_meter_inputs: bool,
+    uvi_meter_started_at: u64,
     pub(crate) host_bindings: Arc<[super::HostBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
@@ -250,10 +260,15 @@ fn host_bindings(
 }
 
 impl Part {
+    #[cfg(all(test, feature = "shots"))]
+    pub(crate) fn set_uvi_inspector_fixture_script(&mut self, script: ScriptDriver) {
+        self.script = Some(Box::new(script));
+    }
+
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe =
-            Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
+            Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, runtime.note_capacity().max(1)).map_err(core)?;
         // Plans without articulations have nothing to drive.
         let articulator = runtime
             .performance(0)
@@ -303,12 +318,16 @@ impl Part {
             channels: 1,
         };
         let (runtime, client) = runtime
-            .with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY)
+            .with_control_updates(256, sampler_core::SNAPSHOT_OVERLAY_VALUE_CAPACITY + 7)
             .map_err(core)?;
         let tone = sampler_core::OutputLowPass::new(runtime.sample_rate()).map_err(core)?;
         Ok(Self {
             epoch: 0,
             engine_bindings,
+            uvi_meter_buses: Arc::default(),
+            uvi_meter_plan: None,
+            uvi_meter_inputs: false,
+            uvi_meter_started_at: 0,
             host_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress {
@@ -333,6 +352,7 @@ impl Part {
                 pending_widgets: Default::default(),
                 pending: Default::default(),
                 persistence: None,
+                snapshot_replies: Default::default(),
             }),
             runtime,
             widget_revision,
@@ -578,6 +598,7 @@ pub(crate) struct ControlIngress {
     array_worker: Option<array_file::Worker>,
     revision: u64,
     persistence: Option<Arc<persistence::Snapshot>>,
+    snapshot_replies: std::collections::VecDeque<sampler_core::ControlReply>,
 }
 
 impl ControlIngress {
@@ -904,6 +925,13 @@ impl ControlIngress {
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if matches!(&reply.command.operation,
+                sampler_core::ControlOperation::NativeSnapshotOverlay(_)
+                | sampler_core::ControlOperation::CaptureSnapshotFence(_)) {
+                if let Ok((_, revision)) = reply.result { self.revision = revision; }
+                self.snapshot_replies.push_back(reply);
+                continue;
+            }
             if matches!(
                 &reply.command.operation,
                 sampler_core::ControlOperation::ArrayFileCapture(_)
@@ -964,6 +992,8 @@ impl ControlIngress {
             if let Ok((_, revision)) = reply.result {
                 self.revision = revision;
             }
+            // Capture metadata before returning owned buffers to their pools.
+            let rejection = control_diagnostics::rejection(&reply);
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self
@@ -1018,12 +1048,12 @@ impl ControlIngress {
                 }
                 self.captures.push_back(output);
             }
-            if let Err(error) = reply.result {
+            if let Some(details) = rejection {
                 crate::diagnostics::event(
                     crate::diagnostics::LogLevel::Warning,
                     "ui",
                     "control_rejected",
-                    serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}),
+                    details,
                 );
             }
         }
@@ -1189,6 +1219,26 @@ impl V2Core {
     /// Available to ordinary offline witnesses as well as scan builds.
     pub fn runtime_stats(&self, part: usize) -> Option<sampler_core::RuntimeStats> {
         Some(self.parts.get(part)?.as_ref()?.runtime.stats())
+    }
+
+    /// Offline diagnostic only, between render calls. Physical compiled layout
+    /// supplies instance/cell; an old owner cannot inspect a replacement.
+    #[cfg(feature = "shots")]
+    pub fn diagnostic_script_cell(
+        &self, part: usize, epoch: u64, instance: u16, cell: u32,
+    ) -> Result<i64, sampler_core::Error> {
+        let part = self.parts.get(part).and_then(Option::as_ref)
+            .filter(|part| part.epoch == epoch).ok_or(sampler_core::Error::StaleHandle)?;
+        part.runtime.script_cell(part.runtime.active_plan(), sampler_core::ScriptInstanceId(instance), cell)
+    }
+
+    /// Control-side demand inspection between render calls; never polls or waits.
+    #[cfg(feature = "shots")]
+    pub fn visit_stream_demand(
+        &self, part: usize, frames: u32,
+        accept: impl FnMut(sampler_core::StreamDemandSnapshot) -> bool,
+    ) -> Option<Result<bool, sampler_core::Error>> {
+        Some(self.parts.get(part)?.as_ref()?.runtime.visit_stream_demand(frames, accept))
     }
 
     pub(crate) fn release_all_notes(&mut self) {
@@ -1395,6 +1445,62 @@ impl V2Core {
             .as_ref()
             .map(|s| s.scan_faults())
     }
+
+    /// Service read-only KSP effects during offline UI activation. The shared
+    /// effect handler retains unsupported operations and never writes files.
+    pub fn service_ui_read_only(
+        &mut self,
+        part: usize,
+        scripts: &mut [sampler_ksp::ScriptView],
+    ) -> std::io::Result<usize> {
+        let part = self
+            .parts
+            .get_mut(part)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "UI part is absent"))?;
+        sampler_ksp::service_ui_effects(&mut part.runtime, scripts)
+    }
+
+    /// Numeric owner-thread evidence only. Outcomes remain available to the
+    /// production fault consumer; script source, values and messages are omitted.
+    pub fn ui_lifecycle_progress(&self, part: usize) -> serde_json::Value {
+        let Some(Some(part)) = self.parts.get(part) else {
+            return serde_json::json!({"part_present": false});
+        };
+        let mut rows = Vec::new();
+        let mut callbacks = 0usize;
+        let mut pending_plan = 0usize;
+        let mut failures = 0usize;
+        part.runtime.visit_behavior_progress(|progress| {
+            callbacks += 1;
+            let plan_owner = matches!(progress.owner, sampler_core::BehaviorOwner::Plan(_));
+            pending_plan += usize::from(plan_owner && progress.outcome.is_none());
+            failures += usize::from(matches!(progress.outcome,
+                Some(sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted)));
+            if rows.len() < 256 {
+                let (outcome, error) = match progress.outcome {
+                    None => ("pending", None),
+                    Some(sampler_core::Outcome::Finished) => ("finished", None),
+                    Some(sampler_core::Outcome::Cancelled) => ("cancelled", None),
+                    Some(sampler_core::Outcome::FuelExhausted) => ("fuel_exhausted", None),
+                    Some(sampler_core::Outcome::Fault(error)) => ("fault",
+                        sampler_core::Error::ALL.iter().position(|candidate| *candidate == error)),
+                };
+                rows.push(serde_json::json!({"program": progress.program, "pc": progress.pc,
+                    "owner": if plan_owner {"plan"} else {"note"}, "waiting": progress.waiting,
+                    "yielded_at": progress.yielded_at, "caller_depth": progress.callers.len(),
+                    "outcome": outcome, "error_kind": error}));
+            }
+        });
+        let (queued_faults, dropped_faults) = part.fault_inbox.counts();
+        let startup_pending = part.runtime
+            .startup_work_pending(part.runtime.active_plan()).unwrap_or(true);
+        serde_json::json!({"part_present": true, "audio_generation": part.epoch, "callback_count": callbacks,
+            "pending_plan_callbacks": pending_plan, "live_callback_failures": failures,
+            "pending_startup_work": startup_pending,
+            "queued_faults": queued_faults, "dropped_faults": dropped_faults,
+            "rows_omitted": callbacks.saturating_sub(rows.len()), "callbacks": rows})
+    }
 }
 
 fn wire(key: u8, external_id: Option<i32>) -> Input {
@@ -1415,6 +1521,14 @@ fn host_input(note: HostNote, mpe: bool, execution_id: i32) -> Input {
     Input {
         channel: if mpe { note.channel & 15 } else { WIRE.channel },
         ..wire(note.key, Some(execution_id))
+    }
+}
+
+fn host_source(note: HostNote) -> Input {
+    Input {
+        protocol: if note.clap { sampler_core::Protocol::Clap } else { sampler_core::Protocol::Vst3 },
+        port: u16::from(note.port), group: 0, channel: note.channel & 15,
+        key: note.key, external_id: Some(note.id),
     }
 }
 
@@ -1526,6 +1640,30 @@ fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
         NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
         NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
     })
+}
+
+/// One pressure callback per physical address/key, even for overlapping host
+/// note IDs mapped onto the same internal wire. Captured recipients remain
+/// exact if a script waits or consumes the pressure event.
+fn host_pressure(
+    part: &mut Part, index: usize, held: &[Held], value: u32,
+    matches: impl Fn(HostNote) -> bool, external_id: Option<i32>,
+) {
+    let Ok(performance) = part.runtime.performance(0) else { return };
+    for (at, h) in held.iter().enumerate() {
+        if h.part != index || !matches(h.note) { continue; }
+        if held[..at].iter().any(|previous| previous.part == index && matches(previous.note)
+            && previous.note.clap == h.note.clap && previous.note.port == h.note.port
+            && previous.note.channel == h.note.channel && previous.note.key == h.note.key) { continue; }
+        let source = host_source(h.note);
+        let selector = sampler_core::InputSelector {
+            protocol: Some(source.protocol), port: Some(source.port), group: Some(source.group),
+            channel: Some(source.channel), key: Some(source.key), external_id,
+        };
+        if let Err(sampler_core::Error::Capacity) = part.runtime.dispatch_poly_pressure_selected(
+            performance, h.input.channel_address(), h.note.key, value, Some(selector),
+        ) { part.problems.capacity_drops += 1; }
+    }
 }
 
 /// Controllers, bend, pressure and program changes reach the part's scripts
@@ -1651,11 +1789,17 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
     };
     tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
-        (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
-        (4, 0xa0) => per_note(
-            part,
-            NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX)),
-        ),
+        (2 | 4, 0xa0) => {
+            let port = ((word >> 24) & 15) as u8;
+            let value = if kind == 4 { data } else { unit_scale(f64::from(b) / 127.0) };
+            if held.iter().any(|h| h.part == index && h.note.port == port
+                && h.note.channel == channel && h.note.key == a) {
+                host_pressure(part, index, held, value,
+                    |note| note.port == port && note.channel == channel && note.key == a, None);
+            } else {
+                wire_packet(part, &words[..if kind == 4 { 2 } else { 1 }]);
+            }
+        }
         // Per-note pitch bend: centre 2^31, ±48 semitones full scale.
         (4, 0x60) => per_note(
             part,
@@ -1725,6 +1869,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 let velocity = velocity.clamp(0.0, 1.0);
                 match part.runtime.note_on(input, note.key, velocity) {
                     Ok(id) => {
+                        let _ = part.runtime.set_input_source(id, host_source(note));
                         held.push(Held {
                             part: index,
                             note,
@@ -1754,6 +1899,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 Err(_) => return,
             };
+            let _ = part.runtime.set_input_source(id, host_source(note));
             held.push(Held {
                 part: index,
                 note,
@@ -1796,11 +1942,16 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                     if let Some(script) = part.script.as_mut() {
                         let _ = script.note_off_note_velocity(&mut part.runtime, h.id, h.note.key, velocity);
                     }
-                    let _ = part.runtime.note_off(h.input, velocity);
+                    let _ = part.runtime.note_off_exact(h.id, velocity);
                 }
             }
         }
         Event::Expression(pattern, expression) => {
+            if let NoteExpression::Pressure(value) = expression {
+                host_pressure(part, index, held, unit_scale(value), |note| pattern.matches(note),
+                    (pattern.id != -1).then_some(pattern.id));
+                return;
+            }
             for h in held
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
@@ -1828,6 +1979,7 @@ impl V2Core {
     pub(crate) fn scripts_running(&self, part: usize) -> bool {
         let mut running = false;
         if let Some(Some(p)) = self.parts.get(part) {
+            running |= p.runtime.startup_work_pending(p.runtime.active_plan()).unwrap_or(true);
             p.runtime.visit_behavior_progress(|c| {
                 running |= c.outcome.is_none() && matches!(c.owner, sampler_core::BehaviorOwner::Plan(_));
             });
@@ -1956,7 +2108,14 @@ impl V2Core {
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             // Native replies apply backpressure; bounded ingress is serviced before rendering.
             for _ in 0..256 {
-                if !matches!(part.runtime.poll_control_update(), Ok(Some(_))) {
+                if !matches!(part.runtime.poll_control_update_with_snapshot_gate(|| {
+                    // Native snapshot recall ends prior audio. This initial
+                    // retained-owner slice cannot reset host alignment/filter
+                    // history, so it must not silently carry either across.
+                    // The closure runs only for an actual snapshot operation.
+                    self.align.parts[index].hosts().next().is_none()
+                        && part.tone_history.iter().flatten().flatten().all(|value| *value == 0.)
+                }), Ok(Some(_))) {
                     break;
                 }
             }
@@ -2795,7 +2954,10 @@ impl Core for V2Core {
             script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
+            cold_starts: stats.cold_starts,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
+            voice_pool_refusals: stats.voice_pool_refusals,
+            waiting_voice_replacements: stats.waiting_voice_replacements,
             stream_capacity: p.problems.stream_capacity + stats.stream_capacity_refusals,
             stream_disconnected: p.problems.stream_disconnected
                 + stats.stream_disconnected_refusals,
@@ -2958,8 +3120,13 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     });
     sampler_kontakt::StreamPolicy {
         resident_budget,
-        lazy: request.streaming == super::Streaming::Auto,
-        head_budget: resident_budget.unwrap_or(8 << 20),
+        // Prepare Auto attacks on the loader worker before publication;
+        // any capacity fallback stays explicit in the load report.
+        lazy: false,
+        head_budget: resident_budget.unwrap_or(256 << 20),
+        // Capacity fallback is distinct from a source/decode failure and must
+        // remain visible in the load report and diagnostics.
+        allow_cold_fallback: true,
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
         voices: MAX_VOICES,
@@ -3000,7 +3167,7 @@ const VOICE_OVERHEAD: usize = 4096;
 /// the voice count the pool may grow to. Notes, families and decisions keep
 /// v1's event capacity independently of the streaming voice ceiling.
 #[cfg(test)]
-fn limits(plan: &Prepared) -> (Limits, usize) {
+pub(crate) fn limits(plan: &Prepared) -> (Limits, usize) {
     budgeted_limits(plan, None)
 }
 
@@ -3197,43 +3364,8 @@ pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::Scr
 
 /// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
 /// folder above the snapshot, named by its metadata or by the snapshot's folder.
-fn snapshot_parent(snapshot: &Path, name: &str) -> Option<PathBuf> {
-    fn find(dir: &Path, wanted: &[String], depth: usize) -> Option<PathBuf> {
-        let mut folders = Vec::new();
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                folders.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
-                && path
-                    .file_stem()
-                    .is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
-            {
-                return Some(path);
-            }
-        }
-        if depth == 0 {
-            return None;
-        }
-        folders.sort();
-        folders.iter().find_map(|d| find(d, wanted, depth - 1))
-    }
-    let folder = snapshot
-        .parent()?
-        .file_name()?
-        .to_string_lossy()
-        .into_owned();
-    let wanted: Vec<String> = [name.to_owned(), folder]
-        .into_iter()
-        .filter(|n| !n.is_empty())
-        .collect();
-    snapshot
-        .ancestors()
-        .skip(1)
-        .take(4)
-        .find_map(|dir| find(dir, &wanted, 3))
+fn snapshot_parent(snapshot: &Path, _name: &str) -> anyhow::Result<Option<PathBuf>> {
+    sampler_kontakt::resolve_snapshot_base(snapshot)
 }
 
 fn kontakt(
@@ -3254,18 +3386,13 @@ fn kontakt(
     // A snapshot is the saved state of an instrument found beside it in the library.
     let snapshot = if let Some(snapshot) = &request.snapshot {
         let state = sampler_kontakt::read_snapshot(snapshot).map_err(load)?;
-        let identity = snapshot_instrument(snapshot).and_then(|name| {
-            ensure!(
-                name == snapshot_base_name(&request.path)?,
-                "Snapshot requires base instrument {name:?}"
-            );
-            Ok(())
-        });
+        let identity = validate_snapshot_base(snapshot, &request.path);
         identity.map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?;
         Some((request.path.clone(), state))
     } else if extension("nksn") {
         let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
-        let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
+        let parent = snapshot_parent(&request.path, &state.instrument)
+            .map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?.ok_or_else(|| {
             CoreError::Load(LoadFailure::message(format!(
                 "no instrument \"{}\" found for snapshot",
                 state.instrument
@@ -3291,6 +3418,7 @@ fn kontakt(
             )
         })
         .collect::<Vec<_>>();
+    let reuse_seed = snapshot_reuse::Seed::capture(path, request.sample_rate as u32);
     let mut source = match &snapshot {
         Some((parent, state)) => {
             sampler_kontakt::read_with_snapshot_and_controls(parent, state, &control_values)
@@ -3341,6 +3469,7 @@ fn kontakt(
         streamer,
         report: stream,
     } = streamed;
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets, &stream));
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded
         .dynamics()
@@ -3358,6 +3487,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
+    let snapshot_reuse = reuse_seed.and_then(|seed| seed.finish(&loaded.scripts));
     Ok(Loaded {
         part: (loaded.plan, Some(cache), None),
         tree,
@@ -3366,6 +3496,7 @@ fn kontakt(
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi {
+            snapshot_reuse,
             views: loaded.scripts,
             resources: loaded.resources,
             resource_path: Some(path.clone()),
@@ -3384,12 +3515,15 @@ fn kontakt(
 fn uvi(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
+    canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
+    if canceled() { return Err(CoreError::Canceled); }
     let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     drop(span);
     progress(Progress(300));
+    if canceled() { return Err(CoreError::Canceled); }
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let config = sampler_uvi::script::Config::realtime();
@@ -3408,8 +3542,14 @@ fn uvi(
         report.uvi_faults = a.driver.ui().fault_counts();
     }
     let tree = nest(&mut t.instrument);
-    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &stream_policy(request))
-        .map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed_cancelable(
+        t, rate, &stream_policy(request), canceled,
+    ).map_err(|e| {
+        if e.downcast_ref::<sampler_kontakt::LoadError>().is_some_and(|e|
+            matches!(e.cause(), sampler_kontakt::LoadError::Canceled)) {
+            CoreError::Canceled
+        } else { load(&*e) }
+    })?;
     let sampler_kontakt::Streamed {
         mut loaded,
         assets,
@@ -3417,8 +3557,10 @@ fn uvi(
         streamer,
         report: stream,
     } = streamed;
+    report.stream_startup = Some(super::report::StreamStartup::of(&streamer, &assets, &stream));
     report.decoded.full_bytes = stream.full_bytes;
     let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
+    let uvi_meter_buses = attached.as_ref().map(|a| a.meter_buses.clone()).unwrap_or_default();
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded
@@ -3446,6 +3588,7 @@ fn uvi(
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi {
             uvi: uvi_ui,
+            uvi_meter_buses,
             views: loaded.scripts,
             resources: loaded.resources,
             ..Default::default()
@@ -3539,15 +3682,45 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 const LOADER_STACK: usize = 16 << 20;
 
 impl V2Loader {
+    /// Product loader only: keep the committed owner's host services moving
+    /// while this caller waits for its private preparation worker.
+    pub(crate) fn prepare_serviced(
+        &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync), service: &mut dyn FnMut(),
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        self.prepare_waiting(request, progress, canceled, Some(service))
+    }
+
+    fn prepare_waiting(
+        &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>,
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("sampler-load".into())
+                .stack_size(LOADER_STACK)
+                .spawn_scoped(scope, move || {
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                })
+                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            load_wait::relay(rx, progress, service);
+            worker.join().unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
+        })
+    }
+
     fn prepare_on_worker(
         &self,
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
+        let core = |e: sampler_core::Error| match e {
+            sampler_core::Error::Canceled => CoreError::Canceled,
+            e => CoreError::Invalid(format!("{e:?}")),
+        };
         let Loaded {
-            part: (prepared, cache, script),
+            part: (prepared, cache, mut script),
             tree,
             mut report,
             interfaces,
@@ -3558,7 +3731,7 @@ impl V2Loader {
         } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_uvi(&request.path) {
-            uvi(request, progress)?
+            uvi(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -3625,12 +3798,13 @@ impl V2Loader {
                 }
             }
         }
-        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity(
+        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity_cancelable(
             prepared,
             limits,
             2,
             1,
             limits.notes.min(RESIDENT_NOTE_PARAMS),
+            canceled,
         )
         .map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
@@ -3669,12 +3843,25 @@ impl V2Loader {
                 runtime.bus_count()
             )));
         }
+        if instrument.as_ref().is_some_and(|i| !i.source_indices.sample_targets.is_empty())
+            && let Some(driver) = script.as_mut()
+        {
+            if let Some(stream) = &stream {
+                driver.bind_sample_stream(stream.streamer.dynamic_sources())
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+            }
+            let (updated, sample_control) = runtime.with_sample_updates(64).map_err(core)?;
+            driver.bind_sample_control(sample_control)
+                .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+            runtime = updated;
+        }
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
         if request.mpe_upper {
-            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, NOTES)
+            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, part.runtime.note_capacity().max(1))
                 .map_err(core)?;
         }
         part.mpe.set_timbre_controller(timbre);
@@ -3726,35 +3913,19 @@ impl CoreLoader for V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name("sampler-load".into())
-                .stack_size(LOADER_STACK)
-                .spawn_scoped(scope, move || {
-                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
-                })
-                .map_err(|e| CoreError::Invalid(e.to_string()))?;
-            // The sender drops when the worker ends, closing the channel.
-            for p in rx {
-                progress(p);
-            }
-            worker
-                .join()
-                .unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
-        })
+        self.prepare_waiting(request, progress, canceled, None)
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let parent = path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
-                .then(|| {
-                    let state = sampler_kontakt::read_snapshot(path).ok()?;
-                    snapshot_parent(path, &state.instrument)
-                });
-            let path = parent.flatten().unwrap_or_else(|| path.to_path_buf());
+            let parent = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
+                let state = sampler_kontakt::read_snapshot(path)
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
+                Some(snapshot_parent(path, &state.instrument)
+                    .map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?
+                    .ok_or_else(|| CoreError::Load(LoadFailure::message("no base instrument found for snapshot")))?)
+            } else { None };
+            let path = parent.unwrap_or_else(|| path.to_path_buf());
             let instrument = sampler_kontakt::read(&path)
                 .map_err(|e| CoreError::Load(LoadFailure::message(e)))?
                 .instrument;
@@ -5055,6 +5226,7 @@ mod tests {
         };
         let asset = |i| ir::Asset {
             location: ir::AssetLocation::Path(format!("{i}.wav")),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),
@@ -5355,6 +5527,7 @@ mod tests {
         instrument.zones.push(zone);
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("generated.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -5404,6 +5577,82 @@ mod tests {
             5,
             "v1 sums lost commands and stream underruns"
         );
+    }
+
+    #[test]
+    fn host_binding_budget_admits_300_overlapping_ids_and_reuses_terminal_slots_without_heap() {
+        let pcm = Pcm::new(48000, vec![[0.01; 2]; 48000].into_boxed_slice()).unwrap();
+        let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+            velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::new(0, 0, 0, 1.0, 0).unwrap(), playback: Playback::default() };
+        let plan = Prepared::new(48000, vec![pcm], vec![region], 512).unwrap();
+        let budget = Limits { families: 512, decisions: 512, ..Limits::for_plan(&plan, 512, 512) };
+        let runtime = Runtime::new(plan, budget).unwrap();
+        assert_eq!(runtime.note_capacity(), 512);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("polyphonic")).unwrap())));
+        let note = |id| HostNote { port: 0, channel: 0, key: 60, id, clap: true };
+        let calls = crate::plugin::tests::allocations(|| {
+            for round in 0..2 {
+                for id in 0..300 { core.event(0, on(note(id + round * 300))); }
+                core.render(32);
+                assert_eq!(core.voices().active, 300);
+                assert_eq!(core.voices().audible, 300);
+                assert_eq!(core.held.len(), 300);
+                core.event(0, Event::Ump([0x40a0_3c00, 123]));
+                let runtime = &core.parts[0].as_ref().unwrap().runtime;
+                for h in &core.held {
+                    assert_eq!(runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure, 123);
+                }
+                core.event(0, Event::NoteOff(super::super::event::HostPattern {
+                    port: -1, channel: -1, key: -1, id: -1, clap: true,
+                }));
+                core.render(32);
+                let mut ended = 0;
+                core.end_block(32, &mut |_| { ended += 1; true });
+                assert_eq!(ended, 300);
+                assert!(core.held.is_empty());
+            }
+        });
+        assert_eq!(calls, 0, "admission, pressure, release and NOTE_END must allocate/free nothing on audio");
+        assert_eq!(core.problems(0).capacity_drops, 0);
+    }
+
+    #[test]
+    fn host_poly_pressure_reaches_ksp_once_and_respects_physical_note_recipients() {
+        let source = "on init declare $calls end on on poly_at inc($calls) if (%POLY_AT[$POLY_AT_NUM] = 127) ignore_controller end if end on";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let pcm = Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
+        let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+            velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default() };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan).0;
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("pressure")).unwrap())));
+        let note = HostNote { port: 0, channel: 3, key: 60, id: 11, clap: true };
+        for note in [note, HostNote { id: 12, ..note }, HostNote { channel: 4, id: 13, ..note }] {
+            core.event(0, on(note));
+        }
+        let values = |core: &V2Core| {
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            core.held.iter().map(|h| runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure).collect::<Vec<_>>()
+        };
+        let calls = |core: &V2Core| {
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0).unwrap()
+        };
+        core.event(0, Event::Ump([0x40a3_3c00, u32::MAX]));
+        assert_eq!(calls(&core), 1, "overlapping host IDs share one physical pressure callback");
+        assert_eq!(values(&core), [0, 0, 0], "ignore_controller suppresses downstream pressure");
+        core.event(0, Event::Ump([0x40a3_3c00, 0x4000_0000]));
+        assert_eq!(calls(&core), 2);
+        assert_eq!(values(&core), [0x4000_0000, 0x4000_0000, 0], "physical channel survives wire mapping");
+        core.event(0, Event::Expression(super::super::event::HostPattern {
+            port: -1, channel: -1, key: -1, id: 12, clap: true,
+        }, NoteExpression::Pressure(0.5)));
+        assert_eq!(calls(&core), 3);
+        assert_eq!(values(&core), [0x4000_0000, unit_scale(0.5), 0], "CLAP exact ID reaches the same callback path");
     }
 
     #[test]
@@ -6850,6 +7099,7 @@ mod tests {
             let state = sampler_kontakt::read_snapshot(file)
                 .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
             let parent = snapshot_parent(file, &state.instrument)
+                .unwrap_or_else(|e| panic!("{}: {e}", file.display()))
                 .unwrap_or_else(|| panic!("no instrument for {}", file.display()));
             let plain = sampler_kontakt::read(&parent).unwrap();
             let applied = sampler_kontakt::read_with_snapshot(&parent, &state).unwrap();
@@ -7461,53 +7711,17 @@ mod keyswitch_tests;
 #[path = "envelope_init_tests.rs"]
 mod envelope_init_tests;
 
-// Port from v1 0cb7a8a0:src/import.rs; v2 containers retain native metadata.
-/// Container identity only, for the off-thread snapshot catalog. Snapshot
-/// metadata names its base instrument, not the snapshot itself; the latter's
-/// authored name is its file stem (as in `read_snapshot`).
+/// Snapshot identity shared by playback, catalog and offline inspection.
 pub(crate) fn snapshot_instrument(path: &Path) -> anyhow::Result<String> {
-    std::panic::catch_unwind(|| {
-        let c = sampler_kontakt::read_chunks(path)?;
-        c.find_first(0x4f).context("Snapshot state missing")?;
-        let names = ni_file::kontakt::objects::snapshot_metadata_names(
-            c.find_first(0x51).context("Snapshot metadata missing")?,
-        )?;
-        Ok(snapshot_binding_name(&names, None)?.to_owned())
-    })
-    .map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+    sampler_kontakt::snapshot_identity(path)
 }
 
-/// The same exact base identity used by snapshot validation, without loading
-/// zones, samples, scripts or artwork.
 pub(crate) fn snapshot_base_name(path: &Path) -> anyhow::Result<String> {
-    std::panic::catch_unwind(|| {
-        let c = sampler_kontakt::read_chunks(path)?;
-        let program = ni_file::kontakt::objects::Program::try_from(
-            c.find_first(0x28).context("Base program missing")?,
-        )?;
-        Ok(program.params()?.name)
-    })
-    .map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
+    sampler_kontakt::snapshot_base_name(path)
 }
 
-// A factory snapshot may retain Kontakt's generic template name. Only use
-// its second embedded name when it also exactly names the supplied NKI file;
-// the program name, group/source/slot identities are still validated below.
-fn snapshot_binding_name<'a>(
-    names: &'a (String, String),
-    base: Option<&Path>,
-) -> anyhow::Result<&'a str> {
-    if names.0 != "Kontakt" || names.1.is_empty() {
-        return Ok(&names.0);
-    }
-    if let Some(base) = base {
-        ensure!(
-            base.file_stem().and_then(|s| s.to_str()) == Some(names.1.as_str()),
-            "Generic snapshot requires base filename {:?}",
-            names.1
-        );
-    }
-    Ok(&names.1)
+fn validate_snapshot_base(snapshot: &Path, base: &Path) -> anyhow::Result<()> {
+    sampler_kontakt::validate_snapshot_base(snapshot, base)
 }
 
 #[cfg(test)]

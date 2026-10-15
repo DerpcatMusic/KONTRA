@@ -432,6 +432,14 @@ impl Runtime {
                 ..edits[0].interaction
             },
         });
+        // Scalar type/domain and revision arithmetic validation is read-only.
+        // Keep it ahead of callback admission just like the array/text checks.
+        // The actual write below still follows the complete capacity preflight.
+        if let Some(write) = scalar {
+            self.validate_controls(plan, expected_revision, &[write])?;
+        } else {
+            revision.checked_add(1).ok_or(Error::Capacity)?;
+        }
         if let Some(program) = w.program {
             self.validate_plan_context(plan, program, event)?;
         }

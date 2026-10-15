@@ -79,7 +79,7 @@ impl Runtime {
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
-            asset: self.plans.get(note.plan.0).unwrap().prepared.pcm[v.sample].asset_id(),
+            asset: self.plans.get(note.plan.0).unwrap().asset(v.sample).asset_id(),
         }))
     }
 }
@@ -96,6 +96,16 @@ pub(crate) struct VoiceDemand {
 pub(crate) type LoopReach = [Option<(Range<usize>, u32)>; 4];
 
 impl Cursor {
+    /// Control-only initial forward geometry. The established demand law must
+    /// prove the complete interpolation window stays before a loop transition.
+    pub(crate) fn initial_forward_window(self, frames: u32, step: f64) -> Option<Range<usize>> {
+        if self.direction != Direction::Forward || self.controlled_loop.is_some()
+            || !(super::MIN_STEP..=super::MAX_STEP).contains(&step)
+        { return None; }
+        let (range, _, _) = self.with_step(step).linear_reach(frames)?;
+        (!range.is_empty()).then_some(range)
+    }
+
     /// Physical frames a stretch of `frames` output frames may read, when that
     /// stretch maps linearly (before any loop boundary or crossfade): a
     /// superset of `visit_demand`'s ranges, ignoring envelope ends. With the

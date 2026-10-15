@@ -202,12 +202,9 @@ impl Ingress {
             }
             Message::PolyPressure { key, value } => {
                 let pressure = value.full_scale();
+                let (_, owners) = runtime.dispatch_poly_pressure(performance, input.channel_address(), key, pressure)?;
                 Applied::Expression {
-                    owners: runtime.set_input_expressions(
-                        input.channel_address(),
-                        Some(key),
-                        |e| Expression { pressure, ..e },
-                    )?,
+                    owners,
                 }
             }
             Message::ChannelControl {
@@ -299,6 +296,7 @@ impl Ingress {
                 })?;
                 let channel = &mut self.channels[slot];
                 (channel.bend, channel.pressure, channel.rpn) = (0.0, 0, [127; 2]);
+                runtime.reset_poly_pressure(performance)?;
                 Applied::ResetControllers
             }
             Message::Control {

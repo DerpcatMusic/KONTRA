@@ -51,10 +51,11 @@ pub(crate) struct Convolution {
 /// What it cannot prepare is reported in `notes`.
 pub(super) fn convolution(
     c: &Convolution,
+    request: super::ImpulseRequest,
     impulses: &mut Impulses,
     notes: &mut Notes,
 ) -> Result<sampler_ir::ImpulseRef, String> {
-    let (rate, frames) = (impulses.load)(c.ir_index)?;
+    let (rate, frames) = (impulses.load)(request)?;
     if frames.is_empty() || rate == 0 {
         return Err("the impulse response is empty".into());
     }
@@ -108,7 +109,7 @@ pub(super) fn convolution(
     let (left, right) = sampler_core::shape_impulse(rate, &left, &right, &shape);
     impulses.store.push(sampler_ir::Impulse { rate, left, right, asset: None });
     if let Some(recipes) = impulses.recipes.as_deref_mut() {
-        recipes.push(c.clone());
+        recipes.push((request, c.clone()));
     }
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }

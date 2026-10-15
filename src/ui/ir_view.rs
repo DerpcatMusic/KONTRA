@@ -52,6 +52,16 @@ impl Picture {
             window,
         }
     }
+    /// Keep decoded pixels while expressing their viewport in paint coordinates.
+    /// Wallpaper base-frame offsets belong to source selection, not placement.
+    pub(super) fn with_window(&self, window: Option<[u32; 4]>) -> Self {
+        Self {
+            frames: self.frames.clone(),
+            indices: self.indices.clone(),
+            count: self.count,
+            window,
+        }
+    }
     fn len(&self) -> usize {
         self.count
     }
@@ -68,7 +78,7 @@ impl Picture {
 }
 
 /// The frame of `frames` a control at `value` in `min..=max` shows.
-fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
+pub(super) fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     let span = max - min;
     let t = if span == 0. {
         0.
@@ -79,7 +89,7 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
 }
 
 /// UVI mappers operate on normalized positions, including drag and strip frames.
-fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+pub(super) fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
     if range.max == range.min {
         return if inverse { 0. } else { range.min };
     }
@@ -150,6 +160,7 @@ fn drive_mapped(
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    wallpapers: HashMap<usize, Option<Arc<Picture>>>,
     fonts: HashMap<usize, Option<Font>>,
     pub meter: Option<Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
@@ -161,6 +172,10 @@ pub struct Assets {
 }
 
 impl Assets {
+    #[cfg(test)]
+    pub(super) fn worker_identity(&self) -> Option<usize> {
+        self.preparation.as_ref().map(|p| p.worker_identity())
+    }
     pub fn prepare(
         &mut self,
         path: &std::path::Path,
@@ -170,8 +185,22 @@ impl Assets {
         scale: f64,
         values: &Values,
     ) {
-        if self.preparation.as_ref().is_none_or(|p| p.path() != path) {
-            self.preparation = Some(super::picture_worker::Preparation::new(path));
+        self.prepare_owned(path, None, face, page, presentation, scale, values);
+    }
+    pub fn prepare_for_program(
+        &mut self, path: &std::path::Path, program: u32, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        self.prepare_owned(path, Some(program), face, page, presentation, scale, values);
+    }
+    fn prepare_owned(
+        &mut self, path: &std::path::Path, program: Option<u32>, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.program() != program) {
+            self.preparation = Some(program.map_or_else(
+                || super::picture_worker::Preparation::new(path),
+                |program| super::picture_worker::Preparation::new_for_program(path, program)));
         }
         let prepared =
             self.preparation
@@ -182,9 +211,14 @@ impl Assets {
             return;
         }
         self.loaded.clear();
+        self.wallpapers.clear();
         self.fonts.clear();
-        for (n, picture, font) in prepared {
+        for (n, picture, font, plane) in prepared {
             if let Some(picture) = picture {
+                if plane == super::picture_worker::Plane::Wallpaper {
+                    self.wallpapers.insert(n, Some(picture));
+                    continue;
+                }
                 // Knobs sharing one strip each need their own frame of it.
                 let merged = match self.loaded.remove(&n).flatten() {
                     Some(have) if have.window == picture.window && have.count == picture.count => {
@@ -212,9 +246,9 @@ impl Assets {
             v(&mut h);
             std::hash::Hasher::finish(&h)
         };
-        let entry = |n: &usize, p: &Option<Arc<Picture>>| {
+        let entry = |plane: u8, n: &usize, p: &Option<Arc<Picture>>| {
             let frames = p.iter().flat_map(|p| p.indices.iter().zip(&p.frames));
-            hash(&|h| std::hash::Hash::hash(&(n, p.as_ref().map(|p| (p.window, p.count))), h))
+            hash(&|h| std::hash::Hash::hash(&(plane, n, p.as_ref().map(|p| (p.window, p.count))), h))
                 .wrapping_add(
                     frames
                         .map(|(i, f)| hash(&|h| std::hash::Hash::hash(&(i, Arc::as_ptr(f) as usize), h)))
@@ -224,7 +258,8 @@ impl Assets {
         self.version = self
             .loaded
             .iter()
-            .map(|(n, p)| entry(n, p))
+            .map(|(n, p)| entry(0, n, p))
+            .chain(self.wallpapers.iter().map(|(n, p)| entry(1, n, p)))
             .chain(self.fonts.keys().map(|n| (*n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
             .fold(0, u64::wrapping_add);
     }
@@ -237,6 +272,14 @@ impl Assets {
         self.preparation
             .as_ref()
             .map_or(Default::default(), |p| p.scan)
+    }
+    #[cfg(feature = "shots")]
+    pub fn probes(&self) -> &[super::pictures::AssetProbe] {
+        self.preparation.as_ref().map_or(&[], |p| p.probes())
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.preparation.as_ref().map_or(0, |p| p.probe_dropped())
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
@@ -297,6 +340,16 @@ impl Assets {
         self.loaded.get(&a.0)?.as_ref()
     }
 
+    /// Runtime preparation keeps raw wallpaper viewports separate from control
+    /// frames of the same asset. Synchronous/manual assets have one full image.
+    pub(super) fn wallpaper(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
+        if self.preparation.is_some() {
+            self.wallpapers.get(&a.0)?.as_ref()
+        } else {
+            self.get(a)
+        }
+    }
+
     /// Bytes of decoded pixels held, each image counted once.
     pub fn bytes(&self) -> usize {
         if let Some(p) = &self.preparation {
@@ -321,10 +374,14 @@ pub type Values = HashMap<ControlId, f64>;
 pub struct InputState {
     pub values: HashMap<WidgetRef, ir::Value>,
     pub meters: HashMap<WidgetRef, f64>,
+    /// Raw Kontra bus observations; never coerced to a native scalar meter.
+    pub uvi_meters: HashMap<WidgetRef, sampler_uvi::meters::Observation>,
     pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
     menu: Option<WidgetRef>,
+    menu_path: Vec<String>,
+    menu_hovered: Option<String>,
     typing: Option<(String, String)>,
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
@@ -464,7 +521,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
             );
         }
     };
-    if let Some(pic) = page.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = page.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(page.background.frame as usize)
     {
         let [wx, wy, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
@@ -487,20 +544,16 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         }
         let w = &face.widgets[at.0];
         let r = face.page_rect(at);
-        if x < r.x as f64
-            || y < r.y as f64
-            || x >= (r.x as f64 + r.width as f64)
-            || y >= (r.y as f64 + r.height as f64)
-        {
-            continue;
-        }
-        if let Some(c) = w.colors.background {
+        let contains = |width: f64, height: f64| {
+            x >= r.x && y >= r.y && x < r.x + width && y < r.y + height
+        };
+        if let Some(c) = w.colors.background.filter(|_| contains(r.width, r.height)) {
             blend(&mut rgb, c);
         }
         if w.hide.background {
             continue;
         }
-        if let Some(img) = w
+        if let Some((asset, img)) = w
             .images
             .iter()
             .find(|i| i.role == Use::Background)
@@ -508,17 +561,49 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
                 assets
                     .get(i.asset)
                     .and_then(|p| p.at(i.frame.unwrap_or(0) as usize))
+                    .map(|image| (i.asset, image))
             })
         {
+            let [width, height] = label_background_size(face, at, asset, [r.width, r.height], 1.);
+            if !contains(width, height) {
+                continue;
+            }
             sample(
                 &mut rgb,
                 img,
-                (x - r.x as f64) / r.width.max(1.) as f64 * img.width as f64,
-                (y - r.y as f64) / r.height.max(1.) as f64 * img.height as f64,
+                (x - r.x) / width.max(1.) * img.width as f64,
+                (y - r.y) / height.max(1.) * img.height as f64,
             );
         }
     }
     0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 140.
+}
+
+/// Kontakt Label text/control bounds and its picture's bounds are independent.
+/// NI's resizable flags decide which picture axes may follow WIDTH/HEIGHT.
+fn label_background_size(
+    face: &Interface,
+    widget: WidgetRef,
+    asset: ir::AssetRef,
+    control: [f64; 2],
+    scale: f64,
+) -> [f64; 2] {
+    if !matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        || !matches!(face.widgets[widget.0].kind, Kind::Label)
+    {
+        return control;
+    }
+    let Some(ir::Asset { kind: ir::AssetKind::Image(meta), .. }) = face.assets.get(asset.0) else {
+        return control;
+    };
+    let Some(size) = meta.size else { return control };
+    let mut result = control;
+    for (axis, intrinsic) in [size.width * scale, size.height * scale].into_iter().enumerate() {
+        if !meta.stretch[axis] && intrinsic.is_finite() && intrinsic > 0. {
+            result[axis] = intrinsic;
+        }
+    }
+    result
 }
 
 fn art(
@@ -564,6 +649,7 @@ fn retained_art(
         ir::AssetKind::Image(m) => m,
         _ => ir::ImageMeta::default(),
     };
+    let [w, h] = label_background_size(face, n, asset, [w, h], scale);
     let r = face.page_rect(n);
     // The retained fill owns the image Arc, so this pointer cannot be reused
     // while that tree is live. Parent placement/clipping is rebuilt outside it;
@@ -585,10 +671,23 @@ fn retained_art(
             meta.margins.right,
         ),
     );
-    ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
+    let image = ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
         art(face, asset, p, frame, w, h, scale)
-    })
+    });
+    if matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        && matches!(face.widgets[n.0].kind, Kind::Label)
+    {
+        // A smaller fixed picture still starts at the control's authored
+        // position; the overlay's default alignment would center it instead.
+        image.at(0., 0.)
+    } else {
+        image
+    }
 }
+
+#[cfg(test)]
+#[path = "picture_geometry_tests.rs"]
+mod picture_geometry_tests;
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
 /// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
@@ -751,7 +850,7 @@ pub fn view_state(
         },
     ));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(pic) = p.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = p.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(p.background.frame as usize)
     {
         let [x, y, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
@@ -872,6 +971,9 @@ pub fn view_state(
     }
     layers.extend(within_budget(built));
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) {
+        layers.push(popup);
+    }
+    if let Some(popup) = value_popup(ui, namespace, face, scale, values) {
         layers.push(popup);
     }
     stack(layers)
@@ -1200,7 +1302,11 @@ pub(super) fn widget_state(
         .unwrap_or(initial);
     // KSP responsive menu "on" is the open popup, not its selected value.
     // Port the state selection from v1 0cb7a8a0:src/ui/perf_view.rs.
-    let on = if matches!(wd.kind, Kind::Menu { .. }) { input.menu == Some(n) } else { v > 0.5 };
+    let on = if matches!(wd.kind, Kind::Menu { .. }) {
+        input.menu == Some(n)
+    } else if face.source == ir::Source::FalconLua && matches!(wd.kind, Kind::Button { momentary: true }) {
+        can_edit && held
+    } else { v > 0.5 };
     let state = usize::from(on)
         + if ui.get(id.as_str()).held {
             2
@@ -1221,7 +1327,7 @@ pub(super) fn widget_state(
     let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
-        Some(s) if (bitmap || !own_face) && s.color.a > 0 => Fill::from(colour(s.color)),
+        Some(s) if bitmap || !own_face => Fill::from(colour(s.color)),
         _ if !own_face && light_under(face, assets, n) => Fill::from(Color::srgb(0.1, 0.1, 0.1)),
         _ => Fill::from(Role::Ink),
     };
@@ -1460,6 +1566,8 @@ pub(super) fn widget_state(
                 if wd.menu_cycle {
                     v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
                 } else {
+                    input.menu_path.clear();
+                    input.menu_hovered = None;
                     input.menu = if input.menu == Some(n) { None } else { Some(n) };
                 }
             }
@@ -1468,7 +1576,14 @@ pub(super) fn widget_state(
                 .find(|i| f64::from(i.value) == v)
                 .map(|i| i.text.clone())
                 .unwrap_or_default();
-            match strip {
+            let content = |label| {
+                let mut parts = vec![words(label).flex(1).min_w(0)];
+                if wd.menu_arrow && !wd.menu_cycle {
+                    parts.push(glyph(Icon::Down, TIGHT * 2. * scale, wd.colors.arrow.map_or(secondary(), |c| Fill::from(colour(c)))));
+                }
+                row(parts).align(Align::Center).pad((TIGHT * scale, 0.))
+            };
+            let menu = match strip {
                 Some(p) => stack![
                     block(w, h).radius(0).fill(
                         picture(
@@ -1483,29 +1598,22 @@ pub(super) fn widget_state(
                         )
                         .unwrap_or(Fill::from(Role::Field))
                     ),
-                    row![words(label)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    content(label)
                         .w(w)
                         .h(h)
                 ],
-                // An authored Lua menu has its own backdrop (often a blank one over
-                // the page art): text only, never the generic tinted box and caret.
+                // Authored background images remain the menu's backdrop.
                 None if face.source == ir::Source::FalconLua
                     && wd.image(Use::Background).is_some() =>
                 {
-                    row![words(label).flex(1).min_w(0)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    content(label)
                 }
-                None => row![
-                    words(label).flex(1).min_w(0),
-                    glyph(Icon::Down, TIGHT * 2. * scale, secondary())
-                ]
-                .align(Align::Center)
-                .pad((TIGHT * scale, 0.))
-                .fill(Role::Ink.alpha(0.08)),
-            }
+                None => content(label).fill(Role::Ink.alpha(0.08)),
+            };
+            let menu = if let Some(ink) = wd.colors.outline {
+                menu.stroke(colour(ink)).stroke_width(scale)
+            } else { menu };
+            menu
             .focusable()
             .a11y(A11y::Button)
         }
@@ -1607,6 +1715,11 @@ pub(super) fn widget_state(
         ),
         Kind::LevelMeter { orientation } => {
             let level = input.meters.get(&n).copied().unwrap_or_else(|| {
+                // A Falcon element/input/sum request needs an exact provider.
+                // An unavailable tap must not display the Program output.
+                if face.source == ir::Source::FalconLua {
+                    return 0.;
+                }
                 let (bus, channel) = match wd.binding {
                     Binding::Meter { bus, channel } => (bus, channel),
                     _ => (None, 0),
@@ -2238,6 +2351,32 @@ pub(super) fn widget_state(
     }
 }
 
+/// Non-interactive value readout pinned to the active authored control. The
+/// source chooses whether it exists; it never replaces an authored tooltip.
+fn value_popup(ui: &Ui, namespace: &str, face: &Interface, scale: f64, values: &Values) -> Option<El> {
+    let (n, wd) = face.widgets.iter().enumerate().find_map(|(index, wd)| {
+        let n = WidgetRef(index);
+        if wd.popup_display != Some(true) || !wd.enabled || !face.visible(n)
+            || !matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. }) { return None; }
+        let response=ui.get(target(namespace,n));
+        (response.held || response.dragged || response.wheel != Vec2::ZERO || !ui.keys(target(namespace,n)).is_empty()).then_some((n,wd))
+    })?;
+    let Binding::Control(control) = wd.binding else { return None; };
+    let (range, display) = match &wd.kind {
+        Kind::Knob { range, display } => (range, display.clone()),
+        Kind::Slider { range, .. } => (range, ir::Display::default()),
+        _ => return None,
+    };
+    let value=values.get(&control).copied().unwrap_or(range.default);
+    let shown=wd.value_text.clone().unwrap_or_else(|| display.format_value(value,range.step==Some(1.),face.source));
+    Some(stack![caption(shown).fill(Role::Ink)]
+        .anchor(Align::Start,Align::Start)
+        .pad((SPACE*scale,TIGHT*scale))
+        .fill(Role::Raised).radius(4.)
+        .pin(Pin::to(target(namespace,n)).area(Area::BottomStart).gap(TIGHT*scale).fallback(Area::TopStart))
+        .id(format!("/{}-value-popup",target(namespace,n))))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn menu_popup(
     ui: &mut Ui,
@@ -2253,14 +2392,25 @@ pub(super) fn menu_popup(
     let wd = face.widgets.get(n.0)?;
     let Kind::Menu { items } = &wd.kind else {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     };
     let anchor = target(namespace, n);
     let popup = format!("{anchor}-popup");
     if !wd.enabled || !face.visible(n) || ui.dismissed(&[popup.as_str(), anchor.as_str()]) {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     }
+    if let Some(tree) = &wd.menu_hierarchy {
+        return menu_hierarchy::popup(
+            ui, namespace, face, n, tree, scale, values, input, width, height,
+        );
+    }
+    input.menu_path.clear();
+    input.menu_hovered = None;
     let mut rows = Vec::new();
     for (at, item) in items.iter().enumerate().filter(|(_, item)| item.visible) {
         let id = format!("{anchor}-item-{at}");
@@ -2282,6 +2432,8 @@ pub(super) fn menu_popup(
         rows.push(
             caption(item.text.clone())
                 .pad((TIGHT * scale, SPACE * scale))
+                .h(CONTROL * scale)
+                .w(Len::Pct(100.))
                 .fill(Role::Ink)
                 .focusable()
                 .a11y(A11y::Button)
@@ -2328,6 +2480,9 @@ pub(super) fn menu_popup(
             .at(x, y),
     )
 }
+
+#[path = "menu_hierarchy.rs"]
+mod menu_hierarchy;
 
 /// Detect the owning target before validating a payload, so an invalid batch
 /// cannot fall through into a rack/instrument drop.
@@ -2809,6 +2964,9 @@ mod page_layout_tests {
     #[test]
     fn retained_photo_does_not_skip_knob_menu_or_live_meter_reads() {
         let (mut face, mut assets) = photo_face();
+        // This fixture exercises Kontakt's legacy output provider. Falcon
+        // element taps require their dedicated resolved request/readback path.
+        face.source = ir::Source::Ksp { slot: 0 };
         face.pages[0].size = ir::Size { width: 240.0, height: 140.0 };
         face.widgets.push(ir::Widget::new("menu", PageRef(0), ir::Rect::new(110, 10, 100, 24), Kind::Menu {
             items: vec![

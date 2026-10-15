@@ -116,6 +116,9 @@ pub(crate) fn process(
             PreparedProcessor::Color { color, .. } => {
                 color.process_lanes(cells, cell, batch, block, parameters, at);
             }
+            PreparedProcessor::Eq(eq) => {
+                eq.process_lanes(cells, cell, batch, block, parameters, at);
+            }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
@@ -168,7 +171,6 @@ pub(crate) fn process(
             | PreparedProcessor::Formant(_)
             | PreparedProcessor::LiveFormant { .. }
             | PreparedProcessor::Filter { .. }
-            | PreparedProcessor::Eq(_)
             | PreparedProcessor::ControlMatrix(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")

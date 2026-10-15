@@ -141,8 +141,7 @@ pub(super) fn design(rate: u32, law: Law, kind: Kind, poles: u8, hz: f64, q: f64
 
 /// Both channels through one section, then flush the states.
 pub(super) fn run(svf: kernel::Svf, state: &mut ProcessorState, block: &mut Planar, len: usize) {
-    for (channel, s) in block.iter_mut().zip(&mut state.z) {
-        svf.run(s, &mut channel[..len]);
-        *s = s.map(flush);
-    }
+    let [left, right] = block;
+    svf.run_stereo(&mut state.z, [&mut left[..len], &mut right[..len]]);
+    state.z = state.z.map(|s| s.map(flush));
 }

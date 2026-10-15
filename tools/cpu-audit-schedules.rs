@@ -13,6 +13,23 @@ fn audit_schedule(name: &str) -> AuditSchedule {
         events.push((at + length, 0x80, key, 0));
     };
     let (frames, idle_blocks, steady) = match name {
+        "host-300" => {
+            // Harness-only sentinels: the V2 adapter converts these to typed
+            // CLAP NoteOn/NoteOff events with 300 distinct exact owner IDs.
+            for id in 0..300usize {
+                events.push((0, 0xf0, id as u8, (id >> 8) as u8));
+                events.push((2 * 48000, 0xf1, id as u8, (id >> 8) as u8));
+            }
+            (4 * 48000, 1000, 48000..2 * 48000)
+        }
+        "held-stress" => {
+            // A held playable-range chord. Scripts, authored voice limits and
+            // sample layers determine the actual physical count; measure it.
+            for key in 60..79 {
+                note(&mut events, 0, key, 100, 2 * 48000);
+            }
+            (4 * 48000, 1000, 48000..2 * 48000)
+        }
         "fast-repeat" => {
             // Sixteenths at quarter=140 BPM; half-length gates, no pedal.
             let mut ordinal = 0;
@@ -87,6 +104,25 @@ fn audit_schedule(name: &str) -> AuditSchedule {
 #[cfg(test)]
 mod schedule_tests {
     use super::*;
+    #[test]
+    fn host_stress_preserves_300_exact_note_owners_and_matching_releases() {
+        let s = audit_schedule("host-300");
+        let ids = |status| s.events.iter().filter(|e| e.1 == status)
+            .map(|e| usize::from(e.2) + (usize::from(e.3) << 8)).collect::<Vec<_>>();
+        assert_eq!(ids(0xf0), (0..300).collect::<Vec<_>>());
+        assert_eq!(ids(0xf1), (0..300).collect::<Vec<_>>());
+        assert!(s.events.iter().filter(|e| e.1 == 0xf1).all(|e| e.0 == 96000));
+    }
+    #[test]
+    fn held_stress_avoids_low_keyswitches_and_measures_the_settled_second_second() {
+        let s = audit_schedule("held-stress");
+        let on: Vec<_> = s.events.iter().filter(|e| e.1 == 0x90).collect();
+        assert_eq!(on.len(), 19);
+        assert_eq!(on.iter().map(|e| e.2).collect::<Vec<_>>(), (60..79).collect::<Vec<_>>());
+        assert!(on.iter().all(|e| e.0 == 0));
+        assert_eq!(s.events.iter().filter(|e| e.1 == 0x80 && e.0 == 96000).count(), 19);
+        assert_eq!(s.steady, 48000..96000);
+    }
     #[test]
     fn repeats_use_exact_tempo_alternating_velocities_and_octaves() {
         let s = audit_schedule("fast-repeat");

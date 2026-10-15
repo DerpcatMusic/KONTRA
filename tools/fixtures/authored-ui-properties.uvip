@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored fixture: documented UVI style and interaction properties. -->
+<UVI4><Program Name="Authored UI properties"><EventProcessors><ScriptProcessor><script><![CDATA[
+setSize(320, 160)
+local button = Button('Momentary')
+button.text='STATE'
+button.x=12 button.y=12 button.width=120 button.height=30
+button.fontSize=20 button.textColourOff='#00ff00' button.textColourOn='#ff0000'
+local menu = Menu('Menu', {'First', 'Second'})
+menu.x=156 menu.y=12 menu.width=140 menu.height=30
+menu.arrowColour='#00ff00' menu.outlineColour='#ff0000' menu.displayArrow=true
+local slider = Slider('Level', 0.25, 0, 1)
+slider.x=12 slider.y=70 slider.width=120 slider.height=28
+slider.showPopupDisplay=true slider.displayText='Authored value'
+local knob = Knob('Dial', 0.5, 0, 1)
+knob.x=156 knob.y=70 knob.width=64 knob.height=64
+knob.showPopupDisplay=false
+function button:changed()
+  self.textColourOff='#0000ff'
+  menu.displayArrow=false
+end
+]]></script></ScriptProcessor></EventProcessors></Program></UVI4>

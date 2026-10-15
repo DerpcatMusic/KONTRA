@@ -12,13 +12,161 @@ use std::sync::{
 };
 
 const JOBS: usize = 1024;
+pub(super) mod startup;
+pub use startup::InitialGroupResidency;
+
+/// First request-admission refusal retained by one residency owner. Invalid or
+/// foreign plan handles cannot be attributed to an owner and do not alter it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum ResidencyRejectionReason {
+    QueueCapacity = 1,
+    GroupIndex = 2,
+    AsyncIdCapacity = 3,
+    CallbackCounterCapacity = 4,
+    RevisionCapacity = 5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidencyRejection {
+    /// Dense runtime group, not a physical source-group index.
+    pub group: u32,
+    pub reload: bool,
+    pub reason: ResidencyRejectionReason,
+}
+
+/// Explicit control-side observation of the residency owner retained by a
+/// Prepared object. Lifetime totals start at that owner's construction, not at
+/// UI publication or a query. Worker phase counts are weakly consistent; this
+/// is not an atomic snapshot of the worker thread. No query resets counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResidencyProgress {
+    pub managed: bool,
+    pub groups_total: u32,
+    /// Audio-committed eligibility, not a promise of full sample/page residency.
+    pub groups_loaded: u32,
+    pub groups_unloaded: u32,
+    pub groups_with_pending: u32,
+    pub job_capacity: usize,
+    pub queued: usize,
+    pub in_flight: usize,
+    pub worker_ready: usize,
+    /// All accepted slots not yet consumed by the audio owner.
+    pub pending: usize,
+    /// Generation-owned startup completions awaiting callback admission.
+    /// Physical work was completed off audio before this generation published.
+    pub startup_completions_pending: usize,
+    pub accepted: u64,
+    pub consumed: u64,
+    /// Current-revision successful completions admitted on audio, purge included.
+    pub committed: u64,
+    /// Current-revision failed completions admitted on audio.
+    pub failed: u64,
+    /// Completions superseded by a newer group revision, consumed without commit.
+    pub stale: u64,
+    /// There is no separately observable live cancellation operation today.
+    pub canceled: Option<u64>,
+    pub rejected: u64,
+    pub rejected_queue: u64,
+    pub rejected_group: u64,
+    pub rejected_async_id: u64,
+    pub rejected_callback_counter: u64,
+    pub rejected_revision: u64,
+    /// The completion stays ready when its async callback cannot be admitted.
+    pub completion_admission_failures: u64,
+    pub first_rejection: Option<ResidencyRejection>,
+    pub counters_saturated: bool,
+}
+
+/// Exact dense/physical identity and current eligibility of one valid group.
+/// A pending reload is not loaded until the audio completion is admitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupResidencyProgress {
+    pub group: u32,
+    pub source_group: u32,
+    pub managed: bool,
+    pub loaded: bool,
+    /// Members captured when this residency owner was prepared. This does not
+    /// enumerate later dynamic sample revisions or promise their physical state.
+    pub asset_count: Option<usize>,
+    pub pending: usize,
+    pub logical_revision: Option<u64>,
+    pub latest_requested_reload: Option<bool>,
+    /// Ownership mode after a worker rollback may differ from the last request.
+    pub retention_owned: Option<bool>,
+}
+
+// Updated only by the single audio/request owner, never by the worker. Atomics
+// permit control-side observations without introducing a diagnostic lock.
+#[derive(Default)]
+struct Counters {
+    accepted: AtomicU64,
+    consumed: AtomicU64,
+    committed: AtomicU64,
+    failed: AtomicU64,
+    stale: AtomicU64,
+    rejected: AtomicU64,
+    rejected_queue: AtomicU64,
+    rejected_group: AtomicU64,
+    rejected_async_id: AtomicU64,
+    rejected_callback_counter: AtomicU64,
+    rejected_revision: AtomicU64,
+    completion_admission_failures: AtomicU64,
+    first_reason: AtomicUsize,
+    first_group: AtomicUsize,
+    first_reload: AtomicBool,
+    saturated: AtomicBool,
+}
+impl Counters {
+    fn bump(&self, counter: &AtomicU64) {
+        let value = counter.load(Relaxed);
+        if value == u64::MAX {
+            self.saturated.store(true, Relaxed);
+        } else {
+            counter.store(value + 1, Relaxed);
+        }
+    }
+    fn reject(&self, group: u32, reload: bool, reason: ResidencyRejectionReason) {
+        self.bump(&self.rejected);
+        self.bump(match reason {
+            ResidencyRejectionReason::QueueCapacity => &self.rejected_queue,
+            ResidencyRejectionReason::GroupIndex => &self.rejected_group,
+            ResidencyRejectionReason::AsyncIdCapacity => &self.rejected_async_id,
+            ResidencyRejectionReason::CallbackCounterCapacity => &self.rejected_callback_counter,
+            ResidencyRejectionReason::RevisionCapacity => &self.rejected_revision,
+        });
+        if self.first_reason.load(Relaxed) == 0 {
+            self.first_group.store(group as usize, Relaxed);
+            self.first_reload.store(reload, Relaxed);
+            self.first_reason.store(reason as usize, Release);
+        }
+    }
+    fn first_rejection(&self) -> Option<ResidencyRejection> {
+        let reason = match self.first_reason.load(Acquire) {
+            1 => ResidencyRejectionReason::QueueCapacity,
+            2 => ResidencyRejectionReason::GroupIndex,
+            3 => ResidencyRejectionReason::AsyncIdCapacity,
+            4 => ResidencyRejectionReason::CallbackCounterCapacity,
+            5 => ResidencyRejectionReason::RevisionCapacity,
+            _ => return None,
+        };
+        Some(ResidencyRejection {
+            group: self.first_group.load(Relaxed) as u32,
+            reload: self.first_reload.load(Relaxed),
+            reason,
+        })
+    }
+}
+
 struct Group {
     assets: Box<[Pcm]>,
     loaded: AtomicBool,
     revision: AtomicU64,
+    pending: AtomicUsize,
+    last_requested_reload: AtomicBool,
 }
 struct Slot {
-    state: AtomicUsize, // 0 free, 1 requested, 2 complete
+    state: AtomicUsize, // 0 free, 1 queued, 2 complete, 3 executing
     group: AtomicUsize,
     id: AtomicI32,
     instance: AtomicUsize,
@@ -31,6 +179,7 @@ struct Shared {
     pinned: Box<[Pcm]>,
     slots: Box<[Slot]>,
     stop: AtomicBool,
+    counters: Counters,
 }
 pub(super) struct Residency {
     shared: Arc<Shared>,
@@ -52,7 +201,9 @@ impl Residency {
         let mut groups: Vec<Vec<Pcm>> = vec![vec![]; plan.group_count as usize];
         let mut pinned = Vec::new();
         for region in 0..plan.region_count() {
-            let pcm = plan.region_asset(region).unwrap();
+            let Some(pcm) = plan.region_asset(region) else {
+                continue;
+            };
             let members = match plan.region_groups[region] {
                 Some(g) => &mut groups[g as usize],
                 None => &mut pinned,
@@ -71,6 +222,8 @@ impl Residency {
                     assets: assets.into(),
                     loaded: AtomicBool::new(true),
                     revision: AtomicU64::new(1),
+                    pending: AtomicUsize::new(0),
+                    last_requested_reload: AtomicBool::new(true),
                 })
                 .collect(),
             pinned: pinned.into(),
@@ -86,6 +239,7 @@ impl Residency {
                 })
                 .collect(),
             stop: AtomicBool::new(false),
+            counters: Counters::default(),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -98,6 +252,7 @@ impl Residency {
                         std::thread::park();
                         continue;
                     }
+                    slot.state.store(3, Release);
                     let group = &worker.groups[slot.group.load(Relaxed)];
                     let revision = slot.revision.load(Relaxed);
                     let reload = slot.reload.load(Relaxed);
@@ -177,6 +332,8 @@ impl Residency {
             })
             .map_err(|_| Error::Capacity)?;
         group_state.loaded.store(false, Release);
+        group_state.last_requested_reload.store(reload, Relaxed);
+        group_state.pending.fetch_add(1, Relaxed);
         let revision = ((previous >> 1) + 1) * 2 | u64::from(reload);
         if (previous & 1 != 0) != reload {
             for pcm in &group_state.assets {
@@ -194,6 +351,7 @@ impl Residency {
         slot.instance.store(instance.0 as usize, Relaxed);
         slot.revision.store(revision, Relaxed);
         slot.reload.store(reload, Relaxed);
+        self.shared.counters.bump(&self.shared.counters.accepted);
         slot.state.store(1, Release);
         self.submitted.store(next.wrapping_add(1), Relaxed);
         self.thread.as_ref().unwrap().thread().unpark();
@@ -214,11 +372,62 @@ impl Residency {
         let g = &self.shared.groups[c.group];
         if g.revision.load(Acquire) == c.revision {
             g.loaded.store(c.reload && c.success, Release);
+            self.shared.counters.bump(if c.success {
+                &self.shared.counters.committed
+            } else {
+                &self.shared.counters.failed
+            });
+        } else {
+            self.shared.counters.bump(&self.shared.counters.stale);
         }
+        g.pending.fetch_sub(1, Relaxed);
+        self.shared.counters.bump(&self.shared.counters.consumed);
         let next = self.completed.load(Relaxed);
         self.shared.slots[next % JOBS].state.store(0, Release);
         self.completed.store(next.wrapping_add(1), Relaxed);
         self.thread.as_ref().unwrap().thread().unpark();
+    }
+
+    fn progress(&self) -> ResidencyProgress {
+        let c = &self.shared.counters;
+        let mut out = ResidencyProgress {
+            managed: true,
+            groups_total: self.shared.groups.len() as u32,
+            job_capacity: JOBS,
+            accepted: c.accepted.load(Relaxed),
+            consumed: c.consumed.load(Relaxed),
+            committed: c.committed.load(Relaxed),
+            failed: c.failed.load(Relaxed),
+            stale: c.stale.load(Relaxed),
+            rejected: c.rejected.load(Relaxed),
+            rejected_queue: c.rejected_queue.load(Relaxed),
+            rejected_group: c.rejected_group.load(Relaxed),
+            rejected_async_id: c.rejected_async_id.load(Relaxed),
+            rejected_callback_counter: c.rejected_callback_counter.load(Relaxed),
+            rejected_revision: c.rejected_revision.load(Relaxed),
+            completion_admission_failures: c.completion_admission_failures.load(Relaxed),
+            first_rejection: c.first_rejection(),
+            counters_saturated: c.saturated.load(Relaxed),
+            ..Default::default()
+        };
+        for g in &self.shared.groups {
+            if g.loaded.load(Acquire) {
+                out.groups_loaded += 1;
+            } else {
+                out.groups_unloaded += 1;
+            }
+            out.groups_with_pending += u32::from(g.pending.load(Relaxed) != 0);
+        }
+        for slot in &self.shared.slots {
+            match slot.state.load(Acquire) {
+                1 => out.queued += 1,
+                2 => out.worker_ready += 1,
+                3 => out.in_flight += 1,
+                _ => {}
+            }
+        }
+        out.pending = out.queued + out.in_flight + out.worker_ready;
+        out
     }
 }
 impl Drop for Shared {
@@ -268,14 +477,49 @@ impl Runtime {
             .as_ref()
             .ok_or(Error::InvalidInput)?;
         if group >= generation.prepared.group_count {
+            residency
+                .shared
+                .counters
+                .reject(group, reload, ResidencyRejectionReason::GroupIndex);
             return Err(Error::InvalidInput);
         }
         if !residency.room() {
+            residency.shared.counters.reject(
+                group,
+                reload,
+                ResidencyRejectionReason::QueueCapacity,
+            );
             return Err(Error::Capacity);
         }
-        let callbacks = generation.callbacks.checked_add(1).ok_or(Error::Capacity)?;
-        let id = generation.midi_object.allocate_async_id()?;
-        residency.request(group as usize, reload, id, instance)?;
+        let callbacks = generation.callbacks.checked_add(1).ok_or_else(|| {
+            residency.shared.counters.reject(
+                group,
+                reload,
+                ResidencyRejectionReason::CallbackCounterCapacity,
+            );
+            Error::Capacity
+        })?;
+        let id = generation
+            .midi_object
+            .allocate_async_id()
+            .inspect_err(|_| {
+                residency.shared.counters.reject(
+                    group,
+                    reload,
+                    ResidencyRejectionReason::AsyncIdCapacity,
+                );
+            })?;
+        residency
+            .request(group as usize, reload, id, instance)
+            .inspect_err(|_| {
+                // The single producer checked queue room above; only revision
+                // exhaustion can reject this second, mutation-free preflight.
+                residency.shared.counters.reject(
+                    group,
+                    reload,
+                    ResidencyRejectionReason::RevisionCapacity,
+                );
+            })?;
         generation.callbacks = callbacks;
         if !reload {
             for index in 0..self.voices.slots.len() {
@@ -318,6 +562,68 @@ impl Runtime {
             .as_ref()
             .is_none_or(|r| r.allowed(group)))
     }
+    /// Explicit off-audio diagnostic query: scans at most the owner's group
+    /// inventory and its fixed 1024 job slots, allocates nothing and does not
+    /// advance work. Worker phase counts may change while they are observed.
+    pub fn residency_progress(&self, plan: crate::PlanId) -> Result<ResidencyProgress, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let mut progress = generation.prepared.residency.as_ref().map_or_else(
+            || ResidencyProgress {
+                groups_total: generation.prepared.group_count,
+                groups_loaded: generation.prepared.group_count,
+                ..Default::default()
+            },
+            Residency::progress,
+        );
+        progress.startup_completions_pending = generation.initial_residency.pending();
+        Ok(progress)
+    }
+    /// Exact O(1), allocation-free group observation. Dense runtime group and
+    /// retained physical source identity are reported separately; no fallback
+    /// from an invalid index or foreign plan is performed.
+    pub fn group_residency_progress(
+        &self,
+        plan: crate::PlanId,
+        group: u32,
+    ) -> Result<GroupResidencyProgress, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        if group >= generation.prepared.group_count {
+            return Err(Error::InvalidInput);
+        }
+        let source_group = generation
+            .prepared
+            .group_source_ids
+            .get(group as usize)
+            .copied()
+            .unwrap_or(group);
+        let Some(owner) = generation.prepared.residency.as_ref() else {
+            return Ok(GroupResidencyProgress {
+                group,
+                source_group,
+                managed: false,
+                loaded: true,
+                asset_count: None,
+                pending: 0,
+                logical_revision: None,
+                latest_requested_reload: None,
+                retention_owned: None,
+            });
+        };
+        let g = &owner.shared.groups[group as usize];
+        let revision = g.revision.load(Acquire);
+        Ok(GroupResidencyProgress {
+            group,
+            source_group,
+            managed: true,
+            loaded: g.loaded.load(Acquire),
+            asset_count: Some(g.assets.len()),
+            pending: g.pending.load(Relaxed),
+            logical_revision: Some(revision >> 1),
+            latest_requested_reload: (revision >> 1 != 0)
+                .then(|| g.last_requested_reload.load(Relaxed)),
+            retention_owned: Some(revision & 1 != 0),
+        })
+    }
     /// Bounded completion drain at a render boundary, also for zero-frame renders.
     pub fn service_residency(&mut self) -> Result<(), Error> {
         for index in 0..self.plans.slots.len() {
@@ -325,6 +631,7 @@ impl Runtime {
                 continue;
             };
             let plan = crate::PlanId(self.plans.id(index));
+            self.service_initial_residency(plan)?;
             for _ in 0..JOBS {
                 let next = self
                     .plans
@@ -337,7 +644,22 @@ impl Runtime {
                 let Some(c) = next else {
                     break;
                 };
-                let callback = self.preflight_async_callback(plan, c.instance)?;
+                let callback = self
+                    .preflight_async_callback(plan, c.instance)
+                    .inspect_err(|_| {
+                        let residency = self
+                            .plans
+                            .get(plan.0)
+                            .unwrap()
+                            .prepared
+                            .residency
+                            .as_ref()
+                            .unwrap();
+                        residency
+                            .shared
+                            .counters
+                            .bump(&residency.shared.counters.completion_admission_failures);
+                    })?;
                 let generation = self.plans.get_mut(plan.0).unwrap();
                 generation.prepared.residency.as_ref().unwrap().consume(c);
                 generation.callbacks -= 1;

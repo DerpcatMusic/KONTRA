@@ -1,4 +1,6 @@
-//! Offline source and conversion inspection. No plugin, Runtime or audio audition.
+//! Offline source and UI inspection without a plugin, DAW or audio audition.
+//! Default initialization constructs no Runtime; --settle-ui explicitly steps
+//! production streaming/runtime plan activation before painting its UI state.
 use ni_file::kontakt::objects::{BParScript, Bank as NiBank, GroupList, Program, ZoneList};
 use sampler_parity::{Lang, ScriptReport};
 use serde_json::{Value, json};
@@ -6,6 +8,7 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 const XML_BYTES: u64 = 32 << 20;
@@ -13,10 +16,16 @@ const XML_BYTES: u64 = 32 << 20;
 #[derive(Default, Debug)]
 struct Options {
     path: PathBuf,
+    base: Option<PathBuf>,
     program: Option<String>,
     initialize: bool,
     source: bool,
     summary: bool,
+    render: bool,
+    ui_only: bool,
+    profile_init: bool,
+    settle_ui: bool,
+    audit_seed: Option<u32>,
 }
 
 fn options(args: &[String]) -> Result<Options, &'static str> {
@@ -27,7 +36,26 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
             "--program" => {
                 opts.program = Some(args.next().ok_or("--program needs a value")?.clone())
             }
+            "--base" => opts.base = Some(args.next().ok_or("--base needs a path")?.into()),
             "--initialize" => opts.initialize = true,
+            "--ephemeral-render" => {
+                opts.render = true;
+                opts.initialize = true;
+            }
+            "--ui-only" => {
+                opts.ui_only = true;
+                opts.initialize = true;
+            }
+            "--settle-ui" => {
+                opts.settle_ui = true;
+                opts.ui_only = true;
+                opts.initialize = true;
+                opts.render = true;
+            }
+            "--profile-init" => {
+                opts.profile_init = true;
+                opts.initialize = true;
+            }
             "--ephemeral-source" => opts.source = true,
             "--summary" => opts.summary = true,
             flag if flag.starts_with('-') => return Err("unknown inspector flag"),
@@ -37,6 +65,18 @@ fn options(args: &[String]) -> Result<Options, &'static str> {
     }
     if opts.path.as_os_str().is_empty() {
         return Err("inspect needs an input path");
+    }
+    if opts.ui_only && opts.source {
+        return Err(
+            "--ui-only skips source classification; omit --ephemeral-source or use a full inspection",
+        );
+    }
+    if opts.profile_init && !matches!(opts.path.extension().and_then(|e| e.to_str()), Some("uvip" | "ufs")) {
+        return Err("--profile-init currently profiles UVI UVIP/UFS initialization only");
+    }
+    if opts.initialize && matches!(opts.path.extension().and_then(|e| e.to_str()), Some("uvip" | "ufs")) {
+        opts.audit_seed = sampler_uvi::script::audit_seed()
+            .map_err(|_| "KONTRA_UVI_AUDIT_SEED needs an unsigned 32-bit integer")?;
     }
     Ok(opts)
 }
@@ -57,6 +97,27 @@ fn diagnostic(report: &mut Value, stage: &str, category: &str, detail: &str, own
         "stage": stage, "category": category, "feature": category,
         "location": null, "detail": detail, "owner": owner, "spec": null
     }));
+}
+
+fn timing(report: &mut Value, phase: &str, started: Instant) {
+    let record = json!({"phase":phase,"elapsed_ms":started.elapsed().as_secs_f64()*1000.});
+    if std::env::var_os("KONTRA_INSPECT_PROGRESS").is_some() {
+        eprintln!("INSPECT_PROGRESS {record}");
+    }
+    report["performance"]["timings"]
+        .as_array_mut()
+        .unwrap()
+        .push(record);
+}
+
+fn begin_phase(phase: &str) -> Instant {
+    if std::env::var_os("KONTRA_INSPECT_PROGRESS").is_some() {
+        eprintln!(
+            "INSPECT_PROGRESS {}",
+            json!({"phase":phase,"status":"started"})
+        );
+    }
+    Instant::now()
 }
 
 fn fail(report: &mut Value, name: &str, category: &str, detail: &str, owner: &str) {
@@ -129,12 +190,14 @@ fn base(opts: &Options, kind: &str) -> Value {
     json!({
         "format": "kontra-library-inspector", "schema": 1,
         "item": {"path": opts.path, "kind": kind, "program": opts.program},
-        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source},
+        "mode": {"initialize": opts.initialize, "ephemeral_source": opts.source, "ephemeral_render":opts.render,"ui_only":opts.ui_only,"profile_init":opts.profile_init,"settle_ui":opts.settle_ui,"audit_seed":opts.audit_seed,"lua_coverage":opts.initialize && !opts.ui_only},
         "status": "ok", "stages": [], "metadata": {}, "scripts": [],
         "converted": {"status": "not_run", "scope": "No product IR translation requested"},
         "ui": {"status": "not_evaluated", "scope": "Source frontends do not execute authored UI initialization", "interfaces": []},
         "diagnostics": [],
+        "performance":{"timings":[],"scope":"Wall-clock durations within this process; nested render phases overlap. OS cache state and native host timing are unverified"},
         "evidence": {"runtime": "not_run", "audio": "not_run", "native_equivalence": "unknown",
+            "static_source_analysis":if opts.ui_only{"skipped: UI-focused production initialization"}else{"requested"},
             "reference_policy":"Native host behavior and official scripting contracts; implementation agreement is not native proof",
             "native_reference":{"host":if kind.starts_with("kontakt") {"Native Instruments Kontakt"} else {"UVI Falcon/Workstation"},"measurement":"not_run"},
             "implementation_history": {"kontakt_v1": "0cb7a8a0", "uvi_v1": "4bffbb18"},
@@ -165,6 +228,26 @@ fn source_program(
             "Program public parameters were rejected",
             "vendor/ni-file/src/kontakt/objects/program.rs",
         );
+    }
+    if let Some(chunk) = program.0.find_first(0x32) {
+        match ni_file::kontakt::objects::VoiceGroups::try_from(chunk) {
+            Ok(groups) => {
+                let limit = |v: &ni_file::kontakt::objects::VoiceLimit| json!({
+                    "max_voices":v.max_num_voices,"kill_mode":v.kill_mode,
+                    "prefer_released":v.prefer_released,"fade_ms":v.ms_fade_time,
+                    "exclusion_group":v.exclusion_group,
+                });
+                record["voice_policy"] = json!({
+                    "scope":"Saved native voice-group records; script and initialization changes are not applied",
+                    "program":limit(&groups.voice_limit),
+                    "overrides":groups.groups.iter().enumerate().filter_map(|(slot,group)|
+                        group.as_ref().map(|group|json!({"voice_group":slot,"limit":limit(&group.voice_limit)}))
+                    ).collect::<Vec<_>>(),
+                });
+            }
+            Err(_) => diagnostic(report,"parse","VoiceGroups","Typed saved voice policies were rejected",
+                "vendor/ni-file/src/kontakt/objects/voice_groups.rs"),
+        }
     }
     if let Some(chunk) = program.0.find_first(0x33) {
         match GroupList::try_from(chunk) {
@@ -255,8 +338,12 @@ fn source_program(
                         match sampler_ksp::nckp::parse(&bytes) {
                             Ok((_, skipped)) => {
                                 view["parse_status"] = json!("ok");
-                                let omitted_fields = skipped.iter().filter(|warning|
-                                    sampler_ksp::nckp::omitted_field(warning).is_some()).count();
+                                let omitted_fields = skipped
+                                    .iter()
+                                    .filter(|warning| {
+                                        sampler_ksp::nckp::omitted_field(warning).is_some()
+                                    })
+                                    .count();
                                 view["skipped"] = json!({
                                     "total": skipped.len(),
                                     "omitted_source_fields": omitted_fields,
@@ -290,12 +377,15 @@ fn source_program(
 }
 
 fn instrument(report: &mut Value, ir: &sampler_ir::Instrument, scope: &str) {
+    // Retained dormant players preserve mappings for later loadSample calls.
+    // A converted zone count alone does not imply a bound or audible source.
+    let zones_with_asset = ir.zones.iter().filter(|zone| zone.asset.is_some()).count();
     let ownership: Vec<_> = ir.source_indices.modulators.iter().map(|m| json!({
         "source_group": m.group,"source_slot":m.slot,"external":m.external,"name":m.name,"runtime":m.runtime.map(|r|r.0)
     })).collect();
     report["converted"] = json!({
         "status":"ok","scope":scope,
-        "summary":{"groups":ir.groups.len(),"zones":ir.zones.len(),"assets":ir.assets.len(),"buses":ir.buses.len(),"chains":ir.chains.len(),"modulators":ir.modulators.len(),"routes":ir.routes.len(),"controls":ir.controls.len(),"scripts":ir.behaviors.len(),"impulses":ir.impulses.len()},
+        "summary":{"groups":ir.groups.len(),"zones":ir.zones.len(),"zones_with_asset":zones_with_asset,"dormant_zones":ir.zones.len()-zones_with_asset,"assets":ir.assets.len(),"buses":ir.buses.len(),"chains":ir.chains.len(),"modulators":ir.modulators.len(),"routes":ir.routes.len(),"controls":ir.controls.len(),"scripts":ir.behaviors.len(),"impulses":ir.impulses.len()},
         "groups":ir.groups,"zones":ir.zones,"buses":ir.buses,"chains":ir.chains,
         "modulators":ir.modulators,"routes":ir.routes,"controls":ir.controls,"processor_controls":ir.processor_controls,
         "ownership":ownership,"physical_control_aliases":ir.source_indices.control_aliases,
@@ -316,20 +406,104 @@ fn instrument(report: &mut Value, ir: &sampler_ir::Instrument, scope: &str) {
     }
 }
 
+fn menu_nodes(nodes: &[sampler_ui_ir::MenuNode]) -> Value {
+    json!(nodes.iter().map(|node| json!({
+        "label":node.label,"item_index":node.item_index,"children":menu_nodes(&node.children)
+    })).collect::<Vec<_>>())
+}
+
+fn widget_record(face: &sampler_ui_ir::Interface, n: usize, w: &sampler_ui_ir::Widget) -> Value {
+    use sampler_ui_ir::{Binding, Kind, WidgetRef};
+    let interactive=matches!(w.kind,Kind::Knob{..}|Kind::Slider{..}|Kind::ValueEdit{..}|Kind::Button{..}|Kind::Switch|Kind::Menu{..}|Kind::Table{..}|Kind::Xy{..}|Kind::TextEdit|Kind::FileSelector{..}|Kind::MouseArea);
+    let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
+    let mut record = json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"uvi_meter_request":w.uvi_meter_request.map(|meter|json!({"element_id":meter.element_id,"element_node":meter.element_node,"scope":format!("{:?}",meter.scope),"bus_id":meter.bus_id,"use_output":meter.use_output,"display_as_mono":meter.display_as_mono})),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()});
+    record["menu_hierarchy"] = w.menu_hierarchy.as_deref().map_or(Value::Null, menu_nodes);
+    // KSP publishes current scalar state in Widget.value. initial_value is the
+    // constructor seed and is not its menu selection after persistence/activation.
+    let scalar = match w.value.as_ref() {
+        Some(sampler_ui_ir::Value::Integer(value)) => Some(f64::from(*value)),
+        Some(sampler_ui_ir::Value::Real(value)) => Some(*value),
+        _ => None,
+    };
+    record["model_scalar_value"] = json!(scalar);
+    if let Kind::Menu { items } = &w.kind {
+        let value = scalar.unwrap_or(w.initial_value);
+        record["menu_items"] = json!(items.iter().enumerate().map(|(index,item)|json!({
+            "index":index,"text":item.text,"value":item.value,"visible":item.visible
+        })).collect::<Vec<_>>());
+        record["model_selected_item_index"] = json!(items.iter().position(|item|f64::from(item.value)==value));
+        record["menu_selection_scope"] = json!("Current exported widget scalar, then constructor seed; live control-overlay values and gestures are separate");
+    }
+    record
+}
+
 fn interfaces(faces: &[sampler_ui_ir::Interface]) -> Value {
     json!(faces.iter().enumerate().map(|(index, face)|json!({
         "index":index,"source":format!("{:?}",face.source),"performance":face.performance,
-        "pages":face.pages.iter().enumerate().map(|(n,p)|json!({"index":n,"name":p.name})).collect::<Vec<_>>(),
-        "widgets":face.widgets.iter().enumerate().map(|(n,w)|json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"binding":format!("{:?}",w.binding),"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"enabled":w.enabled,"text":w.text})).collect::<Vec<_>>(),
-        "assets":face.assets.iter().map(|a|json!({"path":a.path,"kind":format!("{:?}",a.kind)})).collect::<Vec<_>>(),
+        "native_ui":face.native_ui.as_ref().map(|native|json!({"entry":native.entry})),
+        "geometry_scope":"Authored IR coordinates; grid placement, stock sizing and image metadata are resolved by the optional production renderer",
+        "validation_error":face.validate().err().map(|error|error.to_string()),
+        "pages":face.pages.iter().enumerate().map(|(n,p)|json!({"index":n,"name":p.name,"width":p.size.width,"height":p.size.height,"height_rows":p.height_rows,"background_asset":p.background.image.map(|a|a.0),"background_offset_y":p.background.offset_y,"background_origin_y":p.background.origin_y,"background_frame":p.background.frame})).collect::<Vec<_>>(),
+        "widgets":face.widgets.iter().enumerate().map(|(n,w)|widget_record(face,n,w)).collect::<Vec<_>>(),
+        "assets":face.assets.iter().enumerate().map(|(n,a)|json!({"index":n,"path":a.path,"kind":format!("{:?}",a.kind)})).collect::<Vec<_>>(),
+        "styles":face.styles.iter().enumerate().map(|(n,s)|json!({"index":n,"font":format!("{:?}",s.font),"size":s.size,"colour":json!([s.color.r,s.color.g,s.color.b,s.color.a]),"align":format!("{:?}",s.align),"render_support":match s.font {sampler_ui_ir::Font::Named(_)=>"Kontra default-face fallback; authored named family is unresolved",sampler_ui_ir::Font::Default=>"Kontra default face",sampler_ui_ir::Font::Stock(_)=>"Kontra stock-font mapping; native glyph fidelity unverified",sampler_ui_ir::Font::File(_)=>"Authored font asset; see requested TrueTypeFont outcome",sampler_ui_ir::Font::Bitmap(_)=>"Authored bitmap glyph asset in bitmap presentation; vector uses the default face"}})).collect::<Vec<_>>(),
         "unsupported":face.unsupported.iter().map(|u|json!({"feature":u.feature,"widget":u.widget.map(|w|w.0),"detail":"UI projection does not model this source feature; authored value omitted"})).collect::<Vec<_>>()
     })).collect::<Vec<_>>())
+}
+
+fn render_interface(
+    report: &mut Value,
+    opts: &Options,
+    index: usize,
+    face: &sampler_ui_ir::Interface,
+    path: &Path,
+    values: &[(sampler_ui_ir::ControlId, f64)],
+    faces: &[sampler_ui_ir::Interface],
+) {
+    if !opts.render {
+        return;
+    }
+    #[cfg(feature = "ui-render")]
+    {
+        let started = begin_phase("ui_render");
+        let program = report["item"]["program"].as_u64().unwrap_or(0) as u32;
+        report["ui"]["interfaces"][index]["render"] =
+            kontakto::offline_ui_preview(face, path, values, program, faces);
+        let outcome = report["ui"]["interfaces"][index]["render"]["status"]
+            .as_str()
+            .unwrap_or("partial")
+            .to_owned();
+        stage(
+            report,
+            "ui_render",
+            if outcome == "empty" {
+                "partial"
+            } else {
+                &outcome
+            },
+            "Kontra production UI witness; asset/font/preparation and renderer outcomes are separate from source projection and native fidelity",
+            "src/ui/offline_preview.rs",
+        );
+        timing(report, "ui_render", started);
+        report["evidence"]["ui_render"] = json!({"status":"executed","renderer":"Kontra production UI layout, asset worker and CPU painter","native_equivalence":"unknown","gestures":"not_run","live_meter_service":"not_observed: CPU witness has no live meter provider; bitmap control strips can contain authored colour independently of audio","scope":if opts.settle_ui {"In-memory production lifecycle state through the same UI painter; bounded Runtime/DSP stepping is reported separately, no plugin/window/DAW/audio device"}else{"In-memory initial-state witness; no plugin instance, window, Runtime or audio host"}});
+    }
+    #[cfg(not(feature = "ui-render"))]
+    {
+        let _ = (index, face, path, values, faces);
+        fail(
+            report,
+            "ui_render",
+            "RenderFeatureRequired",
+            "Rebuild corpus-health with --features ui-render to use --ephemeral-render",
+            "tools/corpus-health/Cargo.toml",
+        );
+    }
 }
 
 fn uvi_interface(report: &mut Value, face: &sampler_ui_ir::Interface) {
     report["ui"] = json!({
         "status":if face.unsupported.is_empty() {"ok"} else {"partial"},
-        "scope":"Actual Lua initialization/interface projection only; asynchronous/live callbacks and rendering not run",
+        "scope":"Actual Lua initialized model; optional renderer outcomes are recorded separately. Asynchronous/live callbacks are not run",
         "interfaces":interfaces(std::slice::from_ref(face))
     });
     for gap in &face.unsupported {
@@ -372,7 +546,16 @@ fn uvi_initialization(
     host: &sampler_uvi::script::ScriptHost,
     source_lines: &BTreeMap<String, Vec<usize>>,
 ) {
-    uvi_interface(report, &host.interface());
+    uvi_initialization_model(report, host, source_lines, &host.interface());
+}
+
+fn uvi_initialization_model(
+    report: &mut Value,
+    host: &sampler_uvi::script::ScriptHost,
+    source_lines: &BTreeMap<String, Vec<usize>>,
+    face: &sampler_ui_ir::Interface,
+) {
+    uvi_interface(report, face);
     let counts = host.fault_counts();
     let failed = counts.init.values().any(|count| *count != 0);
     let coverage = host.coverage();
@@ -386,6 +569,7 @@ fn uvi_initialization(
         "status":if failed {"failed"} else {"ok"},
         "scope":"Actual bounded Luau script bodies/onInit only; no musical or gesture callbacks",
         "fault_counts":counts.init,
+        "resource_services":{"audio_decoder":"not_attached","impulse_decoder":"not_attached","sample_binding":"not_run","ui_image_dimensions":"Production loose/bank resource authority","ui_assets":"Rendered separately through production resource authority when requested","scope":"An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin"},
         "line_observations":coverage.iter().map(|c|json!({
             "script_id":c.script_id,
             "hits":c.hits.iter().map(|(offset,count)|json!({"span":at(&c.script_id,*offset),"count":count})).collect::<Vec<_>>(),
@@ -424,11 +608,21 @@ fn uvi_initialization(
         if finding.feature == "lua error" && located_faults {
             continue;
         }
+        let sample_service_unavailable =
+            finding.feature == "lua loadSample resource task unavailable";
         diagnostic(
             report,
             "initialize",
-            "LuaFinding",
-            "The initializer reported an unsupported or failed operation; authored value omitted",
+            if sample_service_unavailable {
+                "UnsupportedResourceService"
+            } else {
+                "LuaFinding"
+            },
+            if sample_service_unavailable {
+                "Script sample loading/replacement service is unavailable on this KONTRA path. A failed task does not establish a missing bank asset; this inspector also does not attach an audio decoder"
+            } else {
+                "The initializer reported an unsupported or failed operation; authored value omitted"
+            },
             "crates/sampler-uvi/src/script.rs",
         );
         let entry = report["diagnostics"]
@@ -500,8 +694,154 @@ fn placeholder_plan(
     }
 }
 
+/// Compilation retains wait-capable persistence work for plan activation.
+/// An initial-state renderer must make that lifecycle boundary observable.
+fn kontakt_persistence(report: &mut Value, scripts: &[sampler_ksp::Script]) -> bool {
+    use sampler_ksp::model::PersistenceCompletion;
+    let mut pending = false;
+    let records = scripts.iter().map(|script| {
+        let completion = script.model().persistence_completion;
+        if completion == PersistenceCompletion::Scheduled {
+            pending = true;
+            diagnostic(report, "ui_projection", "PendingLifecycle",
+                "Wait-capable persistence callback awaits plan activation; later authored UI position/visibility writes are not included in this initial-state witness",
+                "crates/sampler-ksp/src/eval.rs");
+            let entry=report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+            entry["feature"]=json!("on persistence_changed scheduled");
+            entry["slot"]=json!(script.slot());
+        }
+        match completion {
+            PersistenceCompletion::NotPresent => json!({"slot":script.slot(),"status":"not_present"}),
+            PersistenceCompletion::Scheduled => json!({"slot":script.slot(),"status":"scheduled_for_plan_activation"}),
+            PersistenceCompletion::Completed => json!({"slot":script.slot(),"status":"completed"}),
+            PersistenceCompletion::Failed { category, offset, .. } => json!({"slot":script.slot(),"status":"failed","category":format!("{category:?}"),"offset":offset}),
+        }
+    }).collect::<Vec<_>>();
+    report["evidence"]["initialization"]["persistence_callbacks"]=json!(records);
+    pending
+}
+
+#[cfg(feature = "ui-render")]
+fn kontakt_settle(opts: &Options, report: &mut Value) {
+    let program=match opts.program.as_deref().unwrap_or("0").parse::<u32>() {
+        Ok(program)=>program,
+        Err(_)=>{fail(report,"select","ProgramIndex","Kontakt lifecycle program must be a numeric index","tools/corpus-health/src/inspect.rs");return;}
+    };
+    let started=begin_phase("production_ui_lifecycle");
+    let witness=match kontakto::offline_ui_lifecycle(&opts.path,program,opts.base.as_deref()) {
+        Ok(witness)=>witness,
+        Err(error)=>{fail(report,"ui_lifecycle","LifecycleUnavailable",error,"src/ui/offline_lifecycle.rs");return;}
+    };
+    timing(report,"production_ui_lifecycle",started);
+    report["item"]["program"]=json!(program);
+    report["metadata"]["resource_path"]=json!(witness.resource_path);
+    report["metadata"]["initial_interface_count"]=json!(witness.initial.len());
+    report["metadata"]["settled_interface_count"]=json!(witness.settled.len());
+    report["evidence"]["ui_lifecycle"]=witness.report;
+    report["evidence"]["initialization"]=json!({"status":"executed_by_production_loader","scope":"Single production loader initialization and bounded plan activation; see explicit lifecycle limits and runtime outcomes"});
+    report["evidence"]["runtime"]=json!("production plan activation; no host event input");
+    report["evidence"]["audio"]=json!("DSP runtime stepped; output measured and discarded, no audition/native comparison");
+    stage(report,"source_frontend","skipped","Separate source inventory/parity audit not requested","tools/corpus-health/src/inspect.rs");
+    let lifecycle_status=if matches!(report["evidence"]["ui_lifecycle"]["status"].as_str(),Some("completed"|"background_active")) {"ok"}else{"partial"};
+    stage(report,"ui_lifecycle",lifecycle_status,"Production Part/V2Core activation, metadata getters and read-only shared KSP UI outbox; authored startup/listener callbacks may execute","src/ui/offline_lifecycle.rs");
+    if lifecycle_status!="ok" {
+        diagnostic(report,"ui_lifecycle","PendingLifecycle","Production lifecycle remains pending or an actual service was unavailable; inspect numeric limit/service outcomes","src/ui/offline_lifecycle.rs");
+    }
+    if report["evidence"]["ui_lifecycle"]["source_conversion_gap_count"].as_u64().is_some_and(|n|n!=0) {
+        diagnostic(report,"translate","NotModeled","Production loader retained source conversion gaps; this lifecycle witness does not establish full instrument parity","src/sound/v2.rs");
+    }
+    let initial_count=witness.initial.len();
+    let faces: Vec<_>=witness.initial.into_iter().chain(witness.settled).collect();
+    let ui_status=if lifecycle_status!="ok" || faces.iter().any(|f|!f.unsupported.is_empty()) {"partial"}else{"ok"};
+    if faces.iter().any(|f|!f.unsupported.is_empty()) {
+        diagnostic(report,"ui_projection","NotModeled","Compiled UI retains unsupported authored properties; successful lifecycle or asset loading does not establish faithful modeling","crates/sampler-ui-ir/src/lib.rs");
+    }
+    report["ui"]=json!({"status":ui_status,"scope":"Compiled initial state and bounded production lifecycle state; renderer outcomes and native parity are separate","interfaces":interfaces(&faces)});
+    for (index,face) in faces.iter().enumerate() {
+        report["ui"]["interfaces"][index]["lifecycle_state"]=json!(if index<initial_count{"compiled_initial"}else{"after_plan_activation"});
+        let values=if index<initial_count {&witness.initial_values}else{&witness.settled_values};
+        render_interface(report,opts,index,face,&witness.resource_path,values,&faces);
+        report["ui"]["interfaces"][index]["render"]["scope"]=json!(if index<initial_count{"Compiled pre-activation UI model; later persistence writes may change it"}else{"UI model after bounded production plan activation; see lifecycle completion/fault/service bounds. Native pixels and later gestures remain unverified"});
+    }
+}
+
 fn kontakt(opts: &Options, report: &mut Value) {
-    let chunks = match sampler_kontakt::read_chunks(&opts.path) {
+    #[cfg(not(feature = "ui-render"))]
+    if opts.settle_ui {
+        fail(report,"ui_lifecycle","LifecycleUnavailable","Rebuild corpus-health with --features ui-render for the explicit production lifecycle witness","src/ui/offline_lifecycle.rs");
+        return;
+    }
+    #[cfg(feature = "ui-render")]
+    if opts.settle_ui {
+        kontakt_settle(opts,report);
+        return;
+    }
+    let started = begin_phase("snapshot_or_container");
+    let is_snapshot = opts
+        .path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("nksn"));
+    let (base_path, snapshot) = if is_snapshot {
+        let base = match opts
+            .base
+            .clone()
+            .map(|base| Ok(Some(base)))
+            .unwrap_or_else(|| sampler_kontakt::resolve_snapshot_base(&opts.path))
+        {
+            Ok(Some(base)) => base,
+            Ok(None) => {
+                fail(
+                    report,
+                    "snapshot_base",
+                    "SnapshotBaseMissing",
+                    "No unambiguous matching base NKI was found. Supply --base ORIGINAL.nki; the shared production identity check must accept it",
+                    "crates/sampler-kontakt/src/snapshot.rs",
+                );
+                return;
+            }
+            Err(_) => {
+                fail(
+                    report,
+                    "snapshot_base",
+                    "SnapshotBaseResolution",
+                    "Snapshot base resolution failed or is ambiguous; authored payload omitted",
+                    "crates/sampler-kontakt/src/snapshot.rs",
+                );
+                return;
+            }
+        };
+        if sampler_kontakt::validate_snapshot_base(&opts.path, &base).is_err() {
+            fail(
+                report,
+                "snapshot_base",
+                "SnapshotIdentityMismatch",
+                "The snapshot and base instrument identities do not match; choose its original base NKI",
+                "crates/sampler-kontakt/src/snapshot.rs",
+            );
+            return;
+        }
+        let state = match sampler_kontakt::read_snapshot(&opts.path) {
+            Ok(state) => state,
+            Err(error) => {
+                kontakt_error(report, &error);
+                return;
+            }
+        };
+        stage(
+            report,
+            "snapshot_base",
+            "ok",
+            "Shared production snapshot identity validation and base-NKI resolution; saved state is applied before initialization",
+            "crates/sampler-kontakt/src/snapshot.rs",
+        );
+        timing(report, "snapshot_base", started);
+        (base, Some(state))
+    } else {
+        (opts.path.clone(), None)
+    };
+    let instrument_path = &base_path;
+    let started = begin_phase("container");
+    let chunks = match sampler_kontakt::read_chunks(instrument_path) {
         Ok(c) => c,
         Err(e) => {
             kontakt_error(report, &e);
@@ -515,6 +855,8 @@ fn kontakt(opts: &Options, report: &mut Value) {
         "Decoded Kontakt chunk metadata only",
         "crates/sampler-kontakt/src/container.rs",
     );
+    timing(report, "container", started);
+    let started = begin_phase("program_metadata");
     let mut programs = Vec::new();
     if let Some(chunk) = chunks.find_first(0x28) {
         match Program::try_from(chunk) {
@@ -583,14 +925,23 @@ fn kontakt(opts: &Options, report: &mut Value) {
     let records: Vec<_> = programs
         .iter()
         .enumerate()
-        .map(|(i, (slot, p))| source_program(report, &opts.path, p, i, *slot, opts))
+        .map(|(i, (slot, p))| if opts.ui_only {
+            json!({"program":i,"rack_slot":slot.map(|slot|slot.0),"name":p.params().ok().map(|params|params.name),"source_scope":"Static source classification skipped in UI-only mode"})
+        }else{source_program(report, instrument_path, p, i, *slot, opts)})
         .collect();
     report["metadata"] = json!({"program_count":programs.len(),"programs":records});
+    if is_snapshot {
+        report["metadata"]["snapshot"] = json!({"base_path":instrument_path,"state_scope":if opts.initialize{"Saved snapshot state applied before the product initializer"}else{"Base source inspected; saved state initialization not run"}});
+    }
+    timing(report, "program_metadata", started);
+    let started = begin_phase("source_frontend");
     let mut frontend_ok = true;
-    let frontends = if opts.summary {
-        sampler_kontakt::read_parity_reports_summary(&opts.path)
+    let frontends = if opts.ui_only {
+        Ok(Vec::new())
+    } else if opts.summary {
+        sampler_kontakt::read_parity_reports_summary(instrument_path)
     } else {
-        sampler_kontakt::read_parity_reports(&opts.path)
+        sampler_kontakt::read_parity_reports(instrument_path)
     };
     match frontends {
         Ok(frontends) => {
@@ -603,7 +954,10 @@ fn kontakt(opts: &Options, report: &mut Value) {
                 {
                     let rejected = frontend.constructs.iter().any(|construct| {
                         construct.name.starts_with("@syntax")
-                            && matches!(construct.status, sampler_parity::Status::Unsupported | sampler_parity::Status::Fault)
+                            && matches!(
+                                construct.status,
+                                sampler_parity::Status::Unsupported | sampler_parity::Status::Fault
+                            )
                     });
                     frontend_ok &= !rejected;
                     let mut frontend = serde_json::to_value(frontend).unwrap();
@@ -625,10 +979,21 @@ fn kontakt(opts: &Options, report: &mut Value) {
     stage(
         report,
         "source_frontend",
-        if frontend_ok { "ok" } else { "failed" },
-        "Physical scripts parsed/lowered without initialization; bypassed/empty slots retained",
+        if opts.ui_only {
+            "skipped"
+        } else if frontend_ok {
+            "ok"
+        } else {
+            "failed"
+        },
+        if opts.ui_only {
+            "Separate static source inventory and parity classification were not requested; the production initializer still parses and compiles its scripts"
+        } else {
+            "Physical scripts parsed/lowered without initialization; bypassed/empty slots retained"
+        },
         "crates/sampler-kontakt/src/parity.rs",
     );
+    timing(report, "source_frontend", started);
     if !opts.initialize {
         return;
     }
@@ -646,10 +1011,13 @@ fn kontakt(opts: &Options, report: &mut Value) {
         }
     };
     report["item"]["program"] = json!(index);
-    let converted = if programs[0].0.is_some() {
-        sampler_kontakt::read_program(&opts.path, index)
+    let started = begin_phase("translate_and_initialize");
+    let converted = if let Some(snapshot) = &snapshot {
+        sampler_kontakt::read_with_snapshot(instrument_path, snapshot)
+    } else if programs[0].0.is_some() {
+        sampler_kontakt::read_program(instrument_path, index)
     } else {
-        sampler_kontakt::read(&opts.path)
+        sampler_kontakt::read(instrument_path)
     };
     let mut converted = match converted {
         Ok(c) => c,
@@ -658,25 +1026,39 @@ fn kontakt(opts: &Options, report: &mut Value) {
             return;
         }
     };
+    timing(report, "translate_and_initialize", started);
     let init_faults = converted.script_init_faults();
     let script_id = |slot: usize| -> Value {
         report["scripts"]
             .as_array()
-            .and_then(|scripts| scripts.iter().find(|script| {
-                script["program"].as_u64() == Some(index as u64)
-                    && script["slot"].as_u64() == Some(slot as u64)
-            }))
+            .and_then(|scripts| {
+                scripts.iter().find(|script| {
+                    script["program"].as_u64() == Some(index as u64)
+                        && script["slot"].as_u64() == Some(slot as u64)
+                })
+            })
             .map_or(Value::Null, |script| script["id"].clone())
     };
-    let init_records: Vec<_> = init_faults.iter().map(|fault| {
-        let slot = fault.slot.map_or(fault.behavior_index, usize::from);
-        (slot, script_id(slot))
-    }).collect();
+    let init_records: Vec<_> = init_faults
+        .iter()
+        .map(|fault| {
+            let slot = fault.slot.map_or(fault.behavior_index, usize::from);
+            (slot, script_id(slot))
+        })
+        .collect();
     for (fault, (slot, script_id)) in init_faults.iter().zip(&init_records) {
-        diagnostic(report, "initialize", "KspInitializationFault",
+        diagnostic(
+            report,
+            "initialize",
+            "KspInitializationFault",
             "KONTRA KSP initialization rejected this script; authored error payload omitted",
-            "crates/sampler-ksp/src/lib.rs");
-        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+            "crates/sampler-ksp/src/lib.rs",
+        );
+        let entry = report["diagnostics"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap();
         entry["feature"] = json!(fault.error.builtin.unwrap_or("KSP initialization"));
         entry["location"] = json!(format!("script slot {slot}"));
         entry["script_id"] = script_id.clone();
@@ -701,62 +1083,104 @@ fn kontakt(opts: &Options, report: &mut Value) {
     stage(
         report,
         "initialize",
-        if init_faults.is_empty() { "ok" } else { "failed" },
+        if init_faults.is_empty() {
+            "ok"
+        } else {
+            "failed"
+        },
         "Product translation executes KSP init; may read/decode convolution impulse resources, no sample playback",
         "crates/sampler-kontakt/src/library.rs",
     );
     let expected_scripts = converted.instrument.behaviors.len();
+    let started = Instant::now();
     let unsupported_before = converted.instrument.unsupported.len();
     let (scripts, faces, _) = converted.compile_ui(&sampler_kontakt::Options {
-        library: Some(opts.path.clone()),
+        library: Some(base_path.clone()),
         mpe: None,
         ..Default::default()
     });
     let new_unsupported = &converted.instrument.unsupported[unsupported_before..];
-    let projection_faults = new_unsupported.iter().filter(|gap| {
-        gap.feature == "script" || gap.feature == "script interface"
-    }).count();
-    let projection_gaps = new_unsupported.iter().filter(|gap| {
-        gap.feature.starts_with("script interface:") || gap.feature == "native interface"
-    }).count();
-    let resource_gaps = converted.instrument.unsupported.iter().filter(|gap| {
-        gap.feature == "performance view" || gap.feature == "performance view control"
-    }).count();
+    let projection_faults = new_unsupported
+        .iter()
+        .filter(|gap| gap.feature == "script" || gap.feature == "script interface")
+        .count();
+    let projection_gaps = new_unsupported
+        .iter()
+        .filter(|gap| {
+            gap.feature.starts_with("script interface:") || gap.feature == "native interface"
+        })
+        .count();
+    let resource_gaps = converted
+        .instrument
+        .unsupported
+        .iter()
+        .filter(|gap| {
+            gap.feature == "performance view" || gap.feature == "performance view control"
+        })
+        .count();
     for gap in new_unsupported.iter().filter(|gap| {
-        gap.feature == "script" || gap.feature.starts_with("script interface")
+        gap.feature == "script"
+            || gap.feature.starts_with("script interface")
             || gap.feature == "native interface"
     }) {
-        diagnostic(report, "ui_projection",
-            if gap.feature == "script" || gap.feature == "script interface" {"ProjectionFault"} else {"NotModeled"},
+        diagnostic(
+            report,
+            "ui_projection",
+            if gap.feature == "script" || gap.feature == "script interface" {
+                "ProjectionFault"
+            } else {
+                "NotModeled"
+            },
             "KONTRA UI projection omitted an authored feature or script; authored value omitted",
-            "crates/sampler-kontakt/src/load.rs");
-        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+            "crates/sampler-kontakt/src/load.rs",
+        );
+        let entry = report["diagnostics"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap();
         entry["feature"] = json!(gap.feature);
         entry["location"] = json!(gap.location);
         if opts.source {
             entry["detail"] = json!(gap.value);
-            entry["detail_scope"] = json!("ephemeral authored diagnostic; omitted from source-free reports");
+            entry["detail_scope"] =
+                json!("ephemeral authored diagnostic; omitted from source-free reports");
         }
     }
     for gap in converted.instrument.unsupported.iter().filter(|gap| {
         gap.feature == "performance view" || gap.feature == "performance view control"
     }) {
-        diagnostic(report, "ui_projection", "NotModeled",
+        diagnostic(
+            report,
+            "ui_projection",
+            "NotModeled",
             "Native performance view resource was unavailable or had omitted controls or fields; authored value omitted",
-            "crates/sampler-kontakt/src/load.rs");
-        let entry = report["diagnostics"].as_array_mut().unwrap().last_mut().unwrap();
+            "crates/sampler-kontakt/src/load.rs",
+        );
+        let entry = report["diagnostics"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap();
         entry["feature"] = json!(gap.feature);
         entry["location"] = json!(gap.location);
         if opts.source {
             entry["detail"] = json!(gap.value);
-            entry["detail_scope"] = json!("ephemeral authored diagnostic; omitted from source-free reports");
+            entry["detail_scope"] =
+                json!("ephemeral authored diagnostic; omitted from source-free reports");
         }
     }
+    let persistence_pending = kontakt_persistence(report, &scripts);
     let lost_projection = scripts.len() < expected_scripts || faces.len() < scripts.len();
     let ui_status = if expected_scripts != 0 && faces.is_empty() && lost_projection {
         "failed"
-    } else if lost_projection || projection_faults != 0 || projection_gaps != 0 || resource_gaps != 0
-        || faces.iter().any(|face| !face.unsupported.is_empty()) {
+    } else if persistence_pending
+        || lost_projection
+        || projection_faults != 0
+        || projection_gaps != 0
+        || resource_gaps != 0
+        || faces.iter().any(|face| !face.unsupported.is_empty())
+    {
         "partial"
     } else {
         "ok"
@@ -768,16 +1192,39 @@ fn kontakt(opts: &Options, report: &mut Value) {
         "Product UI projection consumes translated KSP init state; deferred live persistence callbacks are not activated",
         "crates/sampler-kontakt/src/load.rs",
     );
-    report["ui"] = json!({"status":ui_status,"scope":"Initialized model only; no native renderer, resource pixels, gestures or live callbacks","interfaces":interfaces(&faces)});
+    report["ui"] = json!({"status":ui_status,"scope":"Initialized model; optional renderer/resource outcomes are recorded separately. Gestures and live callbacks are not run","interfaces":interfaces(&faces)});
+    timing(report, "ui_projection", started);
+    for (index, face) in faces.iter().enumerate() {
+        let values: Vec<_> = scripts
+            .iter()
+            .flat_map(|script| script.controls())
+            .map(|control| {
+                let value = match control.definition.default {
+                    sampler_core::ControlValue::Integer(n) => n as f64,
+                    sampler_core::ControlValue::Real(n) => n,
+                    sampler_core::ControlValue::Toggle(n) => f64::from(n),
+                };
+                (sampler_ui_ir::ControlId(control.definition.id.0), value)
+            })
+            .collect();
+        render_interface(report, opts, index, face, instrument_path, &values, &faces);
+    }
+    let started = Instant::now();
     instrument(
         report,
         &converted.instrument,
         "Product Kontakt IR after initializer; selected program only",
     );
-    placeholder_plan(report, &converted.instrument, scripts);
+    if opts.ui_only {
+        report["converted"]["placeholder_plan"] = json!({"status":"skipped","scope":"UI-only mode does not bind even fictitious audio assets"});
+    } else {
+        placeholder_plan(report, &converted.instrument, scripts);
+    }
+    timing(report, "conversion_report_and_placeholder_plan", started);
 }
 
 fn uvi(opts: &Options, report: &mut Value) {
+    let started = begin_phase("container_program_and_scripts");
     let bank = if opts
         .path
         .extension()
@@ -809,6 +1256,7 @@ fn uvi(opts: &Options, report: &mut Value) {
                 "Bank directory only; choose --program BANK_MEMBER to inspect source",
                 "crates/sampler-uvi/src/bank.rs",
             );
+            timing(report, "bank_directory", started);
             return;
         };
         let (xml, _) = match bank.program(program) {
@@ -864,6 +1312,8 @@ fn uvi(opts: &Options, report: &mut Value) {
         "Source text retained in process memory; no decoded samples",
         "crates/sampler-uvi/src/bank.rs",
     );
+    timing(report, "container_program_and_scripts", started);
+    let started = begin_phase("xml_parse_and_metadata");
     let doc = match sampler_uvi::parse_program_xml(&xml) {
         Ok(d) => d,
         Err(e) => {
@@ -893,7 +1343,7 @@ fn uvi(opts: &Options, report: &mut Value) {
             return;
         }
     };
-    if opts.summary {
+    if opts.summary || opts.ui_only {
         let mut counts = BTreeMap::<&str, usize>::new();
         for node in doc.descendants().filter(|n| n.is_element()) {
             *counts.entry(node.tag_name().name()).or_default() += 1;
@@ -905,9 +1355,32 @@ fn uvi(opts: &Options, report: &mut Value) {
     if opts.source && !opts.summary {
         report["metadata"]["xml"] = json!(xml);
     }
+    if bank.is_some() {
+        let occurrences = files.occurrences();
+        let mut outcomes = BTreeMap::<&str, usize>::new();
+        for occurrence in occurrences {
+            let category = occurrence.outcome.err().map_or("admitted_utf8", |e| e.category());
+            *outcomes.entry(category).or_default() += 1;
+        }
+        let unavailable = occurrences.iter().filter(|o| o.outcome.is_err()).count();
+        report["metadata"]["script_members"] = json!({
+            "occurrences": occurrences.len(), "unavailable": unavailable, "outcomes": outcomes,
+            "policy": "Unavailable unused members are optional; a requested unavailable member raises its admission error in require. No lossy source decoding.",
+        });
+        stage(report, "script_members", if unavailable == 0 { "ok" } else { "partial" },
+            "All bank Lua occurrences; admission is distinct from required-module execution",
+            "crates/sampler-uvi/src/bank.rs");
+    }
+    timing(report, "xml_parse_and_metadata", started);
+    let started = begin_phase("source_frontend");
     let mut syntax_ok = true;
     let mut source_lines = BTreeMap::new();
-    for (frontend, source) in sampler_uvi::parity::report_sources(&xml, &files) {
+    let frontend_sources = if opts.ui_only {
+        Vec::new()
+    } else {
+        sampler_uvi::parity::report_sources(&xml, &files)
+    };
+    for (frontend, source) in frontend_sources {
         if opts.initialize {
             source_lines.insert(
                 frontend.id.clone(),
@@ -973,18 +1446,44 @@ fn uvi(opts: &Options, report: &mut Value) {
     stage(
         report,
         "source_frontend",
-        if syntax_ok { "ok" } else { "failed" },
-        "Falcon Lua source/modules classified and compiled for Luau syntax without execution; lowered entries are source mappings, native Lua semantics unverified",
+        if opts.ui_only {
+            "skipped"
+        } else if syntax_ok {
+            "ok"
+        } else {
+            "failed"
+        },
+        if opts.ui_only {
+            "Separate static source inventory and parity classification were not requested; the production initializer still parses and compiles its scripts"
+        } else {
+            "Falcon Lua source/modules classified and compiled for Luau syntax without execution; lowered entries are source mappings, native Lua semantics unverified"
+        },
         "crates/sampler-uvi/src/parity.rs",
     );
+    timing(report, "source_frontend", started);
+    let started = begin_phase(if opts.initialize {
+        "translate_and_initialize"
+    } else {
+        "translate"
+    });
     if opts.initialize {
-        let origin = if let Some(program) = program.as_deref() {
-            sampler_uvi::ScriptedOrigin::Bank(program)
+        let origin = if let (Some(bank), Some(program)) = (&bank, program.as_deref()) {
+            sampler_uvi::ScriptedOrigin::BankWithResources(bank, program)
         } else {
             sampler_uvi::ScriptedOrigin::Loose(&opts.path)
         };
-        match sampler_uvi::inspect_decoded_scripted_program(xml, files, origin) {
+        let mut config = sampler_uvi::script::Config::default();
+        config.audit_seed = opts.audit_seed;
+        match sampler_uvi::inspect_decoded_scripted_program_with_config(
+            xml,
+            files,
+            origin,
+            !opts.ui_only,
+            opts.profile_init,
+            config,
+        ) {
             Ok((ir, host)) => {
+                timing(report, "translate_and_initialize", started);
                 instrument(
                     report,
                     &ir,
@@ -997,7 +1496,32 @@ fn uvi(opts: &Options, report: &mut Value) {
                     "Converted the initialized XML hierarchy and admitted processor/control graph",
                     "crates/sampler-uvi/src/lib.rs",
                 );
-                uvi_initialization(report, &host, &source_lines);
+                let model_started = begin_phase("ui_model_export");
+                let face = host.interface();
+                timing(report, "ui_model_export", model_started);
+                uvi_initialization_model(report, &host, &source_lines, &face);
+                report["evidence"]["initialization"]["coverage"] = json!(!opts.ui_only);
+                if opts.ui_only {
+                    report["evidence"]["initialization"]["scope"] = json!(
+                        "Ordinary production Luau script-body/restore/onInit constructor without line-coverage instructions; no musical or gesture callbacks"
+                    );
+                }
+                let path = program
+                    .as_deref()
+                    .map(|program| opts.path.join(program))
+                    .unwrap_or_else(|| opts.path.clone());
+                render_interface(
+                    report,
+                    opts,
+                    0,
+                    &face,
+                    &path,
+                    &[],
+                    std::slice::from_ref(&face),
+                );
+                if opts.profile_init {
+                    report["performance"]["initialization_profile"] = host.initialization_profile();
+                }
             }
             Err(sampler_uvi::ScriptedTranslationFailure::Initialize(error)) => {
                 fail(
@@ -1029,6 +1553,7 @@ fn uvi(opts: &Options, report: &mut Value) {
     };
     match ir {
         Ok(ir) => {
+            timing(report, "translate", started);
             instrument(
                 report,
                 &ir,
@@ -1057,6 +1582,7 @@ fn uvi(opts: &Options, report: &mut Value) {
 }
 
 fn inspect(opts: &Options) -> Value {
+    let started = Instant::now();
     let kind = match opts
         .path
         .extension()
@@ -1067,11 +1593,23 @@ fn inspect(opts: &Options) -> Value {
     {
         "nki" => "kontakt",
         "nkm" => "kontakt-multi",
+        "nksn" => "kontakt-snapshot",
         "ufs" => "uvi-bank",
         "uvip" => "uvi-loose",
         _ => "unknown",
     };
     let mut report = base(opts, kind);
+    #[cfg(not(feature = "ui-render"))]
+    if opts.render {
+        fail(
+            &mut report,
+            "ui_render",
+            "RenderFeatureRequired",
+            "Rebuild corpus-health with --features ui-render for memory-only CPU witnesses",
+            "tools/corpus-health/Cargo.toml",
+        );
+        return report;
+    }
     if opts.initialize
         && (std::env::var("KONTRA_INSPECT_READ_ONLY_INIT").as_deref() != Ok("1")
             || std::env::var_os("KONTRA_SCAN_ACTIVE").is_none())
@@ -1086,13 +1624,14 @@ fn inspect(opts: &Options) -> Value {
         return report;
     }
     match kind {
-        "kontakt" | "kontakt-multi" => kontakt(opts, &mut report),
+        "kontakt" | "kontakt-multi" | "kontakt-snapshot" => kontakt(opts, &mut report),
+        _ if opts.settle_ui => fail(&mut report,"ui_lifecycle","LifecycleKind","Bounded production UI lifecycle currently supports Kontakt NKI/NKM/NKSN","src/ui/offline_lifecycle.rs"),
         "uvi-loose" | "uvi-bank" => uvi(opts, &mut report),
         _ => fail(
             &mut report,
             "select",
             "Format",
-            "Expected .nki, .nkm, .uvip or .ufs input",
+            "Expected .nki, .nkm, .nksn, .uvip or .ufs input",
             "tools/corpus-health/src/inspect.rs",
         ),
     }
@@ -1128,14 +1667,20 @@ fn inspect(opts: &Options) -> Value {
             "Samples were not auditioned or compared to native hosts",
         ),
     ] {
-        stage(
-            &mut report,
-            name,
-            "skipped",
-            scope,
-            "tools/corpus-health/src/inspect.rs",
-        );
+        if opts.settle_ui && report["evidence"]["ui_lifecycle"].is_object() {
+            let ran=name=="runtime" || report["evidence"]["ui_lifecycle"]["frames"].as_u64().is_some_and(|n|n!=0);
+            stage(&mut report,name,if ran {"executed"}else{"not_run"},if name=="runtime" {"Bounded production plan activation; no injected host musical or gesture input"}else{"Production runtime allocated; see actual stepped frame count and measured/discarded output. No device, audition or native comparison"},"src/ui/offline_lifecycle.rs");
+        } else {
+            stage(
+                &mut report,
+                name,
+                "skipped",
+                scope,
+                "tools/corpus-health/src/inspect.rs",
+            );
+        }
     }
+    report["performance"]["total_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
     report
 }
 
@@ -1187,7 +1732,7 @@ fn manifest_item(kind: &str, id: &str) -> Result<Options, &'static str> {
                 ..Default::default()
             })
         }
-        "kontakt" | "kontakt-multi" | "uvi-loose" => {
+        "kontakt" | "kontakt-multi" | "kontakt-snapshot" | "uvi-loose" => {
             let (path, program) = if kind == "kontakt-multi" {
                 id.rsplit_once('#')
                     .map_or((id, None), |(p, n)| (p, Some(n.to_owned())))
@@ -1265,10 +1810,62 @@ pub(super) fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn menu_tree_report_keeps_original_item_indices() {
+        use sampler_ui_ir::{MenuItem, menu_hierarchy};
+        let items = ["A/First", "B/Middle", "A/Last"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| MenuItem {
+                text: text.into(),
+                value: i as i32 + 1,
+                visible: true,
+            })
+            .collect::<Vec<_>>();
+        let mut widget = sampler_ui_ir::Widget::new(
+            "menu",
+            sampler_ui_ir::PageRef(0),
+            sampler_ui_ir::Rect::default(),
+            sampler_ui_ir::Kind::Menu { items: items.clone() },
+        );
+        widget.menu_hierarchy = Some(menu_hierarchy(&items).unwrap());
+        let record = widget_record(&sampler_ui_ir::Interface::default(), 0, &widget);
+        let report = &record["menu_hierarchy"];
+        assert_eq!(report[0]["label"], "A");
+        assert_eq!(report[0]["children"][1]["item_index"], 2);
+        assert_eq!(report[1]["children"][0]["item_index"], 1);
+    }
+
+    #[test]
+    fn menu_report_keeps_semantic_values_visibility_and_current_snapshot_selection() {
+        use sampler_ui_ir::{Interface, Kind, MenuItem, PageRef, Rect, Widget};
+        let mut widget=Widget::new("menu",PageRef(0),Rect::default(),Kind::Menu{items:vec![
+            MenuItem{text:"First".into(),value:30,visible:true},
+            MenuItem{text:"Hidden".into(),value:-4,visible:false},
+            MenuItem{text:"Last".into(),value:100,visible:true},
+        ]});
+        widget.initial_value=30.;
+        widget.value=Some(sampler_ui_ir::Value::Integer(-4));
+        let record=widget_record(&Interface::default(),0,&widget);
+        assert_eq!(record["initial_value"],30.);
+        assert_eq!(record["model_scalar_value"],-4.);
+        assert_eq!(record["model_selected_item_index"],1);
+        assert_eq!(record["menu_items"][2]["index"],2);
+        assert_eq!(record["menu_items"][2]["value"],100);
+        assert_eq!(record["menu_items"][1]["visible"],false);
+        widget.value=Some(sampler_ui_ir::Value::Integer(7));
+        let record=widget_record(&Interface::default(),0,&widget);
+        assert!(record["model_selected_item_index"].is_null());
+        assert_eq!(widget.value,Some(sampler_ui_ir::Value::Integer(7)));
+    }
+
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
+            let root = std::env::var_os("KONTRA_TEST_TMPDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir);
+            let path = root.join(format!(
                 "kontra-inspect-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
@@ -1303,21 +1900,36 @@ mod tests {
         };
         let item = |domain_id: [u8; 4], item_id: u32, data: Vec<u8>| {
             let base = ItemData {
-                header: ItemDataHeader { length: 0, domain_id: *b"NISD", item_id: 1, version: 1 },
+                header: ItemDataHeader {
+                    length: 0,
+                    domain_id: *b"NISD",
+                    item_id: 1,
+                    version: 1,
+                },
                 inner: None,
                 data: 1u32.to_le_bytes().to_vec(),
             };
             ItemContainer {
                 header: ItemHeader {
-                    length: 0, magic: b"hsin".to_vec(), header_flags: 0,
-                    reserved: 0, uuid: vec![0; 16],
+                    length: 0,
+                    magic: b"hsin".to_vec(),
+                    header_flags: 0,
+                    reserved: 0,
+                    uuid: vec![0; 16],
                 },
                 data: ItemData {
-                    header: ItemDataHeader { length: 0, domain_id, item_id, version: 1 },
+                    header: ItemDataHeader {
+                        length: 0,
+                        domain_id,
+                        item_id,
+                        version: 1,
+                    },
                     inner: (item_id != 1).then_some(Box::new(base)),
                     data,
                 },
-                children: vec![], child_headers: vec![], trailing_data: vec![],
+                children: vec![],
+                child_headers: vec![],
+                trailing_data: vec![],
             }
         };
         let mut script = vec![0, 0x50, 0];
@@ -1330,9 +1942,18 @@ mod tests {
         script.extend(0u32.to_le_bytes()); // persistent-table count
         let mut children = Vec::new();
         for child in [
-            Chunk { id: 0x33, data: vec![0; 4] },
-            Chunk { id: 0x34, data: vec![0; 4] },
-            Chunk { id: 6, data: script },
+            Chunk {
+                id: 0x33,
+                data: vec![0; 4],
+            },
+            Chunk {
+                id: 0x34,
+                data: vec![0; 4],
+            },
+            Chunk {
+                id: 6,
+                data: script,
+            },
         ] {
             child.write(&mut children).unwrap();
         }
@@ -1346,8 +1967,18 @@ mod tests {
         let mut table = 2u16.to_le_bytes().to_vec();
         table.extend([0; 12]);
         let mut preset = Vec::new();
-        KontaktChunks(vec![Chunk { id: 0x28, data: program }, Chunk { id: 0x4b, data: table }])
-            .write(&mut preset).unwrap();
+        KontaktChunks(vec![
+            Chunk {
+                id: 0x28,
+                data: program,
+            },
+            Chunk {
+                id: 0x4b,
+                data: table,
+            },
+        ])
+        .write(&mut preset)
+        .unwrap();
         let mut chunk = 1u32.to_le_bytes().to_vec();
         chunk.extend(0u32.to_le_bytes());
         chunk.extend(1u32.to_le_bytes());
@@ -1416,9 +2047,13 @@ mod tests {
         let report = inspect(&opts);
         assert_ne!(report["status"], "failed");
         assert_eq!(
-            report["converted"]["summary"]["zones"], 0,
-            "a missing sample is an omitted source zone, not admitted audio"
+            report["converted"]["summary"]["zones"], 1,
+            "a dormant player's mapping is retained for later sample replacement"
         );
+        assert_eq!(report["converted"]["summary"]["zones_with_asset"], 0);
+        assert_eq!(report["converted"]["summary"]["dormant_zones"], 1);
+        assert_eq!(report["converted"]["summary"]["assets"], 0);
+        assert!(report["converted"]["zones"][0]["asset"].is_null());
         assert!(
             report["metadata"]["elements"]
                 .as_array()
@@ -1702,34 +2337,72 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
     fn scripted_nki_frontend_rejection_marks_compiler_stage_failed() {
         let temp = Temp::new();
         let path = scripted_nki(&temp, "on init\n declare $broken(\nend on");
-        let opts = Options { path, ..Default::default() };
+        let opts = Options {
+            path,
+            ..Default::default()
+        };
         let report = inspect(&opts);
-        let frontend = report["stages"].as_array().unwrap().iter()
-            .find(|stage| stage["name"] == "source_frontend").unwrap();
+        let frontend = report["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stage| stage["name"] == "source_frontend")
+            .unwrap();
         assert_eq!(frontend["status"], "failed");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["scripts"][0]["compiler"]["status"], "failed");
-        assert!(report["scripts"][0]["constructs"].as_array().unwrap().iter()
-            .any(|construct| construct["name"].as_str().unwrap_or("").starts_with("@syntax")));
+        assert!(
+            report["scripts"][0]["constructs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|construct| construct["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("@syntax"))
+        );
     }
 
     #[test]
     fn scripted_nki_init_fault_keeps_physical_source_location_and_failed_ui() {
         let temp = Temp::new();
-        let path = scripted_nki(&temp, "on init\n declare $signal := 1\n declare $value := -1\n change_listener_par($signal,$value)\nend on");
-        let opts = Options { path, initialize: true, ..Default::default() };
+        let path = scripted_nki(
+            &temp,
+            "on init\n declare $signal := 1\n declare $value := -1\n change_listener_par($signal,$value)\nend on",
+        );
+        let opts = Options {
+            path,
+            initialize: true,
+            ..Default::default()
+        };
         let mut report = base(&opts, "kontakt");
         kontakt(&opts, &mut report);
-        let stage_status = |name| report["stages"].as_array().unwrap().iter()
-            .find(|stage| stage["name"] == name).unwrap()["status"].clone();
-        assert_eq!(stage_status("source_frontend"), "ok", "{:?}", report["scripts"][0]["constructs"]);
+        let stage_status = |name| {
+            report["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|stage| stage["name"] == name)
+                .unwrap()["status"]
+                .clone()
+        };
+        assert_eq!(
+            stage_status("source_frontend"),
+            "ok",
+            "{:?}",
+            report["scripts"][0]["constructs"]
+        );
         assert_eq!(stage_status("initialize"), "failed");
         assert_eq!(stage_status("ui_projection"), "failed");
         assert_eq!(report["status"], "failed");
         assert_eq!(report["ui"]["status"], "failed");
         assert!(report["ui"]["interfaces"].as_array().unwrap().is_empty());
-        let fault = report["diagnostics"].as_array().unwrap().iter()
-            .find(|entry| entry["category"] == "KspInitializationFault").unwrap();
+        let fault = report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["category"] == "KspInitializationFault")
+            .unwrap();
         assert_eq!(fault["script_id"], "ksp:slot0");
         assert_eq!(fault["program"], 0);
         assert_eq!(fault["slot"], 0);
@@ -1745,13 +2418,23 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         let temp = Temp::new();
         let source = "on init\n declare ui_knob $Cut(0,100,1)\n set_control_par(get_ui_id($Cut),$CONTROL_PAR_HIDE,$HIDE_PART_MOD_LIGHT)\nend on";
         let path = scripted_nki(&temp, source);
-        let opts = Options { path, initialize: true, ..Default::default() };
+        let opts = Options {
+            path,
+            initialize: true,
+            ..Default::default()
+        };
         let mut report = base(&opts, "kontakt");
         kontakt(&opts, &mut report);
         assert_eq!(report["ui"]["status"], "partial");
         assert_eq!(report["status"], "partial");
-        assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
-            entry["stage"] == "ui_projection" && entry["feature"] == "script interface: $HIDE_PART_MOD_LIGHT"));
+        assert!(
+            report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["stage"] == "ui_projection"
+                    && entry["feature"] == "script interface: $HIDE_PART_MOD_LIGHT")
+        );
     }
 
     #[test]
@@ -1762,17 +2445,88 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         let view = r#"{"value":{"performanceView":{"controls":[{"index":3,"value":{"common":{"id":"Cut"},"text":{"font":{"custom":"PRIVATE_CUSTOM_FONT"}}}},{"index":999,"value":{"common":{"id":"Unknown"}}}]}}}"#;
         std::fs::write(view_dir.join("Piano.nckp"), view).unwrap();
         let path = scripted_nki(&temp, "on init\n load_performance_view(\"Piano\")\nend on");
-        let opts = Options { path, initialize: true, ..Default::default() };
+        let opts = Options {
+            path,
+            initialize: true,
+            ..Default::default()
+        };
         let mut report = base(&opts, "kontakt");
         kontakt(&opts, &mut report);
         assert_eq!(report["evidence"]["initialization"]["status"], "ok");
         assert_eq!(report["ui"]["status"], "partial");
         assert_eq!(report["status"], "partial");
-        assert!(report["diagnostics"].as_array().unwrap().iter().any(|entry|
-            entry["stage"] == "ui_projection" && entry["feature"] == "performance view control"));
+        assert!(
+            report["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["stage"] == "ui_projection"
+                    && entry["feature"] == "performance view control")
+        );
         // The font is a resolved bitmap-font asset now; skipped values must still stay
         // out of the diagnostics.
-        assert!(!report["diagnostics"].to_string().contains("PRIVATE_CUSTOM_FONT"));
+        assert!(
+            !report["diagnostics"]
+                .to_string()
+                .contains("PRIVATE_CUSTOM_FONT")
+        );
+    }
+
+    #[test]
+    fn saved_voice_policy_is_exposed_without_guessing_rejected_records() {
+        use ni_file::kontakt::{Chunk, StructuredObject};
+        let inline = |voices: i32, exclusion: i32| {
+            let mut bytes = vec![0, 0x60, 0];
+            bytes.extend(0u32.to_le_bytes()); // Empty UTF-16 name.
+            bytes.extend(1i16.to_le_bytes());
+            bytes.push(1);
+            bytes.extend(voices.to_le_bytes());
+            bytes.extend(10i32.to_le_bytes());
+            bytes.extend(exclusion.to_le_bytes());
+            bytes
+        };
+        let mut valid = inline(1024, -1);
+        let mut mask = [0; 16]; mask[15] = 128;
+        valid.extend(mask); valid.extend(inline(3, 16));
+        for rejected in [false, true] {
+            let mut data = valid.clone();
+            if rejected { data.pop(); }
+            let program = Program(StructuredObject { version: 0xaf, public_data: vec![0; 70],
+                private_data: vec![], children: vec![Chunk { id: 0x32, data }] });
+            let opts = Options { path: "Authored.nki".into(), ..Default::default() };
+            let mut report = base(&opts, "kontakt");
+            let record = source_program(&mut report, &opts.path, &program, 0, None, &opts);
+            if rejected {
+                assert!(record.get("voice_policy").is_none(), "malformed policy must not manufacture defaults");
+                assert!(report["diagnostics"].as_array().unwrap().iter().any(|d| d["category"] == "VoiceGroups"));
+            } else {
+                assert_eq!(record["voice_policy"]["program"]["max_voices"], 1024);
+                assert_eq!(record["voice_policy"]["program"]["exclusion_group"], -1);
+                assert_eq!(record["voice_policy"]["overrides"].as_array().unwrap().len(), 1);
+                assert_eq!(record["voice_policy"]["overrides"][0]["voice_group"], 127);
+                assert_eq!(record["voice_policy"]["overrides"][0]["limit"]["exclusion_group"], 16);
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_persistence_ui_is_reported_without_executing_or_hiding_it() {
+        let source = |wait: &str| format!("on init make_perfview declare ui_label $drawer(1,1) move_control_px($drawer,10,20) end on on persistence_changed {wait} move_control_px($drawer,10,-100) end on");
+        for (wait, pending, y, status) in [("wait(1000)", true, 20., "scheduled_for_plan_activation"), ("", false, -100., "completed")] {
+            let script = sampler_ksp::compile(&source(wait), 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            assert_eq!(script.ui(&|_| None).unwrap().widgets[0].rect.y, y);
+            let opts=Options { path: PathBuf::from("authored.nki"), initialize: true, ..Default::default() };
+            let mut report=base(&opts,"kontakt");
+            report["evidence"]["initialization"]=json!({"status":"ok"});
+            assert_eq!(kontakt_persistence(&mut report, &[script]), pending);
+            assert_eq!(report["evidence"]["initialization"]["persistence_callbacks"][0]["status"],status);
+            assert_eq!(report["evidence"]["initialization"]["status"],"ok");
+            assert_eq!(report["diagnostics"].as_array().unwrap().len(),usize::from(pending));
+            if pending {
+                assert_eq!(report["diagnostics"][0]["category"],"PendingLifecycle");
+                assert_eq!(report["diagnostics"][0]["slot"],0);
+            }
+        }
     }
 
     #[test]
@@ -1820,8 +2574,7 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         let temp = Temp::new();
         let view_dir = temp.0.join("Resources/performance_view");
         std::fs::create_dir_all(&view_dir).unwrap();
-        let view =
-            r#"{"value":{"performanceView":{"size":{"width":800,"height":500},"controls":[{"index":3,"value":{"common":{"id":"Cut"},"text":{"font":{"custom":"PRIVATE_CUSTOM_FONT"}}}},{"index":999,"value":{"common":{"id":"Unknown"}}}]}}}"#;
+        let view = r#"{"value":{"performanceView":{"size":{"width":800,"height":500},"controls":[{"index":3,"value":{"common":{"id":"Cut"},"text":{"font":{"custom":"PRIVATE_CUSTOM_FONT"}}}},{"index":999,"value":{"common":{"id":"Unknown"}}}]}}}"#;
         std::fs::write(view_dir.join("Piano.nckp"), view).unwrap();
         let source = "on init\n load_performance_view(\"Piano\")\nend on";
         let mut data = vec![0, 0x50, 0];
@@ -1851,7 +2604,10 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert_eq!(original["slot"], 0);
         assert_eq!(original["path"], "Resources/performance_view/Piano.nckp");
         assert_eq!(original["parse_status"], "ok");
-        assert_eq!(original["skipped"], json!({"total":1,"omitted_source_fields":0,"unsupported_control_types":1}));
+        assert_eq!(
+            original["skipped"],
+            json!({"total":1,"omitted_source_fields":0,"unsupported_control_types":1})
+        );
         assert_eq!(original["source"], view);
 
         let opts = Options {
@@ -1874,6 +2630,46 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         assert_eq!(parsed.program.as_deref(), Some("1"));
         assert!(parsed.source);
         assert!(!parsed.initialize);
+        let focused = options(&strings(&["a.nki", "--ui-only", "--ephemeral-render"])).unwrap();
+        assert!(focused.initialize && focused.ui_only && focused.render);
+        let settled = options(&strings(&["a.nksn", "--settle-ui"])).unwrap();
+        assert!(settled.initialize && settled.ui_only && settled.render && settled.settle_ui);
+        assert!(options(&strings(&["a.nksn", "--settle-ui", "--ephemeral-source"])).is_err());
+        assert!(options(&strings(&["a.nki", "--ui-only", "--ephemeral-source"])).is_err());
+        assert!(options(&strings(&["a.nki", "--profile-init"])).is_err());
+        let profiled = options(&strings(&["a.uvip", "--ui-only", "--profile-init"])).unwrap();
+        assert!(profiled.initialize && profiled.profile_init && profiled.ui_only);
+    }
+
+    #[test]
+    fn ui_only_retains_production_initialization_and_marks_static_audit_skipped() {
+        let temp = Temp::new();
+        let xml = "<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(320,120) local p=Panel('Authored') p:Label('Visible')]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let mut opts = fixture(&temp, xml, false);
+        opts.ui_only = true;
+        opts.initialize = true;
+        let mut report = base(&opts, "uvi-loose");
+        uvi(&opts, &mut report);
+        assert!(report["scripts"].as_array().unwrap().is_empty());
+        assert_eq!(
+            report["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|stage| stage["name"] == "source_frontend")
+                .unwrap()["status"],
+            "skipped"
+        );
+        assert_eq!(report["evidence"]["initialization"]["status"], "ok");
+        assert_eq!(report["evidence"]["initialization"]["coverage"], false);
+        assert!(report["evidence"]["initialization"]["line_observations"].as_array().unwrap().is_empty());
+        assert!(
+            !report["ui"]["interfaces"][0]["widgets"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(report["evidence"]["audio"], "not_run");
     }
 
     #[test]
@@ -1883,7 +2679,17 @@ end]]></script></ScriptProcessor></EventProcessors></Program>"#;
         let full = inspect(&opts);
         let summary = compact(full.clone());
         opts.summary = true;
-        assert_eq!(compact(inspect(&opts)), summary);
+        let mut measured_summary = compact(inspect(&opts));
+        let mut expected_summary = summary.clone();
+        measured_summary
+            .as_object_mut()
+            .unwrap()
+            .remove("performance");
+        expected_summary
+            .as_object_mut()
+            .unwrap()
+            .remove("performance");
+        assert_eq!(measured_summary, expected_summary);
         assert_eq!(summary["status"], full["status"]);
         assert_eq!(summary["evidence"], full["evidence"]);
         assert_eq!(

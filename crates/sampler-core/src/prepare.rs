@@ -1,9 +1,23 @@
 //! Control-thread compilation of immutable assets and native mappings.
 mod predicates;
 mod selection;
+#[path = "sample_revision.rs"]
+pub(crate) mod sample_revision;
+pub use sample_revision::{DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision,
+    SampleControl, SampleRevisionLimits, SampleTarget, SampleTargetId, SampleTask, SampleTransaction};
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 use predicates::Matching;
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
+#[path = "head_budget.rs"]
+mod head_budget;
+pub use head_budget::{HeadBudget, HeadBudgetStatus};
+#[path = "head_ranges.rs"]
+mod head_ranges;
+pub use head_ranges::{HeadPreparer, HeadRangeBuilder, PreparedRanges, Ranges};
+#[path = "resident_data.rs"]
+mod resident_data;
+pub use resident_data::ResidentBuffer;
+use resident_data::ResidentData;
 use sampler_pool::{Snapshot, SnapshotRead};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 
@@ -23,7 +37,9 @@ type StoreEntry = ([i32; super::STORE_KEY], i64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Snapshot<Option<Box<[Frame]>>>,
+    frames: Snapshot<Option<ResidentData>>,
+    resident_budget: std::sync::OnceLock<HeadBudget>,
+    resident_published: AtomicBool,
     full: bool,
     residency_owners: std::sync::atomic::AtomicUsize,
     residency_managed: AtomicBool,
@@ -39,24 +55,29 @@ struct PcmData {
     // A streamed asset's resident ranges (where voices start); empty when purged.
     /// Readers (every render thread) share it; only a control-side swap writes.
     head: Snapshot<Ranges>,
+    head_budget: std::sync::OnceLock<HeadBudget>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
     length: usize,
 }
 /// A control-installed decoder for this asset's authored resident ranges.
 pub type ResidencyRanges = Vec<(usize, Box<[Frame]>)>;
-struct ResidencyLoader(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>);
+enum ResidencyLoader {
+    Raw(std::sync::Arc<dyn Fn() -> Result<ResidencyRanges, Error> + Send + Sync>),
+    Prepared(std::sync::Arc<dyn Fn() -> Result<PreparedRanges, Error> + Send + Sync>),
+    Resident(std::sync::Arc<dyn Fn() -> Result<ResidentBuffer, Error> + Send + Sync>),
+}
 impl std::fmt::Debug for ResidencyLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ResidencyLoader")
     }
 }
 /// Borrowed full-resident PCM; retiring storage is reclaimed only on control.
-pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<Box<[Frame]>>>);
+pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<ResidentData>>);
 impl std::ops::Deref for ResidentFrames<'_> {
     type Target = [Frame];
     fn deref(&self) -> &[Frame] {
-        self.0.as_deref().expect("resident generation")
+        self.0.as_ref().expect("resident generation").frames()
     }
 }
 impl std::fmt::Debug for ResidentFrames<'_> {
@@ -79,10 +100,6 @@ impl AsRef<[Frame]> for ResidentFrames<'_> {
 }
 
 type LevelData = Box<[Box<[Frame]>]>;
-/// Resident ranges of a streamed asset: (first frame, frames), ascending and
-/// disjoint.
-pub type Ranges = Box<[(usize, crate::Packed)]>;
-
 /// Calls `f` with each part of `range` outside `ranges`, in order, until it
 /// returns false; returns whether every call returned true.
 pub(crate) fn uncovered(
@@ -115,7 +132,7 @@ impl Pcm {
         if rate == 0 || frames.is_empty() || frames.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::InvalidInput);
         }
-        Self::create(rate, frames.len(), Some(frames))
+        Self::create(rate, frames.len(), Some(ResidentData::unbudgeted(frames)))
     }
     /// `new` plus every octave level, built here (about +100% memory). Prefer
     /// `service_mipmaps`, which builds levels only for assets played an octave
@@ -170,27 +187,89 @@ impl Pcm {
         &self,
         ranges: Vec<(usize, Box<[Frame]>)>,
     ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        self.publish_ranges_unlocked(self.prepare_ranges(ranges)?)
+    }
+    /// Prepare exact packed residency without changing the published asset.
+    /// Call off audio; a bound head budget is reserved before packed allocation.
+    /// The caller-owned decoded buffers are outside that packed-payload cap.
+    pub fn prepare_ranges(&self, ranges: ResidencyRanges) -> Result<PreparedRanges, Error> {
         if !ranges.is_empty() && !self.residency_permitted() {
             return Err(Error::NotReady);
         }
-        let valid = !self.0.full
-            && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
-            && ranges.iter().all(|(start, frames)| {
-                !frames.is_empty()
-                    && start
-                        .checked_add(frames.len())
-                        .is_some_and(|end| end <= self.0.length)
-                    && frames.iter().flatten().all(|x| x.is_finite())
-            });
-        if !valid {
+        self.0.head.collect();
+        self.head_preparer().prepare(ranges)
+    }
+    /// Off audio: bind one shared packed-payload quota before initial head
+    /// publication. Existing current storage is admitted without copying;
+    /// unaccounted retired generations must first be reclaimed on control.
+    pub fn bind_head_budget(&self, budget: &HeadBudget) -> Result<(), Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = self.0.head_budget.get() {
+            return if old.same(budget) {
+                Ok(())
+            } else {
+                Err(Error::RevisionConflict)
+            };
+        }
+        self.0.head.collect();
+        if self.0.head.has_retired() {
             return Err(Error::InvalidInput);
         }
-        let ranges = ranges
-            .into_iter()
-            .map(|(start, frames)| (start, crate::Packed::new(&frames)))
-            .collect();
+        self.0.head.read().charge(budget)?;
+        self.0
+            .head_budget
+            .set(budget.clone())
+            .map_err(|_| Error::RevisionConflict)
+    }
+    /// Immutable decoder recipe. It holds budget identity, not a Pcm reference,
+    /// so storing it in a residency loader cannot create an ownership cycle.
+    pub fn head_preparer(&self) -> HeadPreparer {
+        HeadPreparer::new(
+            self.asset_id(),
+            self.sample_rate(),
+            self.frame_count(),
+            !self.0.full,
+            self.0.head_budget.get().cloned(),
+        )
+    }
+    /// Publish a previously prepared generation. A bound asset requires the
+    /// exact same budget identity already carried by that generation.
+    /// The old generation remains borrowed until control-side collection.
+    pub fn publish_ranges(
+        &self,
+        ranges: PreparedRanges,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.publish_ranges_unlocked(ranges)
+    }
+    fn publish_ranges_unlocked(
+        &self,
+        prepared: PreparedRanges,
+    ) -> Result<SnapshotRead<'_, Ranges>, Error> {
+        if self.0.full || prepared.asset != self.asset_id() {
+            return Err(Error::InvalidInput);
+        }
+        if self
+            .0
+            .head_budget
+            .get()
+            .is_some_and(|budget| !prepared.charged_to(budget))
+        {
+            return Err(Error::RevisionConflict);
+        }
+        if !prepared.ranges.is_empty() && !self.residency_permitted() {
+            return Err(Error::NotReady);
+        }
         self.0.head.collect();
-        Ok(self.0.head.swap(ranges))
+        Ok(self.0.head.swap(prepared.ranges))
     }
     /// Control side: frames in resident ranges, collecting retired generations.
     pub fn head_frames(&self) -> usize {
@@ -201,6 +280,57 @@ impl Pcm {
     pub fn head_bytes(&self) -> usize {
         self.0.head.collect();
         self.0.head.read().iter().map(|(_, f)| f.bytes()).sum()
+    }
+    /// Control-side readiness query for an exact source-frame range. A nonzero
+    /// head alone does not establish that an authored offset or reverse start
+    /// is resident. This takes one immutable residency snapshot and allocates
+    /// nothing; a later purge may still remove that generation.
+    pub fn resident_covers(&self, range: std::ops::Range<usize>) -> bool {
+        if range.start >= range.end || range.end > self.frame_count() {
+            return false;
+        }
+        if self.resident_frames().is_some() {
+            return true;
+        }
+        uncovered(&self.0.head.read(), range, |_| false)
+    }
+    /// Control-side count of the currently resident source frames in `range`,
+    /// including partial intersections with disjoint packed heads. Invalid or
+    /// empty ranges return zero. The immutable read snapshot is pinned only for
+    /// this query; no allocation, I/O or residency mutation occurs.
+    pub fn resident_covered_frames(&self, range: std::ops::Range<usize>) -> usize {
+        if range.start >= range.end || range.end > self.frame_count() {
+            return 0;
+        }
+        if self.resident_frames().is_some() {
+            return range.len();
+        }
+        let mut missing = 0;
+        uncovered(&self.0.head.read(), range.clone(), |part| {
+            missing += part.len();
+            true
+        });
+        range.len() - missing
+    }
+    /// Copy an exact source-frame window from one pinned resident generation.
+    /// Intended for bounded control-side verification/waveforms. Never opens a
+    /// file, allocates, changes readiness, or partially writes on failure.
+    pub fn copy_resident_range(&self, start: usize, out: &mut [Frame]) -> Result<(), Error> {
+        let end = start.checked_add(out.len()).ok_or(Error::InvalidInput)?;
+        if end > self.frame_count() { return Err(Error::InvalidInput); }
+        if out.is_empty() { return Ok(()); }
+        if let Some(full) = self.resident_frames() {
+            out.copy_from_slice(&full[start..end]);
+            return Ok(());
+        }
+        let ranges = self.0.head.read();
+        if !uncovered(&ranges, start..end, |_| false) { return Err(Error::NotReady); }
+        for (base, packed) in ranges.iter() {
+            let a = start.max(*base);
+            let b = end.min(*base + packed.len());
+            if a < b { packed.copy(a - base, &mut out[a - start..b - start]); }
+        }
+        Ok(())
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -221,7 +351,11 @@ impl Pcm {
     pub(crate) fn touch(&self, now: u64) {
         self.0.used.store(now, Relaxed);
     }
-    fn create(rate: u32, length: usize, frames: Option<Box<[Frame]>>) -> Result<Self, Error> {
+    fn create(rate: u32, length: usize, frames: Option<ResidentData>) -> Result<Self, Error> {
+        let full=frames.is_some();
+        Self::create_kind(rate,length,frames,full)
+    }
+    fn create_kind(rate:u32,length:usize,frames:Option<ResidentData>,full:bool)->Result<Self,Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
@@ -231,8 +365,10 @@ impl Pcm {
         Ok(Self(std::sync::Arc::new(PcmData {
             id: AssetId(id),
             rate,
-            full: frames.is_some(),
+            full,
+            resident_published: AtomicBool::new(frames.is_some()),
             frames: Snapshot::new(frames),
+            resident_budget: std::sync::OnceLock::new(),
             residency_owners: std::sync::atomic::AtomicUsize::new(0),
             residency_managed: AtomicBool::new(false),
             residency_loader: std::sync::OnceLock::new(),
@@ -241,9 +377,31 @@ impl Pcm {
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
             head: Snapshot::default(),
+            head_budget: std::sync::OnceLock::new(),
             cold: AtomicBool::new(false),
             length,
         })))
+    }
+    /// Real admitted source metadata whose complete PCM must be prepared on
+    /// control before publishing the part. This descriptor cannot stream tails.
+    pub fn pending_resident(rate:u32,frames:usize)->Result<Self,Error> {
+        if rate==0 || frames==0 {return Err(Error::InvalidInput);}
+        if frames.checked_mul(size_of::<Frame>()).is_none_or(|n|n>isize::MAX as usize) {return Err(Error::Capacity);}
+        Self::create_kind(rate,frames,None,true)
+    }
+    pub fn requires_resident(&self)->bool {self.0.full}
+    /// Control-only one-shot initial publication; it never overwrites the
+    /// bytes of an existing revision. Reload uses its budgeted residency recipe.
+    pub fn publish_initial_resident(&self,buffer:ResidentBuffer)->Result<(),Error> {
+        let (rate,data,budget)=buffer.into_parts()?;
+        let _mutation=self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full || self.0.resident_published.load(Relaxed) {return Err(Error::RevisionConflict);}
+        if rate!=self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+        if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+        if !self.residency_permitted() {return Err(Error::NotReady);}
+        self.0.frames.replace(Some(data),|_|());
+        self.0.resident_published.store(true,Relaxed);
+        Ok(())
     }
     pub fn asset_id(&self) -> AssetId {
         self.0.id
@@ -264,10 +422,48 @@ impl Pcm {
         &self,
         loader: impl Fn() -> Result<ResidencyRanges, Error> + Send + Sync + 'static,
     ) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if self.0.full && self.0.resident_budget.get().is_some() { return Err(Error::RevisionConflict); }
         self.0
             .residency_loader
-            .set(ResidencyLoader(std::sync::Arc::new(loader)))
+            .set(ResidencyLoader::Raw(std::sync::Arc::new(loader)))
             .map_err(|_| Error::InvalidInput)
+    }
+    /// Page-bounded decoder/packer with generation-owned budget admission.
+    /// The closure should retain a HeadPreparer rather than this Pcm itself.
+    pub fn set_prepared_residency_loader(
+        &self,
+        loader: impl Fn() -> Result<PreparedRanges, Error> + Send + Sync + 'static,
+    ) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if self.0.full { return Err(Error::InvalidInput); }
+        self.0
+            .residency_loader
+            .set(ResidencyLoader::Prepared(std::sync::Arc::new(loader)))
+            .map_err(|_| Error::InvalidInput)
+    }
+    /// Control side: adopt existing full PCM into a physical quota without
+    /// copying. Caller-owned allocations made before admission are outside the
+    /// quota until this succeeds; use ResidentBuffer to reserve before decoding.
+    /// A raw whole-buffer reload callback is incompatible with this contract.
+    pub fn bind_resident_budget(&self, budget: &HeadBudget) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full { return Err(Error::InvalidInput); }
+        if let Some(old) = self.0.resident_budget.get() {
+            return if old.same(budget) {Ok(())} else {Err(Error::RevisionConflict)};
+        }
+        if matches!(self.0.residency_loader.get(), Some(ResidencyLoader::Raw(_))) { return Err(Error::RevisionConflict); }
+        self.0.frames.collect();
+        if self.0.frames.has_retired() { return Err(Error::InvalidInput); }
+        if let Some(data) = self.0.frames.read().as_ref() { data.charge(budget)?; }
+        self.0.resident_budget.set(budget.clone()).map_err(|_|Error::RevisionConflict)
+    }
+    /// Control side: full-resident reload with admission before decode
+    /// allocation. Capture metadata and budget, never this Pcm, in the closure.
+    pub fn set_budgeted_resident_loader(&self, loader: impl Fn() -> Result<ResidentBuffer, Error> + Send + Sync + 'static) -> Result<(), Error> {
+        let _mutation = self.0.residency_mutation.lock().unwrap_or_else(|e|e.into_inner());
+        if !self.0.full || self.0.resident_budget.get().is_none() { return Err(Error::InvalidInput); }
+        self.0.residency_loader.set(ResidencyLoader::Resident(std::sync::Arc::new(loader))).map_err(|_|Error::InvalidInput)
     }
     pub(crate) fn residency_acquire(&self) {
         self.0
@@ -306,7 +502,7 @@ impl Pcm {
                 self.0.frames.replace(None, |_| ());
             }
             if !self.0.head.read().is_empty() {
-                self.0.head.replace(Box::new([]), |_| ());
+                self.0.head.replace(Ranges::default(), |_| ());
             }
             if !self.0.levels.read().is_empty() {
                 self.0.levels.replace(Box::new([]), |_| ());
@@ -328,13 +524,29 @@ impl Pcm {
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
+        self.0.frames.collect();
         if (self.0.full && self.resident_frames().is_some())
             || (!self.0.full && self.head_frames() > 0)
         {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
-        let mut ranges = (loader.0)()?;
+        if let ResidencyLoader::Resident(loader)=loader {
+            let (rate,data,budget)=loader()?.into_parts()?;
+            if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+            if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+            if !self.residency_permitted() {return Err(Error::NotReady);}
+            self.0.frames.replace(Some(data), |_|());
+            return Ok(());
+        }
+        if let ResidencyLoader::Prepared(loader)=loader {
+            let prepared=loader()?;
+            if !self.residency_permitted() {return Err(Error::NotReady);}
+            self.publish_ranges_unlocked(prepared)?;
+            return Ok(());
+        }
+        let ResidencyLoader::Raw(loader)=loader else {unreachable!()};
+        let mut ranges = loader()?;
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -346,7 +558,7 @@ impl Pcm {
             {
                 return Err(Error::InvalidInput);
             }
-            self.0.frames.replace(Some(ranges.pop().unwrap().1), |_| ());
+            self.0.frames.replace(Some(ResidentData::unbudgeted(ranges.pop().unwrap().1)), |_| ());
         } else {
             self.set_ranges_unlocked(ranges)?;
         }
@@ -369,13 +581,27 @@ impl Pcm {
         let levels = self.0.levels.read();
         levels.iter().map(|l| l.len()).sum::<usize>() * size_of::<Frame>()
     }
-    /// Control side: bytes of resident frames, octave levels and any streamed head.
-    pub fn resident_bytes(&self) -> usize {
+    /// Control side: current full-resident PCM and octave bytes, excluding
+    /// packed heads. Shared streamed head quotas must be counted once through
+    /// HeadBudget::status, including staged and retired physical generations.
+    pub fn resident_non_head_bytes(&self) -> usize {
         self.0.frames.collect();
         self.resident_frames()
             .map_or(0, |f| f.len() * size_of::<Frame>())
-            + self.head_bytes()
             + self.level_bytes()
+    }
+    /// Control side: current full PCM outside this exact physical authority,
+    /// plus octave levels. Add the shared authority's held bytes only once.
+    pub fn resident_non_head_bytes_outside(&self,budget:&HeadBudget)->usize {
+        self.0.frames.collect();
+        let bytes=if self.0.resident_budget.get().is_some_and(|owned|owned.same(budget)) {0}
+            else {self.resident_frames().map_or(0,|f|f.len()*size_of::<Frame>())};
+        bytes+self.level_bytes()
+    }
+    /// Control side: current full PCM, octave levels and streamed head bytes.
+    /// A shared head quota's held bytes additionally include retired/staged data.
+    pub fn resident_bytes(&self) -> usize {
+        self.resident_non_head_bytes() + self.head_bytes()
     }
 }
 
@@ -558,7 +784,7 @@ struct PreparedRegion {
     bus: Option<usize>,
     envelope: Envelope,
     fallback_envelope: bool,
-    cursor: super::source::CursorTemplate,
+    cursor: Option<super::source::CursorTemplate>,
     root_key: Option<u8>,
     transpose_semitones: f64,
     take: Option<super::Take>,
@@ -573,7 +799,29 @@ struct Candidate {
     step: f64,
 }
 
+/// Immutable control-side initial source geometry, bound to one physical asset
+/// revision. It does not retain PCM or model future loop/pitch/script changes.
+#[derive(Clone, Copy, Debug)]
+pub struct ConstantStartPrefix {
+    asset: AssetId,
+    template: super::source::CursorTemplate,
+    offset: u32,
+}
+impl ConstantStartPrefix {
+    pub fn asset_id(&self) -> AssetId { self.asset }
+    /// Source window for an explicit conservative step and output horizon.
+    /// None rejects a loop transition/crossfade, reverse or ambiguous geometry.
+    pub fn window(&self, frames: usize, step: f64) -> Option<std::ops::Range<usize>> {
+        // Admission rejected indexed multi-loop/wavetable geometry, so this
+        // compact template needs no external slot table or retained plan.
+        self.template.cursor(&[]).skip(self.offset)
+            .initial_forward_window(u32::try_from(frames).ok()?, step)
+    }
+}
+
 pub struct Prepared {
+    pub(super) sample_targets: Box<[SampleTarget]>,
+    pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
     pub(super) residency: Option<super::residency::Residency>,
     pub(super) parameter_registry: super::PreparedParameterRegistry,
@@ -637,6 +885,7 @@ pub struct Prepared {
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
+    pub(super) initial_residency: Box<[super::InitialGroupResidency]>,
     pub(super) signal_programs: Box<[super::SignalProgram]>,
     pub(super) parameter_programs: Box<[super::ParameterProgram]>,
     pub(super) shared_store: (Box<[StoreEntry]>, usize),
@@ -657,6 +906,39 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// Initial sample-start modulation offset, in source frames, when every
+    /// contributing source and depth assignment is Constant. `None` means an
+    /// input-dependent route or an invalid region; a region without such routes
+    /// returns zero. This control-side hint uses the actual voice-start law.
+    ///
+    /// It is scoped to this immutable plan, supplements authored base attacks,
+    /// and does not cover arbitrary script offsets or future source revisions.
+    pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
+        self.regions.get(region)?;
+        if self.voice_modulation.is_empty() {
+            Some(0)
+        } else {
+            self.voice_modulation.constant_start_offset(region)
+        }
+    }
+
+    /// Positive Constant onset through the actual prepared cursor/skip law.
+    /// Only looped forward cursors qualify. Loop controls and complex segments remain unsupported;
+    /// the returned descriptor still checks each requested physical window.
+    pub fn constant_start_forward_prefix(&self, region: usize) -> Option<ConstantStartPrefix> {
+        let offset = self.constant_start_offset(region)?;
+        if offset == 0 || self.voice_modulation.has_loop_targets(region) { return None; }
+        let source = self.regions.get(region)?;
+        let template = source.cursor?;
+        let cursor = template.cursor(&self.cursor_loops);
+        if !cursor.trace_loops().iter().any(Option::is_some) { return None; }
+        // Reject offsets that already cross a transition, even when skip()
+        // would intentionally bypass that loop for the actual voice.
+        cursor.initial_forward_window(offset, 1.)?;
+        cursor.skip(offset).initial_forward_window(0, cursor.step())?;
+        Some(ConstantStartPrefix { asset: self.pcm.get(source.sample)?.asset_id(), template, offset })
+    }
+
     /// One response per authored region, in its original order. Selection always
     /// uses the unmodified velocity; this only changes the admitted voice gain.
     pub fn with_velocity_curves(mut self, curves: Vec<VelocityCurve>) -> Result<Self, Error> {
@@ -713,7 +995,7 @@ impl Prepared {
         let mut prepared_regions = Vec::new();
         let mut cursor_loops = Vec::new();
         for r in &regions {
-            if r.sample >= pcm.len()
+            if (r.sample != DORMANT_SAMPLE && r.sample >= pcm.len())
                 || r.key_low > r.key_high
                 || r.key_high >= 128
                 || r.root_key.is_some_and(|key| key >= 128)
@@ -737,11 +1019,14 @@ impl Prepared {
                 playback.transpose_semitones +=
                     f64::from(r.key_low) - f64::from(root) + tuning.0[r.key_low as usize];
             }
-            let cursor = playback.cursor(
-                pcm[r.sample].frame_count(),
-                pcm[r.sample].sample_rate(),
-                rate,
-            )?;
+            let cursor = if r.sample == DORMANT_SAMPLE {
+                if playback.wavetable.is_some() || !playback.transpose_semitones.is_finite() {
+                    return Err(Error::InvalidInput);
+                }
+                None
+            } else {
+                Some(playback.cursor(pcm[r.sample].frame_count(), pcm[r.sample].sample_rate(), rate)?)
+            };
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
                 .ok_or(Error::Capacity)?;
@@ -765,7 +1050,7 @@ impl Prepared {
                 bus: None,
                 envelope: r.envelope,
                 fallback_envelope: false,
-                cursor: super::source::CursorTemplate::new(cursor, &mut cursor_loops),
+                cursor: cursor.map(|c| super::source::CursorTemplate::new(c, &mut cursor_loops)),
                 root_key,
                 transpose_semitones: r.playback.transpose_semitones,
                 take: None,
@@ -788,13 +1073,16 @@ impl Prepared {
                         let mut playback = r.playback;
                         playback.transpose_semitones +=
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
-                        playback.step(pcm[r.sample].sample_rate(), rate)
+                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { pcm[r.sample].sample_rate() }, rate)
                     } else {
-                        prepared_regions[region].cursor.cursor(&cursor_loops).step()
+                        prepared_regions[region].cursor.map_or_else(
+                            || r.playback.step(rate, rate),
+                            |c| c.cursor(&cursor_loops).step(),
+                        )
                     };
-                    if r.playback.wavetable.is_none()
+                    if !step.is_finite() || step <= 0. || (r.sample != DORMANT_SAMPLE && r.playback.wavetable.is_none()
                         && !(super::resample::MIN_STEP..=super::resample::MAX_STEP).contains(&step)
-                    {
+                    ) {
                         return Err(Error::InvalidInput);
                     }
                     candidates.push(Candidate { region, step });
@@ -814,8 +1102,11 @@ impl Prepared {
             );
         }
         Ok(Self {
+            sample_targets: Box::new([]),
+            sample_limits: None,
             group_mutes: Box::new([]),
             residency: None,
+            initial_residency: Box::new([]),
             parameter_registry: Default::default(),
             rate,
             pcm: pcm.into_boxed_slice(),
@@ -1014,10 +1305,8 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::LoopStart
                             | super::voice_mod::CompiledTarget::LoopLength
                     )
-                ) && !region
-                    .cursor
-                    .cursor(&self.cursor_loops)
-                    .supports_loop_control(self.pcm[region.sample].frame_count())
+                ) && region.cursor.is_some_and(|c| !c.cursor(&self.cursor_loops)
+                    .supports_loop_control(self.pcm[region.sample].frame_count()))
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -1237,10 +1526,10 @@ impl Prepared {
         match (pitch, r.root_key) {
             (NotePitch::Absolute(pitch), Some(root)) => {
                 let semitones = r.transpose_semitones + (pitch - f64::from(root));
-                if r.cursor.cursor(&self.cursor_loops).wavetable().is_some() {
+                if r.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()) {
                     440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones)
                 } else {
-                    f64::from(self.pcm[r.sample].sample_rate()) / f64::from(self.rate)
+                    self.pcm.get(r.sample).map_or(1., |pcm| f64::from(pcm.sample_rate()) / f64::from(self.rate))
                         * super::pitch::ratio(semitones)
                 }
             }
@@ -1339,7 +1628,7 @@ impl Prepared {
         for (region, trigger) in self.regions.iter_mut().zip(triggers) {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
-                && region.cursor.cursor(&self.cursor_loops).unbounded_loop()
+                && region.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).unbounded_loop())
                 && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
@@ -1596,13 +1885,15 @@ impl Prepared {
             });
             let mut matching = Matching::new(ranges);
             while let Some(candidate) = matching.next(self, state, velocity) {
+                // An unbound player has no source rate yet. Its dimensionless
+                // pitch cannot be tested against resampling limits until the
+                // actual immutable revision is prepared and admitted.
+                if self.regions[candidate.region].cursor.is_none() {
+                    continue;
+                }
                 range.apply_source(
                     self.step(candidate, pitch),
-                    self.regions[candidate.region]
-                        .cursor
-                        .cursor(&self.cursor_loops)
-                        .wavetable()
-                        .is_some(),
+                    self.regions[candidate.region].cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()),
                 )?;
             }
             from = until;
@@ -1914,6 +2205,79 @@ impl Prepared {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn packed_head_preparation_is_inert_asset_bound_and_reuses_validated_ranges() {
+        let pcm = Pcm::headed(48000,64,&[[0.125;2];8]).unwrap();
+        let old = pcm.try_head().unwrap();
+        let prepared=pcm.prepare_ranges(vec![(16,vec![[0.5;2];8].into_boxed_slice())]).unwrap();
+        assert_eq!(prepared.bytes(),16);
+        assert!(pcm.resident_covers(0..8));
+        assert!(!pcm.resident_covers(16..24));
+        pcm.publish_ranges(prepared).unwrap();
+        assert_eq!(old[0].1.frame(0),[0.125;2]);
+        assert!(pcm.resident_covers(16..24));
+        assert!(!pcm.resident_covers(0..8));
+        let other=Pcm::streamed(48000,64).unwrap();
+        let wrong=pcm.prepare_ranges(vec![(0,vec![[0.5;2];8].into_boxed_slice())]).unwrap();
+        assert!(other.publish_ranges(wrong).is_err());
+        assert_eq!(other.head_bytes(),0);
+        assert!(pcm.resident_covers(16..24));
+    }
+
+    #[test]
+    fn explicit_residency_reload_obeys_retained_generation_budget_and_retries_after_collection() {
+        let budget=HeadBudget::new(32);
+        let pcm=Pcm::streamed(48000,64).unwrap();
+        pcm.bind_head_budget(&budget).unwrap();
+        let recipe=pcm.head_preparer();
+        pcm.set_prepared_residency_loader(move ||recipe.prepare(vec![(0,vec![[0.5;2];16].into_boxed_slice())])).unwrap();
+        pcm.residency_acquire();
+        pcm.residency_reload().unwrap();
+        let retained=pcm.set_ranges(Vec::new()).unwrap();
+        assert_eq!(budget.status().held_bytes,32);
+        assert_eq!(pcm.residency_reload(),Err(Error::Capacity));
+        assert_eq!(pcm.head_frames(),0);
+        assert_eq!(budget.status().held_bytes,32);
+        drop(retained);
+        assert_eq!(budget.status().held_bytes,32);
+        pcm.residency_reload().unwrap();
+        assert!(pcm.resident_covers(0..16));
+        assert_eq!(budget.status().held_bytes,32);
+        assert_eq!(budget.status().peak_bytes,32);
+        pcm.residency_release();
+        assert!(pcm.residency_collect());
+        assert_eq!(budget.status().held_bytes,0);
+    }
+
+    #[test]
+    fn purged_residency_transaction_cannot_publish_or_leak_its_staging_lease() {
+        let budget=HeadBudget::new(32);
+        let pcm=Pcm::streamed(48000,64).unwrap();
+        pcm.bind_head_budget(&budget).unwrap();
+        let recipe=pcm.head_preparer();
+        let (entered,received)=std::sync::mpsc::channel();
+        let (resume,resumed)=std::sync::mpsc::channel();
+        let resumed=std::sync::Mutex::new(resumed);
+        pcm.set_prepared_residency_loader(move || {
+            let prepared=recipe.prepare(vec![(0,vec![[0.5;2];16].into_boxed_slice())])?;
+            entered.send(()).unwrap();
+            resumed.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            Ok(prepared)
+        }).unwrap();
+        pcm.residency_acquire();
+        std::thread::scope(|scope| {
+            let loading=scope.spawn(||pcm.residency_reload());
+            received.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(budget.status().held_bytes,32);
+            pcm.residency_release();
+            resume.send(()).unwrap();
+            assert_eq!(loading.join().unwrap(),Err(Error::NotReady));
+        });
+        assert_eq!(pcm.head_frames(),0);
+        assert_eq!(budget.status().held_bytes,0);
+        assert_eq!(budget.status().peak_bytes,32);
+    }
 
     #[test]
     fn publishing_residency_does_not_wait_for_an_audio_reader() {

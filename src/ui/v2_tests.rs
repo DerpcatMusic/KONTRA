@@ -107,6 +107,7 @@ fn nested_mixer_strips_step_down_and_fold() {
 fn load_report_shot() {
     let r = lr::Report {
         instrument: "Vista - 3 Cellos".into(),
+        stream_warning: None,
         why_silent: Some("key 60: 1122 zones rejected by group selection (script)".into()),
         faults: vec!["InvalidInput in script 1 on note".into()],
         loaded: vec![
@@ -5175,6 +5176,7 @@ fn mapping_view_preserves_zone_identity_and_ir() {
     };
     inst.assets.push(sir::Asset {
         location: sir::AssetLocation::Path("Samples/Cello_C3_rr1.wav".into()),
+        residency: Default::default(),
         encoding: sir::Encoding::Wav,
         root_key: Some(60),
         loops: vec![],
@@ -7271,6 +7273,7 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
     let mut inst = sir::Instrument::default();
     inst.assets.push(sir::Asset {
         location: sir::AssetLocation::Path("Samples/Selected_sample.wav".into()),
+        residency: Default::default(),
         encoding: sir::Encoding::Wav,
         root_key: Some(60),
         loops: vec![],

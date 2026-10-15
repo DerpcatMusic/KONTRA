@@ -61,7 +61,7 @@ fn observe(vista: Option<usize>) {
                 && (z.velocities.low..=z.velocities.high).contains(&velocity)
         })
         .map(|(index, z)| {
-            json!({"zone":index,"group":z.group.map(|g|g.0),"asset":z.asset.0,
+            json!({"zone":index,"group":z.group.map(|g|g.0),"asset":z.asset.map(|a|a.0),
             "gain":z.gain.linear(),"source_start":z.playback.start})
         })
         .collect();

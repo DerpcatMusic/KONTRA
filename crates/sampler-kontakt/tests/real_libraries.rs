@@ -221,7 +221,7 @@ fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
         assert!(!original.playback.reverse);
         let decoded = library
             .samples
-            .decode(&library.locations[original.asset.0])
+            .decode(&library.locations[original.asset.expect("Kontakt source asset").0])
             .unwrap();
         assert_eq!((decoded.rate, decoded.frames.len()), (48000, 475512));
         let start = slot.range.start as usize;
@@ -235,7 +235,7 @@ fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
         }
         unrolled.extend_from_slice(&decoded.frames[end..]);
         let mut zone = original.clone();
-        zone.asset = ir::AssetRef(0);
+        zone.asset = Some(ir::AssetRef(0));
         zone.group = Some(ir::GroupRef(0));
         zone.trigger = ir::Trigger::Attack;
         zone.selection = None;
@@ -247,7 +247,7 @@ fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
         zone.amplitude = None;
         let authored_group = &library.instrument.groups[original.group.unwrap().0];
         let mut isolated = ir::Instrument {
-            assets: vec![library.instrument.assets[original.asset.0].clone()],
+            assets: vec![library.instrument.assets[original.asset.expect("Kontakt source asset").0].clone()],
             groups: vec![ir::Group {
                 gain: authored_group.gain,
                 pan: authored_group.pan,
@@ -635,9 +635,14 @@ fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
                         .any(|processor| match processor {
                             sampler_ir::Processor::LadderLP4(d) => d.address.is_some_and(same_slot),
                             sampler_ir::Processor::Color(c) => c.address.is_some_and(same_slot),
-                            _ => false,
+                            processor => processor.lanes().is_some_and(|(slot, lanes)| {
+                                same_slot(slot) && lanes.iter().any(|lane| {
+                                    sampler_core::engine_parameter_id(lane.name)
+                                        == Some(binding.address.parameter)
+                                })
+                            }),
                         }),
-                    "native effect lane lost its physical processor owner"
+                    "native effect lane {name} at {:?} lost its physical processor owner", binding.address
                 );
             }
         }

@@ -7,6 +7,7 @@ fn fixture(owner: ir::SwitchOwner) -> (V2Core, ir::Instrument) {
         assets: (0..3)
             .map(|n| ir::Asset {
                 location: ir::AssetLocation::Path(format!("{n}.wav")),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),

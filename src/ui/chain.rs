@@ -230,6 +230,11 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         ir::Target::SampleStart => "Sample start".into(),
         ir::Target::SourcePhase(_) => "LFO start phase".into(),
         ir::Target::SourceRate(_) => "LFO rate".into(),
+        ir::Target::Wavetable(parameter) => match parameter {
+            ir::WavetableParameter::Position => "Wavetable position",
+            ir::WavetableParameter::Form1 => "Wavetable form 1 amount",
+            ir::WavetableParameter::Form2 => "Wavetable form 2 amount",
+        }.into(),
         ir::Target::LoopStart => "Loop start".into(),
         ir::Target::LoopLength => "Loop length".into(),
         ir::Target::Control(c) => i
@@ -264,6 +269,10 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
                 ir::ProcessorParameter::Shape => "Shape",
                 ir::ProcessorParameter::Drive => "Drive",
                 ir::ProcessorParameter::Damping => "Damping",
+                ir::ProcessorParameter::Tone => "Tone",
+                ir::ProcessorParameter::Bass => "Bass",
+                ir::ProcessorParameter::Bright => "Brightness",
+                ir::ProcessorParameter::Mix => "Mix",
                 ir::ProcessorParameter::FormantTalk => "Talk",
                 ir::ProcessorParameter::FormantSharp => "Sharp",
                 ir::ProcessorParameter::FormantSize => "Size",

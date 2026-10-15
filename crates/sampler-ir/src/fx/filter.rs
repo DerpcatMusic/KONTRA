@@ -44,7 +44,9 @@ pub enum Topology {
     FormantII,
     /// Kontakt's legacy BFilter classes (saved types 2..=4, 6..=12): first- and second-order
     /// direct-form sections whose native law the engine owns. `Response` and `poles` name the
-    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs. [`Variant`]
+    /// class (BR4 is `Notch`, 4); cutoff and resonance are the stored knobs. The default
+    /// legacy classes retain any finite f32 cutoff and saturate after modulation, when
+    /// deriving coefficients; other members require normalized controls. [`Variant`]
     /// names the members response and poles do not (Vowel, Pro-53, Legacy Ladder, Versatile).
     Cascade,
 }

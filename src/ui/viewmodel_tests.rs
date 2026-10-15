@@ -82,6 +82,7 @@ fn audit_ui_real_frames() {
             instrument: String::new(),
             persistent: Vec::new(),
             effects: Vec::new(),
+            other_files: Default::default(),
             groups: Vec::new(),
         })
     } else {
@@ -511,4 +512,229 @@ fn w1_os_file_drop_uses_epoch_admission_and_preserves_native_enter_leave() {
     atoms.generation.store(2,Ordering::Release);
     assert!(!native_files(&p,&picker,&drag,&ui,at,&paths,true));core.render(16);
     assert_eq!(core.control_value(0,calls),Some(3.));
+}
+
+/// A Kontakt popup keeps authored item indices separate from semantic values;
+/// pointer interaction uses the same production painter as offline inspection.
+#[test]
+fn ksp_tab_and_flat_menu_pointer_edits_preserve_authored_identity_and_values() {
+    use sampler_ui_ir::{
+        Binding, ControlId, Interface, Kind, MenuItem, Page, PageRef, Rect, Source, Widget,
+        WidgetRef,
+    };
+    for scale in [1., 2.] {
+        for current in [123., 20.] {
+            let (width, height) = ((320. * scale) as u16, (200. * scale) as u16);
+            let mut face = Interface {
+                source: Source::Ksp { slot: 0 },
+                pages: vec![Page {
+                    size: sampler_ui_ir::Size {
+                        width: 320.,
+                        height: 200.,
+                    },
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut tab = Widget::new("$tab", PageRef(0), Rect::new(10, 10, 40, 24), Kind::Switch);
+            tab.binding = Binding::Control(ControlId(10));
+            tab.source_id = Some(32768);
+            let mut menu = Widget::new(
+                "$menu",
+                PageRef(0),
+                Rect::new(200, 150, 100, 24),
+                Kind::Menu {
+                    items: vec![
+                        MenuItem {
+                            text: "Unselected".into(),
+                            value: -1,
+                            visible: true,
+                        },
+                        MenuItem {
+                            text: "Zero".into(),
+                            value: 0,
+                            visible: true,
+                        },
+                        MenuItem {
+                            text: "Hidden".into(),
+                            value: 20,
+                            visible: false,
+                        },
+                        MenuItem {
+                            text: "Sixty".into(),
+                            value: 60,
+                            visible: true,
+                        },
+                    ],
+                },
+            );
+            menu.binding = Binding::Control(ControlId(20));
+            menu.source_id = Some(32769);
+            menu.value = Some(sampler_ui_ir::Value::Integer(0));
+            face.widgets = vec![tab, menu];
+            let mut ui = theme::ui();
+            let assets = ir_view::Assets::default();
+            let mut input = ir_view::InputState::default();
+            let mut values = ir_view::Values::from([(ControlId(10), 0.), (ControlId(20), current)]);
+            let tick = |ui: &mut Ui,
+                        input: &mut ir_view::InputState,
+                        values: &mut ir_view::Values,
+                        event: Input| {
+                let root = ir_view::view_state(
+                    ui,
+                    "menu-parity",
+                    &face,
+                    PageRef(0),
+                    &assets,
+                    sampler_ui_ir::Presentation::Vector,
+                    scale,
+                    values,
+                    input,
+                );
+                ui.frame(
+                    root,
+                    Some(Size::new(width.into(), height.into())),
+                    event,
+                    1. / 60.,
+                )
+                .unwrap();
+            };
+            for _ in 0..3 {
+                tick(&mut ui, &mut input, &mut values, Input::default());
+            }
+            assert_eq!(
+                values[&ControlId(20)],
+                current,
+                "idle drawing preserves unknown or hidden selected semantic value"
+            );
+            assert!(input.edits.is_empty());
+            let press = |ui: &mut Ui,
+                         input: &mut ir_view::InputState,
+                         values: &mut ir_view::Values,
+                         at: Point| {
+                for buttons in [Buttons::default(), Buttons::PRIMARY, Buttons::default()] {
+                    for _ in 0..2 {
+                        tick(
+                            ui,
+                            input,
+                            values,
+                            Input {
+                                pointer: PointerInput {
+                                    pos: Some(at),
+                                    buttons,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                tick(ui, input, values, Input::default());
+            };
+            let click = |ui: &mut Ui,
+                         input: &mut ir_view::InputState,
+                         values: &mut ir_view::Values,
+                         id: &str| {
+                let at = center(ui, id);
+                press(ui, input, values, at);
+            };
+            click(&mut ui, &mut input, &mut values, "menu-parity-ir-0");
+            assert_eq!(values[&ControlId(10)], 1.);
+            assert_eq!(input.edits.len(), 1);
+            assert_eq!(input.edits[0].widget, WidgetRef(0));
+            assert_eq!(face.widgets[input.edits[0].widget.0].source_id, Some(32768));
+            assert_eq!(input.edits[0].value, sampler_ui_ir::Value::Integer(1));
+            input.edits.clear();
+            let closed = pixels(&ui, width, height);
+            click(&mut ui, &mut input, &mut values, "menu-parity-ir-1");
+            assert!(
+                ui.scene()
+                    .unwrap()
+                    .surface("menu-parity-ir-1-popup")
+                    .is_some()
+            );
+            assert!(
+                ui.scene()
+                    .unwrap()
+                    .surface("menu-parity-ir-1-item-2")
+                    .is_none(),
+                "hidden source item retains its index without admission"
+            );
+            let opened = pixels(&ui, width, height);
+            assert_ne!(
+                closed, opened,
+                "opening the popup changes production pixels"
+            );
+            if let Some(directory) = std::env::var_os("KONTRA_MENU_FIXTURE_SHOTS") {
+                let directory = PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).unwrap();
+                let file = std::fs::File::create(
+                    directory.join(format!("flat-menu-{}-{current}.png", scale * 100.)),
+                )
+                .unwrap();
+                let mut encoder = png::Encoder::new(file, width.into(), height.into());
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder
+                    .write_header()
+                    .unwrap()
+                    .write_image_data(&opened)
+                    .unwrap();
+            }
+            assert!(input.edits.is_empty(), "opening a menu is not a value edit");
+            let item_frame = ui
+                .scene()
+                .unwrap()
+                .surface("menu-parity-ir-1-item-3")
+                .unwrap()
+                .frame;
+            let popup_frame = ui
+                .scene()
+                .unwrap()
+                .surface("menu-parity-ir-1-popup")
+                .unwrap()
+                .frame;
+            assert!(
+                item_frame.y + item_frame.size.height
+                    <= popup_frame.y + popup_frame.size.height + 1e-6,
+                "last row must fit its popup at scale {scale}"
+            );
+            assert!(
+                (item_frame.size.width - popup_frame.size.width).abs() < 1e-6,
+                "entire popup row must be interactive"
+            );
+            press(
+                &mut ui,
+                &mut input,
+                &mut values,
+                Point::new(
+                    popup_frame.x + 2.,
+                    item_frame.y + item_frame.size.height / 2.,
+                ),
+            );
+            assert_eq!(
+                values[&ControlId(20)],
+                60.,
+                "item={item_frame:?};popup={popup_frame:?};edit_count={}",
+                input.edits.len()
+            );
+            assert_eq!(input.edits.len(), 1);
+            assert_eq!(
+                (input.edits[0].widget, input.edits[0].index),
+                (WidgetRef(1), 0)
+            );
+            assert_eq!(face.widgets[input.edits[0].widget.0].source_id, Some(32769));
+            assert_eq!(
+                input.edits[0].value,
+                sampler_ui_ir::Value::Integer(60),
+                "submit item value, not original index3 or visible position2"
+            );
+            assert!(
+                ui.scene()
+                    .unwrap()
+                    .surface("menu-parity-ir-1-popup")
+                    .is_none()
+            );
+        }
+    }
 }

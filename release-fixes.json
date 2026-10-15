@@ -526,9 +526,10 @@
       "summary": "Return the documented ui_menu entry index for CONTROL_PAR_VALUE",
       "source_commits": [
         "1f62da4c8f155c315715a71cf9d40ff4a2dd85a1",
-        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640",
+        "15a6bd13fb6d2bed01dd7886479b780db659161d"
       ],
-      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified. Follow-up 15a6bd13 closes the dynamic-selector path of this same logical getter defect: all11 focused menu checks pass, including nonconsecutive values, hidden selected rows and variable parameter selectors; combined library-access root796 passed/53 ignored, then snapshot integration30 passed/1 ignored. Actual Una Corda/Analog gesture and native parity remain separate evidence.",
       "accepted": true
     },
     {
@@ -4849,6 +4850,18 @@
       "category": "Fixed",
       "release_note": "Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).",
       "validation": "Round trip of every reader at every version; Rust/Python executors agree on 297 streams."
+    },
+    {
+      "id": "uvi-ui-inventory-iteration",
+      "summary": "Avoid repeated per-entry Lua iterator guards during complete UVI UI inventory export",
+      "source_commits": [
+        "057d6f1cda5e5469a672a64e70f19f2d550aa305",
+        "57d4dcd611740bf4842e6a939424844caf93cdfe"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Full UVI UI inventory exports use a faster iterator while retaining the complete authored model.",
+      "validation": "48 complete synthetic models agree; full geometry and exact Bitmap/Vector PNG oracle passes; ordinary UVI163 and scan173 tests pass; integrated 0.3.477 root785 passed/53 ignored. Paired typical synthetic export caller CPU improves18\u201320%; no universal real-bank speed or native parity claim. Follow-up57d4 promotes fresh plain-scalar projection with canonical fallback:80 full authored models exact, full geometry and Bitmap/Vector pixels exact; scan177 passed/12 ignored. Contended paired caller-thread CPU ratios ordinary0.451/sparse0.458/all-document0.682/mixed0.780/all-metatable0.999; external compilers present in every timing sample, so quiet and real-bank speedup remain unverified. Combined root796 passed/53 ignored. No retained cache, hidden-widget pruning or native parity claim."
     }
   ]
 }

@@ -242,6 +242,61 @@ pub(super) fn png(
 mod tests {
     use super::*;
     #[test]
+    fn whole_strip_budget_rejects_output_and_reduction_scratch_before_allocation() {
+        let mut bytes = Vec::new();
+        let pixels: Vec<u8> = (0..256u32)
+            .flat_map(|row| [row as u8, 8, 9, 127].repeat(32))
+            .collect();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 32, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        }
+        let meta = ir::ImageMeta {
+            frames: 256,
+            ..Default::default()
+        };
+        let budget = 128 << 10;
+        let mut strip = None;
+        let peak = crate::plugin::tests::peak_allocated(|| {
+            strip = png_strip(&bytes, meta, [16, 1], budget, || false);
+        });
+        assert!(
+            strip.is_none(),
+            "all reduction rows exceed the whole-strip budget"
+        );
+        assert!(
+            peak < budget,
+            "preflight allocated {peak} bytes before rejecting a {budget}-byte budget"
+        );
+        let selected = decode(&bytes, meta, 211, [16, 1], None, || false).unwrap();
+        assert_eq!([selected.width, selected.height], [16, 1]);
+        assert!(
+            selected
+                .rgba
+                .chunks_exact(4)
+                .all(|pixel| pixel == [211, 8, 9, 127])
+        );
+        let strip = png_strip(&bytes, meta, [16, 1], 512 << 10, || false).unwrap();
+        assert_eq!(strip.len(), 256);
+        assert_eq!(strip[211].rgba.as_ref(), selected.rgba.as_ref());
+        assert!(
+            png_strip(
+                &bytes,
+                ir::ImageMeta { frames: 0, ..meta },
+                [16, 1],
+                budget,
+                || false
+            )
+            .is_none()
+        );
+    }
+    #[test]
     fn shrinking_authored_frames_matches_v1_fractional_coverage_pixels() {
         // v1 0cb7a8a0:src/artwork.rs fractional coverage and transparent-edge oracle.
         for (width, pixels, target, expected) in [
@@ -302,7 +357,10 @@ mod tests {
             let mut e = png::Encoder::new(&mut bytes, 1, 1);
             e.set_color(png::ColorType::Rgba);
             e.set_depth(png::BitDepth::Eight);
-            e.write_header().unwrap().write_image_data(&[0, 0, 0, 0]).unwrap();
+            e.write_header()
+                .unwrap()
+                .write_image_data(&[0, 0, 0, 0])
+                .unwrap();
         }
         let image = png(&bytes, Default::default(), 0, [1, 1], None, || false).unwrap();
         assert_eq!(image.rgba.as_ref(), [0, 0, 0, 0]);
@@ -500,6 +558,7 @@ pub(super) fn png_strip(
     bytes: &[u8],
     meta: ir::ImageMeta,
     target: [u32; 2],
+    budget: usize,
     canceled: impl Fn() -> bool,
 ) -> Option<Vec<Image>> {
     let _permit = DECODE.lock_unpoisoned();
@@ -519,7 +578,31 @@ pub(super) fn png_strip(
         (png::ColorType::Grayscale, png::BitDepth::Eight) => 1,
         _ => return None,
     };
+    // Bound the whole strip before allocating even its first frame. The
+    // caller falls back to a single streamed frame when this atlas will not
+    // fit; checking the LRU only after decoding does not bound transient RAM.
+    let [_, _, fw, fh] = source_rect(meta, 0, width, height, None)?;
+    let (tw, th) = (target[0].max(1).min(fw), target[1].max(1).min(fh));
+    let frame_bytes = (tw as usize).checked_mul(th as usize)?.checked_mul(4)?;
+    let output_bytes = frame_bytes.checked_mul(meta.frames as usize)?;
+    let row_bytes = if [tw, th] == [fw, fh] {
+        0
+    } else {
+        (tw as usize)
+            .checked_mul(std::mem::size_of::<[f64; 5]>())?
+            .checked_mul(meta.frames as usize)?
+    };
+    let frame_overhead = (meta.frames as usize).checked_mul(std::mem::size_of::<Reduction>())?;
+    if frame_bytes > PIXELS * 4
+        || output_bytes
+            .checked_add(row_bytes)?
+            .checked_add(frame_overhead)?
+            > budget
+    {
+        return None;
+    }
     let mut frames = Vec::new();
+    frames.try_reserve_exact(meta.frames as usize).ok()?;
     for frame in 0..meta.frames as usize {
         let [x, y, w, h] = source_rect(meta, frame, width, height, None)?;
         let (tw, th) = (target[0].max(1).min(w), target[1].max(1).min(h));
@@ -655,4 +738,24 @@ pub(super) fn decode(
         );
     }
     None
+}
+
+/// Dispatch identity only; a recognized codec can still be malformed, exceed
+/// a decoder bound, or disagree with authored frame geometry.
+#[cfg(any(feature = "shots", test))]
+pub(super) fn codec(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG") {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8]) {
+        Some("jpeg")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else if std::str::from_utf8(bytes)
+        .ok()
+        .is_some_and(|s| s.contains("<svg"))
+    {
+        Some("svg")
+    } else {
+        None
+    }
 }

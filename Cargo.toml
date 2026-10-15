@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.476"
+version = "0.3.477"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -89,6 +89,10 @@ required-features = ["standalone"]
 
 [[example]]
 name = "kontra_scan"
+required-features = ["shots"]
+
+[[example]]
+name = "dfd_readiness"
 required-features = ["shots"]
 
 # panic stays "unwind": a plugin must not abort the host, and the importer

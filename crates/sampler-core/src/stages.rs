@@ -8,6 +8,9 @@ pub struct Stage {
     pub note: Option<usize>,
     pub release: Option<usize>,
     pub controller: Option<usize>,
+    /// Polyphonic aftertouch has its own callback and captured key, while
+    /// retaining the same ordered, suppressible input-event ownership.
+    pub poly_at: Option<usize>,
 }
 
 impl Prepared {
@@ -25,7 +28,7 @@ impl Prepared {
                         p.requires_controller || p.wait_lifetime != WaitLifetime::Callback
                     })
                 })
-                || stage.controller.is_some_and(|id| {
+                || stage.controller.into_iter().chain(stage.poly_at).any(|id| {
                     self.programs.get(id).is_none_or(|p| {
                         p.requires_note || p.wait_lifetime != WaitLifetime::Callback
                     })
@@ -177,7 +180,8 @@ mod tests {
             &[Stage {
                 note: Some(0),
                 release: Some(1),
-                controller: Some(2)
+                controller: Some(2),
+                poly_at: None,
             }]
         );
         let plan = plan.with_controller_programs(vec![]).unwrap();
@@ -186,7 +190,8 @@ mod tests {
             &[Stage {
                 note: Some(0),
                 release: Some(1),
-                controller: None
+                controller: None,
+                poly_at: None,
             }]
         );
         for stage in [

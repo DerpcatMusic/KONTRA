@@ -33,6 +33,10 @@ mod editor;
 mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod health;
+#[cfg(feature = "shots")]
+pub(crate) mod offline_preview;
+#[cfg(feature = "shots")]
+pub(crate) mod offline_lifecycle;
 mod inside;
 mod ir_view;
 #[allow(dead_code)]
@@ -355,9 +359,12 @@ impl Watch {
         // A scan's progress, a size measured, a setting changed.
         p.shared.libraries.stamp().hash(&mut h);
         let (loading, pending) = {
+            // File drops and preset publication hold selection before view.
+            // Keep the fingerprint in that order so drawing cannot deadlock
+            // with the background worker while a preset receipt is published.
+            let selection = read(&p.selection);
             let view = lock(&p.shared.view);
             fingerprint(&view, &mut h);
-            let selection = read(&p.selection);
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
                 || (0..view.parts.len().max(selection.parts.len())).any(|n| {
@@ -1761,6 +1768,8 @@ mod keyboard_tests;
 mod loop_audit;
 #[cfg(test)]
 mod popup_tests;
+#[cfg(test)]
+mod authored_properties_tests;
 #[cfg(test)]
 pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
     tests::audit_frames(p)

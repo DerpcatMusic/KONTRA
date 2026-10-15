@@ -34,5 +34,11 @@ serde_json = "1"
 sha2 = "0.10.9"
 aes = { version = "0.8", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", features = ["time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "deny" # Library forbids it; test allocator instrumentation opts out.

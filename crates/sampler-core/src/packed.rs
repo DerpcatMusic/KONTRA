@@ -2,6 +2,8 @@
 //! when both channels match, converted to f32 frames as they are read.
 
 use crate::Frame;
+mod layout;
+pub use layout::Packing;
 
 const I16: f32 = 32_768.0;
 const I24: f32 = 8_388_608.0;
@@ -24,41 +26,11 @@ pub struct Packed {
 impl Packed {
     /// Pack `frames` losslessly: a frame reads back with identical bits.
     pub fn new(frames: &[Frame]) -> Self {
-        let mono = frames.iter().all(|[l, r]| l.to_bits() == r.to_bits());
-        let samples: Vec<f32> = if mono {
-            frames.iter().map(|f| f[0]).collect()
-        } else {
-            frames.as_flattened().to_vec()
-        };
-        let exact = |scale: f32, max: f32| {
-            samples.iter().all(|&s| {
-                let q = s * scale;
-                q.fract() == 0.0
-                    && (-max..max).contains(&q)
-                    && ((q as i32) as f32 / scale).to_bits() == s.to_bits()
-            })
-        };
-        let data = if exact(I16, I16) {
-            Data::I16(samples.iter().map(|&s| (s * I16) as i16).collect())
-        } else if exact(I24, I24) {
-            Data::I24(
-                samples
-                    .iter()
-                    .map(|&s| {
-                        let [a, b, c, _] = ((s * I24) as i32).to_le_bytes();
-                        [a, b, c]
-                    })
-                    .collect(),
-            )
-        } else {
-            Data::F32(samples.into_boxed_slice())
-        };
-        Self {
-            data,
-            mono,
-            len: frames.len(),
-        }
+        Self::prepare(frames).finish()
     }
+    /// Analyze lossless width without allocating a payload. Callers can reserve
+    /// exact storage before encoding the same immutable borrowed frames.
+    pub fn prepare(frames: &[Frame]) -> Packing<'_> { Packing::analyze(frames) }
 
     pub fn len(&self) -> usize {
         self.len

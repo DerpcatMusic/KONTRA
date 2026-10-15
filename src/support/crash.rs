@@ -543,7 +543,7 @@ impl CrashSessionGuard {
         let mut reporter_ready = false;
         if first_instance {
             let (acknowledge, acknowledged) = mpsc::sync_channel(1);
-            if REPORTER.ensure_running()
+            if REPORTER.ensure_running(instance_id)
                 && REPORTER.send(ReporterControl::Register(instance_id, acknowledge))
             {
                 reporter_ready = acknowledged
@@ -703,7 +703,7 @@ impl CrashReporter {
         }
     }
 
-    fn ensure_running(&self) -> bool {
+    fn ensure_running(&self, instance_id: u64) -> bool {
         let mut runtime = self.runtime.lock_unpoisoned();
         if runtime.is_some() {
             return true;
@@ -712,14 +712,16 @@ impl CrashReporter {
         let run_token = new_run_token();
         let session_path = current_session_path(&run_token);
         let bootstrap_path = bootstrap_journal_path(&run_token);
+        let mut recorder_path = bootstrap_path.clone();
         let recorder = Recorder::start(
             bootstrap_path.clone(),
             EVENT_CHANNEL_CAPACITY,
             JOURNAL_BYTES,
         )
         .or_else(|_| {
+            recorder_path = std::env::temp_dir().join(format!("kontra-{}-{run_token}.dfr", std::process::id()));
             Recorder::start(
-                std::env::temp_dir().join(format!("kontra-{}-{run_token}.dfr", std::process::id())),
+                recorder_path.clone(),
                 EVENT_CHANNEL_CAPACITY,
                 JOURNAL_BYTES,
             )
@@ -727,6 +729,15 @@ impl CrashReporter {
         .ok()
         .map(Arc::new);
         *self.session_path.lock_unpoisoned() = Some(session_path.clone());
+        // Publish the in-memory marker before the worker starts. Construction
+        // may outrun journal rotation: lifecycle writes must retain their real
+        // state and identity even when the registration acknowledgement is late.
+        let mut current = new_session_marker(instance_id, &run_token);
+        current.journal_file = recorder.as_ref().and_then(|_| {
+            (recorder_path.parent() == bootstrap_path.parent())
+                .then(|| recorder_path.file_name().unwrap().to_string_lossy().into_owned())
+        });
+        *self.marker.lock_unpoisoned() = Some(current);
         let (control_sender, control_receiver) = mpsc::channel();
         let worker_marker = Arc::clone(&self.marker);
         let worker_pending = Arc::clone(&self.pending);
@@ -808,7 +819,9 @@ impl CrashReporter {
             return false;
         };
         current.apply_lifecycle(instance_id, lifecycle, host_name, plugin_api);
-        persist_json(&path, current)
+        let persisted = persist_json(&path, current);
+        self.ready.store(persisted, Ordering::Release);
+        persisted
     }
 
     fn shutdown(&self) {
@@ -1300,9 +1313,7 @@ fn reporter_worker(
                         let _ = std::fs::remove_file(&bootstrap_path);
                     }
                 }
-                let persisted = persist_json(&session_path, &current);
-                *marker.lock_unpoisoned() = Some(current);
-                ready.store(persisted, Ordering::Release);
+                let persisted = publish_registered_marker(&marker, current, &session_path, &ready);
                 let _ = acknowledge.send(persisted);
                 super::report::restore_last_report_status();
                 // Persist the initialization marker before invoking any platform subprocess.
@@ -1482,6 +1493,24 @@ fn reporter_worker(
             }
         }
     }
+}
+
+fn publish_registered_marker(
+    marker: &Mutex<Option<SessionMarker>>,
+    registered: SessionMarker,
+    path: &Path,
+    ready: &AtomicBool,
+) -> bool {
+    let mut shared = marker.lock_unpoisoned();
+    if let Some(existing) = shared.as_mut() {
+        // Preserve transitions made while rotation was pending.
+        existing.journal_file = registered.journal_file;
+    } else {
+        *shared = Some(registered);
+    }
+    let persisted = persist_json(path, shared.as_ref().unwrap());
+    ready.store(persisted, Ordering::Release);
+    persisted
 }
 
 fn retire_acknowledged_copy(
@@ -4934,6 +4963,33 @@ mod tests {
             !finished_early,
             "shutdown returned while the worker was live"
         );
+    }
+
+    #[test]
+    fn late_registration_preserves_lifecycle_identity_and_durable_readiness() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.json");
+        let reporter = CrashReporter::new();
+        *reporter.session_path.lock_unpoisoned() = Some(path.clone());
+        *reporter.marker.lock_unpoisoned() = Some(new_session_marker(1, "delayed"));
+        assert!(reporter.persist_instance_lifecycle(1, InstanceLifecycle::Active,
+            Some("Example host".into()), Some("CLAP".into())));
+        assert!(reporter.persist_instance_lifecycle(2, InstanceLifecycle::Inactive, None, None));
+        let mut registered = new_session_marker(1, "delayed");
+        registered.journal_file = Some("rotated.dfr".into());
+        assert!(publish_registered_marker(&reporter.marker, registered, &path, &reporter.ready));
+        let saved: SessionMarker = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.instances[&1], InstanceLifecycle::Active);
+        assert_eq!(saved.instances[&2], InstanceLifecycle::Inactive);
+        assert_eq!((saved.host_name.as_str(), saved.plugin_api.as_str()), ("Example host", "CLAP"));
+        assert_eq!(saved.journal_file.as_deref(), Some("rotated.dfr"));
+        assert!(reporter.ready.load(Ordering::Acquire));
+        // A failed subsequent durable write cannot leave readiness advertised.
+        std::fs::write(directory.path().join("blocker"), b"file").unwrap();
+        *reporter.session_path.lock_unpoisoned() = Some(directory.path().join("blocker/session.json"));
+        assert!(!reporter.persist_instance_lifecycle(1, InstanceLifecycle::Inactive, None, None));
+        assert!(!reporter.ready.load(Ordering::Acquire));
+        assert_eq!(reporter.marker.lock_unpoisoned().as_ref().unwrap().instances[&1], InstanceLifecycle::Inactive);
     }
 
     #[test]

@@ -178,7 +178,7 @@ mod merge_tests {
 }
 
 impl Runtime {
-    fn script_state_context(&self, instance: ScriptInstanceId) -> crate::behavior::PlanContext {
+    pub(super) fn script_state_context(&self, instance: ScriptInstanceId) -> crate::behavior::PlanContext {
         if self.performance_state.current.is_empty() {
             return crate::behavior::PlanContext::Bare;
         }
@@ -325,7 +325,7 @@ impl Runtime {
     }
 
     #[inline]
-    fn script_state_value(
+    pub(super) fn script_state_value(
         &self,
         plan: PlanId,
         address: ScriptStateAddress,
@@ -345,7 +345,7 @@ impl Runtime {
     }
 
     /// A text entry's value must name one of `texts`' slots.
-    fn script_state_slot(entry: &ScriptStateEntry, texts: &[Text]) -> Result<(), Error> {
+    pub(super) fn script_state_slot(entry: &ScriptStateEntry, texts: &[Text]) -> Result<(), Error> {
         match (entry.address, entry.value) {
             (ScriptStateAddress::Text { .. }, ScriptStateValue::Text(slot))
                 if (slot as usize) < texts.len() =>

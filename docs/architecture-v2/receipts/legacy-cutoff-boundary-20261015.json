@@ -1,0 +1,286 @@
+{
+  "native_sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+  "scope": "isolated prepare and cutoff setter, 48kHz, resonance .25; fake no-op base reset; compare state +0x200..+0x1200; excludes stored raw cutoff +0x1e4; no wrapper clock or modulation ownership proof; independent confirmation of existing coefficient clamp; no implementation audio math changed",
+  "rows": [
+    {
+      "kind": 2,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "c93903b9d99dc4ea80a22e491b4bb98eba400b5ab47cf35c5618de3772589e61"
+    },
+    {
+      "kind": 2,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "7bdf33a327342e511055c45f09b4a3f4de0bb9858fc8cdaf52fd4855f9f33d18"
+    },
+    {
+      "kind": 2,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "7bdf33a327342e511055c45f09b4a3f4de0bb9858fc8cdaf52fd4855f9f33d18"
+    },
+    {
+      "kind": 2,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "7bdf33a327342e511055c45f09b4a3f4de0bb9858fc8cdaf52fd4855f9f33d18"
+    },
+    {
+      "kind": 3,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "0954427e7e56b789aa03bd2c8b3815f2a26d05cbf0c746de7521bcefb08957df"
+    },
+    {
+      "kind": 3,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "b04b192f74175556bf3473ce31508fae4e9669524a4e0da17eeafb23ec51e0dd"
+    },
+    {
+      "kind": 3,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "b04b192f74175556bf3473ce31508fae4e9669524a4e0da17eeafb23ec51e0dd"
+    },
+    {
+      "kind": 3,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "b04b192f74175556bf3473ce31508fae4e9669524a4e0da17eeafb23ec51e0dd"
+    },
+    {
+      "kind": 4,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "596c8cdb19011dcd4114f99b51a20b70bc3e09aaa2e2b93fc5abdffbf664038d"
+    },
+    {
+      "kind": 4,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "cd3288d47a04860fa8685a0905072519621787a34bb760eb32ae15327d4c6872"
+    },
+    {
+      "kind": 4,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "cd3288d47a04860fa8685a0905072519621787a34bb760eb32ae15327d4c6872"
+    },
+    {
+      "kind": 4,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "cd3288d47a04860fa8685a0905072519621787a34bb760eb32ae15327d4c6872"
+    },
+    {
+      "kind": 6,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "88ccfa835a04089c4558e51b3d4278e58154802be4cc66094ed43c9a5c35d7f6"
+    },
+    {
+      "kind": 6,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "6842865b74006664ed0fa60be43338fdfcc41d866503f98aafeba5a4c93f6fa1"
+    },
+    {
+      "kind": 6,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "6842865b74006664ed0fa60be43338fdfcc41d866503f98aafeba5a4c93f6fa1"
+    },
+    {
+      "kind": 6,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "6842865b74006664ed0fa60be43338fdfcc41d866503f98aafeba5a4c93f6fa1"
+    },
+    {
+      "kind": 7,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "a508ee65da4ffa49ac9d4ce8cbf4de3e6b639a6dce3842f41ff933d33a518df2"
+    },
+    {
+      "kind": 7,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "53ee785d7575afc6953e6c1d10da1093685b04985ae01f35236af807d8b1f0eb"
+    },
+    {
+      "kind": 7,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "53ee785d7575afc6953e6c1d10da1093685b04985ae01f35236af807d8b1f0eb"
+    },
+    {
+      "kind": 7,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "53ee785d7575afc6953e6c1d10da1093685b04985ae01f35236af807d8b1f0eb"
+    },
+    {
+      "kind": 8,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "108547d94a45e69563b4c8f6eb0d2bb178e23609b5889e85af50473de28630aa"
+    },
+    {
+      "kind": 8,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1ab0a1a1d21cf36b3d1cb86f23550008c716199acf7a0f5a1ad6e5e1d1e94c5e"
+    },
+    {
+      "kind": 8,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1ab0a1a1d21cf36b3d1cb86f23550008c716199acf7a0f5a1ad6e5e1d1e94c5e"
+    },
+    {
+      "kind": 8,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1ab0a1a1d21cf36b3d1cb86f23550008c716199acf7a0f5a1ad6e5e1d1e94c5e"
+    },
+    {
+      "kind": 9,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "0cccfd9440d6142b45fb4e7ed999389d91a3da936f5509a4c193be69e907df25"
+    },
+    {
+      "kind": 9,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "e669a23901fdbc787311ce4b74c1909a3d0f2b514a1e10a01b2794a799419efe"
+    },
+    {
+      "kind": 9,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "e669a23901fdbc787311ce4b74c1909a3d0f2b514a1e10a01b2794a799419efe"
+    },
+    {
+      "kind": 9,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "e669a23901fdbc787311ce4b74c1909a3d0f2b514a1e10a01b2794a799419efe"
+    },
+    {
+      "kind": 10,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "bfd61ea4b32fac912a571af6b9c156fea72e359565c481d9e4cca07a4ec78d9a"
+    },
+    {
+      "kind": 10,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "d98fa006f015b23e3456e31b8619f20d6807584b514e902d3db42848f4cc7c57"
+    },
+    {
+      "kind": 10,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "d98fa006f015b23e3456e31b8619f20d6807584b514e902d3db42848f4cc7c57"
+    },
+    {
+      "kind": 10,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "d98fa006f015b23e3456e31b8619f20d6807584b514e902d3db42848f4cc7c57"
+    },
+    {
+      "kind": 11,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "ae9813cdf31f50df9e2c3e1bbfa9bb25eeace2fc07c55bd7af167ece71e8b8ff"
+    },
+    {
+      "kind": 11,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "141d96b4695c0746b04a303c40f8011ba85fa45d5f7f0c7cdb6b4b69a6a00700"
+    },
+    {
+      "kind": 11,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "141d96b4695c0746b04a303c40f8011ba85fa45d5f7f0c7cdb6b4b69a6a00700"
+    },
+    {
+      "kind": 11,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "141d96b4695c0746b04a303c40f8011ba85fa45d5f7f0c7cdb6b4b69a6a00700"
+    },
+    {
+      "kind": 12,
+      "raw": -8.5,
+      "boundary": 0.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "b2aefd443cd0d02af5988c11764eb3b8ba90fa395fb10c72d0fa8f5b2cb0bb73"
+    },
+    {
+      "kind": 12,
+      "raw": 8.5,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1e998a83e6b04fa1630179af316d89e76486f87d1f9e07c5a7beb42dee196581"
+    },
+    {
+      "kind": 12,
+      "raw": 9.7,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1e998a83e6b04fa1630179af316d89e76486f87d1f9e07c5a7beb42dee196581"
+    },
+    {
+      "kind": 12,
+      "raw": 10.0,
+      "boundary": 1.0,
+      "coefficient_state_equal": true,
+      "coefficient_state_sha256": "1e998a83e6b04fa1630179af316d89e76486f87d1f9e07c5a7beb42dee196581"
+    }
+  ]
+}

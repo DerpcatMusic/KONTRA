@@ -16,12 +16,21 @@ use sampler_core::{
     Runtime, Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread, UiBridge};
+pub use thread::{Loaded, ScriptThread, UiBridge, DiagnosticAcknowledgement, DiagnosticPhase,
+    DiagnosticPoll, DiagnosticProgress, DiagnosticRequest, DiagnosticRequestError};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
 /// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
 pub trait Script {
     fn handles_notes(&self) -> bool;
+    /// Off audio only: bounded owner query; threaded hosts may wait for a reply.
+    fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {Err("sample status service unavailable".into())}
+    fn bind_sample_control(&mut self, _control: sampler_core::SampleControl) -> Result<(), String> {
+        Err("sample source service is not installed on this script owner".into())
+    }
+    fn bind_sample_stream(&mut self, _sources: sampler_kontakt::DynamicSources) -> Result<(), String> {
+        Err("sample streaming service is not installed on this script owner".into())
+    }
     fn set_time(&mut self, ms: f64);
     fn note_on(&mut self, id: u64, key: u8, velocity: u8);
     fn note_off(&mut self, id: u64, key: u8);
@@ -69,6 +78,10 @@ pub enum HostInput {
 }
 
 impl Script for ScriptHost {
+    fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {Ok(ScriptHost::sample_load_status(self))}
+    fn bind_sample_control(&mut self, control: sampler_core::SampleControl) -> Result<(), String> { ScriptHost::bind_sample_control(self, control) }
+    fn bind_sample_stream(&mut self, sources: sampler_kontakt::DynamicSources) -> Result<(), String> { ScriptHost::bind_sample_stream(self, sources) }
+    fn tick(&mut self, _now_ms: f64) { self.poll_sample_loads(); }
     fn handles_notes(&self) -> bool {
         ScriptHost::handles_notes(self)
     }
@@ -212,6 +225,15 @@ impl Driver<ScriptThread> {
 }
 
 impl<S: Script> Driver<S> {
+    /// Control/diagnostic query only; never call from an audio callback.
+    pub fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {self.host.sample_load_status()}
+    /// Hand the dedicated sample queue to its sole script/control producer.
+    pub fn bind_sample_control(&mut self, control: sampler_core::SampleControl) -> Result<(), String> {
+        self.host.bind_sample_control(control)
+    }
+    pub fn bind_sample_stream(&mut self, sources: sampler_kontakt::DynamicSources) -> Result<(), String> {
+        self.host.bind_sample_stream(sources)
+    }
     /// The driver of `host`; the plan it plays on is the caller's runtime.
     pub fn new(host: S, groups: Vec<OscGroup>, rate: u32) -> Self {
         Self {
@@ -788,9 +810,15 @@ impl Player {
                 rt = rt.with_stream_cache(cache);
             }
         }
+        let mut driver=Driver::new(program.host, program.groups, rate);
+        if rt.sample_target_count()>0 {
+            if let Some(s)=&stream { driver.bind_sample_stream(s._keep.0.dynamic_sources()).map_err(|_|Error::NotReady)?; }
+            let (next,control)=rt.with_sample_updates(64)?;rt=next;
+            driver.bind_sample_control(control).map_err(|_|Error::NotReady)?;
+        }
         Ok(Self {
             rt,
-            driver: Driver::new(program.host, program.groups, rate),
+            driver,
             horizon,
             _stream: stream,
             feed: MidiFeed::default(),

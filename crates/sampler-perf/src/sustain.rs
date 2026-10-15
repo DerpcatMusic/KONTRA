@@ -43,10 +43,12 @@ fn summary(mut times: Vec<u64>, block: usize) -> Value {
     let deadline = block as f64 / RATE as f64 * 1e9;
     json!({"blocks": times.len(), "p50_us": percentile(&times, 0.5) as f64 / 1e3,
         "p99_us": percentile(&times, 0.99) as f64 / 1e3,
+        "p999_us": percentile(&times, 0.999) as f64 / 1e3,
         "p50_percent_core": percentile(&times, 0.5) as f64 / deadline * 100.,
         "p99_percent_core": percentile(&times, 0.99) as f64 / deadline * 100.,
         "mean_percent_core": times.iter().sum::<u64>() as f64 / times.len() as f64 / deadline * 100.,
-        "max_us": times.last().unwrap() / 1000})
+        "max_us": times.last().unwrap() / 1000,
+        "deadline_misses": times.iter().filter(|&&ns| ns as f64 > deadline).count()})
 }
 
 /// Paced sampling: sleeping and metadata reads stay outside the timed section.
@@ -55,18 +57,19 @@ fn summary(mut times: Vec<u64>, block: usize) -> Value {
     unsafe_code,
     reason = "Read the thread CPU clock; no user/library data is exposed"
 )]
-fn cpu_ns() -> u64 {
+fn cpu_ns(process: bool) -> u64 {
     let mut time = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+    let clock = if process { libc::CLOCK_PROCESS_CPUTIME_ID } else { libc::CLOCK_THREAD_CPUTIME_ID };
+    let result = unsafe { libc::clock_gettime(clock, &mut time) };
     assert_eq!(result, 0);
     time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
 }
 
 #[cfg(not(target_os = "linux"))]
-fn cpu_ns() -> u64 {
+fn cpu_ns(_: bool) -> u64 {
     0
 }
 
@@ -74,6 +77,7 @@ fn phase(players: &mut [Loaded], block: usize, seconds: f64) -> Value {
     let blocks = (seconds * RATE as f64 / block as f64).ceil() as usize;
     let mut times = Vec::with_capacity(blocks);
     let mut cpu_times = Vec::with_capacity(blocks);
+    let mut process_times = Vec::with_capacity(blocks);
     let mut voice_min = usize::MAX;
     let mut voice_max = 0;
     let mut peak = 0.0f32;
@@ -81,16 +85,20 @@ fn phase(players: &mut [Loaded], block: usize, seconds: f64) -> Value {
     let mut fingerprint = 0xcbf29ce484222325u64;
     let mut buffers = vec![vec![[0.0; 2]; block]; players.len()];
     let before = CALLS.get();
+    let underruns_before: u64 = players.iter().map(|p| stats(&p.player).stream_underruns).sum();
+    let phase_cpu_start = cpu_ns(true);
     let start = Instant::now();
     for i in 0..blocks {
         COUNTING.set(true);
-        let c = cpu_ns();
+        let p = cpu_ns(true);
+        let c = cpu_ns(false);
         let t = Instant::now();
         for (loaded, buffer) in players.iter_mut().zip(&mut buffers) {
             render(&mut loaded.player, buffer, &[], &[], 0, &mut 0);
         }
         times.push(t.elapsed().as_nanos() as u64);
-        cpu_times.push(cpu_ns() - c);
+        cpu_times.push(cpu_ns(false) - c);
+        process_times.push(cpu_ns(true) - p);
         COUNTING.set(false);
         let n = players.iter().map(|p| voices(&p.player)).sum();
         voice_min = voice_min.min(n);
@@ -107,14 +115,20 @@ fn phase(players: &mut [Loaded], block: usize, seconds: f64) -> Value {
             std::thread::sleep(wait);
         }
     }
+    let phase_cpu = cpu_ns(true) - phase_cpu_start;
     let mut result = summary(times, block);
     result["thread_cpu"] = summary(cpu_times, block);
+    result["all_workers_cpu_during_render"] = summary(process_times, block);
+    result["whole_phase_process_cpu_percent_core"] = json!(phase_cpu as f64 / (blocks * block) as f64 * RATE as f64 / 1e9 * 100.);
     result["voices_min"] = json!(voice_min);
     result["voices_max"] = json!(voice_max);
     result["peak"] = json!(peak);
     result["rms"] = json!((energy / (blocks * block * 2 * players.len()) as f64).sqrt());
     result["pcm_fingerprint"] = json!(format!("{fingerprint:016x}"));
     result["audio_thread_heap_calls"] = json!(CALLS.get() - before);
+    let underruns_after: u64 = players.iter().map(|p| stats(&p.player).stream_underruns).sum();
+    result["stream_underruns_during_phase"] = json!(underruns_after - underruns_before);
+    result["stream_underruns_before_phase"] = json!(underruns_before);
     result
 }
 
@@ -137,6 +151,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     let mut block = None;
     let mut seconds = 3.;
     let mut notes = None;
+    let mut threads = 1;
     let mut out = None;
     for pair in args.chunks(2) {
         let [key, value] = pair else {
@@ -147,6 +162,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
             "--block" => block = Some(value.parse::<usize>().map_err(fail)?),
             "--seconds" => seconds = value.parse::<f64>().map_err(fail)?,
             "--notes" => notes = Some(value.parse::<usize>().map_err(fail)?),
+            "--threads" => threads = value.parse::<usize>().map_err(fail)?,
             "--out" => out = Some(value),
             _ => return Err(format!("unknown sustain option {key}")),
         }
@@ -155,8 +171,9 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
         || seconds <= 0.
         || block.is_some_and(|b| ![64, 256].contains(&b))
         || notes.is_some_and(|n| ![1, 8].contains(&n))
+        || ![1, 2, 4].contains(&threads)
     {
-        return Err("seconds > 0, block 64|256, notes 1|8 required".into());
+        return Err("seconds > 0, block 64|256, notes 1|8, threads 1|2|4 required".into());
     }
     if only.is_some_and(|n| !PATCHES.iter().any(|(name, _)| *name == n)) {
         return Err("unknown sustain scenario".into());
@@ -201,12 +218,18 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                     };
                     players.push(load(&scenario, &messages, b)?);
                 }
+                for loaded in &mut players {
+                    match &mut loaded.player {
+                        Player::Midi { rt, .. } => rt.set_threads(Threads::Fixed(threads)),
+                        Player::Uvi(_) => return Err("Kontakt sustain requires a MIDI runtime".into()),
+                    }
+                }
                 eprintln!("{name} block {b} notes {n}: loaded {count} programs");
                 // Drain finite bootstrap; recurring timers continue normally.
-                phase(&mut players, b, 1.);
+                let bootstrap = phase(&mut players, b, 1.);
                 let idle = phase(&mut players, b, seconds);
                 events(&mut players, keys, true);
-                phase(&mut players, b, 1.);
+                let attack = phase(&mut players, b, 1.);
                 if let Ok(ready) = std::env::var("CPU_AUDIT_READY") {
                     std::fs::write(ready, std::process::id().to_string()).map_err(fail)?;
                     std::thread::sleep(Duration::from_millis(400));
@@ -239,7 +262,11 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
                     ));
                 }
                 cells.push(json!({"scenario":name,"block":b,"notes":n,"programs":count,
-                    "idle":idle,"held":held,"release":release,"post_release":post_release,
+                    "bootstrap":bootstrap,"idle":idle,"attack":attack,"held":held,"release":release,"post_release":post_release,
+                    "cold_starts":st.iter().map(|s| s.cold_starts).sum::<u64>(),
+                    "voice_drops":st.iter().map(|s| s.voice_drops).sum::<u64>(),
+                    "refused_starts":st.iter().map(|s| s.refused_starts).sum::<u64>(),
+                    "stream_capacity_refusals":st.iter().map(|s| s.stream_capacity_refusals).sum::<u64>(),
                     "event_errors":errors,"behavior_errors":behavior_errors,"external_service_refusals":service_errors,
                     "external_service_mask":service_mask,"stream_service_errors":stream_service_errors,"stream_underruns":underruns}));
                 eprintln!(
@@ -249,12 +276,13 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let result = json!({"format":"sampler-perf-sustain-1","rate":RATE,"threads":1,
+    let result = json!({"format":"sampler-perf-sustain-2","rate":RATE,"threads":threads,
         "seconds_per_phase":seconds,"release_settle_seconds":8,"cells":cells,"failures":failures,
         "external_service_mask_bits":{"1":"MIDI service","2":"array file service"},
         "ui_effects":"presentation effects drained without a UI; file/MIDI jobs retained and reported as failure",
         "key_range":"only sample zones intersecting held MIDI keys are loaded; script-generated out-of-range notes are not a full-library audit",
         "multi_routing":"all physical programs auditioned on MIDI channel 1; rack channel/fader routing is not modeled",
+        "cpu_metrics":"wall and thread_cpu are callback deadline percentages; all_workers_cpu_during_render sums process CPU while render is bracketed; whole_phase_process_cpu_percent_core includes decoder workers, pacing, clocks, PCM fingerprinting and other harness overhead across the entire phase",
         "loadavg":std::fs::read_to_string("/proc/loadavg").ok()});
     let text = serde_json::to_string_pretty(&result).map_err(fail)?;
     if let Some(out) = out {

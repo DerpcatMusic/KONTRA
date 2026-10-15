@@ -34,6 +34,7 @@ pub struct Report {
     pub why_silent: Option<String>,
     /// Script faults behind it, each "error in callback".
     pub faults: Vec<String>,
+    pub stream_warning: Option<String>,
 }
 
 /// A part of the instrument that was translated and plays.
@@ -216,6 +217,9 @@ pub enum Runtime {
     StreamUnderruns {
         count: u64,
     },
+    ColdStarts {
+        count: u64,
+    },
     NonFinite {
         count: u64,
     },
@@ -246,7 +250,11 @@ impl Runtime {
             ),
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),
-                "The disk did not keep up; those notes played silent for a moment.".into(),
+                "Sample data was not ready; those notes played silent for a moment.".into(),
+            ),
+            Self::ColdStarts { count } => (
+                format!("{count} sample starts waited for data"),
+                "The first sample frames were not resident when those voices began.".into(),
             ),
             Self::NonFinite { count } => (
                 "Invalid audio silenced".into(),
@@ -297,6 +305,7 @@ pub fn verdict(r: &Report) -> String {
     let gaps = groups(&r.missing).len();
     let severe = r.missing.iter().any(Missing::severe);
     let mut out = match (gaps, severe) {
+        (0, _) if r.stream_warning.is_some() => "Playing with delayed attack risk".to_owned(),
         (0, _) => "Plays as authored".to_owned(),
         (_, true) => format!(
             "Plays incompletely · {gaps} problem{}",
@@ -324,6 +333,13 @@ pub(super) struct Entry {
 
 pub(super) fn entries(r: &Report) -> Vec<Entry> {
     let mut rows = Vec::new();
+    if let Some(warning) = &r.stream_warning {
+        rows.push(Entry {
+            title: "Sample attacks may wait for disk".into(),
+            detail: warning.clone(),
+            severe: true,
+        });
+    }
     for group in groups(&r.missing) {
         rows.push(Entry {
             title: group[0].title(group.len()),
@@ -432,6 +448,19 @@ pub fn view(ui: &mut Ui, state: &mut State, r: &Report) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_budget_fallback_is_visible_without_a_translation_gap() {
+        let report = Report {
+            stream_warning: Some("First notes may wait for disk reads.".into()),
+            ..Default::default()
+        };
+        assert_eq!(verdict(&report), "Playing with delayed attack risk");
+        let rows = entries(&report);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].severe);
+        assert!(rows[0].detail.contains("wait for disk"));
+    }
 
     #[test]
     fn single_load_problem_expands_to_every_labelled_detail() {

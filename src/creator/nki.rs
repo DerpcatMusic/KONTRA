@@ -242,7 +242,7 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
 fn zones(p: &Program) -> Result<Vec<u8>> {
     let mut out = (p.zones.len() as u32).to_le_bytes().to_vec();
     for (n, z) in p.zones.iter().enumerate() {
-        let file = z.asset.0;
+        let file = z.asset.ok_or_else(|| anyhow::anyhow!("Dormant zones need a bound sample before Kontakt export"))?.0;
         ensure!(
             file < p.samples.len(),
             "Zone sample is not in the file table"

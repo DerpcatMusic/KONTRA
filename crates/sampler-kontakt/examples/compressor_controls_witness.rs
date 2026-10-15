@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         .iter()
         .enumerate()
         .find(|(_, z)| z.keys.low <= 60 && z.keys.high >= 60 && z.velocities.high >= 64)
-        .map(|(n, z)| (n, z.asset.0))
+        .map(|(n, z)| (n, z.asset.expect("Kontakt source asset").0))
         .context("no gate sample")?;
     let decoded = library.samples.decode(&library.locations[asset])?;
     let peak = decoded

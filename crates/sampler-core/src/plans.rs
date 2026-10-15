@@ -14,6 +14,7 @@ pub enum PlanError {
     Disconnected,
     SequenceExhausted,
     Disabled,
+    Canceled,
 }
 
 pub struct RejectedPlan {
@@ -43,6 +44,9 @@ pub struct PlanTransfer {
     projections: super::note_event::NoteProjections,
     modulation: super::voice_mod::VoiceModState,
     script: super::script_params::EngineLayers,
+    samples: super::prepare::sample_revision::SampleState,
+    initial_residency: super::residency::startup::State,
+    start_cursor: usize,
 }
 
 pub(super) struct Generation {
@@ -64,6 +68,15 @@ pub(super) struct Generation {
     pub projections: super::note_event::NoteProjections,
     pub modulation: super::voice_mod::VoiceModState,
     pub script: super::script_params::EngineLayers,
+    pub samples: super::prepare::sample_revision::SampleState,
+    pub initial_residency: super::residency::startup::State,
+    pub start_cursor: usize,
+}
+
+impl Generation {
+    pub fn asset(&self,sample:usize)->&crate::Pcm {
+        self.samples.asset(&self.prepared,sample).expect("live voice pins its immutable source revision")
+    }
 }
 
 pub(super) struct PlanQueues {
@@ -178,7 +191,11 @@ impl PlanControl {
     }
 
     /// Rejection returns the exact owned plan to the caller; nothing is published.
-    pub fn submit(&mut self, mut prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
+    pub fn submit(&mut self, prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
+        self.submit_cancelable(prepared,&||false)
+    }
+
+    pub fn submit_cancelable(&mut self,mut prepared:Box<Prepared>,canceled:&dyn Fn()->bool)->Result<u64,RejectedPlan> {
         let reason = if self.pending.is_abandoned() {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
@@ -272,6 +289,11 @@ impl PlanControl {
             .collect();
         let midi_object = prepared.midi_object.clone();
         let dims = super::grow::Dims::of(request, &prepared);
+        let samples = super::prepare::sample_revision::SampleState::new(&prepared);
+        let initial_residency=match prepared.prepare_initial_residency(canceled) {
+            Ok(state)=>state,
+            Err(error)=>return Err(RejectedPlan{reason:if error==Error::Canceled {PlanError::Canceled}else{PlanError::Capacity},prepared}),
+        };
         match self.pending.push(PlanTransfer {
             request,
             prepared,
@@ -286,6 +308,9 @@ impl PlanControl {
             projections,
             modulation,
             script,
+            samples,
+            initial_residency,
+            start_cursor: 0,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -327,10 +352,17 @@ impl Runtime {
         queued: usize,
         initial_notes: usize,
     ) -> Result<(Self, PlanControl), Error> {
+        Self::with_plan_updates_and_note_capacity_cancelable(plan,limits,generations,queued,initial_notes,&||false)
+    }
+
+    pub fn with_plan_updates_and_note_capacity_cancelable(
+        plan:Prepared,limits:Limits,generations:usize,queued:usize,initial_notes:usize,
+        canceled:&dyn Fn()->bool,
+    )->Result<(Self,PlanControl),Error> {
         if generations < 2 || queued == 0 {
             return Err(Error::InvalidInput);
         }
-        let mut runtime = Self::new_with_note_params(plan, limits, initial_notes)?;
+        let mut runtime = Self::new_with_note_params(plan, limits, initial_notes,canceled)?;
         // Move the initial generation into the larger control-side arena. No live
         // notes exist yet, and the emptied old arena owns no prepared assets.
         let mut slots = Arena::new(runtime.plans.runtime, generations);
@@ -440,6 +472,9 @@ impl Runtime {
                 projections: generation.projections,
                 modulation: generation.modulation,
                 script: generation.script,
+                samples: generation.samples,
+                initial_residency: generation.initial_residency,
+                start_cursor: generation.start_cursor,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -462,6 +497,9 @@ impl Runtime {
                             projections: plan.projections,
                             modulation: plan.modulation,
                             script: plan.script,
+                            samples: plan.samples,
+                            initial_residency: plan.initial_residency,
+                            start_cursor: plan.start_cursor,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -521,8 +559,11 @@ impl Runtime {
                     projections: plan.projections,
                     modulation: plan.modulation,
                     script: plan.script,
+                    samples: plan.samples,
                     notes: 0,
-                    callbacks: 0,
+                    callbacks: plan.initial_residency.pending(),
+                    initial_residency: plan.initial_residency,
+                    start_cursor: plan.start_cursor,
                 })
                 .expect("reserved plan generation slot"),
         );

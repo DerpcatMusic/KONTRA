@@ -24,6 +24,16 @@ pub struct BusMix {
     pub gain: [f32; 2],
     pub output: Option<usize>,
 }
+
+/// Raw stereo sample peaks of a summed runtime bus. These are linear peaks,
+/// not a native meter's ballistics, mono summation or display transfer law.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusPeakTap {
+    /// Sum entering the bus, before its tone, inserts and mix gain.
+    Input,
+    /// Signal after the bus's inserts and mix gain, before sends.
+    Output,
+}
 impl Default for BusMix {
     fn default() -> Self {
         Self {
@@ -275,6 +285,9 @@ pub(super) struct BusState {
     pub fader: Box<[f64]>,
     /// Per bus, its post-mix peak since last taken.
     pub peaks: Box<[[f32; 2]]>,
+    /// Input measurement is opt-in: unobserved buses do no extra sample scan.
+    input_peaks: Box<[[f32; 2]]>,
+    input_peak_enabled: Box<[bool]>,
 }
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
@@ -301,6 +314,8 @@ impl BusState {
             mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
             fader: plan.buses.nodes.iter().map(|n| n.fader).collect(),
             peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
+            input_peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
+            input_peak_enabled: vec![false; plan.buses.len()].into_boxed_slice(),
         })
     }
     /// Exchange convolution `slot` with `upload`: no allocation, state starts
@@ -323,6 +338,32 @@ impl BusState {
                 buffer.dirty = false;
             }
             buffer.input_frames = 0;
+        }
+    }
+    pub fn enable_input_peak(&mut self, bus: usize, enabled: bool) -> Result<(), Error> {
+        let interest = self.input_peak_enabled.get_mut(bus).ok_or(Error::InvalidInput)?;
+        if *interest != enabled {
+            self.input_peaks[bus] = [0.; 2];
+            *interest = enabled;
+        }
+        Ok(())
+    }
+    pub fn peak(&self, bus: usize, tap: BusPeakTap) -> Result<[f32; 2], Error> {
+        match tap {
+            BusPeakTap::Input => {
+                if self.input_peak_enabled.get(bus) != Some(&true) {
+                    return Err(Error::InvalidInput);
+                }
+                self.input_peaks.get(bus)
+            }
+            BusPeakTap::Output => self.peaks.get(bus),
+        }.copied().ok_or(Error::InvalidInput)
+    }
+    pub fn take_input_peaks(&mut self, mut each: impl FnMut(usize, [f32; 2])) {
+        for (bus, peak) in self.input_peaks.iter_mut().enumerate() {
+            if self.input_peak_enabled[bus] {
+                each(bus, std::mem::take(peak));
+            }
         }
     }
     pub fn input(&mut self, bus: usize, frames: usize) -> &mut [Frame] {
@@ -384,6 +425,12 @@ impl BusState {
             // over zero input until it ends, which clears the bus's history.
             let len = output.len();
             let input = buffer.input_frames.min(len);
+            if self.input_peak_enabled[index] {
+                let peak = &mut self.input_peaks[index];
+                for frame in &buffer.samples[..input] {
+                    *peak = [peak[0].max(frame[0].abs()), peak[1].max(frame[1].abs())];
+                }
+            }
             let tail = if input > 0 {
                 self.tail_frames[index]
             } else {
@@ -501,7 +548,7 @@ impl BusState {
                     && block
                         .iter()
                         .all(|c| c[..produced].iter().all(|v| (*v as f32).is_finite()))
-                    && states.iter().all(ProcessorState::finite);
+                    && crate::dsp::finite_states(&node.processors, states);
                 if finite {
                     for (i, frame) in buffer.samples[..produced].iter_mut().enumerate() {
                         *frame = [block[0][i], block[1][i]]

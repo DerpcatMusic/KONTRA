@@ -134,6 +134,7 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
     let instrument = root.join("Instruments/Piano.nki");
     std::fs::create_dir_all(instrument.parent().unwrap()).unwrap();
     let mut routed = sampler_kontakt::Resources::of(&instrument);
+    assert_eq!(routed.read_with_origin_result("Resources/pictures/Wallpaper.PNG").unwrap().unwrap().1, "kontakt-nicnt");
     assert_eq!(
         routed.read("Resources\\pictures\\Wallpaper.PNG").as_deref(),
         Some(picture)
@@ -146,6 +147,7 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
     std::fs::create_dir_all(loose.parent().unwrap()).unwrap();
     std::fs::write(&loose, b"loose override").unwrap();
     let mut routed = sampler_kontakt::Resources::of(&instrument);
+    assert_eq!(routed.read_with_origin_result("Resources/pictures/Wallpaper.PNG").unwrap().unwrap().1, "kontakt-loose");
     assert_eq!(
         routed.read("resources|pictures|wallpaper.PNG").as_deref(),
         Some(b"loose override".as_slice())

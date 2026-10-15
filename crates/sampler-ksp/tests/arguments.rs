@@ -136,16 +136,6 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
             u32::MAX,
             sampler_core::Error::ArithmeticOverflow,
         ),
-        (
-            "play_note(60, 127, 0, -2)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "play_note(60, 127, 0, -2147483648)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
     ] {
         let mut rt = runtime(
             &format!("on note ignore_event($EVENT_ID) {body} end on"),

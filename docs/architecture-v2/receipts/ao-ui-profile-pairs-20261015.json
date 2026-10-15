@@ -1,0 +1,903 @@
+{
+  "binary_sha256": "9fa1b7edc7276abd6654191dc6488f2fb69cbb7f93a080b0eae10a5cf8786344",
+  "build_profile": "ci opt-level3/noLTO",
+  "input_member": "Presets/00 Orchestra/01 Strings/V Strings Pizzicato 2.uvip",
+  "mode": "ui-only initialized+render; no coverage, Runtime, PCM, audio host or gesture callbacks",
+  "cpu_clock": "Linux owned process group-leader /proc stat aggregate user+system ticks at stderr phase boundaries; thread-group CPU, 10ms quantization at this host; wall markers observed through pipe. Child totals via RUSAGE_CHILDREN deltas with no other simultaneous children from this runner.",
+  "cpu_ticks_per_second": 100,
+  "publish_scope": "render-begin is inspector model/export boundary, not plugin interactive publication; render-end includes asset preparation and PNG encoding",
+  "medians": {
+    "profile_off": {
+      "launcher_ms": 7304.792791001091,
+      "total_process_ms": 7126.122094,
+      "child_user_cpu_ms": 8470.123000000001,
+      "child_system_cpu_ms": 370.7100000000001
+    },
+    "profile_on": {
+      "launcher_ms": 7247.5826859990775,
+      "total_process_ms": 7064.913222,
+      "child_user_cpu_ms": 8470.844,
+      "child_system_cpu_ms": 367.5219999999997
+    }
+  },
+  "measurement_date_local": "2026-10-15",
+  "timezone": "Asia/Jerusalem",
+  "classification": "CONTENDED: external workload observed throughout most samples; zero compiler observations. No causal speed ratio or resolved positive profiler overhead.",
+  "run_order": [
+    "off",
+    "on",
+    "on",
+    "off",
+    "off",
+    "on"
+  ],
+  "monitor_totals": {
+    "observations": 212,
+    "rustc_observations": 0,
+    "external_workload_observations": 208
+  },
+  "invariants": {
+    "all_initialization_ok": true,
+    "all_fault_counts_empty": true,
+    "work_checkpoints": [
+      14053215
+    ],
+    "no_work_or_wall_exhaustion": true,
+    "ui": {
+      "widgets": 10145,
+      "visible_widgets": 101,
+      "hierarchical_menus": 53,
+      "unsupported": {
+        "AudioMeter element": 8,
+        "AudioMeter.0dBColour": 4,
+        "AudioMeter.displayAsMono": 8,
+        "Table.fillStyle": 8
+      },
+      "assets": {
+        "ambiguous": 0,
+        "corrupt": 0,
+        "decode_ok": 84,
+        "decodes": 84,
+        "encoded_bytes": 4820792,
+        "font_ok": 5,
+        "fonts": 5,
+        "found": 89,
+        "invalid": 0,
+        "limit": 0,
+        "lookups": 89,
+        "missing": 0,
+        "preparation_key_budget": 0,
+        "preparation_oversized": 0,
+        "read_failed": 0,
+        "unavailable": 0
+      },
+      "renderer_status": "ok",
+      "pending_assets": [
+        0,
+        0
+      ]
+    },
+    "all_assets_equal": true,
+    "all_pending_assets_zero": true,
+    "all_cache_hits": true,
+    "all_ui_counts_equal": true
+  },
+  "runs": [
+    {
+      "ordinal": 0,
+      "profile_init": false,
+      "total_process_ms": 7661.510203,
+      "launcher_ms": 7859.931997998501,
+      "child_user_cpu_ms": 8830.872000000001,
+      "child_system_cpu_ms": 363.212,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 628.724077,
+          "observed_wall_ms": 628.7439480001922,
+          "process_cpu_ms": 2390.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 69.234911,
+          "observed_wall_ms": 69.20030000037514,
+          "process_cpu_ms": 80.00000000000007
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00185,
+          "observed_wall_ms": 0.026650999643607065,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5562.422762,
+          "observed_wall_ms": 5562.260099999548,
+          "process_cpu_ms": 5470.000000000001
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 314.17681400000004,
+          "observed_wall_ms": 314.3729080002231,
+          "process_cpu_ms": 250.0
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 468.651432,
+          "observed_wall_ms": 468.6625210015336,
+          "process_cpu_ms": 200.00000000000108
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 4.144878999795765,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 632.9396379987884,
+          "cpu_seconds": 2.39
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 702.1931989984296,
+          "cpu_seconds": 2.47
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 702.2392899998522,
+          "cpu_seconds": 2.47
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 6339.736774996709,
+          "cpu_seconds": 8.02
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6931.535955998697,
+          "cpu_seconds": 8.54
+        }
+      ],
+      "monitor": {
+        "observations": 38,
+        "rustc_observations": 0,
+        "external_workload_observations": 38
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 108.307726,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 1,
+      "profile_init": true,
+      "total_process_ms": 7118.549258,
+      "launcher_ms": 7320.1868449978065,
+      "child_user_cpu_ms": 8559.211000000001,
+      "child_system_cpu_ms": 393.46100000000007,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 462.92794100000003,
+          "observed_wall_ms": 462.8201199993782,
+          "process_cpu_ms": 2330.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 54.145263,
+          "observed_wall_ms": 53.981469998689136,
+          "process_cpu_ms": 49.99999999999982
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00168,
+          "observed_wall_ms": 0.027919999411096796,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5374.3845759999995,
+          "observed_wall_ms": 5374.3856660003075,
+          "process_cpu_ms": 5300.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 234.299929,
+          "observed_wall_ms": 234.3739009993442,
+          "process_cpu_ms": 240.00000000000023
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 329.594607,
+          "observed_wall_ms": 329.69551899805083,
+          "process_cpu_ms": 179.99999999999972
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 5.345531997591024,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 468.21610299957683,
+          "cpu_seconds": 2.33
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 522.2336939987144,
+          "cpu_seconds": 2.38
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 522.2871949990804,
+          "cpu_seconds": 2.38
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 5971.851264999714,
+          "cpu_seconds": 7.75
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6517.124345999036,
+          "cpu_seconds": 8.3
+        }
+      ],
+      "monitor": {
+        "observations": 35,
+        "rustc_observations": 0,
+        "external_workload_observations": 35
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 90.08560899999999,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 2,
+      "profile_init": true,
+      "total_process_ms": 7064.913222,
+      "launcher_ms": 7247.5826859990775,
+      "child_user_cpu_ms": 8470.844,
+      "child_system_cpu_ms": 353.91700000000003,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 439.756489,
+          "observed_wall_ms": 439.64176600275096,
+          "process_cpu_ms": 2250.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 52.840508,
+          "observed_wall_ms": 52.77503699835506,
+          "process_cpu_ms": 60.00000000000006
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00227,
+          "observed_wall_ms": 0.032410000130767,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5406.226605999999,
+          "observed_wall_ms": 5406.144723998295,
+          "process_cpu_ms": 5330.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 229.727521,
+          "observed_wall_ms": 229.76522200042382,
+          "process_cpu_ms": 219.99999999999974
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 340.951593,
+          "observed_wall_ms": 340.8616710003116,
+          "process_cpu_ms": 189.9999999999995
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 3.8984139973763376,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 443.5841810009151,
+          "cpu_seconds": 2.25
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 496.4015189980273,
+          "cpu_seconds": 2.31
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 496.46355000004405,
+          "cpu_seconds": 2.31
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 5968.5011109977495,
+          "cpu_seconds": 7.71
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6478.946005998296,
+          "cpu_seconds": 8.21
+        }
+      ],
+      "monitor": {
+        "observations": 35,
+        "rustc_observations": 0,
+        "external_workload_observations": 35
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 84.001293,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 3,
+      "profile_init": false,
+      "total_process_ms": 6998.818249,
+      "launcher_ms": 7192.333200000576,
+      "child_user_cpu_ms": 8406.032,
+      "child_system_cpu_ms": 382.3209999999999,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 430.23547499999995,
+          "observed_wall_ms": 429.93897999986075,
+          "process_cpu_ms": 2260.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 58.510736,
+          "observed_wall_ms": 58.39384299906669,
+          "process_cpu_ms": 50.00000000000027
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.0019700000000000004,
+          "observed_wall_ms": 0.03756099977181293,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5334.893607999999,
+          "observed_wall_ms": 5334.723836000194,
+          "process_cpu_ms": 5260.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 235.672335,
+          "observed_wall_ms": 235.7332960018539,
+          "process_cpu_ms": 229.99999999999955
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 326.01094600000005,
+          "observed_wall_ms": 325.9410049977305,
+          "process_cpu_ms": 179.99999999999972
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 4.516685999988113,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 434.63933000020916,
+          "cpu_seconds": 2.26
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 493.08640399976866,
+          "cpu_seconds": 2.31
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 493.1502649997128,
+          "cpu_seconds": 2.31
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 5900.701738999487,
+          "cpu_seconds": 7.65
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6418.781659001979,
+          "cpu_seconds": 8.16
+        }
+      ],
+      "monitor": {
+        "observations": 35,
+        "rustc_observations": 0,
+        "external_workload_observations": 35
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 81.505904,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 4,
+      "profile_init": false,
+      "total_process_ms": 7126.122094,
+      "launcher_ms": 7304.792791001091,
+      "child_user_cpu_ms": 8470.123000000001,
+      "child_system_cpu_ms": 370.7100000000001,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 463.572279,
+          "observed_wall_ms": 463.49465799721656,
+          "process_cpu_ms": 2230.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 57.387674,
+          "observed_wall_ms": 57.23029100045096,
+          "process_cpu_ms": 49.99999999999982
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.0015999999999999999,
+          "observed_wall_ms": 0.028471000405261293,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5402.093663,
+          "observed_wall_ms": 5402.092033000372,
+          "process_cpu_ms": 5330.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 253.032574,
+          "observed_wall_ms": 253.01286400281242,
+          "process_cpu_ms": 250.0
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 328.591225,
+          "observed_wall_ms": 328.66975600336445,
+          "process_cpu_ms": 189.9999999999995
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 4.209531001833966,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 467.7467000001343,
+          "cpu_seconds": 2.23
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 525.0141309988976,
+          "cpu_seconds": 2.28
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 525.0614020005742,
+          "cpu_seconds": 2.28
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 5999.652286998753,
+          "cpu_seconds": 7.69
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6548.502361998544,
+          "cpu_seconds": 8.23
+        }
+      ],
+      "monitor": {
+        "observations": 35,
+        "rustc_observations": 0,
+        "external_workload_observations": 35
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 114.88772,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 5,
+      "profile_init": true,
+      "total_process_ms": 6865.244729000001,
+      "launcher_ms": 6999.113720998139,
+      "child_user_cpu_ms": 8215.526999999995,
+      "child_system_cpu_ms": 367.5219999999997,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 451.207143,
+          "observed_wall_ms": 451.1866920001921,
+          "process_cpu_ms": 2260.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 60.050435,
+          "observed_wall_ms": 59.82357000175398,
+          "process_cpu_ms": 60.00000000000006
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.0028109999999999997,
+          "observed_wall_ms": 0.03558100070222281,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 5407.418537,
+          "observed_wall_ms": 5407.128052000189,
+          "process_cpu_ms": 5340.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 201.93918,
+          "observed_wall_ms": 201.83919700139086,
+          "process_cpu_ms": 209.99999999999997
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 311.012429,
+          "observed_wall_ms": 311.00865799817257,
+          "process_cpu_ms": 169.99999999999994
+        }
+      ],
+      "phase_starts": [
+        {
+          "phase": "container_program_and_scripts",
+          "wall_from_launch_ms": 5.987743999867234,
+          "cpu_seconds": 0.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "wall_from_launch_ms": 457.2612679985468,
+          "cpu_seconds": 2.26
+        },
+        {
+          "phase": "source_frontend",
+          "wall_from_launch_ms": 517.1315489969857,
+          "cpu_seconds": 2.32
+        },
+        {
+          "phase": "translate_and_initialize",
+          "wall_from_launch_ms": 517.1895299972675,
+          "cpu_seconds": 2.32
+        },
+        {
+          "phase": "ui_model_export",
+          "wall_from_launch_ms": 5986.6194399983215,
+          "cpu_seconds": 7.71
+        },
+        {
+          "phase": "ui_render",
+          "wall_from_launch_ms": 6396.109956000146,
+          "cpu_seconds": 8.12
+        }
+      ],
+      "monitor": {
+        "observations": 34,
+        "rustc_observations": 0,
+        "external_workload_observations": 30
+      },
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 96.416658,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ]
+    }
+  ],
+  "phase_medians": {
+    "off": [
+      {
+        "phase": "container_program_and_scripts",
+        "reported_wall_ms": 463.572279,
+        "process_cpu_ms": 2260.0
+      },
+      {
+        "phase": "xml_parse_and_metadata",
+        "reported_wall_ms": 58.510736,
+        "process_cpu_ms": 50.00000000000027
+      },
+      {
+        "phase": "source_frontend",
+        "reported_wall_ms": 0.00185,
+        "process_cpu_ms": 0.0
+      },
+      {
+        "phase": "translate_and_initialize",
+        "reported_wall_ms": 5402.093663,
+        "process_cpu_ms": 5330.0
+      },
+      {
+        "phase": "ui_model_export",
+        "reported_wall_ms": 253.032574,
+        "process_cpu_ms": 250.0
+      },
+      {
+        "phase": "ui_render",
+        "reported_wall_ms": 328.591225,
+        "process_cpu_ms": 189.9999999999995
+      }
+    ],
+    "on": [
+      {
+        "phase": "container_program_and_scripts",
+        "reported_wall_ms": 451.207143,
+        "process_cpu_ms": 2260.0
+      },
+      {
+        "phase": "xml_parse_and_metadata",
+        "reported_wall_ms": 54.145263,
+        "process_cpu_ms": 60.00000000000006
+      },
+      {
+        "phase": "source_frontend",
+        "reported_wall_ms": 0.00227,
+        "process_cpu_ms": 0.0
+      },
+      {
+        "phase": "translate_and_initialize",
+        "reported_wall_ms": 5406.226605999999,
+        "process_cpu_ms": 5330.0
+      },
+      {
+        "phase": "ui_model_export",
+        "reported_wall_ms": 229.727521,
+        "process_cpu_ms": 219.99999999999974
+      },
+      {
+        "phase": "ui_render",
+        "reported_wall_ms": 329.594607,
+        "process_cpu_ms": 179.99999999999972
+      }
+    ]
+  },
+  "profile_on": {
+    "stages": [
+      {
+        "phase": "host_create",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 3197.569201
+      },
+      {
+        "phase": "host_globals_and_prelude",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 6.202329000000001
+      },
+      {
+        "phase": "module_compile",
+        "calls": [
+          19,
+          19,
+          19
+        ],
+        "inclusive_wall_median_ms": 78.137702
+      },
+      {
+        "phase": "module_name_inventory",
+        "calls": [
+          19,
+          19,
+          19
+        ],
+        "inclusive_wall_median_ms": 1.826343
+      },
+      {
+        "phase": "on_init_and_deferred_callbacks",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 6.067405
+      },
+      {
+        "phase": "parameter_overlay_export",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 50.454612000000004
+      },
+      {
+        "phase": "post_init_overlays_and_ir_translation",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 2082.441855
+      },
+      {
+        "phase": "program_object_graph",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 635.563283
+      },
+      {
+        "phase": "root_script_compile",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 0.079322
+      },
+      {
+        "phase": "saved_ui_restore",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 65.323476
+      },
+      {
+        "phase": "script_body_and_require",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 2425.619566
+      },
+      {
+        "phase": "script_promotion",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 121.263553
+      },
+      {
+        "phase": "scripts_total",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 2492.94476
+      },
+      {
+        "phase": "ui_ir_export",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 229.724141
+      },
+      {
+        "phase": "vm_create",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 0.500609
+      },
+      {
+        "phase": "xml_parse",
+        "calls": [
+          1,
+          1,
+          1
+        ],
+        "inclusive_wall_median_ms": 53.929919
+      }
+    ],
+    "native_apis": [
+      {
+        "phase": "uvi_lua_api_definition",
+        "calls": [
+          39937,
+          39937,
+          39937
+        ],
+        "inclusive_wall_median_ms": 11.972011
+      },
+      {
+        "phase": "uvi_lua_api_definitions",
+        "calls": [
+          60034,
+          60034,
+          60034
+        ],
+        "inclusive_wall_median_ms": 629.256652
+      },
+      {
+        "phase": "uvi_lua_api_get_param",
+        "calls": [
+          575045,
+          575045,
+          575045
+        ],
+        "inclusive_wall_median_ms": 358.199053
+      },
+      {
+        "phase": "uvi_lua_api_has_param",
+        "calls": [
+          25228,
+          25228,
+          25228
+        ],
+        "inclusive_wall_median_ms": 5.626552
+      },
+      {
+        "phase": "uvi_lua_api_set_param",
+        "calls": [
+          108953,
+          108953,
+          108953
+        ],
+        "inclusive_wall_median_ms": 63.99935299999999
+      }
+    ],
+    "sample_count_range": [
+      1186,
+      1214
+    ],
+    "stack_collection_ms_range": [
+      3.495697,
+      3.60535
+    ],
+    "function_self_cpu": "unavailable in frozen executable; inclusive opportunistic frame counts are context, not exclusive CPU attribution"
+  }
+}

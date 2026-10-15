@@ -232,6 +232,10 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Authored sample-player identities, independent of asset renumbering.
+    /// An initially empty player retains complete dormant zone recipes.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub sample_targets: Vec<SourceSampleTarget>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -255,6 +259,13 @@ pub struct SourceIndices {
     #[cfg_attr(feature = "cache", serde(default))]
     pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSampleTarget {
+    pub node: u32,
+    pub zones: Vec<ZoneRef>,
 }
 
 /// What a Kontakt external route record says about its law: the native target
@@ -401,11 +412,35 @@ pub enum SourceFormat {
 
 // ---------------------------------------------------------------- assets
 
+/// Minimum storage required by an authored sample user. Shared immutable
+/// sources must retain the strongest requirement of all their users.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssetResidency {
+    /// The source may use resident attacks with disk-streamed tails.
+    #[default]
+    Streamable,
+    /// The complete base PCM must be resident before publishing the part.
+    Resident,
+}
+
+impl AssetResidency {
+    pub const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Resident, _) | (_, Self::Resident) => Self::Resident,
+            _ => Self::Streamable,
+        }
+    }
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub location: AssetLocation,
     pub encoding: Encoding,
+    /// A source-level minimum, independent of the host's preferred cache mode.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub residency: AssetResidency,
     /// Recorded pitch stored with the audio, if any.
     pub root_key: Option<u8>,
     /// Loops stored with the audio (e.g. a WAV `smpl` chunk).
@@ -645,7 +680,9 @@ pub enum Kill {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
-    pub asset: AssetRef,
+    /// None is an authored, dormant sample player, not a missing decoded file.
+    /// Its complete mapping remains available for a future sample transaction.
+    pub asset: Option<AssetRef>,
     pub group: Option<GroupRef>,
     pub keys: KeyRange,
     pub velocities: VelocityRange,
@@ -691,28 +728,46 @@ impl Instrument {
                 let Processor::Dynamics(c) = *processor else {
                     continue;
                 };
+                use fx::dynamics::Law;
+                // These are physical editor controls, in the DSP law's units.
+                // Native is not a domain: Feedback takes linear input drive and
+                // ratio 1..20, unlike the original compressor's dB / 0..1 knobs.
+                let (input_label, input_low, input_high, input_unit, ratio_low, ratio_high, attack_low, release_low) = match c.law {
+                    Law::Generic(_) => ("Threshold", -60., 0., ControlUnit::Decibels, 1., 20., 0., 0.),
+                    Law::KontaktClassic(_) | Law::KontaktPro(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0., 0.),
+                    Law::KontaktEnhanced(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0.000_001, 0.),
+                    Law::KontaktFeedback { .. } =>
+                        ("Input gain", 10_f64.powf(-0.5), 100., ControlUnit::None, 1., 20., 0.000_1, 0.05),
+                    Law::KontaktLimiter(_) =>
+                        ("Input gain", -24., 24., ControlUnit::Decibels, 0., 0., 0., 0.),
+                    // These cores either ignore the four generic knobs or use
+                    // different controls. Do not invent a compressor editor.
+                    _ => continue,
+                };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
-                        "Threshold",
+                        input_label,
                         c.threshold(),
-                        -60_f64,
-                        0_f64,
-                        ControlUnit::Decibels,
+                        input_low,
+                        input_high,
+                        input_unit,
                     ),
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
                         c.ratio(),
-                        if c.is_native() { 0_f64 } else { 1_f64 },
-                        if c.is_native() { 1_f64 } else { 20_f64 },
+                        ratio_low,
+                        ratio_high,
                         ControlUnit::None,
                     ),
                     (
                         ProcessorParameter::Attack,
                         "Attack",
                         c.attack.seconds(),
-                        0_f64,
+                        attack_low,
                         1_f64,
                         ControlUnit::Seconds,
                     ),
@@ -720,17 +775,24 @@ impl Instrument {
                         ProcessorParameter::Release,
                         "Release",
                         c.release.seconds(),
-                        0_f64,
+                        release_low,
                         5_f64,
                         ControlUnit::Seconds,
                     ),
                 ] {
+                    if matches!(c.law, Law::KontaktLimiter(_))
+                        && matches!(parameter, ProcessorParameter::Ratio | ProcessorParameter::Attack) {
+                        continue;
+                    }
                     if existing.contains(&(chain, index, parameter as u8)) {
                         continue;
                     }
                     let control = ControlRef(self.controls.len());
+                    // Labels can become more precise without changing a saved
+                    // editor control's identity (the historical key was Threshold).
+                    let key_label = if parameter == ProcessorParameter::Threshold { "Threshold" } else { label };
                     self.controls.push(Control {
-                        key: format!("compressor:{chain}:{index}:{label}"),
+                        key: format!("compressor:{chain}:{index}:{key_label}"),
                         label: label.into(),
                         value: ControlValue::Continuous {
                             min: low.min(default),
@@ -848,9 +910,13 @@ impl Instrument {
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
+        for target in &mut self.source_indices.sample_targets {
+            target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();
+        }
+        self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
-            if let Some(used) = used.get_mut(zone.asset.0) {
+            if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {
                 *used = true;
             }
         }
@@ -865,22 +931,27 @@ impl Instrument {
             used[index - 1]
         });
         for zone in &mut self.zones {
-            zone.asset = AssetRef(
+            zone.asset = zone.asset.map(|asset| AssetRef(
                 renumbered
-                    .get(zone.asset.0)
+                    .get(asset.0)
                     .copied()
-                    .unwrap_or(zone.asset.0),
-            );
+                    .unwrap_or(asset.0),
+            ));
         }
         kept
     }
 }
 
 impl Zone {
+    /// An authored mapping with no sample bound yet. Requires an explicit
+    /// source sample-target identity before structural validation/lowering.
+    pub fn dormant() -> Self {
+        Self { asset: None, ..Self::new(AssetRef(0)) }
+    }
     /// Full key and velocity range, root key 60, no processing.
     pub fn new(asset: AssetRef) -> Self {
         Self {
-            asset,
+            asset: Some(asset),
             group: None,
             keys: KeyRange::FULL,
             velocities: VelocityRange::FULL,
@@ -1600,9 +1671,19 @@ pub enum Target {
     /// on Kontakt's normalized frequency lane (law ID26, see sampler-core
     /// `CompiledTarget::SourceRate`). Depth is `Normalized`.
     SourceRate(ModulatorRef),
+    /// Per-voice normalized wavetable source lane, added to the saved/live base.
+    Wavetable(WavetableParameter),
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavetableParameter {
+    Position,
+    Form1,
+    Form2,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1640,6 +1721,11 @@ pub enum ProcessorParameter {
     Shape,
     Drive,
     Damping,
+    /// Kontakt Skreamer's normalized tone, bass, brightness and internal mix.
+    Tone,
+    Bass,
+    Bright,
+    Mix,
     FormantTalk,
     FormantSharp,
     FormantSize,
@@ -2161,6 +2247,9 @@ pub enum Reason {
     /// Recognized and representable, but how the source maps it to sound
     /// (its scaling, curve or timing law) is not established.
     UnknownLaw,
+    /// The law is unverified and the feature was omitted, rather than executed
+    /// by an approximation. Preserve that distinction in every host report.
+    UnknownLawOmitted,
 }
 
 /// A feature name with its numbers and paths removed, so equal causes group:

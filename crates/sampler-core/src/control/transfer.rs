@@ -15,6 +15,8 @@ pub enum ControlOperation {
     CaptureWidget(Vec<crate::WidgetEdit>),
     CaptureScriptState(crate::ScriptStateBuffer),
     RestoreScriptState(crate::ScriptStateBuffer),
+    CaptureSnapshotFence(Option<super::SnapshotOverlayFence>),
+    NativeSnapshotOverlay(super::NativeSnapshotOverlay),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -27,12 +29,16 @@ impl ControlOperation {
             | Self::MidiComplete(..)
             | Self::MidiCapture(..)
             | Self::Invoke(..)
-            | Self::HostParameter(..) => 1,
+            | Self::HostParameter(..)
+            | Self::CaptureSnapshotFence(..) => 1,
             Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
             Self::CaptureScriptState(v) | Self::RestoreScriptState(v) => {
                 v.values.len().saturating_add(v.callbacks.len())
             }
+            Self::NativeSnapshotOverlay(v) => v.state.values.len()
+                .saturating_add(v.state.callbacks.len()).saturating_add(v.native.len())
+                .saturating_add(v.epochs.len()),
         }
     }
 }
@@ -47,6 +53,10 @@ pub struct ControlRequest {
 pub struct ControlReply {
     pub request: u64,
     pub behavior: Option<crate::BehaviorId>,
+    /// The first refused callback preflight in this rejected operation, captured
+    /// before subsequent audio work can change its owners. Other Capacity causes
+    /// and successful operations leave this empty.
+    pub admission_failure: Option<super::BehaviorAdmissionFailure>,
     pub command: ControlRequest,
     /// (written/captured count, coherent revision), or an explicit rejection.
     /// Capture writes only the returned prefix. Error leaves its buffer untouched.
@@ -78,6 +88,8 @@ pub(crate) struct ControlQueues {
     pending: Consumer<ControlReply>,
     replies: Producer<ControlReply>,
     retained: Option<ControlReply>,
+    record_admission: bool,
+    admission_failure: Option<super::BehaviorAdmissionFailure>,
 }
 impl ControlClient {
     #[allow(
@@ -103,6 +115,7 @@ impl ControlClient {
         match self.pending.push(ControlReply {
             request,
             behavior: None,
+            admission_failure: None,
             command,
             result: Err(Error::InvalidInput),
         }) {
@@ -137,6 +150,8 @@ impl Runtime {
             pending: incoming,
             replies,
             retained: None,
+            record_admission: false,
+            admission_failure: None,
         });
         Ok((
             self,
@@ -152,6 +167,15 @@ impl Runtime {
     /// Apply at most one command at this sample boundary. Response pressure leaves
     /// commands untouched; no accepted edit loses its acknowledgement. No coalescing.
     pub fn poll_control_update(&mut self) -> Result<Option<u64>, ControlQueueError> {
+        self.poll_control_update_with_snapshot_gate(|| true)
+    }
+
+    /// Inspect host-owned audio state only for a snapshot overlay whose complete
+    /// core preflight succeeded. Other operations never invoke `snapshot_gate`.
+    pub fn poll_control_update_with_snapshot_gate(
+        &mut self,
+        snapshot_gate: impl FnOnce() -> bool,
+    ) -> Result<Option<u64>, ControlQueueError> {
         let queues = self
             .control_queues
             .as_mut()
@@ -175,7 +199,12 @@ impl Runtime {
         };
         let command = &mut reply.command;
         // Share ordering with direct controls and the native musical timeline.
-        self.apply_due();
+        if !matches!(command.operation, ControlOperation::NativeSnapshotOverlay(_) | ControlOperation::CaptureSnapshotFence(_)) {
+            self.apply_due();
+        }
+        let queues = self.control_queues.as_mut().unwrap();
+        queues.admission_failure = None;
+        queues.record_admission = true;
         reply.result = match &mut command.operation {
             ControlOperation::ArrayFileCapture(output) => self
                 .capture_array_file(command.plan, output)
@@ -217,6 +246,20 @@ impl Runtime {
             ControlOperation::RestoreScriptState(state) => {
                 self.restore_script_state(command.plan, command.expected_revision, state)
             }
+            ControlOperation::CaptureSnapshotFence(output) => self.snapshot_overlay_fence(command.plan).map(|fence| {
+                *output = Some(fence);
+                (1, fence.control_revision)
+            }),
+            ControlOperation::NativeSnapshotOverlay(overlay) => {
+                if command.plan != overlay.expected.plan
+                    || (overlay.linearized_ingress() && command.expected_revision.is_some())
+                    || command.expected_revision.is_some_and(|revision| revision != overlay.expected.control_revision) {
+                    overlay.refusal = Some(super::SnapshotOverlayRefusal::InvalidInput);
+                    Err(Error::InvalidInput)
+                } else {
+                    self.apply_snapshot_overlay_with_gate(overlay, snapshot_gate)
+                }
+            }
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
                 .map(|rev| (writes.len(), rev)),
@@ -227,6 +270,11 @@ impl Runtime {
         };
         let request = reply.request;
         let queues = self.control_queues.as_mut().unwrap();
+        queues.record_admission = false;
+        let failure = queues.admission_failure.take();
+        if reply.result == Err(Error::Capacity) {
+            reply.admission_failure = failure;
+        }
         // A consumer only frees slots. Retain even on an unexpected queue failure
         // so neither a rejected edit nor a successful one is freed/repeated here.
         if let Err(PushError::Full(reply)) = queues.replies.push(reply) {
@@ -234,5 +282,79 @@ impl Runtime {
             return Err(ControlQueueError::Capacity);
         }
         Ok(Some(request))
+    }
+
+    /// Called only at a refused behavior-room preflight. There is no periodic
+    /// scan and no diagnostic retention outside an in-flight queued operation.
+    pub(crate) fn record_control_admission_failure(&mut self, needed: usize) {
+        if !self
+            .control_queues
+            .as_ref()
+            .is_some_and(|queues| queues.record_admission && queues.admission_failure.is_none())
+        {
+            return;
+        }
+        const SCAN_LIMIT: usize = 4096;
+        let mut failure = super::BehaviorAdmissionFailure {
+            required_callbacks: needed,
+            used: self.behaviors.count(),
+            capacity: self.behaviors.slots.len(),
+            available: self.behaviors.available(),
+            reserved: self.behaviors.reserved,
+            scanned: 0,
+            scan_truncated: false,
+            note_owned: 0,
+            plan_owned: 0,
+            waiting: 0,
+            preempted: 0,
+            terminal: 0,
+            finished: 0,
+            yielded_queue: self.yielded.len(),
+            pending_commands: self.commands.len(),
+            reserved_commands: self.reserved_commands,
+            stalled_effects: self.ops.stalled_effects,
+            outbox_used: self.ops.effects.len(),
+            outbox_capacity: crate::ops::EFFECT_CAPACITY,
+            owners: [None; 8],
+            owners_omitted: 0,
+        };
+        let mut next = self.behaviors.first;
+        while let Some(index) = next {
+            if failure.scanned == SCAN_LIMIT {
+                failure.scan_truncated = true;
+                break;
+            }
+            let slot = &self.behaviors.slots[index];
+            next = slot.next;
+            let c = slot.value.as_ref().expect("occupied callback list");
+            match c.owner {
+                crate::BehaviorOwner::Note(_) => failure.note_owned += 1,
+                crate::BehaviorOwner::Plan(_) => failure.plan_owned += 1,
+            }
+            failure.waiting += usize::from(c.waiting);
+            failure.preempted += usize::from(c.yielded_at.is_some());
+            failure.terminal += usize::from(c.outcome.is_some());
+            failure.finished += usize::from(c.outcome == Some(crate::Outcome::Finished));
+            if failure.scanned < failure.owners.len() {
+                let plan = self.behavior_plan(c.owner).expect("retained callback plan");
+                failure.owners[failure.scanned] = Some(super::BehaviorAdmissionOwner {
+                    owner: c.owner,
+                    plan,
+                    program: c.program,
+                    source_slot: self.plans.get(plan.0).unwrap().prepared.programs[c.program]
+                        .source_slot,
+                    stage: self
+                        .behavior_stage(crate::BehaviorId(self.behaviors.id(index)))
+                        .expect("retained callback stage"),
+                    pc: c.pc,
+                    waiting: c.waiting,
+                    preempted: c.yielded_at.is_some(),
+                    outcome: c.outcome,
+                });
+            }
+            failure.scanned += 1;
+        }
+        failure.owners_omitted = failure.used.saturating_sub(failure.owners.len());
+        self.control_queues.as_mut().unwrap().admission_failure = Some(failure);
     }
 }

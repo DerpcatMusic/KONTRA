@@ -161,6 +161,9 @@ impl ParameterAddress {
     pub const SampleStart: Self = Self::legacy(0, 12);
     pub const LoopStart: Self = Self::legacy(0, 15);
     pub const LoopLength: Self = Self::legacy(0, 16);
+    pub const WavetablePosition: Self = Self::legacy(0, 18);
+    pub const WavetableForm1: Self = Self::legacy(0, 19);
+    pub const WavetableForm2: Self = Self::legacy(0, 20);
     /// Start phase of a program-local LFO, read once at voice onset.
     pub const fn SourcePhase(node: u32) -> Self {
         Self::legacy(node, 14)

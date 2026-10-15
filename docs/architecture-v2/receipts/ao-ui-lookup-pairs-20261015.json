@@ -1,0 +1,1821 @@
+{
+  "binary_sha256": "59ba975a09619eac03a33625eeb5a54b474d896575d31a694fd5f6b805aa8bd1",
+  "source_head": "de38bbe0694eb51ec4d51780eded871fbed28552",
+  "profiler_checkpoint": "af5d3f9c3",
+  "build_profile": "ci opt-level3/noLTO",
+  "audit_seed": 611,
+  "input_member": "Presets/00 Orchestra/01 Strings/V Strings Pizzicato 2.uvip",
+  "mode": "ui-only initialized+render, no coverage/Runtime/PCM/audio host/gesture callbacks",
+  "order": [
+    false,
+    true,
+    true,
+    false
+  ],
+  "cpu_clock": "Linux owned process group-leader /proc stat aggregate user+system ticks at stderr phase boundaries; thread-group CPU, 10ms quantization at this host; wall markers observed through pipe. Child totals via RUSAGE_CHILDREN deltas with no other simultaneous children from this runner.",
+  "cpu_ticks_per_second": 100,
+  "runs": [
+    {
+      "ordinal": 0,
+      "profile_init": false,
+      "mode": {
+        "audit_seed": 611,
+        "ephemeral_render": true,
+        "ephemeral_source": false,
+        "initialize": true,
+        "lua_coverage": false,
+        "profile_init": false,
+        "settle_ui": false,
+        "ui_only": true
+      },
+      "model_sha256": "dad142bf7a3652209b242e48ce3a733ee5f39a7c4f24623ec97455b04d0b5bac",
+      "resolved_geometry_sha256": "387f90273188eb2cbd697a10df8164e3247d4a321d8eb6e49588f894f46529b5",
+      "pixel_hashes": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "791269dbc487ec558a460075998e443df219825fc822ec3334dbb85e8256f8ca",
+          "status": "ok"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "937fe15268c844ee8ca3d954f1e8e9fa35ffebea7fc6c732279fabe30625a6f0",
+          "status": "ok"
+        }
+      ],
+      "exit_code": 0,
+      "status": "partial",
+      "conditions_before": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "conditions_after": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "monitor": {
+        "observations": 29,
+        "rustc_observations": 0,
+        "external_workload_observations": 0
+      },
+      "launcher_ms": 5993.048394997459,
+      "child_user_cpu_ms": 7018.619000000001,
+      "child_system_cpu_ms": 330.796,
+      "total_process_ms": 5863.493322,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 381.228471,
+          "observed_wall_ms": 381.0937890011701,
+          "process_cpu_ms": 1950.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 50.625937,
+          "observed_wall_ms": 50.50301499795751,
+          "process_cpu_ms": 50.00000000000004
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00457,
+          "observed_wall_ms": 0.021630999981425703,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 4485.365769999999,
+          "observed_wall_ms": 4485.416290997819,
+          "process_cpu_ms": 4440.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 205.611947,
+          "observed_wall_ms": 205.63863700226648,
+          "process_cpu_ms": 200.00000000000017
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 321.42427299999997,
+          "observed_wall_ms": 321.41358199805836,
+          "process_cpu_ms": 169.99999999999994
+        }
+      ],
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 79.004367,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ],
+      "work": [
+        {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "initialized": true,
+          "memory_bytes": 365896386,
+          "script_bytes": 417412,
+          "stage": "uvi_lua_work",
+          "vm_checkpoints": 14053215,
+          "wall_expired": false,
+          "wall_limit_ms": 20000,
+          "work_exhausted": false,
+          "work_limit": 33554432,
+          "work_remaining": 19501213,
+          "xml_bytes": 18961851
+        }
+      ],
+      "ui": {
+        "widgets": 10145,
+        "visible_widgets": 101,
+        "hierarchical_menus": 53,
+        "unsupported": {
+          "AudioMeter element": 8,
+          "AudioMeter.0dBColour": 4,
+          "AudioMeter.displayAsMono": 8,
+          "Table.fillStyle": 8
+        },
+        "assets": {
+          "ambiguous": 0,
+          "corrupt": 0,
+          "decode_ok": 84,
+          "decodes": 84,
+          "encoded_bytes": 4820792,
+          "font_ok": 5,
+          "fonts": 5,
+          "found": 89,
+          "invalid": 0,
+          "limit": 0,
+          "lookups": 89,
+          "missing": 0,
+          "preparation_key_budget": 0,
+          "preparation_oversized": 0,
+          "read_failed": 0,
+          "unavailable": 0
+        },
+        "renderer_status": "ok",
+        "render_timings": {
+          "geometry_observations_ms": 4.3084810000000004,
+          "resolve_ms": 1.5038479999999999,
+          "resource_decode_ms": 44.009,
+          "resource_discovery_ms": 0.151,
+          "resource_read_ms": 11.102,
+          "total_ms": 319.055989
+        },
+        "pending_assets": [
+          0,
+          0
+        ]
+      },
+      "initialization": {
+        "coverage": false,
+        "fault_counts": {},
+        "resource_services": {
+          "audio_decoder": "not_attached",
+          "impulse_decoder": "not_attached",
+          "sample_binding": "not_run",
+          "scope": "An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin",
+          "ui_assets": "Rendered separately through production resource authority when requested",
+          "ui_image_dimensions": "Production loose/bank resource authority"
+        },
+        "status": "ok"
+      },
+      "profile": null
+    },
+    {
+      "ordinal": 1,
+      "profile_init": true,
+      "mode": {
+        "audit_seed": 611,
+        "ephemeral_render": true,
+        "ephemeral_source": false,
+        "initialize": true,
+        "lua_coverage": false,
+        "profile_init": true,
+        "settle_ui": false,
+        "ui_only": true
+      },
+      "model_sha256": "dad142bf7a3652209b242e48ce3a733ee5f39a7c4f24623ec97455b04d0b5bac",
+      "resolved_geometry_sha256": "387f90273188eb2cbd697a10df8164e3247d4a321d8eb6e49588f894f46529b5",
+      "pixel_hashes": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "791269dbc487ec558a460075998e443df219825fc822ec3334dbb85e8256f8ca",
+          "status": "ok"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "937fe15268c844ee8ca3d954f1e8e9fa35ffebea7fc6c732279fabe30625a6f0",
+          "status": "ok"
+        }
+      ],
+      "exit_code": 0,
+      "status": "partial",
+      "conditions_before": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "conditions_after": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "monitor": {
+        "observations": 29,
+        "rustc_observations": 0,
+        "external_workload_observations": 0
+      },
+      "launcher_ms": 5916.399924000871,
+      "child_user_cpu_ms": 6921.637000000001,
+      "child_system_cpu_ms": 304.5689999999999,
+      "total_process_ms": 5784.857913,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 359.907413,
+          "observed_wall_ms": 359.75884000072256,
+          "process_cpu_ms": 1860.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 49.989214999999994,
+          "observed_wall_ms": 49.98601500119548,
+          "process_cpu_ms": 49.99999999999982
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00498,
+          "observed_wall_ms": 0.025639998057158664,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 4486.090966,
+          "observed_wall_ms": 4486.040353996941,
+          "process_cpu_ms": 4439.999999999999
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 157.22076199999998,
+          "observed_wall_ms": 157.22385100161773,
+          "process_cpu_ms": 149.99999999999946
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 318.04122,
+          "observed_wall_ms": 318.0448900020565,
+          "process_cpu_ms": 169.99999999999994
+        }
+      ],
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 69.910348,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ],
+      "work": [
+        {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "initialized": true,
+          "memory_bytes": 380685826,
+          "script_bytes": 417412,
+          "stage": "uvi_lua_work",
+          "vm_checkpoints": 14053215,
+          "wall_expired": false,
+          "wall_limit_ms": 20000,
+          "work_exhausted": false,
+          "work_limit": 33554432,
+          "work_remaining": 19501213,
+          "xml_bytes": 18961851
+        }
+      ],
+      "ui": {
+        "widgets": 10145,
+        "visible_widgets": 101,
+        "hierarchical_menus": 53,
+        "unsupported": {
+          "AudioMeter element": 8,
+          "AudioMeter.0dBColour": 4,
+          "AudioMeter.displayAsMono": 8,
+          "Table.fillStyle": 8
+        },
+        "assets": {
+          "ambiguous": 0,
+          "corrupt": 0,
+          "decode_ok": 84,
+          "decodes": 84,
+          "encoded_bytes": 4820792,
+          "font_ok": 5,
+          "fonts": 5,
+          "found": 89,
+          "invalid": 0,
+          "limit": 0,
+          "lookups": 89,
+          "missing": 0,
+          "preparation_key_budget": 0,
+          "preparation_oversized": 0,
+          "read_failed": 0,
+          "unavailable": 0
+        },
+        "renderer_status": "ok",
+        "render_timings": {
+          "geometry_observations_ms": 4.30053,
+          "resolve_ms": 1.3840160000000001,
+          "resource_decode_ms": 47.576,
+          "resource_discovery_ms": 0.141,
+          "resource_read_ms": 3.979,
+          "total_ms": 315.740727
+        },
+        "pending_assets": [
+          0,
+          0
+        ]
+      },
+      "initialization": {
+        "coverage": false,
+        "fault_counts": {},
+        "resource_services": {
+          "audio_decoder": "not_attached",
+          "impulse_decoder": "not_attached",
+          "sample_binding": "not_run",
+          "scope": "An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin",
+          "ui_assets": "Rendered separately through production resource authority when requested",
+          "ui_image_dimensions": "Production loose/bank resource authority"
+        },
+        "status": "ok"
+      },
+      "profile": {
+        "collection_window_ms": 5111.303772,
+        "coverage": false,
+        "dropped_chunk_names": 0,
+        "dropped_frames": 0,
+        "dropped_self_samples": 0,
+        "native_apis": [
+          {
+            "calls": 39937,
+            "elapsed_ms": 4.555617,
+            "phase": "uvi_lua_api_definition"
+          },
+          {
+            "calls": 60034,
+            "elapsed_ms": 526.624467,
+            "phase": "uvi_lua_api_definitions"
+          },
+          {
+            "calls": 575045,
+            "elapsed_ms": 261.577008,
+            "phase": "uvi_lua_api_get_param"
+          },
+          {
+            "calls": 25228,
+            "elapsed_ms": 3.7593560000000004,
+            "phase": "uvi_lua_api_has_param"
+          },
+          {
+            "calls": 108953,
+            "elapsed_ms": 39.054408,
+            "phase": "uvi_lua_api_set_param"
+          }
+        ],
+        "sample_count": 899,
+        "sample_scope": "Opportunistic VM safepoint stacks, at most 500Hz; up to four inclusive frames. Counts do not measure exclusive CPU time or time spent blocked in native callbacks",
+        "sampling_overhead_ms": 2.186451,
+        "self_sample_scope": "Topmost frame at an observed VM safepoint (Lua or C). Retained self samples plus dropped self samples plus unavailable top frames equal sample_count. These are not exclusive CPU time; a blocking/native callback may be absent from VM safepoint samples",
+        "source_name_scope": "Only bounded compiler names explicitly registered by the host or resolved script resource authority. Unregistered/debug-only names are scrubbed; names identify chunks, not verified source bodies",
+        "stages": [
+          {
+            "calls": 1,
+            "elapsed_ms": 2427.4749930000003,
+            "phase": "host_create"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 5.933681,
+            "phase": "host_globals_and_prelude"
+          },
+          {
+            "calls": 19,
+            "elapsed_ms": 72.70307199999999,
+            "phase": "module_compile"
+          },
+          {
+            "calls": 19,
+            "elapsed_ms": 1.8529550000000001,
+            "phase": "module_name_inventory"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 7.204255,
+            "phase": "on_init_and_deferred_callbacks"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 30.151324,
+            "phase": "parameter_overlay_export"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1952.830914,
+            "phase": "post_init_overlays_and_ir_translation"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 481.808534,
+            "phase": "program_object_graph"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 0.062471000000000006,
+            "phase": "root_script_compile"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 43.913700999999996,
+            "phase": "saved_ui_restore"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1837.3904539999999,
+            "phase": "script_body_and_require"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 105.081326,
+            "phase": "script_promotion"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1889.0670200000002,
+            "phase": "scripts_total"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 157.21909200000002,
+            "phase": "ui_ir_export"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 0.411517,
+            "phase": "vm_create"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 46.059512,
+            "phase": "xml_parse"
+          }
+        ],
+        "timing_scope": "Inclusive wall clocks; nested compilation/require/body/API phases overlap. Collection window extends through any UI export/render before this report; host_create measures initializer construction. No script text, argument values, stack bytes or heap contents are retained",
+        "trusted_chunk_count": 22,
+        "unavailable_top_frames": 0,
+        "work": {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "lua_memory_bytes": 384005906,
+          "script_bytes": 417412,
+          "vm_checkpoints": 14053215
+        },
+        "top_frames": [
+          {
+            "defined_line": 373,
+            "function": "getParameter",
+            "inclusive_samples": 306,
+            "kind": "Lua",
+            "self_samples": 232,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 346,
+            "function": null,
+            "inclusive_samples": 236,
+            "kind": "Lua",
+            "self_samples": 133,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 566,
+            "function": "type",
+            "inclusive_samples": 121,
+            "kind": "Lua",
+            "self_samples": 121,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 3,
+            "function": null,
+            "inclusive_samples": 103,
+            "kind": "Lua",
+            "self_samples": 103,
+            "source": "kontra/catalog-definitions"
+          },
+          {
+            "defined_line": 11,
+            "function": "__init",
+            "inclusive_samples": 385,
+            "kind": "Lua",
+            "self_samples": 85,
+            "source": "scripts/_ui/modulatedknob.lua"
+          },
+          {
+            "defined_line": 398,
+            "function": "setParameter",
+            "inclusive_samples": 98,
+            "kind": "Lua",
+            "self_samples": 57,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 451,
+            "function": "getParameterConnections",
+            "inclusive_samples": 129,
+            "kind": "Lua",
+            "self_samples": 30,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 36,
+            "function": "getParameterDefinitionWithName",
+            "inclusive_samples": 154,
+            "kind": "Lua",
+            "self_samples": 23,
+            "source": "scripts/_main/globalfunctions.lua"
+          },
+          {
+            "defined_line": 206,
+            "function": null,
+            "inclusive_samples": 49,
+            "kind": "Lua",
+            "self_samples": 17,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 79,
+            "function": "data",
+            "inclusive_samples": 17,
+            "kind": "Lua",
+            "self_samples": 17,
+            "source": "prelude"
+          },
+          {
+            "defined_line": null,
+            "function": "match",
+            "inclusive_samples": 14,
+            "kind": "C",
+            "self_samples": 14,
+            "source": "[C]"
+          },
+          {
+            "defined_line": 229,
+            "function": null,
+            "inclusive_samples": 29,
+            "kind": "Lua",
+            "self_samples": 11,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 178,
+            "function": null,
+            "inclusive_samples": 19,
+            "kind": "Lua",
+            "self_samples": 10,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 86,
+            "function": "updateModulation",
+            "inclusive_samples": 82,
+            "kind": "Lua",
+            "self_samples": 7,
+            "source": "scripts/_ui/modulatedknob.lua"
+          },
+          {
+            "defined_line": 327,
+            "function": null,
+            "inclusive_samples": 75,
+            "kind": "Lua",
+            "self_samples": 7,
+            "source": "scripts/_main/main.lua"
+          },
+          {
+            "defined_line": 127,
+            "function": "createUI",
+            "inclusive_samples": 418,
+            "kind": "Lua",
+            "self_samples": 6,
+            "source": "scripts/_engine/part.lua"
+          }
+        ],
+        "retained_self_sample_sum": 899,
+        "self_samples": "Topmost VM-safepoint frame visits; not exclusive CPU time",
+        "lookup_collection_overhead_ms": 21.040561,
+        "lookup_distribution_sha256": "818550396c430304339dea2dd357c473779cfbcb5836cef4eaee93ff38aae5ae"
+      },
+      "lookup_calls_accounted": 575045
+    },
+    {
+      "ordinal": 2,
+      "profile_init": true,
+      "mode": {
+        "audit_seed": 611,
+        "ephemeral_render": true,
+        "ephemeral_source": false,
+        "initialize": true,
+        "lua_coverage": false,
+        "profile_init": true,
+        "settle_ui": false,
+        "ui_only": true
+      },
+      "model_sha256": "dad142bf7a3652209b242e48ce3a733ee5f39a7c4f24623ec97455b04d0b5bac",
+      "resolved_geometry_sha256": "387f90273188eb2cbd697a10df8164e3247d4a321d8eb6e49588f894f46529b5",
+      "pixel_hashes": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "791269dbc487ec558a460075998e443df219825fc822ec3334dbb85e8256f8ca",
+          "status": "ok"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "937fe15268c844ee8ca3d954f1e8e9fa35ffebea7fc6c732279fabe30625a6f0",
+          "status": "ok"
+        }
+      ],
+      "exit_code": 0,
+      "status": "partial",
+      "conditions_before": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "conditions_after": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "monitor": {
+        "observations": 29,
+        "rustc_observations": 0,
+        "external_workload_observations": 0
+      },
+      "launcher_ms": 5942.832991000614,
+      "child_user_cpu_ms": 6958.766000000002,
+      "child_system_cpu_ms": 282.10999999999996,
+      "total_process_ms": 5817.902974,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 357.370506,
+          "observed_wall_ms": 357.1578619994398,
+          "process_cpu_ms": 1850.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 50.229389,
+          "observed_wall_ms": 50.208119002491,
+          "process_cpu_ms": 49.99999999999982
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.0053,
+          "observed_wall_ms": 0.02111999856424518,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 4503.972443000001,
+          "observed_wall_ms": 4503.949882000597,
+          "process_cpu_ms": 4460.000000000001
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 175.92762100000002,
+          "observed_wall_ms": 175.94825199921615,
+          "process_cpu_ms": 169.99999999999994
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 316.456291,
+          "observed_wall_ms": 316.4204599997902,
+          "process_cpu_ms": 169.99999999999994
+        }
+      ],
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 68.25645700000001,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ],
+      "work": [
+        {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "initialized": true,
+          "memory_bytes": 372865746,
+          "script_bytes": 417412,
+          "stage": "uvi_lua_work",
+          "vm_checkpoints": 14053215,
+          "wall_expired": false,
+          "wall_limit_ms": 20000,
+          "work_exhausted": false,
+          "work_limit": 33554432,
+          "work_remaining": 19501213,
+          "xml_bytes": 18961851
+        }
+      ],
+      "ui": {
+        "widgets": 10145,
+        "visible_widgets": 101,
+        "hierarchical_menus": 53,
+        "unsupported": {
+          "AudioMeter element": 8,
+          "AudioMeter.0dBColour": 4,
+          "AudioMeter.displayAsMono": 8,
+          "Table.fillStyle": 8
+        },
+        "assets": {
+          "ambiguous": 0,
+          "corrupt": 0,
+          "decode_ok": 84,
+          "decodes": 84,
+          "encoded_bytes": 4820792,
+          "font_ok": 5,
+          "fonts": 5,
+          "found": 89,
+          "invalid": 0,
+          "limit": 0,
+          "lookups": 89,
+          "missing": 0,
+          "preparation_key_budget": 0,
+          "preparation_oversized": 0,
+          "read_failed": 0,
+          "unavailable": 0
+        },
+        "renderer_status": "ok",
+        "render_timings": {
+          "geometry_observations_ms": 4.536425,
+          "resolve_ms": 1.466097,
+          "resource_decode_ms": 43.274,
+          "resource_discovery_ms": 0.166,
+          "resource_read_ms": 4.095,
+          "total_ms": 314.013594
+        },
+        "pending_assets": [
+          0,
+          0
+        ]
+      },
+      "initialization": {
+        "coverage": false,
+        "fault_counts": {},
+        "resource_services": {
+          "audio_decoder": "not_attached",
+          "impulse_decoder": "not_attached",
+          "sample_binding": "not_run",
+          "scope": "An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin",
+          "ui_assets": "Rendered separately through production resource authority when requested",
+          "ui_image_dimensions": "Production loose/bank resource authority"
+        },
+        "status": "ok"
+      },
+      "profile": {
+        "collection_window_ms": 5147.446441,
+        "coverage": false,
+        "dropped_chunk_names": 0,
+        "dropped_frames": 0,
+        "dropped_self_samples": 0,
+        "native_apis": [
+          {
+            "calls": 39937,
+            "elapsed_ms": 5.010466,
+            "phase": "uvi_lua_api_definition"
+          },
+          {
+            "calls": 60034,
+            "elapsed_ms": 518.482843,
+            "phase": "uvi_lua_api_definitions"
+          },
+          {
+            "calls": 575045,
+            "elapsed_ms": 270.49572900000004,
+            "phase": "uvi_lua_api_get_param"
+          },
+          {
+            "calls": 25228,
+            "elapsed_ms": 3.775084,
+            "phase": "uvi_lua_api_has_param"
+          },
+          {
+            "calls": 108953,
+            "elapsed_ms": 39.686632,
+            "phase": "uvi_lua_api_set_param"
+          }
+        ],
+        "sample_count": 905,
+        "sample_scope": "Opportunistic VM safepoint stacks, at most 500Hz; up to four inclusive frames. Counts do not measure exclusive CPU time or time spent blocked in native callbacks",
+        "sampling_overhead_ms": 2.249855,
+        "self_sample_scope": "Topmost frame at an observed VM safepoint (Lua or C). Retained self samples plus dropped self samples plus unavailable top frames equal sample_count. These are not exclusive CPU time; a blocking/native callback may be absent from VM safepoint samples",
+        "source_name_scope": "Only bounded compiler names explicitly registered by the host or resolved script resource authority. Unregistered/debug-only names are scrubbed; names identify chunks, not verified source bodies",
+        "stages": [
+          {
+            "calls": 1,
+            "elapsed_ms": 2433.835373,
+            "phase": "host_create"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 5.788899,
+            "phase": "host_globals_and_prelude"
+          },
+          {
+            "calls": 19,
+            "elapsed_ms": 70.70104500000001,
+            "phase": "module_compile"
+          },
+          {
+            "calls": 19,
+            "elapsed_ms": 1.8400969999999999,
+            "phase": "module_name_inventory"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 4.818560000000001,
+            "phase": "on_init_and_deferred_callbacks"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 32.392516,
+            "phase": "parameter_overlay_export"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1965.9232900000002,
+            "phase": "post_init_overlays_and_ir_translation"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 477.920501,
+            "phase": "program_object_graph"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 0.062141,
+            "phase": "root_script_compile"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 43.062785999999996,
+            "phase": "saved_ui_restore"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1850.288286,
+            "phase": "script_body_and_require"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 103.46641600000001,
+            "phase": "script_promotion"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 1898.6617909999998,
+            "phase": "scripts_total"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 175.926061,
+            "phase": "ui_ir_export"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 0.41377800000000003,
+            "phase": "vm_create"
+          },
+          {
+            "calls": 1,
+            "elapsed_ms": 47.260224,
+            "phase": "xml_parse"
+          }
+        ],
+        "timing_scope": "Inclusive wall clocks; nested compilation/require/body/API phases overlap. Collection window extends through any UI export/render before this report; host_create measures initializer construction. No script text, argument values, stack bytes or heap contents are retained",
+        "trusted_chunk_count": 22,
+        "unavailable_top_frames": 0,
+        "work": {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "lua_memory_bytes": 393052986,
+          "script_bytes": 417412,
+          "vm_checkpoints": 14053215
+        },
+        "top_frames": [
+          {
+            "defined_line": 373,
+            "function": "getParameter",
+            "inclusive_samples": 280,
+            "kind": "Lua",
+            "self_samples": 200,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 346,
+            "function": null,
+            "inclusive_samples": 259,
+            "kind": "Lua",
+            "self_samples": 147,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 566,
+            "function": "type",
+            "inclusive_samples": 118,
+            "kind": "Lua",
+            "self_samples": 118,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 3,
+            "function": null,
+            "inclusive_samples": 112,
+            "kind": "Lua",
+            "self_samples": 112,
+            "source": "kontra/catalog-definitions"
+          },
+          {
+            "defined_line": 11,
+            "function": "__init",
+            "inclusive_samples": 381,
+            "kind": "Lua",
+            "self_samples": 82,
+            "source": "scripts/_ui/modulatedknob.lua"
+          },
+          {
+            "defined_line": 398,
+            "function": "setParameter",
+            "inclusive_samples": 102,
+            "kind": "Lua",
+            "self_samples": 70,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 36,
+            "function": "getParameterDefinitionWithName",
+            "inclusive_samples": 170,
+            "kind": "Lua",
+            "self_samples": 27,
+            "source": "scripts/_main/globalfunctions.lua"
+          },
+          {
+            "defined_line": 451,
+            "function": "getParameterConnections",
+            "inclusive_samples": 114,
+            "kind": "Lua",
+            "self_samples": 21,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 79,
+            "function": "data",
+            "inclusive_samples": 19,
+            "kind": "Lua",
+            "self_samples": 19,
+            "source": "prelude"
+          },
+          {
+            "defined_line": null,
+            "function": "match",
+            "inclusive_samples": 16,
+            "kind": "C",
+            "self_samples": 16,
+            "source": "[C]"
+          },
+          {
+            "defined_line": 206,
+            "function": null,
+            "inclusive_samples": 50,
+            "kind": "Lua",
+            "self_samples": 14,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 127,
+            "function": "createUI",
+            "inclusive_samples": 411,
+            "kind": "Lua",
+            "self_samples": 12,
+            "source": "scripts/_engine/part.lua"
+          },
+          {
+            "defined_line": 229,
+            "function": null,
+            "inclusive_samples": 41,
+            "kind": "Lua",
+            "self_samples": 12,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 368,
+            "function": "parameter_name",
+            "inclusive_samples": 9,
+            "kind": "Lua",
+            "self_samples": 9,
+            "source": "prelude"
+          },
+          {
+            "defined_line": 178,
+            "function": null,
+            "inclusive_samples": 15,
+            "kind": "Lua",
+            "self_samples": 7,
+            "source": "prelude"
+          },
+          {
+            "defined_line": null,
+            "function": "find",
+            "inclusive_samples": 7,
+            "kind": "C",
+            "self_samples": 7,
+            "source": "[C]"
+          }
+        ],
+        "retained_self_sample_sum": 905,
+        "self_samples": "Topmost VM-safepoint frame visits; not exclusive CPU time",
+        "lookup_collection_overhead_ms": 20.454361,
+        "lookup_distribution_sha256": "818550396c430304339dea2dd357c473779cfbcb5836cef4eaee93ff38aae5ae"
+      },
+      "lookup_calls_accounted": 575045
+    },
+    {
+      "ordinal": 3,
+      "profile_init": false,
+      "mode": {
+        "audit_seed": 611,
+        "ephemeral_render": true,
+        "ephemeral_source": false,
+        "initialize": true,
+        "lua_coverage": false,
+        "profile_init": false,
+        "settle_ui": false,
+        "ui_only": true
+      },
+      "model_sha256": "dad142bf7a3652209b242e48ce3a733ee5f39a7c4f24623ec97455b04d0b5bac",
+      "resolved_geometry_sha256": "387f90273188eb2cbd697a10df8164e3247d4a321d8eb6e49588f894f46529b5",
+      "pixel_hashes": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "791269dbc487ec558a460075998e443df219825fc822ec3334dbb85e8256f8ca",
+          "status": "ok"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 720,
+          "height": 480,
+          "png_sha256": "937fe15268c844ee8ca3d954f1e8e9fa35ffebea7fc6c732279fabe30625a6f0",
+          "status": "ok"
+        }
+      ],
+      "exit_code": 0,
+      "status": "partial",
+      "conditions_before": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "conditions_after": {
+        "rustc": 0,
+        "external_workload": 0
+      },
+      "monitor": {
+        "observations": 28,
+        "rustc_observations": 0,
+        "external_workload_observations": 0
+      },
+      "launcher_ms": 5776.5703730001405,
+      "child_user_cpu_ms": 6789.0650000000005,
+      "child_system_cpu_ms": 272.208,
+      "total_process_ms": 5652.41333,
+      "phase_observations": [
+        {
+          "phase": "container_program_and_scripts",
+          "reported_wall_ms": 357.57815999999997,
+          "observed_wall_ms": 357.43496700160904,
+          "process_cpu_ms": 1840.0
+        },
+        {
+          "phase": "xml_parse_and_metadata",
+          "reported_wall_ms": 52.223276999999996,
+          "observed_wall_ms": 52.14733499815338,
+          "process_cpu_ms": 49.99999999999982
+        },
+        {
+          "phase": "source_frontend",
+          "reported_wall_ms": 0.00516,
+          "observed_wall_ms": 0.02193999898736365,
+          "process_cpu_ms": 0.0
+        },
+        {
+          "phase": "translate_and_initialize",
+          "reported_wall_ms": 4369.228533,
+          "observed_wall_ms": 4369.190651999816,
+          "process_cpu_ms": 4320.0
+        },
+        {
+          "phase": "ui_model_export",
+          "reported_wall_ms": 154.103673,
+          "observed_wall_ms": 154.15821400165441,
+          "process_cpu_ms": 160.00000000000014
+        },
+        {
+          "phase": "ui_render",
+          "reported_wall_ms": 313.858052,
+          "observed_wall_ms": 313.8708129990846,
+          "process_cpu_ms": 169.99999999999994
+        }
+      ],
+      "cache": [
+        {
+          "hit": true,
+          "lookup_decode_validate_ms": 68.612494,
+          "payloads_cached": 0,
+          "schema": 1
+        }
+      ],
+      "work": [
+        {
+          "graph_depth": 6,
+          "graph_nodes": 86871,
+          "initialized": true,
+          "memory_bytes": 391368906,
+          "script_bytes": 417412,
+          "stage": "uvi_lua_work",
+          "vm_checkpoints": 14053215,
+          "wall_expired": false,
+          "wall_limit_ms": 20000,
+          "work_exhausted": false,
+          "work_limit": 33554432,
+          "work_remaining": 19501213,
+          "xml_bytes": 18961851
+        }
+      ],
+      "ui": {
+        "widgets": 10145,
+        "visible_widgets": 101,
+        "hierarchical_menus": 53,
+        "unsupported": {
+          "AudioMeter element": 8,
+          "AudioMeter.0dBColour": 4,
+          "AudioMeter.displayAsMono": 8,
+          "Table.fillStyle": 8
+        },
+        "assets": {
+          "ambiguous": 0,
+          "corrupt": 0,
+          "decode_ok": 84,
+          "decodes": 84,
+          "encoded_bytes": 4820792,
+          "font_ok": 5,
+          "fonts": 5,
+          "found": 89,
+          "invalid": 0,
+          "limit": 0,
+          "lookups": 89,
+          "missing": 0,
+          "preparation_key_budget": 0,
+          "preparation_oversized": 0,
+          "read_failed": 0,
+          "unavailable": 0
+        },
+        "renderer_status": "ok",
+        "render_timings": {
+          "geometry_observations_ms": 4.167908,
+          "resolve_ms": 1.2156529999999999,
+          "resource_decode_ms": 41.606,
+          "resource_discovery_ms": 0.181,
+          "resource_read_ms": 4.096,
+          "total_ms": 311.394366
+        },
+        "pending_assets": [
+          0,
+          0
+        ]
+      },
+      "initialization": {
+        "coverage": false,
+        "fault_counts": {},
+        "resource_services": {
+          "audio_decoder": "not_attached",
+          "impulse_decoder": "not_attached",
+          "sample_binding": "not_run",
+          "scope": "An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin",
+          "ui_assets": "Rendered separately through production resource authority when requested",
+          "ui_image_dimensions": "Production loose/bank resource authority"
+        },
+        "status": "ok"
+      },
+      "profile": null
+    }
+  ],
+  "scope": "Bounded opt-in linear lookup observations only; no production lookup/value/field cache. Full reports and PNGs remain in process memory. Filename/function metadata contains no vendor script body. Shared-machine on/off timing is not causal overhead without independent conditions/order evidence.",
+  "model_hashes_equal": true,
+  "resolved_geometry_hashes_equal": true,
+  "png_hashes_equal": true,
+  "prior_baseline_model_equal": true,
+  "prior_baseline_png_equal": true,
+  "medians": {
+    "off": {
+      "launcher_ms": 5884.8093839988,
+      "total_process_ms": 5757.953326000001,
+      "child_user_cpu_ms": 6903.842000000001,
+      "child_system_cpu_ms": 301.502
+    },
+    "on": {
+      "launcher_ms": 5929.616457500742,
+      "total_process_ms": 5801.3804435,
+      "child_user_cpu_ms": 6940.201500000001,
+      "child_system_cpu_ms": 293.33949999999993
+    }
+  },
+  "monitor": {
+    "observations": 115,
+    "rustc_observations": 0,
+    "external_workload_observations": 0
+  },
+  "lookup_distributions": {
+    "dropped_calls": 0,
+    "histogram_upper_bounds": [
+      0,
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024,
+      null
+    ],
+    "kinds": [
+      {
+        "allocation_failures": 0,
+        "kind": "<uncatalogued>",
+        "retained_clone_bytes": 6881210,
+        "retained_fields": {
+          "calls": 574962,
+          "comparisons": 1934306,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            574962,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 574962,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            574962,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 4599696,
+          "max_length": 8,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 574962,
+          "comparisons": 0,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            574962,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 0,
+          "max_length": 0,
+          "misses": 574962
+        },
+        "value_classes": {
+          "saved_text": 574962
+        }
+      },
+      {
+        "allocation_failures": 0,
+        "kind": "ConstantModulation",
+        "retained_clone_bytes": 4,
+        "retained_fields": {
+          "calls": 1,
+          "comparisons": 3,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 1,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 7,
+          "max_length": 7,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 1,
+          "comparisons": 4,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 4,
+          "max_length": 4,
+          "misses": 1
+        },
+        "value_classes": {
+          "saved_text": 1
+        }
+      },
+      {
+        "allocation_failures": 0,
+        "kind": "DAHDSR",
+        "retained_clone_bytes": 184,
+        "retained_fields": {
+          "calls": 20,
+          "comparisons": 40,
+          "hit_position_histogram": [
+            0,
+            0,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 20,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 320,
+          "max_length": 16,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 20,
+          "comparisons": 280,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 280,
+          "max_length": 14,
+          "misses": 20
+        },
+        "value_classes": {
+          "saved_text": 20
+        }
+      },
+      {
+        "allocation_failures": 0,
+        "kind": "LFO",
+        "retained_clone_bytes": 36,
+        "retained_fields": {
+          "calls": 3,
+          "comparisons": 6,
+          "hit_position_histogram": [
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 3,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 39,
+          "max_length": 13,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 3,
+          "comparisons": 36,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 36,
+          "max_length": 12,
+          "misses": 3
+        },
+        "value_classes": {
+          "saved_text": 3
+        }
+      },
+      {
+        "allocation_failures": 0,
+        "kind": "ScriptEventModulation",
+        "retained_clone_bytes": 232,
+        "retained_fields": {
+          "calls": 24,
+          "comparisons": 48,
+          "hit_position_histogram": [
+            0,
+            0,
+            24,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 24,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            24,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 120,
+          "max_length": 5,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 24,
+          "comparisons": 72,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            24,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 72,
+          "max_length": 3,
+          "misses": 24
+        },
+        "value_classes": {
+          "saved_text": 24
+        }
+      },
+      {
+        "allocation_failures": 0,
+        "kind": "StepEnvelope",
+        "retained_clone_bytes": 33,
+        "retained_fields": {
+          "calls": 3,
+          "comparisons": 6,
+          "hit_position_histogram": [
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 3,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 33,
+          "max_length": 11,
+          "misses": 0
+        },
+        "schema": {
+          "calls": 3,
+          "comparisons": 30,
+          "hit_position_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "hits": 0,
+          "length_histogram": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "length_sum": 30,
+          "max_length": 10,
+          "misses": 3
+        },
+        "value_classes": {
+          "saved_text": 3
+        }
+      }
+    ],
+    "scope": "Exact native.param lookup counts while profiling is enabled. Hit positions are one-based; comparison counts derive from the first hit or list length on a miss. Length/hit histograms use inclusive upper bounds; null is overflow. Only public catalog kind names are retained; unknown kinds share a fixed bucket. Value classes and clone byte lengths contain no authored names, values or element identities. The collection clock measures record updates, not the complete opt-in branch or all profiler overhead",
+    "step_envelope_level_calls": 32
+  },
+  "lookup_distributions_sha256": "818550396c430304339dea2dd357c473779cfbcb5836cef4eaee93ff38aae5ae",
+  "build_freeze": {
+    "binary_sha256": "59ba975a09619eac03a33625eeb5a54b474d896575d31a694fd5f6b805aa8bd1",
+    "source_head_at_start": "de38bbe0694eb51ec4d51780eded871fbed28552",
+    "source_manifest_sha256": "c3f3e7c559796c5e2df9aff6d2ea58fd841f7588f8771e08b8b1458fd45c7f95",
+    "source_files": 682,
+    "changed_during_build": [],
+    "dirty_at_start": [
+      " M docs/architecture-v2/DFD_READINESS_EVIDENCE.md",
+      " M docs/architecture-v2/UVI_PARITY_LEDGER.md",
+      " M docs/architecture-v2/WHOLE_CALLBACK_CPU_EVIDENCE.md",
+      " M examples/dfd_readiness.rs",
+      " M src/plugin.rs",
+      " M src/sound/mod.rs",
+      " M src/sound/report.rs",
+      " M src/sound/v2.rs",
+      " M src/ui/bridge.rs",
+      " M src/ui/load_report.rs",
+      " M src/ui/v2_tests.rs",
+      " M tools/kontra-scan/metrics.rs",
+      "?? src/sound/stream_accounting_tests.rs",
+      "?? work"
+    ]
+  },
+  "measurement_limits": [
+    "Two observations per mode, fixed off/on/on/off order; no confidence interval or causal total-overhead bound",
+    "115 monitor observations exclude detected rustc/named pure_va processes, not all desktop work",
+    "Phase CPU has 10ms tick quantization plus stderr-pipe observation uncertainty",
+    "Lookup collection clock excludes the complete branch cost and other profiler work; API clocks include diagnostic work",
+    "Unknown catalog kinds deliberately share one scrubbed bucket; no exact kind/caller attribution follows from it",
+    "Lua self_samples count VM safepoint visits, not exclusive CPU time",
+    "UI-only inspector ModelReady/render boundaries do not measure plugin publication or native host parity"
+  ]
+}

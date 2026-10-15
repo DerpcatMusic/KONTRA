@@ -1,0 +1,1434 @@
+{
+  "schema": 1,
+  "binary_sha256": "e977ef50f519ad0f8b3a9603ab3584ef504ac178cf91e849a4cbab02a03d0606",
+  "mode": "one production V2Loader constructor per input; Auto streaming; bounded silent plan activation through first observed listener cycle; shared production CPU bitmap/vector painters",
+  "source_frontend_audit": "not_requested",
+  "native_host_pixel_equivalence": "unknown",
+  "gestures": "not_run",
+  "notes": "not_run",
+  "payload_committed": false,
+  "inputs": [
+    {
+      "label": "Una Corda Felt",
+      "status": "partial",
+      "main_faces": [
+        {
+          "index": 0,
+          "lifecycle_state": "compiled_initial",
+          "widgets": 118,
+          "visible_widgets": 7,
+          "bound_widgets": 101,
+          "components": 0,
+          "asset_count": 57,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 6,
+            "decodes": 6,
+            "encoded_bytes": 2288166,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 6,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 6,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 633,
+              "height": 500,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "0ea59d495a0e24b1ea07de504b1b66fffd2ffcfc851e1bb81fccf0ec6b10ad2d"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 633,
+              "height": 500,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "0bd2f7c0d4e65b39a56203760740cd9c0c24603471370b1db3737d1ec1592ec4"
+            }
+          ],
+          "menu_count": 10,
+          "visible_menus": 0,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {},
+          "visible_outside_page": 0,
+          "visible_zero_size": 0
+        },
+        {
+          "index": 4,
+          "lifecycle_state": "after_plan_activation",
+          "widgets": 118,
+          "visible_widgets": 7,
+          "bound_widgets": 101,
+          "components": 0,
+          "asset_count": 57,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 6,
+            "decodes": 6,
+            "encoded_bytes": 2288166,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 6,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 6,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 633,
+              "height": 500,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "0ea59d495a0e24b1ea07de504b1b66fffd2ffcfc851e1bb81fccf0ec6b10ad2d"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 633,
+              "height": 500,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "0bd2f7c0d4e65b39a56203760740cd9c0c24603471370b1db3737d1ec1592ec4"
+            }
+          ],
+          "menu_count": 10,
+          "visible_menus": 0,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {},
+          "visible_outside_page": 0,
+          "visible_zero_size": 0
+        }
+      ],
+      "lifecycle": {
+        "status": "background_active",
+        "activation_readiness": "finite_callbacks_not_pending",
+        "background_observation": "first_callbacks_observed",
+        "frames": 6016,
+        "effects_applied": 0,
+        "changed_widgets": 0,
+        "source_conversion_gap_count": 88,
+        "source_conversion_gap_kinds": {
+          "Filter": 7,
+          "Skreamer": 2,
+          "Solid G-EQ": 50,
+          "Tape Saturator": 3,
+          "modulation of a module parameter": 4,
+          "script Warning": 22
+        },
+        "runtime_problems": {
+          "capacity_drops": 0,
+          "cold_starts": 0,
+          "fault_error": 0,
+          "fault_program": 0,
+          "ignored_input": 0,
+          "lua_faults": 0,
+          "narrowed_input": 0,
+          "nonfinite": 0,
+          "offline_failures": 0,
+          "refused_starts": 0,
+          "script_overruns": 0,
+          "silent": [
+            0,
+            0,
+            0
+          ],
+          "silent_notes": 0,
+          "stolen_voices": 0,
+          "stream_capacity": 0,
+          "stream_disconnected": 0,
+          "stream_errors": 0,
+          "stream_failed": 0,
+          "underruns": 0
+        },
+        "stream_full_sample_bytes": 16820339512,
+        "stream_sample_head_bytes": 20086262,
+        "stream_pool_bytes": 100663296,
+        "load_ms": 391.682906
+      },
+      "preload_geometry_audit": [
+        {
+          "alias_entries": 0,
+          "block_frames": 128,
+          "bounded_end_zones": 88,
+          "head_budget_bytes": 268435456,
+          "head_output_frames": 632,
+          "logical_assets": 3943,
+          "mandatory_full_assets": 0,
+          "mandatory_full_pcm_bytes": 0,
+          "mandatory_wavetable_assets": 0,
+          "mandatory_wavetable_min_packed_bytes": 0,
+          "max_sample_start_offset_frames": 0,
+          "max_step": 16.0,
+          "offset_free_optional_start_frames": 3348634,
+          "offset_free_optional_start_min_packed_bytes": 6697268,
+          "offset_union_extra_frames": 0,
+          "optional_start_assets": 3943,
+          "optional_start_frames": 3348634,
+          "optional_start_min_packed_bytes": 6697268,
+          "physical_assets": 3943,
+          "reverse_zones": 88,
+          "sample_rate": 48000,
+          "sample_start_route_zones": 228,
+          "sample_start_zero_depth_routes": 0,
+          "schema": "kontra-preload-geometry-v1",
+          "scope": "request geometry before decode/admission; offset-free is attribution only; no payload or source names",
+          "top_offset_assets": [
+            {
+              "asset_index": 0,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 942592
+            },
+            {
+              "asset_index": 1,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 939520
+            },
+            {
+              "asset_index": 2,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 856576
+            },
+            {
+              "asset_index": 3,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 576512
+            },
+            {
+              "asset_index": 4,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 338944
+            },
+            {
+              "asset_index": 5,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1079296
+            },
+            {
+              "asset_index": 6,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 875520
+            },
+            {
+              "asset_index": 7,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 775168
+            },
+            {
+              "asset_index": 8,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 536064
+            },
+            {
+              "asset_index": 9,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 462336
+            },
+            {
+              "asset_index": 10,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 763392
+            },
+            {
+              "asset_index": 11,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 861696
+            },
+            {
+              "asset_index": 12,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 747008
+            },
+            {
+              "asset_index": 13,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 386560
+            },
+            {
+              "asset_index": 14,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 870,
+              "pinned_wavetable": false,
+              "range_frames": 870,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 337920
+            },
+            {
+              "asset_index": 15,
+              "offset_extra_frames": 0,
+              "offset_free_range_frames": 820,
+              "pinned_wavetable": false,
+              "range_frames": 820,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 997376
+            }
+          ],
+          "zones": 4402
+        }
+      ]
+    },
+    {
+      "label": "Analog Gates",
+      "status": "partial",
+      "main_faces": [
+        {
+          "index": 0,
+          "lifecycle_state": "compiled_initial",
+          "widgets": 934,
+          "visible_widgets": 84,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 194,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 52,
+            "decodes": 52,
+            "encoded_bytes": 47407186,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 52,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 52,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "68383720967e147e4a6cdb21a20c3c1ea76716b14425ea714527809ed2efa0aa"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "a874b8979f1fb9d2a9702fdc943025f89564858a463080482a46ef1f4d00aeb3"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {},
+          "visible_outside_page": 17,
+          "visible_zero_size": 2
+        },
+        {
+          "index": 3,
+          "lifecycle_state": "after_plan_activation",
+          "widgets": 934,
+          "visible_widgets": 90,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 196,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 53,
+            "decodes": 53,
+            "encoded_bytes": 47259791,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 53,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 53,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "f746638c6bda6e2f052d7086c52269eae564b30c375274b1921366201f234b82"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "06a65a304b31cd827313355b93795e17d1973a09a79cf368a076e5c37a2ce4f9"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {
+            "$CONTROL_PAR_VALUE": 14
+          },
+          "visible_outside_page": 18,
+          "visible_zero_size": 2
+        }
+      ],
+      "lifecycle": {
+        "status": "background_active",
+        "activation_readiness": "finite_callbacks_not_pending",
+        "background_observation": "first_callbacks_observed",
+        "frames": 5888,
+        "effects_applied": 11689,
+        "changed_widgets": 439,
+        "source_conversion_gap_count": 172,
+        "source_conversion_gap_kinds": {
+          "Convolution": 3,
+          "Filter": 34,
+          "LFO waveform (id, multi weights, pulse width)": 8,
+          "Reverb (legacy)": 4,
+          "effect": 5,
+          "keys beyond the runtime's pitch range, narrowed": 1,
+          "modulation of a module parameter": 76,
+          "saved release/MIDI/voice state and v4 selection words": 2,
+          "script Warning": 39
+        },
+        "runtime_problems": {
+          "capacity_drops": 0,
+          "cold_starts": 0,
+          "fault_error": 0,
+          "fault_program": 0,
+          "ignored_input": 0,
+          "lua_faults": 0,
+          "narrowed_input": 0,
+          "nonfinite": 0,
+          "offline_failures": 0,
+          "refused_starts": 0,
+          "script_overruns": 0,
+          "silent": [
+            0,
+            0,
+            0
+          ],
+          "silent_notes": 0,
+          "stolen_voices": 0,
+          "stream_capacity": 0,
+          "stream_disconnected": 0,
+          "stream_errors": 0,
+          "stream_failed": 0,
+          "underruns": 0
+        },
+        "stream_full_sample_bytes": 50156846256,
+        "stream_sample_head_bytes": 0,
+        "stream_pool_bytes": 100663296,
+        "load_ms": 3961.097449
+      },
+      "preload_geometry_audit": [
+        {
+          "alias_entries": 0,
+          "block_frames": 128,
+          "bounded_end_zones": 0,
+          "head_budget_bytes": 268435456,
+          "head_output_frames": 631,
+          "logical_assets": 23595,
+          "mandatory_full_assets": 0,
+          "mandatory_full_pcm_bytes": 0,
+          "mandatory_wavetable_assets": 0,
+          "mandatory_wavetable_min_packed_bytes": 0,
+          "max_sample_start_offset_frames": 840930,
+          "max_step": 16.0,
+          "offset_free_optional_start_frames": 33177853,
+          "offset_free_optional_start_min_packed_bytes": 66355706,
+          "offset_union_extra_frames": 3864152100,
+          "optional_start_assets": 23595,
+          "optional_start_frames": 3897329953,
+          "optional_start_min_packed_bytes": 7794659906,
+          "physical_assets": 23595,
+          "reverse_zones": 40042,
+          "sample_rate": 48000,
+          "sample_start_route_zones": 95624,
+          "sample_start_zero_depth_routes": 58520,
+          "schema": "kontra-preload-geometry-v1",
+          "scope": "request geometry before decode/admission; offset-free is attribution only; no payload or source names",
+          "top_offset_assets": [
+            {
+              "asset_index": 9418,
+              "offset_extra_frames": 1681860,
+              "offset_free_range_frames": 18777,
+              "pinned_wavetable": false,
+              "range_frames": 1700637,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 2303919
+            },
+            {
+              "asset_index": 16994,
+              "offset_extra_frames": 1573392,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1575030,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 1962002
+            },
+            {
+              "asset_index": 9411,
+              "offset_extra_frames": 1020911,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1022549,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1022549
+            },
+            {
+              "asset_index": 9392,
+              "offset_extra_frames": 1017095,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1018733,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018733
+            },
+            {
+              "asset_index": 9417,
+              "offset_extra_frames": 1016517,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1018155,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018155
+            },
+            {
+              "asset_index": 9401,
+              "offset_extra_frames": 1013778,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1015416,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015416
+            },
+            {
+              "asset_index": 9403,
+              "offset_extra_frames": 1013738,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1015376,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015376
+            },
+            {
+              "asset_index": 9410,
+              "offset_extra_frames": 1008418,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1010056,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1010056
+            },
+            {
+              "asset_index": 9386,
+              "offset_extra_frames": 1008243,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1009881,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009881
+            },
+            {
+              "asset_index": 9391,
+              "offset_extra_frames": 1008215,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1009853,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009853
+            },
+            {
+              "asset_index": 9387,
+              "offset_extra_frames": 1007761,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1009399,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009399
+            },
+            {
+              "asset_index": 9393,
+              "offset_extra_frames": 1006453,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1008091,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1008091
+            },
+            {
+              "asset_index": 9409,
+              "offset_extra_frames": 1004520,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1006158,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1006158
+            },
+            {
+              "asset_index": 9397,
+              "offset_extra_frames": 1004116,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1005754,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1005754
+            },
+            {
+              "asset_index": 9398,
+              "offset_extra_frames": 1003202,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1004840,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004840
+            },
+            {
+              "asset_index": 9414,
+              "offset_extra_frames": 1003061,
+              "offset_free_range_frames": 1638,
+              "pinned_wavetable": false,
+              "range_frames": 1004699,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004699
+            }
+          ],
+          "zones": 95624
+        }
+      ]
+    },
+    {
+      "label": "9001 Punch",
+      "status": "partial",
+      "main_faces": [
+        {
+          "index": 0,
+          "lifecycle_state": "compiled_initial",
+          "widgets": 934,
+          "visible_widgets": 84,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 194,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 52,
+            "decodes": 52,
+            "encoded_bytes": 47407186,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 52,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 52,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "7ecff04626ddafe632a9072f9f84c5a870a0633695c0dfe819b973ebd5a06713"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "f61d50123c6f2ad910ac32c5a770d9dbdfe7ace666999da968b7bac155fd02bb"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {},
+          "visible_outside_page": 17,
+          "visible_zero_size": 2
+        },
+        {
+          "index": 3,
+          "lifecycle_state": "after_plan_activation",
+          "widgets": 934,
+          "visible_widgets": 84,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 192,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 50,
+            "decodes": 50,
+            "encoded_bytes": 47199106,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 50,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 50,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "e926cfc0302d0602d1ec28e2f40c137e528d09d6373b0e70f9fcb1c7fe8f8384"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "8e5a7b573fd2d4351bb18de2f64b6ec7df34b78001b8e5bf5a59d7be7e7c86d1"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {
+            "$CONTROL_PAR_VALUE": 14
+          },
+          "visible_outside_page": 19,
+          "visible_zero_size": 2
+        }
+      ],
+      "lifecycle": {
+        "status": "background_active",
+        "activation_readiness": "finite_callbacks_not_pending",
+        "background_observation": "first_callbacks_observed",
+        "frames": 6016,
+        "effects_applied": 11958,
+        "changed_widgets": 504,
+        "source_conversion_gap_count": 116,
+        "source_conversion_gap_kinds": {
+          "Convolution": 3,
+          "Filter": 20,
+          "LFO waveform (id, multi weights, pulse width)": 4,
+          "Reverb (legacy)": 4,
+          "effect": 5,
+          "keys beyond the runtime's pitch range, narrowed": 1,
+          "modulation of a module parameter": 38,
+          "saved release/MIDI/voice state and v4 selection words": 2,
+          "script Warning": 39
+        },
+        "runtime_problems": {
+          "capacity_drops": 0,
+          "cold_starts": 0,
+          "fault_error": 0,
+          "fault_program": 0,
+          "ignored_input": 0,
+          "lua_faults": 0,
+          "narrowed_input": 0,
+          "nonfinite": 0,
+          "offline_failures": 0,
+          "refused_starts": 0,
+          "script_overruns": 0,
+          "silent": [
+            0,
+            0,
+            0
+          ],
+          "silent_notes": 0,
+          "stolen_voices": 0,
+          "stream_capacity": 0,
+          "stream_disconnected": 0,
+          "stream_errors": 0,
+          "stream_failed": 0,
+          "underruns": 0
+        },
+        "stream_full_sample_bytes": 50156846256,
+        "stream_sample_head_bytes": 0,
+        "stream_pool_bytes": 100663296,
+        "load_ms": 3228.7090689999995
+      },
+      "preload_geometry_audit": [
+        {
+          "alias_entries": 0,
+          "block_frames": 128,
+          "bounded_end_zones": 0,
+          "head_budget_bytes": 268435456,
+          "head_output_frames": 621,
+          "logical_assets": 23595,
+          "mandatory_full_assets": 0,
+          "mandatory_full_pcm_bytes": 0,
+          "mandatory_wavetable_assets": 0,
+          "mandatory_wavetable_min_packed_bytes": 0,
+          "max_sample_start_offset_frames": 840930,
+          "max_step": 16.0,
+          "offset_free_optional_start_frames": 32641011,
+          "offset_free_optional_start_min_packed_bytes": 65282022,
+          "offset_union_extra_frames": 3864380637,
+          "optional_start_assets": 23595,
+          "optional_start_frames": 3897021648,
+          "optional_start_min_packed_bytes": 7794043296,
+          "physical_assets": 23595,
+          "reverse_zones": 40042,
+          "sample_rate": 48000,
+          "sample_start_route_zones": 95624,
+          "sample_start_zero_depth_routes": 72571,
+          "schema": "kontra-preload-geometry-v1",
+          "scope": "request geometry before decode/admission; offset-free is attribution only; no payload or source names",
+          "top_offset_assets": [
+            {
+              "asset_index": 9418,
+              "offset_extra_frames": 1681860,
+              "offset_free_range_frames": 18519,
+              "pinned_wavetable": false,
+              "range_frames": 1700379,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 2303919
+            },
+            {
+              "asset_index": 16994,
+              "offset_extra_frames": 1573392,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1575008,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 1962002
+            },
+            {
+              "asset_index": 9411,
+              "offset_extra_frames": 1020933,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1022549,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1022549
+            },
+            {
+              "asset_index": 9392,
+              "offset_extra_frames": 1017117,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1018733,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018733
+            },
+            {
+              "asset_index": 9417,
+              "offset_extra_frames": 1016539,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1018155,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018155
+            },
+            {
+              "asset_index": 9401,
+              "offset_extra_frames": 1013800,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1015416,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015416
+            },
+            {
+              "asset_index": 9403,
+              "offset_extra_frames": 1013760,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1015376,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015376
+            },
+            {
+              "asset_index": 9410,
+              "offset_extra_frames": 1008440,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1010056,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1010056
+            },
+            {
+              "asset_index": 9386,
+              "offset_extra_frames": 1008265,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1009881,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009881
+            },
+            {
+              "asset_index": 9391,
+              "offset_extra_frames": 1008237,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1009853,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009853
+            },
+            {
+              "asset_index": 9387,
+              "offset_extra_frames": 1007783,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1009399,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009399
+            },
+            {
+              "asset_index": 9393,
+              "offset_extra_frames": 1006475,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1008091,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1008091
+            },
+            {
+              "asset_index": 9409,
+              "offset_extra_frames": 1004542,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1006158,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1006158
+            },
+            {
+              "asset_index": 9397,
+              "offset_extra_frames": 1004138,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1005754,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1005754
+            },
+            {
+              "asset_index": 9398,
+              "offset_extra_frames": 1003224,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1004840,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004840
+            },
+            {
+              "asset_index": 9414,
+              "offset_extra_frames": 1003083,
+              "offset_free_range_frames": 1616,
+              "pinned_wavetable": false,
+              "range_frames": 1004699,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004699
+            }
+          ],
+          "zones": 95624
+        }
+      ]
+    },
+    {
+      "label": "Analog Harmonics",
+      "status": "partial",
+      "main_faces": [
+        {
+          "index": 0,
+          "lifecycle_state": "compiled_initial",
+          "widgets": 934,
+          "visible_widgets": 84,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 194,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 52,
+            "decodes": 52,
+            "encoded_bytes": 47407186,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 52,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 52,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "52bb690bce04a96833c2c725acb3f4044ad331c29f0167bb6dcc4cfbcb6de7ac"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "a84286c7fab3395e6b1d2940374cc81a284655919068b7936f034364a1b9e019"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {},
+          "visible_outside_page": 17,
+          "visible_zero_size": 2
+        },
+        {
+          "index": 3,
+          "lifecycle_state": "after_plan_activation",
+          "widgets": 934,
+          "visible_widgets": 93,
+          "bound_widgets": 648,
+          "components": 0,
+          "asset_count": 195,
+          "asset_summary": {
+            "ambiguous": 0,
+            "corrupt": 0,
+            "decode_ok": 60,
+            "decodes": 60,
+            "encoded_bytes": 47471620,
+            "font_ok": 0,
+            "fonts": 0,
+            "found": 60,
+            "invalid": 0,
+            "limit": 0,
+            "lookups": 60,
+            "missing": 0,
+            "preparation_key_budget": 0,
+            "preparation_oversized": 0,
+            "read_failed": 0,
+            "unavailable": 0
+          },
+          "render_status": "ok",
+          "shots": [
+            {
+              "page": 0,
+              "presentation": "Bitmap",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "e47c024a2b97666ba3a6f0b8039526def37858b44c72758bec314a0fccce1aa8"
+            },
+            {
+              "page": 0,
+              "presentation": "Vector",
+              "width": 732,
+              "height": 540,
+              "status": "ok",
+              "pending_assets": 0,
+              "png_sha256": "059636e5dc00776666d98fcd8cf387671b1de1afb8dbbfcb3159b4ba2bcfd3d0"
+            }
+          ],
+          "menu_count": 20,
+          "visible_menus": 3,
+          "menu_missing_semantic_selection": 0,
+          "unsupported": {
+            "$CONTROL_PAR_VALUE": 14
+          },
+          "visible_outside_page": 21,
+          "visible_zero_size": 1
+        }
+      ],
+      "lifecycle": {
+        "status": "background_active",
+        "activation_readiness": "finite_callbacks_not_pending",
+        "background_observation": "first_callbacks_observed",
+        "frames": 6016,
+        "effects_applied": 12110,
+        "changed_widgets": 494,
+        "source_conversion_gap_count": 153,
+        "source_conversion_gap_kinds": {
+          "Convolution": 3,
+          "Filter": 28,
+          "LFO waveform (id, multi weights, pulse width)": 4,
+          "Reverb (legacy)": 4,
+          "effect": 5,
+          "modulation of a module parameter": 68,
+          "saved release/MIDI/voice state and v4 selection words": 2,
+          "script Warning": 39
+        },
+        "runtime_problems": {
+          "capacity_drops": 0,
+          "cold_starts": 0,
+          "fault_error": 0,
+          "fault_program": 0,
+          "ignored_input": 0,
+          "lua_faults": 0,
+          "narrowed_input": 0,
+          "nonfinite": 0,
+          "offline_failures": 0,
+          "refused_starts": 0,
+          "script_overruns": 0,
+          "silent": [
+            0,
+            0,
+            0
+          ],
+          "silent_notes": 0,
+          "stolen_voices": 0,
+          "stream_capacity": 0,
+          "stream_disconnected": 0,
+          "stream_errors": 0,
+          "stream_failed": 0,
+          "underruns": 0
+        },
+        "stream_full_sample_bytes": 50156846256,
+        "stream_sample_head_bytes": 0,
+        "stream_pool_bytes": 100663296,
+        "load_ms": 10895.618057
+      },
+      "preload_geometry_audit": [
+        {
+          "alias_entries": 0,
+          "block_frames": 128,
+          "bounded_end_zones": 0,
+          "head_budget_bytes": 268435456,
+          "head_output_frames": 1400,
+          "logical_assets": 23595,
+          "mandatory_full_assets": 0,
+          "mandatory_full_pcm_bytes": 0,
+          "mandatory_wavetable_assets": 0,
+          "mandatory_wavetable_min_packed_bytes": 0,
+          "max_sample_start_offset_frames": 840930,
+          "max_step": 16.0,
+          "offset_free_optional_start_frames": 68729057,
+          "offset_free_optional_start_min_packed_bytes": 137458114,
+          "offset_union_extra_frames": 3838931119,
+          "optional_start_assets": 23595,
+          "optional_start_frames": 3907660176,
+          "optional_start_min_packed_bytes": 7815320352,
+          "physical_assets": 23595,
+          "reverse_zones": 40042,
+          "sample_rate": 48000,
+          "sample_start_route_zones": 95624,
+          "sample_start_zero_depth_routes": 67042,
+          "schema": "kontra-preload-geometry-v1",
+          "scope": "request geometry before decode/admission; offset-free is attribution only; no payload or source names",
+          "top_offset_assets": [
+            {
+              "asset_index": 9418,
+              "offset_extra_frames": 1681860,
+              "offset_free_range_frames": 29392,
+              "pinned_wavetable": false,
+              "range_frames": 1711252,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 2303919
+            },
+            {
+              "asset_index": 16994,
+              "offset_extra_frames": 1573392,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1576756,
+              "ranges": 2,
+              "requires_full_residency": false,
+              "source_frames": 1962002
+            },
+            {
+              "asset_index": 9411,
+              "offset_extra_frames": 1019185,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1022549,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1022549
+            },
+            {
+              "asset_index": 9392,
+              "offset_extra_frames": 1015369,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1018733,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018733
+            },
+            {
+              "asset_index": 9417,
+              "offset_extra_frames": 1014791,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1018155,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1018155
+            },
+            {
+              "asset_index": 9401,
+              "offset_extra_frames": 1012052,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1015416,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015416
+            },
+            {
+              "asset_index": 9403,
+              "offset_extra_frames": 1012012,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1015376,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1015376
+            },
+            {
+              "asset_index": 9410,
+              "offset_extra_frames": 1006692,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1010056,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1010056
+            },
+            {
+              "asset_index": 9386,
+              "offset_extra_frames": 1006517,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1009881,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009881
+            },
+            {
+              "asset_index": 9391,
+              "offset_extra_frames": 1006489,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1009853,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009853
+            },
+            {
+              "asset_index": 9387,
+              "offset_extra_frames": 1006035,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1009399,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1009399
+            },
+            {
+              "asset_index": 9393,
+              "offset_extra_frames": 1004727,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1008091,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1008091
+            },
+            {
+              "asset_index": 9409,
+              "offset_extra_frames": 1002794,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1006158,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1006158
+            },
+            {
+              "asset_index": 9397,
+              "offset_extra_frames": 1002390,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1005754,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1005754
+            },
+            {
+              "asset_index": 9398,
+              "offset_extra_frames": 1001476,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1004840,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004840
+            },
+            {
+              "asset_index": 9414,
+              "offset_extra_frames": 1001335,
+              "offset_free_range_frames": 3364,
+              "pinned_wavetable": false,
+              "range_frames": 1004699,
+              "ranges": 1,
+              "requires_full_residency": false,
+              "source_frames": 1004699
+            }
+          ],
+          "zones": 95624
+        }
+      ]
+    }
+  ]
+}

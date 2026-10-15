@@ -342,16 +342,17 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
         let mut seen: HashMap<(usize, i64), ()> = HashMap::new();
         let mut list = Vec::new();
         for zone in &ins.zones {
+            let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
             if !(zone.keys.low <= key && key <= zone.keys.high) {
                 continue;
             }
             let group_tune = zone.group.map_or(ir::Pitch::NONE, |g| ins.groups[g.0].tune);
             let semis = shift(zone, group_tune, key);
-            let id = (zone.asset.0, (semis * 1000.0).round() as i64);
+            let id = (asset, (semis * 1000.0).round() as i64);
             if seen.insert(id, ()).is_some() {
                 continue;
             }
-            let (rate, frames) = &heads[zone.asset.0];
+            let (rate, frames) = &heads[asset];
             let long = resample(frames, *rate, semis, (2.0 * RATE) as usize);
             let peak = long
                 .iter()
@@ -374,7 +375,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
             }
             let spectrum = fft.spectrum(&window);
             list.push(Candidate {
-                asset: zone.asset.0,
+                asset,
                 window,
                 norm,
                 spectrum,
@@ -397,7 +398,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                         && z.velocities.low <= vel
                         && vel <= z.velocities.high
                 })
-                .map(|z| label(z.asset.0))
+                .filter_map(|z| z.asset.map(|a| label(a.0)))
                 .collect();
             v.sort();
             v.dedup();
@@ -406,7 +407,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
         let zone_info = |asset: usize| -> Vec<Value> {
             ins.zones
                 .iter()
-                .filter(|z| z.asset.0 == asset && z.keys.low <= key && key <= z.keys.high)
+                .filter(|z| z.asset == Some(ir::AssetRef(asset)) && z.keys.low <= key && key <= z.keys.high)
                 .map(|z| {
                     let take = z.selection.as_ref().map(|s| match s.take {
                         ir::Take::Index(i) => json!(i),
@@ -554,7 +555,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                                     && z.velocities.low <= vel
                                     && vel <= z.velocities.high
                             })
-                            .map(|z| z.asset.0)
+                            .filter_map(|z| z.asset.map(|a| a.0))
                             .collect();
                         assets.sort_unstable();
                         assets.dedup();
@@ -573,7 +574,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                     let zone = ins
                         .zones
                         .iter()
-                        .find(|z| z.asset.0 == asset && z.keys.low <= key && key <= z.keys.high);
+                        .find(|z| z.asset == Some(ir::AssetRef(asset)) && z.keys.low <= key && key <= z.keys.high);
                     let Some(zone) = zone else { continue };
                     let group_tune = zone.group.map_or(ir::Pitch::NONE, |g| ins.groups[g.0].tune);
                     let semis = shift(zone, group_tune, key);

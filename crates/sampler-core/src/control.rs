@@ -1,6 +1,13 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
 mod script_state;
+mod snapshot_overlay;
+mod snapshot_program;
+pub(crate) use snapshot_program::snapshot_callback_safe;
+pub use snapshot_overlay::{
+    NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
+    SNAPSHOT_OVERLAY_VALUE_CAPACITY,
+};
 pub use script_state::{
     ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue,
 };
@@ -12,6 +19,51 @@ pub use transfer::{
     ControlClient, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
     RejectedControls,
 };
+
+/// Source-free ownership sample taken at a refused callback admission. Numeric
+/// program/stage addresses belong to `plan`; they contain no script values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviorAdmissionOwner {
+    pub owner: crate::BehaviorOwner,
+    pub plan: PlanId,
+    pub program: usize,
+    pub source_slot: i32,
+    pub stage: usize,
+    pub pc: usize,
+    pub waiting: bool,
+    pub preempted: bool,
+    pub outcome: Option<crate::Outcome>,
+}
+
+/// Failure-time callback ownership, returned with a rejected control operation.
+/// The fixed-size samples and capped rejection-only traversal never allocate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviorAdmissionFailure {
+    pub required_callbacks: usize,
+    pub used: usize,
+    pub capacity: usize,
+    pub available: usize,
+    pub reserved: usize,
+    /// Counts below cover only `scanned` occupied continuations.
+    pub scanned: usize,
+    pub scan_truncated: bool,
+    pub note_owned: usize,
+    pub plan_owned: usize,
+    pub waiting: usize,
+    pub preempted: usize,
+    pub terminal: usize,
+    pub finished: usize,
+    /// Scheduler queue depth, including callbacks parked behind an earlier yield.
+    pub yielded_queue: usize,
+    pub pending_commands: usize,
+    pub reserved_commands: usize,
+    pub stalled_effects: u64,
+    pub outbox_used: usize,
+    pub outbox_capacity: usize,
+    /// Occupied-list order, with an explicit count of omitted owner samples.
+    pub owners: [Option<BehaviorAdmissionOwner>; 8],
+    pub owners_omitted: usize,
+}
 
 /// Persistent semantic identity assigned by the source frontend/composition root.
 /// Never derive this from a widget position, dense index or randomized hash.
@@ -312,23 +364,28 @@ impl Prepared {
 }
 
 impl crate::Generation {
-    pub(super) fn project_wavetable(&self, cursor: &mut crate::source::Cursor, group: Option<u32>) {
+    pub(super) fn project_wavetable(
+        &self,
+        cursor: &mut crate::source::Cursor,
+        group: Option<u32>,
+        voice: usize,
+    ) {
         if cursor.wavetable().is_none() {
             return;
         }
-        let Some(Some(lanes)) =
+        if let Some(Some(lanes)) =
             group.and_then(|g| self.prepared.wavetable_controls.get(g as usize))
-        else {
-            return;
-        };
-        cursor.set_wavetable_controls(lanes.map(|id| {
-            let ControlValue::Real(value) =
-                self.controls.values[self.prepared.control_index(id).unwrap()]
-            else {
-                unreachable!("wavetable lanes are real controls")
-            };
-            value as f32
-        }));
+        {
+            cursor.set_wavetable_controls(lanes.map(|id| {
+                let ControlValue::Real(value) =
+                    self.controls.values[self.prepared.control_index(id).unwrap()]
+                else {
+                    unreachable!("wavetable lanes are real controls")
+                };
+                value as f32
+            }));
+        }
+        cursor.set_wavetable_offsets(self.modulation.wavetable_offsets(voice));
     }
 }
 
@@ -437,6 +494,10 @@ impl Runtime {
                 interaction: crate::WidgetInteraction::default(),
             })
         });
+        // Pure validation must precede resource admission: a malformed edit is
+        // still malformed while other callbacks own the arena. No values or
+        // revisions change until the complete callback preflight also succeeds.
+        self.validate_controls(plan, expected_revision, &[write])?;
         if let Some(binding) = binding {
             self.validate_plan_context(plan, binding.program, event.unwrap())?;
         }

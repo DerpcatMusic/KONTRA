@@ -148,6 +148,8 @@ pub(crate) enum CompiledTarget {
     /// set of FUN_140873040: `$out := $in + E * $intensity`) moves by
     /// depth·v each control cell; the LFO integrates the resulting rate.
     SourceRate(u32),
+    /// Offset of normalized position, first form amount, or second form amount.
+    Wavetable(u8),
     LoopStart,
     LoopLength,
 }
@@ -177,6 +179,9 @@ impl crate::ParameterAddress {
             (0, 12) => T::SampleStart,
             (i, 14) => T::SourcePhase(i),
             (i, 17) => T::SourceRate(i),
+            (0, 18) => T::Wavetable(0),
+            (0, 19) => T::Wavetable(1),
+            (0, 20) => T::Wavetable(2),
             (0, 15) => T::LoopStart,
             (0, 16) => T::LoopLength,
             _ => return None,
@@ -758,7 +763,7 @@ impl VoiceModulation {
                             | CompiledTarget::ProcessorResonance(_)
                             | CompiledTarget::ProcessorNativeCutoff(_)
                             | CompiledTarget::ProcessorNativeResonance(_)
-                            | CompiledTarget::ProcessorNativeGain(_))
+                            | CompiledTarget::ProcessorNativeGain(_) | CompiledTarget::Wavetable(_))
                     {
                         return None;
                     }
@@ -868,14 +873,9 @@ impl VoiceModulation {
         if !program.start {
             return 0;
         }
-        let mut fraction = 0.0;
-        for route in program
-            .routes
-            .iter()
-            .filter(|r| r.target == ModTarget::SampleStart)
-        {
+        self.offset(program, region, |index| {
             // Lfo and envelope values at the voice's first frame.
-            let at_start = |index: usize| match program.sources[index] {
+            match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
                     let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
                     program.fades[index].as_ref().map_or(signal, |gains| {
@@ -884,7 +884,35 @@ impl VoiceModulation {
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
-            };
+            }
+        })
+    }
+
+    /// Control-side proof, using the exact onset consumer below. A dependent
+    /// route makes the entire result unknown, even when its saved depth is zero.
+    pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
+        self.start_ranges.get(region)?;
+        let Some(index) = self.program(region) else {
+            return Some(0);
+        };
+        let program = &self.programs[index as usize];
+        if program.routes.iter().filter(|r| r.target == ModTarget::SampleStart).any(|route| {
+            !matches!(program.sources[route.source], Prepared::Constant)
+                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Constant))
+        }) {
+            return None;
+        }
+        Some(self.offset(program, region, |_| 1.0))
+    }
+
+    pub fn has_loop_targets(&self, region: usize) -> bool {
+        self.program(region).is_some_and(|index| self.programs[index as usize].targets.iter()
+            .any(|target| matches!(target, CompiledTarget::LoopStart | CompiledTarget::LoopLength)))
+    }
+
+    fn offset(&self, program: &Program, region: usize, at_start: impl Fn(usize) -> f64) -> u32 {
+        let mut fraction = 0.0;
+        for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
             let depth = route.scales().fold(route.depth,
@@ -1107,6 +1135,7 @@ pub(crate) struct Outputs {
     pub filter: [f64; 2],
     /// Semitones below the tone filter's open cutoff; 0 bypasses it.
     pub tone: f64,
+    pub wavetable: [f64; 3],
 }
 
 impl Default for Outputs {
@@ -1116,6 +1145,7 @@ impl Default for Outputs {
             pitch: 0.0,
             filter: [1.0; 2],
             tone: 0.0,
+            wavetable: [0.; 3],
         }
     }
 }
@@ -1493,6 +1523,13 @@ impl VoiceModState {
         }
     }
 
+    pub(crate) fn wavetable_offsets(&self, voice: usize) -> [f32; 3] {
+        if self.program(voice).is_none() { return [0.; 3]; }
+        std::array::from_fn(|lane| {
+            ((self.previous[voice].wavetable[lane] + self.outputs[voice].wavetable[lane]) * 0.5) as f32
+        })
+    }
+
     /// The control ramp covering a segment starting at `clock.now`. Points
     /// sit on the absolute `CELL` grid (and the voice onset), so a segment
     /// entering a new cell evaluates its end once and segments inside a cell
@@ -1717,6 +1754,7 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
+                CompiledTarget::Wavetable(lane) => out.wavetable[usize::from(lane)] += d * v,
                 CompiledTarget::SampleStart
                 | CompiledTarget::SourcePhase(_)
                 | CompiledTarget::SourceRate(_) => {}

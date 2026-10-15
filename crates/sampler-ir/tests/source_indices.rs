@@ -5,6 +5,7 @@ fn filtered_zones_keep_their_physical_source_rows() {
         zones: (0..3).map(|_| Zone::new(AssetRef(0))).collect(),
         assets: vec![Asset {
             location: AssetLocation::Path("one.wav".into()),
+            residency: Default::default(),
             encoding: Encoding::Wav,
             root_key: None,
             loops: vec![],

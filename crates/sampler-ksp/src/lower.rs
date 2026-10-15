@@ -22,6 +22,7 @@ pub enum Context {
     Note,
     Release,
     Controller,
+    PolyAt,
     /// Instrument-owned callback (UI control, listener, ...), no originating event.
     Plan,
 }
@@ -127,6 +128,8 @@ pub struct Module {
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    /// Bytecode positions where source semantics were omitted, never opcodes.
+    opaque: Vec<usize>,
     entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
 }
 
@@ -199,6 +202,7 @@ impl<'h> Unit<'h> {
             calls: module.calls,
             starts: module.starts,
             ends: module.ends,
+            opaque: module.opaque,
             loops: Vec::new(),
             span,
             statement_span: None,
@@ -276,6 +280,7 @@ impl<'h> Unit<'h> {
             calls: g.calls,
             starts: g.starts,
             ends: g.ends,
+            opaque: g.opaque,
             entries,
         };
         self.modules[module_index].3 = module;
@@ -300,6 +305,18 @@ impl<'h> Unit<'h> {
                 );
             }
             let texts: Vec<_> = module.texts.iter().map(String::as_str).collect();
+            // Service IDs are script-local. Only effects whose host consumer
+            // edits presentation metadata may run in a same-owner snapshot.
+            let snapshot_ui_services: Vec<_> = self.services.iter().enumerate()
+                .filter(|(_, builtin)| matches!(builtin.name(),
+                    "set_control_par" | "set_control_par_str" | "set_control_par_real"
+                    | "set_control_par_arr" | "set_control_par_str_arr" | "set_control_par_real_arr"
+                    | "set_text" | "set_knob_label" | "set_control_help" | "hide_part"
+                    | "set_knob_defval" | "set_knob_unit" | "set_table_steps_shown"
+                    | "move_control" | "move_control_px" | "set_skin_offset" | "set_ui_color"
+                    | "set_key_color" | "set_key_name" | "set_key_type" | "set_key_pressed"
+                    | "set_key_pressed_support" | "set_keyrange" | "remove_keyrange" | "message"))
+                .map(|(id, _)| id as u16).collect();
             let shared = Program::new(module.code)
                 .and_then(|p| p.with_texts(&texts))
                 .map_err(|e| Fault {
@@ -308,9 +325,16 @@ impl<'h> Unit<'h> {
                     message: format!("invalid lowered module: {e:?}"),
                 })?
                 .with_wait_lifetime(WaitLifetime::Callback)
-                .with_source_slot(self.slot);
+                .with_source_slot(self.slot)
+                .with_snapshot_overlay_services(&snapshot_ui_services);
             for (index, ranges, ui_id, span) in module.entries {
-                programs[index] = shared
+                // The initializer cache stores values/model metadata, not
+                // Programs: fresh lowering always reconstructs this proof.
+                let opaque = ranges.iter().any(|range| {
+                    let first = module.opaque.partition_point(|at| *at < range.start);
+                    module.opaque.get(first).is_some_and(|at| *at < range.end)
+                });
+                let program = shared
                     .clone()
                     .with_entry(ranges[0].start, &ranges, ui_id)
                     .map_err(|e| Fault {
@@ -318,6 +342,11 @@ impl<'h> Unit<'h> {
                         builtin: None,
                         message: format!("invalid lowered entry: {e:?}"),
                     })?;
+                programs[index] = if opaque {
+                    program.without_snapshot_overlay()
+                } else {
+                    program
+                };
             }
         }
         Ok(())
@@ -329,8 +358,13 @@ impl<'h> Unit<'h> {
     pub fn engine_start(
         &mut self,
         writes: &[([i32; 4], i32)],
-        purges: &[(i32, i32)],
     ) -> Result<Program> {
+        let cost=writes.len().checked_mul(6).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
+        self.budget=self.budget.checked_sub(cost).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
         let mut code = Vec::new();
         for &(address, value) in writes {
             for (i, v) in address.into_iter().enumerate() {
@@ -346,21 +380,6 @@ impl<'h> Unit<'h> {
             code.push(I::Op(Op::EngineParameter {
                 address: 0,
                 local: 4,
-                write: true,
-            }));
-        }
-        for &(group, value) in purges {
-            code.push(I::SetLocal {
-                local: 0,
-                value: i64::from(group),
-            });
-            code.push(I::SetLocal {
-                local: 1,
-                value: i64::from(value),
-            });
-            code.push(I::Op(Op::Purge {
-                group: 0,
-                local: 1,
                 write: true,
             }));
         }
@@ -395,6 +414,7 @@ impl<'h> Unit<'h> {
             calls: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
+            opaque: Vec::new(),
             loops: Vec::new(),
             span,
             statement_span: None,
@@ -443,6 +463,7 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
+            .and_then(Program::with_snapshot_listener_driver)
             .map(|p| {
                 p.with_wait_lifetime(WaitLifetime::Callback)
                     .with_source_slot(g.u.slot)
@@ -498,6 +519,7 @@ struct Gen<'u, 'h> {
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    opaque: Vec<usize>,
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
@@ -571,7 +593,14 @@ impl Gen<'_, '_> {
         }
     }
     fn warn(&mut self, message: impl Into<String>) {
+        self.mark_opaque();
         self.report(None, crate::diag::Kind::Warning, message.into());
+    }
+    fn mark_opaque(&mut self) {
+        let at = self.code.len();
+        if self.opaque.last() != Some(&at) {
+            self.opaque.push(at);
+        }
     }
     fn report(&mut self, builtin: Option<Builtin>, kind: crate::diag::Kind, message: String) {
         if self.u.warnings.len() < 1000 {
@@ -604,6 +633,7 @@ impl Gen<'_, '_> {
         }
     }
     fn ignore(&mut self, builtin: Builtin, why: &str) {
+        self.mark_opaque();
         self.cover(builtin, Coverage::Ignored);
         let message = format!("{} {why}", builtin.name());
         self.report(Some(builtin), crate::diag::Kind::Unsupported, message);
@@ -615,7 +645,7 @@ impl Gen<'_, '_> {
         match self.ctx {
             Context::Note => self.emit(I::ForwardAttack),
             Context::Release => self.emit(I::ForwardReleaseGroups),
-            Context::Controller => self.emit(I::ForwardController),
+            Context::Controller | Context::PolyAt => self.emit(I::ForwardController),
             Context::Plan => Ok(()),
         }
     }
@@ -1051,6 +1081,7 @@ impl Gen<'_, '_> {
             SysVar::CcNum if self.ctx == Context::Controller => {
                 I::ReadControllerNumber { local: dst }
             }
+            SysVar::PolyAtNum if self.ctx == Context::PolyAt => I::ReadPolyPressureKey { local: dst },
             SysVar::WidgetInteraction(field) => {
                 I::Op(Op::ReadWidgetInteraction { local: dst, field })
             }
@@ -1119,7 +1150,7 @@ impl Gen<'_, '_> {
 
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
-            SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::Cc | SysArray::KeyDown | SysArray::PolyAt => true,
             SysArray::EventPar => self.ui_id.is_some() || self.note_context(),
             SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
@@ -1148,6 +1179,10 @@ impl Gen<'_, '_> {
                 })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::PolyAt => {
+                self.emit(I::ReadPolyPressure { local: at })?;
+                self.emit(I::ControllerToMidi7 { local: at })
+            }
             SysArray::EventPar if self.note_context() => {
                 let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
                 self.set(bound, 0)?;
@@ -1250,9 +1285,15 @@ impl Gen<'_, '_> {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
                     Const::Str(s) => TextPart::Constant(self.constant(&s)),
-                    _ => return Ok(()),
+                    _ => {
+                        self.mark_opaque();
+                        return Ok(());
+                    }
                 },
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::LoadElem(v, index) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Texts { offset, len } => {
@@ -1262,7 +1303,10 @@ impl Gen<'_, '_> {
                         index: free,
                     })
                 }
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::Builtin(Builtin::GroupName, args) => {
                 let name = self
@@ -2106,11 +2150,12 @@ impl Gen<'_, '_> {
                 self.land(end);
                 true
             }
-            IgnoreController if self.ctx == Context::Controller => {
+            IgnoreController if matches!(self.ctx, Context::Controller | Context::PolyAt) => {
                 self.emit(I::SuppressController)?;
                 true
             }
             IgnoreController => {
+                self.mark_opaque();
                 self.cover(builtin, Coverage::Native);
                 self.report(
                     None,
@@ -2925,9 +2970,10 @@ impl Gen<'_, '_> {
             }
             _ => {
                 let why = match builtin {
-                    AllowGroup | DisallowGroup | IgnoreEvent | GetEventPar => {
+                    AllowGroup | DisallowGroup | IgnoreEvent => {
                         "needs the originating note event; ignored"
                     }
+                    GetEventPar => "this event parameter is not implemented; result 0",
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
@@ -3797,13 +3843,14 @@ impl Gen<'_, '_> {
         self.cover(Builtin::PlayNote, Coverage::Native);
         match self.const_int(args, 3) {
             Some(0) => return self.emit(play(DurationValue::Fixed(Duration::UntilSilent))),
-            Some(-1) if self.note_context() => {
-                return self.emit(play(DurationValue::Fixed(Duration::Gate)));
-            }
-            Some(-1) => {
-                self.warn("play_note duration -1 needs a note callback; faults at runtime");
-                self.set(frames, -1)?;
-                return self.emit(play(DurationValue::Frames(frames)));
+            Some(value) if value < 0 => {
+                // Native command 0x50 retains a negative duration only when
+                // the note callback supplies an originating note owner.
+                return self.emit(play(DurationValue::Fixed(if self.ctx == Context::Note {
+                    Duration::Gate
+                } else {
+                    Duration::UntilSilent
+                })));
             }
             Some(_) => {
                 self.arg(args, 3, frames)?;
@@ -3815,21 +3862,18 @@ impl Gen<'_, '_> {
         // Runtime-selected sentinels.
         self.arg(args, 3, frames)?;
         let mut exits = Vec::new();
-        for (value, duration) in [(0, Duration::UntilSilent), (-1, Duration::Gate)] {
-            self.set(scratch, value)?;
+        for (comparison, duration) in [
+            (Cmp::Equal, Duration::UntilSilent),
+            (Cmp::Greater, if self.ctx == Context::Note { Duration::Gate } else { Duration::UntilSilent }),
+        ] {
+            self.set(scratch, 0)?;
             self.emit(I::CompareLocal {
                 lhs: scratch,
                 rhs: frames,
-                comparison: Cmp::Equal,
+                comparison,
             })?;
             let miss = self.jump_if_zero(scratch)?;
-            self.emit(play(if value == -1 && !self.note_context() {
-                // A parent-gate sentinel has no meaning without a note; the
-                // positive-frame check faults before publishing anything.
-                DurationValue::Frames(frames)
-            } else {
-                DurationValue::Fixed(duration)
-            }))?;
+            self.emit(play(DurationValue::Fixed(duration)))?;
             exits.push(self.jump()?);
             self.land(miss);
         }
@@ -4136,6 +4180,9 @@ impl Gen<'_, '_> {
                     local: dst,
                     write: false,
                 }))?;
+                if builtin == Builtin::GetControlPar {
+                    self.menu_selected_index(args, dst)?;
+                }
                 self.land(skip);
             } else {
                 self.emit(I::Op(Op::ControlAt {

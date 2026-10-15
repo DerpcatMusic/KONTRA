@@ -1,13 +1,13 @@
 //! Plugin sound seam, not an exported CLAP/VST3 benchmark. Audio never leaves RAM.
 use kontakto::sound::{
     BlockInfo, Core, CoreLoader, LoadRequest,
-    event::Event,
+    event::{Event, HostNote, HostPattern},
     v2::{V2Core, V2Loader},
 };
 use serde_json::{Value, json};
 use std::path::Path;
 
-struct Player(V2Core);
+struct Player(V2Core, f64, u64);
 impl Drop for Player {
     fn drop(&mut self) {
         if std::env::var_os("KONTRA_SIGNAL_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -91,9 +91,26 @@ impl Player {
         let info = json!({"engine":"v2", "stream":stream, "missing_features":loaded.report.missing.len(), "script_callbacks":loaded.report.decoded.script_callbacks});
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, loaded.part);
-        (Self(core), info)
+        (Self(core, 0., 0), info)
     }
     fn event(&mut self, s: u8, a: u8, b: u8) {
+        // Audit-schedule sentinels encode an exact note ID, not a MIDI packet.
+        // Production receives the same typed host events from CLAP/VST3.
+        if matches!(s, 0xf0 | 0xf1) {
+            let id = i32::from(a) + (i32::from(b) << 8);
+            let key = 60 + (id % 12) as u8;
+            let event = if s == 0xf0 {
+                Event::NoteOn {
+                    note: HostNote { port: 0, channel: 0, key, id, clap: true },
+                    velocity: 0.5 + f64::from(id) / 600.,
+                    tune: 0.,
+                }
+            } else {
+                Event::NoteOff(HostPattern { port: 0, channel: 0, key: i32::from(key), id, clap: true })
+            };
+            self.0.event(0, event);
+            return;
+        }
         self.0.event(0, Event::midi1(s, a, b));
     }
     fn begin(&mut self, frames: usize) {
@@ -104,12 +121,11 @@ impl Player {
         for n in (0..frames).step_by(128) {
             let len = (frames - n).min(128);
             let r = self.0.render(len);
-            peak = peak.max(
-                r.buses[0]
-                    .iter()
-                    .flat_map(|x| &x[..len])
-                    .fold(0.0f32, |a, b| a.max(b.abs())),
-            );
+            for sample in r.buses[0].iter().flat_map(|x| &x[..len]) {
+                peak = peak.max(sample.abs());
+                self.1 += f64::from(*sample).powi(2);
+                self.2 += u64::from(!sample.is_finite());
+            }
         }
         self.0.end_block(frames, &mut |_| true);
         peak
@@ -123,6 +139,8 @@ impl Player {
             problems["v1_control_starts"] = stats.v1_control_starts.into();
             problems["v1_control_blocks"] = stats.v1_control_blocks.into();
         }
+        problems["witness_pcm_energy"] = self.1.into();
+        problems["witness_nonfinite_samples"] = self.2.into();
         problems
     }
 }

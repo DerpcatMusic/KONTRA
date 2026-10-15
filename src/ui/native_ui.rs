@@ -383,6 +383,14 @@ impl State {
             .map_or(Default::default(), |p| p.images.scan())
     }
     #[cfg(feature = "shots")]
+    pub fn probes(&self) -> Vec<super::pictures::AssetProbe> {
+        self.package.as_ref().map_or(Vec::new(), |p| p.images.probes())
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.package.as_ref().map_or(0, |p| p.images.probe_dropped())
+    }
+    #[cfg(feature = "shots")]
     pub fn font_success(&self) -> Option<usize> {
         self.package.as_ref().map(|p| p.fonts.len())
     }

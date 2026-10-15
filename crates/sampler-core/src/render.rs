@@ -1,6 +1,9 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
 #[cfg(test)]
+#[path = "render/traversal_experiment.rs"]
+mod traversal_experiment;
+#[cfg(test)]
 std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Runtime health counters as plain data, for load reports and meters.
@@ -12,8 +15,15 @@ pub struct RuntimeStats {
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
     pub v1_control_starts: u64,
     pub v1_control_blocks: u64,
-    /// Voice starts rejected because every voice was busy and audible.
+    /// Aggregate rejected voice starts: stream admission and unavailable slots.
+    /// Preserved for compatibility; use the reason counters below for diagnosis.
     pub voice_drops: u64,
+    /// Starts rejected by unavailable voice slots after no silent waiting
+    /// victim could be replaced. Separate from page-pool admission failures.
+    pub voice_pool_refusals: u64,
+    /// A full voice pool replaced a started voice already waiting silently for
+    /// source data. Includes cold onset holds and faded-out stream starvation.
+    pub waiting_voice_replacements: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
     /// Time-stretch voices that found no free engine and played as a sampler.
@@ -72,6 +82,8 @@ impl Runtime {
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
+            voice_pool_refusals: self.voice_pool_refusals,
+            waiting_voice_replacements: self.waiting_voice_replacements,
             refused_starts: self.refused_starts,
             stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
@@ -104,6 +116,7 @@ impl Runtime {
             .collect();
         let mut bytes = 0;
         for (i, plan) in plans.iter().enumerate() {
+            bytes += plan.samples.resident_bytes();
             for pcm in &plan.prepared.pcm {
                 // ponytail: quadratic dedupe, only paid while plans overlap.
                 let shared = plans[..i].iter().any(|p| {
@@ -199,6 +212,7 @@ impl Runtime {
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
+        let _ = self.poll_sample_update();
         self.start_plan_programs();
         self.service_residency()?;
         self.apply_growth();
@@ -427,6 +441,10 @@ impl Runtime {
         let mut gains = [[0.; 2]; VOICES];
         let mut starved = [false; VOICES];
         let mut plan_id = None;
+        let reuse_mask = super::source::reuse::candidates(
+            voices.iter().map(|&i| self.voices.slots[i].value.as_ref().unwrap()),
+        );
+        let mut source_reuse = None;
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let f = self.families.get(v.family.0).unwrap();
@@ -436,10 +454,10 @@ impl Runtime {
             v.last_gains = gains[lane].map(|g| g * v.gain);
             v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
-            plan.project_wavetable(&mut v.cursor, v.group);
+            plan.project_wavetable(&mut v.cursor, v.group, i);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = &plan.prepared.pcm[v.sample];
+            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
             let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[lane] = v.cursor.starved();
@@ -448,11 +466,17 @@ impl Runtime {
             begun[lane] = if let Some(frames) = asset.resident_frames() {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
-                let pcm = super::source::Resident {
-                    frames: &frames,
-                    levels: guard.as_deref().map_or(&[], |l| l),
-                };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+                if reuse_mask & (1 << lane) != 0 {
+                    source_reuse
+                        .get_or_insert_with(super::source::reuse::ResidentReuse::default)
+                        .begin(chain, v, frames, guard, output.len(), &self.kernel, &mut planar, engine)
+                } else {
+                    let pcm = super::source::Resident {
+                        frames: &frames,
+                        levels: guard.as_deref().map_or(&[], |l| l),
+                    };
+                    chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+                }
             } else {
                 asset.touch(at + output.len() as u64);
                 let head = asset.try_head();
@@ -474,6 +498,9 @@ impl Runtime {
             batch.ends[2 * lane] = len;
             batch.ends[2 * lane + 1] = len;
         }
+        // Readers retire before any plan/voice lifecycle mutation. Their drop
+        // only releases snapshot counts; storage reclamation remains control-side.
+        drop(source_reuse);
         batch.len = batch.ends.iter().copied().max().unwrap_or(0);
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;
@@ -572,7 +599,6 @@ impl Runtime {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get_mut(n.plan.0).unwrap();
-        plan.project_wavetable(&mut v.cursor, v.group);
         let modulated = plan.modulation.program(i).is_some();
         let mut filter = None;
         let points = plan.modulation.program(i).map(|_| {
@@ -610,6 +636,7 @@ impl Runtime {
             ]);
             ramp
         });
+        plan.project_wavetable(&mut v.cursor, v.group, i);
         // Script layers (render_segment chunks once a script writes one).
         let mut stop = false;
         let points = if self.script_params {
@@ -728,11 +755,12 @@ impl Runtime {
                 plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
             }
         }
-        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        // Only ramped voices render through scratch; direct voices use target.
+        let mut scratch;
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
         bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
-        let asset = &plan.prepared.pcm[v.sample];
+        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
         let bus = v.bus;
         let target = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())
@@ -740,6 +768,7 @@ impl Runtime {
             segment
         };
         let (segment, mixed) = if points.is_some() {
+            scratch = [[0.0; 2]; super::dsp::BLOCK];
             (&mut scratch[..target.len()], Some(target))
         } else {
             (target, None)

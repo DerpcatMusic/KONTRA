@@ -101,6 +101,68 @@ pub(crate) struct NativeEq {
     gain: PreparedParameter,
 }
 impl NativeEq {
+    pub(super) fn batches(self) -> bool {
+        [self.frequency, self.bandwidth, self.gain].iter()
+            .all(|p| matches!(p, PreparedParameter::Constant(_)))
+    }
+
+    pub(super) fn process_lanes(
+        self,
+        cells: &mut super::super::lanes::Cells<'_>,
+        cell: usize,
+        batch: &super::super::lanes::Batch,
+        block: &mut super::super::lanes::LaneBlock,
+        parameters: &[ControlRamp],
+        at: u64,
+    ) {
+        use super::super::lanes::LANES;
+        debug_assert!(self.batches());
+        let targets = self.targets(parameters, at);
+        let mut held = true;
+        for v in 0..batch.count {
+            if batch.ends[2 * v] == 0 { continue; }
+            let state = &mut cells[v].as_mut().expect("batch voice")[cell];
+            if state.aux[8] == 0. {
+                self.tune(state, targets, 7);
+                state.aux[15] = state.aux[2];
+                state.aux[8] = 1.;
+                state.delay_position = 32;
+            }
+            // Stronger than the native settle tolerance: inherited moving
+            // coefficients continue through their scalar cadence until exact.
+            held &= (0..3).all(|i| state.aux[i] as f32 == targets[i]);
+        }
+        if !held {
+            for v in 0..batch.count {
+                let len = batch.ends[2 * v];
+                let mut planar = std::array::from_fn(|c| std::array::from_fn(|i| block[i][2*v+c]));
+                self.process(&mut cells[v].as_mut().expect("batch voice")[cell], parameters, &mut planar, len, at);
+                for i in 0..len { for c in 0..2 { block[i][2*v+c] = planar[c][i]; } }
+            }
+            return;
+        }
+        let mut coefficients = [kernel::Svf::PASS; LANES];
+        let mut states = [[0.; LANES]; 2];
+        for v in 0..batch.count {
+            let state = &cells[v].as_ref().expect("batch voice")[cell];
+            let coefficient = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9+i]));
+            for c in 0..2 {
+                coefficients[2*v+c] = coefficient;
+                states[0][2*v+c] = state.z[c][0];
+                states[1][2*v+c] = state.z[c][1];
+            }
+        }
+        if batch.ends.iter().all(|&end| end == batch.len) {
+            kernel::Svf::run_lanes_dispatched::<LANES, false>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+        } else {
+            kernel::Svf::run_lanes_dispatched::<LANES, true>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+        }
+        for v in 0..batch.count {
+            if batch.ends[2*v] == 0 { continue; }
+            cells[v].as_mut().expect("batch voice")[cell].z = std::array::from_fn(|c| [states[0][2*v+c], states[1][2*v+c]].map(super::super::flush));
+        }
+    }
+
     pub(crate) fn trace_parameters(self) -> [(&'static str, PreparedParameter); 3] {
         [
             ("frequency_knob", self.frequency),
@@ -198,10 +260,9 @@ impl NativeEq {
                 len - position
             };
             let svf = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9 + i]));
-            for (channel, history) in block.iter_mut().zip(&mut state.z) {
-                svf.run(history, &mut channel[position..position + count]);
-                *history = history.map(super::super::flush);
-            }
+            let [left, right] = &mut block;
+            svf.run_stereo(&mut state.z, [&mut left[position..position + count], &mut right[position..position + count]]);
+            state.z = state.z.map(|history| history.map(super::super::flush));
             position += count;
             if !active {
                 continue;
@@ -243,6 +304,72 @@ impl NativeEq {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn constant_voice_lanes_preserve_scalar_pcm_histories_masks_and_inherited_cadence() {
+        use super::super::super::lanes::{Batch, Cells, LANES, VOICES};
+        use sampler_pool::Slab;
+        let eq = settings(0.5, 0.5, 9.);
+        assert!(eq.batches());
+        for count in [1, 3, VOICES] {
+            for unequal in [false, true] {
+                for inherited in [false, true] {
+                    let mut scalar = [ProcessorState::default(); VOICES];
+                    for (v, state) in scalar.iter_mut().enumerate() {
+                        state.z = [[(v as f64 * 0.2).sin(), -0.0], [f64::from_bits(1), (v as f64 * 0.3).cos()]];
+                        if inherited {
+                            eq.tune(state, [0.1 + v as f32 * 0.01, 0.3, -0.2], 7);
+                            state.aux[8] = 1.;
+                            state.aux[15] = state.aux[2];
+                            state.delay_position = [0, 1, 3, 32][v % 4];
+                        } else if v % 2 == 0 {
+                            eq.tune(state, eq.targets(&[], 0), 7);
+                            state.aux[8] = 1.;
+                            state.aux[15] = state.aux[2];
+                            state.delay_position = 32;
+                            // Same held targets can carry distinct retained
+                            // coefficients: use each voice's actual values.
+                            if v == 2 { state.aux[9..15].copy_from_slice(&kernel::Svf::PASS.to_array()); }
+                        }
+                    }
+                    let slab = Slab::new(scalar.to_vec().into_boxed_slice(), 1);
+                    let mut cells: Cells<'_> = std::array::from_fn(|v| (v < count).then(|| slab.claim(v)));
+                    for round in 0..80 {
+                        let len = [1, 3, 31, 32, 33, 63, 64][round % 7];
+                        let ends: [usize; LANES] = std::array::from_fn(|lane| {
+                            if lane / 2 >= count { len } else if unequal {
+                                [0, 1, 3, 31, 32, 33, 63, 64][lane / 2].min(len)
+                            } else { len }
+                        });
+                        let batch = Batch { count, expressions: [None; VOICES], ends, len };
+                        let mut block = std::array::from_fn(|i| std::array::from_fn(|lane| {
+                            match (i + lane + round) % 17 {
+                                0 => -0.0,
+                                1 => f64::from_bits(1),
+                                _ => ((i + lane*7 + round*31) as f64 * 0.137).sin(),
+                            }
+                        }));
+                        let mut expected = block;
+                        for v in 0..count {
+                            let mut planar = std::array::from_fn(|c| std::array::from_fn(|i| block[i][2*v+c]));
+                            eq.process(&mut scalar[v], &[], &mut planar, ends[2*v], round as u64 * 64);
+                            for i in 0..ends[2*v] { for c in 0..2 { expected[i][2*v+c] = planar[c][i]; } }
+                        }
+                        eq.process_lanes(&mut cells, 0, &batch, &mut block, &[], round as u64 * 64);
+                        for v in 0..count {
+                            let state = &cells[v].as_ref().unwrap()[0];
+                            assert_eq!(state.z.map(|s| s.map(f64::to_bits)), scalar[v].z.map(|s| s.map(f64::to_bits)));
+                            assert_eq!(state.aux.map(f64::to_bits), scalar[v].aux.map(f64::to_bits));
+                            assert_eq!((state.delay_position, state.delay_filled), (scalar[v].delay_position, scalar[v].delay_filled));
+                            for i in 0..64 { for c in 0..2 {
+                                assert_eq!(block[i][2*v+c].to_bits(), expected[i][2*v+c].to_bits(), "count={count} unequal={unequal} inherited={inherited} round={round} voice={v} frame={i}");
+                            } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn vectors() -> serde_json::Value {
         serde_json::from_str(include_str!(
             "../../../../../docs/architecture-v2/KONTAKT_DSP_LAWS.vectors.json"
