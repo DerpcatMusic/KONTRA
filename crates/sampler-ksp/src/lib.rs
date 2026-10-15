@@ -821,6 +821,10 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                     instance,
                     storage,
                     drop,
+                    menu: (w.kind == model::WidgetKind::Menu).then_some(sampler_core::WidgetMenuStorage {
+                        count_key: [w.ui_id, lower::MENU_COUNT, -1, lower::MENU_TAG],
+                        value_key: [w.ui_id, lower::MENU_VALUE, 0, lower::MENU_TAG],
+                    }),
                     program: script
                         .routed(EntryKind::UiControl(
                             (w.ui_id - builtins::FIRST_UI_ID) as usize,

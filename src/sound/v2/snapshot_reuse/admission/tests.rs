@@ -128,7 +128,7 @@ fn native_refusal_records_decoded_domains_without_decoding_saved_rows_again() {
 }
 
 #[test]
-fn saved_decode_schema_and_menu_refusals_keep_the_exact_observed_stage() {
+fn saved_decode_schema_and_negative_menu_position_keep_the_exact_observed_stage() {
     let cases: &[(&str, &[&str], Refusal, &str, usize)] = &[
         (
             SAVED,
@@ -146,8 +146,8 @@ fn saved_decode_schema_and_menu_refusals_keep_the_exact_observed_stage() {
         ),
         (
             "on init set_snapshot_type(3) declare ui_menu $saved add_menu_item($saved,\"A\",20) add_menu_item($saved,\"B\",80) make_persistent($saved) end on",
-            &["$saved 1"],
-            Refusal::MenuRosterUnverified,
+            &["$saved -1"],
+            Refusal::SavedState,
             "saved_schema",
             1,
         ),
@@ -170,8 +170,8 @@ fn saved_decode_schema_and_menu_refusals_keep_the_exact_observed_stage() {
             assert_eq!(report["saved_refusal"]["slot"], 0);
             assert_eq!(
                 report["saved_refusal"]["row_reason"],
-                if *reason == Refusal::MenuRosterUnverified {
-                    "menu_roster_unverified"
+                if source.contains("ui_menu") {
+                    "domain"
                 } else {
                     "count"
                 }
@@ -180,6 +180,40 @@ fn saved_decode_schema_and_menu_refusals_keep_the_exact_observed_stage() {
             assert!(report["saved_refusal"].is_null());
         }
     }
+}
+
+#[test]
+fn native_menu_positions_prepare_separately_and_commit_the_semantic_value() {
+    let source = "on init set_snapshot_type(3) declare ui_menu $saved add_menu_item($saved,\"same\",20) add_menu_item($saved,\"same\",80) make_persistent($saved) end on";
+    let (_directory, descriptor, views, path) = files(source, script_snapshot(&["$saved 1"]));
+    let (ready, report) = descriptor.prepare_reported(&path, 48_000, &views);
+    let ready = ready.unwrap();
+    assert!(ready.state.values.is_empty());
+    assert_eq!(ready.menus.len(), 1);
+    assert_eq!(ready.menus[0].position, 1);
+    let report = report.json();
+    assert_eq!(report["prepared"]["script_value_homes"], 0);
+    assert_eq!(report["prepared"]["native_menu_positions"], 1);
+    assert!(report["audio_committed"].is_null());
+    let script = sampler_ksp::compile(source, 48_000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let prepared = script
+        .bind(sampler_core::Prepared::new(48_000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = sampler_core::Limits::for_plan(&prepared, 4, 4);
+    let mut runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+    let plan = runtime.active_plan();
+    let mut overlay = sampler_core::NativeSnapshotOverlay::new(
+        runtime.snapshot_overlay_fence(plan).unwrap(),
+        ready.state,
+        Box::new([]),
+    );
+    overlay.menus = ready.menus;
+    runtime.apply_snapshot_overlay(&mut overlay).unwrap();
+    assert!(overlay.committed.is_some());
+    assert_eq!(
+        runtime.widget_value(plan, sampler_ksp::derived_control_id(0, "$saved"), 0),
+        Ok(sampler_core::WidgetValue::Integer(80))
+    );
 }
 
 #[test]
