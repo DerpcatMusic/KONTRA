@@ -133,6 +133,10 @@ pub struct MuiEditor<P: Params> {
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
     timing: Option<window::NativeTimingHook>,
+    #[cfg(target_os = "linux")]
+    x11_hook: Option<window::X11WindowHook>,
+    #[cfg(target_os = "linux")]
+    x11_requests: Arc<Mutex<std::sync::Weak<Requests>>>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -194,6 +198,10 @@ impl<P: Params> MuiEditor<P> {
             keys: None,
             pointer: None,
             timing: None,
+            #[cfg(target_os = "linux")]
+            x11_hook: None,
+            #[cfg(target_os = "linux")]
+            x11_requests: Arc::default(),
         }
     }
 
@@ -251,9 +259,44 @@ impl<P: Params> MuiEditor<P> {
     /// Publish a safe portal parent at creation; cancel dialogs before native close.
     #[cfg(target_os = "linux")]
     #[must_use]
-    pub fn on_x11_window(self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
-        self.requests.on_x11_window(Arc::new(Mutex::new(f)));
+    pub fn on_x11_window(mut self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
+        self.x11_hook = Some(Arc::new(Mutex::new(f)));
+        if let Some(hook) = self.x11_window_hook() {
+            self.requests.on_x11_window(hook);
+        }
         self
+    }
+
+    #[cfg(target_os = "linux")]
+    fn x11_window_hook(&self) -> Option<window::X11WindowHook> {
+        let hook = Arc::clone(self.x11_hook.as_ref()?);
+        let requests = Arc::downgrade(&self.requests);
+        *self
+            .x11_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = requests.clone();
+        let current = Arc::clone(&self.x11_requests);
+        Some(Arc::new(Mutex::new(move |parent| {
+            // Keep the existing serialized FnMut delivery contract. Check the
+            // request generation only after acquiring its delivery lock: an
+            // active old close completes before the new creation callback.
+            // Synchronously opening another window from this callback remains
+            // unsupported, as it can wait on this same user callback lock.
+            let mut callback = hook
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let is_current = std::sync::Weak::ptr_eq(
+                &requests,
+                &current
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            // No registration/model lock is held across user code. The weak
+            // identity avoids retaining an obsolete Requests/window cycle.
+            if is_current {
+                callback(parent);
+            }
+        })))
     }
 
     /// Hide the pointer while `f` says so (a knob being dragged), and put it
@@ -341,6 +384,10 @@ impl<P: Params> Editor for MuiEditor<P> {
         }
         if let Some(timing) = &self.timing {
             self.requests.on_native_timing(Arc::clone(timing));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(hook) = self.x11_window_hook() {
+            self.requests.on_x11_window(hook);
         }
         #[cfg(not(target_os = "linux"))]
         use window::open as open_window;
