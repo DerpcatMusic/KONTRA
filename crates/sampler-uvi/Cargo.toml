@@ -39,8 +39,12 @@ serde = { version = "1", features = ["derive"] }
 dirs = "5"
 sha2 = { version = "0.10.9", optional = true }
 libc = { version = "0.2", optional = true }
-# Luau + JIT, built from source. UVI documents Lua 5.1.4, not Luau; see docs/architecture-v2/UVI_LUA.md.
-mlua = { version = "=0.12.2", features = ["luau", "luau-jit"] }
+# Use the same Luau interpreter in browser builds; native builds also enable JIT.
+# UVI documents Lua 5.1.4, not Luau; see docs/architecture-v2/UVI_LUA.md.
+mlua = { version = "=0.12.2", features = ["luau"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mlua = { version = "=0.12.2", features = ["luau-jit"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1", features = ["time"], optional = true }

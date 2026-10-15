@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-15T22:40:17.298068Z",
+  "generatedAt": "2026-10-15T23:18:02.528841Z",
   "title": "Design System: KONTRA Public Website",
   "extensions": {
     "colorMeta": {
@@ -303,6 +303,21 @@
           "oklch(80% 0 0)",
           "oklch(95% 0 0)"
         ]
+      },
+      "inspector-error": {
+        "role": "status",
+        "displayName": "Inspector Error",
+        "canonical": "#ff9a94",
+        "tonalRamp": [
+          "oklch(15% 0.122 23.8)",
+          "oklch(25% 0.122 23.8)",
+          "oklch(35% 0.122 23.8)",
+          "oklch(45% 0.122 23.8)",
+          "oklch(55% 0.122 23.8)",
+          "oklch(65% 0.122 23.8)",
+          "oklch(80% 0.122 23.8)",
+          "oklch(95% 0.122 23.8)"
+        ]
       }
     },
     "typographyMeta": {
@@ -312,7 +327,7 @@
       },
       "page-title": {
         "displayName": "Page Title",
-        "purpose": "Titles on documentation, compatibility and roadmap pages."
+        "purpose": "Titles on documentation, compatibility, inspector and roadmap pages."
       },
       "body": {
         "displayName": "Body",
@@ -337,6 +352,22 @@
       "table-header": {
         "displayName": "Feature Table Header",
         "purpose": "12px sortable column headings."
+      },
+      "report-body": {
+        "displayName": "Report Body",
+        "purpose": "Dense shared inspection evidence at 13px/1.5; scoped to the report viewer."
+      },
+      "report-metadata": {
+        "displayName": "Report Metadata",
+        "purpose": "12px report notices, source excerpts and table labels."
+      },
+      "report-subhead": {
+        "displayName": "Report Subhead",
+        "purpose": "14px shared report section headings."
+      },
+      "inspection-result-heading": {
+        "displayName": "Inspection Result Heading",
+        "purpose": "24px public result heading above the embedded report."
       }
     },
     "shadows": [],
@@ -403,9 +434,9 @@
     {
       "name": "Page Navigation",
       "kind": "nav",
-      "description": "Shared page links with an underline on the current page.",
-      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"index.html\" aria-current=\"page\">Overview</a><a href=\"docs.html\">Documentation</a><a href=\"features.html\">Compatibility</a><a href=\"roadmap.html\">Roadmap</a></nav>",
-      "css": ".ds-nav{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 24px}.ds-nav a{display:inline-flex;align-items:center;min-height:44px;color:var(--muted);font:13px/1.65 'Noto Sans',sans-serif;text-decoration:none}.ds-nav a:hover{color:var(--accent)}.ds-nav a[aria-current=page]{color:var(--text);text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:10px}.ds-nav a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(max-width:480px){.ds-nav{justify-content:space-between;gap:0 12px}.ds-nav a{font-size:12px}}",
+      "description": "Five shared page links with a pink current-page underline and a three-column grid on small phones.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"index.html\" aria-current=\"page\">Overview</a><a href=\"docs.html\">Documentation</a><a href=\"features.html\">Compatibility</a><a href=\"inspector.html\">Inspector</a><a href=\"roadmap.html\">Roadmap</a></nav>",
+      "css": ".ds-nav{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 24px}.ds-nav a{display:inline-flex;align-items:center;min-height:44px;color:var(--muted);font:13px/1.65 'Noto Sans',sans-serif;text-decoration:none}.ds-nav a:hover{color:var(--accent)}.ds-nav a[aria-current=page]{color:var(--text);text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:10px}.ds-nav a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(max-width:480px){.ds-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px}.ds-nav a{font-size:12px}}",
       "refersTo": "current-navigation"
     },
     {
@@ -446,11 +477,27 @@
       "description": "Quiet square search field with a visible label, dark inset fill and accent keyboard focus.",
       "html": "<label class=\"ds-search\">Search features<input type=\"search\" placeholder=\"Search features or notes\" autocomplete=\"off\"></label>",
       "css": ".ds-search{display:grid;gap:8px;color:var(--muted);font:12px/1.65 \"Noto Sans\",sans-serif}.ds-search input{width:100%;min-width:0;height:44px;padding:8px 10px;border:1px solid #686868;border-radius:0;background:var(--field);color:var(--text);font:13px/1.65 \"Noto Sans\",sans-serif}.ds-search input::placeholder{color:var(--muted);opacity:1}.ds-search input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}"
+    },
+    {
+      "name": "Inspector Primary Action",
+      "kind": "button",
+      "refersTo": "inspector-primary",
+      "description": "Neutral primary for choosing a local folder or running inspection; shares the detected-download color treatment.",
+      "html": "<button class=\"ds-inspector-primary\" type=\"button\">Choose library folder</button>",
+      "css": ".ds-inspector-primary{min-height:46px;padding:10px 16px;border:1px solid var(--text);border-radius:0;background:var(--text);color:var(--action-ink);font:13px/1.65 \"Noto Sans\",sans-serif;cursor:pointer}.ds-inspector-primary:hover:not(:disabled){background:#fff;border-color:#fff}.ds-inspector-primary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.ds-inspector-primary:disabled{background:var(--surface);color:var(--muted);border-color:var(--line);cursor:default}"
+    },
+    {
+      "name": "Inspector Selection and Error",
+      "kind": "input",
+      "refersTo": "inspector-field",
+      "description": "Native dark selection field and explicit inline recovery copy using the inherited workbench error role.",
+      "html": "<div class=\"ds-inspector-selection\"><label>Instrument<select><option>Selected instrument</option></select></label><p role=\"alert\">The engine could not finish. Reload and try a single instrument file.</p></div>",
+      "css": ".ds-inspector-selection label{display:grid;gap:8px;color:var(--muted);font:12px/1.65 \"Noto Sans\",sans-serif}.ds-inspector-selection select{width:100%;min-width:0;height:46px;padding:8px 10px;border:1px solid #686868;border-radius:0;background:var(--field);color:var(--text);font:13px/1.65 \"Noto Sans\",sans-serif;cursor:pointer}.ds-inspector-selection select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.ds-inspector-selection p{margin:16px 0 0;color:var(--error);font:14px/1.65 \"Noto Sans\",sans-serif}"
     }
   ],
   "narrative": {
     "northStar": "A Native Instrument's Public Home",
-    "overview": "This website extends the native graphite and Noto Sans system recorded in the root [DESIGN.md](../DESIGN.md). The native editor remains the authority for the application; this document records the web reading and download surface. Graphite fills and square edges carry through, while the website uses muted pink for interaction and donations, recognizable Discord blue for community access, and a light primary download for the detected desktop platform.\n\nThe overview keeps the message short and puts the release identity and three icon-led downloads before an uncropped image of the actual player. Shared header and footer actions make donations and community access prominent. Reading pages retain essential instructions and evidence. Compatibility uses a source-built feature table with visible status and implementation notes; the roadmap groups parallel sampler work and planned expansion into quiet, unnumbered bands.",
+    "overview": "This website extends the native graphite and Noto Sans system recorded in the root [DESIGN.md](../DESIGN.md). The native editor remains the authority for the application; this document records the web reading, download, and local inspection surfaces. Graphite fills and square edges carry through, while the website uses muted pink for interaction and donations, recognizable Discord blue for community access, and a light primary download for the detected desktop platform. Local inspector entry and run actions reuse that neutral primary treatment.\n\nThe overview keeps the message short and puts the release identity and three icon-led downloads before an uncropped image of the actual player. Shared header and footer actions make donations and community access prominent. Reading pages retain essential instructions and evidence. Compatibility uses a source-built feature table with visible status and implementation notes; the roadmap groups parallel sampler work and planned expansion into quiet, unnumbered bands. The browser inspector brings the existing dense report workbench into this same shell, preserving its evidence-first navigation and local file workflow.",
     "keyCharacteristics": [
       "Dark graphite surfaces with thin dividers and quiet neutral text.",
       "Purposeful pink donation actions, Discord blue, and light detected downloads on graphite.",
