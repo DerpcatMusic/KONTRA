@@ -28,6 +28,8 @@ pub mod uvi_diagnostics;
 mod residency_diagnostics;
 #[cfg(feature = "shots")]
 pub mod onset_diagnostics;
+#[cfg(feature = "shots")]
+mod source_diagnostics;
 pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -92,7 +94,7 @@ pub struct Part {
     tone: sampler_core::OutputLowPass,
     tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
-    pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
+    pub(crate) waveform_sources: super::waveform::Sources,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
     uvi_meter_buses: Arc<[sampler_uvi::meters::Binding]>,
@@ -3808,13 +3810,14 @@ impl V2Loader {
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
-        let mut waveform_sources = std::collections::HashMap::new();
+        let mut waveform_sources = super::waveform::Sources::default();
         // Both Original waveform widgets and the chrome Mapping view use this worker.
         if let Some(inst) = &instrument {
             for (zone, id) in super::waveform::source_ids(inst).into_iter().enumerate() {
                 // Lowering keeps one region per IR zone in order; IDs remain physical where present.
                 if let Some(pcm) = prepared.region_asset(zone) {
-                    waveform_sources.insert(
+                    waveform_sources.insert_region(
+                        zone,
                         id,
                         super::waveform::Source {
                             pcm: pcm.clone(),

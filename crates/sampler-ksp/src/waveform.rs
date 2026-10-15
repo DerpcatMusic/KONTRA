@@ -49,7 +49,7 @@ pub(crate) fn admit_sources(
         let id = crate::builtins::FIRST_UI_ID + index as i32;
         let name = &hir.vars[ui.var.0 as usize].name;
         let Some(wave) = crate::ui::waveform_requests(model, id, name) else { continue; };
-        let zone = u32::try_from(wave.zone).ok().filter(|&zone| zone > 0);
+        let zone = u32::try_from(wave.zone).ok();
         let reason = match zone.and_then(|zone| captured.get(&zone).zip(admitted.get(&zone))) {
             Some((before, after)) if before == after => continue,
             Some(_) => crate::WaveformSourceReason::IdentityChanged,
@@ -76,7 +76,15 @@ pub(crate) fn validate_prepared_sources(
     for &(key, value) in store {
         if key[3] == sampler_core::waveform::SOURCE_TAG && value == 1 {
             let zone = u32::try_from(key[0]).map_err(|_| sampler_core::Error::InvalidInput)?;
-            if plan.source_zone_region(zone).is_none() {
+            // Native command identities include zero and are independent of
+            // positive EventInfo selection IDs. A present native catalog is
+            // authoritative even when this particular source was not admitted.
+            let region = if plan.source_zone_identity_count() != 0 {
+                plan.source_zone_identity_region(zone)
+            } else {
+                plan.source_zone_region(zone)
+            };
+            if region.is_none() {
                 return Err(sampler_core::Error::NotReady);
             }
         }
@@ -108,7 +116,7 @@ pub(crate) fn seed(
         }).ok_or(sampler_core::Error::InvalidInput)?;
         match (request.command, request.args.as_slice()) {
             ("attach_zone", [_, Value::Int(zone), Value::Int(_flags)])
-                if *zone > 0 && environment.zones.contains_key(&(*zone as u32)) =>
+                if *zone >= 0 && environment.zones.contains_key(&(*zone as u32)) =>
             {
                 attached[index] = true;
             }
@@ -128,7 +136,7 @@ pub(crate) fn seed(
         let name = &hir.vars[ui.var.0 as usize].name;
         let wave = crate::ui::waveform_requests(&init.model, id, name);
         // Cached requests must still match their captured physical-source domain.
-        if wave.as_ref().is_some_and(|w| w.zone <= 0 || !environment.zones.contains_key(&(w.zone as u32))) {
+        if wave.as_ref().is_some_and(|w| w.zone < 0 || !environment.zones.contains_key(&(w.zone as u32))) {
             return Err(sampler_core::Error::InvalidInput);
         }
         for (key, default) in initial(id) {
@@ -154,7 +162,7 @@ pub(crate) fn seed(
     }
     for &zone in environment.zones.keys() {
         if let Ok(zone) = i32::try_from(zone) {
-            if zone > 0 { store.push((source_key(zone), 1)); }
+            if zone >= 0 { store.push((source_key(zone), 1)); }
         }
     }
     for (index, name) in hir.symbols.iter().enumerate() {

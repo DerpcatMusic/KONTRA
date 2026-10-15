@@ -18,6 +18,9 @@ pub fn directory() -> tempfile::TempDir {
         .unwrap()
 }
 pub fn wav(path: &std::path::Path) {
+    wav_frames(path, 4096);
+}
+pub fn wav_frames(path: &std::path::Path, frames: usize) {
     let mut wav = hound::WavWriter::create(
         path,
         hound::WavSpec {
@@ -28,7 +31,7 @@ pub fn wav(path: &std::path::Path) {
         },
     )
     .unwrap();
-    for frame in 0..4096 {
+    for frame in 0..frames {
         wav.write_sample(if frame < 32 { 0f32 } else { 0.25f32 })
             .unwrap();
     }
@@ -125,4 +128,78 @@ pub fn nki(root: &std::path::Path, script: &str) -> std::path::PathBuf {
     nks.extend([1, 1, 12, 0]);
     std::fs::write(root.join("owned.nki"), nks).unwrap();
     root.join("owned.nki")
+}
+
+/// Two independently decoded assets selected by one real Runtime note.
+/// Completion order is controlled by the test, never by sleeps or a decoder.
+pub(super) fn streamed_layers(
+    traced: bool,
+    trace_capacity: usize,
+) -> (
+    super::V2Core,
+    Option<super::Owner>,
+    sampler_core::StreamWorker,
+    [sampler_core::Pcm; 2],
+) {
+    use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime, StreamCache};
+    let assets = std::array::from_fn(|_| Pcm::streamed(48000, 512).unwrap());
+    assert_ne!(assets[0].asset_id(), assets[1].asset_id());
+    let regions = (0..2)
+        .map(|sample| Region {
+            sample,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        })
+        .collect();
+    let plan = Prepared::new(48000, assets.to_vec(), regions, 2).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 16);
+    let (plan, reader) = if traced {
+        let (plan, reader) = plan.with_signal_trace_reader(trace_capacity).unwrap();
+        (plan, Some(reader))
+    } else {
+        (plan, None)
+    };
+    let (cache, worker) = StreamCache::new(2).unwrap();
+    let mut runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    runtime.set_cold_starts(true);
+    let mut part = super::Part::new(
+        runtime,
+        super::super::super::MixTree::instrument("authored two asset cold onset"),
+    )
+    .unwrap();
+    part.epoch = 109;
+    part.horizon = Some(128);
+    for (index, pcm) in assets.iter().enumerate() {
+        part.waveform_sources.insert(
+            index as u32,
+            crate::sound::waveform::Source {
+                pcm: pcm.clone(),
+                stream: None,
+            },
+        );
+    }
+    let plan = part.runtime.active_plan();
+    let mut core = super::V2Core::with_parts(1, 48000.);
+    drop(crate::sound::Core::install(
+        &mut core,
+        0,
+        Some(Box::new(part)),
+    ));
+    (
+        core,
+        reader.map(|reader| super::Owner {
+            epoch: 109,
+            plan,
+            reader,
+            canceled: false,
+        }),
+        worker,
+        assets,
+    )
 }

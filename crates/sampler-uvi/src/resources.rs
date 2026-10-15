@@ -124,6 +124,25 @@ impl Resources {
             root: program.parent().unwrap_or(Path::new(".")).to_owned(),
         }
     }
+    /// Display-only sample authority. Uses exactly the existing dynamic-sample
+    /// lookup rules and immutable source validation; it submits no core edit.
+    /// Call only on a preparation worker: origin/header reads may block.
+    pub fn sample_result(
+        &self,
+        path: crate::script::SamplePath<'_>,
+    ) -> Result<crate::script::SampleResource, String> {
+        #[cfg(feature = "library-access")]
+        if let Some(bank) = &self.bank {
+            let (bank, program) = bank.as_ref().map_err(|error| error.to_string())?;
+            return bank.sample_resource(program, path, false);
+        }
+        #[cfg(not(feature = "library-access"))]
+        if self.root.ancestors().any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs"))) {
+            return Err(ResourceError::Unavailable.to_string());
+        }
+        crate::stream::loose_sample_resource(&self.root, path, false)
+    }
+
     pub fn read_result(&self, path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
         self.read_with_origin_result(path)
             .map(|found| found.map(|(bytes, _)| bytes))

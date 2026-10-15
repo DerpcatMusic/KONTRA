@@ -1710,6 +1710,10 @@ impl ScriptHost {
             "resourcePath",
             lua.create_function(|lua, path: String| Ok(script_relative(lua, path)))?,
         )?;
+        native.set(
+            "sampleDirectory",
+            lua.create_function(|lua, ()| Ok(script_directory(lua)))?,
+        )?;
         let s = shared.clone();
         native.set(
             "saved",
