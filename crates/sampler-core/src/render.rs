@@ -717,6 +717,9 @@ impl Runtime {
         let modulated = prelude.modulated;
         let stop = prelude.stop;
         let filter = prelude.filter;
+        let trace_voice = if TRACE {
+            Some(crate::trace::onset::PhysicalVoice::from(crate::VoiceId(self.voices.id(i))))
+        } else { None };
         let v = self.voices.slots[i].value.as_mut().unwrap();
         // Retention invariant: live voice -> counted family -> counted note
         // -> expression owner. Each owner retires only after its dependents.
@@ -790,6 +793,7 @@ impl Runtime {
                             nodes,
                             envelope_parameters: v.envelope.trace_parameters(),
                             identity: crate::trace::TraceIdentity {
+                                voice: trace_voice,
                                 zone: v.source_zone,
                                 sample: v.sample,
                                 family: v.family.0.index,
