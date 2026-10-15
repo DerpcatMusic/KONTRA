@@ -49,3 +49,7 @@ pub use ui::offline_lifecycle::{run as offline_ui_lifecycle, Witness as OfflineU
 /// Metadata-only UVI UI render check; assets and pixels remain in memory.
 #[cfg(feature = "shots")]
 pub use ui::uvi_ui_health;
+
+/// Explicit bounded Kontakt onset diagnostics through the production loader.
+#[cfg(feature = "shots")]
+pub use sound::v2::onset_diagnostics::{run as offline_kontakt_onset, config as onset_config};

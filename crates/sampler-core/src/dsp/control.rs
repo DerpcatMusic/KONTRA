@@ -223,20 +223,14 @@ impl Prepared {
 }
 
 pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> Box<[ControlRamp]> {
-    bindings
-        .iter()
-        .map(|binding| {
-            let definition = plan.controls[plan.control_index(binding.control).unwrap()];
-            let target = binding.target(normalized(definition.domain, definition.default));
-            ControlRamp {
-                from: target,
-                target,
-                start: 0,
-                frames: 0,
-                modulation: None,
-            }
-        })
-        .collect()
+    bindings.iter().map(|binding| initial_parameter(plan, binding)).collect()
+}
+/// Same initialization law for one scoped graph parameter, without allocating
+/// a temporary ramp array for controls belonging to excluded regions.
+pub(crate) fn initial_parameter(plan: &Prepared, binding: &ControlRange) -> ControlRamp {
+    let definition = plan.controls[plan.control_index(binding.control).unwrap()];
+    let target = binding.target(normalized(definition.domain, definition.default));
+    ControlRamp { from: target, target, start: 0, frames: 0, modulation: None }
 }
 
 impl super::DspState {
