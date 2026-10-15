@@ -472,6 +472,9 @@ pub struct Program {
     /// be rescanned per entry (a 3.1M-instruction module took seconds).
     pub(super) starts_program: bool,
     pub(super) writes_slots: bool,
+    pub(super) snapshot_overlay_safe: bool,
+    pub(super) snapshot_overlay_services: Arc<[u16]>,
+    pub(super) snapshot_listener_driver: Option<u32>,
 }
 /// One program per distinct code body (and script instance when `by_instance`):
 /// entries into a shared module all carry the same `Arc`, and whole-code
@@ -523,6 +526,8 @@ impl Program {
                 }
             }
         }
+        self.snapshot_listener_driver = self.snapshot_listener_driver
+            .and_then(|body| body.checked_add(u32::try_from(base).ok()?));
         self
     }
 
@@ -581,6 +586,8 @@ impl Program {
         ) = Self::requirements(instructions)?;
         self.entry = entry;
         self.ui_id = ui_id;
+        self.snapshot_overlay_safe = crate::control::snapshot_callback_safe(&self.code, ranges, &self.snapshot_overlay_services);
+        self.snapshot_listener_driver = None;
         Ok(self)
     }
 
@@ -914,6 +921,9 @@ impl Program {
             requires_performance,
             requires_controller,
             requires_note,
+            snapshot_overlay_safe: crate::control::snapshot_callback_safe(&code, &[0..code.len()], &[]),
+            snapshot_overlay_services: Arc::from([]),
+            snapshot_listener_driver: None,
             code: code.into(),
             entry: 0,
             ui_id: 0,
@@ -997,7 +1007,7 @@ pub(super) enum PlanContext {
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
-    fn stage(self) -> Option<usize> {
+    pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
             Self::Controller(event) => Some(event.stage),
