@@ -1181,9 +1181,10 @@
       "source_commits": [
         "597266e8ba5baea872cc44f6432a3ca8f594bcc2",
         "224d11883646fc87032682b47d064c5145654c15",
-        "cabde651d5c3696ad8ce205423b3564952c45068"
+        "cabde651d5c3696ad8ce205423b3564952c45068",
+        "470ddd24ce7dbbffa0a656cffabe274d6bcab9ba"
       ],
-      "validation": "Accepted scoped outcome. Fresh isolated source 4a4f5ca7765668c5adcd4928a20ca092be373578 passed locked all-targets/all-features checking, test compilation and production build; all 477 tracked source hashes remained unchanged. Frozen lib-test cef99c9623cb passed all 590 library regressions (30 ignored), all 59 reporter regressions and the actual manual-export regression; frozen playback-test 5faf6f575afe passed all 89 playback regressions (4 ignored). The parent source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed six Ladder, ten BUFFR durable-file, eleven flight-recorder and one optional-date vendor regression, plus strict-MPE/native VST3 processing gates; the 4a correction changes only the authored reporter actor-lifecycle tests. Final versioned production identity and host gates are prepared separately before export. Production GitHub crash-upload/issue creation and Mac user-crash cause remain unverified. Independent double/scalar/PCM, rate, bounded resonance, partition/reset and zero-heap references pass. Generated math tables only. High Quality oversampling, other Ladder modes and full audible/native transition equivalence remain unproved.",
+      "validation": "Accepted scoped outcome. Fresh isolated source 4a4f5ca7765668c5adcd4928a20ca092be373578 passed locked all-targets/all-features checking, test compilation and production build; all 477 tracked source hashes remained unchanged. Frozen lib-test cef99c9623cb passed all 590 library regressions (30 ignored), all 59 reporter regressions and the actual manual-export regression; frozen playback-test 5faf6f575afe passed all 89 playback regressions (4 ignored). The parent source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed six Ladder, ten BUFFR durable-file, eleven flight-recorder and one optional-date vendor regression, plus strict-MPE/native VST3 processing gates; the 4a correction changes only the authored reporter actor-lifecycle tests. Final versioned production identity and host gates are prepared separately before export. Production GitHub crash-upload/issue creation and Mac user-crash cause remain unverified. Independent double/scalar/PCM, rate, bounded resonance, partition/reset and zero-heap references pass. Generated math tables only. High Quality oversampling, other Ladder modes and full audible/native transition equivalence remain unproved. Follow-up strict native float ordering:117/117 complete1024-frame stereo native hashes/checkpoints exact across13 taps/3 rates/3 quality settings; complete core487 passed/11 ignored and55 affected integrations passed/1 ignored. This does not admit HQ or unproved host transition laws.",
       "accepted": true
     },
     {
@@ -1198,7 +1199,7 @@
     },
     {
       "id": "ladder-versioned-cutoff-clock-mode",
-      "summary": "Retain version144\u2013146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
+      "summary": "Retain version144–146 Ladder cutoff boundary snapshots independently of the Gain/resonance clock",
       "source_commits": [
         "3d5a34b1ddb58211ea38e7d9d76ec3c4c6c59b5c"
       ],
@@ -3517,7 +3518,7 @@
       ],
       "release_note": "Let scripted interfaces settle before taking scan snapshots.",
       "accepted": true,
-      "validation": "Real Areia red1\u2192green1, rootshots no-run; five quiet alternating beforefail/afterpass witnesses. Snapshot median+1.90%; wholepainting/audition performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "validation": "Real Areia red1→green1, rootshots no-run; five quiet alternating beforefail/afterpass witnesses. Snapshot median+1.90%; wholepainting/audition performance unknown. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
       "category": "Fixed"
     },
     {
@@ -3528,7 +3529,7 @@
       ],
       "release_note": "Find installed UVI banks even with existing Kontakt roots, including banks directly inside an added folder.",
       "accepted": true,
-      "validation": "Owner6 focused/33library/rootci no-run; authored clearbanks flat0\u21922 and mixed1\u21923. Installed filesystem census only4folders/26containers; protected downstream playback not certified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
+      "validation": "Owner6 focused/33library/rootci no-run; authored clearbanks flat0→2 and mixed1→3. Installed filesystem census only4folders/26containers; protected downstream playback not certified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install.",
       "category": "Fixed"
     },
     {
@@ -3551,7 +3552,7 @@
       "release_note": "Recover complex interfaces from blank first frames and redraw on open, resize and restore.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "OwnerRX6600/Vulkan fresh-target22layer redalltransparent\u2192opaque first/changed/resized frames;24exactpartial/full pairs;33rendererPASS, targetedhost/allocator/debug-limit/native-resize, rootno-run andWindowsGNUcheckPASS. Windows DAW scanout and timing remain unverified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+      "validation": "OwnerRX6600/Vulkan fresh-target22layer redalltransparent→opaque first/changed/resized frames;24exactpartial/full pairs;33rendererPASS, targetedhost/allocator/debug-limit/native-resize, rootno-run andWindowsGNUcheckPASS. Windows DAW scanout and timing remain unverified. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
     },
     {
       "id": "uvi-directory-only-catalog",
@@ -3562,7 +3563,7 @@
       "release_note": "List UVI presets from bank directories without requiring payload access, and show failed-root bank counts and causes.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner8focused/7auditseed/nativeclearbank/rootlib and feature-off no-runPASS. Clear unavailable-payload fixture0\u21921catalogprogram; installed26/26directories\u21924libraries/660programs/0bankissues, no payload opening. Downstream protected playback UNKNOWN; metadata catalog is not playback certification. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
+      "validation": "Owner8focused/7auditseed/nativeclearbank/rootlib and feature-off no-runPASS. Clear unavailable-payload fixture0→1catalogprogram; installed26/26directories→4libraries/660programs/0bankissues, no payload opening. Downstream protected playback UNKNOWN; metadata catalog is not playback certification. W0 merged gates: ci/shots workspace at f109799e 1868PASS/0FAIL/218ignored; final01680642 rootshots no-run,9W10 regressions,57UVI tests,feature-off no-run,2fresh GPU fixtures and24 exact partial/full frames PASS. Native quick72loads/68audible;70 matched344 cases unchanged stage/audibility,0nonfinite/audioalloc. Loose scripted UVI fixture verifies sample playback only, not Lua execution; protected UVI playback and quiet performance unknown. Clean artifact proof and hosted Nightly-stamp proof recorded in separate release receipts; no W0 install."
     },
     {
       "id": "nkx-repeated-directory-members",
@@ -3801,7 +3802,7 @@
       "release_note": "Inventory accessible UVI program metadata without preparing unrelated sample content.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner authored inventory 0\u21921, opener compatibility and feature-on/off no-run PASS; installed protected inventories remain 0\u21920. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
+      "validation": "Owner authored inventory 0→1, opener compatibility and feature-on/off no-run PASS; installed protected inventories remain 0→0. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "editor-graphics-setup-deadline",
@@ -3834,7 +3835,7 @@
       "release_note": "Honor legacy event tags during piano release routing, preventing the extra dry release note.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner legacy-array RED\u2192GREEN, noheap saved-script witness and frozen native host comparison: settled Una release falls 14.4113 dB; attack peak timing unchanged. Noire and exact older tester build unavailable. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
+      "validation": "Owner legacy-array RED→GREEN, noheap saved-script witness and frozen native host comparison: settled Una release falls 14.4113 dB; attack peak timing unchanged. Noire and exact older tester build unavailable. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "sample-resolver-temporary-allocation",
@@ -3845,7 +3846,7 @@
       "release_note": "Avoid unnecessary temporary archive paths when resolving loose samples.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner allocation RED 687 bytes\u2192GREEN 147/161 bytes matching path lengths, three sample tests and root no-run PASS. No whole-worker speed or RSS parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
+      "validation": "Owner allocation RED 687 bytes→GREEN 147/161 bytes matching path lengths, three sample tests and root no-run PASS. No whole-worker speed or RSS parity claim. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "quiet-waiter-parent-classification",
@@ -3856,7 +3857,7 @@
       "release_note": "Keep idle build waiters from falsely invalidating quiet measurement admission.",
       "category": "Fixed",
       "accepted": true,
-      "validation": "Owner nested idle-runner RED\u2192GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
+      "validation": "Owner nested idle-runner RED→GREEN; real sibling workloads remain CONTENDED. Synthetic observer coverage only. W0 combined source46c899a9: workspace1956PASS/0FAIL/219ignored, scan scheduler48PASS, reader45PASS/1ignored, standalone+workspace no-run and GPU gates PASS; native15loads/15audible, existing Vista image reference remains open. Publication requires completion of the held 72-cell playback and hosted checks."
     },
     {
       "id": "exclusive-midi-learn-ownership",
@@ -3990,7 +3991,7 @@
       "source_commits": [
         "85d15c65047684e4041e907b4659995eef37ad91"
       ],
-      "validation": "Codex P2 authored exact/suffix collision RED1\u2192GREEN3 monolith tests; Kontakt lib97PASS/5ignored and area no-run PASS. Case and separator normalization retained; ambiguous fallback still fails closed. Existing full f1 workspace/native regression receipts precede this isolated correction.",
+      "validation": "Codex P2 authored exact/suffix collision RED1→GREEN3 monolith tests; Kontakt lib97PASS/5ignored and area no-run PASS. Case and separator normalization retained; ambiguous fallback still fails closed. Existing full f1 workspace/native regression receipts precede this isolated correction.",
       "accepted": true,
       "category": "Fixed"
     },
@@ -4129,13 +4130,13 @@
     },
     {
       "id": "keyboard-top-midi-window",
-      "summary": "Reach MIDI notes120\u2013127 and exclude out-of-range keyboard faces",
+      "summary": "Reach MIDI notes120–127 and exclude out-of-range keyboard faces",
       "source_commits": [
         "70caa6b7e3be2009a751fe1070716717360e5230"
       ],
       "accepted": true,
       "validation": "Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
-      "release_note": "Reach MIDI notes 120\u2013127 and exclude out-of-range keyboard faces."
+      "release_note": "Reach MIDI notes 120–127 and exclude out-of-range keyboard faces."
     },
     {
       "id": "explicit-performance-view-default-selection",
@@ -4856,12 +4857,68 @@
       "summary": "Avoid repeated per-entry Lua iterator guards during complete UVI UI inventory export",
       "source_commits": [
         "057d6f1cda5e5469a672a64e70f19f2d550aa305",
-        "57d4dcd611740bf4842e6a939424844caf93cdfe"
+        "57d4dcd611740bf4842e6a939424844caf93cdfe",
+        "ea844c04fbdd5bf30b067c48a5a996d3e6466f62"
       ],
       "accepted": true,
       "category": "Fixed",
       "release_note": "Full UVI UI inventory exports use a faster iterator while retaining the complete authored model.",
-      "validation": "48 complete synthetic models agree; full geometry and exact Bitmap/Vector PNG oracle passes; ordinary UVI163 and scan173 tests pass; integrated 0.3.477 root785 passed/53 ignored. Paired typical synthetic export caller CPU improves18\u201320%; no universal real-bank speed or native parity claim. Follow-up57d4 promotes fresh plain-scalar projection with canonical fallback:80 full authored models exact, full geometry and Bitmap/Vector pixels exact; scan177 passed/12 ignored. Contended paired caller-thread CPU ratios ordinary0.451/sparse0.458/all-document0.682/mixed0.780/all-metatable0.999; external compilers present in every timing sample, so quiet and real-bank speedup remain unverified. Combined root796 passed/53 ignored. No retained cache, hidden-widget pruning or native parity claim."
+      "validation": "48 complete synthetic models agree; full geometry and exact Bitmap/Vector PNG oracle passes; ordinary UVI163 and scan173 tests pass; integrated 0.3.477 root785 passed/53 ignored. Paired typical synthetic export caller CPU improves18–20%; no universal real-bank speed or native parity claim. Follow-up57d4 promotes fresh plain-scalar projection with canonical fallback:80 full authored models exact, full geometry and Bitmap/Vector pixels exact; scan177 passed/12 ignored. Contended paired caller-thread CPU ratios ordinary0.451/sparse0.458/all-document0.682/mixed0.780/all-metatable0.999; external compilers present in every timing sample, so quiet and real-bank speedup remain unverified. Combined root796 passed/53 ignored. No retained cache, hidden-widget pruning or native parity claim. Follow-up identical immutable presentation writes retain UI revision and avoid export; mutable/metamethod writes retain side effects. Five focused checks and full UVI scan182 passed/12 ignored; real unseeded worker proves8 identical controller updates retain the same interface and one actual text change publishes once. No universal bank speedup claim."
+    },
+    {
+      "id": "source-rate-complete-scaling-dependencies",
+      "summary": "Order all source-rate scaling dependencies before evaluation and reject instantaneous cycles",
+      "source_commits": [
+        "d7b4530b94ea0c2dc80a857512573b438aa94cfa"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Order all source-rate scaling dependencies before evaluation and reject instantaneous cycles.",
+      "validation": "Rendered PCM, primary/additional source-scale, cycle refusal, unsupported phase-scale and reuse oracles fail before the correction and pass after it;95 integration checks pass with1 pre-existing ignored. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "source-phase-preserves-saved-lfo-base",
+      "summary": "Preserve saved LFO phase when applying onset phase modulation",
+      "source_commits": [
+        "d3d087c66c2e2ad0b0dfecff633a3b755efc6f7c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve saved LFO phase when applying onset phase modulation.",
+      "validation": "Original Kontakt instruction probes and independent getter/builder/binding witnesses establish saved base plus modulation, not modulation from zero; authored unit/PCM RED-to-GREEN and29 targeted checks pass; corrected saved-phase integration oracle retained. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "macos-window-open-state-query",
+      "summary": "Report macOS native window open state without inverting the closed flag",
+      "source_commits": [
+        "fc94ce441c1ebb8d3994f9798abf9b2f801bec68"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Report macOS native window open state without inverting the closed flag.",
+      "validation": "Source review and platform-neutral lifetime coverage confirm the query polarity; Linux integrated root suite passes. Actual macOS host execution remains pending hosted validation. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "linux-window-worker-ownership",
+      "summary": "Keep Linux native window state and callbacks on their owning worker",
+      "source_commits": [
+        "9752e84ebd65f21f6bd021e3ad6f62afba49d5f8"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep Linux native window state and callbacks on their owning worker.",
+      "validation": "Additive auto-Send control handle replaces unsafe cross-thread native-window transfer on Linux. Native host26 unit checks, ownership type assertion, baseview27 checks and five actual isolated X11 lifecycle cases pass, including failed construction and callback self-close; non-Linux legacy ownership remains outside this slice. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "x11-parent-hook-generation-retention",
+      "summary": "Retain X11 parent notifications through first open and editor reopen",
+      "source_commits": [
+        "08616d3eed9c2856ad431840cdc9375c0034e583"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Retain X11 parent notifications through first open and editor reopen.",
+      "validation": "Retained hook plus weak per-open identity preserves current parent notifications and rejects late old teardown.22 unit checks pass with1 native case ignored by default; actual isolated first-open, pre-frame close and reopen test passes. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
     }
   ]
 }
