@@ -8,3 +8,7 @@ pub mod glide;
 pub mod lfo;
 pub mod pattern_arp;
 pub mod step_table;
+
+// Original-instruction proof foundation; no production source/graph admission.
+#[cfg(test)]
+mod uvi_lfo;
