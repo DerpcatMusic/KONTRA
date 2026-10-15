@@ -271,6 +271,37 @@ fn exact_snapshot_mapper_rejects_missing_duplicate_foreign_types_counts_domains_
 }
 
 #[test]
+fn persisted_menu_indices_are_refused_until_the_live_roster_has_an_atomic_fence() {
+    let source = "on init declare ui_menu $menu add_menu_item($menu,\"A\",20) add_menu_item($menu,\"B\",80) make_persistent($menu) end on";
+    let view = compile(source, 0).view();
+    assert_eq!(
+        snapshot_saved_state(
+            &[view],
+            &[slot(0, vec![("$menu", Saved::Int(1))])],
+            limits()
+        )
+        .unwrap_err(),
+        SnapshotSavedError::Row {
+            slot: 0,
+            name: "$menu".into(),
+            reason: SnapshotSavedRowError::MenuRosterUnverified,
+        }
+    );
+    let view = compile(
+        "on init declare $integer make_persistent($integer) end on",
+        0,
+    )
+    .view();
+    let state = snapshot_saved_state(
+        &[view],
+        &[slot(0, vec![("$integer", Saved::Int(1))])],
+        limits(),
+    )
+    .unwrap();
+    assert_eq!(state.values[0].value, ScriptStateValue::Cell(1));
+}
+
+#[test]
 fn sparse_slot_zero_and_four_keep_live_banks_private_properties_pgs_and_views() {
     let last = "on init declare $last := 5 make_persistent($last) declare $calls declare $pgs_seen end on on persistence_changed inc($calls) $pgs_seen := pgs_get_key_val(SHARED,0) end on";
     let (mut rt, mut views) = runtime(vec![compile(ALL, 0), compile(last, 4)], 16, false);

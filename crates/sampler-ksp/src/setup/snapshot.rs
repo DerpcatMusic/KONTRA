@@ -34,6 +34,9 @@ pub enum SnapshotSavedRowError {
     Count,
     Domain,
     TextCapacity,
+    /// Native menus save an item position; the mutable live menu roster owns
+    /// its semantic value and has no atomic roster fence in this first slice.
+    MenuRosterUnverified,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnapshotSavedError {
@@ -47,7 +50,9 @@ pub enum SnapshotSavedError {
     },
 }
 impl std::fmt::Display for SnapshotSavedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for SnapshotSavedError {}
 
@@ -184,6 +189,15 @@ pub fn snapshot_saved_state(
             .iter()
             .filter(|field| field.persistence == Persistence::Snapshot)
         {
+            if view.model().interface.widgets.iter().any(|widget| {
+                widget.name == field.name && widget.kind == crate::model::WidgetKind::Menu
+            }) {
+                return Err(row_error(
+                    view.slot,
+                    &field.name,
+                    SnapshotSavedRowError::MenuRosterUnverified,
+                ));
+            }
             if !names.insert(field.name.as_str()) {
                 return Err(E::InvalidLayout);
             }
