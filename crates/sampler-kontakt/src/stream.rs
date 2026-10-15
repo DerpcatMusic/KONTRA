@@ -558,6 +558,63 @@ fn start_ranges_with_offsets(
     ranges
 }
 
+struct AttackAnchors {
+    output_frames: usize,
+    ranges: Vec<Vec<Range<usize>>>,
+}
+
+/// Control-side geometry only. Optional whole-sample promotion is omitted;
+/// required resident and wavetable sources retain their complete requirements.
+/// Every trial charges the maximum lossless payload (two f32 channels/frame).
+/// Packing and publication still pass the exact shared physical quota once.
+fn bounded_attack_anchors(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    head: usize,
+    policy: &StreamPolicy,
+    pinned: &HashSet<AssetId>,
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> io::Result<AttackAnchors> {
+    let mut anchor_policy = *policy;
+    anchor_policy.resident_budget = None;
+    let pinned_ranges=(!pinned.is_empty()).then(||start_ranges(instrument,assets,rate,head,policy));
+    let physical: HashMap<_, _> = assets.iter().enumerate().map(|(i,p)| (p.asset_id(),i)).collect();
+    let trial = |head| {
+        let mut ranges = start_ranges_with_offsets(instrument,assets,rate,head,&anchor_policy,false);
+        if let Some(original)=&pinned_ranges {
+            for (i,pcm) in assets.iter().enumerate() {
+                if pinned.contains(&pcm.asset_id()) {ranges[i]=original[i].clone();}
+            }
+        }
+        let bytes = physical.values().try_fold(0usize,|sum,&i| {
+            let pcm = &assets[i];
+            let frames = if pcm.requires_resident() && pcm.resident_frames().is_some() {Some(0)}
+                else if pcm.requires_resident() { Some(pcm.frame_count()) }
+                else { ranges[i].iter().try_fold(0usize,|sum,r|sum.checked_add(r.len())) };
+            sum.checked_add(frames?.checked_mul(size_of::<Frame>())?)
+        });
+        (ranges,bytes)
+    };
+    // Even a zero-output-frame horizon keeps both interpolation guards at each
+    // authored forward/reverse start. Exact admission can still reject these
+    // minimum anchors; it must not silently publish an empty plan instead.
+    let (mut ranges, minimum) = trial(0);
+    let mut low = 0;
+    let mut high = head;
+    if minimum.is_some_and(|n|n<=policy.head_budget) {
+        while low < high {
+            if canceled() { return Err(canceled_head()); }
+            let middle = low + (high-low).div_ceil(2);
+            let (candidate,bytes) = trial(middle);
+            if bytes.is_some_and(|n|n<=policy.head_budget) {
+                low=middle; ranges=candidate;
+            } else { high=middle-1; }
+        }
+    }
+    Ok(AttackAnchors{output_frames:low,ranges})
+}
+
 /// Opt-in control-side evidence only. The counterfactual removes static start
 /// modulation coverage to attribute demand; it never changes published ranges.
 fn audit_start_ranges(
@@ -893,6 +950,8 @@ pub struct Streamer {
     /// Authored onsets without the complete possible start-offset interval.
     /// The full table above remains authoritative for reload/coverage reporting.
     onset_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
+    anchor_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
+    selected_anchor_head_frames: Option<usize>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
@@ -908,6 +967,7 @@ impl Streamer {
     /// Decode workspaces and page pools are reported separately.
     pub fn head_budget_status(&self)->HeadBudgetStatus {self.residency_budget.status()}
     pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
+    pub fn selected_anchor_head_frames(&self)->Option<usize> {self.selected_anchor_head_frames}
     pub fn dynamic_sources(&self) -> DynamicSources {
         self.dynamic.clone()
     }
@@ -919,7 +979,12 @@ impl Streamer {
     /// Base authored forward/reverse starts. Complete onset coverage is distinct
     /// from covering every possible sample-start modulation offset.
     pub fn onset_readiness(&self, assets: &[Pcm]) -> HeadReadiness {
-        self.ranges_readiness_matching(assets, |_| true, true)
+        self.ranges_readiness_matching(assets, |_| true, self.onset_ranges.as_deref().unwrap_or(&self.ranges))
+    }
+    /// Shorter anchors selected only after the complete requested onset table
+    /// exceeded its quota. This does not certify that original onset horizon.
+    pub fn anchor_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
+        Some(self.ranges_readiness_matching(assets, |_|true, self.anchor_ranges.as_deref()?))
     }
     /// Coverage of every authored range belonging to the selected asset IDs.
     /// This does not infer script/group/round-robin reachability.
@@ -928,16 +993,14 @@ impl Streamer {
         assets: &[Pcm],
         include: impl Fn(AssetId) -> bool,
     ) -> HeadReadiness {
-        self.ranges_readiness_matching(assets, include, false)
+        self.ranges_readiness_matching(assets, include, &self.ranges)
     }
     fn ranges_readiness_matching(
         &self,
         assets: &[Pcm],
         include: impl Fn(AssetId) -> bool,
-        onsets: bool,
+        table: &HashMap<AssetId, Vec<Range<usize>>>,
     ) -> HeadReadiness {
-        let table = if onsets { self.onset_ranges.as_deref().unwrap_or(&self.ranges) }
-            else { &self.ranges };
         let mut state = HeadReadiness {
             budget_bytes: self.head_budget,
             ..Default::default()
@@ -1179,6 +1242,23 @@ impl Streamer {
         allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
+        Self::start_with_fallbacks_cancelable(sources,assets,ranges,onsets,None,worker,decoders,
+            lazy,head_budget,pinned_wavetables,allow_cold_fallback,canceled)
+    }
+    fn start_with_fallbacks_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        onsets: Option<Vec<Vec<Range<usize>>>>,
+        anchors: Option<&dyn Fn(usize)->io::Result<AttackAnchors>>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
         let decoders = decoders.clamp(1, 8);
         if assets.len() != ranges.len() {
@@ -1234,6 +1314,8 @@ impl Streamer {
                 .collect::<Vec<_>>()
         };
         let mut selected = select(lazy, false);
+        let mut anchor_table = None;
+        let mut selected_anchor_head_frames = None;
         let residency_budget = HeadBudget::new(head_budget);
         // Binding and publication serialize on each Pcm's control mutation lock.
         // Escaped unbudgeted recipes can never publish into a bound asset.
@@ -1284,6 +1366,40 @@ impl Streamer {
                     } else { None };
                     let staged = match onset_staged {
                         Some(staged) => staged,
+                        None if anchors.is_some() => {
+                            let room=head_budget.saturating_sub(residency_budget.status().held_bytes);
+                            let anchors = anchors.unwrap()(room)?;
+                            if anchors.ranges.len()!=assets.len() {
+                                return Err(io::Error::new(io::ErrorKind::InvalidInput,"anchor asset/range count mismatch"));
+                            }
+                            let mut table_anchors = HashMap::new();
+                            for (pcm,ranges) in assets.iter().zip(anchors.ranges) {
+                                range_bounds(pcm,&ranges)?;
+                                let original=onset_table.as_ref().unwrap_or(&table);
+                                if !pcm.requires_resident() && !pinned_wavetables.contains(&pcm.asset_id())
+                                    && ranges.iter().any(|r|!original[&pcm.asset_id()].iter()
+                                    .any(|full|full.start<=r.start && full.end>=r.end)) {
+                                    return Err(io::Error::new(io::ErrorKind::InvalidInput,"anchor range outside requested onset coverage"));
+                                }
+                                table_anchors.insert(pcm.asset_id(),ranges);
+                            }
+                            anchor_table=Some(table_anchors);
+                            selected_anchor_head_frames=Some(anchors.output_frames);
+                            let mut read=HashSet::new();
+                            selected=assets.iter().filter(|pcm|read.insert(pcm.asset_id()))
+                                .filter_map(|pcm| {
+                                    let ranges=if pcm.requires_resident()||pinned_wavetables.contains(&pcm.asset_id()) {
+                                        &table[&pcm.asset_id()]
+                                    } else {&anchor_table.as_ref().unwrap()[&pcm.asset_id()]};
+                                    ((!ranges.is_empty()||pcm.requires_resident())
+                                        && !(pcm.requires_resident()&&pcm.resident_frames().is_some()))
+                                        .then_some((pcm,ranges.as_slice()))
+                                }).collect();
+                            // Minimum first-read anchors still must pass the
+                            // exact quota. Failure remains typed, never an
+                            // accepted empty/partially published attack plan.
+                            prepare(&selected)?
+                        }
                         None => {
                             selected = select(true, false);
                             prepare(&selected)?
@@ -1364,6 +1480,8 @@ impl Streamer {
             sources,
             ranges: Arc::new(table),
             onset_ranges: onset_table.map(Arc::new),
+            anchor_ranges: anchor_table.map(Arc::new),
+            selected_anchor_head_frames,
             stop,
             threads: Vec::new(),
             reloader: None,
@@ -1967,11 +2085,17 @@ impl Streamed {
         audit_start_ranges(&loaded.instrument, &kept, &ranges, &pinned_wavetables, rate, head, &policy);
         let onsets = policy.allow_cold_fallback.then(||
             start_ranges_with_offsets(&loaded.instrument, &kept, rate, head, &policy, false));
-        let (streamer, bytes) = Streamer::start_with_onsets_cancelable(
+        let anchor_pins=pinned_wavetables.clone();
+        let anchors = |room| {
+            let anchor_policy=StreamPolicy{head_budget:room,..policy};
+            bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
+        };
+        let (streamer, bytes) = Streamer::start_with_fallbacks_cancelable(
             sources,
             &kept,
             ranges,
             onsets,
+            policy.allow_cold_fallback.then_some(&anchors as &dyn Fn(usize)->io::Result<AttackAnchors>),
             worker,
             policy.decoders,
             policy.lazy,
@@ -2384,6 +2508,130 @@ mod tests {
                 assert!(result.err().unwrap().get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
                 assert!(assets.iter().all(|p|p.head_bytes()==0));
             }
+        }
+    }
+
+    #[test]
+    fn adaptive_attack_anchors_keep_shared_quota_and_original_horizon_truthful() {
+        for decoders in [1,4] {
+            let assets=vec![Pcm::streamed(48000,131072).unwrap(),Pcm::streamed(48000,131072).unwrap(),
+                Pcm::streamed(48000,2048).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
+            let mut zones=Vec::new();
+            for (asset,start,end,reverse) in [(0,1024,120000,false),(0,2048,100000,true),
+                (1,4096,125000,false),(2,0,2048,false),(3,0,64,false)] {
+                let mut z=ir::Zone::new(ir::AssetRef(asset));
+                z.playback.start=start;z.playback.end=Some(end);z.playback.reverse=reverse;
+                z.keys=ir::KeyRange{low:95,high:95};
+                z.pitch=ir::KeyTracking::Tracked{root:48};
+                if asset==2 {z.group=Some(ir::GroupRef(0));}
+                zones.push(z);
+            }
+            let instrument=ir::Instrument{zones,groups:vec![ir::Group{wavetable:Some(ir::Wavetable::default()),..Default::default()}],..Default::default()};
+            let policy=StreamPolicy{head_budget:100_000,max_step:16.,resident_budget:None,..Default::default()};
+            let full=start_ranges(&instrument,&assets,48000,4096,&policy);
+            let onsets=start_ranges_with_offsets(&instrument,&assets,48000,4096,&policy,false);
+            let calls=std::cell::Cell::new(0);
+            let pins=HashSet::from([assets[2].asset_id()]);
+            let anchors=|room|{calls.set(calls.get()+1);bounded_attack_anchors(&instrument,&assets,48000,4096,
+                &StreamPolicy{head_budget:room,..policy},&pins,&||false)};
+            let opens=Arc::new(AtomicU64::new(0));
+            let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:opens.clone(),
+                cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
+            let (_,worker)=StreamCache::new(4).unwrap();
+            let (streamer,bytes)=Streamer::start_with_fallbacks_cancelable(sources,&assets,full,Some(onsets),
+                Some(&anchors),worker,decoders,false,policy.head_budget,pins.clone(),true,&||false).unwrap();
+            assert_eq!(calls.get(),1,"metadata search, not repeated source decoding");
+            assert_eq!(opens.load(Ordering::Relaxed),4);
+            assert!(bytes<=policy.head_budget && streamer.head_budget_status().peak_bytes<=policy.head_budget);
+            assert!(streamer.selected_anchor_head_frames().is_some_and(|n|n>64 && n<4096),"selected {:?}",streamer.selected_anchor_head_frames());
+            let next=start_ranges_with_offsets(&instrument,&assets,48000,streamer.selected_anchor_head_frames().unwrap()+1,&policy,false);
+            assert!(next.iter().flatten().map(|r|r.len()*size_of::<Frame>()).sum::<usize>()>policy.head_budget,
+                "binary search chooses the largest guaranteed-fit uniform horizon");
+            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
+            assert!(!streamer.onset_readiness(&assets).complete());
+            assert!(!streamer.head_readiness(&assets).complete());
+            assert!(assets[2].resident_covers(0..2048));
+            assert_eq!(assets[3].resident_frames().unwrap().len(),64);
+            for z in instrument.zones.iter().take(3) {
+                let render=|pcm:Pcm| {
+                    let prepared=sampler_core::Prepared::new(48000,vec![pcm],vec![sampler_core::Region{
+                        sample:0,key_low:95,key_high:95,root_key:Some(48),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Default::default(),
+                        playback:sampler_core::Playback{start:z.playback.start as usize,end:z.playback.end.map(|n|n as usize),
+                            direction:if z.playback.reverse {sampler_core::Direction::Reverse}else{sampler_core::Direction::Forward},
+                            ..Default::default()},
+                    }],1).unwrap();
+                    let limits=sampler_core::Limits::for_plan(&prepared,2,1);
+                    let (cache,_)=StreamCache::new(128).unwrap();
+                    let mut runtime=sampler_core::Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
+                    runtime.set_cold_starts(true);
+                    runtime.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:95,external_id:None},95,1.).unwrap();
+                    assert_eq!(runtime.voice_count(),1);assert_eq!(runtime.stats().cold_starts,0);
+                    let mut out=[[0.;2];64];runtime.render(&mut out).unwrap();
+                    assert_eq!(runtime.stats().stream_underruns,0);
+                    out.map(|f|f.map(f32::to_bits))
+                };
+                let value=[f32::from_bits(0x3f123457),f32::from_bits(0x3f234569)];
+                let golden=Pcm::new(48000,vec![value;131072].into()).unwrap();
+                assert_eq!(render(assets[z.asset.unwrap().0].clone()),render(golden));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_horizon_anchors_cover_first_fractional_high_pitch_read_in_both_directions() {
+        for reverse in [false,true] {
+            let pcm=Pcm::streamed(48000,131072).unwrap();
+            let assets=vec![pcm];
+            let mut zone=ir::Zone::new(ir::AssetRef(0));
+            zone.playback.start=4096;zone.playback.end=Some(120000);zone.playback.reverse=reverse;
+            zone.pitch=ir::KeyTracking::Tracked{root:48};zone.keys=ir::KeyRange{low:95,high:95};
+            let instrument=ir::Instrument{zones:vec![zone.clone()],..Default::default()};
+            let policy=StreamPolicy{max_step:16.,head_budget:32768,resident_budget:None,..Default::default()};
+            let anchors=|room|bounded_attack_anchors(&instrument,&assets,48000,0,&StreamPolicy{head_budget:room,..policy},&HashSet::new(),&||false);
+            let original=start_ranges_with_offsets(&instrument,&assets,48000,4096,&policy,false);
+            let sources=HashMap::from([(assets[0].asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
+                cancel:None,frames:131072,wide:true}) as Arc<dyn AssetSource>)]);
+            let (_,worker)=StreamCache::new(64).unwrap();
+            let (streamer,_)=Streamer::start_with_fallbacks_cancelable(sources,&assets,original.clone(),Some(original),
+                Some(&anchors),worker,1,false,policy.head_budget,HashSet::new(),true,&||false).unwrap();
+            assert_eq!(streamer.selected_anchor_head_frames(),Some(0));
+            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
+            let prepared=sampler_core::Prepared::new(48000,assets.clone(),vec![sampler_core::Region{
+                sample:0,key_low:95,key_high:95,root_key:Some(48),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Default::default(),
+                playback:sampler_core::Playback{start:4096,end:Some(120000),
+                    direction:if reverse {sampler_core::Direction::Reverse}else{sampler_core::Direction::Forward},..Default::default()},
+            }],1).unwrap();
+            let limits=sampler_core::Limits::for_plan(&prepared,2,1);
+            let (cache,_)=StreamCache::new(128).unwrap();
+            let mut runtime=sampler_core::Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
+            runtime.set_cold_starts(true);
+            runtime.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:95,external_id:None},95,1.).unwrap();
+            assert_eq!(runtime.voice_count(),1);assert_eq!(runtime.stats().cold_starts,0);
+            let mut out=[[0.;2];1];runtime.render(&mut out).unwrap();
+            assert_eq!(runtime.stats().stream_underruns,0);
+            assert!(out.iter().flatten().all(|s|s.is_finite()));
+        }
+    }
+
+    #[test]
+    fn minimum_attack_anchors_are_atomic_or_fail_with_typed_capacity() {
+        for budget in [511,575,767,768] {
+        let assets=vec![Pcm::streamed(48000,8192).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
+        let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
+            cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
+        let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..32],vec![0..64]]});
+        let (_,worker)=StreamCache::new(4).unwrap();
+        let result=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..8192],vec![0..64]],
+            Some(vec![vec![0..4096],vec![0..64]]),Some(&anchors),worker,4,false,budget,HashSet::new(),true,&||false);
+        if budget==768 {
+            let (streamer,bytes)=result.unwrap();assert_eq!(bytes,768);
+            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
+            assert!(!streamer.onset_readiness(&assets).complete());
+        } else {
+            let error=result.err().unwrap();
+            assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+            assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
+        }
         }
     }
 
@@ -2876,6 +3124,8 @@ mod tests {
                     .collect(),
             ),
             onset_ranges: None,
+            anchor_ranges: None,
+            selected_anchor_head_frames: None,
             stop: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),
             reloader: None,
