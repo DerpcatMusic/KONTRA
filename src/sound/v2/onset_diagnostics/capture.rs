@@ -8,7 +8,7 @@ use sampler_core::{
     },
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 type Voice = (u64, usize, u64);
 fn voice(v: sampler_core::trace::onset::PhysicalVoice) -> Voice {
@@ -79,6 +79,12 @@ pub(super) struct Capture {
     birth_graph: BTreeMap<Voice, Option<usize>>,
     graph_scope: Option<sampler_core::trace::SignalTraceScope>,
     graph_nodes: usize,
+    voice_samples: BTreeMap<Voice, sampler_core::trace::onset::VoiceSnapshot>,
+    sampled_voices: BTreeSet<Voice>,
+    voice_edges: Vec<Value>,
+    voice_sample_ticks: u64,
+    voice_observation_loss: u64,
+    previous_voice_tick: Option<u64>,
 }
 impl Capture {
     pub fn new(capacity: usize) -> Self {
@@ -97,6 +103,12 @@ impl Capture {
             birth_graph: BTreeMap::new(),
             graph_scope: None,
             graph_nodes: 0,
+            voice_samples: BTreeMap::new(),
+            sampled_voices: BTreeSet::new(),
+            voice_edges: Vec::new(),
+            voice_sample_ticks: 0,
+            voice_observation_loss: 0,
+            previous_voice_tick: None,
         }
     }
     pub fn birth_count(&self) -> usize {
@@ -167,6 +179,77 @@ impl Capture {
         }
         Ok(())
     }
+    /// Off audio only. The interval is bounded by observations, not by worker
+    /// completion. A birth and death within one render can remain unseen.
+    pub fn observe_voices(&mut self, runtime: &sampler_core::Runtime) -> Result<(), &'static str> {
+        if self.voice_observation_loss != 0 {
+            return Err("Between-block voice observation already lost rows");
+        }
+        if self
+            .previous_voice_tick
+            .is_some_and(|at| runtime.now() <= at)
+        {
+            self.voice_observation_loss += 1;
+            return Err("Between-block observation sample clock did not advance");
+        }
+        let mut current = BTreeMap::new();
+        if !runtime.visit_onset_voices(|row| {
+            if current.len() == self.capacity {
+                return false;
+            }
+            current.insert(voice(row.voice), row);
+            true
+        }) {
+            self.voice_observation_loss += 1;
+            return Err("Between-block voice snapshot capacity exceeded");
+        }
+        let new_identities = current
+            .keys()
+            .filter(|key| !self.sampled_voices.contains(key))
+            .count();
+        let new_edges = current
+            .iter()
+            .filter(|(key, row)| {
+                self.voice_samples
+                    .get(key)
+                    .is_none_or(|old| old.cold != row.cold || old.starved != row.starved)
+            })
+            .count()
+            + self
+                .voice_samples
+                .keys()
+                .filter(|key| !current.contains_key(key))
+                .count();
+        if new_identities > self.capacity.saturating_sub(self.sampled_voices.len())
+            || new_edges > self.capacity.saturating_sub(self.voice_edges.len())
+        {
+            self.voice_observation_loss += 1;
+            return Err("Between-block identity or state transition capacity exceeded");
+        }
+        for (key, row) in &current {
+            self.sampled_voices.insert(*key);
+            let previous = self.voice_samples.get(key);
+            if previous.is_none_or(|old| old.cold != row.cold || old.starved != row.starved) {
+                self.voice_edges
+                    .push(json!({"kind":"observed_state","voice":id(*key),
+                    "previous_observation":previous,"current_observation":row,
+                    "interval_start":self.previous_voice_tick,
+                    "clock":"runtime_output_frames","sample_exact_transition":false}));
+            }
+        }
+        for (key, previous) in &self.voice_samples {
+            if !current.contains_key(key) {
+                self.voice_edges
+                    .push(json!({"kind":"not_present_after_block","voice":id(*key),
+                    "previous_observation":previous,"absent_at":runtime.now(),
+                    "termination_reason":null,"sample_exact_transition":false}));
+            }
+        }
+        self.voice_samples = current;
+        self.previous_voice_tick = Some(runtime.now());
+        self.voice_sample_ticks += 1;
+        Ok(())
+    }
     pub fn mark_first_trial(&mut self, start: usize) {
         self.first_trial = Some((start, self.births.len()));
     }
@@ -202,6 +285,23 @@ impl Capture {
         part: &mut Part,
         plan: PlanId,
         request: bool,
+    ) -> Result<Value, &'static str> {
+        self.first_window_status(part, plan, request, true)
+    }
+    /// Query historical windows without requests, polling, protection, or time advancement.
+    pub fn inspect_first_windows(
+        &self,
+        part: &mut Part,
+        plan: PlanId,
+    ) -> Result<Value, &'static str> {
+        self.first_window_status(part, plan, false, false)
+    }
+    fn first_window_status(
+        &self,
+        part: &mut Part,
+        plan: PlanId,
+        request: bool,
+        protect: bool,
     ) -> Result<Value, &'static str> {
         if part.runtime.active_plan() != plan {
             return Err("Warm-window plan owner was replaced");
@@ -244,9 +344,15 @@ impl Capture {
                 asset: window.asset,
                 index: window.page,
             }) == sampler_core::PageStatus::Ready
-                && cache
-                    .protect(&pcm, window.frames[0]..window.frames[1])
-                    .map_err(|_| "Exact-window protection failed")?
+                && if protect {
+                    cache
+                        .protect(&pcm, window.frames[0]..window.frames[1])
+                        .map_err(|_| "Exact-window protection failed")?
+                } else {
+                    cache
+                        .span(window.asset, window.frames[0]..window.frames[1])
+                        .is_some()
+                }
             {
                 ready += 1;
             }
@@ -259,10 +365,43 @@ impl Capture {
                 .map_err(|_| "Exact-window production service failed")?;
         }
         Ok(
-            json!({"declared_intervention":true,"requested":request,"requested_pages":requested,
+            json!({"declared_intervention":request || protect,"requested":request,"requested_pages":requested,
+            "page_protection_requested":protect,"production_service_requested":request && requested != 0,
+            "sample_clock_advanced":part.runtime.now()!=at,
             "windows":windows.len(),"ready_windows":ready,"verified_ready":ready==windows.len(),
             "at_frame":at,"identity":"historical_actual_asset_id_and_interpolation_ranges"}),
         )
+    }
+    /// Cover every observed birth, including release callbacks and gap/tail work
+    /// outside the attack-hold ranges used for strict RR comparisons.
+    pub fn birth_phases(&self, trials: &[Value]) -> Value {
+        let rows: Vec<_> = self
+            .births
+            .iter()
+            .enumerate()
+            .map(|(index, birth)| {
+                let preceding = trials
+                    .iter()
+                    .rev()
+                    .find(|t| t["note_on_frame"].as_u64().is_some_and(|at| at <= birth.at));
+                let (trial, phase) = preceding.map_or((Value::Null, "before_first_attack"), |t| {
+                    let attack = t["note_off_frame"]
+                        .as_u64()
+                        .is_some_and(|off| birth.at < off);
+                    (
+                        t["trial"].clone(),
+                        if attack {
+                            "attack_hold"
+                        } else {
+                            "release_gap_or_tail"
+                        },
+                    )
+                });
+                json!({"birth_index":index,"voice":id(voice(birth.voice)),"at_frame":birth.at,
+                "preceding_trial":trial,"phase":phase})
+            })
+            .collect();
+        json!(rows)
     }
     pub fn compare_trials(&self, trials: &[Value]) -> Value {
         let Some((first, last)) = trials.first().zip(trials.last()) else {
@@ -385,8 +524,10 @@ impl Capture {
             .iter()
             .filter(|r| r["contribution_observed"] != true)
             .count();
-        let loss =
-            self.signal_dropped != 0 || self.onset_dropped != 0 || self.reduced_overflow != 0;
+        let loss = self.signal_dropped != 0
+            || self.onset_dropped != 0
+            || self.reduced_overflow != 0
+            || self.voice_observation_loss != 0;
         let coverage_status = if loss || missing != 0 {
             "partial"
         } else if physical.is_empty() {
@@ -406,6 +547,13 @@ impl Capture {
             .map(|(id, (kind, processor))| json!({"node":id,"kind":kind,"processor":processor}))
             .collect();
         json!({"births":self.births,"first_windows":self.windows,"voice_metrics":rows,"node_metrics":sums,"nodes":nodes,
+            "voice_state_observations":self.voice_edges,"voice_sample_ticks":self.voice_sample_ticks,
+            "voice_state_observation_limit":self.capacity,"voice_observation_loss":self.voice_observation_loss,
+            "voices_present_at_last_observation":self.voice_samples.len(),
+            "within_block_birth_and_death_observation":false,
+            "births_without_between_block_snapshot":self.births.iter()
+                .filter(|b| !self.sampled_voices.contains(&voice(b.voice))).count(),
+            "voice_state_observation_scope":"post_render_current_state_intervals_not_worker_history",
             "signal_rows_reduced":self.records,"signal_dropped":self.signal_dropped,"onset_dropped":self.onset_dropped,
             "reduction_overflow":self.reduced_overflow,"births_without_signal_rows":missing,
             "graph_scope":self.graph_scope,"graph_nodes":self.graph_nodes,

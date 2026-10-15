@@ -19,6 +19,8 @@ mod builtins;
 mod diag;
 mod eval;
 mod hir;
+mod zone_routing;
+pub use zone_routing::{ZoneRoutingCapability, ZoneRoutingRequirements};
 #[cfg(feature = "cache")]
 mod init_cache;
 #[cfg(feature = "cache")]
@@ -1034,6 +1036,18 @@ pub enum WaveformSourceReason {
 }
 
 impl Initialized {
+    pub fn snapshot_mode_write(&self) -> Option<model::SnapshotModeWrite> {
+        self.init.model.snapshot_mode_write
+    }
+    /// Complete source-domain requirements; not permission for saved-row reuse.
+    pub fn zone_routing_requirements(&self) -> ZoneRoutingRequirements {
+        zone_routing::requirements(&self.hir)
+    }
+    /// Successful worker-side physical metadata replacements, in source IDs.
+    pub fn zone_parameters(&self) -> &BTreeMap<u32,[i32;3]> {
+        &self.init.zone_parameters
+    }
+
     /// Reconcile initialization metadata with this plan's final admitted source
     /// domain before compilation/publication. Removed or changed identities
     /// cannot leave an accepted waveform attachment or stale property mirror.

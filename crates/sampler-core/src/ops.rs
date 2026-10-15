@@ -345,6 +345,16 @@ pub enum Op {
         local: u16,
         write: bool,
     },
+    SourceZoneIdentity { index: u16, local: u16 },
+    SourceZoneCount { local: u16 },
+    SetZoneParameter {
+        zone: u16,
+        parameter: u16,
+        value: u16,
+        result: u16,
+        selectors: [i32; 3],
+        present: u8,
+    },
     ZoneParameter {
         zone: u16,
         parameter: u16,
@@ -403,7 +413,8 @@ impl Op {
             | Self::CompareReal { lhs, rhs, .. }
             | Self::Integer { lhs, rhs, .. }
             | Self::Random { lhs, rhs } => usize::from(*lhs.max(rhs)) + 1,
-            Self::RealUnary { local, .. }
+            Self::SourceZoneCount { local }
+            | Self::RealUnary { local, .. }
             | Self::WaitMidi { local }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
@@ -425,6 +436,9 @@ impl Op {
             Self::EngineParameter { address, local, .. } => {
                 (usize::from(*address) + 4).max(usize::from(*local) + 1)
             }
+            Self::SourceZoneIdentity { index, local } => usize::from(*index.max(local)) + 1,
+            Self::SetZoneParameter { zone, parameter, value, result, .. } =>
+                usize::from((*zone).max(*parameter).max(*value).max(*result)) + 1,
             Self::ZoneParameter {
                 zone,
                 parameter,
@@ -1120,6 +1134,7 @@ impl Runtime {
                     .jobs
                     .iter()
                     .any(|j| j.id == job)
+                    || self.plans.get(plan.0).and_then(|g| g.zone_routing.as_ref()).is_some_and(|s| s.has_job(job))
                     || self
                         .plans
                         .get(plan.0)
@@ -1385,6 +1400,31 @@ impl Runtime {
                     *bank.texts.get_mut(cell).ok_or(Error::InvalidInput)? = value;
                 }
             }
+            Op::SourceZoneIdentity { index, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let value = usize::try_from(self.reg(id, index)?).ok()
+                    .and_then(|index| self.plans.get(plan.0)?.prepared.source_zone_identity(index))
+                    .map_or(-1, i64::from);
+                self.set_reg(id, local, value)?;
+            }
+            Op::SourceZoneCount { local } => {
+                let plan = self.behavior_plan(owner)?;
+                let count = self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_zone_identity_count();
+                self.set_reg(id, local, i64::try_from(count).map_err(|_| Error::Capacity)?)?;
+            }
+            Op::SetZoneParameter { zone, parameter, value, result, selectors, present } => {
+                let selector = self.reg(id, parameter)?;
+                let parameter = selectors.iter().enumerate().position(|(i, s)|
+                    present & (1 << i) != 0 && i64::from(*s) == selector)
+                    .map(|i| [crate::ZoneParameter::Group, crate::ZoneParameter::LowKey, crate::ZoneParameter::HighKey][i]);
+                let zone = u32::try_from(self.reg(id, zone)?).map_err(|_| Error::InvalidInput);
+                let value = i32::try_from(self.reg(id, value)?).map_err(|_| Error::InvalidInput);
+                let job = match (zone, parameter, value) {
+                    (Ok(zone), Some(parameter), Ok(value)) => self.request_zone_parameter(id, zone, parameter, value).unwrap_or(-1),
+                    _ => -1,
+                };
+                self.set_reg(id, result, i64::from(job))?;
+            }
             Op::ZoneParameter {
                 zone,
                 parameter,
@@ -1410,12 +1450,9 @@ impl Runtime {
                 let value = parameter
                     .and_then(|parameter| {
                         let zone = u32::try_from(self.reg(id, zone).ok()?).ok()?;
-                        self.plans
-                            .get(plan.0)?
-                            .prepared
-                            .source_zone_parameter(zone, parameter)
+                        self.zone_parameter_in(plan, zone, parameter).ok()
                     })
-                    .unwrap_or(0);
+                    .unwrap_or(-1);
                 self.set_reg(id, local, i64::from(value))?;
             }
             Op::EngineParameter {

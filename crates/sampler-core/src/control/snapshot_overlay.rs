@@ -365,9 +365,9 @@ impl Runtime {
             .callbacks
             .checked_add(state.callbacks.len())
             .ok_or(R::Capacity)?;
-        self.last_callback_id
-            .checked_add(i32::try_from(state.callbacks.len()).map_err(|_| R::Capacity)?)
-            .ok_or(R::Capacity)?;
+        crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, state.callbacks.len())
+            .map_err(|_| R::Capacity)?;
         // Preparation may be canceled while the bounded roster is checked.
         // This last acquire is the snapshot's admission linearization point.
         if overlay
