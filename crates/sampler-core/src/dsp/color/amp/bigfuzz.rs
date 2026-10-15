@@ -90,7 +90,7 @@ impl Engine {
         let cap = |x: f32| if 1.0 <= x { 1.0 } else { x };
         // SR setup 0x140abe7f0.
         let inv = 1.0 / (rate as f32 * 4.0);
-        let w = inv * 6.283;
+        let w = inv * f32::from_bits(0x40c90e56);
         let co = |i: f32| cap(w * table(i + 0.881_591_8));
         let clip = |a: f32, b: f32| {
             let c = cap((rate as f32 * a - b).max(1.0).ln() * 0.130_719_066) * 127.5;

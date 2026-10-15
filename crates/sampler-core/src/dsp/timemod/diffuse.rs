@@ -25,7 +25,7 @@ const MAX_STAGES: usize = 16;
 const MT_FRAMES: usize = 625;
 
 fn exp2pi(x: f32) -> f32 {
-    (-6.283_185_307_179_586 * f64::from(x)).exp() as f32
+    (-std::f64::consts::TAU * f64::from(x)).exp() as f32
 }
 
 /// Modulation ring frames.

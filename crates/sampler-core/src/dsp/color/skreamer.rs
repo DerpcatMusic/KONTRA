@@ -76,7 +76,7 @@ impl Skreamer {
         super::super::filter::ladder_kernel::prepare();
         let sr = rate as f32;
         let inv = 1.0 / sr;
-        let w = inv * 6.283;
+        let w = inv * f32::from_bits(0x40c90e56);
         let k = [
             (table_db((570.0 - bass * 400.0) + 1381.881_6) * w).min(1.0),
             (inv * 129.429_81).min(1.0),

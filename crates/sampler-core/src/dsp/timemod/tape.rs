@@ -23,7 +23,7 @@ use crate::blocks::lfo::uvi_sine;
 use sampler_ir::fx::timemod::UviTapeEcho;
 
 fn exp2pi(x: f32) -> f32 {
-    (-6.283_185_307_179_586 * f64::from(x)).exp() as f32
+    (-std::f64::consts::TAU * f64::from(x)).exp() as f32
 }
 
 /// First-order shelf `0x141649120` (f64): DC gain `ga`, Nyquist gain `gb`,
