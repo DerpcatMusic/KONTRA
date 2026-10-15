@@ -114,6 +114,9 @@
       status.textContent = programs.length ? `Bank opened: ${programs.length} programs. Choose a program to inspect.` : 'The bank opened but no programs were found.';
       $('bank-program').focus();
     } else {
+      $('inspection-result-title').tabIndex = -1;
+      $('inspection-result-title').focus({ preventScroll: true });
+      $('inspection-result').scrollIntoView({ block: 'start', behavior: 'instant' });
       status.textContent = value.status === 'failed' ? 'Inspection failed. See the recorded stage and diagnostics below.' : value.status === 'partial' ? 'Inspection completed with gaps. Review the results below.' : 'Inspection completed. Review load stages and UI below.';
     }
   }
