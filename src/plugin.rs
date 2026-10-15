@@ -196,6 +196,9 @@ impl Part {
     pub(crate) fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
         self.control_values.clear();
+        // Project captures belong to host recall, not a new explicit preset.
+        self.script_state.clear();
+        self.script_state_source.clear();
         self.uvi_state.clear();
         self.uvi_state_source.clear();
     }
