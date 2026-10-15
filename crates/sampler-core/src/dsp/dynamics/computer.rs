@@ -204,7 +204,7 @@ pub(super) struct Decibel;
 impl Stage for Decibel {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        f.level = [f64::from((f.level[0] as f32).log10() * 20.); 2];
+        f.level = [f64::from(super::logarithm::log10(f.level[0] as f32) * 20.); 2];
     }
 }
 
@@ -216,7 +216,7 @@ impl Stage for Ceiling {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let mut gain_db = (-(f.level[0] as f32)).min(0.);
-        let window_db = (f.peak as f32).log10() * 20.;
+        let window_db = super::logarithm::log10(f.peak as f32) * 20.;
         if window_db + gain_db > 0. {
             gain_db = -window_db;
         }
@@ -235,7 +235,7 @@ impl Stage for MaxKnee {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
         let (t, k) = (self.threshold, self.knee);
-        let v = 20. * (f.level[0] as f32).log10();
+        let v = 20. * super::logarithm::log10(f.level[0] as f32);
         let v = if k > 0. {
             if v < t - k {
                 t
