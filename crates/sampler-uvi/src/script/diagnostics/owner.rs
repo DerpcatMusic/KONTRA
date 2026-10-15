@@ -176,8 +176,12 @@ pub enum OwnerCounter {
     ExportSampledBoundValues,
     ReadyCommandsCollected,
     ReadyCommandsPushed,
+    ExportPlainWidgets,
+    ExportMetatableWidgets,
+    ExportBoundWidgets,
+    ExportIndirectWidgets,
 }
-const COUNTERS: [OwnerCounter; 18] = [
+const COUNTERS: [OwnerCounter; 22] = [
     OwnerCounter::Turns,
     OwnerCounter::Events,
     OwnerCounter::UiRequests,
@@ -196,6 +200,10 @@ const COUNTERS: [OwnerCounter; 18] = [
     OwnerCounter::ExportSampledBoundValues,
     OwnerCounter::ReadyCommandsCollected,
     OwnerCounter::ReadyCommandsPushed,
+    OwnerCounter::ExportPlainWidgets,
+    OwnerCounter::ExportMetatableWidgets,
+    OwnerCounter::ExportBoundWidgets,
+    OwnerCounter::ExportIndirectWidgets,
 ];
 impl OwnerCounter {
     fn name(self) -> &'static str {
@@ -218,6 +226,10 @@ impl OwnerCounter {
             Self::ExportSampledBoundValues => "export_sampled_bound_value_reads",
             Self::ReadyCommandsCollected => "ready_commands_collected",
             Self::ReadyCommandsPushed => "ready_commands_pushed",
+            Self::ExportPlainWidgets => "export_plain_scalar_widgets",
+            Self::ExportMetatableWidgets => "export_metatable_widgets",
+            Self::ExportBoundWidgets => "export_bound_widgets",
+            Self::ExportIndirectWidgets => "export_indirect_kind_widgets",
         }
     }
 }
