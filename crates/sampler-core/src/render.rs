@@ -709,15 +709,14 @@ impl Runtime {
 
     #[inline]
     fn render_voice<const TRACE: bool>(&mut self, i: usize, segment: &mut [Frame], at: u64) {
-        let Some(Prelude {
-            points,
-            modulated,
-            stop,
-            filter,
-        }) = self.prepare_voice(i, at, segment.len())
-        else {
+        let prelude = self.prepare_voice(i, at, segment.len());
+        let Some(prelude) = prelude.as_ref() else {
             return;
         };
+        let points = prelude.points.as_ref();
+        let modulated = prelude.modulated;
+        let stop = prelude.stop;
+        let filter = prelude.filter;
         let v = self.voices.slots[i].value.as_mut().unwrap();
         // Retention invariant: live voice -> counted family -> counted note
         // -> expression owner. Each owner retires only after its dependents.
@@ -879,7 +878,7 @@ impl Runtime {
             controls,
             trace,
             stretch: stretch.as_mut().map(|c| &mut c[0]),
-            amplifier: chain.and(points),
+            amplifier: chain.and_then(|_| points.copied()),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters,
@@ -917,9 +916,9 @@ impl Runtime {
         drop((claimed, delay, parameter_scratch, native, stretch));
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
-                ramp.without_gains()
+                (*ramp).without_gains()
             } else {
-                ramp
+                *ramp
             };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
