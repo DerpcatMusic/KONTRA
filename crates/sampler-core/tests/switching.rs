@@ -33,6 +33,7 @@ fn instrument(switching: ir::Switching) -> ir::Instrument {
         assets: (0..4)
             .map(|i| ir::Asset {
                 location: ir::AssetLocation::Path(format!("{i}.wav")),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),

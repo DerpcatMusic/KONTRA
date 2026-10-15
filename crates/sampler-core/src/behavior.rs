@@ -89,6 +89,13 @@ pub enum Instruction {
     ReadControllerValue {
         local: u16,
     },
+    ReadPolyPressureKey {
+        local: u16,
+    },
+    /// Index in `local` is replaced by the full-resolution stage-owned value.
+    ReadPolyPressure {
+        local: u16,
+    },
     /// Latest input value in the callback's performance domain, including consumed CCs.
     ReadInputController {
         controller: u16,
@@ -465,6 +472,11 @@ pub struct Program {
     /// be rescanned per entry (a 3.1M-instruction module took seconds).
     pub(super) starts_program: bool,
     pub(super) writes_slots: bool,
+    pub(super) snapshot_overlay_safe: bool,
+    /// Frontend semantics omitted from bytecode can only deny admission.
+    pub(super) snapshot_frontend_opaque: bool,
+    pub(super) snapshot_overlay_services: Arc<[u16]>,
+    pub(super) snapshot_listener_driver: Option<u32>,
 }
 /// One program per distinct code body (and script instance when `by_instance`):
 /// entries into a shared module all carry the same `Arc`, and whole-code
@@ -516,6 +528,8 @@ impl Program {
                 }
             }
         }
+        self.snapshot_listener_driver = self.snapshot_listener_driver
+            .and_then(|body| body.checked_add(u32::try_from(base).ok()?));
         self
     }
 
@@ -574,6 +588,9 @@ impl Program {
         ) = Self::requirements(instructions)?;
         self.entry = entry;
         self.ui_id = ui_id;
+        self.snapshot_overlay_safe = !self.snapshot_frontend_opaque
+            && crate::control::snapshot_callback_safe(&self.code, ranges, &self.snapshot_overlay_services);
+        self.snapshot_listener_driver = None;
         Ok(self)
     }
 
@@ -624,6 +641,7 @@ impl Program {
                     | Instruction::ReadControllerGroup { .. }
                     | Instruction::ReadControllerChannel { .. }
                     | Instruction::ReadControllerValue { .. }
+                    | Instruction::ReadPolyPressureKey { .. }
             )
         });
         let requires_performance = requires_controller
@@ -631,6 +649,7 @@ impl Program {
                 matches!(
                     op,
                     Instruction::ReadInputController { .. }
+                        | Instruction::ReadPolyPressure { .. }
                         | Instruction::SendParameter { .. }
                         | Instruction::WriteController { .. }
                         | Instruction::PlayMidi { .. }
@@ -695,6 +714,8 @@ impl Program {
             | Instruction::ReadControllerGroup { local }
             | Instruction::ReadControllerChannel { local }
             | Instruction::ReadControllerValue { local }
+            | Instruction::ReadPolyPressureKey { local }
+            | Instruction::ReadPolyPressure { local }
             | Instruction::ControllerToMidi7 { local }
             | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
@@ -903,6 +924,10 @@ impl Program {
             requires_performance,
             requires_controller,
             requires_note,
+            snapshot_overlay_safe: crate::control::snapshot_callback_safe(&code, &[0..code.len()], &[]),
+            snapshot_frontend_opaque: false,
+            snapshot_overlay_services: Arc::from([]),
+            snapshot_listener_driver: None,
             code: code.into(),
             entry: 0,
             ui_id: 0,
@@ -986,7 +1011,7 @@ pub(super) enum PlanContext {
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
-    fn stage(self) -> Option<usize> {
+    pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
             Self::Controller(event) => Some(event.stage),
@@ -1345,6 +1370,7 @@ impl Runtime {
             })
             .count();
         if available + finished < needed {
+            self.record_control_admission_failure(needed);
             return false;
         }
         let mut i = 0;
@@ -2517,6 +2543,15 @@ impl Runtime {
                                 && n.input.is_some_and(|i| i64::from(i.key) == key)
                         });
                 *self.local_cell_mut(id, local)? = i64::from(held);
+            }
+            Instruction::ReadPolyPressureKey { local } => {
+                let key = self.controller_event_mut(id)?.poly_key.ok_or(Error::InvalidInput)?;
+                *self.local_cell_mut(id, local)? = i64::from(key);
+            }
+            Instruction::ReadPolyPressure { local } => {
+                let key = u8::try_from(*self.local_cell_mut(id, local)?).map_err(|_| Error::InvalidInput)?;
+                let value = self.behavior_poly_pressure(id, key)?;
+                *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::SendParameter {
                 kind,

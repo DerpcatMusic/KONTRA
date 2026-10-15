@@ -59,6 +59,7 @@ pub struct Face {
     path: std::path::PathBuf,
     program: u32,
     generation: u64,
+    resource_revision: Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
     revision: u64,
     patch: ir::InterfacePatch,
     pub page: ir::PageRef,
@@ -91,6 +92,47 @@ impl Face {
         presentation: Presentation,
         program: u32,
     ) -> Self {
+        Self::with_assets(path, generation, from, shown, presentation, program, Default::default())
+    }
+
+    fn shares_resources(
+        &self, path: &std::path::Path, program: u32,
+        revision: &Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
+    ) -> bool {
+        self.path == path && self.program == program
+            && revision.is_some() && self.resource_revision == *revision
+    }
+
+    fn refresh_generation(
+        &mut self, generation: u64, from: Arc<[ir::Interface]>, shown: usize,
+        presentation: Presentation,
+    ) {
+        let navigation = (self.shown < from.len()
+            && same_bindings(&self.from[self.shown], &from[self.shown])
+            && self.from[self.shown].pages == from[self.shown].pages)
+            .then_some((self.shown, self.page));
+        let assets = std::mem::take(&mut self.assets);
+        let revision = self.resource_revision.clone();
+        let mut next = Self::with_assets(
+            &self.path, generation, from, shown, presentation, self.program, assets,
+        );
+        next.resource_revision = revision;
+        if let Some((shown, page)) = navigation {
+            next.show(shown);
+            next.page.0 = page.0.min(next.face.pages.len().saturating_sub(1));
+        }
+        *self = next;
+    }
+
+    fn with_assets(
+        path: &std::path::Path,
+        generation: u64,
+        from: Arc<[ir::Interface]>,
+        shown: usize,
+        presentation: Presentation,
+        program: u32,
+        assets: ir_view::Assets,
+    ) -> Self {
         let face = ir_view::resolved(&from[shown]);
         let mut out = Self {
             sources: (0..from.len()).map(|_| SourceProjection::default()).collect(),
@@ -99,12 +141,13 @@ impl Face {
             path: path.into(),
             program,
             generation,
+            resource_revision: None,
             revision: u64::MAX,
             patch: Default::default(),
             page: ir::PageRef(0),
             shown,
             face,
-            assets: Default::default(),
+            assets,
             presentation,
             values: Default::default(),
             input: Default::default(),
@@ -266,8 +309,9 @@ impl Face {
         if self.native.is_some() && self.presentation == Presentation::Bitmap {
             return;
         }
-        self.assets.prepare(
+        self.assets.prepare_for_program(
             &self.path,
+            self.program,
             &self.face,
             self.page,
             self.presentation,
@@ -386,17 +430,26 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     });
     if stale {
         activity.add(Count::FaceNew, 1);
-        cx.state.faces.insert(
-            slot,
-            Face::new_for_program(
+        // A new audio generation must clear drafts, values and native Lua state,
+        // but an unchanged resource namespace keeps its worker and decoded art.
+        // Asset descriptors are checked again by Preparation::prepare.
+        let program = cx.selection.parts[slot].program;
+        if let Some(face) = cx.state.faces.get_mut(&slot)
+            && face.shares_resources(&path, program, &published.resource_revision)
+        {
+            face.refresh_generation(generation, from.clone(), main, presentation);
+        } else {
+            let mut next = Face::new_for_program(
                 &path,
                 generation,
                 from.clone(),
                 main,
                 presentation,
-                cx.selection.parts[slot].program,
-            ),
-        );
+                program,
+            );
+            next.resource_revision = published.resource_revision.clone();
+            cx.state.faces.insert(slot, next);
+        }
     }
     let face = cx.state.faces.get_mut(&slot)?;
     if !Arc::ptr_eq(&face.from, &from)
@@ -592,6 +645,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
         face.input.meters = shared.widget_meters(&face.face, generation);
+        face.input.uvi_meters = shared.uvi_widget_meters(&face.face, generation);
         let waveforms =
             shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
         face.input.wave_duration_us = waveforms
@@ -605,8 +659,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }
     drop(readback);
     if face.native.is_none() || mode == crate::library::ViewMode::Kontra {
-        face.assets.prepare(
+        face.assets.prepare_for_program(
             &face.path,
+            face.program,
             &face.face,
             face.page,
             face.presentation,
@@ -1055,6 +1110,38 @@ mod tests {
             widgets: vec![widget],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn preset_generation_keeps_unchanged_art_worker_but_clears_old_values_and_gestures() {
+        use crate::sound::resource_revision::ResourceRevision;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.nki");
+        std::fs::write(&path, b"synthetic owner").unwrap();
+        let resources = sampler_kontakt::Resources::of(&path);
+        let revision = Arc::new(ResourceRevision::capture(&path, 0, &resources).unwrap());
+        let mut face = Face::new_for_program(
+            &path, 0, vec![projection_fixture(0)].into(), 0, Presentation::Vector, 0,
+        );
+        face.resource_revision = Some(revision.clone());
+        let worker = face.assets.worker_identity().unwrap();
+        face.values.insert(ir::ControlId(999999), 123.);
+        face.input.values.insert(ir::WidgetRef(999999), ir::Value::Integer(123));
+        assert!(face.shares_resources(&path, 0, &Some(revision.clone())));
+        let mut next = projection_fixture(0);
+        next.widgets[0].value_text = Some("New preset".into());
+        face.refresh_generation(1, vec![next].into(), 0, Presentation::Vector);
+        assert_eq!(face.generation, 1);
+        assert_eq!(face.assets.worker_identity(), Some(worker));
+        assert!(!face.values.contains_key(&ir::ControlId(999999)));
+        assert!(!face.input.values.contains_key(&ir::WidgetRef(999999)));
+        assert_eq!(face.face.widgets[0].value_text.as_deref(), Some("New preset"));
+        assert!(!face.shares_resources(&path, 0, &None));
+        assert!(!face.shares_resources(&path, 1, &Some(revision.clone())));
+        std::fs::write(&path, b"changed synthetic owner").unwrap();
+        let changed = Arc::new(ResourceRevision::capture(&path, 0, &resources).unwrap());
+        assert_ne!(revision, changed);
+        assert!(!face.shares_resources(&path, 0, &Some(changed)));
     }
 
     #[test]

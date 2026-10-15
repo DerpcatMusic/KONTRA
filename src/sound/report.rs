@@ -16,6 +16,8 @@ pub enum MissingReason {
     InvalidValue,
     /// Representable, but how the source maps it to sound is not established.
     UnknownLaw,
+    /// An unverified law prevented a source or route from being translated.
+    UnknownLawOmitted,
 }
 
 /// One feature that was not translated or not implemented.
@@ -137,6 +139,10 @@ impl FaultInbox {
     pub(crate) fn take_dropped(&self) -> u64 {
         self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
+    #[cfg(feature = "shots")]
+    pub(crate) fn counts(&self) -> (usize, u64) {
+        (self.queue.len(), self.dropped.load(std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// Problems while playing, cumulative since the part was installed.
@@ -144,8 +150,19 @@ impl FaultInbox {
 pub struct RuntimeProblems {
     /// Notes or voices refused for lack of preallocated capacity.
     pub capacity_drops: u64,
+    /// Core starts rejected by the voice-slot pool, excluding stream-page
+    /// admission and adapter/script capacity failures in the aggregate above.
+    #[serde(default)]
+    pub voice_pool_refusals: u64,
+    /// Silent source-waiting voices replaced at full voice-slot capacity.
+    #[serde(default)]
+    pub waiting_voice_replacements: u64,
     /// Streamed audio not read in time and played silent.
     pub underruns: u64,
+    /// Voices admitted before their first source frames were resident. Separate
+    /// from gaps during playback: the start waits silently for worker data.
+    #[serde(default)]
+    pub cold_starts: u64,
     #[serde(default)]
     pub stream_capacity: u64,
     #[serde(default)]
@@ -207,6 +224,90 @@ pub struct LoadReport {
     /// Message-free typed UVI initial diagnostics. Live counts arrive in runtime.
     #[serde(default)]
     pub uvi_faults: sampler_uvi::script::FaultCounts,
+    /// Initial permanent attack coverage; excludes later dynamic sample revisions.
+    #[serde(default)]
+    pub stream_startup: Option<StreamStartup>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamStartup {
+    pub ranges: usize,
+    pub covered_ranges: usize,
+    /// Base forward/reverse attacks, excluding the full possible offset union.
+    pub onset_ranges: usize,
+    pub covered_onset_ranges: usize,
+    /// A quota-selected shorter output horizon, not the originally requested
+    /// storage-latency horizon. None means this fallback was not selected.
+    pub selected_anchor_head_frames: Option<usize>,
+    pub anchor_ranges: usize,
+    pub covered_anchor_ranges: usize,
+    /// Proved non-loop Constant onset windows at the original requested horizon.
+    pub hint_ranges: usize,
+    pub covered_hint_ranges: usize,
+    pub hint_source_frames: u64,
+    pub covered_hint_source_frames: u64,
+    /// Selected hint windows can be shorter than the requested ones. None means
+    /// a hint-bearing candidate was not selected, even if base ranges overlap.
+    pub selected_hint_head_frames: Option<usize>,
+    pub selected_hint_ranges: usize,
+    pub covered_selected_hint_ranges: usize,
+    pub selected_hint_source_frames: u64,
+    pub covered_selected_hint_source_frames: u64,
+    pub packed_head_bytes: usize,
+    pub head_budget_bytes: usize,
+    pub required_resident_assets: usize,
+    pub required_resident_bytes: usize,
+    pub physical_payload_bytes: usize,
+    /// Exact typed capacity failure retained as readable support evidence.
+    pub fallback: Option<String>,
+}
+
+impl StreamStartup {
+    pub fn of(streamer: &sampler_kontakt::Streamer, assets: &[sampler_core::Pcm], report: &sampler_kontakt::StreamReport) -> Self {
+        let readiness = streamer.head_readiness(assets);
+        let onsets = streamer.onset_readiness(assets);
+        let anchors = streamer.anchor_readiness(assets);
+        let hints = streamer.hint_readiness(assets);
+        let selected_hints = streamer.selected_hint_readiness(assets);
+        Self {
+            ranges: readiness.ranges,
+            covered_ranges: readiness.covered_ranges,
+            onset_ranges: onsets.ranges,
+            covered_onset_ranges: onsets.covered_ranges,
+            selected_anchor_head_frames: streamer.selected_anchor_head_frames(),
+            anchor_ranges: anchors.as_ref().map_or(0,|r|r.ranges),
+            covered_anchor_ranges: anchors.as_ref().map_or(0,|r|r.covered_ranges),
+            hint_ranges: hints.as_ref().map_or(0,|r|r.ranges),
+            covered_hint_ranges: hints.as_ref().map_or(0,|r|r.covered_ranges),
+            hint_source_frames: hints.as_ref().map_or(0,|r|r.source_frames),
+            covered_hint_source_frames: hints.as_ref().map_or(0,|r|r.covered_source_frames),
+            selected_hint_head_frames: streamer.selected_hint_head_frames(),
+            selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.ranges),
+            covered_selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.covered_ranges),
+            selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.source_frames),
+            covered_selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.covered_source_frames),
+            packed_head_bytes: readiness.packed_bytes,
+            head_budget_bytes: readiness.budget_bytes,
+            required_resident_assets: report.required_resident_assets,
+            required_resident_bytes: report.required_resident_bytes,
+            physical_payload_bytes: streamer.physical_budget().status().held_bytes,
+            fallback: streamer.head_fallback().map(|failure| failure.to_string()),
+        }
+    }
+
+    pub fn warning(&self) -> Option<String> {
+        self.fallback.as_ref().map(|why| {
+            let anchors=self.selected_anchor_head_frames.map(|frames|format!(
+                " Shorter attack anchors: {} of {}, covering {frames} output frames.",
+                self.covered_anchor_ranges,self.anchor_ranges)).unwrap_or_default();
+            let hints=self.selected_hint_head_frames.map(|frames|format!(
+                " Constant onset windows: {} of {}, covering {frames} output frames.",
+                self.covered_selected_hint_ranges,self.selected_hint_ranges)).unwrap_or_default();
+            format!("Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}.{anchors}{hints} Uncached starts may wait for disk reads.",
+                self.covered_ranges,self.ranges,self.covered_onset_ranges,self.onset_ranges)
+        })
+    }
 }
 
 impl From<&sampler_ir::Unsupported> for Missing {
@@ -220,6 +321,7 @@ impl From<&sampler_ir::Unsupported> for Missing {
                 sampler_ir::Reason::NotModeled => MissingReason::NotModeled,
                 sampler_ir::Reason::InvalidValue => MissingReason::InvalidValue,
                 sampler_ir::Reason::UnknownLaw => MissingReason::UnknownLaw,
+                sampler_ir::Reason::UnknownLawOmitted => MissingReason::UnknownLawOmitted,
             },
         }
     }
@@ -270,6 +372,7 @@ impl LoadReport {
             why_silent: None,
             faults: Vec::new(),
             uvi_faults: Default::default(),
+            stream_startup: None,
         }
     }
 
@@ -289,6 +392,7 @@ impl LoadReport {
         .chain(self.missing.iter().map(|m| {
             format!("missing ({:?}): {} = {:?} at {}", m.reason, m.feature, m.value, m.location)
         }))
+        .chain(self.stream_startup.iter().filter_map(StreamStartup::warning))
     }
 }
 

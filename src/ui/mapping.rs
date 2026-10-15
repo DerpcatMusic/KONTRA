@@ -216,7 +216,7 @@ fn color(g: usize) -> Color {
     Color::oklch(0.72, 0.09, golden_hue(200., g))
 }
 fn sample(inst: &ir::Instrument, z: &ir::Zone) -> String {
-    match inst.assets.get(z.asset.0).map(|a| &a.location) {
+    match z.asset.and_then(|a| inst.assets.get(a.0)).map(|a| &a.location) {
         Some(ir::AssetLocation::Path(p)) => p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned(),
         Some(ir::AssetLocation::KontaktFile { id }) => format!("Container sample {id}"),
         None => "Sample unavailable".into(),
@@ -1196,7 +1196,7 @@ fn inspector(
     let envelope = envelope.filter(|e| e.range == bounds);
     let root = match z.pitch {
         ir::KeyTracking::Tracked { root } | ir::KeyTracking::Scaled { root, .. } => Some(root),
-        ir::KeyTracking::Fixed => inst.assets.get(z.asset.0).and_then(|a| a.root_key),
+        ir::KeyTracking::Fixed => z.asset.and_then(|a| inst.assets.get(a.0)).and_then(|a| a.root_key),
     };
     let gain = 20. * z.gain.linear().log10();
     let pan = z.pan.position;

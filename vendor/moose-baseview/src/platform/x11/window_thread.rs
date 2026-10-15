@@ -106,17 +106,30 @@ pub enum HostCallback {
     Destroyed,
 }
 
-pub struct WindowThreadHandle {
+/// Thread control only: native state and the handler stay on the X11 worker.
+/// No owner-thread HostCallbacks are stored in this auto-Send type.
+pub struct WindowThreadControl {
     shared: Arc<WindowThreadShared>,
     loop_signal: LoopSignal,
     event_loop_handle: Cell<Option<JoinHandle<()>>>,
-
     request_sender: calloop::channel::SyncSender<WindowThreadRequest>,
     response_receiver: mpsc::Receiver<WindowThreadResponseMessage>,
-    callback_receiver: Option<mpsc::Receiver<HostCallback>>,
-    host_callbacks: Option<RefCell<Box<dyn HostCallbacks>>>,
     can_detach: Cell<bool>,
     close_timeout: Cell<Option<Duration>>,
+}
+
+pub struct WindowThreadHandle {
+    control: WindowThreadControl,
+    callback_receiver: Option<mpsc::Receiver<HostCallback>>,
+    host_callbacks: Option<RefCell<Box<dyn HostCallbacks>>>,
+}
+
+impl std::ops::Deref for WindowThreadHandle {
+    type Target = WindowThreadControl;
+
+    fn deref(&self) -> &Self::Target {
+        &self.control
+    }
 }
 
 // Pinning code cannot keep a host-owned parent drawable alive after close.
@@ -130,12 +143,66 @@ fn can_detach(settings: &WindowSettings, host: &crate::host::Host) -> bool {
 impl WindowThreadHandle {
     pub fn create_window(init: WindowInitializer) -> Result<Self> {
         let can_detach = can_detach(&init.settings, &init.host);
+        let (control, callback_receiver) = WindowThreadControl::spawn(
+            init.settings,
+            init.builder,
+            init.host.main_thread,
+            can_detach,
+        )?;
+        Ok(Self {
+            control,
+            callback_receiver,
+            host_callbacks: init.host.callbacks.map(|c| c.into_inner().into()),
+        })
+    }
+
+    pub fn handle_main_thread_callback(&self) {
+        loop {
+            let Some(receiver) = self.callback_receiver.as_ref() else { return };
+            let Some(callback) = receiver.try_recv().ok() else { return };
+            self.handle_main_thread_message(callback);
+        }
+    }
+
+    fn handle_main_thread_message(&self, msg: HostCallback) {
+        let Some(host_callbacks) = self.host_callbacks.as_ref() else { return };
+        let mut host_callbacks = host_callbacks.borrow_mut();
+        match msg {
+            HostCallback::Destroyed => host_callbacks.destroyed(),
+            HostCallback::Resized { new_size: new, previous } => {
+                if let Err(e) = host_callbacks.request_resize(new) {
+                    warn!("Host failed to resize parent window: {}. Reverting.", e);
+                    if let Err(e) = self.resize(previous.physical.into()) {
+                        warn!(
+                            "Failed to revert to previous size while handling previous error: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl WindowThreadControl {
+    /// Constructs a controller with no owner-thread callbacks by construction.
+    pub(crate) fn create_without_host(
+        settings: WindowSettings, builder: WindowHandlerBuilder,
+    ) -> Result<Self> {
+        let can_detach = settings.parent.is_none() && !settings.wait_for_parent;
+        let (control, _) = Self::spawn(settings, builder, None, can_detach)?;
+        Ok(control)
+    }
+
+    fn spawn(
+        settings: WindowSettings, builder: WindowHandlerBuilder,
+        main_thread: Option<Box<dyn crate::host::HostMainThreadCaller>>, can_detach: bool,
+    ) -> Result<(Self, Option<mpsc::Receiver<HostCallback>>)> {
         let (tx, rx) = result_channel();
         let shared = Arc::new(WindowThreadShared::new());
         let (request_sender, request_receiver) = calloop::channel::sync_channel(1);
         let (response_sender, response_receiver) = mpsc::channel();
-        let (main_thread_caller, main_thread_receiver) =
-            MainThreadCaller::new(init.host.main_thread);
+        let (main_thread_caller, main_thread_receiver) = MainThreadCaller::new(main_thread);
 
         let join_handle = {
             let shared = Arc::clone(&shared);
@@ -143,8 +210,8 @@ impl WindowThreadHandle {
 
             thread::spawn(move || {
                 let thread = match WindowThread::create(
-                    init.settings,
-                    init.builder,
+                    settings,
+                    builder,
                     shared,
                     request_receiver,
                     response_sender,
@@ -163,19 +230,28 @@ impl WindowThreadHandle {
             })
         };
 
-        let loop_signal = rx.receive()?;
+        let loop_signal = match rx.receive() {
+            Ok(signal) => signal,
+            Err(error) => {
+                // Failed construction must finish dropping the worker-owned handler
+                // before returning control to a caller that may close its parent.
+                let _ = join_handle.join();
+                return Err(error);
+            }
+        };
 
-        Ok(WindowThreadHandle {
-            event_loop_handle: Some(join_handle).into(),
-            shared,
-            loop_signal,
-            request_sender,
-            response_receiver,
-            host_callbacks: init.host.callbacks.map(|c| c.into_inner().into()),
-            callback_receiver: main_thread_receiver,
-            can_detach: Cell::new(can_detach),
-            close_timeout: Cell::new(None),
-        })
+        Ok((
+            Self {
+                event_loop_handle: Some(join_handle).into(),
+                shared,
+                loop_signal,
+                request_sender,
+                response_receiver,
+                can_detach: Cell::new(can_detach),
+                close_timeout: Cell::new(None),
+            },
+            main_thread_receiver,
+        ))
     }
 
     pub fn size(&self) -> WindowSize {
@@ -213,21 +289,31 @@ impl WindowThreadHandle {
     }
 
     pub fn run_until_closed(&self) -> Result<()> {
-        if !self.shared.stopped.load(Ordering::Relaxed) {
-            self.request(WindowThreadRequest::Show)?;
-        }
+        let shown = if self.shared.stopped.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            self.request(WindowThreadRequest::Show)
+        };
+        // Even an already-disconnected request channel cannot skip native teardown.
+        let joined = self.join_thread();
+        shown.and(joined)
+    }
 
+    fn join_thread(&self) -> Result<()> {
         let Some(thread) = self.event_loop_handle.take() else { return Ok(()) };
-
+        if thread.thread().id() == thread::current().id() {
+            // A callback can legally receive its own Send controller. The loop
+            // is already stopped by Drop; its current callback must return before
+            // the native handler can be destroyed. Never try to join ourselves.
+            drop(thread);
+            return Ok(());
+        }
         if let Err(panic) = thread.join() {
             resume_unwind(panic);
         }
-
-        // Ignore poisoned mutex
         if let Some(e) = self.shared.final_error.lock().unwrap_or_else(|g| g.into_inner()).take() {
             return Err(PlatformError::Run(e));
         }
-
         Ok(())
     }
 
@@ -255,43 +341,13 @@ impl WindowThreadHandle {
         self.shared.sizing_strategy().max_size()
     }
 
-    pub fn handle_main_thread_callback(&self) {
-        loop {
-            let Some(receiver) = self.callback_receiver.as_ref() else { return };
-            let Some(callback) = receiver.try_recv().ok() else { return };
-
-            self.handle_main_thread_message(callback);
-        }
-    }
-
     pub fn set_parent(&self, new_parent: ParentWindowHandle) -> Result<()> {
         self.can_detach.set(false);
         self.request(WindowThreadRequest::SetParent(new_parent))
     }
-
-    fn handle_main_thread_message(&self, msg: HostCallback) {
-        let Some(host_callbacks) = self.host_callbacks.as_ref() else { return };
-        let mut host_callbacks = host_callbacks.borrow_mut();
-
-        match msg {
-            HostCallback::Destroyed => host_callbacks.destroyed(),
-            HostCallback::Resized { new_size: new, previous } => {
-                if let Err(e) = host_callbacks.request_resize(new) {
-                    warn!("Host failed to resize parent window: {}. Reverting.", e);
-
-                    if let Err(e) = self.resize(previous.physical.into()) {
-                        warn!(
-                            "Failed to revert to previous size while handling previous error: {}",
-                            e
-                        );
-                    }
-                }
-            }
-        }
-    }
 }
 
-impl Drop for WindowThreadHandle {
+impl Drop for WindowThreadControl {
     fn drop(&mut self) {
         self.shared.stopped_requested_from_host.store(true, Ordering::Relaxed);
         self.loop_signal.stop();
@@ -299,6 +355,10 @@ impl Drop for WindowThreadHandle {
 
         if let Some(timeout) = self.close_timeout.get() {
             let Some(thread) = self.event_loop_handle.take() else { return };
+            if thread.thread().id() == thread::current().id() {
+                drop(thread);
+                return;
+            }
             join_bounded(thread, timeout, || {
                 if !self.can_detach.get() || !crate::pin_current_image_for_detached_work() {
                     return false;
@@ -306,7 +366,7 @@ impl Drop for WindowThreadHandle {
                 self.shared.callbacks_revoked.store(true, Ordering::Release);
                 true
             });
-        } else if let Err(e) = self.run_until_closed() {
+        } else if let Err(e) = self.join_thread() {
             warn!("Error while closing window: {}", e);
         }
     }
@@ -327,6 +387,9 @@ fn join_bounded(thread: JoinHandle<()>, timeout: Duration, pin: impl FnOnce() ->
     let _ = thread.join();
     true
 }
+
+#[cfg(test)]
+mod ownership_tests;
 
 #[cfg(test)]
 mod close_tests {

@@ -300,7 +300,7 @@ pub struct Stereo {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     /// The script-addressable slot (`set_engine_par`) whose Shape, Drive,
-    /// Damping, Bits, Frequency, Noise level and Noise color writes drive this
+    /// Damping, Skreamer, Bits, Frequency, Noise level and Noise color writes drive this
     /// unit's knobs. Absent: the knobs are constants.
     pub address: Option<SlotAddress>,
     pub gainer: Option<Gainer>,
@@ -501,6 +501,17 @@ impl Config {
         }
         if let Curve::Tube { drive } | Curve::Transistor { drive } = self.curve {
             lane("ENGINE_PAR_DRIVE", P::Drive, f64::from(drive), Law::Identity);
+        }
+        if let Curve::Skreamer([tone, drive, bass, bright, mix]) = self.curve {
+            for (name, role, value) in [
+                ("ENGINE_PAR_SK_TONE", P::Tone, tone),
+                ("ENGINE_PAR_SK_DRIVE", P::Drive, drive),
+                ("ENGINE_PAR_SK_BASS", P::Bass, bass),
+                ("ENGINE_PAR_SK_BRIGHT", P::Bright, bright),
+                ("ENGINE_PAR_SK_MIX", P::Mix, mix),
+            ] {
+                lane(name, role, f64::from(value), Law::Identity);
+            }
         }
         if let Some(damping) = self.damping {
             lane("ENGINE_PAR_DAMPING", P::Damping, f64::from(damping), Law::Identity);

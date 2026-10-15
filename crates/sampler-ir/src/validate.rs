@@ -52,6 +52,10 @@ pub enum ValidationError {
         owner: String,
         reason: &'static str,
     },
+    SampleTarget {
+        owner: String,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -74,6 +78,7 @@ impl fmt::Display for ValidationError {
                 write!(f, "zone {zone}: take {take} of a {takes}-take sequence")
             }
             Self::Switching { owner, reason } => write!(f, "{owner}: {reason}"),
+            Self::SampleTarget { owner, reason } => write!(f, "{owner}: {reason}"),
         }
     }
 }
@@ -339,7 +344,22 @@ impl Check<'_> {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "formant control")?; }
                 }
                 Processor::FilterBank(c) => {
-                    for (v, field) in [(c.cutoff, "filter cutoff"), (c.resonance, "filter resonance"), (c.extra, "filter extra")] {
+                    // Legacy BFilter setters retain the raw cutoff but saturate its
+                    // coefficient input. Preserve that base for subsequent modulation;
+                    // clipping here would change a later negative modulation delta.
+                    use crate::fx::filter::{Response, Topology, Variant};
+                    let raw_legacy = c.topology == Topology::Cascade
+                        && c.variant == Variant::Default
+                        && matches!((c.response, c.poles),
+                            (Response::LowPass, 1 | 2 | 4 | 6)
+                            | (Response::HighPass, 1 | 2 | 4)
+                            | (Response::BandPass, 2 | 4)
+                            | (Response::Notch, 4));
+                    let cutoff_bounds = if raw_legacy {
+                        f64::from(f32::MIN)..=f64::from(f32::MAX)
+                    } else { 0.0..=1.0 };
+                    self.within(c.cutoff, cutoff_bounds, "filter cutoff")?;
+                    for (v, field) in [(c.resonance, "filter resonance"), (c.extra, "filter extra")] {
                         self.within(v, 0.0..=1.0, field)?;
                     }
                     if let crate::fx::filter::Variant::Versatile(v) = c.variant {
@@ -479,6 +499,20 @@ impl Instrument {
                 check.exists(Reference::Zone(zone.0))?;
             }
         }
+        let mut sample_nodes = std::collections::HashSet::new();
+        let mut sample_zones = std::collections::HashSet::new();
+        for target in &self.source_indices.sample_targets {
+            check.owner = format!("sample target {}", target.node);
+            if !sample_nodes.insert(target.node) || target.zones.is_empty() {
+                return Err(ValidationError::SampleTarget { owner: check.owner.clone(), reason: "duplicate or empty sample target" });
+            }
+            for zone in &target.zones {
+                check.exists(Reference::Zone(zone.0))?;
+                if !sample_zones.insert(zone.0) {
+                    return Err(ValidationError::SampleTarget { owner: check.owner.clone(), reason: "zone belongs to several sample targets" });
+                }
+            }
+        }
         for (i, impulse) in self.impulses.iter().enumerate() {
             check.owner = format!("impulse {i}");
             check.within(f64::from(impulse.rate), 1.0..=f64::from(u32::MAX), "rate")?;
@@ -531,7 +565,11 @@ impl Instrument {
         }
         for (i, zone) in self.zones.iter().enumerate() {
             check.owner = format!("zone {i}");
-            check.exists(Reference::Asset(zone.asset.0))?;
+            if let Some(asset) = zone.asset {
+                check.exists(Reference::Asset(asset.0))?;
+            } else if !sample_zones.contains(&i) {
+                return Err(ValidationError::SampleTarget { owner: check.owner.clone(), reason: "dormant zone has no sample target" });
+            }
             if let Some(group) = zone.group {
                 check.exists(Reference::Group(group.0))?;
             }
@@ -689,7 +727,8 @@ impl Instrument {
                 | Target::Pan
                 | Target::SampleStart
                 | Target::LoopStart
-                | Target::LoopLength => {}
+                | Target::LoopLength
+                | Target::Wavetable(_) => {}
             }
             if let Some(shape) = route.shape {
                 check.exists(Reference::Shape(shape.0))?;
@@ -745,6 +784,7 @@ impl Instrument {
             .map(|binding| binding.control)
             .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
             .collect();
+        let mut native_aliases = std::collections::HashSet::new();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
             check.owner = format!("source control alias {i}");
             check.exists(Reference::Control(alias.control.0))?;
@@ -761,6 +801,18 @@ impl Instrument {
                 return Err(ValidationError::OutOfRange {
                     owner: check.owner.clone(),
                     field: "unbound native control alias",
+                    value: i as f64,
+                });
+            }
+            if !native_aliases.insert((
+                alias.parameter.trim_start_matches('$'),
+                alias.address.group,
+                alias.address.slot,
+                alias.address.generic,
+            )) {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "duplicate native control alias",
                     value: i as f64,
                 });
             }
@@ -898,10 +950,43 @@ impl Instrument {
 mod tests {
     use crate::*;
 
+    #[test]
+    fn legacy_filter_raw_cutoff_retains_its_native_saturating_domain() {
+        use fx::filter::{Config, Response, Topology, Variant};
+        for (response, poles) in [(Response::LowPass, 1), (Response::HighPass, 1),
+            (Response::BandPass, 2), (Response::LowPass, 2), (Response::HighPass, 2),
+            (Response::LowPass, 4), (Response::HighPass, 4), (Response::BandPass, 4),
+            (Response::Notch, 4), (Response::LowPass, 6)] {
+            let mut config = Config::new(Topology::Cascade, response, poles);
+            let check = |config| {
+                let mut ir = one_zone();
+                ir.chains.push(Chain { scope: Scope::Master,
+                    pre_amplitude: vec![Processor::FilterBank(config)], post_amplitude: vec![] });
+                ir.validate()
+            };
+            for cutoff in [-8.5, 8.5, 9.7, 10.0] {
+                config.cutoff = cutoff;
+                assert_eq!(check(config), Ok(()));
+            }
+            for cutoff in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+                config.cutoff = cutoff;
+                assert!(check(config).is_err());
+            }
+            config.cutoff = 8.5;
+            config.variant = Variant::Pro52;
+            assert!(check(config).is_err());
+            config.variant = Variant::Default;
+            config.cutoff = 0.5;
+            config.resonance = 8.5;
+            assert!(check(config).is_err());
+        }
+    }
+
     fn one_zone() -> Instrument {
         Instrument {
             assets: vec![Asset {
                 location: AssetLocation::Path("a.wav".into()),
+                residency: Default::default(),
                 encoding: Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),
@@ -912,6 +997,28 @@ mod tests {
     }
 
     #[test]
+    fn dormant_sample_targets_preserve_mapping_and_renumber_without_fabricated_assets() {
+        let mut ir = one_zone();
+        let dormant = Zone { keys: KeyRange { low: 48, high: 72 }, ..Zone::dormant() };
+        ir.zones.push(dormant.clone());
+        assert!(matches!(ir.validate(), Err(ValidationError::SampleTarget { .. })));
+        ir.source_indices.sample_targets = vec![
+            SourceSampleTarget { node: 100, zones: vec![ZoneRef(0)] },
+            SourceSampleTarget { node: 200, zones: vec![ZoneRef(1)] },
+        ];
+        assert_eq!(ir.validate(), Ok(()));
+        assert_eq!(ir.retain_zones(|z| z.asset.is_none()), Vec::<usize>::new());
+        assert!(ir.assets.is_empty());
+        assert_eq!(ir.zones, vec![dormant]);
+        assert_eq!(ir.source_indices.sample_targets, vec![SourceSampleTarget { node: 200, zones: vec![ZoneRef(0)] }]);
+        assert_eq!(ir.validate(), Ok(()));
+        ir.source_indices.sample_targets.push(SourceSampleTarget { node: 300, zones: vec![ZoneRef(0)] });
+        assert!(matches!(ir.validate(), Err(ValidationError::SampleTarget { .. })));
+        ir.source_indices.sample_targets[1].zones = vec![ZoneRef(99)];
+        assert!(matches!(ir.validate(), Err(ValidationError::Dangling { .. })));
+    }
+
+    #[test]
     fn retaining_zones_drops_and_renumbers_unused_assets() {
         let mut ir = one_zone();
         ir.assets
@@ -919,11 +1026,11 @@ mod tests {
         ir.zones = (0..3).map(|i| Zone::new(AssetRef(i))).collect();
         ir.zones[2].keys = KeyRange { low: 10, high: 10 };
         assert_eq!(
-            ir.retain_zones(|z| z.keys.high != 127 || z.asset.0 == 1),
+            ir.retain_zones(|z| z.keys.high != 127 || z.asset == Some(AssetRef(1))),
             [1, 2]
         );
         assert_eq!(
-            ir.zones.iter().map(|z| z.asset.0).collect::<Vec<_>>(),
+            ir.zones.iter().map(|z| z.asset.unwrap().0).collect::<Vec<_>>(),
             [0, 1]
         );
         assert_eq!((ir.assets.len(), ir.validate()), (2, Ok(())));
@@ -937,7 +1044,7 @@ mod tests {
     #[test]
     fn names_the_dangling_reference_and_its_owner() {
         let mut ir = one_zone();
-        ir.zones[0].asset = AssetRef(3);
+        ir.zones[0].asset = Some(AssetRef(3));
         let error = ir.validate().unwrap_err();
         assert_eq!(
             error,

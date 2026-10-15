@@ -78,6 +78,111 @@ fn origin() -> ChannelAddress {
 }
 
 #[test]
+fn poly_aftertouch_owns_key_array_suppression_and_following_controller_stage() {
+    let first = compile("on init declare $key declare $pressure end on
+        on poly_at
+            $key := $POLY_AT_NUM
+            $pressure := %POLY_AT[$POLY_AT_NUM]
+            ignore_controller
+            set_controller(1,$pressure)
+        end on").unwrap();
+    assert!(!first.warnings().iter().any(|w| w.message.contains("PolyAt") || w.message.contains("ignore_controller")));
+    let second = compile("on init declare $pressure declare $cc end on
+        on poly_at $pressure := %POLY_AT[60] end on
+        on controller $cc := %CC[1] end on").unwrap();
+    let prepared = sampler_ksp::bind_modules(vec![first, second], Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+    let mut rt = Runtime::new(prepared, limits_for_pressure()).unwrap();
+    support::without_heap(|| {
+        let generation = rt.active_plan();
+        let domain = rt.performance(1).unwrap();
+        rt.dispatch_poly_pressure(domain, origin(), 60, u32::MAX).unwrap();
+        assert_eq!(rt.input_poly_pressure(domain, 60), Ok(u32::MAX));
+        assert_eq!(rt.input_poly_pressure(rt.performance(0).unwrap(), 60), Ok(0));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(60));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 1), Ok(127));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(0), "consumed pressure does not reach the next module");
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(127));
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+        rt.reset_poly_pressure(domain).unwrap();
+        assert_eq!(rt.input_poly_pressure(domain, 60), Ok(0));
+    });
+}
+
+fn limits_for_pressure() -> Limits {
+    Limits { notes: 4, performances: 2, channels: 2, families: 4, voices: 4,
+        expressions: 4, decisions: 0, commands: 8, behaviors: 8,
+        behavior_cells: 256, behavior_fuel: 512, note_cells: 16 }
+}
+
+#[test]
+fn poly_aftertouch_waits_retain_key_and_failed_admission_keeps_input_unchanged() {
+    let script = compile("on init declare $key declare $pressure end on
+        on poly_at wait(1000) $key := $POLY_AT_NUM $pressure := %POLY_AT[$key] end on").unwrap();
+    let prepared = script.bind(Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+    let mut budget = limits_for_pressure();
+    budget.behaviors = 1;
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let generation = rt.active_plan();
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_poly_pressure(domain, origin(), 61, u32::MAX).unwrap();
+        assert!(matches!(rt.dispatch_poly_pressure(domain, origin(), 62, u32::MAX), Err(Error::Capacity)));
+        assert_eq!(rt.input_poly_pressure(domain, 62), Ok(0));
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(61));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 1), Ok(127));
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+    });
+}
+
+#[test]
+fn poly_aftertouch_forwarding_counts_matching_expression_owners_only() {
+    let mut rt = runtime("on poly_at end on");
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let input = Input { protocol: Protocol::Midi1, port: 1, group: 2, channel: 3, key: 60, external_id: None };
+        let note = rt.trigger(input, 60, 1.).unwrap();
+        let other = rt.trigger(Input { channel: 4, ..input }, 60, 1.).unwrap();
+        assert_eq!(rt.dispatch_poly_pressure(domain, origin(), 60, u32::MAX).unwrap().1, 1);
+        assert_eq!(rt.expression(rt.expression_id(note).unwrap()).unwrap().pressure, u32::MAX);
+        assert_eq!(rt.expression(rt.expression_id(other).unwrap()).unwrap().pressure, 0);
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+        assert_eq!(rt.dispatch_poly_pressure(domain, origin(), 61, u32::MAX).unwrap().1, 0);
+    });
+}
+
+#[test]
+fn mapped_host_pressure_retains_physical_recipients_across_callback_waits() {
+    let mut rt = runtime("on init declare $calls end on on poly_at inc($calls) wait(1000) end on");
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let execution = Input { protocol: Protocol::Midi1, port: 1, group: 2, channel: 3, key: 60, external_id: Some(1) };
+        let first = rt.trigger(execution, 60, 1.).unwrap();
+        let overlap = rt.trigger(Input { external_id: Some(2), ..execution }, 60, 1.).unwrap();
+        let elsewhere = rt.trigger(Input { external_id: Some(3), ..execution }, 60, 1.).unwrap();
+        let source = Input { protocol: Protocol::Clap, port: 4, group: 0, channel: 9, key: 60, external_id: Some(101) };
+        rt.set_input_source(first, source).unwrap();
+        rt.set_input_source(overlap, Input { external_id: Some(102), ..source }).unwrap();
+        rt.set_input_source(elsewhere, Input { channel: 10, external_id: Some(103), ..source }).unwrap();
+        let recipients = InputSelector { protocol: Some(Protocol::Clap), port: Some(4), group: Some(0), channel: Some(9), key: Some(60), external_id: None };
+        rt.dispatch_poly_pressure_selected(domain, origin(), 60, u32::MAX, Some(recipients)).unwrap();
+        let pressure = |rt: &Runtime, note| rt.expression(rt.expression_id(note).unwrap()).unwrap().pressure;
+        assert_eq!(pressure(&rt, first), u32::MAX, "KSP forwards an unconsumed event before wait");
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(pressure(&rt, first), u32::MAX);
+        assert_eq!(pressure(&rt, overlap), u32::MAX);
+        assert_eq!(pressure(&rt, elsewhere), 0, "mapped wire channel must not broaden physical recipients");
+        assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0), Ok(1));
+        rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+        rt.dispatch_poly_pressure_selected(domain, origin(), 60, 123, Some(InputSelector { external_id: Some(102), ..recipients })).unwrap();
+        rt.render(&mut [[0.; 2]; 49]).unwrap();
+        assert_eq!(pressure(&rt, first), u32::MAX);
+        assert_eq!(pressure(&rt, overlap), 123, "exact host note ID survives the wait");
+        assert_eq!(pressure(&rt, elsewhere), 0);
+    });
+}
+
+#[test]
 fn source_controller_modules_keep_ordered_cc_views_globals_and_ui_bindings() {
     let first = "on init declare $value := 11 end on
         on controller
@@ -576,10 +681,9 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
     }
     assert!(compile("on note $CC_NUM end on").is_err());
     // v2: operations outside their event context compile like Kontakt, with
-    // a warning, and do nothing (or fault at runtime for play_note -1).
+    // a warning, and do nothing.
     for warned in [
         "on note ignore_controller end on",
-        "on controller play_note(60,127,0,-1) end on",
         "on controller ignore_event($EVENT_ID) end on",
     ] {
         assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
@@ -885,22 +989,12 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
                 };
                 let mut audio = [[0.; 2]; 32];
                 rt.render(&mut audio).unwrap();
-                if duration < 0 {
-                    assert_eq!(
-                        rt.behavior_outcome(callback),
-                        Ok(Some(Outcome::Fault(Error::InvalidInput)))
-                    );
-                    assert_eq!(audio, [[0.; 2]; 32]);
-                    assert_eq!(
-                        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
-                        Ok(0)
-                    );
-                } else {
-                    assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
-                    let length = if duration == 0 { 16 } else { 6 };
-                    assert!(audio[..length].iter().all(|f| *f == [1.; 2]));
-                    assert!(audio[length..].iter().all(|f| *f == [0.; 2]));
-                }
+                assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+                // Without a note owner native negative duration follows the
+                // ordinary whole-source law, just like duration zero.
+                let length = if duration <= 0 { 16 } else { 6 };
+                assert!(audio[..length].iter().all(|f| *f == [1.; 2]));
+                assert!(audio[length..].iter().all(|f| *f == [0.; 2]));
                 rt.flush_behaviors(|_, _, _| true);
                 rt.flush_ended(|_| panic!("generated source has no host note"));
                 assert_eq!(
@@ -939,15 +1033,14 @@ fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_cont
             true
         });
     });
-    // v2: a constant parent-gate duration outside a note callback warns at
-    // compile time and faults at runtime before publishing a note.
+    // A constant negative duration has the same supported owner law.
     let script = compile_bound(
         "on init declare ui_button $fire end on
         on ui_control($fire) play_note(60,127,0,-1) end on",
         &[("$fire", button)],
     )
     .unwrap();
-    assert!(!script.warnings().is_empty());
+    assert!(script.warnings().is_empty());
 }
 
 #[test]

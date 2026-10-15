@@ -32,7 +32,7 @@ fn tap(t: f32) -> f32 {
         return 1.0;
     }
     #[allow(clippy::excessive_precision)]
-    let a = f64::from(t) * 3.141_592_653_589_79;
+    let a = f64::from(t) * f64::from_bits(0x400921fb54442d11);
     let d = f64::from((t + t) / 16.0);
     let w = i0((1.0 - d * d).sqrt() * 8.0);
     let den = f64::from(8f32.exp() / 8f32.sqrt()) * big(3.75 / 8.0);

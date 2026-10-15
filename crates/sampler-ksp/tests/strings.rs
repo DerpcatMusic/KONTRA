@@ -520,6 +520,71 @@ fn menu_control_properties_report_selected_index_and_live_item_count() {
 }
 
 #[test]
+fn menu_value_getters_use_selected_index_for_constant_and_variable_arguments() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",20) add_menu_item($m,\"second\",80)
+        $m := 80 declare $id declare $par
+        declare $constant declare $variable_id declare $variable_par declare $both declare $raw end on
+        on note
+            $id := get_ui_id($m) $par := $CONTROL_PAR_VALUE
+            $constant := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE)
+            $variable_id := get_control_par($id,$CONTROL_PAR_VALUE)
+            $variable_par := get_control_par(get_ui_id($m),$par)
+            $both := get_control_par($id,$par)
+            $raw := $m
+        end on",
+        &[],
+    );
+    assert_eq!(
+        (
+            cell(&rt, 2),
+            cell(&rt, 3),
+            cell(&rt, 4),
+            cell(&rt, 5),
+            cell(&rt, 6)
+        ),
+        (1, 1, 1, 1, 80)
+    );
+}
+
+#[test]
+fn variable_menu_value_getter_tracks_hidden_changed_missing_and_empty_selections() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",20) add_menu_item($m,\"second\",80)
+        declare ui_menu $empty
+        declare ui_knob $knob(0,100,1) $knob := 37
+        declare $id declare $par declare $default declare $hidden declare $missing declare $changed
+        declare $empty_index declare $ordinary declare $raw end on
+        on note
+            $id := get_ui_id($m) $par := $CONTROL_PAR_VALUE
+            $default := get_control_par($id,$par)
+            $m := 80
+            set_menu_item_visibility($id,1,0)
+            $hidden := get_control_par($id,$par)
+            set_menu_item_value($id,1,93)
+            $missing := get_control_par($id,$par)
+            $m := 93 $changed := get_control_par($id,$par)
+            $empty_index := get_control_par(get_ui_id($empty),$par)
+            $ordinary := get_control_par(get_ui_id($knob),$par)
+            $raw := $m
+        end on",
+        &[],
+    );
+    assert_eq!(
+        (
+            cell(&rt, 2),
+            cell(&rt, 3),
+            cell(&rt, 4),
+            cell(&rt, 5),
+            cell(&rt, 6),
+            cell(&rt, 7),
+            cell(&rt, 8)
+        ),
+        (-1, 1, -1, 1, -1, 37, 93)
+    );
+}
+
+#[test]
 fn real_xy_getters_read_authored_and_live_indexed_values() {
     let rt = run(
         "on init declare ui_xy ?xy[2] declare ~before declare ~after

@@ -1,0 +1,285 @@
+{
+  "input_member": "Presets/00 Orchestra/01 Strings/V Strings Pizzicato 2.uvip",
+  "build_profile": "ci: opt-level 3, no LTO",
+  "binary_sha256": "9fa1b7edc7276abd6654191dc6488f2fb69cbb7f93a080b0eae10a5cf8786344",
+  "ui_checkpoint": "73d316ec1",
+  "repository_head_at_probe": "7d673fa05f160435a4cd5db8276dc5131592c649",
+  "mode": {
+    "ephemeral_render": true,
+    "ephemeral_source": false,
+    "initialize": true,
+    "lua_coverage": false,
+    "profile_init": true,
+    "settle_ui": false,
+    "ui_only": true
+  },
+  "exit_code": 0,
+  "status": "partial",
+  "execution_conditions": {
+    "rustc_before": 1,
+    "external_cpu_workload_present": false,
+    "rustc_after": 1
+  },
+  "work_ledger": [
+    {
+      "graph_depth": 6,
+      "graph_nodes": 86871,
+      "initialized": true,
+      "memory_bytes": 373618306,
+      "script_bytes": 417412,
+      "stage": "uvi_lua_work",
+      "vm_checkpoints": 14053215,
+      "wall_expired": false,
+      "wall_limit_ms": 20000,
+      "work_exhausted": false,
+      "work_limit": 33554432,
+      "work_remaining": 19501213,
+      "xml_bytes": 18961851
+    }
+  ],
+  "initialization": {
+    "status": "ok",
+    "coverage": false,
+    "fault_counts": {},
+    "resource_services": {
+      "audio_decoder": "not_attached",
+      "impulse_decoder": "not_attached",
+      "sample_binding": "not_run",
+      "scope": "An initialized preview does not establish that every audio/resource-dependent onLoad branch completed like a fully loaded plugin",
+      "ui_assets": "Rendered separately through production resource authority when requested",
+      "ui_image_dimensions": "Production loose/bank resource authority"
+    }
+  },
+  "measurement_scope": "One unpinned shared-machine run; compiler present before/after. Correctness and count evidence, no prior-build speed ratio. No Runtime/PCM/audio host. Source/artwork omitted.",
+  "ui": {
+    "hierarchy": {
+      "validated_menus": 53,
+      "visible_validated_menus": 0,
+      "nodes": 1403,
+      "leaves": 1214,
+      "max_depth": 5,
+      "unique_original_indices": true,
+      "remaining_omissions": 0
+    },
+    "meters": {
+      "typed_requests": 8,
+      "scope_counts": {
+        "Layer": 8
+      },
+      "live_tap_service": "not_attached; no output-meter fallback"
+    },
+    "widget_count": 10145,
+    "visible_widgets": 101,
+    "asset_count": 541,
+    "style_count": 4282,
+    "unsupported_total": 28,
+    "unsupported_by_feature": {
+      "AudioMeter element": 8,
+      "AudioMeter.0dBColour": 4,
+      "AudioMeter.displayAsMono": 8,
+      "Table.fillStyle": 8
+    },
+    "visible_unsupported_total": 20,
+    "visible_unsupported_by_feature": {
+      "AudioMeter element": 8,
+      "AudioMeter.0dBColour": 4,
+      "AudioMeter.displayAsMono": 8
+    },
+    "renderer_status": "ok",
+    "render_timings": {
+      "geometry_observations_ms": 5.161371,
+      "resolve_ms": 2.827055,
+      "resource_decode_ms": 91.287,
+      "resource_discovery_ms": 0.197,
+      "resource_read_ms": 32.128,
+      "total_ms": 508.844859
+    },
+    "asset_summary": {
+      "ambiguous": 0,
+      "corrupt": 0,
+      "decode_ok": 84,
+      "decodes": 84,
+      "encoded_bytes": 4820792,
+      "font_ok": 5,
+      "fonts": 5,
+      "found": 89,
+      "invalid": 0,
+      "limit": 0,
+      "lookups": 89,
+      "missing": 0,
+      "preparation_key_budget": 0,
+      "preparation_oversized": 0,
+      "read_failed": 0,
+      "unavailable": 0
+    },
+    "asset_probe_dropped": 0,
+    "font_fallback_count": 0
+  },
+  "cache_lookups": [
+    {
+      "hit": true,
+      "lookup_decode_validate_ms": 145.55158100000003,
+      "payloads_cached": 0,
+      "schema": 1
+    }
+  ],
+  "performance": {
+    "initialization_profile": {
+      "collection_window_ms": 11399.578903,
+      "coverage": false,
+      "dropped_frames": 0,
+      "native_apis": [
+        {
+          "calls": 39937,
+          "elapsed_ms": 21.053476,
+          "phase": "uvi_lua_api_definition"
+        },
+        {
+          "calls": 60034,
+          "elapsed_ms": 1234.075209,
+          "phase": "uvi_lua_api_definitions"
+        },
+        {
+          "calls": 575045,
+          "elapsed_ms": 523.249652,
+          "phase": "uvi_lua_api_get_param"
+        },
+        {
+          "calls": 25228,
+          "elapsed_ms": 6.051731,
+          "phase": "uvi_lua_api_has_param"
+        },
+        {
+          "calls": 108953,
+          "elapsed_ms": 83.947672,
+          "phase": "uvi_lua_api_set_param"
+        }
+      ],
+      "sample_count": 1732,
+      "sample_scope": "Opportunistic VM safepoint stacks, at most 500Hz; up to four inclusive frames. Counts do not measure exclusive CPU time or time spent blocked in native callbacks",
+      "sampling_overhead_ms": 22.30217,
+      "stages": [
+        {
+          "calls": 1,
+          "elapsed_ms": 5743.411333,
+          "phase": "host_create"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 10.705688,
+          "phase": "host_globals_and_prelude"
+        },
+        {
+          "calls": 19,
+          "elapsed_ms": 173.59079699999998,
+          "phase": "module_compile"
+        },
+        {
+          "calls": 19,
+          "elapsed_ms": 2.487169,
+          "phase": "module_name_inventory"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 9.259989999999998,
+          "phase": "on_init_and_deferred_callbacks"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 64.987563,
+          "phase": "parameter_overlay_export"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 4337.601323999999,
+          "phase": "post_init_overlays_and_ir_translation"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 922.8967369999999,
+          "phase": "program_object_graph"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 0.087451,
+          "phase": "root_script_compile"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 103.553663,
+          "phase": "saved_ui_restore"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 4591.652167,
+          "phase": "script_body_and_require"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 232.37089899999998,
+          "phase": "script_promotion"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 4705.425659,
+          "phase": "scripts_total"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 296.941522,
+          "phase": "ui_ir_export"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 0.52403,
+          "phase": "vm_create"
+        },
+        {
+          "calls": 1,
+          "elapsed_ms": 94.26235299999999,
+          "phase": "xml_parse"
+        }
+      ],
+      "timing_scope": "Inclusive wall clocks; nested compilation/require/body/API phases overlap. Collection window extends through any UI export/render before this report; host_create measures initializer construction. No script text, argument values, stack bytes or heap contents are retained",
+      "work": {
+        "graph_depth": 6,
+        "graph_nodes": 86871,
+        "lua_memory_bytes": 392987546,
+        "script_bytes": 417412,
+        "vm_checkpoints": 14053215
+      },
+      "lua_frame_record_count": 71
+    },
+    "scope": "Wall-clock durations within this process; nested render phases overlap. OS cache state and native host timing are unverified",
+    "timings": [
+      {
+        "elapsed_ms": 833.148473,
+        "phase": "container_program_and_scripts"
+      },
+      {
+        "elapsed_ms": 103.31346900000001,
+        "phase": "xml_parse_and_metadata"
+      },
+      {
+        "elapsed_ms": 0.00598,
+        "phase": "source_frontend"
+      },
+      {
+        "elapsed_ms": 10316.754733,
+        "phase": "translate_and_initialize"
+      },
+      {
+        "elapsed_ms": 296.94340200000005,
+        "phase": "ui_model_export"
+      },
+      {
+        "elapsed_ms": 514.3590959999999,
+        "phase": "ui_render"
+      }
+    ],
+    "total_ms": 12911.120495000001,
+    "launcher_ms": 13236.375455999223
+  },
+  "measurement_date_local": "2026-10-15",
+  "timezone": "Asia/Jerusalem"
+}

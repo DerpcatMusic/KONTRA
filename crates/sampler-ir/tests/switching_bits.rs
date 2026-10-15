@@ -29,6 +29,7 @@ fn amplitude_controllers_lists_live_controller_to_amplitude_routes_by_zone_count
     let mut ir = Instrument::default();
     ir.assets.push(Asset {
         location: AssetLocation::Path("a".into()),
+        residency: Default::default(),
         encoding: Encoding::Wav,
         root_key: None,
         loops: Vec::new(),

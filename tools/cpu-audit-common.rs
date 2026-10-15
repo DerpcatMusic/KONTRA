@@ -82,8 +82,16 @@ fn quantiles(mut times: Vec<u64>) -> Value {
     assert!(!times.is_empty());
     times.sort_unstable();
     let n = times.len();
-    json!({"blocks":n,"p50_us":times[n/2] as f64/1000.,"p99_us":times[(n-1)*99/100] as f64/1000.,"max_us":times[n-1] as f64/1000.})
+    json!({"blocks":n,"p50_us":times[n/2] as f64/1000.,"p99_us":times[(n-1)*99/100] as f64/1000.,"p999_us":times[(n-1)*999/1000] as f64/1000.,"max_us":times[n-1] as f64/1000.})
 }
+#[cfg(target_os = "linux")]
+fn process_cpu_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) }, 0);
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+#[cfg(not(target_os = "linux"))]
+fn process_cpu_ns() -> u64 { 0 }
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--check") {
@@ -111,7 +119,7 @@ fn main() {
     assert_eq!(
         args.len(),
         4,
-        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump"
+        "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump|held-stress|host-300"
     );
     let block: usize = args[2].parse().unwrap();
     assert!([32, 64, 256].contains(&block));
@@ -125,6 +133,11 @@ fn main() {
     }
     let start = Instant::now();
     let (mut p, mut info) = Player::load(Path::new(&args[1]));
+    if args[3] == "host-300" {
+        assert_eq!(info["engine"], "v2", "exact-host-ID schedule requires the typed V2 event adapter");
+    }
+    info["schedule"] = json!(&args[3]);
+    info["requested_host_note_ids"] = json!(if args[3] == "host-300" { 300 } else { 0 });
     info["load_seconds"] = json!(start.elapsed().as_secs_f64());
     info["rss_kb_loaded"] = json!(proc_value("/proc/self/status", "VmRSS:"));
     let mut idle = Vec::with_capacity(1000);
@@ -143,8 +156,15 @@ fn main() {
     );
     let (mut next, mut peak, mut voice_sum, mut voice_peak, mut misses) =
         (0, 0.0f32, 0usize, 0usize, 0usize);
+    let (mut steady_voices_min, mut steady_voices_max, mut steady_audible_blocks) = (usize::MAX, 0, 0);
+    let (mut process_cpu, mut caller_cpu, mut event_times, mut render_times) = (
+        Vec::with_capacity(blocks), Vec::with_capacity(blocks), Vec::with_capacity(blocks), Vec::with_capacity(blocks),
+    );
     let (mut allocations, mut event_allocations) = (0u64, 0u64);
     let mut miss_detail = Vec::with_capacity(6000);
+    // At least one event belongs to every recorded callback, so the input
+    // schedule bounds this control-side allocation. Store after timing ends.
+    let mut event_detail = Vec::with_capacity(events.len());
     let (io0, rchar0) = (
         proc_value("/proc/self/io", "read_bytes:"),
         proc_value("/proc/self/io", "rchar:"),
@@ -172,6 +192,7 @@ fn main() {
     });
     let mut previous_underruns = 0;
     let pace = Instant::now();
+    let phase_cpu_start = process_cpu_ns();
     for begin in (0..schedule.frames).step_by(block) {
         let before = CALLS.get();
         COUNT.set(true);
@@ -181,7 +202,9 @@ fn main() {
             None
         };
         let cpu_start = thread_cpu_ns();
+        let process_start = process_cpu_ns();
         let t = Instant::now();
+        let events_before = next;
         p.begin(block);
         while next < events.len() && events[next].0 < begin + block {
             let (_, s, a, b) = events[next];
@@ -189,17 +212,30 @@ fn main() {
             next += 1
         }
         let after_events = CALLS.get();
+        let event_ns = t.elapsed().as_nanos() as u64;
         event_allocations += after_events - before;
         let v = p.voices();
         let got = p.render(block);
+        if schedule.steady.contains(&begin) {
+            steady_voices_min = steady_voices_min.min(v);
+            steady_voices_max = steady_voices_max.max(v);
+            steady_audible_blocks += usize::from(got > 0.);
+        }
         let ns = t.elapsed().as_nanos() as u64;
         let cpu_ns = thread_cpu_ns().saturating_sub(cpu_start);
+        caller_cpu.push(cpu_ns);
+        process_cpu.push(process_cpu_ns().saturating_sub(process_start));
+        event_times.push(event_ns);
+        render_times.push(ns.saturating_sub(event_ns));
         let switches_after = if scheduling_diagnostic {
             thread_switches()
         } else {
             None
         };
         COUNT.set(false);
+        if next != events_before {
+            event_detail.push((begin, next - events_before, event_ns, ns, cpu_ns, v));
+        }
         if ns > block as u64 * 1_000_000_000 / 48000 {
             miss_detail.push((
                 begin,
@@ -245,7 +281,22 @@ fn main() {
         info["idle"] = quantiles(idle);
     }
     info["all"] = quantiles(all.clone());
+    let audio_ns = schedule.frames as f64 / 48000. * 1e9;
+    info["whole_phase_process_cpu_percent_core"] = json!(process_cpu_ns().saturating_sub(phase_cpu_start) as f64 / audio_ns * 100.);
+    info["all_workers_cpu"] = quantiles(process_cpu.clone());
+    info["caller_cpu"] = quantiles(caller_cpu);
+    info["all_workers_cpu_mean_percent_core"] = json!(process_cpu.iter().map(|n| *n as f64).sum::<f64>() / audio_ns * 100.);
+    info["begin_and_events"] = quantiles(event_times);
+    info["render_and_finish"] = quantiles(render_times);
+    info["event_callback_detail"] = json!(event_detail.into_iter().map(|(frame, count, events_ns, callback_ns, caller_ns, voices)| json!({
+        "frame":frame, "events":count, "begin_and_events_wall_us":events_ns as f64 / 1000.,
+        "callback_wall_us":callback_ns as f64 / 1000., "callback_caller_cpu_us":caller_ns as f64 / 1000., "voices":voices,
+    })).collect::<Vec<_>>());
+    info["timing_scope"] = json!(format!("{} core adapter callback including witness PCM observation/probes; excludes outer plugin process, UI and host; whole-phase CPU includes pacing/harness/decoder work", info["engine"].as_str().unwrap_or("unknown")));
     if !steady.is_empty() {
+        info["steady_voices_min"] = json!(steady_voices_min);
+        info["steady_voices_max"] = json!(steady_voices_max);
+        info["steady_audible_blocks"] = json!(steady_audible_blocks);
         info["steady"] = quantiles(steady);
         info["amortized_per_voice"] = quantiles(per_voice)
     }

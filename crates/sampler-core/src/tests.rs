@@ -11,6 +11,134 @@ fn input(id: Option<i32>) -> Input {
     }
 }
 
+// Candidate admission lookup: retain every live owner, including released notes
+// whose terminal delivery has not been accepted. Empty arena capacity is irrelevant.
+fn live_input_lookup(rt: &Runtime, performance: usize, input: Input) -> bool {
+    let mut next = rt.notes.first;
+    while let Some(index) = next {
+        let slot = &rt.notes.slots[index];
+        if slot.value.is_some_and(|n| n.input == Some(input))
+            && rt.selections[index].performance == performance
+        {
+            return true;
+        }
+        next = slot.next;
+    }
+    false
+}
+
+fn capacity_input_lookup(rt: &Runtime, performance: usize, input: Input) -> bool {
+    rt.notes.slots.iter().enumerate().any(|(index, slot)| {
+        slot.value.is_some_and(|n| n.input == Some(input))
+            && rt.selections[index].performance == performance
+    })
+}
+
+fn bitmap_input_lookup(rt: &Runtime, performance: usize, input: Input) -> bool {
+    for (word, &free) in rt.notes.free.iter().enumerate() {
+        let valid = if (word + 1) * 64 > rt.notes.slots.len() {
+            (1u64 << (rt.notes.slots.len() % 64)) - 1
+        } else { u64::MAX };
+        let mut occupied = !free & valid;
+        while occupied != 0 {
+            let index = word * 64 + occupied.trailing_zeros() as usize;
+            let slot = &rt.notes.slots[index];
+            if slot.value.is_some_and(|n| n.input == Some(input))
+                && rt.selections[index].performance == performance
+            { return true; }
+            occupied &= occupied - 1;
+        }
+    }
+    false
+}
+
+#[test]
+fn live_input_lookup_matches_capacity_across_holes_domains_and_retained_terminals() {
+    let mut rt = fixture_runtime(48_000, &[], Limits {
+        notes: 4093, families: 4093, expressions: 4093, performances: 2,
+        ..limits()
+    }).unwrap();
+    let mut notes = Vec::new();
+    for id in 0..300 {
+        let domain = (id % 2) as usize;
+        notes.push(rt.note_on_pitched_in(rt.performance(domain).unwrap(), input(Some(id)),
+            NotePitch::Key(60), 1., Expression::default()).unwrap());
+    }
+    for (index, &note) in notes.iter().enumerate() {
+        if index % 3 == 0 { rt.release(note).unwrap(); }
+    }
+    rt.flush_ended(|i| i.external_id.unwrap() % 6 == 0);
+    for id in 0..=300 {
+        for domain in 0..2 {
+            let original = input(Some(id));
+            let variants = [original,
+                Input { protocol: Protocol::Vst3, ..original },
+                Input { port: 3, ..original }, Input { group: 1, ..original },
+                Input { channel: 5, ..original }, Input { key: 61, ..original }];
+            for query in variants {
+                assert_eq!(live_input_lookup(&rt, domain, query),
+                    capacity_input_lookup(&rt, domain, query), "{id} {domain} {query:?}");
+                assert_eq!(bitmap_input_lookup(&rt, domain, query),
+                    capacity_input_lookup(&rt, domain, query), "bitmap {id} {domain} {query:?}");
+                assert_eq!(rt.owns_input(domain, query),
+                    capacity_input_lookup(&rt, domain, query), "adaptive {id} {domain} {query:?}");
+            }
+        }
+    }
+    assert!(live_input_lookup(&rt, 1, input(Some(3))));
+    assert!(!live_input_lookup(&rt, 0, input(Some(0))));
+    rt.flush_ended(|_| true);
+    let replacement = rt.note_on(input(Some(0)), 60, 1.).unwrap();
+    assert_ne!(replacement, notes[0]);
+    assert!(live_input_lookup(&rt, 0, input(Some(0))));
+    for id in 301..2400 {
+        rt.note_on(input(Some(id)), 60, 1.).unwrap();
+    }
+    assert!(rt.notes.count() > rt.notes.slots.len() / 2);
+    for id in [-1, 0, 2, 3, 6, 300, 301, 1200, 2399, 2400] {
+        for domain in 0..2 {
+            assert_eq!(rt.owns_input(domain, input(Some(id))),
+                capacity_input_lookup(&rt, domain, input(Some(id))), "dense {id} {domain}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "optimized isolated admission lookup timing"]
+fn input_lookup_stage_evidence() {
+    use std::{hint::black_box, time::Instant};
+    for live in [0, 32, 300, 512, 1024, 2048, 4096] {
+        let mut rt = fixture_runtime(48_000, &[], Limits {
+            notes: 4096, families: 4096, expressions: 4096, ..limits()
+        }).unwrap();
+        for id in 0..live {
+            rt.note_on(input(Some(id)), 60, 1.).unwrap();
+        }
+        let loops = if live >= 1024 { 20 } else { 200 };
+        for pair in 0..4 {
+            for candidate in if pair % 2 == 0 { [0, 1, 2, 3] } else { [3, 2, 1, 0] } {
+                let start = Instant::now();
+                let mut found = 0;
+                for turn in 0..loops {
+                    for query in 0..300 {
+                        let id = if query % 4 == 0 && live > 0 { query % live } else { 10_000 + query + turn };
+                        let input = black_box(input(Some(id)));
+                        found += usize::from(match candidate {
+                            1 => live_input_lookup(black_box(&rt), 0, input),
+                            2 => bitmap_input_lookup(black_box(&rt), 0, input),
+                            3 => black_box(&rt).owns_input(0, input),
+                            _ => capacity_input_lookup(black_box(&rt), 0, input),
+                        });
+                    }
+                }
+                black_box(found);
+                eprintln!("input_lookup live={live} capacity=4096 pair={pair} candidate={candidate} queries={} us={} hits={found}",
+                    loops * 300, start.elapsed().as_micros());
+            }
+        }
+    }
+}
+
 fn limits() -> Limits {
     Limits {
         notes: 8,

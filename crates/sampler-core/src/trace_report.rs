@@ -206,7 +206,13 @@ impl Session {
             .iter()
             .filter_map(|&id| self.levels[id].row.map(|_| (id, &self.levels[id])))
             .collect();
-        let mut body = String::new();
+        let root = &self.reader.graph.nodes[self.reader.graph.master];
+        // Show the graph identity even when the standalone part only records
+        // downstream nodes. This label does not invent a measured root level.
+        let mut body = format!(
+            "<text x=\"24\" y=\"48\">Graph root #{} {} / {}; measured nodes below.</text>",
+            root.id, root.kind, root.processor,
+        );
         let mut y = 65;
         for (id, level) in &active {
             let node = &self.reader.graph.nodes[*id];
