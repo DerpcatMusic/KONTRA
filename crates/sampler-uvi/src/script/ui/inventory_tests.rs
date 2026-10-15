@@ -104,6 +104,7 @@ fn property_inventory_preserves_complete_models_for_kinds_and_value_types() {
     let reference = h.interface_classified::<0>();
     let candidate = h.interface_classified::<2>();
     assert_eq!(candidate, reference);
+    assert_eq!(h.interface_classified::<3>(), reference);
     assert_eq!(
         h.interface(),
         reference,
@@ -317,6 +318,7 @@ fn inventory_retains_raw_iteration_order_and_first_malformed_key_cutoff() {
         let reference = h.interface_classified::<0>();
         let candidate = h.interface_classified::<2>();
         assert_eq!(candidate, reference);
+        assert_eq!(h.interface_classified::<3>(), reference);
         assert_eq!(
             candidate
                 .unsupported
@@ -325,6 +327,210 @@ fn inventory_retains_raw_iteration_order_and_first_malformed_key_cutoff() {
                 .collect::<Vec<_>>(),
             prefix
         );
+    }
+}
+
+#[test]
+fn plain_projection_matches_scalar_kinds_assets_styles_and_documented_types() {
+    let keys = serde_json::to_string(DOCUMENTED).unwrap();
+    let keys = keys.trim_start_matches('[').trim_end_matches(']');
+    let script = format!(
+        r#"
+      local keys={{{keys}}}
+      local values={{true,false,1,'#ffffff','invalid','solid',{{}},function() end}}
+      for _,kind in ipairs({{'Panel','Frame','ParameterValue','Knob','ParamKnob',
+          'Slider','ParamSlider','Button','OnOffButton','ParamOnOffButton',
+          'NumBox','ParamNumBox','Label','Text'}}) do
+        for n,value in ipairs(values) do
+          local w=Label(kind..n)
+          local d=rawget(w,'__data')
+          d.kind=kind; d.x=n*3; d.y=n*5; d.width=80; d.height=20
+          d.value=0.25; d.default=0.5; d.min=-1; d.max=1; d.integer=false
+          d.visible=n%2==0; d.enabled=n%3==0; d.alpha=0.625
+          d.interceptsMouseClicks=false; d.exported=true; d.paramId=37
+          d.text='caption '..n; d.tooltip='tip '..n; d.displayName='name '..n
+          d.displayText=n%2==0 and 'readout '..n or ''; d.unit='Decibels'; d.mapper=2
+          d.vertical=true; d.showLabel=true; d.showValue=true
+          d.image='authored/base.png'; d.backgroundImage='authored/base.png'
+          d.normalImage='authored/normal.png'; d.stripImage='authored/strip.png'
+          d.pressedImage='authored/pressed.png'; d.overImage='authored/over.png'
+          d.overPressedImage='authored/over-pressed.png'; d.handleImage='authored/handle.png'
+          d.frames=7; d.stripHorizontal=true
+          d.backgroundColour='#123456'; d.backgroundColourOn='#234567'
+          d.backgroundColourOff='#345678'; d.sliderColour='#456789'; d.fillColour='#56789a'
+          d.font=n%2==0 and 'authored/font.ttf' or ''; d.fontSize=13
+          d.textColour='#abcdef'; d.align='right'
+          for _,key in ipairs(keys) do rawset(d,key,value) end
+          d.privateFunction=function() error('never execute') end
+          d.privateTable={{nested=n}}; d[17]='numeric key'
+        end
+      end
+    "#
+    );
+    let h = host(&script);
+    assert!(widgets(&h).iter().all(|w| {
+        InputRoute::for_table(&w.raw_get::<Table>("__data").unwrap()) == InputRoute::Plain
+    }));
+    let reference = h.interface_classified::<2>();
+    let candidate = h.interface_classified::<3>();
+    assert_eq!(candidate, reference);
+    assert_eq!(candidate.widgets.len(), 112);
+    assert_eq!(candidate.assets.len(), 8);
+    assert!(!candidate.styles.is_empty());
+    assert_eq!(candidate.widgets[0].tooltip, "tip 1");
+    assert!(candidate.widgets[0].hidden);
+    assert_eq!(candidate.widgets[0].images.len(), 8);
+    assert_eq!(
+        ScriptHost::control_values_from(&candidate),
+        ScriptHost::control_values_from(&reference)
+    );
+    assert!(h.findings().is_empty());
+}
+
+#[test]
+fn projection_rebuilds_at_declaration_position_around_getter_mutations() {
+    let script = r#"
+      calls=0; trace=''
+      local before=Label('Before')
+      local bound=ParamKnob(Program,'Gain')
+      local after=Label('After')
+      local meta=Label('Meta')
+      local bd=rawget(before,'__data'); local ad=rawget(after,'__data')
+      local base=Program.getParameter
+      Program.getParameter=function(self,key)
+        calls=calls+1; trace=trace..'value;'
+        rawset(bd,'text','before '..calls); rawset(ad,'text','after '..calls)
+        rawset(ad,'fontSize',12+calls); rawset(ad,'fillStyle','solid '..calls)
+        return base(self,key)
+      end
+      setmetatable(rawget(meta,'__data'),{__index=function(_,key)
+        trace=trace..key..';'
+        if key=='fontSize' then
+          rawset(bd,'tooltip','late '..calls)
+          postEvent{type=Event.Controller,controller=1,value=17}
+          return 12
+        end
+      end})
+      function onNote(e)
+        rawset(ad,'displayText','raw '..e.note)
+        rawget(before,'__data').private={nested=e.note}
+      end
+      function onSave() return {calls=calls,trace=trace} end
+    "#;
+    let mut reference = host(script);
+    let mut candidate = host(script);
+    for note in [None, Some(60), Some(61)] {
+        if let Some(note) = note {
+            reference.note_on(1, note, 64, 0);
+            candidate.note_on(1, note, 64, 0);
+        }
+        let expected = reference.interface_classified::<2>();
+        let actual = candidate.interface_classified::<3>();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            candidate.global_text("trace"),
+            reference.global_text("trace")
+        );
+        assert_eq!(candidate.save_ui_state(), reference.save_ui_state());
+        assert_eq!(candidate.take_commands(), reference.take_commands());
+        assert_eq!(candidate.findings(), reference.findings());
+        assert_eq!(candidate.ui_revision(), reference.ui_revision());
+    }
+}
+
+#[test]
+fn projection_fallback_keeps_nested_reads_and_budget_fault_order() {
+    let script = r#"
+      local plain=Label('Plain')
+      local menu=Menu('Menu',{'Group/One','Group/Two'})
+      menu.hierarchical=true
+      local cells=Table('Cells',3,0,0,1)
+      local view=Viewport('Viewport'); view.viewPosition={3,4}
+      local image=Image('authored/image.png')
+      local xy=XY('Plain','Missing')
+      setmetatable(rawget(plain,'__data'),{__index=function(_,key)
+        if key=='fontSize' then
+          rawget(menu,'__data').items[1]='Changed/One'
+          rawget(cells,'__data').values[2]=0.75
+          local n=0; for i=1,10000 do n=n+i end
+          return 12+n*0
+        end
+      end})
+    "#;
+    let config = Config {
+        load_work: 1024,
+        ..Default::default()
+    };
+    let reference = host_config(script, config);
+    let candidate = host_config(script, config);
+    reference.shared.remaining_work.set(7);
+    candidate.shared.remaining_work.set(7);
+    assert_eq!(
+        candidate.interface_classified::<3>(),
+        reference.interface_classified::<2>()
+    );
+    assert_eq!(candidate.findings(), reference.findings());
+    assert!(
+        candidate
+            .findings()
+            .iter()
+            .any(|row| row.value.contains("budget"))
+    );
+    assert_eq!(
+        candidate.shared.vm_checkpoints.get(),
+        reference.shared.vm_checkpoints.get()
+    );
+    assert_eq!(candidate.shared.remaining_work.get(), 7);
+    assert_eq!(reference.shared.remaining_work.get(), 7);
+}
+
+#[cfg(feature = "scan")]
+#[test]
+fn opt_in_export_route_counts_cover_each_widget_without_extra_getters() {
+    use crate::script::diagnostics::OwnerAudit;
+    use std::sync::Arc;
+    let script = r#"
+      getter_calls=0
+      local label=Label('Plain')
+      local knob=Knob('Knob')
+      local meta=Label('Meta')
+      setmetatable(rawget(meta,'__data'),{__index=function(_,key)
+        if key=='fontSize' then getter_calls=getter_calls+1; return 12 end
+      end})
+      local bound=ParamKnob(Program,'Gain')
+      local menu=Menu('Menu',{'One','Two'})
+      local image=Image('authored/image.png')
+    "#;
+    for projection in [false, true] {
+        let ordinary = host(script);
+        let observed = host(script);
+        let audit = Arc::new(OwnerAudit::default());
+        observed.install_owner_audit(Some(audit.clone()));
+        let expected = ordinary.interface_classified::<2>();
+        let actual = if projection {
+            observed.interface_classified::<3>()
+        } else {
+            observed.interface_classified::<2>()
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(
+            observed.global_text("getter_calls"),
+            ordinary.global_text("getter_calls")
+        );
+        assert_eq!(observed.findings(), ordinary.findings());
+        let snapshot = audit.snapshot();
+        let count = |name| {
+            snapshot
+                .counters
+                .iter()
+                .find(|row| row.name == name)
+                .unwrap()
+                .value
+        };
+        assert_eq!(count("export_plain_scalar_widgets"), 2);
+        assert_eq!(count("export_metatable_widgets"), 1);
+        assert_eq!(count("export_bound_widgets"), 1);
+        assert_eq!(count("export_indirect_kind_widgets"), 2);
     }
 }
 
@@ -338,6 +544,18 @@ fn caller_cpu_ns() -> u64 {
 #[test]
 #[ignore = "bounded manual paired export benchmark; optionally export authored IR to KONTRA_UVI_INVENTORY_ORACLE_DIR"]
 fn paired_full_export_inventory_benchmark() {
+    paired_export_benchmark::<0, 2>("for_each_canonical_membership");
+}
+
+#[cfg(all(feature = "scan", target_os = "linux"))]
+#[test]
+#[ignore = "bounded manual projection benchmark; optionally export authored IR to KONTRA_UVI_INVENTORY_ORACLE_DIR"]
+fn paired_full_export_projection_benchmark() {
+    paired_export_benchmark::<2, 3>("fresh_plain_scalar_projection");
+}
+
+#[cfg(all(feature = "scan", target_os = "linux"))]
+fn paired_export_benchmark<const REFERENCE: u8, const CANDIDATE: u8>(experiment: &str) {
     use std::time::Instant;
     let artifact =
         std::env::var_os("KONTRA_UVI_INVENTORY_ORACLE_DIR").map(std::path::PathBuf::from);
@@ -355,7 +573,7 @@ fn paired_full_export_inventory_benchmark() {
         builder.create(dir).unwrap();
     }
     let mut rows = Vec::new();
-    for (name, properties) in [
+    let mut fixtures = vec![
         ("ordinary", ""),
         (
             "sparse_documented",
@@ -365,7 +583,20 @@ fn paired_full_export_inventory_benchmark() {
             "all_documented",
             "for _,key in ipairs(documented) do d[key]='#888888' end",
         ),
-    ] {
+    ];
+    if CANDIDATE == 3 {
+        fixtures.extend([
+            (
+                "mixed_fallback",
+                "if i%4==0 then setmetatable(d,{__index=function() end}) elseif i%4==1 then d.kind='Menu'; d.items={'One','Two'}; d.value=1 end",
+            ),
+            (
+                "all_metatable_fallback",
+                "setmetatable(d,{__index=function() end})",
+            ),
+        ]);
+    }
+    for (name, properties) in fixtures {
         let keys = serde_json::to_string(DOCUMENTED).unwrap();
         let keys = keys.trim_start_matches('[').trim_end_matches(']');
         let script = format!(
@@ -384,9 +615,15 @@ fn paired_full_export_inventory_benchmark() {
         "#
         );
         let h = host(&script);
-        let expected = h.interface_classified::<0>();
+        let eligible = widgets(&h)
+            .iter()
+            .filter(|w| {
+                InputRoute::for_table(&w.raw_get::<Table>("__data").unwrap()) == InputRoute::Plain
+            })
+            .count();
+        let expected = h.interface_classified::<REFERENCE>();
         assert_eq!(expected.widgets.len(), 10145);
-        assert_eq!(h.interface_classified::<2>(), expected);
+        assert_eq!(h.interface_classified::<CANDIDATE>(), expected);
         for round in 0..8 {
             for candidate in if round % 2 == 0 {
                 [false, true]
@@ -396,14 +633,14 @@ fn paired_full_export_inventory_benchmark() {
                 let wall = Instant::now();
                 let cpu = caller_cpu_ns();
                 let face = if candidate {
-                    h.interface_classified::<2>()
+                    h.interface_classified::<CANDIDATE>()
                 } else {
-                    h.interface_classified::<0>()
+                    h.interface_classified::<REFERENCE>()
                 };
                 let cpu = caller_cpu_ns() - cpu;
                 let wall = wall.elapsed().as_nanos() as u64;
                 assert_eq!(face, expected);
-                rows.push(serde_json::json!({"fixture":name,"round":round,"candidate":candidate,"wall_ns":wall,"caller_cpu_ns":cpu,"widgets":face.widgets.len(),"unsupported":face.unsupported.len()}));
+                rows.push(serde_json::json!({"fixture":name,"round":round,"candidate":candidate,"wall_ns":wall,"caller_cpu_ns":cpu,"widgets":face.widgets.len(),"eligible_plain_widgets":eligible,"unsupported":face.unsupported.len()}));
             }
         }
         if name == "sparse_documented"
@@ -411,7 +648,7 @@ fn paired_full_export_inventory_benchmark() {
         {
             for (name, face) in [
                 ("reference", expected),
-                ("candidate", h.interface_classified::<2>()),
+                ("candidate", h.interface_classified::<CANDIDATE>()),
             ] {
                 let bytes = serde_json::to_vec(&fixture::encode(&face)).unwrap();
                 assert!(bytes.len() <= 64 << 20);
@@ -428,7 +665,7 @@ fn paired_full_export_inventory_benchmark() {
             }
         }
     }
-    let receipt = serde_json::json!({"schema":"kontra-uvi-inventory-paired-v1","experiment":"for_each_canonical_membership","scope":"authored 10145-widget full export, no owner audit; caller CPU excludes model comparison and serialization","rows":rows});
+    let receipt = serde_json::json!({"schema":"kontra-uvi-inventory-paired-v1","experiment":experiment,"scope":"authored 10145-widget full export, no owner audit; caller CPU excludes model comparison and serialization","rows":rows});
     if let Some(dir) = &artifact {
         std::fs::write(
             dir.join("timings.json"),
