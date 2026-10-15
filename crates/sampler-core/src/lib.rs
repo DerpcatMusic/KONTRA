@@ -130,6 +130,9 @@ mod pitch;
 pub use pitch::NotePitch;
 mod groups;
 mod residency;
+pub use residency::{
+    GroupResidencyProgress, ResidencyProgress, ResidencyRejection, ResidencyRejectionReason,
+};
 mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
