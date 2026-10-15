@@ -51,8 +51,28 @@ report, nor recreated by filtering findings and calling the result authoritative
 
 Rust Doctor 0.7.0 was fetched with Bun into the dev-drive audit cache. Its version
 and compiled rule catalog were checked; the configuration names real rules and
-disables none. The complete current workspace scan is pending the serialized
-benchmark/Cargo slot. No current score or green audit is claimed yet.
+disables none. The full current-worktree scan ran at `a7ea03b56` with 1,168 tracked source
+hashes unchanged before/after. Its workspace Clippy command completed with exit
+0 and `build_finished=true`. The process returned 1 because the overall report
+is **incomplete**: its source resolver reported 35 unresolved module declarations,
+including real `#[path = "..."]` modules accepted by the compiler. Do not rewrite
+valid module ownership or disable source rules to hide this analyzer limitation.
+
+The retained report contains 93 distinct error-level findings, 11,198 warnings
+and 81 informational findings. Of the errors, 57 are first-party sites: 50
+`unreachable!` branches, three unpinned Git dependency declarations, three
+`panic_in_result_fn` sites and one `mem_forget` site. These categories require
+contextual review; a private invariant branch is not proof of an observed crash.
+The other findings include vendor/dependency debt. The emitted score has
+`authoritative=false`, and the gate is `not-evaluated`; no score or green audit
+is claimed. Group counts are the report's distinct diagnostic counts, not its
+larger occurrence totals.
+
+Private source/tool/command identities and the complete report are retained in
+`PluginArtifacts/kontra-rust-audio-audit-20261015/`, including
+`scan-receipt.json` and `first-party-errors.json`. The full report SHA-256 is
+`6eca759b3623a5391471725c99815b1d3479d010493909ec97b2144e9cbc34aa`.
+Toolchain: Rust/Clippy 1.99.0. No rule was disabled for this run.
 
 The executable audio checks already include callback allocation **and free**
 counting, streaming/residency budgets and lifetime tests, source/modulation PCM
