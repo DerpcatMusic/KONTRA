@@ -281,7 +281,7 @@ button:disabled { cursor: default; }
 .text-button:disabled { color: var(--muted); text-decoration: none; }
 @media (max-width: 1050px) { .header > nav:not(.community-actions) { gap: 8px 20px; } }
 @media (max-width: 480px) {
-  .header > nav:not(.community-actions) { justify-content: flex-start; gap: 0 16px; }
+  .header > nav:not(.community-actions) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; }
   .inspector-file-actions { align-items: stretch; }
   .inspector-file-actions > button:not(.text-button) { flex: 1 1 100%; }
   .inspector-selection label { flex-basis: 100%; min-width: 0; }
