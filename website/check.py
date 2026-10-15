@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, unquote
 import sys
 import json
+import re
 
 root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
 
@@ -23,9 +24,15 @@ class Page(HTMLParser):
             if key in attrs: self.links.append(attrs[key])
 
 pages = {}
+footers = []
 for path in root.glob('*.html'):
     page = Page(path)
-    page.feed(path.read_text())
+    source = path.read_text()
+    page.feed(source)
+    if path.name != 'inspector-viewer.html':
+        footer = re.search(r'<footer\b.*?</footer>', source, re.S)
+        assert footer, f'missing shared footer: {path}'
+        footers.append(footer.group())
     assert page.headings == 1, f'expected one h1: {path}'
     assert 'main' in page.ids
     pages[path] = page
