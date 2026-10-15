@@ -439,9 +439,8 @@ impl Runtime {
         if !self.behavior_room(state.callbacks.len()) {
             return Err(Error::Capacity);
         }
-        self.last_callback_id
-            .checked_add(i32::try_from(state.callbacks.len()).map_err(|_| Error::Capacity)?)
-            .ok_or(Error::Capacity)?;
+        crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, state.callbacks.len())?;
         self.plans
             .get(plan.0)
             .unwrap()

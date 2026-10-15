@@ -309,6 +309,20 @@ const SEED: u64 = 0x5eed_1a7e;
 /// Decay allowance for bus filters after their input stops, in seconds.
 const BUS_TAIL_SECONDS: f64 = 0.1;
 
+/// Worker routing budgets, independent of a particular library or asset set.
+/// Includes dormant candidates and retained metadata plus one generation state.
+pub const ZONE_ROUTING_LIMITS: crate::ZoneRoutingLimits = crate::ZoneRoutingLimits {
+    zones: 65_536, variants: 262_144, candidates: 8_388_608,
+    jobs: crate::MAX_ZONE_BATCH_JOBS, bytes: 256 << 20,
+};
+pub const SOURCE_ZONE_CATALOG_BYTES: usize = 16 << 20;
+/// Read-only physical identities are independent of the mutable routing bank.
+/// Budget every row as known before constructing the roster, including lookup
+/// storage and its owner; sparse/unknown IDs never increase this upper bound.
+pub const SOURCE_ZONE_CATALOG_ZONES: usize =
+    (SOURCE_ZONE_CATALOG_BYTES - std::mem::size_of::<crate::prepare::zone_routing::SourceZoneCatalog>())
+    / (std::mem::size_of::<crate::SourceZoneIdentity>() + std::mem::size_of::<(u32, usize)>());
+
 /// The builder step that refused lowered data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -321,6 +335,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    ZoneRouting,
     Controls,
     Modulation,
 }
@@ -329,6 +344,7 @@ pub enum Stage {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Feature {
     Trigger(ir::Trigger),
+    ZoneRouting(crate::ZoneRoutingFeature),
     KeyScaling {
         cents_per_key: i32,
     },
@@ -572,6 +588,9 @@ pub fn lower_with(
     options: &Options,
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
+    if instrument.source_indices.zone_catalog.len() > SOURCE_ZONE_CATALOG_ZONES {
+        return Err(core(Stage::ZoneRouting, "source zone catalog")(Error::Capacity));
+    }
     instrument.validate().map_err(LowerError::Invalid)?;
     let tapped;
     let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
@@ -1026,6 +1045,40 @@ pub fn lower_with(
             }).collect(),
             crate::SampleRevisionLimits { slots, resident_bytes: 256 << 20 },
         ).map_err(core(Stage::Regions, "sample targets"))?;
+    }
+    if !instrument.source_indices.zone_catalog.is_empty() {
+        let roster = instrument.source_indices.zone_catalog.iter()
+            .zip(&instrument.source_indices.zones)
+            .map(|(row, region)| crate::SourceZoneIdentity {
+                id: row.id,
+                home: crate::SourceZoneHome { group: row.home.group, low_key: row.home.low_key, high_key: row.home.high_key },
+                region: region.map(|z| z.0),
+            }).collect();
+        plan = plan.with_source_zone_identities(roster, SOURCE_ZONE_CATALOG_ZONES, SOURCE_ZONE_CATALOG_BYTES)
+            .map_err(core(Stage::ZoneRouting, "source zone catalog"))?;
+    }
+    if !instrument.zone_routing.is_empty() {
+        let variants = instrument.zone_routing.iter().try_fold(0usize, |n,r| n.checked_add(r.variants.len()))
+            .ok_or_else(|| core(Stage::ZoneRouting, "zone recipes")(Error::Capacity))?;
+        if instrument.zone_routing.len() > ZONE_ROUTING_LIMITS.zones || variants > ZONE_ROUTING_LIMITS.variants {
+            return Err(core(Stage::ZoneRouting, "zone recipes")(Error::Capacity));
+        }
+        let routes = instrument.zone_routing.iter().map(|r| crate::ZoneRouting {
+            source_zone: r.source_zone, group: r.group, low_key: r.low_key, high_key: r.high_key,
+            variants: r.variants.iter().map(|v| crate::ZoneRouteVariant { group: v.group, region: v.zone.map(|z| z.0) }).collect(),
+        }).collect();
+        // Match the initializer's complete authoritative ID roster, including
+        // catalog-only homes. No asset-name or currently selected group rule.
+        let jobs = crate::source_zone_job_capacity(instrument.source_indices.zone_catalog.iter()
+            .filter(|row| row.id.is_some()).count())
+            .map_err(core(Stage::ZoneRouting, "source zone batch budget"))?;
+        plan = plan.with_zone_routing(instrument.zone_routing_mode.unwrap_or(0), routes,
+            crate::ZoneRoutingLimits { jobs, ..ZONE_ROUTING_LIMITS }, &crate::Tuning::default())
+            .map_err(|error| match error {
+                crate::ZoneRoutingBuildError::Unsupported(feature) => unsupported("zone recipes", Feature::ZoneRouting(feature)),
+                crate::ZoneRoutingBuildError::Capacity => core(Stage::ZoneRouting, "zone recipes")(Error::Capacity),
+                crate::ZoneRoutingBuildError::InvalidInput => core(Stage::ZoneRouting, "zone recipes")(Error::InvalidInput),
+            })?;
     }
     if instrument.behaviors.is_empty() {
         Ok(plan)

@@ -74,6 +74,11 @@ pub struct Instrument {
     /// Physical source indices, retained across omissions and key-range filtering.
     pub source_indices: SourceIndices,
     pub zones: Vec<Zone>,
+    /// Native source identity -> fully translated destination recipes.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_routing: Vec<ZoneRouting>,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_routing_mode: Option<u8>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
     /// Independent nested selectors (see [`Axis`]), beside the articulation.
@@ -232,6 +237,9 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Original physical order. Empty for caches without native identity metadata.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_catalog: Vec<SourceZone>,
     /// Authored sample-player identities, independent of asset renumbering.
     /// An initially empty player retains complete dormant zone recipes.
     #[cfg_attr(feature = "cache", serde(default))]
@@ -259,6 +267,36 @@ pub struct SourceIndices {
     #[cfg_attr(feature = "cache", serde(default))]
     pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceZoneHome {
+    pub group: u32,
+    pub low_key: u8,
+    pub high_key: u8,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceZone {
+    pub id: Option<u32>,
+    pub home: SourceZoneHome,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneRouting {
+    pub source_zone: u32,
+    pub group: u32,
+    pub low_key: u8,
+    pub high_key: u8,
+    pub variants: Vec<ZoneRouteVariant>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneRouteVariant {
+    pub group: u32,
+    /// Unavailable destinations retain their identity and never become a fallback.
+    pub zone: Option<ZoneRef>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -909,6 +947,11 @@ impl Instrument {
         });
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
+        }
+        for route in &mut self.zone_routing {
+            for variant in &mut route.variants {
+                variant.zone = variant.zone.and_then(|z| remap[z.0]);
+            }
         }
         for target in &mut self.source_indices.sample_targets {
             target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();

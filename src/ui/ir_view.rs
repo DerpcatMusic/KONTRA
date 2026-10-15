@@ -156,6 +156,9 @@ fn drive_mapped(
     held
 }
 
+#[path = "wave_view.rs"]
+mod wave_view;
+
 /// Decoded images the interface draws, by asset index; `None` failed to load.
 #[derive(Default)]
 pub struct Assets {
@@ -165,6 +168,8 @@ pub struct Assets {
     pub meter: Option<Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
     preparation: Option<super::picture_worker::Preparation>,
+    wave_views: Option<wave_view::Preparation>,
+    wave_version: u64,
     /// Bumped when the face's widgets change (Face::sync); keys retained widgets.
     pub(super) epoch: u64,
     /// Hash of which pictures and fonts are loaded; keys retained widgets.
@@ -197,6 +202,18 @@ impl Assets {
         &mut self, path: &std::path::Path, program: Option<u32>, face: &Interface,
         page: PageRef, presentation: Presentation, scale: f64, values: &Values,
     ) {
+        if face.widgets.iter().any(|w| w.uvi_wave_view_request.is_some()) {
+            if self.wave_views.as_ref().is_none_or(|p| !p.same_owner(path, program)) {
+                self.wave_views = Some(wave_view::Preparation::new(path, program));
+            }
+            let wave = self.wave_views.as_mut().unwrap();
+            wave.prepare(face, page, scale);
+            self.version ^= self.wave_version.rotate_left(17) ^ wave.revision.rotate_left(17);
+            self.wave_version = wave.revision;
+        } else if self.wave_views.take().is_some() {
+            self.version ^= self.wave_version.rotate_left(17);
+            self.wave_version = 0;
+        }
         if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.program() != program) {
             self.preparation = Some(program.map_or_else(
                 || super::picture_worker::Preparation::new(path),
@@ -261,10 +278,28 @@ impl Assets {
             .map(|(n, p)| entry(0, n, p))
             .chain(self.wallpapers.iter().map(|(n, p)| entry(1, n, p)))
             .chain(self.fonts.keys().map(|n| (*n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
-            .fold(0, u64::wrapping_add);
+            .fold(0, u64::wrapping_add) ^ self.wave_version.rotate_left(17);
     }
     pub fn pending(&self) -> usize {
         self.preparation.as_ref().map_or(0, |p| p.pending())
+            + self.wave_views.as_ref().map_or(0, |p| p.pending())
+    }
+
+    /// Numeric-only observations from the real manual display provider.
+    #[cfg(feature = "shots")]
+    pub fn wave_view_observations(&self, face: &Interface) -> serde_json::Value {
+        let rows: Vec<_> = face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            let request = widget.uvi_wave_view_request.as_ref()?;
+            let prepared = self.wave_views.as_ref().and_then(|p| p.get(WidgetRef(n), request));
+            Some(serde_json::json!({"widget":n,"visible":face.visible(WidgetRef(n)),
+                "status":self.wave_views.as_ref().map_or("not_prepared", |p| p.status(WidgetRef(n), request)),
+                "frames":prepared.map(|p| p.envelope.frames),"sample_rate":prepared.map(|p| p.envelope.sample_rate),
+                "bins":prepared.map(|p| p.envelope.peaks.len()),
+                "binding_requested":request.binding != ir::UviWaveViewBinding::Unspecified}))
+        }).collect();
+        serde_json::json!({"scope":"actual authorized manual display source; native binding/paint unverified",
+            "rows":rows,"requested_resolved_envelopes":self.wave_views.as_ref().map(|p| p.counts()),
+            "stale_results":self.wave_views.as_ref().map(|p| p.stale),"request_limit_drops":self.wave_views.as_ref().map(|p| p.dropped)})
     }
 
     #[cfg(feature = "shots")]
@@ -283,9 +318,9 @@ impl Assets {
     }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
-        self.preparation
-            .as_ref()
-            .map_or(Vec::new(), |p| p.failures())
+        let mut failures = self.preparation.as_ref().map_or(Vec::new(), |p| p.failures());
+        if let Some(waves) = &self.wave_views { failures.extend(waves.failures()); }
+        failures
     }
     #[cfg(feature = "shots")]
     pub fn completed_key_bytes(&self) -> Vec<(String, usize)> {
@@ -353,7 +388,7 @@ impl Assets {
     /// Bytes of decoded pixels held, each image counted once.
     pub fn bytes(&self) -> usize {
         if let Some(p) = &self.preparation {
-            return p.bytes();
+            return p.bytes() + self.wave_views.as_ref().map_or(0, |p| p.bytes());
         }
         let mut seen = std::collections::HashSet::new();
         self.loaded
@@ -2219,13 +2254,26 @@ pub(super) fn widget_state(
             }
             col(rows).gap(0).scroll().fill(Role::Ink.alpha(0.06))
         }
-        Kind::Waveform | Kind::Wavetable { .. } => super::render_art::waveform(
-            input.peaks.get(&n).cloned().unwrap_or_default(),
-            wd.waveform.clone(),
-            input.wave_duration_us.get(&n).copied(),
-            wd.colors,
-            wd.hide.background,
-        ),
+        Kind::Waveform | Kind::Wavetable { .. } => {
+            if let Some(request) = &wd.uvi_wave_view_request {
+                let envelope = assets.wave_views.as_ref().and_then(|p| p.get(n, request));
+                // Only the exact current manual provider can supply these peaks.
+                // Kontakt/input-state peaks and bound cursor data cannot substitute.
+                let mut colors = wd.colors;
+                if let Some(high) = request.colors.high_wave
+                    && request.colors.low_wave == Some(high) { colors.wave = Some(high); }
+                super::render_art::waveform(
+                    envelope.map(|e| e.envelope.peaks.clone()).unwrap_or_default(),
+                    None, envelope.map(|e| e.envelope.duration_us), colors,
+                    wd.hide.background, request.colors.axis,
+                )
+            } else {
+                super::render_art::waveform(
+                    input.peaks.get(&n).cloned().unwrap_or_default(), wd.waveform.clone(),
+                    input.wave_duration_us.get(&n).copied(), wd.colors, wd.hide.background, None,
+                )
+            }
+        },
         Kind::MouseArea => {
             let response = ui.get(id.as_str());
             if can_edit && (response.pressed || response.released) {

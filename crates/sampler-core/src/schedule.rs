@@ -384,6 +384,13 @@ impl Runtime {
             }
             keep
         });
+        // Cancellation may originate from a closed gate rather than an explicit
+        // cancel_behavior call. Preserve every accepted async job as a failure.
+        for index in 0..self.behaviors.slots.len() {
+            if self.behaviors.slots[index].value.is_some_and(|c| c.outcome.is_some()) {
+                self.cancel_zone_parameters(super::BehaviorId(self.behaviors.id(index)));
+            }
+        }
     }
 
     /// Remove queued control writes, including an unexecuted boundary event. Does not change
