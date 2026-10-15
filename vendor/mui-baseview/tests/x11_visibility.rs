@@ -3,7 +3,8 @@
 
 use kontra_native_host::baseview as moose_baseview;
 use moose_baseview::{
-    Event, EventStatus, HandlerError, Window, WindowHandler, WindowSettings, WindowSize,
+    Event, EventStatus, HandlerError, ThreadedWindow, Window, WindowEvent, WindowHandler,
+    WindowSettings, WindowSize,
 };
 use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle, XlibWindowHandle,
@@ -148,4 +149,166 @@ fn late_parent_map_receives_frames() {
 #[ignore = "requires an isolated X11 server; see PATCHES.md"]
 fn reparent_to_root_receives_frames() {
     exercise(true);
+}
+
+struct OwnedHandler {
+    owner: std::thread::ThreadId,
+    frames: Arc<AtomicU64>,
+    closes: Arc<AtomicU64>,
+    dropped: mpsc::Sender<(std::thread::ThreadId, std::thread::ThreadId)>,
+    // Native handlers need not be Send; this stays on the X11 worker.
+    _owner_only: std::rc::Rc<()>,
+}
+
+impl WindowHandler for OwnedHandler {
+    fn on_frame(&self) -> Result<(), HandlerError> {
+        self.frames.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn resized(&self, _: WindowSize) -> Result<(), HandlerError> {
+        Ok(())
+    }
+    fn on_event(&self, event: Event) -> EventStatus {
+        if matches!(event, Event::Window(WindowEvent::WillClose)) {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+        }
+        EventStatus::Ignored
+    }
+}
+
+impl Drop for OwnedHandler {
+    fn drop(&mut self) {
+        let _ = self.dropped.send((self.owner, std::thread::current().id()));
+    }
+}
+
+#[test]
+#[ignore = "requires an isolated X11 server"]
+fn threaded_foreign_close_joins_without_a_frame_and_reopens() {
+    let host = Host::new();
+    for _ in 0..2 {
+        let frames = Arc::new(AtomicU64::new(0));
+        let closes = Arc::new(AtomicU64::new(0));
+        let (dropped, drop_rx) = mpsc::channel();
+        let (owner, owner_rx) = mpsc::channel();
+        let frame_counter = Arc::clone(&frames);
+        let close_counter = Arc::clone(&closes);
+        let window = ThreadedWindow::create(
+            WindowSettings::new()
+                .with_size(moose_baseview::dpi::LogicalSize::new(64.0, 64.0))
+                .with_parent(&Parent(host.parent)),
+            move |_| {
+                let thread = std::thread::current().id();
+                owner.send(thread).unwrap();
+                Ok(OwnedHandler {
+                    owner: thread,
+                    frames: frame_counter,
+                    closes: close_counter,
+                    dropped,
+                    _owner_only: std::rc::Rc::new(()),
+                })
+            },
+        )
+        .unwrap();
+        let native_owner = owner_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        window.show().unwrap();
+        // The parent stays unmapped: no display frame can service this close.
+        std::thread::spawn(move || {
+            assert_ne!(native_owner, std::thread::current().id());
+            assert!(window.is_open());
+            assert!(window.size().scale_factor.is_finite());
+            // Even a zero timeout must join an embedded window.
+            window.close_bounded(Duration::ZERO);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(frames.load(Ordering::SeqCst), 0);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        let (created, destroyed) = drop_rx
+            .try_recv()
+            .expect("close returned after handler drop");
+        assert_eq!(created, native_owner);
+        assert_eq!(destroyed, native_owner);
+    }
+}
+
+#[test]
+#[ignore = "requires an isolated X11 server"]
+fn threaded_failed_builder_drops_its_owner_state_before_return() {
+    struct FailedPayload(mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for FailedPayload {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+    let host = Host::new();
+    let (dropped, drop_rx) = mpsc::channel();
+    let caller = std::thread::current().id();
+    let result = ThreadedWindow::create(
+        WindowSettings::new().with_parent(&Parent(host.parent)),
+        move |_| {
+            let _payload = FailedPayload(dropped);
+            Err::<Count, _>(std::io::Error::other("authored builder rejection").into())
+        },
+    );
+    assert!(result.is_err());
+    assert_ne!(
+        drop_rx.try_recv().expect("failed creation joined cleanup"),
+        caller
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated X11 server"]
+fn threaded_self_close_defers_until_its_native_callback_returns() {
+    struct SelfClosing {
+        lifetime: OwnedHandler,
+        controller: std::cell::RefCell<mpsc::Receiver<ThreadedWindow>>,
+    }
+    impl WindowHandler for SelfClosing {
+        fn on_frame(&self) -> Result<(), HandlerError> {
+            if let Ok(window) = self.controller.borrow_mut().try_recv() {
+                window.close();
+            }
+            self.lifetime.on_frame()
+        }
+        fn resized(&self, size: WindowSize) -> Result<(), HandlerError> {
+            self.lifetime.resized(size)
+        }
+        fn on_event(&self, event: Event) -> EventStatus {
+            self.lifetime.on_event(event)
+        }
+    }
+    let host = Host::new();
+    // SAFETY: this fixture owns the live parent and synchronizes its mapping.
+    unsafe {
+        (host.lib.XMapWindow)(host.display, host.parent);
+        (host.lib.XSync)(host.display, 0);
+    }
+    let closes = Arc::new(AtomicU64::new(0));
+    let close_counter = Arc::clone(&closes);
+    let (send, receive) = mpsc::channel();
+    let (dropped, drop_rx) = mpsc::channel();
+    let window = ThreadedWindow::create(
+        WindowSettings::new().with_parent(&Parent(host.parent)),
+        move |_| {
+            Ok(SelfClosing {
+                lifetime: OwnedHandler {
+                    owner: std::thread::current().id(),
+                    frames: Arc::new(AtomicU64::new(0)),
+                    closes: close_counter,
+                    dropped,
+                    _owner_only: std::rc::Rc::new(()),
+                },
+                controller: std::cell::RefCell::new(receive),
+            })
+        },
+    )
+    .unwrap();
+    window.show().unwrap();
+    send.send(window).unwrap();
+    let (created, destroyed) = drop_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(created, destroyed);
+    assert_ne!(created, std::thread::current().id());
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
 }

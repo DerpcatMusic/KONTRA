@@ -258,6 +258,58 @@ impl Window {
     }
 }
 
+/// An X11 window controller with no main-thread host callbacks.
+///
+/// This handle is auto-Send: the native drawable, WindowContext and handler stay
+/// on their existing worker thread. Unlike Window::create_with_host, construction
+/// cannot attach a non-Send HostCallbacks object. Moving or dropping the controller
+/// never moves or drops native state on the caller's thread.
+///
+/// Dropping it from a control thread joins native teardown. Dropping it inside
+/// its own native callback requests close and defers teardown until that callback
+/// returns. close_bounded preserves the existing floating-only detach policy;
+/// it never detaches an embedded window from a different control thread.
+#[cfg(target_os = "linux")]
+pub struct ThreadedWindow {
+    inner: platform::WindowThreadControl,
+}
+
+#[cfg(target_os = "linux")]
+impl ThreadedWindow {
+    /// Creates a hidden X11 window with no host callbacks. Call show to show it.
+    pub fn create<H: WindowHandler>(
+        settings: WindowSettings,
+        handler: impl FnOnce(WindowContext) -> Result<H, HandlerError> + Send + 'static,
+    ) -> Result<Self, Error> {
+        let builder = WindowHandlerBuilder::new(handler);
+        Ok(Self { inner: platform::WindowThreadControl::create_without_host(settings, builder)? })
+    }
+
+    /// Last owner-published geometry, read only from atomic shared metadata.
+    pub fn size(&self) -> WindowSize {
+        self.inner.size()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.inner.is_open()
+    }
+
+    pub fn show(&self) -> Result<(), Error> {
+        self.inner.show()?;
+        Ok(())
+    }
+
+    pub fn close(self) {
+        drop(self)
+    }
+
+    /// Same close policy as Window::close_bounded, including synchronous
+    /// teardown for embedded/parented windows closed from another thread.
+    pub fn close_bounded(self, timeout: Duration) {
+        self.inner.set_close_timeout(timeout);
+    }
+}
+
 pub(crate) struct WindowInitializer {
     pub settings: WindowSettings,
     pub builder: WindowHandlerBuilder,

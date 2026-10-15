@@ -148,15 +148,19 @@ fn points(s: Size) -> (u32, u32) {
     )
 }
 
-/// The one field of [`MuiEditor`] that is not auto-`Send`.
+/// Linux stores only an auto-Send X11 thread controller. The native window
+/// and renderer stay on their worker thread, including during destruction.
+#[cfg(target_os = "linux")]
+type Handle = window::baseview::ThreadedWindow;
+
+/// Windows/macOS ownership has not yet been converted to a safe control proxy.
+#[cfg(not(target_os = "linux"))]
 struct Handle(window::baseview::Window);
 
-// SAFETY: `baseview::Window` wraps a native window pointer and is not
-// auto-`Send`. moose calls `open`, `set_size`, `window_scale` and `close`
-// from one GUI thread, never concurrently, so the window never leaves the
-// thread that made it; `Send` is only what `Box<dyn Editor>` asks for.
-// moose-gui's own `GpuEditor` makes the same argument.
-#[expect(unsafe_code, reason = "vouches Send for the baseview window alone")]
+// SAFETY: This legacy assertion is limited to Windows/macOS. Their ownership
+// conversion remains separate work; Linux's controller is Send by its fields.
+#[cfg(not(target_os = "linux"))]
+#[expect(unsafe_code, reason = "legacy native window owner; not used on Linux")]
 unsafe impl Send for Handle {}
 
 impl<P: Params> MuiEditor<P> {
@@ -292,13 +296,13 @@ impl<P: Params> MuiEditor<P> {
     }
 
     fn close_window(&mut self) {
-        if let Some(Handle(window)) = self.window.take() {
+        if let Some(window) = self.window.take() {
             #[cfg(target_os = "linux")]
             {
                 window.close_bounded(std::time::Duration::from_millis(250));
             }
             #[cfg(not(target_os = "linux"))]
-            window.close();
+            window.0.close();
         }
     }
 }
@@ -338,15 +342,26 @@ impl<P: Params> Editor for MuiEditor<P> {
         if let Some(timing) = &self.timing {
             self.requests.on_native_timing(Arc::clone(timing));
         }
-        self.window = window::open(
+        #[cfg(not(target_os = "linux"))]
+        use window::open as open_window;
+        #[cfg(target_os = "linux")]
+        use window::open_threaded as open_window;
+        let window = open_window(
             &ParentWindow(parent),
             "MUI",
             self.size,
             self.scale.policy(),
             Arc::clone(&self.shared),
             Arc::clone(&self.requests),
-        )
-        .map(Handle);
+        );
+        #[cfg(target_os = "linux")]
+        {
+            self.window = window;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.window = window.map(Handle);
+        }
     }
 
     fn close(&mut self) {
@@ -386,8 +401,16 @@ impl<P: Params> Editor for MuiEditor<P> {
     }
 
     fn window_scale(&self) -> Option<f64> {
-        let open = self.window.as_ref().filter(|w| w.0.is_open())?;
-        (!cfg!(target_os = "macos")).then(|| open.0.size().scale_factor)
+        #[cfg(target_os = "linux")]
+        {
+            let open = self.window.as_ref().filter(|w| w.is_open())?;
+            Some(open.size().scale_factor)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let open = self.window.as_ref().filter(|w| w.0.is_open())?;
+            (!cfg!(target_os = "macos")).then(|| open.0.size().scale_factor)
+        }
     }
 
     fn state_changed(&mut self) {
