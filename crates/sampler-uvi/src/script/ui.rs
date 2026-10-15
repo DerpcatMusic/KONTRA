@@ -912,6 +912,10 @@ impl ScriptHost {
                 .or_else(|| text(w, "fillColour"))
                 .and_then(|c| color(&c));
             if matches!(wd.kind, ui::Kind::Table { .. }) {
+                wd.table_fill = match text(w, "fillStyle").as_deref() {
+                    Some("solid") => Some(ui::TableFill::Solid),
+                    _ => None,
+                };
                 wd.table_inner_edge = Some(ui::TableInnerEdge {
                     visible: flag(w, "drawInnerEdge", true),
                     color: text(w, "innerEdgeColour").and_then(|c| color(&c)),
@@ -1169,6 +1173,9 @@ impl ScriptHost {
                         "gridColour",
                     ];
                     let consumed = match key.as_str() {
+                        "fillStyle" => {
+                            matches!(wd.kind, ui::Kind::Table { .. }) && wd.table_fill.is_some()
+                        }
                         "drawInnerEdge" => {
                             matches!(wd.kind, ui::Kind::Table { .. })
                                 && matches!(w.raw_read("drawInnerEdge"), Some(Value::Boolean(_)))

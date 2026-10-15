@@ -331,17 +331,23 @@ pub(super) fn sliced(image: &Arc<Image>, meta: ir::ImageMeta, w: f64, h: f64, s:
 }
 
 /// Authored table bars; input and runtime transport remain in widget_state.
-pub(super) fn table(
+pub(super) fn table_with_style(
     samples: Vec<f64>,
     range: ir::Range,
     bipolar: bool,
     colors: ir::Colors,
+    edge: Option<ir::TableInnerEdge>,
+    fill: Option<ir::TableFill>,
 ) -> El {
-    table_with_inner_edge(samples, range, bipolar, colors, None)
+    match fill {
+        // The existing default is a flat fallback; explicit solid selects that
+        // same uniform-colour background and bar painter. No gloss is inferred.
+        None | Some(ir::TableFill::Solid) => table_solid(samples, range, bipolar, colors, edge),
+    }
 }
 
 /// Explicit source separators; unknown/default ink keeps the existing drawing.
-pub(super) fn table_with_inner_edge(
+fn table_solid(
     samples: Vec<f64>,
     range: ir::Range,
     bipolar: bool,
