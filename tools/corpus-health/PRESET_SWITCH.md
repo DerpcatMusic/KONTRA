@@ -182,6 +182,29 @@ worker time is not an instrument-silence verdict. UVI acknowledgement, command
 consumption, pending sample work and later authored wait/listener work must be
 observed separately. Controller values are never silently widened by this probe.
 
+For an explicit paced UVI note condition, add this plan-level object:
+
+```json
+"uvi": {"phase_timeout_ms": 1000, "total_timeout_ms": 10000,
+        "pace_ms": 2, "controllers": []}
+```
+
+The config is validated before loading and is refused for a non-UVI owner.
+It installs monitoring before inputs, requires a real unseeded owner
+acknowledgement and ordered core command drain, then separately observes
+sample transactions and bounded paced PCM. It owns the single fresh NoteOn;
+the ordinary fast note is not also sent. Explicit controller entries, when
+supplied, must be acknowledged before the note. The empty list changes no
+controller defaults. Reports distinguish the script note route from direct
+sampler forwarding without `onNote`.
+
+Acknowledgement does not complete future waits/listeners or certify native
+parity. Timeouts and unresolved/failed sample work retain partial results;
+all-zero PCM alone does not establish incompatibility. The PCM fingerprint is
+a labelled indexed chain of per-block digests, not concatenated audio. See the
+[UVI probe contract](../../docs/re/uvi-inspector-note-probe.md) for exact bounds,
+sample conservation and input/owner evidence.
+
 Plans are limited to 1 MiB, 24 actions and 128..96,000 fresh-note frames per
 publication. The launcher caps each pipe at 16 MiB, numeric audit records at
 4096 and total process time at its explicit timeout. These bounds describe the
