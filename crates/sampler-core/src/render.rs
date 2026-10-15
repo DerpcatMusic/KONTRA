@@ -1,6 +1,9 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
 #[cfg(test)]
+#[path = "render/traversal_experiment.rs"]
+mod traversal_experiment;
+#[cfg(test)]
 std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Runtime health counters as plain data, for load reports and meters.
@@ -752,7 +755,8 @@ impl Runtime {
                 plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
             }
         }
-        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        // Only ramped voices render through scratch; direct voices use target.
+        let mut scratch;
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
         bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
@@ -764,6 +768,7 @@ impl Runtime {
             segment
         };
         let (segment, mixed) = if points.is_some() {
+            scratch = [[0.0; 2]; super::dsp::BLOCK];
             (&mut scratch[..target.len()], Some(target))
         } else {
             (target, None)
