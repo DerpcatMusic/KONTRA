@@ -393,15 +393,22 @@ fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
             Prepared::new(48000,vec![Pcm::new(48000,Box::from([[1.;2];64])).unwrap()],vec![Region {
                 sample:0,key_low:7,key_high:94,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
                 envelope:Envelope::default(),playback:Playback::default()
-            }],128)?.with_groups(3,vec![Some(2)])?.with_source_zones(vec![73])
+            }],128)?.with_groups(3,vec![Some(2)])?
+                // A legacy event ID cannot grant a native command identity.
+                .with_source_zones(vec![1])?
+                .with_source_zone_identities(vec![sampler_core::SourceZoneIdentity {
+                    id: Some(73),
+                    home: sampler_core::SourceZoneHome {group:2,low_key:7,high_key:94},
+                    region: Some(0),
+                }],1,4096)
         });
     assert_eq!(cell(&rt, 0), 2);
     assert_eq!(cell(&rt, 1), 7);
     assert_eq!(cell(&rt, 2), 94);
     assert_eq!(
         cell(&rt, 3),
-        0,
-        "source hole must not resolve to runtime region zero"
+        -1,
+        "legacy event ID must not resolve as a native command identity"
     );
 }
 
@@ -434,10 +441,23 @@ fn runtime_zone_getter_does_not_match_absent_parameter_selectors() {
                 128,
             )?
             .with_groups(3, vec![Some(2)])?
-            .with_source_zones(vec![73])
+            .with_source_zone_identities(
+                vec![sampler_core::SourceZoneIdentity {
+                    id: Some(73),
+                    home: sampler_core::SourceZoneHome {
+                        group: 2,
+                        low_key: 7,
+                        high_key: 94,
+                    },
+                    region: Some(0),
+                }],
+                1,
+                4096,
+            )
         },
     );
-    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (7, 0));
+    // Zero must not alias either selector absent from this script's symbol table.
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (7, -1));
 }
 
 #[test]
@@ -451,7 +471,7 @@ fn init_zone_getter_reads_authored_physical_zone_fields() {
     );
     assert_eq!(
         [cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)],
-        [2, 7, 94, 0]
+        [2, 7, 94, -1]
     );
 }
 

@@ -28,6 +28,9 @@ impl Prepared {
         Ok(self)
     }
 
+    /// Assign the positive source IDs reported by `EventInfo::ZoneId` to regions.
+    /// Native zone commands use an independent identity/home catalog installed
+    /// by `with_source_zone_identities`; these event IDs do not authorize commands.
     pub fn with_source_zones(mut self, ids: Vec<u32>) -> Result<Self, Error> {
         if ids.len() != self.region_count() || ids.contains(&0) {
             return Err(Error::InvalidInput);
