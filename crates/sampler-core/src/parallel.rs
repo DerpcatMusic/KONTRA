@@ -12,6 +12,9 @@ use super::{
 };
 use sampler_pool::{Claims, Disjoint, Pool, Slab};
 
+#[cfg(test)]
+mod worker_witness;
+
 /// How many threads render voices, counting the audio thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Threads {
@@ -81,6 +84,8 @@ pub(super) struct Parallel {
     /// Per voice slot: modulation and script state prepared for this block.
     preps: Vec<Option<Prelude>>,
     blocks: u64,
+    #[cfg(test)]
+    worker_witness: Option<std::sync::Arc<worker_witness::Witness>>,
 }
 
 impl Parallel {
@@ -101,6 +106,8 @@ impl Parallel {
             runs,
             preps,
             blocks: 0,
+            #[cfg(test)]
+            worker_witness: None,
         }
     }
     /// Slots the scratch covers.
@@ -197,6 +204,8 @@ impl Runtime {
                 claims,
                 runs,
                 preps,
+                #[cfg(test)]
+                worker_witness,
                 ..
             } = &mut par;
             let view = View {
@@ -215,10 +224,22 @@ impl Runtime {
                 tempo: self.tempo,
             };
             let runs = &runs[..];
+            #[cfg(test)]
+            if let Some(witness) = worker_witness.as_deref() {
+                witness.reset();
+            }
             pool.run(tasks, &|task, lane| {
+                #[cfg(test)]
+                if let Some(witness) = worker_witness.as_deref() {
+                    witness.before(lane);
+                }
                 let (first, last) = (task * runs.len() / tasks, (task + 1) * runs.len() / tasks);
                 for run in &runs[first..last] {
                     view.exec(run, lane);
+                }
+                #[cfg(test)]
+                if let Some(witness) = worker_witness.as_deref() {
+                    witness.after(lane);
                 }
             });
         }
@@ -398,7 +419,10 @@ impl View<'_> {
         if prelude.is_none() {
             v.set_step(v.base_step * expression.rendered.ratio);
         }
-        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
+        let asset = plan
+            .samples
+            .asset(&plan.prepared, v.sample)
+            .expect("a live voice pins its immutable source");
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
@@ -427,8 +451,17 @@ impl View<'_> {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
-        let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
+        let controls = native.get_mut(0).and_then(|state| {
+            plan.modulation.native_render(
+                &plan.prepared.voice_modulation,
+                i,
+                state,
+                &plan.controls.base,
+            )
+        });
+        let mut stretch = v
+            .stretch
+            .map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = RenderContext {
             controls,
             trace: None,
@@ -477,6 +510,7 @@ impl View<'_> {
         if prelude.is_some_and(|p| p.points.is_some()) {
             bank[0].modulation = [1.0; 2];
         }
+        v.last_gains = applied.map(|g| g * v.gain);
         let done = done
             || prelude.is_some_and(|p| p.stop)
             || super::render::inaudible(v, produced, applied);
@@ -505,7 +539,9 @@ impl View<'_> {
         let mut starved = [false; VOICES];
         let mut plan_id = None;
         let reuse_mask = super::source::reuse::candidates(
-            slots[..voices.len()].iter().map(|slot| slot.as_ref().unwrap()[0].value.as_ref().unwrap()),
+            slots[..voices.len()]
+                .iter()
+                .map(|slot| slot.as_ref().unwrap()[0].value.as_ref().unwrap()),
         );
         let mut source_reuse = None;
         for k in 0..voices.len() {
@@ -514,13 +550,19 @@ impl View<'_> {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[k] = expression.rendered.gains;
+            v.last_gains = gains[k].map(|g| g * v.gain);
             v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan.project_wavetable(&mut v.cursor, v.group, voices[k]);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
-            let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
+            let asset = plan
+                .samples
+                .asset(&plan.prepared, v.sample)
+                .expect("a live voice pins its immutable source");
+            let mut stretch = v
+                .stretch
+                .map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
             let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[k] = v.cursor.starved();
             batch.expressions[k] = Some((n.expression, expression.value));
@@ -531,7 +573,16 @@ impl View<'_> {
                 if reuse_mask & (1 << k) != 0 {
                     source_reuse
                         .get_or_insert_with(super::source::reuse::ResidentReuse::default)
-                        .begin(chain, v, resident, guard, frames, self.kernel, &mut planar, engine)
+                        .begin(
+                            chain,
+                            v,
+                            resident,
+                            guard,
+                            frames,
+                            self.kernel,
+                            &mut planar,
+                            engine,
+                        )
                 } else {
                     let pcm = super::source::Resident {
                         frames: &resident,
@@ -643,6 +694,10 @@ mod tests {
     const LAYERS: usize = 4;
 
     fn runtime(threads: usize) -> Runtime {
+        runtime_with_chain(threads, false)
+    }
+
+    fn runtime_with_chain(threads: usize, chained: bool) -> Runtime {
         let samples: Vec<Pcm> = (0..LAYERS)
             .map(|layer| {
                 let mut x = 0x9E37_79B9u32.wrapping_mul(layer as u32 + 1);
@@ -667,7 +722,11 @@ mod tests {
                 root_key: Some(60),
                 velocity_low: 0.,
                 velocity_high: 1.,
-                gain: 1.,
+                gain: if chained {
+                    [0., 0.75, 0.25, 1.][sample]
+                } else {
+                    1.
+                },
                 envelope: Envelope::new(4, 2, 8, 0.5, 8).unwrap(),
                 playback: Playback {
                     transpose_semitones: 7.,
@@ -676,6 +735,15 @@ mod tests {
             })
             .collect();
         let plan = Prepared::new(48000, samples, regions, LAYERS * (NOTES + 1)).unwrap();
+        let plan = if chained {
+            plan.with_voice_chains(
+                vec![VoiceChain::new(vec![], vec![Processor::Gain(0.5)], 0).unwrap()],
+                vec![Some(0); LAYERS],
+            )
+            .unwrap()
+        } else {
+            plan
+        };
         Runtime::new(
             plan,
             Limits {
@@ -740,6 +808,137 @@ mod tests {
     }
 
     #[test]
+    fn empty_filter_workers_finish_real_tasks_with_exact_pcm_and_voice_history() {
+        let start = |rt: &mut Runtime| {
+            std::array::from_fn::<_, NOTES, _>(|id| {
+                let input = Input {
+                    protocol: Protocol::Native,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 48 + id as u8,
+                    external_id: Some(id as i32),
+                };
+                rt.trigger(input, input.key, 1.).unwrap()
+            })
+        };
+        for chained in [false, true] {
+            for threads in [2, 4] {
+                let mut one = runtime_with_chain(1, chained);
+                let mut many = runtime_with_chain(threads, chained);
+                for generation in many.plans.slots.iter().filter_map(|s| s.value.as_ref()) {
+                    assert!(generation.prepared.filters.is_empty());
+                }
+                let witness = std::sync::Arc::new(super::worker_witness::Witness::default());
+                many.parallel.as_mut().unwrap().worker_witness = Some(witness.clone());
+                let one_notes = start(&mut one);
+                let many_notes = start(&mut many);
+                assert_eq!(many.audible_voice_count(), 0);
+                for step in 0..8 {
+                    for (rt, notes) in [(&mut one, &one_notes), (&mut many, &many_notes)] {
+                        if step == 1 || step == 5 {
+                            for (id, &note) in notes.iter().enumerate() {
+                                let expression = rt.expression_id(note).unwrap();
+                                rt.set_expression(
+                                    expression,
+                                    Expression {
+                                        gain: if step == 1 {
+                                            [0., 0.125, 0.5, 2.][id % 4]
+                                        } else {
+                                            0.25
+                                        },
+                                        pan: [-0.75, -0.25, 0.25, 0.75][id % 4],
+                                        ..Expression::default()
+                                    },
+                                )
+                                .unwrap();
+                            }
+                        }
+                        if step == 2 {
+                            for (id, &note) in notes.iter().enumerate() {
+                                if id % 3 == 0 {
+                                    rt.fade_note(note, Some(2.), 0., 96, false).unwrap();
+                                }
+                            }
+                        }
+                        if step == 6 {
+                            rt.release_all_notes();
+                        }
+                    }
+                    if step == 3 {
+                        many.set_threads(Threads::Fixed(1));
+                    }
+                    if step == 4 {
+                        many.set_threads(Threads::Fixed(threads));
+                        many.parallel.as_mut().unwrap().worker_witness = Some(witness.clone());
+                    }
+                    let mut expected = [[0.; 2]; 64];
+                    let mut actual = expected;
+                    let before = witness.snapshot().runs;
+                    one.render(&mut expected).unwrap();
+                    many.render(&mut actual).unwrap();
+                    let observed = witness.snapshot();
+                    assert!(
+                        !observed.timed_out,
+                        "worker failed to complete within the test bound"
+                    );
+                    if step != 3 && step != 7 {
+                        assert!(observed.runs > before);
+                        assert!(observed.completed_lane.is_some_and(|lane| lane > 0));
+                    }
+                    if step < 2 {
+                        assert_eq!(
+                            many.parallel
+                                .as_ref()
+                                .unwrap()
+                                .runs
+                                .iter()
+                                .any(|run| run.count > 1),
+                            chained
+                        );
+                    }
+                    assert_eq!(
+                        actual.map(|f| f.map(f32::to_bits)),
+                        expected.map(|f| f.map(f32::to_bits))
+                    );
+                    assert_eq!(
+                        (many.now(), many.voice_count(), many.audible_voice_count()),
+                        (one.now(), one.voice_count(), one.audible_voice_count())
+                    );
+                    if step == 0 {
+                        assert!(many.audible_voice_count() > 0);
+                    }
+                    for (a, b) in many.voices.slots.iter().zip(&one.voices.slots) {
+                        match (a.value.as_ref(), b.value.as_ref()) {
+                            (Some(a), Some(b)) => {
+                                assert_eq!(format!("{:?}", a.cursor), format!("{:?}", b.cursor));
+                                assert_eq!(
+                                    format!("{:?}", a.envelope),
+                                    format!("{:?}", b.envelope)
+                                );
+                                assert_eq!(
+                                    a.last_gains.map(f32::to_bits),
+                                    b.last_gains.map(f32::to_bits)
+                                );
+                            }
+                            (None, None) => {}
+                            _ => panic!("serial/parallel voice lifetime diverged"),
+                        }
+                    }
+                }
+                assert_eq!((many.voice_count(), many.audible_voice_count()), (0, 0));
+                assert_eq!((one.voice_count(), one.audible_voice_count()), (0, 0));
+                one.flush_ended(|_| true);
+                many.flush_ended(|_| true);
+                assert_eq!((one.note_count(), many.note_count()), (0, 0));
+                assert!(witness.snapshot().seen_lanes & !1 != 0);
+                drop(many); // joins the owned worker pool before the witness owner leaves
+                drop(witness);
+            }
+        }
+    }
+
+    #[test]
     fn fade_curve_parallel_plain_mix_matches_serial_and_differs_from_linear() {
         let linear = play(&mut runtime(1), crate::FadeCurve::Linear);
         for curve in [
@@ -752,12 +951,18 @@ mod tests {
             let expected = play(&mut one, curve);
             assert!(expected.iter().flatten().all(|sample| sample.is_finite()));
             assert!(
-                expected[..64].iter().zip(&linear[..64]).any(|(faded, control)| {
-                    faded.iter().any(|sample| *sample != 0.) && faded != control
-                }),
+                expected[..64]
+                    .iter()
+                    .zip(&linear[..64])
+                    .any(|(faded, control)| {
+                        faded.iter().any(|sample| *sample != 0.) && faded != control
+                    }),
                 "{curve:?}: no nonzero changed audio during the active fade"
             );
-            assert_ne!(expected, linear, "{curve:?}: no nonlinear fade reached audio");
+            assert_ne!(
+                expected, linear,
+                "{curve:?}: no nonlinear fade reached audio"
+            );
             for threads in [2, 4] {
                 let mut rt = runtime(threads);
                 let actual = play(&mut rt, curve);
