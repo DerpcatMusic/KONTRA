@@ -11,6 +11,9 @@ use std::sync::Arc;
 #[cfg(all(test, feature = "shots"))]
 #[path = "part/asset_retention_tests.rs"]
 mod asset_retention_tests;
+#[cfg(all(test, feature = "shots"))]
+#[path = "part/native_retention_tests.rs"]
+mod native_retention_tests;
 
 /// One current raw materialization per source, never a history of publications.
 #[derive(Default)]
@@ -96,7 +99,7 @@ impl Face {
         presentation: Presentation,
         program: u32,
     ) -> Self {
-        Self::with_assets(path, generation, from, shown, presentation, program, Default::default())
+        Self::with_assets(path, generation, from, shown, presentation, program, Default::default(), None)
     }
 
     fn shares_resources(
@@ -116,9 +119,10 @@ impl Face {
             && self.from[self.shown].pages == from[self.shown].pages)
             .then_some((self.shown, self.page));
         let assets = std::mem::take(&mut self.assets);
+        let package = self.native.as_ref().and_then(|state| state.reusable_package());
         let revision = self.resource_revision.clone();
         let mut next = Self::with_assets(
-            &self.path, generation, from, shown, presentation, self.program, assets,
+            &self.path, generation, from, shown, presentation, self.program, assets, package,
         );
         next.resource_revision = revision;
         if let Some((shown, page)) = navigation {
@@ -128,6 +132,7 @@ impl Face {
         *self = next;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_assets(
         path: &std::path::Path,
         generation: u64,
@@ -136,6 +141,7 @@ impl Face {
         presentation: Presentation,
         program: u32,
         assets: ir_view::Assets,
+        package: Option<Arc<super::native_runtime::Package>>,
     ) -> Self {
         let face = ir_view::resolved(&from[shown]);
         let mut out = Self {
@@ -157,7 +163,7 @@ impl Face {
             input: Default::default(),
             native: None,
         };
-        out.sync();
+        out.sync_with_package(package);
         out
     }
 
@@ -288,11 +294,15 @@ impl Face {
     }
 
     fn sync(&mut self) {
+        self.sync_with_package(None);
+    }
+
+    fn sync_with_package(&mut self, package: Option<Arc<super::native_runtime::Package>>) {
         self.assets.epoch += 1;
         let entry = self.face.native_ui.as_ref().map(|n| n.entry.as_str());
         if self.native.as_ref().map(|n| n.entry()) != entry {
             self.native = entry.map(|entry| {
-                super::native_ui::State::new_for_program(
+                super::native_ui::State::with_package(
                     &self.path,
                     self.program,
                     entry,
@@ -307,6 +317,7 @@ impl Face {
                                 .map(move |(n, w)| (f.source, n, w.clone()))
                         })
                         .collect(),
+                    package,
                 )
             });
         }
@@ -430,14 +441,14 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let stale = cx.state.faces.get(&slot).is_none_or(|f| {
         f.path != path
             || f.generation != generation
-            || f.program != cx.selection.parts[slot].program
+            || f.program != published.program
     });
     if stale {
         activity.add(Count::FaceNew, 1);
         // A new audio generation must clear drafts, values and native Lua state,
         // but an unchanged resource namespace keeps its worker and decoded art.
         // Asset descriptors are checked again by Preparation::prepare.
-        let program = cx.selection.parts[slot].program;
+        let program = published.program;
         if let Some(face) = cx.state.faces.get_mut(&slot)
             && face.shares_resources(&path, program, &published.resource_revision)
         {
@@ -694,12 +705,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             native.update_view(current, &face.values, &typed, &meters);
         }
         drop(projection);
-        let authored = native.authored();
-        let scale = scale_to_fit(Size::new(avail, room), authored, cx.settings.view_scale);
-        let view = native.view(
+        let view = native.view_fitted(
             ui,
             slot,
-            scale,
+            Size::new(avail, room),
+            cx.settings.view_scale,
             face.sources[face.shown].interface(&face.from[face.shown]),
             &face.values,
             &face.input,

@@ -14,6 +14,7 @@ pub(crate) enum Refusal {
     NoSetup,
     InitRequired,
     NativeState,
+    ZoneRouting,
     SourceOrResources,
     SetupChanged,
     SnapshotRead,
@@ -176,6 +177,11 @@ impl Descriptor {
             || snapshot_policy(views).map(|policy| policy.mode).ok() != Some(self.mode)
         {
             return Err(Refusal::SetupChanged);
+        }
+
+        if views.iter().any(|view| view.setup().zone_routing
+            == sampler_ksp::ZoneRoutingCapability::RequiresPreparedRoutes) {
+            return Err(Refusal::ZoneRouting);
         }
         report.authority_check(admission::Stage::AuthorityBeforeRead);
         if authority(&self.base).as_ref() != Some(&self.authority) {
@@ -368,6 +374,17 @@ mod tests {
             descriptor.prepare(&saved, 48000, &views),
             Err(Refusal::SourceOrResources)
         ));
+    }
+    #[test]
+    fn snapshot_callbacks_with_native_zone_routing_require_full_prepared_replacement() {
+        let (_dir, base, saved) = files();
+        for selector in ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"] {
+            let source = format!("{SOURCE} on persistence_changed wait(1) set_zone_par($saved,{selector},0) end on");
+            std::fs::write(&base, fixture::base_instrument("Authority", &[Some(&source), None, None, None, None])).unwrap();
+            let views = views(&source);
+            let descriptor = Seed::capture(&base, 48000).unwrap().finish(&views).unwrap();
+            assert!(matches!(descriptor.prepare(&saved, 48000, &views), Err(Refusal::ZoneRouting)));
+        }
     }
     #[test]
     fn source_change_during_initialization_and_later_rate_or_setup_changes_refuse() {

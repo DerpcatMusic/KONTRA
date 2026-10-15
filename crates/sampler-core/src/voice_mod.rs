@@ -942,6 +942,31 @@ impl VoiceModulation {
         Some(self.offset(program, region, |_| 1.0))
     }
 
+    /// Prediction for explicitly initialized controllers, using the same
+    /// compiled offset consumer as voice admission. Unknown dependencies make
+    /// the whole prediction unknown, including zero-depth assignments.
+    pub fn initialized_start_offset(
+        &self,
+        region: usize,
+        controller: impl Fn(u8) -> Option<u32>,
+    ) -> Option<u32> {
+        self.start_ranges.get(region)?;
+        let Some(index) = self.program(region) else { return Some(0) };
+        let program = &self.programs[index as usize];
+        let at_start = |index: usize| match program.sources[index] {
+            Prepared::Constant => Some(1.0),
+            Prepared::Controller(cc) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
+            _ => None,
+        };
+        for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
+            at_start(route.source)?;
+            for scale in route.scales() { at_start(scale.source)?; }
+        }
+        Some(self.offset(program, region, |index| {
+            at_start(index).expect("every contributing onset source was checked")
+        }))
+    }
+
     pub fn has_loop_targets(&self, region: usize) -> bool {
         self.program(region).is_some_and(|index| self.programs[index as usize].targets.iter()
             .any(|target| matches!(target, CompiledTarget::LoopStart | CompiledTarget::LoopLength)))
