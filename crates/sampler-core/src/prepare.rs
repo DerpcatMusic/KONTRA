@@ -867,6 +867,22 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// Initial sample-start modulation offset, in source frames, when every
+    /// contributing source and depth assignment is Constant. `None` means an
+    /// input-dependent route or an invalid region; a region without such routes
+    /// returns zero. This control-side hint uses the actual voice-start law.
+    ///
+    /// It is scoped to this immutable plan, supplements authored base attacks,
+    /// and does not cover arbitrary script offsets or future source revisions.
+    pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
+        self.regions.get(region)?;
+        if self.voice_modulation.is_empty() {
+            Some(0)
+        } else {
+            self.voice_modulation.constant_start_offset(region)
+        }
+    }
+
     /// One response per authored region, in its original order. Selection always
     /// uses the unmodified velocity; this only changes the admitted voice gain.
     pub fn with_velocity_curves(mut self, curves: Vec<VelocityCurve>) -> Result<Self, Error> {
