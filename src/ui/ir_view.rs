@@ -52,6 +52,16 @@ impl Picture {
             window,
         }
     }
+    /// Keep decoded pixels while expressing their viewport in paint coordinates.
+    /// Wallpaper base-frame offsets belong to source selection, not placement.
+    pub(super) fn with_window(&self, window: Option<[u32; 4]>) -> Self {
+        Self {
+            frames: self.frames.clone(),
+            indices: self.indices.clone(),
+            count: self.count,
+            window,
+        }
+    }
     fn len(&self) -> usize {
         self.count
     }
@@ -150,6 +160,7 @@ fn drive_mapped(
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    wallpapers: HashMap<usize, Option<Arc<Picture>>>,
     fonts: HashMap<usize, Option<Font>>,
     pub meter: Option<Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
@@ -200,9 +211,14 @@ impl Assets {
             return;
         }
         self.loaded.clear();
+        self.wallpapers.clear();
         self.fonts.clear();
-        for (n, picture, font) in prepared {
+        for (n, picture, font, plane) in prepared {
             if let Some(picture) = picture {
+                if plane == super::picture_worker::Plane::Wallpaper {
+                    self.wallpapers.insert(n, Some(picture));
+                    continue;
+                }
                 // Knobs sharing one strip each need their own frame of it.
                 let merged = match self.loaded.remove(&n).flatten() {
                     Some(have) if have.window == picture.window && have.count == picture.count => {
@@ -230,9 +246,9 @@ impl Assets {
             v(&mut h);
             std::hash::Hasher::finish(&h)
         };
-        let entry = |n: &usize, p: &Option<Arc<Picture>>| {
+        let entry = |plane: u8, n: &usize, p: &Option<Arc<Picture>>| {
             let frames = p.iter().flat_map(|p| p.indices.iter().zip(&p.frames));
-            hash(&|h| std::hash::Hash::hash(&(n, p.as_ref().map(|p| (p.window, p.count))), h))
+            hash(&|h| std::hash::Hash::hash(&(plane, n, p.as_ref().map(|p| (p.window, p.count))), h))
                 .wrapping_add(
                     frames
                         .map(|(i, f)| hash(&|h| std::hash::Hash::hash(&(i, Arc::as_ptr(f) as usize), h)))
@@ -242,7 +258,8 @@ impl Assets {
         self.version = self
             .loaded
             .iter()
-            .map(|(n, p)| entry(n, p))
+            .map(|(n, p)| entry(0, n, p))
+            .chain(self.wallpapers.iter().map(|(n, p)| entry(1, n, p)))
             .chain(self.fonts.keys().map(|n| (*n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
             .fold(0, u64::wrapping_add);
     }
@@ -321,6 +338,16 @@ impl Assets {
 
     pub fn get(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
         self.loaded.get(&a.0)?.as_ref()
+    }
+
+    /// Runtime preparation keeps raw wallpaper viewports separate from control
+    /// frames of the same asset. Synchronous/manual assets have one full image.
+    pub(super) fn wallpaper(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
+        if self.preparation.is_some() {
+            self.wallpapers.get(&a.0)?.as_ref()
+        } else {
+            self.get(a)
+        }
     }
 
     /// Bytes of decoded pixels held, each image counted once.
@@ -494,7 +521,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
             );
         }
     };
-    if let Some(pic) = page.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = page.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(page.background.frame as usize)
     {
         let [wx, wy, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
@@ -781,7 +808,7 @@ pub fn view_state(
         },
     ));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(pic) = p.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = p.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(p.background.frame as usize)
     {
         let [x, y, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
