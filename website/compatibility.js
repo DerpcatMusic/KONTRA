@@ -89,7 +89,7 @@
   form.addEventListener('submit', event => event.preventDefault());
   form.addEventListener('input', event => {
     if (event.target === product && area.selectedOptions[0]?.hidden) area.value = '';
-    if (event.target === product && area.value && !data.rows.some(row => row.product === product.value && row.area === area.value)) area.value = '';
+    if (event.target === product && product.value && area.value && !data.rows.some(row => row.product === product.value && row.area === area.value)) area.value = '';
     page = 0;
     render();
   });
