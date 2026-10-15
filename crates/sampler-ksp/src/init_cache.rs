@@ -106,6 +106,12 @@ pub struct CachedInit {
     engine_lookups: Vec<sampler_core::EngineLookup>,
     #[serde(default)]
     zones: Vec<(u32, [i32; 3])>,
+    #[serde(default)]
+    zone_identity_schema: u8,
+    #[serde(default)]
+    snapshot_mode: crate::model::SnapshotMode,
+    #[serde(default)]
+    zone_catalog: Vec<(Option<u32>, u32, u8, u8)>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -222,6 +228,7 @@ impl Initialized {
         if !self.init.midi_object.has_only_async_id_reservations()
             || !self.environment.midi_object.has_only_async_id_reservations()
             || crate::eval::uses_array_file(&self.hir)
+            || crate::zone_routing::requirements(&self.hir).writes
             || self.init.midi_object.async_id_high_water().checked_sub(self.environment.midi_object.async_id_high_water())
                 .and_then(|n|usize::try_from(n).ok()) != Some(self.init.residency.len())
         {
@@ -229,6 +236,10 @@ impl Initialized {
         }
         Some(CachedInit {
             residency_schema: 1,
+            zone_identity_schema: 1,
+            snapshot_mode: self.environment.snapshot_mode,
+            zone_catalog: self.environment.zone_catalog.iter().map(|z|
+                (z.id,z.home.group,z.home.low_key,z.home.high_key)).collect(),
             async_base:self.environment.midi_object.async_id_high_water(),
             async_high:self.init.midi_object.async_id_high_water(),
             residency:self.init.residency.clone(),
@@ -401,6 +412,19 @@ pub fn restore_initialized(
         }
         _ => {}
     }
+    let mut source_ids=std::collections::BTreeSet::new();
+    if cached.zone_catalog.iter().any(|(id,_,low,high)| *low>*high || *high>127
+        || id.is_some_and(|id|id>i32::MAX as u32 || !source_ids.insert(id))) {
+        return Err(error("invalid cached native zone catalog"));
+    }
+    let mut captured_ids=std::collections::BTreeSet::new();
+    if cached.zones.iter().any(|(id,home)| *id>i32::MAX as u32 || !captured_ids.insert(*id)
+        || home[0]<0 || !(0..=127).contains(&home[1]) || !(0..=127).contains(&home[2]) || home[1]>home[2]) {
+        return Err(error("invalid cached native zone homes"));
+    }
+    if cached.zone_identity_schema != 1 {
+        return Err(error("cached zone source identity schema is obsolete"));
+    }
     let frontend_begin = std::time::Instant::now();
     let mut syms = crate::lexer::Interner::default();
     let mut toks = crate::lexer::lex(source, &mut syms).map_err(|f| f.locate(source))?;
@@ -429,6 +453,9 @@ pub fn restore_initialized(
     if cached.source_digest != crate::setup::source_digest(source) {
         return Err(error("cached source identity changed"));
     }
+    if crate::zone_routing::requirements(&hir).writes {
+        return Err(error("zone-writer cache requires fresh physical-source initialization"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -452,6 +479,7 @@ pub fn restore_initialized(
         model: cached.model,
         warnings: Vec::new(),
         engine: cached.engine.into_iter().collect(),
+        zone_parameters: Default::default(),
         properties: cached.properties.into_iter().collect(),
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
@@ -494,6 +522,7 @@ pub fn restore_initialized(
     initial_midi.reserve_async_ids_through(cached.async_base).map_err(|_|error("invalid cached async base"))?;
     let environment = Environment {
         midi_object:initial_midi,
+        snapshot_mode: cached.snapshot_mode,
         groups: cached.groups,
         folders: cached.folders,
         slot: cached.slot,
@@ -501,6 +530,8 @@ pub fn restore_initialized(
         engine_values: cached.engine_values.into_iter().collect(),
         engine_lookups: cached.engine_lookups,
         zones: cached.zones.into_iter().collect(),
+        zone_catalog: cached.zone_catalog.into_iter().map(|(id,group,low_key,high_key)|
+            sampler_ir::SourceZone {id,home:sampler_ir::SourceZoneHome {group,low_key,high_key}}).collect(),
         ..Default::default()
     };
     #[cfg(feature = "scan")]

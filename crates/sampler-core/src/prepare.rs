@@ -1,6 +1,11 @@
 //! Control-thread compilation of immutable assets and native mappings.
 mod predicates;
 mod selection;
+#[path = "zone_routing.rs"]
+pub(crate) mod zone_routing;
+pub use zone_routing::{MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
+    ZoneRouteVariant, ZoneRouting, ZoneRoutingLimits, ZoneRoutingBuildError,
+    ZoneRoutingFeature, ZoneRoutingRefusal, ZoneRoutingReport};
 #[path = "sample_revision.rs"]
 pub(crate) mod sample_revision;
 pub use sample_revision::{DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision,
@@ -820,6 +825,8 @@ impl ConstantStartPrefix {
 }
 
 pub struct Prepared {
+    pub(crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
+    pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
@@ -920,6 +927,24 @@ impl Prepared {
         } else {
             self.voice_modulation.constant_start_offset(region)
         }
+    }
+
+    /// One-time preload prediction for this plan's explicitly initialized
+    /// controllers and Constant sources. Uses the voice admission offset law,
+    /// including authored shapes, signed depths and intensity assignments.
+    /// Missing controller assignments and other input kinds return None.
+    ///
+    /// The last bound assignment wins, including with_initial_level overrides.
+    /// This is the bound state before runtime callbacks/inputs, not the current
+    /// state of an active engine. It never certifies readiness after a CC,
+    /// script offset, plan/source revision or authored listener changes state.
+    pub fn initialized_start_offset(&self, region: usize) -> Option<u32> {
+        self.regions.get(region)?;
+        if self.voice_modulation.is_empty() { return Some(0); }
+        self.voice_modulation.initialized_start_offset(region, |controller| {
+            self.initial_controllers.iter().rev()
+                .find(|&&(cc, _)| cc == controller).map(|&(_, value)| value)
+        })
     }
 
     /// Positive Constant onset through the actual prepared cursor/skip law.
@@ -1104,6 +1129,8 @@ impl Prepared {
         Ok(Self {
             sample_targets: Box::new([]),
             sample_limits: None,
+            source_zone_catalog: None,
+            zone_routing: None,
             group_mutes: Box::new([]),
             residency: None,
             initial_residency: Box::new([]),
@@ -1492,21 +1519,11 @@ impl Prepared {
         zone_id: u32,
         parameter: super::ZoneParameter,
     ) -> Option<i32> {
-        let region = self.source_zone_region(zone_id)?;
+        let home = self.source_zone_identity_home(zone_id)?;
         Some(match parameter {
-            super::ZoneParameter::Group => self
-                .region_groups
-                .get(region)
-                .copied()
-                .flatten()
-                .map_or(-1, |group| {
-                    self.group_source_ids
-                        .get(group as usize)
-                        .copied()
-                        .unwrap_or(group) as i32
-                }),
-            super::ZoneParameter::LowKey => i32::from(self.regions.get(region)?.bounds[0]),
-            super::ZoneParameter::HighKey => i32::from(self.regions.get(region)?.bounds[1]),
+            super::ZoneParameter::Group => home.group as i32,
+            super::ZoneParameter::LowKey => i32::from(home.low_key),
+            super::ZoneParameter::HighKey => i32::from(home.high_key),
         })
     }
 
@@ -1550,7 +1567,7 @@ impl Prepared {
         max_states: usize,
         max_shuffle_entries: usize,
     ) -> Result<Self, Error> {
-        if region_takes.len() != self.regions.len() {
+        if self.zone_routing.is_some() || region_takes.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let mut prepared = Vec::with_capacity(sequences.len());
@@ -1616,7 +1633,7 @@ impl Prepared {
         key_release: super::ReleaseOptions,
         gate_release: super::ReleaseOptions,
     ) -> Result<Self, Error> {
-        if triggers.len() != self.regions.len() {
+        if self.zone_routing.is_some() || triggers.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         for options in [key_release, gate_release] {
@@ -1648,7 +1665,7 @@ impl Prepared {
         key_release: super::SelectionPolicy,
         gate_release: super::SelectionPolicy,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if self.zone_routing.is_some() || regions.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let mut keyswitches = [None; 128];
@@ -1884,7 +1901,7 @@ impl Prepared {
                 self.active_ranges(from..until, state.articulation)
             });
             let mut matching = Matching::new(ranges);
-            while let Some(candidate) = matching.next(self, state, velocity) {
+            while let Some(candidate) = matching.next(self, state, velocity, None) {
                 // An unbound player has no source rate yet. Its dimensionless
                 // pitch cannot be tested against resampling limits until the
                 // actual immutable revision is prepared and admitted.
@@ -1933,7 +1950,7 @@ impl Prepared {
             let ranges = state.map_or([range.start..until, 0..0], |state| {
                 self.active_ranges(range.start..until, state.articulation)
             });
-            let eligible = Matching::new(ranges).next(self, state, velocity).is_some();
+            let eligible = Matching::new(ranges).next(self, state, velocity, None).is_some();
             let sequence = self.regions[self.candidates[range.start].region]
                 .take
                 .map(|t| t.sequence)

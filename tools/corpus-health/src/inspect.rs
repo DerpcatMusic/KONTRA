@@ -390,6 +390,9 @@ fn instrument(report: &mut Value, ir: &sampler_ir::Instrument, scope: &str) {
         "modulators":ir.modulators,"routes":ir.routes,"controls":ir.controls,"processor_controls":ir.processor_controls,
         "ownership":ownership,"physical_control_aliases":ir.source_indices.control_aliases,
         "source_group_mapping":ir.source_indices.groups,"source_zone_mapping":ir.source_indices.zones,
+        "source_zone_catalog":ir.source_indices.zone_catalog,"zone_routing":ir.zone_routing,
+        "source_assets":ir.assets.iter().enumerate().map(|(index,asset)|json!({"index":index,"location":asset.location,"encoding":asset.encoding})).collect::<Vec<_>>(),
+        "source_state_scope":"Worker IR after initialization; runtime zone commits and held-voice source ownership require separate evidence",
         "source_records":ir.source_parameters.iter().map(|r|json!({"location":r.location,"object_id":r.object_id,"version":r.version,"fields":r.fields.iter().map(|f|f.name).collect::<Vec<_>>()})).collect::<Vec<_>>()
     });
     for omitted in &ir.unsupported {

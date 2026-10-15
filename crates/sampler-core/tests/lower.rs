@@ -4,6 +4,66 @@ use sampler_core::{Input, Limits, Pcm, Protocol, Runtime};
 use sampler_ir as ir;
 
 #[test]
+fn readonly_physical_catalog_exceeds_routing_count_but_keeps_its_own_byte_budget() {
+    let count = sampler_core::lower::ZONE_ROUTING_LIMITS.zones + 1;
+    assert!(count < sampler_core::lower::SOURCE_ZONE_CATALOG_ZONES);
+    let home = ir::SourceZoneHome {
+        group: 17,
+        low_key: 0,
+        high_key: 127,
+    };
+    let mut instrument = ir::Instrument::default();
+    instrument.source_indices.zones = vec![None; count];
+    instrument.source_indices.zone_catalog = (0..count)
+        .map(|n| ir::SourceZone {
+            id: (n != 1).then_some(n as u32 * 2),
+            home,
+        })
+        .collect();
+    let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap();
+    assert_eq!(plan.source_zone_identity_count(), count);
+    assert_eq!(plan.source_zone_identity(0), Some(0));
+    assert_eq!(plan.source_zone_identity(1), None);
+    assert_eq!(
+        plan.source_zone_identity(count - 1),
+        Some((count as u32 - 1) * 2)
+    );
+    assert_eq!(plan.source_zone_identity(count), None);
+    let limits = Limits::for_plan(&plan, 1, 1);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        assert_eq!(
+            runtime.zone_parameter_in(
+                runtime.active_plan(),
+                (count as u32 - 1) * 2,
+                sampler_core::ZoneParameter::Group
+            ),
+            Ok(17)
+        );
+        assert!(
+            runtime
+                .zone_routing_report(runtime.active_plan())
+                .unwrap()
+                .is_none()
+        );
+    });
+    let over_budget = sampler_core::lower::SOURCE_ZONE_CATALOG_ZONES + 1;
+    instrument.source_indices.zones.resize(over_budget, None);
+    instrument
+        .source_indices
+        .zone_catalog
+        .resize(over_budget, ir::SourceZone { id: None, home });
+    assert!(matches!(
+        lower(&instrument, 48000, vec![], no_behaviors),
+        Err(LowerError::Core {
+            stage: sampler_core::lower::Stage::ZoneRouting,
+            error: sampler_core::Error::Capacity,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn authored_inactive_envelope_values_remain_readable_without_a_dsp_write_owner() {
     use sampler_core::{EngineParameterAddress, Error, engine_parameter_id};
     let address = EngineParameterAddress {
@@ -2566,6 +2626,10 @@ fn authored_zone_getters_keep_physical_group_holes_after_lowering() {
     instrument.source_indices.groups[7] = Some(ir::GroupRef(0));
     instrument.source_indices.zones = vec![None; 73];
     instrument.source_indices.zones[72] = Some(ir::ZoneRef(0));
+    instrument.source_indices.zone_catalog = (0..73).map(|i| ir::SourceZone {
+        id: (i == 72).then_some(73),
+        home: ir::SourceZoneHome { group: 7, low_key: 12, high_key: 94 },
+    }).collect();
     let plan = lower(&instrument, 48000, vec![constant(1.)], no_behaviors).unwrap();
     assert_eq!(
         plan.source_zone_parameter(73, ZoneParameter::Group),

@@ -1,0 +1,28 @@
+<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+setSize(320,200)
+calls=0
+picked=1
+pickedText='00'
+local route=Menu('00',{'00','10','20','30'},1)
+route.bounds={10,10,140,24}
+route.hierarchical=false
+local display=WaveView('01')
+display.bounds={20,75,240,96}
+display.visible=false
+display.playbackCursorColour='#ff0000'
+display.hiWaveColour='#00ff00'
+display.lowWaveColour='#00ff00'
+display.axisColour='#777777'
+display.channelSeparatorColour='#888888'
+display.sampleNameColour='#ffffff'
+display.sampleNameBackgroundColour='#000000'
+route.changed=function(self)
+  calls=calls+1
+  picked=self.value
+  pickedText=self:getText(self.value)
+  display.visible=self.value~=1
+  if self.value==2 then display.sample='wave-a.wav'
+  elseif self.value==3 then display.sample='wave-b.wav'
+  else display.sample=nil end
+end
+]]></script></ScriptProcessor></EventProcessors></Program></UVI4>

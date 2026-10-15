@@ -30,6 +30,7 @@ pub struct Config {
     pub(super) pacing_tolerance: Duration,
     pub(super) row_capacity: usize,
     pub(super) graph_scope: sampler_core::trace::SignalTraceScope,
+    pub(super) natural_revisit_first: bool,
 }
 fn integer(v: &Value, key: &str, low: u64, high: u64) -> Result<u64, &'static str> {
     v.get(key)
@@ -72,11 +73,12 @@ impl Config {
                 "graph_scope",
             ],
         )?;
+        let natural_revisit_first = v["warm_intervention"] == "natural_then_exact_first_windows";
         if v["schema"] != 1
             || v["opt_in"] != true
             || v["state_origin"] != "saved_state_diagnostic"
             || v["input_origin"] != "synthetic_native"
-            || v["warm_intervention"] != "exact_first_windows"
+            || (v["warm_intervention"] != "exact_first_windows" && !natural_revisit_first)
         {
             return Err(
                 "Explicit saved-state, synthetic-native and exact-window diagnostic opt-in is required",
@@ -138,6 +140,7 @@ impl Config {
             path,
             selection,
             graph_scope,
+            natural_revisit_first,
             rate: integer(v, "rate", 48000, 48000)? as u32,
             block: integer(v, "block", 128, 128)? as usize,
             key: integer(v, "key", 0, 127)? as u8,
@@ -156,7 +159,9 @@ impl Config {
             || c.phase_deadline < c.spacing
             || c.startup_deadline
                 + c.phase_deadline
-                + c.spacing * u32::from(c.selection.rr_cycle)
+                + c.spacing
+                    * u32::from(c.selection.rr_cycle)
+                    * if c.natural_revisit_first { 2 } else { 1 }
                 + c.hold
                 + c.tail_deadline
                 > c.total_deadline
@@ -266,6 +271,22 @@ mod tests {
         v = plan();
         v["unknown"] = json!(0);
         assert!(Config::parse(&v).is_err());
+    }
+    #[test]
+    fn natural_revisit_is_explicit_and_both_cycles_must_fit() {
+        let mut v = plan();
+        assert!(!Config::parse(&v).unwrap().natural_revisit_first);
+        v["warm_intervention"] = json!("natural_then_exact_first_windows");
+        assert!(Config::parse(&v).unwrap().natural_revisit_first);
+        v["selection"]["rr_cycle"] = json!(9);
+        assert!(Config::parse(&v).is_ok());
+        v["total_ms"] = json!(90000);
+        assert!(Config::parse(&v).is_err());
+        v["warm_intervention"] = json!("exact_first_windows");
+        assert!(
+            Config::parse(&v).is_ok(),
+            "legacy schedule remains one cycle"
+        );
     }
     #[test]
     fn graph_scope_is_explicit_and_can_widen_independently_of_input_key() {

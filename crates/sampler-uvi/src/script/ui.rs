@@ -4,6 +4,8 @@ use mlua::{Function, Table, Value};
 use sampler_ui_ir as ui;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+mod wave_view;
+
 pub fn control_id(widget: usize, component: usize) -> ui::ControlId {
     ui::ControlId(0x55564900000000000000000000000000 | ((widget as u128) << 32) | component as u128)
 }
@@ -921,6 +923,9 @@ impl ScriptHost {
                     color: text(w, "innerEdgeColour").and_then(|c| color(&c)),
                 });
             }
+            if kind == "WaveView" {
+                wd.uvi_wave_view_request = Some(wave_view::request(self, w, &data, index, &mut out));
+            }
             if kind == "Viewport" {
                 wd.viewport = Some(
                     w.table("viewPosition")
@@ -1243,7 +1248,9 @@ impl ScriptHost {
                 out.unsupported.push(ui::Unsupported {
                     widget: Some(ui::WidgetRef(index)),
                     feature: format!("{kind} service"),
-                    value: "renderer/engine service unavailable".into(),
+                    value: if kind == "WaveView" {
+                        "oscillator playback and native channel/name/color-blend display remain unavailable; manual sample has an independent display provider".into()
+                    } else { "renderer/engine service unavailable".into() },
                 });
             }
             out.widgets.push(wd);
