@@ -1033,6 +1033,9 @@ impl Runtime {
                 if let Some(Some(state)) = g.modulation.native.as_mut_slice().get(voice.0.index) {
                     self.voices.get_mut(voice.0).unwrap().envelope.set_v1_amplitude(state.amplitude(), self.rate as f32);
                 }
+                if self.signal_trace {
+                    self.trace_selected_birth(voice, start, seed);
+                }
             }
             if let Some(family) = family {
                 self.finish_family(family).expect("admitted family");
