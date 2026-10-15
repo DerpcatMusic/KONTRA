@@ -175,6 +175,13 @@ previously rejected attack is not replayed when loading finishes. Use an
 independent load for the comparison rather than treating a longer held note as
 a retry. Group rows are capped at 4096, with an explicit omitted count.
 
+The physical residency queue and retained startup-completion spool are distinct.
+`startup_completions_pending` and `pending_startup_work` must also clear before
+settlement, including unadmitted startup programs. `stream_after_activation`,
+`stream_at_note` and `stream_after_note` snapshot current physical heads and
+selected hint coverage; the original load report is historical and can differ
+after authored purge/reload. These metadata queries do not decode samples.
+
 UVI runs on an independent asynchronous Lua owner. The KSP-only activation pass
 therefore reports `uvi_owner_not_observed`, even if its callback list is empty.
 An empty fast-rendered PCM window without owner acknowledgement and sufficient
@@ -199,7 +206,10 @@ controller defaults. Reports distinguish the script note route from direct
 sampler forwarding without `onNote`.
 
 Acknowledgement does not complete future waits/listeners or certify native
-parity. Timeouts and unresolved/failed sample work retain partial results;
+parity. Per-phase traces also retain a bounded first observed command-drain
+increase, active voices and owner phase. This is an off-audio polling bound,
+not an exact command timestamp or native/host onset measurement.
+Timeouts and unresolved/failed sample work retain partial results;
 all-zero PCM alone does not establish incompatibility. The PCM fingerprint is
 a labelled indexed chain of per-block digests, not concatenated audio. See the
 [UVI probe contract](../../docs/re/uvi-inspector-note-probe.md) for exact bounds,

@@ -186,6 +186,8 @@ fn acknowledge(
     if timeout.is_zero() {
         return Phase::failed("wall_limit", Value::Null);
     }
+    let drain_baseline = core.uvi_diagnostic_progress(0, owner.request, bridge)
+        .ok().and_then(|o| o.progress).map(|p| p.commands_drained);
     let mut token = match core.request_uvi_diagnostics(0, owner.request, bridge, timeout) {
         Ok(token) => token,
         Err(e) => return Phase::failed("request_failed", json!(format!("{e:?}"))),
@@ -197,6 +199,7 @@ fn acknowledge(
     let mut polls = 0usize;
     let mut observation = Value::Null;
     let mut drained = false;
+    let mut first_command_drain = None;
     let mut detail = Value::Null;
     let status = loop {
         if Instant::now() >= deadline.min(bounds.deadline) {
@@ -227,9 +230,19 @@ fn acknowledge(
         drained = reply.commands_drained;
         observation = observation_value(&reply.observation);
         if let Some(p) = reply.observation.progress {
-            if last.is_none_or(|old: DiagnosticProgress| old.phase != p.phase) {
+            if first_command_drain.is_none()
+                && drain_baseline.is_some_and(|before| p.commands_drained > before) {
+                first_command_drain = Some(json!({"wall_ms":started.elapsed().as_secs_f64()*1000.,
+                    "commands_drained":p.commands_drained,"active_voices":core.voices().active,
+                    "owner_phase":format!("{:?}",p.phase),
+                    "scope":"First observed increase from the request's counter baseline; off-audio poll timing, not an exact command timestamp or native/host latency"}));
+            }
+            if last.is_none_or(|old: DiagnosticProgress| old.phase != p.phase
+                || old.commands_drained != p.commands_drained
+                || old.events_executed != p.events_executed) {
                 if trace.len() < 16 {
-                    trace.push(json!({"wall_ms":started.elapsed().as_secs_f64()*1000.,"progress":progress_value(p)}));
+                    trace.push(json!({"wall_ms":started.elapsed().as_secs_f64()*1000.,
+                        "active_voices":core.voices().active,"progress":progress_value(p)}));
                 } else {
                     trace_omitted += 1;
                 }
@@ -257,6 +270,7 @@ fn acknowledge(
         report: json!({"status":status,"detail":detail,
         "request_id":token.id(),"acknowledgement":ack.map(acknowledgement_value),
         "commands_drained":drained,"observation":observation,"polls":polls,
+        "command_drain_baseline":drain_baseline,"first_command_drain_observed":first_command_drain,
         "wall_ms":started.elapsed().as_secs_f64()*1000.,"clock_frames":0,
         "phase_observations":trace,"phase_observations_omitted":trace_omitted}),
     }

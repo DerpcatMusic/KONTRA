@@ -1483,8 +1483,11 @@ impl V2Core {
             }
         });
         let (queued_faults, dropped_faults) = part.fault_inbox.counts();
+        let startup_pending = part.runtime
+            .startup_work_pending(part.runtime.active_plan()).unwrap_or(true);
         serde_json::json!({"part_present": true, "audio_generation": part.epoch, "callback_count": callbacks,
             "pending_plan_callbacks": pending_plan, "live_callback_failures": failures,
+            "pending_startup_work": startup_pending,
             "queued_faults": queued_faults, "dropped_faults": dropped_faults,
             "rows_omitted": callbacks.saturating_sub(rows.len()), "callbacks": rows})
     }
@@ -1966,6 +1969,7 @@ impl V2Core {
     pub(crate) fn scripts_running(&self, part: usize) -> bool {
         let mut running = false;
         if let Some(Some(p)) = self.parts.get(part) {
+            running |= p.runtime.startup_work_pending(p.runtime.active_plan()).unwrap_or(true);
             p.runtime.visit_behavior_progress(|c| {
                 running |= c.outcome.is_none() && matches!(c.owner, sampler_core::BehaviorOwner::Plan(_));
             });
@@ -3691,7 +3695,10 @@ impl V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
+        let core = |e: sampler_core::Error| match e {
+            sampler_core::Error::Canceled => CoreError::Canceled,
+            e => CoreError::Invalid(format!("{e:?}")),
+        };
         let Loaded {
             part: (prepared, cache, mut script),
             tree,
@@ -3771,12 +3778,13 @@ impl V2Loader {
                 }
             }
         }
-        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity(
+        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity_cancelable(
             prepared,
             limits,
             2,
             1,
             limits.notes.min(RESIDENT_NOTE_PARAMS),
+            canceled,
         )
         .map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
