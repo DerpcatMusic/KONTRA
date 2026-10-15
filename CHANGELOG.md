@@ -6,15 +6,16 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
-## 0.3.500
+## 0.3.501
 
-This experimental checkpoint carries the accepted 0.3.490 changes and ten additional reviewed fixes. Loading remains bounded; UVI/Falcon and Kontakt compatibility remain partial.
+This experimental checkpoint carries the accepted 0.3.490 changes and eleven additional reviewed fixes. Loading remains bounded; UVI/Falcon and Kontakt compatibility remain partial.
 
 - Preset menus resolve saved positions against the live script-owned roster. Explicit preset picks discard stale project captures, and scripted source/zone changes commit with bounded, owned async completions.
 - Analog Strings internal browser A→B→A restored the selected musical parameters, actual source groups and fresh-note sound in a real library witness. Async residency callback pressure now defers completion instead of freezing the script/audio clock. Array-file metadata reads have independent ownership from write snapshots.
 - UI artwork requests and painting use the same committed or authored default value. Retained assets and presentation owners survive unrelated updates; supported same-instrument recalls retain immutable resources. Presets requiring a full initialization or unsupported native-state transaction still use the full load path.
 - Streamed sampler layers belonging to one logical attack wait together for their requested initial demand. One real Areia Full Ensemble Spiccato Slow capture recorded 19 attacks with aligned contribution starts and zero underruns. Cold disk waits remain; pacing misses and round-robin comparison limits prevent a complete perceptual or native-parity verdict. Time-stretch instruments retain their prior path.
 - Mandatory resident PCM remains loaded when optional preload anchors exceed the payload quota. The unchanged public UVI exact-budget regression now passes, while insufficient mandatory budgets, read failures and cancellation still refuse safely.
+- macOS archives include the bundled assistant-font and FastLZ notices; universal composition and publication reject missing font, BUFFR or other required notices. Signing/notarization/install gates are unchanged.
 - Signed modulation mappers preserve interior zero crossings. Malformed KSP get_scale destinations are rejected before they can reach the evaluator's declared-array invariant. The portable logarithm correction is included.
 
 Source validation at the coordinated implementation checkpoint: 1,954 top-level tests passed, zero failed, 69 explicitly ignored. The real Areia trace had zero underruns, stream errors, capacity refusals and trace loss; it still recorded 162 cold admissions and 78 pacing misses. Release-candidate, native format/editor and hosted shipping gates bind their own exact revisions. See docs/diagnostics/20261016-release-checkpoint.md.
