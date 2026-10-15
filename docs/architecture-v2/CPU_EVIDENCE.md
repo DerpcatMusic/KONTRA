@@ -965,3 +965,48 @@ their own exact oracles. Preflight/miss costs, control-side scratch ownership,
 parallel workers and actual 300-voice callback shared/distinct/phase/dynamic
 cases are acceptance requirements. This experiment does not change the open
 300-voice, 1% meter result.
+
+## Deferred unused voice scratch initialization, 2026-10-15
+
+The next current-source baseline is frozen as
+`kontra-cpu-20261015-render/whole-callback-current-baseline`, SHA-256
+`563db11c64418a017ab7cd77c8edb3f1d377cb3afea30eaaa4342ecef1bac5a7`.
+The source cohort is `308bf633b` plus the recorded UVI diagnostic-only edits;
+all 1,168 captured Rust/Lua/manifest/lock source hashes stayed unchanged during
+its locked, offline corpus build. Attempts to acquire a compiler-free
+measurement window stopped at the passive compiler gate before launching the
+fixture. Consequently there is no new callback baseline, current exclusive
+stage attribution, accepted speedup or 1% result from this frozen executable.
+
+The bounded candidate moves the existing 512-byte zeroed scratch initialization
+inside the `points.is_some()` branch that reads it. Direct voices already write
+to their destination and do not use scratch. Rust definite assignment keeps the
+initialized array on the ramped path without unsafe storage, heap allocation or
+any change to sample arithmetic, control cadence, source eligibility or DSP
+history. This does not implement a broader no-chain render bypass.
+
+A new test-only authored fixture lowers 100 keys with three nonoverlapping MIDI
+velocity layers each: 300 independently allocated assets, selected samples,
+physical voices and exact host owners. Whole 256-frame renders and
+1/7/64/65/119-frame fragments produce identical PCM bits and cursor/envelope
+continuation across source wraps; every exact owner releases and runtime
+fault counters remain zero. It passes before and after the candidate. This is
+authored core-selection/state evidence, not an exported-host or actual callback
+meter/heap witness. The existing callback fixture retains those separate guards.
+
+The focused render tests pass. The core functional source manifests contain
+284 files; only `render.rs` differs between candidate and original. Optimized
+before/after disassembly proves the 512-byte `memset` moved behind the points
+discriminant and the direct branch skips it. The `render_voice` symbol shrinks
+from 7,205 to 7,192 machine-code bytes. Static instruction removal is not an
+elapsed-time measurement. Same-cohort, compiler-free actual callback pairs and
+their complete PCM/heap/counter checks remain required before timing promotion.
+
+The seven relevant integration targets pass: EQ lane/processor history, script
+fade curves, paged fallback, realtime heap guards, sample revisions, source
+playback and voice modulation (64 passed, one preexisting ignored test). The
+candidate source hashes stay unchanged throughout these functional checks.
+
+Raw functional logs, source manifests, assembly, passive compiler-gate records
+and the frozen baseline are in
+`/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/kontra-cpu-20261015-render/`.
