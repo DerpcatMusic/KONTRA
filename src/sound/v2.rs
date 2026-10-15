@@ -259,6 +259,11 @@ fn host_bindings(
 }
 
 impl Part {
+    #[cfg(all(test, feature = "shots"))]
+    pub(crate) fn set_uvi_inspector_fixture_script(&mut self, script: ScriptDriver) {
+        self.script = Some(Box::new(script));
+    }
+
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe =

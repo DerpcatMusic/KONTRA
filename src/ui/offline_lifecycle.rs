@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod uvi;
+
 pub struct Witness {
     pub initial: Vec<Interface>,
     pub settled: Vec<Interface>,
@@ -212,6 +214,8 @@ struct SwitchPlan {
     render_ui: bool,
     #[serde(default)]
     residency_wait_ms: Option<u16>,
+    #[serde(default)]
+    uvi: Option<uvi::Config>,
     #[serde(default = "default_note_key")]
     key: u8,
     #[serde(default = "default_note_velocity")]
@@ -651,6 +655,9 @@ fn switch_probe_inner(
             "Preset-switch schema 1 requires 1..24 steps, valid MIDI key/velocity, 128..96000 note frames and optional residency_wait_ms in 1..10000",
         );
     }
+    if let Some(config) = &plan.uvi {
+        config.validate(plan.note_frames)?;
+    }
     for step in &plan.steps {
         match step {
             SwitchStep::Load {
@@ -956,25 +963,31 @@ fn switch_probe_inner(
                     id: generation as i32,
                     clap: true,
                 };
-                core.begin_block(&BlockInfo {
-                    frames: 128,
-                    offline: true,
-                    ..Default::default()
-                });
-                core.play(
-                    0,
-                    Event::NoteOn {
-                        note,
-                        velocity: f64::from(plan.velocity) / 127.,
-                        tune: 0.,
-                    },
-                );
-                owner.held = Some(note);
-                record["fresh_note"] = switch_render(&mut core, &mut owner, plan.note_frames)?;
-                record["fresh_note"]["key"] = json!(plan.key);
-                record["fresh_note"]["velocity"] = json!(plan.velocity);
-                record["fresh_note"]["activation_readiness"] =
-                    record["activation"]["activation_readiness"].clone();
+                if let Some(config) = &plan.uvi {
+                    record["fresh_note"] = uvi::probe_note(
+                        &mut core, &mut owner, config, note, plan.velocity, plan.note_frames,
+                    )?;
+                } else {
+                    core.begin_block(&BlockInfo {
+                        frames: 128,
+                        offline: true,
+                        ..Default::default()
+                    });
+                    core.play(
+                        0,
+                        Event::NoteOn {
+                            note,
+                            velocity: f64::from(plan.velocity) / 127.,
+                            tune: 0.,
+                        },
+                    );
+                    owner.held = Some(note);
+                    record["fresh_note"] = switch_render(&mut core, &mut owner, plan.note_frames)?;
+                    record["fresh_note"]["key"] = json!(plan.key);
+                    record["fresh_note"]["velocity"] = json!(plan.velocity);
+                    record["fresh_note"]["activation_readiness"] =
+                        record["activation"]["activation_readiness"].clone();
+                }
                 record["outcome"] = json!("published_and_probed");
             }
         }
