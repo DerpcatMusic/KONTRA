@@ -98,7 +98,7 @@ def engine_rows():
 def target_table():
     snap = os.path.join(HERE, "data/modulation-targets.tsv")
     law = os.path.join(SPECS, "modulation-laws.md")
-    if os.path.exists(law):
+    if os.environ.get("KONTRA_COVERAGE_SOURCE_ONLY") != "1" and os.path.exists(law):
         body = open(law, encoding="utf-8").read().split("```tsv")[1].split("```")[0].strip()
         os.makedirs(os.path.dirname(snap), exist_ok=True)
         open(snap, "w", encoding="utf-8").write(body + "\n")

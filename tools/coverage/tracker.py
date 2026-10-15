@@ -37,7 +37,7 @@ def repo_path(fname):
                     continue
                 for f in fs:
                     _paths.setdefault(f, os.path.relpath(os.path.join(d, f), ROOT))
-    return _paths.get(os.path.basename(fname.split("::")[0]))
+    return _paths.get(os.path.basename(fname.lstrip("!").split("::")[0]))
 
 
 def feat(product, area, key, name, status, note="", src=None, proof="unproven"):
@@ -60,12 +60,12 @@ def proof_of(row):
     return "proved" if row["status"] == "exact" and build.probe_ok(row["probe"]) is not False else "unproven"
 
 
-def engine_features(category, product, area, label=lambda r: r["name"], rows=None):
+def engine_features(category, product, area, label=lambda r: r["name"], rows=None, key_prefix=""):
     rows = rows if rows is not None else [r for r in build.engine_rows() if r["category"] == category]
     out = []
     for r in rows:
         s, n = derive(r)
-        out.append(feat(product, area, r["key"], label(r), s, n, repo_path(r["probe"]), proof_of(r)))
+        out.append(feat(product, area, key_prefix + r["key"], label(r), s, n, repo_path(r["probe"]), proof_of(r)))
     return out
 
 
@@ -121,7 +121,8 @@ def targets():
 def file_format():
     out = []
     for r in build.format_layer():
-        out.append(feat("Kontakt", "File format objects", r["sertype"], r["class"],
+        # Serialization IDs can be shared by distinct classes; keep row identities unique.
+        out.append(feat("Kontakt", "File format objects", f"{r['sertype']}/{r['class']}", r["class"],
                         "done" if r["status"] == "exact" else "partial" if r["status"] == "mapped" else "todo",
                         r["note"] if r["status"] != "exact" else "", "docs/re/kontakt-catalog/parser_coverage.md",
                         "proved" if r["status"] == "exact" else "unproven"))
@@ -173,7 +174,7 @@ def ksp_families():
 # ------------------------------------------------------------------ UVI
 def uvi_snapshot():
     """Refresh data/uvi-features.tsv from the private catalog when present (CI uses the committed copy)."""
-    if not os.path.exists(UVI_CACHE):
+    if os.environ.get("KONTRA_COVERAGE_SOURCE_ONLY") == "1" or not os.path.exists(UVI_CACHE):
         return
     rows, seen = [], set()
     for r in build.tsv(UVI_CACHE):
@@ -333,7 +334,7 @@ def all_features():
     f += engine_features("mod-source", k, "Modulation sources")
     f += engine_features("source-mode", k, "Source modes")
     f += engine_features("start-mode", k, "Start conditions")
-    f += engine_features("start-join", k, "Start conditions", lambda r: "Combine: " + r["name"])
+    f += engine_features("start-join", k, "Start conditions", lambda r: "Combine: " + r["name"], key_prefix="combine-")
     f += uvi_features()
     audit(f)
     overrides(f)
