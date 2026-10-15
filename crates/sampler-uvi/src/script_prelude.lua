@@ -76,7 +76,21 @@ local widget_mt, methods = {}, {}
 local registry = {}
 local ui = { widgets = registry, revision = 0, keys = {} }
 local rawtype = type
+local rawmetatable = getmetatable
 local function data(w) return rawget(w, "__data") end
+local function same_presentation_scalar(d, k, v)
+  -- Mutable objects can be reassigned to signal an in-place edit. Authored
+  -- data metatables can also give otherwise identical writes side effects.
+  if rawmetatable(d) ~= nil then return false end
+  local old = rawget(d, k)
+  local t = rawtype(v)
+  if rawtype(old) ~= t or old ~= v then return false end
+  if t == "number" then
+    -- Keep nonfinite writes observable, and distinguish the signs of zero.
+    return v-v == 0 and (v ~= 0 or 1/old == 1/v)
+  end
+  return t == "string" or t == "boolean" or t == "nil"
+end
 local function notify(w, index)
   local f = data(w).changed
   if rawtype(f) == "function" then f(w, index) end
@@ -221,7 +235,10 @@ widget_mt.__newindex = function(w, k, v)
   elseif k == "height" then d.height,d.height_set = v,true
   elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
   elseif k == "parent" then d.parent,d.parent_id = v,v and rawget(v,"id")
-  else d[k] = v end
+  else
+    if same_presentation_scalar(d, k, v) then return end
+    d[k] = v
+  end
   ui.revision = ui.revision + 1
 end
 local sizes = {Knob={80,80},Slider={120,20},NumBox={80,20},Button={100,25},OnOffButton={100,25},
