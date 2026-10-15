@@ -153,6 +153,8 @@ pub struct Widget {
     pub colors: Colors,
     /// Authored separation between table bars. Unset preserves the stock drawing.
     pub table_inner_edge: Option<TableInnerEdge>,
+    /// Explicit supported table fill; absent retains the renderer's fallback.
+    pub table_fill: Option<TableFill>,
     pub style: Option<StyleRef>,
     /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
     pub state_styles: [Option<StyleRef>; 6],
@@ -217,6 +219,7 @@ impl Widget {
             drag: None,
             colors: Colors::default(),
             table_inner_edge: None,
+            table_fill: None,
             style: None,
             state_styles: [None; 6],
             images: Vec::new(),
@@ -384,6 +387,12 @@ pub struct Colors {
 pub struct TableInnerEdge {
     pub visible: bool,
     pub color: Option<Rgba>,
+}
+
+/// Supported authored table background/bar drawing. Native gloss is uncalibrated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableFill {
+    Solid,
 }
 
 /// Parts of a control hidden individually (KSP `HIDE_PART_*`).

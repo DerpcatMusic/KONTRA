@@ -1,4 +1,4 @@
-use sampler_ui_ir::{InterfacePatch, Kind, Rgba, TableInnerEdge};
+use sampler_ui_ir::{InterfacePatch, Kind, Rgba, TableFill, TableInnerEdge};
 use sampler_uvi::script::{ScriptHost, control_id};
 
 const XML: &str = include_str!("fixtures/table_inner_edge.uvip");
@@ -135,4 +135,78 @@ fn missing_native_edge_colour_uses_existing_fallback_without_inventing_ink() {
         })
     );
     assert!(face.unsupported.is_empty(), "{:?}", face.unsupported);
+    assert_eq!(face.widgets[0].table_fill, None);
+}
+
+#[test]
+fn explicit_solid_fill_exports_and_live_gloss_remains_an_honest_finding() {
+    let xml = XML
+        .replace("bars.innerEdgeColour='red'", "bars.fillStyle='solid'; initial_fill=bars.fillStyle; bars.innerEdgeColour='red'")
+        .replace("bars.drawInnerEdge=not self.value", "bars.fillStyle=self.value and 'gloss' or 'solid'; current_fill=bars.fillStyle; bars.drawInnerEdge=not self.value");
+    let mut host = host(&xml);
+    assert_eq!(host.global_text("initial_fill"), "solid");
+    let base = host.interface();
+    assert_eq!(base.widgets[0].table_fill, Some(TableFill::Solid));
+    assert!(base.unsupported.is_empty(), "{:?}", base.unsupported);
+    for (value, expected, readback) in [(1., None, "gloss"), (0., Some(TableFill::Solid), "solid")]
+    {
+        host.set_control(control_id(2, 0), value).unwrap();
+        let face = host.interface();
+        assert_eq!(host.global_text("current_fill"), readback);
+        assert_eq!(face.widgets[0].table_fill, expected);
+        assert_eq!(face.widgets[0].components, base.widgets[0].components);
+        assert_eq!(
+            host.global_text("calls"),
+            "0",
+            "a style write must not edit a table cell"
+        );
+        assert_eq!(
+            face.unsupported
+                .iter()
+                .any(|row| row.feature == "Table.fillStyle"),
+            expected.is_none()
+        );
+        let patch = InterfacePatch::between(&base, &face);
+        let mut published = base.clone();
+        patch.apply(&base, &Default::default(), &mut published);
+        assert_eq!(published, face);
+    }
+    host.set_control(base.widgets[0].components[1], 0.375)
+        .unwrap();
+    assert_eq!(host.global_text("calls"), "1");
+    assert_eq!(host.global_text("last_index"), "2");
+    assert_eq!(host.global_text("last_value"), "0.375");
+}
+
+#[test]
+fn gloss_unknown_fill_types_and_other_widget_kinds_remain_findings() {
+    for invalid in ["'gloss'", "'unknown'", "true", "123", "{}"] {
+        let xml = XML.replace(
+            "bars.innerEdgeColour='red'",
+            &format!("bars.fillStyle={invalid}; bars.innerEdgeColour='red'"),
+        );
+        let face = host(&xml).interface();
+        assert_eq!(face.widgets[0].table_fill, None);
+        assert!(
+            face.unsupported
+                .iter()
+                .any(|row| row.feature == "Table.fillStyle")
+        );
+    }
+    let xml = XML
+        .replace(
+            "local bars=Table('Bars',4,1,0,1,false)",
+            "local bars=Knob('Bars',1,0,1)",
+        )
+        .replace(
+            "bars.innerEdgeColour='red'",
+            "bars.fillStyle='solid'; bars.innerEdgeColour='red'",
+        );
+    let face = host(&xml).interface();
+    assert_eq!(face.widgets[0].table_fill, None);
+    assert!(
+        face.unsupported
+            .iter()
+            .any(|row| row.feature == "Knob.fillStyle")
+    );
 }

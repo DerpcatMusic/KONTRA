@@ -422,6 +422,9 @@ fn widget_record(face: &sampler_ui_ir::Interface, n: usize, w: &sampler_ui_ir::W
         "visible": edge.visible,
         "color": edge.color.map(|color| [color.r, color.g, color.b, color.a]),
     })));
+    record["table_fill"] = json!(w.table_fill.map(|fill| match fill {
+        sampler_ui_ir::TableFill::Solid => "solid",
+    }));
     // KSP publishes current scalar state in Widget.value. initial_value is the
     // constructor seed and is not its menu selection after persistence/activation.
     let scalar = match w.value.as_ref() {
@@ -1817,13 +1820,15 @@ mod tests {
     #[test]
     fn table_inner_edge_report_preserves_authored_visibility_and_argb() {
         let xml = include_str!("../../../crates/sampler-uvi/tests/fixtures/table_inner_edge.uvip")
-            .replace("innerEdgeColour='red'", "drawInnerEdge=false; bars.innerEdgeColour='#8011cc33'");
+            .replace("innerEdgeColour='red'", "drawInnerEdge=false; bars.fillStyle='solid'; bars.innerEdgeColour='#8011cc33'");
         let host = sampler_uvi::script::ScriptHost::new(&xml, (), Default::default()).unwrap();
         let face = host.interface();
         assert!(face.unsupported.is_empty(), "{:?}", face.unsupported);
         let record = widget_record(&face, 0, &face.widgets[0]);
         assert_eq!(record["table_inner_edge"], json!({"visible":false,"color":[17,204,51,128]}));
+        assert_eq!(record["table_fill"], "solid");
         assert!(widget_record(&face, 1, &face.widgets[1])["table_inner_edge"].is_null());
+        assert!(widget_record(&face, 1, &face.widgets[1])["table_fill"].is_null());
     }
 
     #[test]
