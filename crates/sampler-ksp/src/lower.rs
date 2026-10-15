@@ -4145,6 +4145,9 @@ impl Gen<'_, '_> {
                     local: dst,
                     write: false,
                 }))?;
+                if builtin == Builtin::GetControlPar {
+                    self.menu_selected_index(args, dst)?;
+                }
                 self.land(skip);
             } else {
                 self.emit(I::Op(Op::ControlAt {
