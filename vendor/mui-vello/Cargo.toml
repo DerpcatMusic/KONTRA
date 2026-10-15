@@ -20,9 +20,9 @@ software-window = ["cpu", "dep:softbuffer", "dep:raw-window-handle"]
 [dependencies]
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"], optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-mui-scene = { git = "https://github.com/Matari-Audio/MUI" }
-mui-weld = { git = "https://github.com/Matari-Audio/MUI" }
-mui-geometry = { git = "https://github.com/Matari-Audio/MUI" }
+mui-scene = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+mui-weld = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+mui-geometry = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 rustc-hash = "2"
 # No wgpu backend features: a plugin renders into the device its host wrapper
 # already created, so this crate must not choose the backend. Hosts turn on
@@ -44,16 +44,16 @@ vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
-mui-layout = { git = "https://github.com/Matari-Audio/MUI" }
-mui-material = { git = "https://github.com/Matari-Audio/MUI" }
+mui-layout = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+mui-material = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 epaint_default_fonts = "0.36"
-mui-text = { git = "https://github.com/Matari-Audio/MUI" }
+mui-text = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 ttf-inter = { version = "0.1", default-features = false, features = ["v"] }
 png = "0.18"
 # The example builds its own headless device.
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "gles", "metal", "dx12"] }
 pollster = "0.4"
-mui = { git = "https://github.com/Matari-Audio/MUI" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 serde_json = { version = "1", optional = true }

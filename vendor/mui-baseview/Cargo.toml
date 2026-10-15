@@ -11,10 +11,10 @@ publish = false
 
 # A native window: nothing here builds for wasm.
 [dependencies]
-mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects", "software-window"] }
-baseview = { package = "moose-baseview", git = "https://github.com/Matari-Audio/MUI" }
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["gpu-effects", "software-window"] }
+baseview = { package = "moose-baseview", git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 # Public accessibility and IME bridges; not shadowed by this custom host.
-mui-native = { package = "mui-baseview", git = "https://github.com/Matari-Audio/MUI" }
+mui-native = { package = "mui-baseview", git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
 keyboard-types = { version = "0.8", default-features = false }
 # baseview's handles; the same 0.6 wgpu takes.
 raw-window-handle = "0.6"
