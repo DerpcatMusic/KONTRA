@@ -169,7 +169,7 @@ button:disabled { cursor: default; }
 .feature-table tbody th { font-weight: 400; }
 .feature-table tbody tr:hover { background: #222; }
 .feature-note { color: var(--muted); }
-.proof-note { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.proof-note { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
 .sort-mark { width: 7px; height: 7px; flex-shrink: 0; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); opacity: .65; }
 [aria-sort="ascending"] .sort-mark { transform: rotate(225deg); opacity: 1; color: var(--text); }
 [aria-sort="descending"] .sort-mark { opacity: 1; color: var(--text); }
