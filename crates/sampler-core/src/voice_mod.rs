@@ -873,14 +873,9 @@ impl VoiceModulation {
         if !program.start {
             return 0;
         }
-        let mut fraction = 0.0;
-        for route in program
-            .routes
-            .iter()
-            .filter(|r| r.target == ModTarget::SampleStart)
-        {
+        self.offset(program, region, |index| {
             // Lfo and envelope values at the voice's first frame.
-            let at_start = |index: usize| match program.sources[index] {
+            match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
                     let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
                     program.fades[index].as_ref().map_or(signal, |gains| {
@@ -889,7 +884,30 @@ impl VoiceModulation {
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
-            };
+            }
+        })
+    }
+
+    /// Control-side proof, using the exact onset consumer below. A dependent
+    /// route makes the entire result unknown, even when its saved depth is zero.
+    pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
+        self.start_ranges.get(region)?;
+        let Some(index) = self.program(region) else {
+            return Some(0);
+        };
+        let program = &self.programs[index as usize];
+        if program.routes.iter().filter(|r| r.target == ModTarget::SampleStart).any(|route| {
+            !matches!(program.sources[route.source], Prepared::Constant)
+                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Constant))
+        }) {
+            return None;
+        }
+        Some(self.offset(program, region, |_| 1.0))
+    }
+
+    fn offset(&self, program: &Program, region: usize, at_start: impl Fn(usize) -> f64) -> u32 {
+        let mut fraction = 0.0;
+        for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
             let depth = route.scales().fold(route.depth,
