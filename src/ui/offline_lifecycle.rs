@@ -306,6 +306,7 @@ struct SwitchOwner {
     program: u32,
     resource_path: PathBuf,
     scripts: ScriptUi,
+    stream: Option<std::sync::Arc<crate::sound::Stream>>,
     controls: Vec<ControlId>,
     held: Option<HostNote>,
 }
@@ -577,6 +578,7 @@ fn switch_residency_state(core: &V2Core, owner: &SwitchOwner) -> Value {
         "groups_with_pending":p.groups_with_pending,"groups":groups,
         "groups_omitted":p.groups_total.saturating_sub(4096),"job_capacity":p.job_capacity,
         "queued":p.queued,"in_flight":p.in_flight,"worker_ready":p.worker_ready,"pending":p.pending,
+        "startup_completions_pending":p.startup_completions_pending,
         "accepted":p.accepted,"consumed":p.consumed,"committed":p.committed,"failed":p.failed,
         "stale":p.stale,"canceled":p.canceled,"rejected":p.rejected,
         "rejected_queue":p.rejected_queue,"rejected_group":p.rejected_group,
@@ -585,6 +587,16 @@ fn switch_residency_state(core: &V2Core, owner: &SwitchOwner) -> Value {
         "first_rejection":p.first_rejection.map(|r|json!({"group":r.group,"reload":r.reload,"reason":format!("{:?}",r.reason)})),
         "counters_saturated":p.counters_saturated,
         "scope":"Bounded off-audio observations of this residency owner; worker fields can change during query. Loaded is eligibility, not PCM/native parity. Purged groups are not forced resident"})
+}
+
+fn switch_stream_state(owner: &SwitchOwner) -> Value {
+    let Some(stream) = &owner.stream else {
+        return json!({"status":"not_streamed"});
+    };
+    json!({"status":"observed",
+        "startup":crate::sound::report::StreamStartup::of(
+            &stream.streamer, &stream.assets, &stream.report),
+        "scope":"Current prepared physical asset/head metadata after this stage; includes actual hint intersections. Source request geometry is unchanged, dynamic UVI sample jobs are reported separately. No source reads or PCM retained"})
 }
 
 fn switch_settle_residency(
@@ -603,7 +615,8 @@ fn switch_settle_residency(
         let mut callbacks = core.ui_lifecycle_progress(0);
         classify_callbacks(&mut callbacks, &owner.scripts.views);
         let finite = callbacks["pending_non_background_plan_callbacks"].as_u64().unwrap_or(1);
-        if p.pending == 0 && finite == 0 {
+        if p.pending == 0 && p.startup_completions_pending == 0
+            && finite == 0 && callbacks["pending_startup_work"] != true {
             break if p.rejected != 0 || p.failed != 0 { "settled_with_failures" } else { "settled" };
         }
         if started.elapsed() >= Duration::from_millis(u64::from(limit_ms)) {
@@ -917,6 +930,7 @@ fn switch_probe_inner(
                     program,
                     resource_path,
                     scripts: loaded.scripts,
+                    stream: loaded.stream,
                     controls: loaded.controls.into_iter().map(|(id, _)| id).collect(),
                     held: previous_held,
                 };
@@ -931,6 +945,7 @@ fn switch_probe_inner(
                     switch_marker(index, "activation");
                     record["residency_settlement"] = switch_settle_residency(&mut core, &mut owner, limit)?;
                 }
+                record["stream_after_activation"] = switch_stream_state(&owner);
                 // Full replacement may end held notes. This is a transition
                 // observation, not the fresh-note compatibility verdict.
                 switch_marker(index, "post_publish_held");
@@ -956,6 +971,7 @@ fn switch_probe_inner(
                 }
                 switch_marker(index, "fresh_note");
                 record["residency_at_note"] = switch_residency_state(&core, &owner);
+                record["stream_at_note"] = switch_stream_state(&owner);
                 let note = HostNote {
                     port: 0,
                     channel: 0,
@@ -988,6 +1004,7 @@ fn switch_probe_inner(
                     record["fresh_note"]["activation_readiness"] =
                         record["activation"]["activation_readiness"].clone();
                 }
+                record["stream_after_note"] = switch_stream_state(&owner);
                 record["outcome"] = json!("published_and_probed");
             }
         }
@@ -1282,6 +1299,7 @@ fn only_listener_drivers_pending(progress: &Value) -> bool {
         .as_u64()
         .is_some_and(|n| n != 0)
         && progress["pending_non_background_plan_callbacks"] == 0
+        && progress["pending_startup_work"] != true
 }
 
 fn observe_listener_completions(progress: &Value, observed: &mut std::collections::BTreeSet<u64>) {
@@ -2138,6 +2156,11 @@ mod tests {
         );
         assert!(views[1].ui(&|_| None).unwrap().widgets[0].hidden);
         assert_eq!(report["background_observation"], "first_callbacks_observed");
+        let mut waiting_startup = report["callback_progress"].clone();
+        assert!(only_listener_drivers_pending(&waiting_startup));
+        waiting_startup["pending_startup_work"] = json!(true);
+        assert!(!only_listener_drivers_pending(&waiting_startup),
+            "an empty finite callback list must not hide unadmitted startup work");
         assert!(
             report["frames"].as_u64().unwrap() < 96_000,
             "finite persistence work must not wait for an eternal periodic driver"
