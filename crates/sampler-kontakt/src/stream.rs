@@ -561,6 +561,13 @@ fn start_ranges_with_offsets(
 struct AttackAnchors {
     output_frames: usize,
     ranges: Vec<Vec<Range<usize>>>,
+    hint_ranges: Option<Vec<Vec<Range<usize>>>>,
+}
+
+struct HintFallback<'a> {
+    head_frames: usize,
+    ranges: Vec<Vec<Range<usize>>>,
+    anchors: Option<&'a dyn Fn(usize) -> io::Result<AttackAnchors>>,
 }
 
 /// Control-side geometry only. Optional whole-sample promotion is omitted;
@@ -576,43 +583,67 @@ fn bounded_attack_anchors(
     pinned: &HashSet<AssetId>,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<AttackAnchors> {
+    bounded_attack_anchors_with_hints(instrument, assets, rate, head, policy, pinned, None, canceled)
+}
+
+fn bounded_attack_anchors_with_hints(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    rate: u32,
+    head: usize,
+    policy: &StreamPolicy,
+    pinned: &HashSet<AssetId>,
+    hints: Option<&ConstantStartHints>,
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> io::Result<AttackAnchors> {
     let mut anchor_policy = *policy;
     anchor_policy.resident_budget = None;
     let pinned_ranges=(!pinned.is_empty()).then(||start_ranges(instrument,assets,rate,head,policy));
     let physical: HashMap<_, _> = assets.iter().enumerate().map(|(i,p)| (p.asset_id(),i)).collect();
-    let trial = |head| {
+    let trial = |head| -> io::Result<_> {
+        if canceled() { return Err(canceled_head()); }
         let mut ranges = start_ranges_with_offsets(instrument,assets,rate,head,&anchor_policy,false);
+        if let Some(hints) = hints {
+            let hints = hints.ranges(instrument, assets, rate, head, &anchor_policy, canceled)?;
+            for (base, hints) in ranges.iter_mut().zip(hints) {
+                base.extend(hints);
+                merge_start_ranges(base);
+            }
+        }
         if let Some(original)=&pinned_ranges {
             for (i,pcm) in assets.iter().enumerate() {
                 if pinned.contains(&pcm.asset_id()) {ranges[i]=original[i].clone();}
             }
         }
+        let union = physical_start_ranges(assets, &ranges);
         let bytes = physical.values().try_fold(0usize,|sum,&i| {
             let pcm = &assets[i];
             let frames = if pcm.requires_resident() && pcm.resident_frames().is_some() {Some(0)}
                 else if pcm.requires_resident() { Some(pcm.frame_count()) }
-                else { ranges[i].iter().try_fold(0usize,|sum,r|sum.checked_add(r.len())) };
+                else { union[&pcm.asset_id()].iter().try_fold(0usize,|sum,r|sum.checked_add(r.len())) };
             sum.checked_add(frames?.checked_mul(size_of::<Frame>())?)
         });
-        (ranges,bytes)
+        Ok((ranges,bytes))
     };
     // Even a zero-output-frame horizon keeps both interpolation guards at each
     // authored forward/reverse start. Exact admission can still reject these
     // minimum anchors; it must not silently publish an empty plan instead.
-    let (mut ranges, minimum) = trial(0);
+    let (mut ranges, minimum) = trial(0)?;
     let mut low = 0;
     let mut high = head;
     if minimum.is_some_and(|n|n<=policy.head_budget) {
         while low < high {
             if canceled() { return Err(canceled_head()); }
             let middle = low + (high-low).div_ceil(2);
-            let (candidate,bytes) = trial(middle);
+            let (candidate,bytes) = trial(middle)?;
             if bytes.is_some_and(|n|n<=policy.head_budget) {
                 low=middle; ranges=candidate;
             } else { high=middle-1; }
         }
     }
-    Ok(AttackAnchors{output_frames:low,ranges})
+    if canceled() { return Err(canceled_head()); }
+    let hint_ranges = hints.map(|h| h.ranges(instrument, assets, rate, low, &anchor_policy, canceled)).transpose()?;
+    Ok(AttackAnchors{output_frames:low,ranges,hint_ranges})
 }
 
 /// Opt-in control-side evidence only. The counterfactual removes static start
@@ -668,6 +699,57 @@ fn physical_start_ranges(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> HashMa
     physical
 }
 
+/// Exact current-plan proof only. Unknown and looped starts retain their base
+/// coverage; no copied modulation law or linearized loop is used for hints.
+struct ConstantStartHints {
+    offsets: Box<[Option<u32>]>,
+    constant: usize,
+    zero: usize,
+    dependent: usize,
+    loops: usize,
+    wavetable: usize,
+    silent: usize,
+    eligible: usize,
+}
+impl ConstantStartHints {
+    fn new(instrument: &ir::Instrument, prepared: &sampler_core::Prepared, assets: &[Pcm],
+        canceled: &(dyn Fn() -> bool + Sync)) -> io::Result<Self> {
+        let mut this = Self { offsets: vec![None; instrument.zones.len()].into_boxed_slice(),
+            constant: 0, zero: 0, dependent: 0, loops: 0, wavetable: 0, silent: 0, eligible: 0 };
+        for (region, zone) in instrument.zones.iter().enumerate() {
+            if canceled() { return Err(canceled_head()); }
+            if !zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) { continue; }
+            let Some(offset) = prepared.constant_start_offset(region) else { this.dependent += 1; continue; };
+            this.constant += 1;
+            if offset == 0 { this.zero += 1; continue; }
+            let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
+            if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) { this.wavetable += 1; continue; }
+            if !matches!(zone.playback.looping, ir::Looping::None | ir::Looping::OneShot) { this.loops += 1; continue; }
+            let end = zone.playback.end.unwrap_or(assets[asset].frame_count() as u64).min(assets[asset].frame_count() as u64);
+            if u64::from(offset) >= end.saturating_sub(zone.playback.start.min(end)) { this.silent += 1; continue; }
+            this.eligible += 1;
+            this.offsets[region] = Some(offset);
+        }
+        Ok(this)
+    }
+    fn ranges(&self, instrument: &ir::Instrument, assets: &[Pcm], rate: u32, head: usize,
+        policy: &StreamPolicy, canceled: &(dyn Fn() -> bool + Sync)) -> io::Result<Vec<Vec<Range<usize>>>> {
+        let mut hints = vec![Vec::new(); assets.len()];
+        for (zone, offset) in instrument.zones.iter().zip(&self.offsets) {
+            if canceled() { return Err(canceled_head()); }
+            let Some(offset) = offset else { continue; };
+            let asset = zone.asset.expect("a proved hint owns a source").0;
+            let pcm = &assets[asset];
+            let step = zone_step(zone, &instrument.groups, f64::from(pcm.sample_rate()) / f64::from(rate), policy);
+            if let Some(range) = constant_start_window(&zone.playback, pcm.frame_count(), *offset, step, head) {
+                hints[asset].push(range);
+            }
+        }
+        for ranges in &mut hints { merge_start_ranges(ranges); }
+        Ok(hints)
+    }
+}
+
 /// Numeric experiment only: does not alter requested heads or publication.
 /// Looped/wavetable geometry is explicitly excluded until a prepared-cursor
 /// visitor can prove it, rather than linearizing a native traversal.
@@ -682,24 +764,8 @@ fn constant_start_geometry(
     policy: &StreamPolicy,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<serde_json::Value> {
-    let mut hints = vec![Vec::new(); assets.len()];
-    let (mut constant, mut zero, mut dependent, mut loops, mut wavetable, mut silent, mut eligible) = (0usize,0usize,0usize,0usize,0usize,0usize,0usize);
-    for (region, zone) in instrument.zones.iter().enumerate() {
-        if canceled() { return Err(canceled_head()); }
-        if !zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) { continue; }
-        let Some(offset) = prepared.constant_start_offset(region) else { dependent += 1; continue; };
-        constant += 1;
-        if offset == 0 { zero += 1; continue; }
-        let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
-        if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) { wavetable += 1; continue; }
-        if !matches!(zone.playback.looping, ir::Looping::None | ir::Looping::OneShot) { loops += 1; continue; }
-        let pcm = &assets[asset];
-        let step = zone_step(zone, &instrument.groups, f64::from(pcm.sample_rate()) / f64::from(rate), policy);
-        match constant_start_window(&zone.playback, pcm.frame_count(), offset, step, head) {
-            Some(range) => { eligible += 1; hints[asset].push(range); }
-            None => silent += 1,
-        }
-    }
+    let recipe = ConstantStartHints::new(instrument, prepared, assets, canceled)?;
+    let hints = recipe.ranges(instrument, assets, rate, head, policy, canceled)?;
     let hints = physical_start_ranges(assets, &hints);
     let mut combined = physical_start_ranges(assets, base);
     let frame_count = |table: &HashMap<AssetId, Vec<Range<usize>>>| {
@@ -723,17 +789,17 @@ fn constant_start_geometry(
     }
     if canceled() { return Err(canceled_head()); }
     Ok(serde_json::json!({
-        "constant_offset_zones":constant,"zero_constant_offset_zones":zero,"dependent_offset_zones":dependent,
-        "nonloop_window_zones":eligible,"loop_geometry_omitted_zones":loops,"wavetable_geometry_omitted_zones":wavetable,
-        "silent_past_view_zones":silent,"hint_assets":hints.values().filter(|r| !r.is_empty()).count(),
+        "constant_offset_zones":recipe.constant,"zero_constant_offset_zones":recipe.zero,"dependent_offset_zones":recipe.dependent,
+        "nonloop_window_zones":recipe.eligible,"loop_geometry_omitted_zones":recipe.loops,"wavetable_geometry_omitted_zones":recipe.wavetable,
+        "silent_past_view_zones":recipe.silent,"hint_assets":hints.values().filter(|r| !r.is_empty()).count(),
         "hint_ranges":hints.values().map(Vec::len).sum::<usize>(),"hint_source_frames":hint_frames,
         "base_source_frames_physical_union":base_frames,"base_plus_hint_source_frames":combined_frames,
         "hint_extra_source_frames":combined_frames.saturating_sub(base_frames),
         "mandatory_full_decoded_bytes":mandatory,"base_plus_hint_optional_source_frames":optional,
         "base_plus_hint_payload_lower_bytes":mandatory.saturating_add(optional.saturating_mul(2)),
         "base_plus_hint_payload_upper_bytes":mandatory.saturating_add(optional.saturating_mul(size_of::<Frame>() as u64)),
-        "pinned_assets":pinned.len(),"preload_selection_unchanged":true,
-        "scope":"current prepared onset law; non-loop windows only; physical AssetId union; payload bounds exclude shared already-held quota and metadata; no admission or native-parity claim"
+        "pinned_assets":pinned.len(),"hinted_preload_enabled":policy.allow_cold_fallback,
+        "scope":"current prepared onset law; non-loop windows only; physical AssetId union; payload bounds exclude shared already-held quota and metadata; actual selected coverage is reported separately; no admission or native-parity claim"
     }))
 }
 
@@ -1054,6 +1120,37 @@ pub struct SourceRegistration {
     registry: DynamicSources,
     asset: AssetId,
 }
+
+type StartTable = HashMap<AssetId, Vec<Range<usize>>>;
+
+fn checked_start_table(assets: &[Pcm], ranges: Vec<Vec<Range<usize>>>, enclosing: Option<&StartTable>) -> io::Result<StartTable> {
+    if ranges.len() != assets.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start asset/range count mismatch"));
+    }
+    for (pcm, ranges) in assets.iter().zip(&ranges) {
+        range_bounds(pcm, ranges)?;
+        if enclosing.is_some_and(|table| ranges.iter().any(|range| !table[&pcm.asset_id()].iter()
+            .any(|full| full.start <= range.start && full.end >= range.end))) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "sample start range outside requested coverage"));
+        }
+    }
+    Ok(physical_start_ranges(assets, &ranges))
+}
+
+fn select_attack_ranges<'a, 'r>(
+    assets: &'a [Pcm], table: &'r StartTable, optional: Option<&'r StartTable>,
+    pinned: &HashSet<AssetId>, lazy: bool,
+) -> Vec<(&'a Pcm, &'r [Range<usize>])> {
+    let mut seen = HashSet::new();
+    assets.iter().filter(|pcm| seen.insert(pcm.asset_id())).filter_map(|pcm| {
+        let required = pcm.requires_resident() || pinned.contains(&pcm.asset_id());
+        let ranges = if !required { optional.unwrap_or(table) } else { table };
+        let ranges = &ranges[&pcm.asset_id()];
+        ((!lazy || required) && (!ranges.is_empty() || pcm.requires_resident())
+            && !(pcm.requires_resident() && pcm.resident_frames().is_some()))
+            .then_some((pcm, ranges.as_slice()))
+    }).collect()
+}
 impl Drop for SourceRegistration {
     fn drop(&mut self) {
         self.registry
@@ -1077,6 +1174,9 @@ pub struct Streamer {
     onset_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
     anchor_ranges: Option<Arc<HashMap<AssetId, Vec<Range<usize>>>>>,
     selected_anchor_head_frames: Option<usize>,
+    hint_ranges: Option<Arc<StartTable>>,
+    selected_hint_ranges: Option<Arc<StartTable>>,
+    selected_hint_head_frames: Option<usize>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     reloader: Option<JoinHandle<()>>,
@@ -1093,6 +1193,16 @@ impl Streamer {
     pub fn head_budget_status(&self)->HeadBudgetStatus {self.residency_budget.status()}
     pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
     pub fn selected_anchor_head_frames(&self)->Option<usize> {self.selected_anchor_head_frames}
+    pub fn selected_hint_head_frames(&self) -> Option<usize> { self.selected_hint_head_frames }
+    /// Requested Constant non-loop windows at the original output horizon.
+    pub fn hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
+        Some(self.ranges_readiness_matching(assets, |_| true, self.hint_ranges.as_deref()?))
+    }
+    /// Exact windows selected after quota admission, possibly shorter than the
+    /// requested hints. This never certifies omitted loop or dynamic offsets.
+    pub fn selected_hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
+        Some(self.ranges_readiness_matching(assets, |_| true, self.selected_hint_ranges.as_deref()?))
+    }
     pub fn dynamic_sources(&self) -> DynamicSources {
         self.dynamic.clone()
     }
@@ -1130,8 +1240,9 @@ impl Streamer {
             budget_bytes: self.head_budget,
             ..Default::default()
         };
+        let mut seen = HashSet::new();
         for pcm in assets {
-            if !include(pcm.asset_id()) {
+            if !include(pcm.asset_id()) || !seen.insert(pcm.asset_id()) {
                 continue;
             }
             let Some(ranges) = table.get(&pcm.asset_id()).filter(|r| !r.is_empty()) else {
@@ -1143,11 +1254,10 @@ impl Streamer {
             for range in ranges {
                 state.ranges += 1;
                 state.source_frames = state.source_frames.saturating_add(range.len() as u64);
-                if pcm.resident_covers(range.clone()) {
+                let covered_frames = pcm.resident_covered_frames(range.clone());
+                state.covered_source_frames = state.covered_source_frames.saturating_add(covered_frames as u64);
+                if covered_frames == range.len() {
                     state.covered_ranges += 1;
-                    state.covered_source_frames = state
-                        .covered_source_frames
-                        .saturating_add(range.len() as u64);
                 } else {
                     covered = false;
                 }
@@ -1384,157 +1494,155 @@ impl Streamer {
         allow_cold_fallback: bool,
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> io::Result<(Self, usize)> {
+        Self::start_with_hint_fallbacks_cancelable(sources, assets, ranges, onsets, None, anchors,
+            worker, decoders, lazy, head_budget, pinned_wavetables, allow_cold_fallback, canceled)
+    }
+    fn start_with_hint_fallbacks_cancelable(
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
+        assets: &[Pcm],
+        ranges: Vec<Vec<Range<usize>>>,
+        onsets: Option<Vec<Vec<Range<usize>>>>,
+        hints: Option<HintFallback<'_>>,
+        anchors: Option<&dyn Fn(usize)->io::Result<AttackAnchors>>,
+        worker: StreamWorker,
+        decoders: usize,
+        lazy: bool,
+        head_budget: usize,
+        pinned_wavetables: HashSet<AssetId>,
+        allow_cold_fallback: bool,
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<(Self, usize)> {
         let span = crate::audit::Span::new("sample_preload");
         let decoders = decoders.clamp(1, 8);
-        if assets.len() != ranges.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "sample head asset/range count mismatch",
-            ));
-        }
-        let table: HashMap<_, _> = assets
-            .iter()
-            .zip(ranges)
-            .map(|(pcm, ranges)| (pcm.asset_id(), ranges))
-            .collect();
-        let onset_table = onsets.map(|onsets| {
-            if onsets.len() != assets.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "onset asset/range count mismatch"));
-            }
-            let mut table_onsets = HashMap::new();
-            for (pcm, onsets) in assets.iter().zip(onsets) {
-                range_bounds(pcm, &onsets)?;
-                if onsets.iter().any(|r| !table[&pcm.asset_id()].iter()
-                    .any(|full| full.start <= r.start && full.end >= r.end)) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "onset range outside requested attack coverage"));
-                }
-                table_onsets.insert(pcm.asset_id(), onsets);
-            }
-            Ok(table_onsets)
-        }).transpose()?;
-        if pinned_wavetables.iter().any(|id| !table.contains_key(id)) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unknown pinned wavetable asset",
-            ));
-        }
-        if canceled() {
-            return Err(canceled_head());
-        }
-        let select = |lazy: bool, onset: bool| {
-            let mut read = HashSet::new();
-            assets
-                .iter()
-                .filter(|pcm| read.insert(pcm.asset_id()))
-                .filter_map(|pcm| {
-                    let ranges = if onset && !pcm.requires_resident()
-                        && !pinned_wavetables.contains(&pcm.asset_id()) {
-                        &onset_table.as_ref().expect("onset fallback table")[&pcm.asset_id()]
-                    } else { &table[&pcm.asset_id()] };
-                    ((!lazy || pinned_wavetables.contains(&pcm.asset_id()) || pcm.requires_resident())
-                        && (!ranges.is_empty() || pcm.requires_resident())
-                        && !(pcm.requires_resident() && pcm.resident_frames().is_some()))
-                        .then_some((pcm, ranges.as_slice()))
-                })
-                .collect::<Vec<_>>()
+        let table = checked_start_table(assets, ranges, None)?;
+        let onset_table = onsets.map(|ranges| checked_start_table(assets, ranges, Some(&table))).transpose()?;
+        let (hint_table, requested_hint_head_frames, hint_anchors) = match hints {
+            Some(hints) => (Some(checked_start_table(assets, hints.ranges, Some(&table))?), Some(hints.head_frames), hints.anchors),
+            None => (None, None, None),
         };
-        let mut selected = select(lazy, false);
-        let mut anchor_table = None;
-        let mut selected_anchor_head_frames = None;
-        let residency_budget = HeadBudget::new(head_budget);
-        // Binding and publication serialize on each Pcm's control mutation lock.
-        // Escaped unbudgeted recipes can never publish into a bound asset.
-        for pcm in assets {
-            let bound=if pcm.requires_resident() {pcm.bind_resident_budget(&residency_budget)}else{pcm.bind_head_budget(&residency_budget)};
-            bound.map_err(|e| {
-                if e == sampler_core::Error::Capacity {
-                    head_budget_error(head_budget, head_budget.saturating_add(1))
-                } else {
-                    io::Error::new(io::ErrorKind::InvalidInput, e)
-                }
-            })?;
+        let hinted_table = hint_table.as_ref().filter(|h| h.values().any(|r| !r.is_empty())).map(|hints| {
+            let mut union = onset_table.as_ref().unwrap_or(&table).clone();
+            for (id, ranges) in hints { union.entry(*id).or_default().extend(ranges.iter().cloned()); }
+            for ranges in union.values_mut() { merge_start_ranges(ranges); }
+            union
+        });
+        if pinned_wavetables.iter().any(|id| !table.contains_key(id)) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown pinned wavetable asset"));
         }
-        let prepare = |selected: &[(&Pcm, &[Range<usize>])]| {
-            let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
-                let min=if pcm.requires_resident() {pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(||io::Error::other("resident source size overflow"))?}else{range_bounds(pcm, ranges)?.0};
-                sum.checked_add(min)
-                    .ok_or_else(|| io::Error::other("sample head size overflow"))
-            })?;
-            let minimum = residency_budget
-                .status()
-                .held_bytes
-                .checked_add(minimum)
-                .ok_or_else(|| io::Error::other("sample head size overflow"))?;
-            if minimum > head_budget {
-                return Err(head_budget_error(head_budget, minimum));
+        if canceled() { return Err(canceled_head()); }
+        let residency_budget = HeadBudget::new(head_budget);
+        for pcm in assets {
+            let bound = if pcm.requires_resident() { pcm.bind_resident_budget(&residency_budget) } else { pcm.bind_head_budget(&residency_budget) };
+            bound.map_err(|e| if e == sampler_core::Error::Capacity {
+                head_budget_error(head_budget, head_budget.saturating_add(1))
+            } else { io::Error::new(io::ErrorKind::InvalidInput, e) })?;
+        }
+        // Every attempt keeps its chosen asset identities with its owned staging.
+        // Range-table borrows end before trying a new candidate or publishing.
+        let prepare = |optional: Option<&StartTable>, lazy: bool, phase: &str|
+            -> io::Result<(Vec<head_prepare::Prepared>, usize, Vec<&Pcm>)> {
+            let selected = select_attack_ranges(assets, &table, optional, &pinned_wavetables, lazy);
+            let audit = std::env::var_os("KONTRA_AUDIT_LOAD").is_some();
+            let started = audit.then(Instant::now);
+            let result = (|| {
+                let minimum = selected.iter().try_fold(0usize, |sum, (pcm, ranges)| {
+                    let min = if pcm.requires_resident() {
+                        pcm.frame_count().checked_mul(size_of::<Frame>()).ok_or_else(|| io::Error::other("resident source size overflow"))?
+                    } else { range_bounds(pcm, ranges)?.0 };
+                    sum.checked_add(min).ok_or_else(|| io::Error::other("sample head size overflow"))
+                })?;
+                let minimum = residency_budget.status().held_bytes.checked_add(minimum)
+                    .ok_or_else(|| io::Error::other("sample head size overflow"))?;
+                if minimum > head_budget { return Err(head_budget_error(head_budget, minimum)); }
+                head_prepare::prepare(&selected, &sources, &residency_budget, decoders, canceled)
+            })();
+            if audit {
+                eprintln!("stream_preload_attempt {}", serde_json::json!({
+                    "phase":phase,"assets":selected.len(),
+                    "requested_source_frames":selected.iter().fold(0u64, |sum,(pcm,ranges)| sum.saturating_add(
+                        if pcm.requires_resident() { pcm.frame_count() as u64 } else { ranges.iter().map(|r|r.len() as u64).sum() })),
+                    "elapsed_us":started.unwrap().elapsed().as_micros() as u64,
+                    "admitted_payload_bytes":result.as_ref().ok().map(|(_,bytes)|*bytes),
+                    "error_kind":result.as_ref().err().map(|error| if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) {"capacity"}
+                        else if error.kind()==io::ErrorKind::Interrupted {"canceled"} else {"source_or_metadata"}),
+                    "peak_payload_bytes":residency_budget.status().peak_bytes,"budget_bytes":head_budget,
+                    "scope":"control-only candidate; requested frames are not decoded-byte counters; failed attempts publish nothing"
+                }));
             }
-            head_prepare::prepare(selected, &sources, &residency_budget, decoders, canceled)
+            let (staged,bytes) = result?;
+            Ok((staged,bytes,selected.into_iter().map(|(pcm,_)|pcm).collect()))
         };
         let mut head_fallback = None;
-        let (staged, bytes) = match prepare(&selected) {
+        let mut anchor_table = None;
+        let mut selected_anchor_head_frames = None;
+        let mut selected_hint_table = None;
+        let mut selected_hint_head_frames = if !lazy && hinted_table.is_some() { requested_hint_head_frames } else { None };
+        let mut selected_requested_hints = selected_hint_head_frames.is_some();
+        let (staged, bytes, selected_assets) = match prepare(None, lazy, "full_possible") {
             Ok(staged) => staged,
             Err(error) => {
-                let reason = error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<HeadBudgetExceeded>())
-                    .copied();
-                if let Some(reason) = reason.filter(|_| allow_cold_fallback && !lazy) {
-                    // Failed preparation publishes nothing and releases every
-                    // staging lease before this retry, over the same sources.
-                    let onset_staged = if onset_table.is_some() {
-                        selected = select(false, true);
-                        match prepare(&selected) {
-                            Ok(staged) => Some(staged),
-                            Err(error) if error.get_ref().is_some_and(|e| e.is::<HeadBudgetExceeded>()) => None,
+                let reason = error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).copied();
+                let Some(reason) = reason.filter(|_| allow_cold_fallback && !lazy) else { return Err(error); };
+                selected_requested_hints = false;
+                selected_hint_head_frames = None;
+                let mut accepted = None;
+                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "constant_onsets"),
+                    (onset_table.as_ref(), false, "base_onsets")] {
+                    let Some(candidate) = candidate else { continue; };
+                    match prepare(Some(candidate), false, phase) {
+                        Ok(staged) => {
+                            selected_requested_hints = hinted;
+                            selected_hint_head_frames = if hinted { requested_hint_head_frames } else { None };
+                            accepted = Some(staged);
+                            break;
+                        }
+                        Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if accepted.is_none() {
+                    let mut last_capacity = None;
+                    let mut has_anchors = false;
+                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "constant_anchors"),
+                        (anchors, false, "base_anchors")] {
+                        let Some(factory) = factory else { continue; };
+                        has_anchors = true;
+                        let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
+                        let candidate = factory(room)?;
+                        let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { onset_table.as_ref().unwrap_or(&table) };
+                        let ranges = checked_start_table(assets, candidate.ranges, Some(enclosing))?;
+                        let hint_ranges = candidate.hint_ranges.map(|h| checked_start_table(assets,h,hint_table.as_ref())).transpose()?;
+                        if hinted && hint_ranges.is_none() {
+                            return Err(io::Error::new(io::ErrorKind::InvalidInput,"hinted anchors omitted their selected hint ranges"));
+                        }
+                        if let Some(hints) = &hint_ranges {
+                            for (id,hints) in hints {
+                                if hints.iter().any(|r|!ranges[id].iter().any(|full| full.start<=r.start && full.end>=r.end)) {
+                                    return Err(io::Error::new(io::ErrorKind::InvalidInput,"selected hint outside admitted anchor coverage"));
+                                }
+                            }
+                        }
+                        match prepare(Some(&ranges), false, phase) {
+                            Ok(staged) => {
+                                selected_anchor_head_frames = Some(candidate.output_frames);
+                                selected_hint_head_frames = hinted.then_some(candidate.output_frames);
+                                anchor_table = Some(ranges);
+                                selected_hint_table = hint_ranges;
+                                accepted = Some(staged);
+                                break;
+                            }
+                            Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => { last_capacity=Some(error); }
                             Err(error) => return Err(error),
                         }
-                    } else { None };
-                    let staged = match onset_staged {
-                        Some(staged) => staged,
-                        None if anchors.is_some() => {
-                            let room=head_budget.saturating_sub(residency_budget.status().held_bytes);
-                            let anchors = anchors.unwrap()(room)?;
-                            if anchors.ranges.len()!=assets.len() {
-                                return Err(io::Error::new(io::ErrorKind::InvalidInput,"anchor asset/range count mismatch"));
-                            }
-                            let mut table_anchors = HashMap::new();
-                            for (pcm,ranges) in assets.iter().zip(anchors.ranges) {
-                                range_bounds(pcm,&ranges)?;
-                                let original=onset_table.as_ref().unwrap_or(&table);
-                                if !pcm.requires_resident() && !pinned_wavetables.contains(&pcm.asset_id())
-                                    && ranges.iter().any(|r|!original[&pcm.asset_id()].iter()
-                                    .any(|full|full.start<=r.start && full.end>=r.end)) {
-                                    return Err(io::Error::new(io::ErrorKind::InvalidInput,"anchor range outside requested onset coverage"));
-                                }
-                                table_anchors.insert(pcm.asset_id(),ranges);
-                            }
-                            anchor_table=Some(table_anchors);
-                            selected_anchor_head_frames=Some(anchors.output_frames);
-                            let mut read=HashSet::new();
-                            selected=assets.iter().filter(|pcm|read.insert(pcm.asset_id()))
-                                .filter_map(|pcm| {
-                                    let ranges=if pcm.requires_resident()||pinned_wavetables.contains(&pcm.asset_id()) {
-                                        &table[&pcm.asset_id()]
-                                    } else {&anchor_table.as_ref().unwrap()[&pcm.asset_id()]};
-                                    ((!ranges.is_empty()||pcm.requires_resident())
-                                        && !(pcm.requires_resident()&&pcm.resident_frames().is_some()))
-                                        .then_some((pcm,ranges.as_slice()))
-                                }).collect();
-                            // Minimum first-read anchors still must pass the
-                            // exact quota. Failure remains typed, never an
-                            // accepted empty/partially published attack plan.
-                            prepare(&selected)?
-                        }
-                        None => {
-                            selected = select(true, false);
-                            prepare(&selected)?
-                        }
-                    };
-                    head_fallback = Some(reason);
-                    staged
-                } else {
-                    return Err(error);
+                    }
+                    if has_anchors && accepted.is_none() { return Err(last_capacity.expect("an unaccepted anchor failed its exact quota")); }
                 }
+                let staged = match accepted {
+                    Some(staged) => staged,
+                    None => prepare(None, true, "mandatory_only")?,
+                };
+                head_fallback = Some(reason);
+                staged
             }
         };
         if canceled() {
@@ -1544,7 +1652,7 @@ impl Streamer {
         // published after exact lossless capacity admission of every head.
         {
             let _publication = crate::audit::Span::new("sample_head_publication");
-            for ((pcm, _), prepared) in selected.into_iter().zip(staged) {
+            for (pcm, prepared) in selected_assets.into_iter().zip(staged) {
                 match prepared {
                     head_prepare::Prepared::Head(head)=>{pcm.publish_ranges(head).map(|_|())},
                     head_prepare::Prepared::Resident(full)=>pcm.publish_initial_resident(full),
@@ -1556,7 +1664,9 @@ impl Streamer {
         let residency_page=Arc::new(Mutex::new(vec![[0.;2];PAGE_FRAMES]));
         // Each asset keeps source metadata, never a backup of sample buffers.
         // Explicit KSP reload returns staging ranges to the core's residency worker.
+        let mut registered = HashSet::new();
         for pcm in assets {
+            if !registered.insert(pcm.asset_id()) { continue; }
             // Assets without a stream source (fully resident) have nothing to reload.
             let (Some(source), Some(ranges)) = (
                 sources.get(&pcm.asset_id()).cloned(),
@@ -1599,6 +1709,8 @@ impl Streamer {
         // Several decoders overlap reads, so one slow read does not hold up
         // the pages queued behind it; they share the single worker endpoint.
         let worker = Arc::new(Mutex::new(worker));
+        let hint_ranges = hint_table.map(Arc::new);
+        let selected_hint_ranges = if selected_requested_hints { hint_ranges.clone() } else { selected_hint_table.map(Arc::new) };
         let mut streamer = Self {
             dynamic: DynamicSources::default(),
             pinned_wavetables,
@@ -1607,6 +1719,9 @@ impl Streamer {
             onset_ranges: onset_table.map(Arc::new),
             anchor_ranges: anchor_table.map(Arc::new),
             selected_anchor_head_frames,
+            hint_ranges,
+            selected_hint_ranges,
+            selected_hint_head_frames,
             stop,
             threads: Vec::new(),
             reloader: None,
@@ -2216,11 +2331,23 @@ impl Streamed {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
         };
-        let (streamer, bytes) = Streamer::start_with_fallbacks_cancelable(
+        let hint_recipe = policy.allow_cold_fallback.then(|| ConstantStartHints::new(&loaded.instrument, &loaded.plan, &kept, canceled))
+            .transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        let hinted_anchors = |room| {
+            let anchor_policy=StreamPolicy{head_budget:room,..policy};
+            bounded_attack_anchors_with_hints(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,hint_recipe.as_ref(),canceled)
+        };
+        let hints = hint_recipe.as_ref().filter(|h| h.eligible != 0).map(|h| {
+            h.ranges(&loaded.instrument,&kept,rate,head,&policy,canceled).map(|ranges| HintFallback {
+                head_frames:head,ranges,anchors:Some(&hinted_anchors),
+            })
+        }).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        let (streamer, bytes) = Streamer::start_with_hint_fallbacks_cancelable(
             sources,
             &kept,
             ranges,
             onsets,
+            hints,
             policy.allow_cold_fallback.then_some(&anchors as &dyn Fn(usize)->io::Result<AttackAnchors>),
             worker,
             policy.decoders,
@@ -2809,7 +2936,7 @@ mod tests {
         let assets=vec![Pcm::streamed(48000,8192).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
         let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
             cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
-        let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..32],vec![0..64]]});
+        let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..32],vec![0..64]],hint_ranges:None});
         let (_,worker)=StreamCache::new(4).unwrap();
         let result=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..8192],vec![0..64]],
             Some(vec![vec![0..4096],vec![0..64]]),Some(&anchors),worker,4,false,budget,HashSet::new(),true,&||false);
@@ -3316,6 +3443,9 @@ mod tests {
             onset_ranges: None,
             anchor_ranges: None,
             selected_anchor_head_frames: None,
+            hint_ranges: None,
+            selected_hint_ranges: None,
+            selected_hint_head_frames: None,
             stop: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),
             reloader: None,
@@ -3972,3 +4102,7 @@ mod tests {
 #[cfg(test)]
 #[path = "stream_onset_tests.rs"]
 mod stream_onset_tests;
+
+#[cfg(test)]
+#[path = "stream_hint_tests.rs"]
+mod stream_hint_tests;
