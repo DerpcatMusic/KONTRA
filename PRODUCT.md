@@ -15,7 +15,7 @@ Musicians evaluating KONTRA, people installing nightly builds, and contributors 
 Provide a professional public home for KONTRA, practical documentation and a full evidence-based roadmap.
 
 ## Capabilities and Constraints
-Nightly alpha application for Windows, macOS and Linux, in CLAP, VST3 and standalone forms. Kontakt and UVI/Falcon are current parallel development tracks. Opus/EastWest, HALion, HISE and other sampler frontends are next. Feature support is generated from committed implementation probes, ledgers and verification records on every main commit; historical audit dates and architecture checkpoints do not define current priorities. Source, targeted checks and release artifacts remain distinct.
+Nightly alpha application for Windows, macOS and Linux, in CLAP, VST3 and standalone forms. Kontakt and UVI/Falcon are current parallel development tracks. Opus/EastWest, HALion, HISE and other sampler frontends are next. Feature support is generated from committed implementation probes, ledgers and verification records on every main commit; historical audit dates and architecture checkpoints do not define current priorities. The public browser inspector uses the shared Rust inspector on user-selected local files, with read-only access, load-stage diagnostics and authored UI-layout records. Audio playback, native UI fidelity, artwork rendering and unresolved stock/grid layout remain outside the browser check. Source, targeted checks and release artifacts remain distinct.
 
 ## Brand Commitments
 KONTRA name; quiet professional presentation connected to the native graphite UI. User requests a Native Instruments-like level of craft and supplies the application screenshot. Build directly from that reference, without an image mockup.
