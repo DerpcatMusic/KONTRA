@@ -105,3 +105,49 @@ UI publication before command collection. These diagnostic observations count
 owner work; they are not KONTRA audio-meter measurements or a native latency
 comparison. Audio-command ordering and incremental projection need separate
 proof before optimization.
+
+
+## Finite startup replay witness
+
+Helper `41f93bb45d70f8f0015b5c8d24fe47cc21d5e638ee7c221902bc12e6403a26c4`
+contains bounded captured residency admission and readiness for both physical
+jobs and the retained async-completion spool. The independent First Steps and
+Float loads now each accept all 1,872 requests: 1,866 committed, six stale,
+zero rejected and zero failed. At note-on both physical pending and startup
+completion counts are zero; 33 of 933 groups are eligible. Purged groups remain
+purged, and stale superseded requests are not relabelled successful.
+
+Both 96,000-frame fresh-note windows produce 95,999 nonzero frames. First Steps
+peaks near 0.1429 with up to four voices; Float near 0.1539 with up to three.
+Neither window reports a runtime fault, voice refusal, cold start or stream
+underrun. This closes the observed key-60 silence for these two selections,
+compared with the retained earlier 848-refusal runs. It does not certify every
+key, modulation/effect law or retained-runtime preset switching. Numeric evidence
+is `evolved-startup-fixed-current.json`, tied to the joint helper freeze and
+784-passing/52-ignored root test cohort. The installed plugin is unchanged at
+this checkpoint.
+
+
+## Ready commands during a full UVI export
+
+The same `41f93bb4…` helper observes all 13 note commands consumed with three
+active voices while the owner is still in `UiExport`, at the first polling
+observation around 2.59 ms. The ordered acknowledgement remains after complete
+publication. The prior helper first observed those commands near 155 ms after
+export. These are separate functional runs under different storage/CPU
+conditions, not a controlled latency ratio or native timing claim.
+
+The Pizzicato note again produces 95,903 nonzero frames out of 96,000 with zero
+reported faults, refusals or underruns. All 89 requested UI assets are found
+(84 images and five fonts); both painter presentations complete with no pending
+assets. The requested PNG is **not written**: the then-current artifact selector
+only recognizes KSP slots and truthfully reports `slot_not_present`. A separate
+source-explicit capture change is required for UVI and performance views.
+
+This cold metadata-cache process spends about 96.6 seconds inside
+`uvi_directory_namespace`, compared with about 209 ms content setup and 165 ms
+program/script reading. Sampled process observations show the load worker in
+disk sleep with amplified physical reads; unrelated compiler/I/O activity is
+present. This identifies the observed preparation stage, not a stable loading
+benchmark or proof that decryption/UI export caused that delay. The retained
+report is `uvi-pizzicato-ready-render-current.json`.

@@ -31,6 +31,11 @@ def finite_number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+def valid_stage(name):
+    return (isinstance(name, str) and 0 < len(name) <= 96
+            and all(c in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in name))
+
+
 def collect_audit(lines):
     """Assign existing spans to explicit sequential action/phase delimiters."""
     step, phase = None, None
@@ -39,9 +44,11 @@ def collect_audit(lines):
     omitted = 0
     malformed = 0
     seen = 0
+    pending = {}
+    begins_seen = begins_omitted = 0
     for line in lines:
         prefix, _, payload = line.partition(" ")
-        if prefix not in ("PRESET_SWITCH", "AUDIT", "head_prepare_audit"):
+        if prefix not in ("PRESET_SWITCH", "AUDIT_BEGIN", "AUDIT", "head_prepare_audit"):
             continue
         try:
             record = json.loads(payload)
@@ -62,40 +69,80 @@ def collect_audit(lines):
             if phase == "end":
                 step, phase = None, None
             continue
+        owner_step, owner_phase = step, phase
+        if prefix == "AUDIT_BEGIN":
+            begins_seen += 1
+            if begins_seen > AUDIT_LIMIT:
+                begins_omitted += 1
+                continue
+            name, span = record.get("stage"), record.get("span")
+            if (owner_step is None or owner_phase is None or not valid_stage(name)
+                    or type(span) is not int or not 0 < span < 1 << 64 or span in pending):
+                malformed += 1
+            else:
+                pending[span] = (owner_step, owner_phase, name)
+            continue
         seen += 1
         if seen > AUDIT_LIMIT:
             omitted += 1
             continue
-        if step is None or phase is None:
+        if prefix == "AUDIT" and record.get("span") is not None:
+            span = record["span"]
+            if type(span) is not int or span not in pending:
+                malformed += 1
+                continue
+            owner_step, owner_phase, begin_name = pending.pop(span)
+            if begin_name != record.get("stage"):
+                malformed += 1
+                continue
+        if owner_step is None or owner_phase is None:
             malformed += 1
             continue
         if prefix == "AUDIT":
             name, ms = record.get("stage"), record.get("ms")
             # Stage labels are code-owned; reject unbounded or authored-looking
             # labels rather than retaining arbitrary stderr text.
-            if not isinstance(name, str) or not name or len(name) > 96 or not all(c.islower() or c.isdigit() or c == "_" for c in name) or not finite_number(ms):
+            if not valid_stage(name) or not finite_number(ms):
                 malformed += 1
                 continue
-            bucket = stages.setdefault(step, {}).setdefault((phase, name), {"calls": 0, "ms_sum": 0.0, "ms_max": 0.0})
+            cpu = record.get("thread_cpu_ms")
+            if cpu is not None and not finite_number(cpu):
+                malformed += 1
+                continue
+            bucket = stages.setdefault(owner_step, {}).setdefault((owner_phase, name), {"calls": 0, "ms_sum": 0.0, "ms_max": 0.0,
+                "thread_cpu_calls": 0, "thread_cpu_ms_sum": None, "thread_cpu_ms_max": None})
+            wall_sum = bucket["ms_sum"] + ms
+            cpu_sum = None if cpu is None else (bucket["thread_cpu_ms_sum"] or 0.0) + cpu
+            if not finite_number(wall_sum) or (cpu_sum is not None and not finite_number(cpu_sum)):
+                malformed += 1
+                continue
             bucket["calls"] += 1
-            bucket["ms_sum"] += ms
+            bucket["ms_sum"] = wall_sum
             bucket["ms_max"] = max(bucket["ms_max"], ms)
+            if cpu is not None:
+                bucket["thread_cpu_calls"] += 1
+                bucket["thread_cpu_ms_sum"] = cpu_sum
+                bucket["thread_cpu_ms_max"] = max(bucket["thread_cpu_ms_max"] or 0.0, cpu)
         else:
             # Raw worker records include sample identifiers and per-job probes;
             # aggregate only their numeric counts, never their payloads.
             if any(type(record.get(key)) is not int or record[key] < 0 for key in ("jobs", "failures", "dropped_probes")):
                 malformed += 1
                 continue
-            bucket = heads.setdefault(step, {"workers": 0, "jobs": 0, "failures": 0, "dropped_probes": 0})
+            bucket = heads.setdefault(owner_step, {"workers": 0, "jobs": 0, "failures": 0, "dropped_probes": 0})
             bucket["workers"] += 1
             for key in ("jobs", "failures", "dropped_probes"):
                 bucket[key] += record[key]
-    return stages, heads, {"records_seen": seen, "records_omitted": omitted, "malformed_or_unassigned": malformed}
+    open_rows = [{"span":span,"step":a,"phase":b,"stage":c} for span,(a,b,c) in sorted(pending.items())[:16]]
+    return stages, heads, {"records_seen": seen, "records_omitted": omitted, "malformed_or_unassigned": malformed,
+        "breadcrumb_records_seen":begins_seen,"breadcrumb_records_omitted":begins_omitted,
+        "unfinished_spans":open_rows,"unfinished_spans_omitted":max(0,len(pending)-len(open_rows))}
 
 
 def augment(report, stderr):
     stages, heads, coverage = collect_audit(stderr.splitlines())
-    complete = coverage["records_omitted"] == 0 and coverage["malformed_or_unassigned"] == 0
+    complete = (coverage["records_omitted"] == 0 and coverage["malformed_or_unassigned"] == 0
+                and coverage["breadcrumb_records_omitted"] == 0 and not coverage["unfinished_spans"] and coverage["unfinished_spans_omitted"] == 0)
     for step in report.get("steps", []):
         buckets = stages.get(step["step"], {})
         step["loader_audit_spans"] = [dict(phase=phase, stage=stage, **counts) for (phase, stage), counts in sorted(buckets.items())]
@@ -116,7 +163,7 @@ def augment(report, stderr):
             "asset_decode_successes": projection_count(projection, "decode_ok"),
             "persistence_callback_programs_observed": step.get("activation", {}).get("completed_callback_programs_observed", {}).get("persistence_programs"),
         }
-        step["work_count_scope"] = "Observed span executions, including resolver/identity/cache work in prepare; no inferred per-file open counts. Nested ms overlap. Zero means no such span emitted, not zero total source work."
+        step["work_count_scope"] = "Observed span executions, including resolver/identity/cache work in prepare; no inferred per-file open counts. Begins assign cross-phase spans to their start phase; legacy records use the end phase. Nested wall/caller CPU overlap; CPU coverage counts are explicit. Off-CPU time includes scheduling and waits, not proved IO. Zero spans means no such span emitted, not zero total source work."
     report["audit_capture"] = dict(coverage, complete=complete, enabled="KONTRA_AUDIT_LOAD=1", limit=AUDIT_LIMIT)
     return report
 
@@ -194,7 +241,7 @@ def main(argv=None):
     if output in (binary, plan, Path(__file__).resolve()):
         parser.error("--output must not overwrite the binary, plan or launcher")
     before = file_hash(binary)
-    env = dict(os.environ, KONTRA_AUDIT_LOAD="1", KONTRA_DISABLE_NETWORK="1")
+    env = dict(os.environ, KONTRA_AUDIT_LOAD="1", KONTRA_AUDIT_BEGIN="1", KONTRA_DISABLE_NETWORK="1")
     process, stdout, stderr = invoke([str(binary), "preset-switch", str(plan)], env, args.timeout)
     after = file_hash(binary)
     try:
@@ -208,6 +255,9 @@ def main(argv=None):
         report = {"format": "kontra-preset-switch-launch", "schema": 1, "probe_report": "unavailable",
                   "scope": "Process failed, unsupported helper command, malformed or bounded-output failure; authored stderr omitted",
                   "native_equivalence": "unknown", "universal_compatibility": "not_established"}
+    if report.get("probe_report") == "unavailable":
+        _, _, coverage = collect_audit(stderr.decode("utf-8", errors="replace").splitlines())
+        report["audit_capture"] = dict(coverage, complete=False, enabled="KONTRA_AUDIT_LOAD=1", limit=AUDIT_LIMIT)
     report["process"] = process
     report["provenance"] = {"binary_path": str(binary), "binary_sha256_before": before, "binary_sha256_after": after,
                             "binary_unchanged": before == after, "plan_sha256": file_hash(plan), "launcher_sha256": file_hash(__file__)}
