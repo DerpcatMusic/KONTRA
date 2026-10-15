@@ -4991,6 +4991,116 @@
       ],
       "validation": "Hosted attempt1 exhausted90minutes during compilation with no test harness started and a cold cache. Existing workflow lint, script tests, signing/publication mocks and version tests pass after the narrow release-only180minute budget change. Ordinary CI remains90minutes; all test/profile/native/editor/signing/license/required gates remain unchanged.180minute completion remains subject to hosted execution.",
       "accepted": true
+    },
+    {
+      "id": "snapshot-menu-live-roster",
+      "summary": "Resolve saved preset menu positions against the live audio-owned menu values.",
+      "source_commits": [
+        "bf83b3ce84da802c74732e304495d433b84323c2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Resolve saved preset menu positions against the live audio-owned menu values.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "ui-effective-default-frame",
+      "summary": "Use committed or authored default control values consistently for artwork requests and painting.",
+      "source_commits": [
+        "004237ae5ff87d8f48226c438eae6d51a1613666"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Use committed or authored default control values consistently for artwork requests and painting.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "residency-callback-backpressure",
+      "summary": "Keep rendering and script clocks progressing when async residency callbacks await capacity.",
+      "source_commits": [
+        "fcb7a1c8f2d1a8ae7920bb7e911f04eaa5d2f438"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep rendering and script clocks progressing when async residency callbacks await capacity.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "explicit-preset-state-replacement",
+      "summary": "Discard stale project captures when the user explicitly selects a preset.",
+      "source_commits": [
+        "3ea1afce6da0c660cae7dd4db8cdcb976100a9b1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Discard stale project captures when the user explicitly selects a preset.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "array-read-write-pool-ownership",
+      "summary": "Keep metadata read admission independent of immutable array-write snapshot capacity.",
+      "source_commits": [
+        "4a0e106981157ae96c3af9fc3afa0e095f97f938"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep metadata read admission independent of immutable array-write snapshot capacity.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "scripted-zone-routing-transaction",
+      "summary": "Apply bounded scripted source and zone routing with exact async completion ownership.",
+      "source_commits": [
+        "ca8731ae32d476d38b551f9764db81d596def44a"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Apply bounded scripted source and zone routing with exact async completion ownership.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "signed-mapper-interior-zero-crossing",
+      "summary": "Preserve signed modulation mapper slopes across interior zero crossings.",
+      "source_commits": [
+        "18303dac1dd31ead6532ded50e390a3486d8463f"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve signed modulation mapper slopes across interior zero crossings.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "ksp-declared-array-scale-destination",
+      "summary": "Reject runtime-owned system arrays as get_scale destinations before evaluation.",
+      "source_commits": [
+        "1a1ae4f5d2fd5f33202a6fc2e9d41b6688b51ee3"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Reject runtime-owned system arrays as get_scale destinations before evaluation.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "coordinated-streamed-attack-readiness",
+      "summary": "Start layered sampler voices together after their requested initial stream demand is ready.",
+      "source_commits": [
+        "376e9ece32c01e0a796db579786f36e0269b38f2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Start layered sampler voices together after their requested initial stream demand is ready.",
+      "validation": "27 startup controls plus legacy onset, release, parallel and page-pool regressions pass in common02. One real Areia Full Ensemble Spiccato Slow capture: 19 logical attacks, 342 voices, zero contribution-start spread on every attack, zero underruns and zero trace loss. Cold admission waits remain; 78 pacing misses and failed planned RR matching preclude native/perceptual or quiet timing claims. Stretch instruments remain on the legacy path."
+    },
+    {
+      "id": "mandatory-residency-optional-anchor-fallback",
+      "summary": "Preserve mandatory resident PCM when optional preload anchors exceed the payload quota.",
+      "source_commits": [
+        "e7a880883fa4171f23be33539dd9ce65abf02d34"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve mandatory resident PCM when optional preload anchors exceed the payload quota.",
+      "validation": "Unchanged public UVI residency binary reproduces cap-128 failure; corrected public target passes all three cases, with 61 Kontakt stream cases passing. Exact mandatory boundary, optional anchor admission, source errors and cancellation remain checked."
     }
   ]
 }
