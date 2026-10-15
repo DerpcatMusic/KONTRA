@@ -49,7 +49,19 @@ fn heads(stream: &kontakto::sound::Stream) -> Value {
         ready += usize::from(b > 0);
         source_frames += p.frame_count() as u64;
     }
-    json!({"assets":stream.assets.len(),"assets_with_any_head":ready,"head_bytes":resident,"source_frames":source_frames,"note":"any head is not proof every authored onset/loop window is ready"})
+    let coverage = |r: sampler_kontakt::HeadReadiness| json!({
+        "assets":r.assets,"ranges":r.ranges,"source_frames":r.source_frames,
+        "covered_ranges":r.covered_ranges,"covered_source_frames":r.covered_source_frames,
+        "complete":r.complete()
+    });
+    let hints = json!({
+        "requested":stream.streamer.hint_readiness(&stream.assets).map(coverage),
+        "selected":stream.streamer.selected_hint_readiness(&stream.assets).map(coverage),
+        "selected_output_horizon":stream.streamer.selected_hint_head_frames(),
+        "scope":"Current resident snapshot, queried outside callback; separate from historical loader report"
+    });
+    json!({"assets":stream.assets.len(),"assets_with_any_head":ready,"head_bytes":resident,"source_frames":source_frames,
+        "current_constant_onsets":hints,"note":"any head is not proof every authored onset/loop window is ready"})
 }
 fn readiness(
     stream: &kontakto::sound::Stream,
