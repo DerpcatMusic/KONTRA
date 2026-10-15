@@ -1,6 +1,13 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
 mod script_state;
+mod snapshot_overlay;
+mod snapshot_program;
+pub(crate) use snapshot_program::snapshot_callback_safe;
+pub use snapshot_overlay::{
+    NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
+    SNAPSHOT_OVERLAY_VALUE_CAPACITY,
+};
 pub use script_state::{
     ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue,
 };

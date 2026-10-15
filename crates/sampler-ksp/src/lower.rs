@@ -301,6 +301,18 @@ impl<'h> Unit<'h> {
                 );
             }
             let texts: Vec<_> = module.texts.iter().map(String::as_str).collect();
+            // Service IDs are script-local. Only effects whose host consumer
+            // edits presentation metadata may run in a same-owner snapshot.
+            let snapshot_ui_services: Vec<_> = self.services.iter().enumerate()
+                .filter(|(_, builtin)| matches!(builtin.name(),
+                    "set_control_par" | "set_control_par_str" | "set_control_par_real"
+                    | "set_control_par_arr" | "set_control_par_str_arr" | "set_control_par_real_arr"
+                    | "set_text" | "set_knob_label" | "set_control_help" | "hide_part"
+                    | "set_knob_defval" | "set_knob_unit" | "set_table_steps_shown"
+                    | "move_control" | "move_control_px" | "set_skin_offset" | "set_ui_color"
+                    | "set_key_color" | "set_key_name" | "set_key_type" | "set_key_pressed"
+                    | "set_key_pressed_support" | "set_keyrange" | "remove_keyrange" | "message"))
+                .map(|(id, _)| id as u16).collect();
             let shared = Program::new(module.code)
                 .and_then(|p| p.with_texts(&texts))
                 .map_err(|e| Fault {
@@ -309,7 +321,8 @@ impl<'h> Unit<'h> {
                     message: format!("invalid lowered module: {e:?}"),
                 })?
                 .with_wait_lifetime(WaitLifetime::Callback)
-                .with_source_slot(self.slot);
+                .with_source_slot(self.slot)
+                .with_snapshot_overlay_services(&snapshot_ui_services);
             for (index, ranges, ui_id, span) in module.entries {
                 programs[index] = shared
                     .clone()
@@ -434,6 +447,7 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
+            .and_then(Program::with_snapshot_listener_driver)
             .map(|p| {
                 p.with_wait_lifetime(WaitLifetime::Callback)
                     .with_source_slot(g.u.slot)

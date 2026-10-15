@@ -4211,6 +4211,7 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ir",
  "sampler-parity",
  "sampler-ui-ir",
  "serde",

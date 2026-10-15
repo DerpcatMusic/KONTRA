@@ -15,6 +15,8 @@ pub enum ControlOperation {
     CaptureWidget(Vec<crate::WidgetEdit>),
     CaptureScriptState(crate::ScriptStateBuffer),
     RestoreScriptState(crate::ScriptStateBuffer),
+    CaptureSnapshotFence(Option<super::SnapshotOverlayFence>),
+    NativeSnapshotOverlay(super::NativeSnapshotOverlay),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -27,12 +29,16 @@ impl ControlOperation {
             | Self::MidiComplete(..)
             | Self::MidiCapture(..)
             | Self::Invoke(..)
-            | Self::HostParameter(..) => 1,
+            | Self::HostParameter(..)
+            | Self::CaptureSnapshotFence(..) => 1,
             Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
             Self::CaptureScriptState(v) | Self::RestoreScriptState(v) => {
                 v.values.len().saturating_add(v.callbacks.len())
             }
+            Self::NativeSnapshotOverlay(v) => v.state.values.len()
+                .saturating_add(v.state.callbacks.len()).saturating_add(v.native.len())
+                .saturating_add(v.epochs.len()),
         }
     }
 }
@@ -184,7 +190,9 @@ impl Runtime {
         };
         let command = &mut reply.command;
         // Share ordering with direct controls and the native musical timeline.
-        self.apply_due();
+        if !matches!(command.operation, ControlOperation::NativeSnapshotOverlay(_) | ControlOperation::CaptureSnapshotFence(_)) {
+            self.apply_due();
+        }
         let queues = self.control_queues.as_mut().unwrap();
         queues.admission_failure = None;
         queues.record_admission = true;
@@ -228,6 +236,20 @@ impl Runtime {
             }
             ControlOperation::RestoreScriptState(state) => {
                 self.restore_script_state(command.plan, command.expected_revision, state)
+            }
+            ControlOperation::CaptureSnapshotFence(output) => self.snapshot_overlay_fence(command.plan).map(|fence| {
+                *output = Some(fence);
+                (1, fence.control_revision)
+            }),
+            ControlOperation::NativeSnapshotOverlay(overlay) => {
+                if command.plan != overlay.expected.plan
+                    || (overlay.linearized_ingress() && command.expected_revision.is_some())
+                    || command.expected_revision.is_some_and(|revision| revision != overlay.expected.control_revision) {
+                    overlay.refusal = Some(super::SnapshotOverlayRefusal::InvalidInput);
+                    Err(Error::InvalidInput)
+                } else {
+                    self.apply_snapshot_overlay(overlay)
+                }
             }
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
