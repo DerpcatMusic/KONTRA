@@ -68,7 +68,7 @@ pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
 pub use snapshot::{
-    GroupState, SnapshotState, apply_snapshot, read_snapshot, resolve_snapshot_base,
+    GroupState, SnapshotState, apply_snapshot, read_snapshot, read_snapshot_for_base, resolve_snapshot_base,
     snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
 pub use stream::{

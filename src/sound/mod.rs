@@ -284,6 +284,7 @@ pub struct KeyLook {
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
+    pub(crate) snapshot_reuse: Option<std::sync::Arc<v2::snapshot_reuse::Descriptor>>,
     /// The resolved instrument owning these resources, including when the
     /// selected preset is a snapshot rather than an instrument file.
     pub resource_path: Option<std::path::PathBuf>,

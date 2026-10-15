@@ -59,6 +59,7 @@ mod host_transport;
 #[cfg(test)]
 mod host_transport_tests;
 mod persistence;
+pub(crate) mod snapshot_reuse;
 #[cfg(test)]
 mod pressed_tests;
 #[cfg(test)]
@@ -317,7 +318,7 @@ impl Part {
             channels: 1,
         };
         let (runtime, client) = runtime
-            .with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY)
+            .with_control_updates(256, sampler_core::SNAPSHOT_OVERLAY_VALUE_CAPACITY + 7)
             .map_err(core)?;
         let tone = sampler_core::OutputLowPass::new(runtime.sample_rate()).map_err(core)?;
         Ok(Self {
@@ -351,6 +352,7 @@ impl Part {
                 pending_widgets: Default::default(),
                 pending: Default::default(),
                 persistence: None,
+                snapshot_replies: Default::default(),
             }),
             runtime,
             widget_revision,
@@ -596,6 +598,7 @@ pub(crate) struct ControlIngress {
     array_worker: Option<array_file::Worker>,
     revision: u64,
     persistence: Option<Arc<persistence::Snapshot>>,
+    snapshot_replies: std::collections::VecDeque<sampler_core::ControlReply>,
 }
 
 impl ControlIngress {
@@ -922,6 +925,13 @@ impl ControlIngress {
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if matches!(&reply.command.operation,
+                sampler_core::ControlOperation::NativeSnapshotOverlay(_)
+                | sampler_core::ControlOperation::CaptureSnapshotFence(_)) {
+                if let Ok((_, revision)) = reply.result { self.revision = revision; }
+                self.snapshot_replies.push_back(reply);
+                continue;
+            }
             if matches!(
                 &reply.command.operation,
                 sampler_core::ControlOperation::ArrayFileCapture(_)
@@ -2098,7 +2108,14 @@ impl V2Core {
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             // Native replies apply backpressure; bounded ingress is serviced before rendering.
             for _ in 0..256 {
-                if !matches!(part.runtime.poll_control_update(), Ok(Some(_))) {
+                if !matches!(part.runtime.poll_control_update_with_snapshot_gate(|| {
+                    // Native snapshot recall ends prior audio. This initial
+                    // retained-owner slice cannot reset host alignment/filter
+                    // history, so it must not silently carry either across.
+                    // The closure runs only for an actual snapshot operation.
+                    self.align.parts[index].hosts().next().is_none()
+                        && part.tone_history.iter().flatten().flatten().all(|value| *value == 0.)
+                }), Ok(Some(_))) {
                     break;
                 }
             }
@@ -3401,6 +3418,7 @@ fn kontakt(
             )
         })
         .collect::<Vec<_>>();
+    let reuse_seed = snapshot_reuse::Seed::capture(path, request.sample_rate as u32);
     let mut source = match &snapshot {
         Some((parent, state)) => {
             sampler_kontakt::read_with_snapshot_and_controls(parent, state, &control_values)
@@ -3469,6 +3487,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
+    let snapshot_reuse = reuse_seed.and_then(|seed| seed.finish(&loaded.scripts));
     Ok(Loaded {
         part: (loaded.plan, Some(cache), None),
         tree,
@@ -3477,6 +3496,7 @@ fn kontakt(
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi {
+            snapshot_reuse,
             views: loaded.scripts,
             resources: loaded.resources,
             resource_path: Some(path.clone()),

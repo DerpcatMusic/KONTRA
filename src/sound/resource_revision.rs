@@ -31,6 +31,9 @@ impl ResourceRevision {
         program: u32,
         resources: &sampler_kontakt::Resources,
     ) -> Option<Self> {
+        if !resources.namespace_complete() {
+            return None;
+        }
         let owner = owner.canonicalize().ok()?;
         let mut paths = resources.locations();
         paths.push(owner.clone());

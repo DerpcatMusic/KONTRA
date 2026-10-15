@@ -16,6 +16,8 @@ use std::{
 };
 
 mod uvi;
+#[cfg(test)]
+mod snapshot_tests;
 
 pub struct Witness {
     pub initial: Vec<Interface>,
@@ -290,6 +292,13 @@ enum SwitchStep {
     },
     Publish {
         request: u64,
+    },
+    /// Exercise the same prepared mapping and native queued transaction as
+    /// the plugin. Refusal is reported; this action never hides a full reload.
+    Snapshot {
+        path: PathBuf,
+        #[serde(default)]
+        release_held: bool,
     },
     UiEdit {
         generation: u64,
@@ -729,6 +738,10 @@ fn switch_probe_inner(
                     );
                 }
             }
+            SwitchStep::Snapshot { path, .. } if path.as_os_str().is_empty()
+                || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("nksn")) => {
+                return Err("Snapshot action requires a nonempty NKSN path");
+            }
             SwitchStep::UiEdit { control, value, .. }
                 if !value.is_finite() || switch_control_id(control).is_none() =>
             {
@@ -831,6 +844,66 @@ fn switch_probe_inner(
                             "failed"
                         });
                         record["error"] = switch_error(&error);
+                    }
+                }
+            }
+            SwitchStep::Snapshot { path, release_held } => {
+                record["selected_path"] = json!(path);
+                record["strategy"] = json!("same_owner_queued_snapshot");
+                record["gate_scope"] = json!("Diagnostic host uses a fixed owner epoch; plugin request and host recall fences are tested separately");
+                if release_held {
+                    if let Some(note) = owner.held.take() {
+                        core.play(0, Event::NoteOff(crate::sound::event::HostPattern { port: i32::from(note.port), channel: i32::from(note.channel), key: i32::from(note.key), id: note.id, clap: note.clap }));
+                    }
+                    record["release_before_snapshot"] = switch_render(&mut core, &mut owner, 4096)?;
+                }
+                let start = Instant::now();
+                switch_marker(index, "snapshot_reuse_prepare");
+                let ready = owner.scripts.snapshot_reuse.as_ref()
+                    .ok_or(crate::sound::v2::snapshot_reuse::Refusal::NoSetup)
+                    .and_then(|descriptor| descriptor.prepare(&path, 48000, &owner.scripts.views));
+                record["prepare_ms"] = json!(start.elapsed().as_secs_f64()*1000.);
+                match ready {
+                    Err(reason) => {
+                        record["outcome"] = json!("snapshot_reuse_refused");
+                        record["refusal"] = serde_json::to_value(reason).unwrap_or_default();
+                    }
+                    Ok(ready) => {
+                        let epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(owner.request));
+                        let command = ingresses.get_mut(&owner.request)
+                            .ok_or("Snapshot action has no current ingress")?
+                            .submit_snapshot_overlay(ready.state, Box::new([sampler_core::SnapshotOverlayEpoch {
+                                sequence: epoch, expected: owner.request,
+                            }])).map_err(|_| "Snapshot action queue refused payload")?;
+                        record["snapshot_mode"] = json!(format!("{:?}", ready.mode));
+                        switch_marker(index, "snapshot_reuse_apply");
+                        record["apply_render"] = switch_render(&mut core, &mut owner, 128)?;
+                        let reply = ingresses.get_mut(&owner.request).unwrap().take_snapshot_reply(command)
+                            .ok_or("Snapshot action did not receive its bounded native reply")?;
+                        let sampler_core::ControlOperation::NativeSnapshotOverlay(overlay) = reply.command.operation else {
+                            return Err("Snapshot action received a foreign reply");
+                        };
+                        record["admission_result"] = json!(format!("{:?}", reply.result));
+                        record["callback_admission_outcomes"] = json!(format!("{:?}", overlay.state.callbacks));
+                        if reply.result.is_ok() && overlay.committed.is_some() {
+                            owner.path = path;
+                            record["outcome"] = json!("snapshot_applied_same_owner");
+                            record["activation"] = step(&mut core, &mut owner.scripts.views)?;
+                            let (faces, values, state) = switch_state(&core, &mut owner);
+                            record["after_activation"] = state;
+                            if plan.render_ui {
+                                let (projection, capture) = switch_projection(&owner, &faces, &values, &mut artifacts, index);
+                                record["ui_projection"] = projection;
+                                if let Some(capture) = capture { record["ui_artifact"] = capture; }
+                            }
+                            let note = HostNote { port: 0, channel: 0, key: plan.key, id: (index+10000) as i32, clap: true };
+                            core.play(0, Event::NoteOn { note, velocity: f64::from(plan.velocity)/127., tune: 0. });
+                            owner.held = Some(note);
+                            record["fresh_note"] = switch_render(&mut core, &mut owner, plan.note_frames)?;
+                        } else {
+                            record["outcome"] = json!("snapshot_reuse_refused");
+                            record["refusal"] = json!(format!("{:?}", overlay.refusal));
+                        }
                     }
                 }
             }
@@ -1059,8 +1132,8 @@ fn switch_probe_inner(
     }
     let mut report = json!({"format":"kontra-preset-switch-probe","schema":1,"steps":records,
         "build":crate::build_info::BUILD,"source_sha256":{"offline_lifecycle.rs":sha256(include_bytes!("offline_lifecycle.rs")),"sound/v2.rs":sha256(include_bytes!("../sound/v2.rs"))},
-        "scope":"Real V2Loader, full Core::install, deferred callbacks, production UI command queues, streaming/DSP and optional CPU UI projection; no plugin instance, DAW, audio device or audition",
-        "publication_gate_scope":"Request ordering and audio generation assignment are diagnostic-host policy; plugin worker/publication races and any future same-base reuse path are not exercised",
+        "scope":"Real V2Loader and full Core::install for load actions; explicit snapshot actions retain the same owner through the production mapper/queued transaction. Deferred callbacks, UI command queues, streaming/DSP and optional CPU UI projection run without a plugin instance or audio device",
+        "publication_gate_scope":"Request ordering and audio generation assignment are diagnostic-host policy. Explicit snapshot actions use the production mapper and queued native transaction without Core::install; plugin worker/recall races remain separate tests",
         "audio_scope":"Held-note transitions and fresh notes after bounded activation are separate; controllers remain at loader defaults",
         "stage_metrics_scope":"KONTRA_AUDIT_LOAD numeric stderr spans, grouped by PRESET_SWITCH phase markers; wrapper can count actual spans without reparsing sources",
         "native_equivalence":"unknown","universal_compatibility":"not_established"});
