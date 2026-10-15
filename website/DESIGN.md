@@ -1,6 +1,6 @@
 ---
 name: KONTRA Public Website
-description: Public home, downloads, support evidence, and roadmap for the KONTRA player.
+description: Public home, downloads, support evidence, local library inspection, and roadmap for the KONTRA player.
 colors:
   muted-pink-accent: "#e6b6c7"
   donation-hover: "#f5cad7"
@@ -21,6 +21,7 @@ colors:
   reading-copy: "#c7c7c7"
   hairline: "#414141"
   status-implemented: "#c7d8c7"
+  inspector-error: "#ff9a94"
   scrollbar-thumb: "#686868"
 typography:
   display:
@@ -83,6 +84,24 @@ typography:
     fontFamily: "Noto Sans, sans-serif"
     fontSize: "14px"
     lineHeight: 1.65
+  report-body:
+    fontFamily: "Noto Sans, system-ui, sans-serif"
+    fontSize: "13px"
+    lineHeight: 1.5
+  report-metadata:
+    fontFamily: "Noto Sans, system-ui, sans-serif"
+    fontSize: "12px"
+    lineHeight: 1.5
+  report-subhead:
+    fontFamily: "Noto Sans, system-ui, sans-serif"
+    fontSize: "14px"
+    lineHeight: 1.5
+  inspection-result-heading:
+    fontFamily: "Noto Sans, sans-serif"
+    fontSize: "24px"
+    fontWeight: 400
+    lineHeight: 1.2
+    letterSpacing: "-0.02em"
 rounded:
   square: "0px"
 spacing:
@@ -159,6 +178,28 @@ components:
     textColor: "{colors.text-primary}"
     rounded: "{rounded.square}"
     padding: "20px 0"
+  inspector-primary:
+    backgroundColor: "{colors.text-primary}"
+    textColor: "{colors.action-ink}"
+    typography: "{typography.metadata}"
+    rounded: "{rounded.square}"
+    padding: "10px 16px"
+    height: "46px"
+  inspector-primary-hover:
+    backgroundColor: "{colors.action-white}"
+  inspector-primary-disabled:
+    backgroundColor: "{colors.graphite-surface}"
+    textColor: "{colors.text-muted}"
+  inspector-field:
+    backgroundColor: "{colors.graphite-field}"
+    textColor: "{colors.text-primary}"
+    typography: "{typography.metadata}"
+    rounded: "{rounded.square}"
+    padding: "8px 10px"
+    height: "46px"
+  inspector-error:
+    textColor: "{colors.inspector-error}"
+    typography: "{typography.technical}"
   footer-legal:
     textColor: "{colors.text-muted}"
     typography: "{typography.small}"
@@ -171,9 +212,9 @@ components:
 
 **Creative North Star: "A Native Instrument's Public Home"**
 
-This website extends the native graphite and Noto Sans system recorded in the root [DESIGN.md](../DESIGN.md). The native editor remains the authority for the application; this document records the web reading and download surface. Graphite fills and square edges carry through, while the website uses muted pink for interaction and donations, recognizable Discord blue for community access, and a light primary download for the detected desktop platform.
+This website extends the native graphite and Noto Sans system recorded in the root [DESIGN.md](../DESIGN.md). The native editor remains the authority for the application; this document records the web reading, download, and local inspection surfaces. Graphite fills and square edges carry through, while the website uses muted pink for interaction and donations, recognizable Discord blue for community access, and a light primary download for the detected desktop platform. Local inspector entry and run actions reuse that neutral primary treatment.
 
-The overview keeps the message short and puts the release identity and three icon-led downloads before an uncropped image of the actual player. Shared header and footer actions make donations and community access prominent. Reading pages retain essential instructions and evidence. Compatibility uses a source-built feature table with visible status and implementation notes; the roadmap groups parallel sampler work and planned expansion into quiet, unnumbered bands.
+The overview keeps the message short and puts the release identity and three icon-led downloads before an uncropped image of the actual player. Shared header and footer actions make donations and community access prominent. Reading pages retain essential instructions and evidence. Compatibility uses a source-built feature table with visible status and implementation notes; the roadmap groups parallel sampler work and planned expansion into quiet, unnumbered bands. The browser inspector brings the existing dense report workbench into this same shell, preserving its evidence-first navigation and local file workflow.
 
 **Key Characteristics:**
 - Dark graphite surfaces with thin dividers and quiet neutral text.
@@ -199,6 +240,7 @@ The overview keeps the message short and puts the release identity and three ico
 - **Download Border and Download Hover:** distinguish alternative OS actions. Table Row Hover provides a restrained reading highlight.
 
 ### Status
+- **Inspector Error:** carries the existing report workbench error role into public inspection failures. Keep explicit failure and recovery text alongside this signal; it is distinct from partial-support pink.
 - **Implemented Status:** a soft green marks implemented support. Partial support shares the pink accent; Not implemented stays muted. Partial rows show incomplete, unverified or mismatched mappings in explicit text, including a smaller muted proof note when available.
 
 **The Pink Signal Rule.** Use pink for donation actions, interaction, focus, and partial support; keep the page foundation graphite.
@@ -209,11 +251,13 @@ The overview keeps the message short and puts the release identity and three ico
 
 Noto Sans is bundled at `assets/noto-sans.woff2` and carries the wordmark, headings, navigation, actions, and reading copy. The frontmatter records the implemented type roles. Titles use the fluid display scale; section headings use Headline, while sampler band headings use their own 24px role at every width. Body copy reads at 16px/1.65; articles use Reading, expanded sampler scope uses Technical, and revision lines, filters and row metadata use Metadata. The table uses 13px/1.6 cells, 12px headers and proof notes, and tabular numerals for counts, result totals and pagination. Inline `code` keeps the browser's monospace face on a dark inset fill.
 
+The embedded inspector preserves the shared report's denser Report Body role (13px/1.5), Report Metadata (12px) and Report Subhead (14px). Source excerpts, numeric fields and binding records use the workbench's monospace stack. The public result heading uses its own 24px role. These are scoped inspection roles, not a replacement for the site's reading scale.
+
 **The One Face Rule.** Keep the bundled Noto Sans for the site's normal text and avoid adding a second display face.
 
 ## Layout
 
-The content frame stops at 1240px. Side gutters step from 40px to 24px below 760px and 20px below 480px. The desktop header keeps the wordmark left, page navigation in the middle, and Patreon and Discord at the far right. Below 1050px the page navigation moves to a second row; on small phones the two community actions stack at the top right. The same actions repeat at the right of the shared footer on all four pages. They remain at least 44px tall.
+The content frame stops at 1240px. Side gutters step from 40px to 24px below 760px and 20px below 480px. The desktop header keeps the wordmark left, page navigation in the middle, and Patreon and Discord at the far right. Below 1050px the page navigation moves to a second row; on small phones the two community actions stack at the top right. Below 480px, the five page links use a three-column, two-row grid. The same actions repeat at the right of the shared footer on all five pages. They remain at least 44px tall.
 
 The overview pairs one short introduction with a compact download list, followed immediately by the actual player image. Three bordered, square icon buttons name the platform and architecture; the detected desktop button gets a light fill while alternatives stay graphite. The format line appears once, beneath the downloads. A concise alpha caveat stays beside the introduction. On smaller screens, introduction and downloads stack.
 
@@ -226,6 +270,8 @@ The six-column semantic feature table retains a 1040px minimum width inside a ke
 The roadmap uses two unnumbered bands: Current work and Next samplers. On desktop, each band places a 210px heading column beside a row list with a 48px gap; rows use flexible sampler names, a 150px status column and a 110px link column, separated by 24px. At 1050px the band heading becomes 160px with a 32px gap, rows use a 130px status column, and links move beneath the name. Below 760px the band stacks with a 20px gap; below 480px the status column becomes 120px. Hairlines bound the list and divide rows, with 20px vertical row padding and 44px between desktop bands (32px on mobile).
 
 The overview fetches the latest GitHub release tag and published date when available; the direct release and asset links work without JavaScript, with a release-page fallback if the lookup fails. Desktop Windows, macOS, and Linux detection gives one download button the light primary treatment and an assistive “Your platform” label. Mobile browsers, including iPad/iOS and Android, and unknown platforms remain unmarked. With JavaScript disabled, all three download links remain available, community links and SVG masks still render, and native disclosures remain operable.
+
+The inspector keeps its folder and file choices above a flexible selection row. Selection labels share the row with 46px fields and the Inspect action; below 480px the choices and labels take the full width. Results begin under a thin rule with a wrapping heading and Save report action. The shared viewer fills the content width and adapts its height to the report, with no duplicate header, file toolbar or footer. Report tabs scroll inside their own row on phones, keeping the selected tab visible; dense evidence tables and source panes retain their own scroll regions.
 
 **The Download First Rule.** Keep the release identity and all three platform choices ahead of the large player image.
 
@@ -246,8 +292,8 @@ Page surfaces, download buttons, community actions and disclosures have square c
 ## Components
 
 ### Header and Navigation
-- A compact wordmark, four page links and the two community actions repeat on every page. “Compatibility” names the audited feature table; installation and troubleshooting live in Documentation. The current page uses primary text and a thin pink underline; other links use muted text.
-- On mobile, page links wrap below the wordmark and right-aligned community actions. Source, releases and contributor links stay in the shared footer.
+- A compact wordmark, five page links and the two community actions repeat on every page. “Compatibility” names the audited feature table; “Inspector” opens local file inspection; installation and troubleshooting live in Documentation. The current page uses primary text and a thin pink underline; other links use muted text.
+- On mobile, page links sit below the wordmark and right-aligned community actions; below 480px they use three columns over two rows. Source, releases and contributor links stay in the shared footer.
 
 ### Community Actions and Icons
 - Donate uses the real Patreon mark on solid pink; Join Discord uses the real Discord mark on its blue fill. Icons are 20px; controls are at least 46px tall, with 10px × 16px padding and a 9px icon-to-label gap. On small-phone headers they become 44px tall with 9px × 12px padding.
@@ -278,6 +324,13 @@ Page surfaces, download buttons, community actions and disclosures have square c
 - Current work lists Kontakt and UVI / Falcon as parallel development tracks, each with an In development label and a link to its filtered feature table. Next samplers lists Opus / EastWest, HALion, HISE and Other samplers as Planned. The bands express current focus and expansion without a fixed order, promised dates, completion charts or progress percentages.
 - A compact native “Implementation scope” disclosure follows current sampler rows. Its muted 13px summary expands to 14px prose and source links. Keep the main sampler names and statuses visible before expansion.
 - Quiet headings sit left of the hairline row lists on desktop and above them on mobile. The roadmap links beneath the bands lead to the implementation table, roadmap source and recent commits.
+
+### Local Library Inspector
+- The folder choice and Inspect action use the light neutral primary button: 46px minimum height, 10px × 16px padding, Primary Text fill and Action Ink content. Hover uses Action White; disabled actions use Graphite Surface, Muted Text and Hairline. The file choice, Stop and Save report reuse the quiet square button. Clear files uses an underlined text action.
+- Instrument selection and conditional program or snapshot fields use Graphite Field with Primary Text, a Scrollbar Thumb border, 12px labels and 13px values. They remain native selects, search and number fields, with 46px height and the site's pink focus outline. Inline status and engine revision use muted 12px text; failures use the Inspector Error role with 14px recovery copy.
+- A completed report moves attention to its result heading. The retained workbench shows explicit load stages, evidence scope, problems, source, structure, UI projection, timings and metadata. Failed reports open Problems. Its selected tab uses a quiet surface fill and light inset underline, not a raised card; the mobile tab strip contains its horizontal scrolling.
+- The embedded report retains its source-local neutral rules, muted metadata, small inset controls and light focus outline. Preserve that existing module rather than propagating its small controls or local tokens to the rest of the public website.
+- Authored UI layout shows exported widget rectangles and selection records, with adjacent wording for artwork, stock sizing, grid placement, live callbacks, audio and native fidelity that the browser has not tested. It is diagnostic evidence; the actual player screenshot remains the product visual. The full surface workflow and limitations live in [the inspector surface contract](.impeccable/surfaces/website-inspector-html.md).
 
 ### Shared Footer and Legal
 - Repeat the brand and strong community actions above source, releases, issues, contribution and license links. Hairlines and spacing define the footer rather than a panel.
