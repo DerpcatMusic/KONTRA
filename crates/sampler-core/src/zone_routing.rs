@@ -1595,56 +1595,54 @@ impl crate::Runtime {
                 continue;
             }
             let plan = crate::PlanId(self.plans.id(index));
-            for _ in 0..MAX_ZONE_BATCH_JOBS {
-                let next = self
-                    .plans
-                    .get(plan.0)
-                    .and_then(|g| g.zone_routing.as_ref())
-                    .and_then(State::completion);
-                let Some(c) = next else {
-                    break;
-                };
-                let admitted = if let Some(callback) = c.completion {
-                    self.behaviors.unreserve(1);
-                    self.callback_id_reservations -= 1;
-                    self.plans.get_mut(plan.0).unwrap().callbacks -= 1;
-                    match self.admit_plan_context(plan, callback.program, callback.context) {
-                        Ok(id) => Some(id),
-                        Err(error) => {
-                            self.plans.get_mut(plan.0).unwrap().callbacks += 1;
-                            self.behaviors.reserve(1);
-                            self.callback_id_reservations += 1;
-                            // Context/program are immutable and ID headroom is
-                            // reserved. Any refusal here is an invariant failure;
-                            // preserve the job rather than lose its completion.
-                            if error == Error::Capacity {
-                                break;
-                            }
-                            return Err(error);
+            let next = self
+                .plans
+                .get(plan.0)
+                .and_then(|g| g.zone_routing.as_ref())
+                .and_then(State::completion);
+            let Some(c) = next else {
+                continue;
+            };
+            let admitted = if let Some(callback) = c.completion {
+                self.behaviors.unreserve(1);
+                self.callback_id_reservations -= 1;
+                self.plans.get_mut(plan.0).unwrap().callbacks -= 1;
+                match self.admit_plan_context(plan, callback.program, callback.context) {
+                    Ok(id) => Some(id),
+                    Err(error) => {
+                        self.plans.get_mut(plan.0).unwrap().callbacks += 1;
+                        self.behaviors.reserve(1);
+                        self.callback_id_reservations += 1;
+                        // Context/program are immutable and ID headroom is
+                        // reserved. Any refusal here is an invariant failure;
+                        // preserve the job rather than lose its completion.
+                        if error == Error::Capacity {
+                            continue;
                         }
+                        return Err(error);
                     }
-                } else {
-                    self.plans.get_mut(plan.0).unwrap().callbacks -= 1;
-                    None
-                };
-                self.plans
-                    .get_mut(plan.0)
-                    .unwrap()
-                    .zone_routing
-                    .as_mut()
-                    .unwrap()
-                    .delivered(c.id)?;
-                // Queue waiters first: the ready stack is LIFO, so the exact
-                // completion callback runs before its resumed waiter. No code
-                // executes while the caller holds the dispatch guard.
-                self.finish_async_callback(plan, c.id, c.success, None)?;
-                if let Some(id) = admitted {
-                    self.behaviors.get_mut(id.0).unwrap().async_result =
-                        Some((c.id, i32::from(c.success)));
-                    self.resume_behavior(id);
                 }
-                return Ok(true);
+            } else {
+                self.plans.get_mut(plan.0).unwrap().callbacks -= 1;
+                None
+            };
+            self.plans
+                .get_mut(plan.0)
+                .unwrap()
+                .zone_routing
+                .as_mut()
+                .unwrap()
+                .delivered(c.id)?;
+            // Queue waiters first: the ready stack is LIFO, so the exact
+            // completion callback runs before its resumed waiter. No code
+            // executes while the caller holds the dispatch guard.
+            self.finish_async_callback(plan, c.id, c.success, None)?;
+            if let Some(id) = admitted {
+                self.behaviors.get_mut(id.0).unwrap().async_result =
+                    Some((c.id, i32::from(c.success)));
+                self.resume_behavior(id);
             }
+            return Ok(true);
         }
         Ok(false)
     }
