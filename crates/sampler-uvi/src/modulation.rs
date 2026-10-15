@@ -135,7 +135,18 @@ impl Mapper {
     /// Inputs (in source units) where the table's slope changes.
     fn knots(&self) -> impl Iterator<Item = f64> + '_ {
         let n = (self.samples.len() - 1) as f64;
-        (0..self.samples.len()).map(move |j| j as f64 / n)
+        (0..self.samples.len()).map(move |j| j as f64 / n).chain(
+            self.samples
+                .windows(2)
+                .enumerate()
+                .filter_map(move |(i, p)| {
+                    let (a, b) = (p[0], p[1]);
+                    // Min/Max scale opposite signs separately, so an interpolated
+                    // zero is another slope boundary inside this table segment.
+                    ((a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0))
+                        .then(|| (i as f64 - a / (b - a)) / n)
+                }),
+        )
     }
 }
 
@@ -1608,6 +1619,49 @@ mod tests {
         // Ratio 12 × the macro's factor 0.25.
         assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(3.0)));
         assert_eq!(shape(&ir, route), [(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]);
+    }
+
+    #[test]
+    fn signed_mapper_shapes_keep_internal_zero_crossings() {
+        // The raw table crosses zero inside both intervals. Distinct signed
+        // scales make those crossings real corners, rather than sample knots.
+        for inverted in [false, true] {
+            let xml = format!(
+                r#"<Program><Mappers><ControlSignalMapper Name="Signed" Min="-0.5" Max="0.75">-1,0 0,25 -1,0</ControlSignalMapper></Mappers>
+                <Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer><Connections>
+                <SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="12" Mapper="Signed" Inverted="{}"/>
+                </Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#,
+                u8::from(inverted)
+            );
+            let ir = crate::translate_bank(&xml).unwrap().0;
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+            let (route, source) = only_route(&ir);
+            assert_eq!(source, &ir::ModulationSource::Controller(1));
+            let points = shape(&ir, route);
+            assert_eq!(points.len(), 5);
+            // Independent piecewise oracle: table [-1,.25,-1], negative
+            // scale .5, positive scale .75; corners are at .4 and .6.
+            for i in 0..=100 {
+                let input = f64::from(i) / 100.0;
+                let x = if inverted { 1.0 - input } else { input };
+                let raw = if x <= 0.5 {
+                    -1.0 + 2.5 * x
+                } else {
+                    1.5 - 2.5 * x
+                };
+                let expected = raw * if raw < 0.0 { 0.5 } else { 0.75 };
+                let span = points
+                    .windows(2)
+                    .find(|s| input >= s[0].0 && input <= s[1].0)
+                    .unwrap();
+                let t = (input - span[0].0) / (span[1].0 - span[0].0);
+                let actual = span[0].1 + t * (span[1].1 - span[0].1);
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "inverted={inverted} input={input}: {actual} != {expected}"
+                );
+            }
+        }
     }
 
     #[test]
