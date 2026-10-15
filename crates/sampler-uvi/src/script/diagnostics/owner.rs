@@ -41,8 +41,10 @@ pub enum OwnerStage {
     ExportWidgetSample,
     ExportValueSample,
     ExportInventorySample,
+    ReadyCommandsCollect,
+    ReadyCommandsPush,
 }
-const STAGES: [OwnerStage; 32] = [
+const STAGES: [OwnerStage; 34] = [
     OwnerStage::Loading,
     OwnerStage::InitialSnapshot,
     OwnerStage::Events,
@@ -75,6 +77,8 @@ const STAGES: [OwnerStage; 32] = [
     OwnerStage::ExportWidgetSample,
     OwnerStage::ExportValueSample,
     OwnerStage::ExportInventorySample,
+    OwnerStage::ReadyCommandsCollect,
+    OwnerStage::ReadyCommandsPush,
 ];
 impl OwnerStage {
     fn name(self) -> &'static str {
@@ -111,6 +115,8 @@ impl OwnerStage {
             Self::ExportWidgetSample => "export_widget_sample",
             Self::ExportValueSample => "export_value_sample",
             Self::ExportInventorySample => "export_inventory_sample",
+            Self::ReadyCommandsCollect => "ready_commands_collect",
+            Self::ReadyCommandsPush => "ready_commands_push",
         }
     }
     fn scope(self) -> &'static str {
@@ -168,8 +174,10 @@ pub enum OwnerCounter {
     ExportSamplePasses,
     ExportBoundValues,
     ExportSampledBoundValues,
+    ReadyCommandsCollected,
+    ReadyCommandsPushed,
 }
-const COUNTERS: [OwnerCounter; 16] = [
+const COUNTERS: [OwnerCounter; 18] = [
     OwnerCounter::Turns,
     OwnerCounter::Events,
     OwnerCounter::UiRequests,
@@ -186,6 +194,8 @@ const COUNTERS: [OwnerCounter; 16] = [
     OwnerCounter::ExportSamplePasses,
     OwnerCounter::ExportBoundValues,
     OwnerCounter::ExportSampledBoundValues,
+    OwnerCounter::ReadyCommandsCollected,
+    OwnerCounter::ReadyCommandsPushed,
 ];
 impl OwnerCounter {
     fn name(self) -> &'static str {
@@ -206,6 +216,8 @@ impl OwnerCounter {
             Self::ExportSamplePasses => "export_sample_passes",
             Self::ExportBoundValues => "export_bound_value_reads",
             Self::ExportSampledBoundValues => "export_sampled_bound_value_reads",
+            Self::ReadyCommandsCollected => "ready_commands_collected",
+            Self::ReadyCommandsPushed => "ready_commands_pushed",
         }
     }
 }
@@ -307,6 +319,8 @@ impl OwnerAudit {
                 "commands_collect",
                 "commands_push",
                 "park",
+                "ready_commands_collect",
+                "ready_commands_push",
             ],
             stages: STAGES
                 .iter()
@@ -378,7 +392,7 @@ pub struct OwnerAuditSnapshot {
     pub elapsed_ns: u64,
     pub active_stage: Option<&'static str>,
     pub scope: &'static str,
-    pub exclusive_owner_turn_stages: [&'static str; 9],
+    pub exclusive_owner_turn_stages: [&'static str; 11],
     pub stages: Vec<StageSnapshot>,
     pub counters: Vec<CounterSnapshot>,
 }
