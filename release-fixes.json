@@ -4849,6 +4849,17 @@
       "category": "Fixed",
       "release_note": "Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).",
       "validation": "Round trip of every reader at every version; Rust/Python executors agree on 297 streams."
+    },
+    {
+      "id": "uvi-ui-inventory-iteration",
+      "summary": "Avoid repeated per-entry Lua iterator guards during complete UVI UI inventory export",
+      "source_commits": [
+        "057d6f1cda5e5469a672a64e70f19f2d550aa305"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Full UVI UI inventory exports use a faster iterator while retaining the complete authored model.",
+      "validation": "48 complete synthetic models agree; full geometry and exact Bitmap/Vector PNG oracle passes; ordinary UVI163 and scan173 tests pass; integrated 0.3.477 root785 passed/53 ignored. Paired typical synthetic export caller CPU improves18\u201320%; no universal real-bank speed or native parity claim."
     }
   ]
 }
