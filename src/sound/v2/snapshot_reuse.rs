@@ -4,7 +4,7 @@
 use super::*;
 use crate::sound::resource_revision::ResourceRevision;
 use sampler_ksp::setup::{
-    SetupIdentity, SnapshotSavedLimits, SnapshotSavedSlot, snapshot_policy, snapshot_saved_state,
+    SetupIdentity, SnapshotSavedLimits, SnapshotSavedSlot, snapshot_policy, snapshot_saved_state_with_menus,
 };
 pub(crate) mod admission;
 
@@ -42,6 +42,7 @@ pub(crate) struct Descriptor {
 
 pub(crate) struct Ready {
     pub state: sampler_core::ScriptStateBuffer,
+    pub menus: Box<[sampler_core::SnapshotMenuPosition]>,
     pub mode: sampler_ksp::model::SnapshotMode,
 }
 
@@ -203,7 +204,7 @@ impl Descriptor {
             })
             .collect::<Result<_, Refusal>>()?;
         report.saved_schema();
-        let state = snapshot_saved_state(
+        let mapped = snapshot_saved_state_with_menus(
             views,
             &incoming,
             SnapshotSavedLimits {
@@ -222,7 +223,7 @@ impl Descriptor {
                 _ => Refusal::SavedState,
             }
         })?;
-        report.prepared(&state);
+        report.prepared(&mapped.state, mapped.menus.len());
         // Revalidate after all file reads. No candidate acquires live ownership
         // if the base/resource authority changed while it was being prepared.
         report.authority_check(admission::Stage::AuthorityAfterRead);
@@ -231,7 +232,8 @@ impl Descriptor {
         }
         report.at(admission::Stage::Prepared);
         Ok(Ready {
-            state,
+            state: mapped.state,
+            menus: mapped.menus,
             mode: self.mode,
         })
     }
@@ -241,11 +243,13 @@ impl ControlIngress {
     pub(crate) fn submit_snapshot_overlay(
         &mut self,
         state: sampler_core::ScriptStateBuffer,
+        menus: Box<[sampler_core::SnapshotMenuPosition]>,
         epochs: Box<[sampler_core::SnapshotOverlayEpoch]>,
     ) -> Result<u64, Refusal> {
         let mut overlay =
             sampler_core::NativeSnapshotOverlay::linearized(self.plan, state, Box::new([]));
         overlay.epochs = epochs;
+        overlay.menus = menus;
         self.client
             .submit(sampler_core::ControlRequest {
                 plan: self.plan,

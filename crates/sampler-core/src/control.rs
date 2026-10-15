@@ -2,6 +2,8 @@
 //! have one audio-side writer and are captured into caller-owned storage.
 mod script_state;
 mod snapshot_overlay;
+pub(crate) mod snapshot_menu;
+pub use snapshot_menu::{SnapshotMenuPosition, WidgetMenuStorage};
 mod snapshot_program;
 pub(crate) use snapshot_program::snapshot_callback_safe;
 pub use snapshot_overlay::{

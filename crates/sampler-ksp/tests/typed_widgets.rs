@@ -229,6 +229,7 @@ fn typed_toggle_preserves_native_domain_validation() {
         .unwrap()
         .with_widgets(vec![WidgetDefinition {
             drop: None,
+            menu: None,
             id,
             source_slot: 0,
             ui_id: 1,
