@@ -137,6 +137,13 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// O(1) readiness of finite startup admissions, without advancing callbacks
+    /// or scanning sample residency. Live authored waits remain separate.
+    pub fn startup_work_pending(&self,plan:crate::PlanId)->Result<bool,Error> {
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok(generation.start_cursor < generation.prepared.plan_programs.len()
+            || generation.initial_residency.pending()!=0)
+    }
     /// Admission is atomic for an emitted message's immediate fanout. No heap
     /// queue: each admitted receiver owns its payload in the bounded callback
     /// arena and is scheduled by the existing explicit dispatch stack.
@@ -284,20 +291,17 @@ impl Runtime {
         Ok(())
     }
 
-    /// Start the active plan's plan programs once. Full callback capacity or
-    /// no performance skips them.
+    /// Start in retained order. Full capacity keeps the next start for a later
+    /// boundary rather than silently losing persistence/listener callbacks.
     pub(super) fn start_plan_programs(&mut self) {
         self.start_midi_jobs(self.active_plan);
-        if self.started_plan == Some(self.active_plan) {
-            return;
-        }
-        self.started_plan = Some(self.active_plan);
         if self.performance_state.current.is_empty() {
             return;
         }
         let plan = self.active_plan;
         let count = self.plans.get(plan.0).unwrap().prepared.plan_programs.len();
-        for i in 0..count {
+        while self.plans.get(plan.0).unwrap().start_cursor < count {
+            let i=self.plans.get(plan.0).unwrap().start_cursor;
             let p = self.plans.get(plan.0).unwrap().prepared.plan_programs[i];
             let context = PlanContext::Control(crate::control::ControlEvent {
                 performance: 0,
@@ -311,7 +315,9 @@ impl Runtime {
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
-            let _ = self.start_plan_context(plan, p.program, context);
+            if self.start_plan_context(plan,p.program,context).is_err() {break;}
+            self.plans.get_mut(plan.0).unwrap().start_cursor+=1;
         }
+        if self.plans.get(plan.0).unwrap().start_cursor == count {self.started_plan=Some(plan);}
     }
 }

@@ -12,6 +12,8 @@ use std::sync::{
 };
 
 const JOBS: usize = 1024;
+pub(super) mod startup;
+pub use startup::InitialGroupResidency;
 
 /// First request-admission refusal retained by one residency owner. Invalid or
 /// foreign plan handles cannot be attributed to an owner and do not alter it.
@@ -51,6 +53,9 @@ pub struct ResidencyProgress {
     pub worker_ready: usize,
     /// All accepted slots not yet consumed by the audio owner.
     pub pending: usize,
+    /// Generation-owned startup completions awaiting callback admission.
+    /// Physical work was completed off audio before this generation published.
+    pub startup_completions_pending: usize,
     pub accepted: u64,
     pub consumed: u64,
     /// Current-revision successful completions admitted on audio, purge included.
@@ -562,14 +567,16 @@ impl Runtime {
     /// advance work. Worker phase counts may change while they are observed.
     pub fn residency_progress(&self, plan: crate::PlanId) -> Result<ResidencyProgress, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        Ok(generation.prepared.residency.as_ref().map_or_else(
+        let mut progress = generation.prepared.residency.as_ref().map_or_else(
             || ResidencyProgress {
                 groups_total: generation.prepared.group_count,
                 groups_loaded: generation.prepared.group_count,
                 ..Default::default()
             },
             Residency::progress,
-        ))
+        );
+        progress.startup_completions_pending = generation.initial_residency.pending();
+        Ok(progress)
     }
     /// Exact O(1), allocation-free group observation. Dense runtime group and
     /// retained physical source identity are reported separately; no fallback
@@ -624,6 +631,7 @@ impl Runtime {
                 continue;
             };
             let plan = crate::PlanId(self.plans.id(index));
+            self.service_initial_residency(plan)?;
             for _ in 0..JOBS {
                 let next = self
                     .plans
