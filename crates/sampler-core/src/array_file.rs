@@ -102,11 +102,18 @@ pub(crate) struct ArrayFileJob {
     pub array: ArrayFileArray,
     pub path: Text,
     pub write: bool,
-    pub payload: ArrayFilePayload,
+    /// Only writes lease request-time snapshots; reads own metadata alone.
+    snapshot: Option<usize>,
+}
+#[derive(Debug)]
+struct ArrayFileSnapshot {
+    leased: bool,
+    payload: ArrayFilePayload,
 }
 #[derive(Debug, Default)]
 pub(crate) struct ArrayFileState {
     pub jobs: Vec<ArrayFileJob>,
+    snapshots: Vec<ArrayFileSnapshot>,
 }
 impl ArrayFileState {
     fn snapshot_jobs(numbers: usize, texts: usize) -> Result<usize, Error> {
@@ -138,19 +145,33 @@ impl ArrayFileState {
         Ok((numbers, texts, Self::snapshot_jobs(numbers, texts)?))
     }
     pub fn prepared(arrays: &[ArrayFileArray]) -> Self {
-        let (numbers, texts, jobs) = Self::dimensions(arrays).unwrap_or_default();
+        let (numbers, texts, snapshots) = Self::dimensions(arrays).unwrap_or_default();
         Self {
             jobs: arrays.first().map_or_else(Vec::new, |array| {
-                (0..jobs)
+                (0..ARRAY_FILE_JOBS)
                     .map(|_| ArrayFileJob {
                         id: 0,
                         array: *array,
                         path: Text::default(),
                         write: false,
-                        payload: ArrayFilePayload::prepared(numbers, texts),
+                        snapshot: None,
                     })
                     .collect()
             }),
+            snapshots: (0..snapshots)
+                .map(|_| ArrayFileSnapshot {
+                    leased: false,
+                    payload: ArrayFilePayload::prepared(numbers, texts),
+                })
+                .collect(),
+        }
+    }
+    fn release_snapshot(&mut self, job: usize) {
+        if let Some(index) = self.jobs[job].snapshot.take() {
+            let snapshot = &mut self.snapshots[index];
+            debug_assert!(snapshot.leased);
+            snapshot.payload.clear();
+            snapshot.leased = false;
         }
     }
     pub fn cancel(&mut self) -> usize {
@@ -158,7 +179,11 @@ impl ArrayFileState {
         for job in &mut self.jobs {
             count += usize::from(job.id != 0);
             job.id = 0;
-            job.payload.clear();
+            job.snapshot = None;
+        }
+        for snapshot in &mut self.snapshots {
+            snapshot.payload.clear();
+            snapshot.leased = false;
         }
         count
     }
@@ -218,18 +243,26 @@ mod tests {
             Ok((16000, 4000, slots))
         );
         let prepared = ArrayFileState::prepared(&arrays);
-        assert_eq!(prepared.jobs.len(), slots);
+        assert_eq!(prepared.jobs.len(), ARRAY_FILE_JOBS);
+        assert!(
+            prepared
+                .jobs
+                .iter()
+                .all(|j| j.id == 0 && j.snapshot.is_none())
+        );
+        assert_eq!(prepared.snapshots.len(), slots);
         let reserved: usize = prepared
-            .jobs
+            .snapshots
             .iter()
-            .map(|job| {
-                assert_eq!(job.id, 0);
-                assert!(job.payload.numbers.is_empty());
-                assert!(job.payload.texts.is_empty());
-                assert_eq!(job.payload.numbers.capacity(), 16000);
-                assert_eq!(job.payload.texts.capacity(), 4000);
-                job.payload.numbers.capacity() * std::mem::size_of::<i64>()
-                    + job.payload.texts.capacity() * std::mem::size_of::<Text>()
+            .map(|snapshot| {
+                assert!(!snapshot.leased);
+                let payload = &snapshot.payload;
+                assert!(payload.numbers.is_empty());
+                assert!(payload.texts.is_empty());
+                assert_eq!(payload.numbers.capacity(), 16000);
+                assert_eq!(payload.texts.capacity(), 4000);
+                payload.numbers.capacity() * std::mem::size_of::<i64>()
+                    + payload.texts.capacity() * std::mem::size_of::<Text>()
             })
             .sum();
         assert_eq!(reserved, slots * bytes);
@@ -514,39 +547,57 @@ impl crate::Runtime {
             .find(|a| a.key == key)
             .ok_or(Error::InvalidInput)?;
         let bank = &mut generation.scripts[instance.0 as usize];
-        let job = bank
+        let job_index = bank
             .array_files
             .jobs
-            .iter_mut()
-            .find(|j| j.id == 0)
+            .iter()
+            .position(|j| j.id == 0)
             .ok_or(Error::Capacity)?;
+        let snapshot_index = if write {
+            let index = bank
+                .array_files
+                .snapshots
+                .iter()
+                .position(|s| !s.leased)
+                .ok_or(Error::Capacity)?;
+            let payload = &bank.array_files.snapshots[index].payload;
+            if (if array.kind == ArrayFileKind::Text {
+                payload.texts.capacity()
+            } else {
+                payload.numbers.capacity()
+            }) < array.len as usize
+            {
+                return Err(Error::Capacity);
+            }
+            Some(index)
+        } else {
+            None
+        };
         let next = generation
             .midi_object
             .next_job
             .checked_add(1)
             .ok_or(Error::Capacity)?;
         let callbacks = generation.callbacks.checked_add(1).ok_or(Error::Capacity)?;
-        if write
-            && (if array.kind == ArrayFileKind::Text {
-                job.payload.texts.capacity()
-            } else {
-                job.payload.numbers.capacity()
-            }) < array.len as usize
-        {
-            return Err(Error::Capacity);
-        }
-        job.payload.clear();
-        if write {
+        if let Some(index) = snapshot_index {
+            let snapshot = &mut bank.array_files.snapshots[index];
+            snapshot.payload.clear();
             let range = array.offset as usize..(array.offset + array.len) as usize;
             if array.kind == ArrayFileKind::Text {
-                job.payload.texts.extend_from_slice(&bank.texts[range]);
+                snapshot.payload.texts.extend_from_slice(&bank.texts[range]);
             } else {
-                job.payload.numbers.extend_from_slice(&bank.cells[range]);
+                snapshot
+                    .payload
+                    .numbers
+                    .extend_from_slice(&bank.cells[range]);
             }
+            snapshot.leased = true;
         }
+        let job = &mut bank.array_files.jobs[job_index];
         job.array = array;
         job.path = path;
         job.write = write;
+        job.snapshot = snapshot_index;
         job.id = next;
         generation.midi_object.next_job = next;
         generation.callbacks = callbacks;
@@ -588,7 +639,18 @@ impl crate::Runtime {
         {
             return Err(Error::InvalidInput);
         }
-        output.payload.copy(&job.payload)?;
+        if job.write {
+            let index = job.snapshot.ok_or(Error::InvalidInput)?;
+            let snapshot = &generation.scripts[output.instance.0 as usize]
+                .array_files
+                .snapshots[index];
+            if !snapshot.leased {
+                return Err(Error::InvalidInput);
+            }
+            output.payload.copy(&snapshot.payload)?;
+        } else {
+            output.payload.clear();
+        }
         output.array = job.array;
         output.path = job.path;
         output.write = job.write;
@@ -639,8 +701,8 @@ impl crate::Runtime {
                 generation.script_revision = generation.script_revision.wrapping_add(1);
             }
         }
+        bank.array_files.release_snapshot(index);
         bank.array_files.jobs[index].id = 0;
-        bank.array_files.jobs[index].payload.clear();
         generation.callbacks -= 1;
         self.finish_async_callback(plan, output.job, output.success, callback)
     }
