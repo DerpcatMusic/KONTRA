@@ -37,8 +37,55 @@ Rejected UI replies now record operation kind, plan identity, expected revision,
 edit count, first widget identity/index and behavior identity. Control values,
 text and paths are excluded. This supplies context for future occurrences;
 the six older `Capacity` replies cannot be retroactively classified.
+Widget identities use exact `0x`-prefixed 32-digit hexadecimal strings. JSON
+numbers cannot represent all authored 128-bit identities; the maximum-width
+regression prevents diagnostic formatting from panicking on rejected edits.
+
+Failure replies now also carry bounded callback-arena evidence captured at the
+actual failed admission: capacity, reservations, queue/outbox occupancy, a scan
+of at most 4,096 occupied callbacks and at most eight numeric owner samples.
+Truncation is explicit. The audio-side capture allocates nothing; JSON formatting
+runs after handoff. Pure input validation precedes capacity preflight, so a full
+arena no longer masks an independently invalid type, range or revision.
+
+An authored normal-limit test disproved autonomous timer accumulation: one
+blocked listener and its driver retain two callbacks. Another 127 independently
+admitted UI callbacks can fill the 129-slot arena during an effect-drain gap.
+Eight bounded drains recover that fixture; servicing 16 effects per block across
+1,000 gestures avoids rejection. This establishes a general backpressure case,
+not the occupants behind the six historical failures.
+
+## Host service during preparation
+
+The serialized loader previously serviced committed script effects and control
+replies once before waiting for private preparation. Long preparation therefore
+delayed the next background service pass. Preparation already has a dedicated
+worker; its waiting caller now services those existing owners on a 20 ms polling
+schedule. Continuous progress messages also check the deadline. Cancellation
+continues servicing until the worker closes its channel and is joined.
+
+One effect pass consumes only its initial queue length, preserving FIFO order
+while leaving new producer work for the next pass. Publication still checks the
+committed generation. No candidate is installed by this service routine. UVI
+publication retains its existing path and lock policy. The polling period is
+not a latency guarantee: existing effect/model work may take longer.
+
+This keeps the old owner moving during preparation; it does not preserve its
+runtime across a successful full replacement. Snapshot mode 1 still requires a
+complete setup-state contract, including private/UI/PGS state and safe event
+identity handling. Skipping initialization or restoring persistent controls
+alone is insufficient.
 
 ## Verification
+
+The integrated root library suite subsequently passed 711 tests with 34 ignored
+and zero failures. Its retained-owner fixture uses real queued controls, callback
+effects and held PCM while a worker cannot finish until service advances. The
+suite also checks failed/canceled replacement and stale-owner commands. Exact
+source, binary and log hashes are recorded privately in
+`PluginArtifacts/kontra-diagnostic-fixes/load-service-integration-receipt-20261015.json`.
+This is root-library coverage, not a new installed release or complete corpus
+and native parity validation.
 
 The frozen CI test executable SHA-256
 `3b32b2312637a718bcebffb1b59c92a6eb1927c0814cadb446fac241aa9a7fde`
