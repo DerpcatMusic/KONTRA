@@ -16,6 +16,11 @@ TARGET = 'wasm32-unknown-emscripten'
 def build(output, profile='ci'):
     if not shutil.which('emcc'):
         raise SystemExit('Emscripten is required. Activate emsdk 6.0.12 and install the Rust wasm32-unknown-emscripten target.')
+    if output == ROOT or output.is_relative_to(ROOT / 'website'):
+        raise ValueError('Build into a separate output directory, not the source tree')
+    compiler = subprocess.check_output(['emcc', '--version'], text=True).splitlines()[0]
+    if not re.search(r'\b6\.0\.12\b', compiler):
+        raise SystemExit(f'Expected Emscripten 6.0.12; found {compiler}')
     output.mkdir(parents=True, exist_ok=True)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     env = dict(os.environ, KONTRA_WEB_REVISION=revision)
