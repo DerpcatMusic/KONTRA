@@ -167,6 +167,7 @@
   .stage span {
     color: var(--muted);
   }
+  .stage span.failed,
   .failed,
   .Fault,
   .Unsupported,
@@ -654,12 +655,12 @@
     root.replaceChildren();
     add(
       root,
-      node("div", r.item.path, "path"),
+      r.browser_engine ? null : node("div", r.item.path, "path"),
       node(
         "p",
-        `${r.item.kind} · ${
-          r.mode?.initialize ? "Initialization requested" : "Static inspection"
-        } · ${r.status || "unknown"}`,
+        r.browser_engine
+          ? `${({kontakt:"Kontakt instrument", "kontakt-multi":"Kontakt multi", "kontakt-snapshot":"Kontakt snapshot", "uvi-loose":"UVI program", "uvi-bank":"UVI bank"})[r.item.kind] || r.item.kind} · ${r.status || "unknown"}`
+          : `${r.item.kind} · ${r.mode?.initialize ? "Initialization requested" : "Static inspection"} · ${r.status || "unknown"}`,
         "muted",
       ),
     );
@@ -668,7 +669,7 @@
       const d = node("div", undefined, "stage");
       add(
         d,
-        node("b", s.name),
+        node("b", ({container:"Container", source_frontend:"Scripts", translate:"Conversion", initialize:"Initialization", ui_projection:"UI model", runtime:"Runtime", audio:"Audio", ui_render:"UI renderer"})[s.name] || s.name.replaceAll("_", " ")),
         node("span", s.status, s.status === "failed" ? "failed" : ""),
       );
       d.title = s.scope || "";
@@ -676,17 +677,9 @@
     }
     root.append(stages);
     const e = r.evidence || {};
-    root.append(
-      node(
-        "p",
-        `Runtime: ${e.runtime || "not recorded"} · Audio: ${
-          e.audio || "not recorded"
-        } · Native equivalence: ${
-          e.native_equivalence || "unknown"
-        }. Binding availability is not proof that a source line executed.`,
-        "scope",
-      ),
-    );
+    const scope = node("p", `Runtime: ${e.runtime || "not recorded"} · Audio: ${e.audio || "not recorded"} · Native equivalence: ${e.native_equivalence || "unknown"}. Binding availability is not proof that a source line executed.`, "scope");
+    if (r.browser_engine) root.append(add(node("details"), node("summary", "Evidence scope"), scope));
+    else root.append(scope);
     const tabs = node("div", undefined, "tabs");
     tabs.setAttribute("role", "tablist");
     const entries = [
@@ -740,7 +733,17 @@
       timings: renderTimings,
       metadata: renderMetadata,
     }[state.tab] || renderProblems)(content, r);
+    requestAnimationFrame(keepCurrentTabVisible);
   }
+  function keepCurrentTabVisible() {
+    const active = document.querySelector('.tabs [aria-selected="true"]');
+    if (!active) return;
+    const tabs = active.parentElement;
+    const control = active.getBoundingClientRect(), viewport = tabs.getBoundingClientRect();
+    if (control.left < viewport.left) tabs.scrollLeft -= viewport.left - control.left;
+    else if (control.right > viewport.right) tabs.scrollLeft += control.right - viewport.right;
+  }
+  window.addEventListener('resize', keepCurrentTabVisible);
   function renderProblems(root, r) {
     const filters = node("div", undefined, "filters"), query = node("input");
     query.type = "search";
@@ -1113,6 +1116,8 @@
   }
   function renderUi(root, r) {
     const u = r.ui || {};
+    if (r.browser_engine) root.append(node("p", `UI model: ${u.status || "not evaluated"}. Live callbacks and gestures are untested.`, "notice"));
+    else {
     add(
       root,
       node(
@@ -1127,6 +1132,7 @@
         "notice",
       ),
     );
+    }
     const lifecycle = r.evidence?.ui_lifecycle;
     if (lifecycle) {
       const pending = lifecycle.callback_progress?.pending_plan_callbacks;
@@ -1194,7 +1200,8 @@
     overlay.checked = state.uiOverlay;
     overlay.disabled = !asArray(native.shots).length;
     const overlayLabel = add(node("label", undefined, "inspect-label"), overlay, node("span", native.native_ui ? "Element bounds" : "Widget bounds"));
-    add(controls, chooseFace, choosePage, chooseMode, overlayLabel);
+    add(controls, chooseFace, choosePage);
+    if (asArray(native.shots).length) add(controls, chooseMode, overlayLabel);
     root.append(controls);
     chooseFace.onchange = () => { state.uiFace = Number(chooseFace.value); state.uiPage = 0; state.uiWidget = null; render(); };
     choosePage.onchange = () => { state.uiPage = Number(choosePage.value); state.uiWidget = null; render(); };
