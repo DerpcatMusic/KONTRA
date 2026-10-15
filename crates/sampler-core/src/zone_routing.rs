@@ -1171,6 +1171,9 @@ impl From<Error> for ZoneRoutingBuildError {
 
 // Child of prepare.rs to share the ordinary immutable Candidate/region law.
 impl super::Prepared {
+    /// Install native zone-command identities and authored homes in physical order.
+    /// Metadata-only rows remain readable without an admitted playable region.
+    /// This catalog is independent of the event IDs installed by `with_source_zones`.
     pub fn with_source_zone_identities(
         mut self,
         rows: Vec<SourceZoneIdentity>,
