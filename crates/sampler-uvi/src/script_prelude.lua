@@ -239,6 +239,7 @@ widget = function(kind, ...)
     interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then
+    d.drawInnerEdge = true
     d.length,d.value,d.min,d.max,d.integer = value or 0,0,args[4] or 0,args[5] or 1,args[6]==true
     d.default = args[3] or 0
     d.values = {}; for i=1,d.length do d.values[i] = args[3] or 0 end

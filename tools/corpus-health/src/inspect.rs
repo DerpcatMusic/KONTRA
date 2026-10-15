@@ -418,6 +418,10 @@ fn widget_record(face: &sampler_ui_ir::Interface, n: usize, w: &sampler_ui_ir::W
     let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
     let mut record = json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"uvi_meter_request":w.uvi_meter_request.map(|meter|json!({"element_id":meter.element_id,"element_node":meter.element_node,"scope":format!("{:?}",meter.scope),"bus_id":meter.bus_id,"use_output":meter.use_output,"display_as_mono":meter.display_as_mono})),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()});
     record["menu_hierarchy"] = w.menu_hierarchy.as_deref().map_or(Value::Null, menu_nodes);
+    record["table_inner_edge"] = json!(w.table_inner_edge.map(|edge| json!({
+        "visible": edge.visible,
+        "color": edge.color.map(|color| [color.r, color.g, color.b, color.a]),
+    })));
     // KSP publishes current scalar state in Widget.value. initial_value is the
     // constructor seed and is not its menu selection after persistence/activation.
     let scalar = match w.value.as_ref() {
@@ -1809,6 +1813,18 @@ pub(super) fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_inner_edge_report_preserves_authored_visibility_and_argb() {
+        let xml = include_str!("../../../crates/sampler-uvi/tests/fixtures/table_inner_edge.uvip")
+            .replace("innerEdgeColour='red'", "drawInnerEdge=false; bars.innerEdgeColour='#8011cc33'");
+        let host = sampler_uvi::script::ScriptHost::new(&xml, (), Default::default()).unwrap();
+        let face = host.interface();
+        assert!(face.unsupported.is_empty(), "{:?}", face.unsupported);
+        let record = widget_record(&face, 0, &face.widgets[0]);
+        assert_eq!(record["table_inner_edge"], json!({"visible":false,"color":[17,204,51,128]}));
+        assert!(widget_record(&face, 1, &face.widgets[1])["table_inner_edge"].is_null());
+    }
 
     #[test]
     fn menu_tree_report_keeps_original_item_indices() {

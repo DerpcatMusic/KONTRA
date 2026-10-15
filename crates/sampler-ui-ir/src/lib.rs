@@ -151,6 +151,8 @@ pub struct Widget {
     pub drag: Option<Drag>,
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
+    /// Authored separation between table bars. Unset preserves the stock drawing.
+    pub table_inner_edge: Option<TableInnerEdge>,
     pub style: Option<StyleRef>,
     /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
     pub state_styles: [Option<StyleRef>; 6],
@@ -214,6 +216,7 @@ impl Widget {
             automation: Automation::default(),
             drag: None,
             colors: Colors::default(),
+            table_inner_edge: None,
             style: None,
             state_styles: [None; 6],
             images: Vec::new(),
@@ -374,6 +377,13 @@ pub struct Colors {
     pub wave: Option<Rgba>,
     pub wave_cursor: Option<Rgba>,
     pub slice_markers: Option<Rgba>,
+}
+
+/// Table separator policy. An unknown native default colour remains unset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableInnerEdge {
+    pub visible: bool,
+    pub color: Option<Rgba>,
 }
 
 /// Parts of a control hidden individually (KSP `HIDE_PART_*`).
