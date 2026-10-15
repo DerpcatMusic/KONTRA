@@ -198,6 +198,64 @@ fn process_ui_requests(
     }
 }
 
+/// A whole already-generated safe batch may reach audio before UI conversion.
+/// Never wait here: a full/partly free queue must not prevent UI publication.
+fn send_ready_commands(
+    host: &mut ScriptHost,
+    outgoing: &mut rtrb::Producer<Outgoing>,
+    ui: &UiBridge,
+    backlog: &mut Vec<Command>,
+) {
+    if !backlog.is_empty() {
+        return;
+    }
+    let batch = {
+        #[cfg(feature = "scan")]
+        let _span = host.owner_span(OwnerStage::ReadyCommandsCollect);
+        host.take_ready_command_batch(outgoing.slots().min(QUEUE))
+    };
+    if batch.is_empty() {
+        return;
+    }
+    if let Some(progress) = ui.diagnostics.get() {
+        progress.collected.fetch_add(batch.len() as u64, Ordering::Release);
+    }
+    #[cfg(feature = "scan")]
+    {
+        host.owner_count(OwnerCounter::CommandsCollected, batch.len());
+        host.owner_count(OwnerCounter::ReadyCommandsCollected, batch.len());
+        if let Some(audit) = host.owner_audit() {
+            audit.max(OwnerCounter::BacklogHighWater, batch.len());
+        }
+    }
+    ui.diagnostic_phase(DiagnosticPhase::Commands);
+    #[cfg(feature = "scan")]
+    let _span = host.owner_span(OwnerStage::ReadyCommandsPush);
+    let mut batch = batch.into_iter();
+    while let Some(command) = batch.next() {
+        match outgoing.push(Outgoing::Command(command)) {
+            Ok(()) => {
+                if let Some(progress) = ui.diagnostics.get() {
+                    progress.pushed.fetch_add(1, Ordering::Release);
+                }
+                #[cfg(feature = "scan")]
+                {
+                    host.owner_count(OwnerCounter::CommandsPushed, 1);
+                    host.owner_count(OwnerCounter::ReadyCommandsPushed, 1);
+                }
+            }
+            Err(rtrb::PushError::Full(Outgoing::Command(command))) => {
+                // SPSC free space cannot shrink while this producer pushes
+                // the admitted batch. Retain FIFO even if that API changes.
+                backlog.push(command);
+                backlog.extend(batch);
+                break;
+            }
+            Err(rtrb::PushError::Full(Outgoing::Diagnostic(_))) => unreachable!(),
+        }
+    }
+}
+
 impl ScriptThread {
     /// Load the scripts of program `xml` on a new thread; returns once they
     /// have loaded (their `onInit` has run).
@@ -331,6 +389,12 @@ impl ScriptThread {
                         }
                         #[cfg(not(feature = "scan"))]
                         host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
+                        #[cfg(feature = "scan")]
+                        if !audit {
+                            send_ready_commands(&mut host, &mut outgoing, &ui, &mut backlog);
+                        }
+                        #[cfg(not(feature = "scan"))]
+                        send_ready_commands(&mut host, &mut outgoing, &ui, &mut backlog);
                         #[cfg(feature = "scan")]
                         host.owner_phase(OwnerPhase::Publish);
                         let current = host.ui_revision();
@@ -870,3 +934,5 @@ impl UiBridge {
 mod owner_audit_tests;
 #[cfg(test)]
 mod diagnostic_tests;
+#[cfg(test)]
+mod ready_batch_tests;

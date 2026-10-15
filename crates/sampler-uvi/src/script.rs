@@ -637,6 +637,9 @@ struct Shared {
     script_bytes: Cell<usize>,
     current: Cell<Option<u64>>,
     commands: RefCell<Vec<Command>>,
+    // A batch sent before UI export stays charged until the ordinary collector
+    // has rebuilt stale impulses, preserving the authored queue admission limit.
+    ready_command_charge: Cell<usize>,
     findings: RefCell<BTreeMap<(String, Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
@@ -1000,7 +1003,7 @@ impl Shared {
 
     fn command(&self, command: Command) -> bool {
         let mut commands = self.commands.borrow_mut();
-        if commands.len() < 1 << 16 {
+        if self.command_count(commands.len()) < 1 << 16 {
             commands.push(command);
             true
         } else {
@@ -1008,6 +1011,10 @@ impl Shared {
             self.find("command queue full, commands dropped", "");
             false
         }
+    }
+
+    fn command_count(&self, queued: usize) -> usize {
+        queued.saturating_add(self.ready_command_charge.get())
     }
 }
 
@@ -1439,6 +1446,7 @@ impl ScriptHost {
             script_bytes: Cell::new(PRELUDE.len()),
             current: Cell::new(None),
             commands: RefCell::new(Vec::new()),
+            ready_command_charge: Cell::new(0),
             findings: RefCell::new(BTreeMap::new()),
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
@@ -2162,7 +2170,7 @@ impl ScriptHost {
                 // full queue refused stays refused.
                 if applied != Some(true)
                     && s.initializing.get()
-                    && s.commands.borrow().len() < 1 << 16
+                    && s.command_count(s.commands.borrow().len()) < 1 << 16
                     && let Some(v) = written
                     && s.fold(id, &field, v)
                 {
@@ -3199,7 +3207,34 @@ impl ScriptHost {
 
     pub fn take_commands(&mut self) -> Vec<Command> {
         self.shared.rebuild_stale_impulses();
-        std::mem::take(&mut *self.shared.commands.borrow_mut())
+        let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
+        self.shared.ready_command_charge.set(0);
+        commands
+    }
+
+    /// Transfer a whole already-generated safe batch before an expensive UI
+    /// snapshot. This never executes Lua, rebuilds impulses or splits a batch.
+    /// The ordinary collector still owns every unsafe or non-fitting batch.
+    pub(crate) fn take_ready_command_batch(&self, free: usize) -> Vec<Command> {
+        if self.shared.ready_command_charge.get() != 0
+            || !self.shared.stale_impulses.borrow().is_empty()
+        {
+            return Vec::new();
+        }
+        let mut commands = self.shared.commands.borrow_mut();
+        if commands.is_empty() || commands.len() > free.min(1024) {
+            return Vec::new();
+        }
+        if !commands.iter().all(|command| matches!(command,
+            Command::Play(_) | Command::Release { .. } | Command::Modulation { .. }
+            | Command::Change { .. } | Command::Fade { .. } | Command::Midi(_)
+            | Command::Parameter { .. }
+        )) {
+            return Vec::new();
+        }
+        let batch = std::mem::take(&mut *commands);
+        self.shared.ready_command_charge.set(batch.len());
+        batch
     }
 
     /// The earliest time a waiting thread resumes, if any.
@@ -3937,3 +3972,7 @@ end
         assert!(matches!(&c[0], Command::Play(p) if p.key == 1));
     }
 }
+
+#[cfg(test)]
+#[path = "script/ready_command_tests.rs"]
+mod ready_command_tests;

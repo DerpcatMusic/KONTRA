@@ -223,14 +223,15 @@ mod tests {
 
     #[test]
     fn authored_bypass_and_unsupported_slots_are_retained() {
-        let text = r#"<Program><Inserts><Gain Volume="1"/><SparkVerb/><Gain Bypass="1"/></Inserts><ControlSignalSources><ConstantModulation Name="unused"/></ControlSignalSources></Program>"#;
+        let text = r#"<Program><Inserts><Gain Volume="1"/><SparkVerb/><UnmodeledFixtureInsert/><Gain Bypass="1"/></Inserts><ControlSignalSources><ConstantModulation Name="unused"/></ControlSignalSources></Program>"#;
         let (ir, ..) = super::super::translate_full(text, super::super::Source::Bank).unwrap();
         let rows = ir.dsp_slots.unwrap();
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows[1].disposition, D::Dropped(R::NotModeled));
-        assert_eq!(rows[2].slot, 2);
-        assert!(!rows[2].enabled);
-        assert_eq!(rows[3].disposition, D::Implemented);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[1].disposition, D::Approximated(R::NativeLawUnverified));
+        assert_eq!(rows[2].disposition, D::Dropped(R::NotModeled));
+        assert_eq!(rows[3].slot, 3);
+        assert!(!rows[3].enabled);
+        assert_eq!(rows[4].disposition, D::Implemented);
     }
 }
 
