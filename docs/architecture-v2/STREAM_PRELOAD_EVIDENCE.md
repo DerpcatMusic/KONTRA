@@ -53,6 +53,22 @@ Two hypotheses remain unpromoted:
 
 No production scheduling or onset-holding change is justified solely by these two contended receipts. Exact source-start/pitch metadata, worker ordering oracles, independent fresh-owner repeats and boundary tests are needed before promotion.
 
+## Effective onset and codec metadata follow-up
+
+Source-bound, initialization-free metadata for the exact eight Harmonics zones identifies a Constant SampleStart route with depth 0.0041315858 and start range 180,479 frames. The current voice-start law truncates its offset to 745 source frames. Group tuning is approximately one octave, which consumes the resident remainder faster than unity playback. This is distinct from the helper's zero script-offset-microseconds field. It explains why covering the authored base onset alone does not prove an effective-onset runway; the exact live cursor observations remain the stronger runtime evidence.
+
+`Prepared::constant_start_offset(region)` now exposes a control-only proof through the same route accumulation consumed by actual voice starts. Any dependent SampleStart source or depth scale returns `None`, even at saved zero depth. Unrelated routes do not defeat the proof. This preserves the current runtime law; it does not establish new Kontakt-native SampleStart calibration or admit previously rejected native intensity laws.
+
+The opt-in geometry record adds `constant_onset_hints`: non-loop effective windows, their merged union with original base attacks, physical-asset deduplication, dependent/omitted-loop counts and two/eight-byte payload bounds. Bounds are clipped to the authored source view; offsets past its end are silent. Looped and wavetable hint geometry is explicitly omitted rather than replaced by a linear guess. This checkpoint changes neither preload selection nor onset timing. The actual Harmonics hint-union/quota receipt is still pending; no hint-readiness or fault-elimination claim follows from the query.
+
+Optimized `ci` validation passed three new actual-start/PCM query oracles, 24 existing modulation cases (one ignored), and two geometry/cancellation cases. Coverage includes host partitions 1/7/64/137, dependent zero-depth sources/scales, fractional truncation, current native metadata law, reverse/high-step bounds, distinct asset revisions and shared aliases. Failed first fixtures (zero allocated voice slots and an extra non-required reverse guard) remain in private logs with their corrections. `constant-start-query-test-manifest-final.json` records source and executed-binary hashes.
+
+The existing validated numeric header cache classifies all 23,595 Analog sources as member ranges in ten NKX archives, with retained file handles. Consequently the worker's measured `open_us` includes snapshot validation, buffered sniff/refill, codec/header/index parsing and scheduling; it is not an operating-system `File::open` measurement. The library volume is on an NVMe SSD, but the contended wall/CPU difference does not isolate physical I/O.
+
+A full NCW-index cache is not free: the numeric frame counts imply 12,255,356 512-frame blocks, or 49,021,424 bytes of tight u32 offsets, before headers, ownership and cache capacity. Codec identity is absent from that numeric cache, so this is an **all-NCW hypothesis envelope**, not a measured NCW total. The existing parser validates and discards a terminal sentinel. Revision-bound immutable layout/index reuse, or smaller validated index windows around attacks, remains a proposal requiring a declared metadata quota, independent mutable decoder state, unchanged identity checks, exact decode oracles and measured benefit.
+
+One approved compiler-free fresh-owner attempt aborted **before loading** because a Cargo/rustc process was present. It created no cache and produced no new audio receipt. Future probes explicitly use a dev-drive `XDG_CACHE_HOME`; earlier receipts retain their original cache provenance and the user's cache is untouched.
+
 ## Counter and verification scope
 
 `05d7aa846` adds O(1) branch-local voice-slot refusals and waiting-voice replacements while preserving the aggregate drop counter. Streaming-credit refusal can increment the aggregate without exhausting physical voice slots. Three admission oracles passed with a heap guard, including failed stream admission preserving an existing waiting voice.

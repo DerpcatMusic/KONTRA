@@ -617,17 +617,140 @@ fn bounded_attack_anchors(
 
 /// Opt-in control-side evidence only. The counterfactual removes static start
 /// modulation coverage to attribute demand; it never changes published ranges.
+/// A control-side, non-looping effective onset window. The offset is already
+/// evaluated by the prepared voice consumer; this only clips physical reads.
+/// Offset-past-view voices are silent, not reads beyond the authored end.
+fn constant_start_window(
+    playback: &ir::Playback,
+    length: usize,
+    offset: u32,
+    step: f64,
+    head: usize,
+) -> Option<Range<usize>> {
+    let end = playback.end.unwrap_or(length as u64).min(length as u64);
+    let start = playback.start.min(end);
+    let offset = u64::from(offset);
+    if offset >= end - start {
+        return None;
+    }
+    let guard = sampler_core::read_radius(step) as u64 + 1;
+    let travel = (head as f64 * step).ceil() as u64;
+    let (from, to) = if playback.reverse {
+        let edge = end - offset;
+        (edge.saturating_sub(travel).saturating_sub(guard).max(start), edge.saturating_add(guard).min(end))
+    } else {
+        let edge = start + offset;
+        (edge.saturating_sub(guard).max(start), edge.saturating_add(travel).saturating_add(guard).min(end))
+    };
+    (from < to).then_some(from as usize..to as usize)
+}
+
+fn merge_start_ranges(ranges: &mut Vec<Range<usize>>) {
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut len = 0;
+    for i in 0..ranges.len() {
+        if len != 0 && ranges[i].start <= ranges[len - 1].end {
+            ranges[len - 1].end = ranges[len - 1].end.max(ranges[i].end);
+        } else {
+            ranges[len] = ranges[i].clone();
+            len += 1;
+        }
+    }
+    ranges.truncate(len);
+}
+
+fn physical_start_ranges(assets: &[Pcm], ranges: &[Vec<Range<usize>>]) -> HashMap<AssetId, Vec<Range<usize>>> {
+    let mut physical = HashMap::<AssetId, Vec<Range<usize>>>::new();
+    for (pcm, ranges) in assets.iter().zip(ranges) {
+        physical.entry(pcm.asset_id()).or_default().extend(ranges.iter().cloned());
+    }
+    for ranges in physical.values_mut() { merge_start_ranges(ranges); }
+    physical
+}
+
+/// Numeric experiment only: does not alter requested heads or publication.
+/// Looped/wavetable geometry is explicitly excluded until a prepared-cursor
+/// visitor can prove it, rather than linearizing a native traversal.
+fn constant_start_geometry(
+    instrument: &ir::Instrument,
+    prepared: &sampler_core::Prepared,
+    assets: &[Pcm],
+    base: &[Vec<Range<usize>>],
+    pinned: &HashSet<AssetId>,
+    rate: u32,
+    head: usize,
+    policy: &StreamPolicy,
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> io::Result<serde_json::Value> {
+    let mut hints = vec![Vec::new(); assets.len()];
+    let (mut constant, mut zero, mut dependent, mut loops, mut wavetable, mut silent, mut eligible) = (0usize,0usize,0usize,0usize,0usize,0usize,0usize);
+    for (region, zone) in instrument.zones.iter().enumerate() {
+        if canceled() { return Err(canceled_head()); }
+        if !zone.routes.iter().any(|r| instrument.routes.get(r.0).is_some_and(|r| r.target == ir::Target::SampleStart)) { continue; }
+        let Some(offset) = prepared.constant_start_offset(region) else { dependent += 1; continue; };
+        constant += 1;
+        if offset == 0 { zero += 1; continue; }
+        let Some(asset) = zone.asset.map(|a| a.0) else { continue; };
+        if zone.group.is_some_and(|g| instrument.groups[g.0].wavetable.is_some()) { wavetable += 1; continue; }
+        if !matches!(zone.playback.looping, ir::Looping::None | ir::Looping::OneShot) { loops += 1; continue; }
+        let pcm = &assets[asset];
+        let step = zone_step(zone, &instrument.groups, f64::from(pcm.sample_rate()) / f64::from(rate), policy);
+        match constant_start_window(&zone.playback, pcm.frame_count(), offset, step, head) {
+            Some(range) => { eligible += 1; hints[asset].push(range); }
+            None => silent += 1,
+        }
+    }
+    let hints = physical_start_ranges(assets, &hints);
+    let mut combined = physical_start_ranges(assets, base);
+    let frame_count = |table: &HashMap<AssetId, Vec<Range<usize>>>| {
+        table.values().flatten().fold(0u64, |n,r| n.saturating_add(r.len() as u64))
+    };
+    let base_frames = frame_count(&combined);
+    let hint_frames = frame_count(&hints);
+    for (id, ranges) in &hints { combined.entry(*id).or_default().extend(ranges.iter().cloned()); }
+    for ranges in combined.values_mut() { merge_start_ranges(ranges); }
+    let combined_frames = frame_count(&combined);
+    let mut mandatory = 0u64;
+    let mut optional = 0u64;
+    let mut seen = HashSet::new();
+    for pcm in assets {
+        if !seen.insert(pcm.asset_id()) { continue; }
+        if pcm.requires_resident() {
+            mandatory = mandatory.saturating_add(pcm.frame_count() as u64 * size_of::<Frame>() as u64);
+        } else {
+            optional = optional.saturating_add(combined.get(&pcm.asset_id()).into_iter().flatten().map(|r| r.len() as u64).sum::<u64>());
+        }
+    }
+    if canceled() { return Err(canceled_head()); }
+    Ok(serde_json::json!({
+        "constant_offset_zones":constant,"zero_constant_offset_zones":zero,"dependent_offset_zones":dependent,
+        "nonloop_window_zones":eligible,"loop_geometry_omitted_zones":loops,"wavetable_geometry_omitted_zones":wavetable,
+        "silent_past_view_zones":silent,"hint_assets":hints.values().filter(|r| !r.is_empty()).count(),
+        "hint_ranges":hints.values().map(Vec::len).sum::<usize>(),"hint_source_frames":hint_frames,
+        "base_source_frames_physical_union":base_frames,"base_plus_hint_source_frames":combined_frames,
+        "hint_extra_source_frames":combined_frames.saturating_sub(base_frames),
+        "mandatory_full_decoded_bytes":mandatory,"base_plus_hint_optional_source_frames":optional,
+        "base_plus_hint_payload_lower_bytes":mandatory.saturating_add(optional.saturating_mul(2)),
+        "base_plus_hint_payload_upper_bytes":mandatory.saturating_add(optional.saturating_mul(size_of::<Frame>() as u64)),
+        "pinned_assets":pinned.len(),"preload_selection_unchanged":true,
+        "scope":"current prepared onset law; non-loop windows only; physical AssetId union; payload bounds exclude shared already-held quota and metadata; no admission or native-parity claim"
+    }))
+}
+
 fn audit_start_ranges(
     instrument: &ir::Instrument,
+    prepared: &sampler_core::Prepared,
     assets: &[Pcm],
     ranges: &[Vec<Range<usize>>],
     pinned: &HashSet<AssetId>,
     rate: u32,
     head: usize,
     policy: &StreamPolicy,
-) {
-    if std::env::var_os("KONTRA_AUDIT_LOAD").is_none() { return; }
+    canceled: &(dyn Fn() -> bool + Sync),
+) -> io::Result<()> {
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_none() { return Ok(()); }
     let base = start_ranges_with_offsets(instrument, assets, rate, head, policy, false);
+    let constant_hints = constant_start_geometry(instrument, prepared, assets, &base, pinned, rate, head, policy, canceled)?;
     let frames = |list: &[Range<usize>]| list.iter().map(|r| r.len() as u64).sum::<u64>();
     let mut full_assets = 0usize;
     let mut full_bytes = 0u64;
@@ -691,8 +814,10 @@ fn audit_start_ranges(
         "optional_start_frames":optional_frames,"optional_start_min_packed_bytes":optional_frames.saturating_mul(2),
         "offset_free_optional_start_frames":base_frames,"offset_free_optional_start_min_packed_bytes":base_frames.saturating_mul(2),
         "offset_union_extra_frames":optional_frames.saturating_sub(base_frames),"top_offset_assets":top,
-        "scope":"request geometry before decode/admission; offset-free is attribution only; no payload or source names"
+        "constant_onset_hints":constant_hints,
+        "scope":"request geometry before decode/admission; offset-free and constant hints are attribution only; no payload or source names"
     }));
+    Ok(())
 }
 
 // Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
@@ -2082,7 +2207,8 @@ impl Streamed {
             })
             .filter_map(|zone| zone.asset.map(|a| kept[a.0].asset_id()))
             .collect();
-        audit_start_ranges(&loaded.instrument, &kept, &ranges, &pinned_wavetables, rate, head, &policy);
+        audit_start_ranges(&loaded.instrument, &loaded.plan, &kept, &ranges, &pinned_wavetables, rate, head, &policy, canceled)
+            .map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
         let onsets = policy.allow_cold_fallback.then(||
             start_ranges_with_offsets(&loaded.instrument, &kept, rate, head, &policy, false));
         let anchor_pins=pinned_wavetables.clone();
@@ -2509,6 +2635,70 @@ mod tests {
                 assert!(assets.iter().all(|p|p.head_bytes()==0));
             }
         }
+    }
+
+    #[test]
+    fn constant_onset_windows_clip_reverse_fractional_guards_and_silent_offsets() {
+        for reverse in [false, true] {
+            for step in [0.25, 1., 1.78125, 16.] {
+                let playback = ir::Playback { start: 37, end: Some(150), reverse, ..Default::default() };
+                let radius = sampler_core::read_radius(step) as usize;
+                for head in [0, 1, 7, 1024] {
+                    let window = constant_start_window(&playback, 200, 10, step, head).unwrap();
+                    let onset = if reverse { 139 } else { 47 };
+                    assert!(window.contains(&onset));
+                    assert!(window.start >= 37 && window.end <= 150);
+                    assert!(window.start <= onset.saturating_sub(radius).max(37));
+                    assert!(window.end >= (onset + radius + 1).min(150));
+                }
+                assert!(constant_start_window(&playback, 200, 113, step, 128).is_none());
+                assert!(constant_start_window(&playback, 100, 63, step, 128).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn constant_onset_geometry_deduplicates_asset_revisions_without_admitting_pcm() {
+        use sampler_core::{Envelope, ModProgram, ModRoute, ModSource, ModTarget, Playback, Prepared, Region};
+        let pcm = Pcm::streamed(48000, 8192).unwrap();
+        let other = Pcm::streamed(48000, 8192).unwrap();
+        let assets = vec![pcm.clone(), pcm.clone(), other.clone()];
+        let raw = vec![vec![0..20], vec![10..30], vec![0..20]];
+        let merged = physical_start_ranges(&assets, &raw);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[&pcm.asset_id()], [0..30]);
+        assert_eq!(merged[&other.asset_id()], [0..20]);
+        let mut instrument = ir::Instrument::default();
+        instrument.zones = (0..3).map(|sample| {
+            let mut z = ir::Zone::new(ir::AssetRef(sample));
+            z.routes.push(ir::RouteRef(0));
+            z.playback.start_range = 1000;
+            z.pitch = ir::KeyTracking::Fixed;
+            z
+        }).collect();
+        instrument.routes.push(ir::Route::new(ir::ModulatorRef(0), ir::Target::SampleStart, ir::Depth::Normalized(0.25)));
+        instrument.modulators.push(ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Constant });
+        let regions = (0..3).map(|sample| Region { sample, key_low: 60, key_high: 60,
+            root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default() }).collect();
+        let prepared = Prepared::new(48000, assets.clone(), regions, 3).unwrap()
+            .with_voice_modulation(vec![ModProgram { sources: vec![ModSource::Constant],
+                routes: vec![ModRoute::new(0, ModTarget::SampleStart, 0.25)], ..Default::default() }],
+                vec![Some(0); 3], vec![1000; 3]).unwrap();
+        let policy = StreamPolicy { head_budget: 1, ..Default::default() };
+        let base = start_ranges_with_offsets(&instrument, &assets, 48000, 64, &policy, false);
+        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||false).unwrap();
+        assert_eq!(audit["constant_offset_zones"], 3);
+        assert_eq!(audit["hint_assets"], 2);
+        assert_eq!(audit["hint_ranges"], 2);
+        assert!(audit["hint_extra_source_frames"].as_u64().unwrap() > 0);
+        assert!(audit["base_plus_hint_payload_lower_bytes"].as_u64().unwrap() > 1);
+        assert!(assets.iter().all(|p| p.head_bytes() == 0), "audit must not decode/admit even above quota");
+        assert_eq!(constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||true).unwrap_err().kind(), io::ErrorKind::Interrupted);
+        instrument.zones[0].playback.looping = ir::Looping::Continuous(ir::LoopRange { start: 100, end: 1000, crossfade: ir::Span::Frames(0), alternating: true });
+        let audit = constant_start_geometry(&instrument, &prepared, &assets, &base, &HashSet::new(), 48000, 64, &policy, &||false).unwrap();
+        assert_eq!(audit["loop_geometry_omitted_zones"], 1);
+        assert_eq!(audit["nonloop_window_zones"], 2);
     }
 
     #[test]
