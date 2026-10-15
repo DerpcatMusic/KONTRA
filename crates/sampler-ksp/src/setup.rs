@@ -11,7 +11,7 @@ use sampler_core::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 mod snapshot;
-pub use snapshot::{SnapshotSavedError, SnapshotSavedLimits, SnapshotSavedRowError, SnapshotSavedSlot, snapshot_saved_state};
+pub use snapshot::{SnapshotSavedError, SnapshotSavedLimits, SnapshotSavedRowError, SnapshotSavedSlot, SnapshotSavedState, snapshot_saved_state, snapshot_saved_state_with_menus};
 
 pub(crate) fn source_digest(source: &str) -> [u8; 32] {
     Sha256::digest(source.as_bytes()).into()

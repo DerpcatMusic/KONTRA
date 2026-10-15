@@ -40,6 +40,7 @@ fn prepared(code: Vec<Instruction>) -> Prepared {
             instance: ScriptInstanceId(0),
             storage: WidgetStorage::Control(MODE),
             drop: None,
+            menu: None,
             program: Some(0),
             stage: 0,
         }])
