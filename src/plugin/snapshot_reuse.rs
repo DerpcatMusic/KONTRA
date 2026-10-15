@@ -93,6 +93,7 @@ pub(super) fn try_submit(
         admission.at(admission::Stage::Submission);
         let command = ingress.submit_snapshot_overlay(
             ready.state,
+            ready.menus,
             Box::new([
                 sampler_core::SnapshotOverlayEpoch {
                     sequence: atoms.generation.clone(),
