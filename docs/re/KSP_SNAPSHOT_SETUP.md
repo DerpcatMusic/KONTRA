@@ -6,7 +6,8 @@ the production container/resource authority without running initialization. The
 source digests are respectively
 `b7bbcb44b60baa3bfd0c01e23d6e9961a4b81e176c1d831872b62cfc37d69a7e` and
 `5df3f62429a96f366f9250b29e7b370712fbfe00ae6448d8adf4453bafdbcee1`.
-No other physical slot in either instrument contains a snapshot policy setter.
+Una's inline text uses the production Windows-1252 fallback; Analog's is valid
+UTF-8. No other physical slot contains a snapshot policy setter.
 The sanitized private receipt is `ksp-snapshot-lifecycle-raw-metadata.json`.
 
 The official [snapshot policy](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
