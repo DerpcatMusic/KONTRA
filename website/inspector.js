@@ -127,6 +127,7 @@
   async function inspect(event) {
     event.preventDefault();
     if (!selected.value || !files.length) return;
+    if (typeof Worker !== 'function' || typeof WebAssembly !== 'object') { showError('This browser cannot run local inspection. WebAssembly and workers must be available.'); return; }
     stop(); resetResult(); error.hidden = true;
     let program = '';
     if (/\.nkm$/i.test(selected.value)) program = String(Number($('multi-program').value) - 1);
