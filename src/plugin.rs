@@ -1793,7 +1793,10 @@ impl Shared {
         };
         let mut changed =
             std::collections::BTreeMap::<(usize, u64), std::collections::BTreeSet<usize>>::new();
-        while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
+        // Bound one service pass even when audio keeps producing. FIFO work
+        // arriving during this batch remains queued for the next pass.
+        for _ in 0..self.effects.len() {
+            let Some((slot, epoch, instance, effect)) = self.effects.pop() else { break };
             let Some(part) = self.part(slot) else {
                 continue;
             };
@@ -2102,7 +2105,9 @@ fn prepare_snapshot(
             library::ThreadSetting::Fixed(n) => Some(crate::sound::ThreadChoice::Fixed(n.into())),
         },
     };
-    let result = V2Loader.prepare(&load, &mut |_| {}, &|| !current());
+    let result = V2Loader.prepare_serviced(
+        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+    );
     if !current() {
         trace.detail(
             "cancellation",
@@ -2185,6 +2190,23 @@ fn prepare_snapshot(
 /// The loader: serialized, polled by the audio thread about ten times a second.
 pub struct Load;
 
+/// Services of the already committed owners; never begins another load or
+/// acquires candidate state. Also called while waiting on private preparation.
+fn service_current_ui(params: &SamplerParams) {
+    let shared = &params.shared;
+    let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
+    shared.apply_effects();
+    shared.with_parts(|parts| {
+        for part in parts {
+            if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
+                && ingress.refresh()
+            {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        }
+    });
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2192,20 +2214,10 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
-        {
-            let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
-            shared.apply_effects();
-        }
-        shared.with_parts(|parts| {
-            for part in parts {
-                if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
-                    && ingress.refresh()
-                {
-                    part.scalar_revision.fetch_add(1, Ordering::Release);
-                }
-            }
-        });
-        shared.refresh_uvi(&params);
+        service_current_ui(params);
+        // UVI publication retains its existing source/lock policy. The load
+        // heartbeat only services the bounded core effect/control handoff.
+        shared.refresh_uvi(params);
         shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -2333,7 +2345,9 @@ fn load_part(
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
-        V2Loader.prepare(request, progress, canceled)
+        V2Loader.prepare_serviced(
+            request, progress, canceled, &mut || service_current_ui(params),
+        )
     })
 }
 
@@ -4047,9 +4061,14 @@ pub(crate) mod tests {
     }
 
     fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+        transaction_candidate_with_source(name,
+            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
+    }
+
+    fn transaction_candidate_with_source(name: &str, source: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
         let script = sampler_ksp::compile(
-            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on",
+            source,
             48000,
             sampler_ksp::Limits::LIBRARY,
             &[],
@@ -4121,6 +4140,60 @@ pub(crate) mod tests {
         core.play(0, CoreEvent::midi1(0x90, 60, 100));
         assert!(core.render(64).live[0]);
         (params, core)
+    }
+
+    #[test]
+    fn a_waiting_load_services_real_retained_ui_callbacks_and_keeps_audio_playing() {
+        let params = SamplerParams::new();
+        params.selection.write_unpoisoned().parts = vec![Part {
+            path: "active.nki".into(), ..Default::default()
+        }];
+        let candidate = transaction_candidate_with_source("Active", concat!(
+            "on init declare ui_knob $value(0,1000,1) $value := 250 ",
+            "declare ui_label $status(1,1) end on ",
+            "on ui_control($value) set_text($status,\"still live\") end on",
+        ));
+        let control = candidate.controls[0].0;
+        assert!(load_part(&params, 0, Some(candidate)));
+        let (slot, epoch, part) = params.shared.ready.pop().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(slot, part);
+        core.play(0, CoreEvent::midi1(0x90, 60, 100));
+        params.selection.write_unpoisoned().parts[0].path = "private-next.nki".into();
+        assert!(params.shared.set_control_at(0, epoch, control, 750.));
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let mut services = 0;
+        let mut published = false;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // This worker cannot report progress or finish until the old
+                // owner's real callback and publication have advanced twice.
+                release_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                progress_tx.send(Progress::DONE).unwrap();
+            });
+            crate::sound::v2::load_wait::relay(progress_rx, &mut |_| {}, Some(&mut || {
+                services += 1;
+                core.begin_block(&crate::sound::BlockInfo { frames:64, ..Default::default() });
+                assert!(core.render(64).buses[0][0].iter().any(|v| *v != 0.));
+                core.end_block(64, &mut |_| true);
+                core.take_effects(0, &mut |instance, effect| {
+                    params.shared.effects.push((0, epoch, instance, *effect)).is_ok()
+                });
+                service_current_ui(&params);
+                let view = params.shared.view.lock_unpoisoned();
+                let part = &view.parts[0];
+                assert_eq!(part.generation, epoch);
+                assert_eq!(part.active, "Active");
+                published |= part.updates.iter().any(|patch| patch.widgets.iter()
+                    .any(|(_, widget)| widget.text == "still live"));
+                if published && services >= 2 { let _ = release_tx.try_send(()); }
+            }));
+        });
+        assert!(published);
+        assert!(services >= 2);
+        assert_eq!(core.epoch(0), epoch);
+        assert!(params.shared.ready.pop().is_none());
     }
 
     #[test]

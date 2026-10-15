@@ -44,6 +44,7 @@ pub use widget::{
 };
 mod control;
 pub use control::{
+    BehaviorAdmissionFailure, BehaviorAdmissionOwner,
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
     ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
     ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
