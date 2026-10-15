@@ -210,6 +210,8 @@ struct SwitchPlan {
     schema: u32,
     #[serde(default)]
     render_ui: bool,
+    #[serde(default)]
+    residency_wait_ms: Option<u16>,
     #[serde(default = "default_note_key")]
     key: u8,
     #[serde(default = "default_note_velocity")]
@@ -554,6 +556,79 @@ fn switch_marker(step: usize, phase: &str) {
     eprintln!("PRESET_SWITCH {}", json!({"step":step,"phase":phase}));
 }
 
+fn switch_residency_state(core: &V2Core, owner: &SwitchOwner) -> Value {
+    let Ok(p) = core.diagnostic_residency_progress(0, owner.request) else {
+        return json!({"status":"unavailable"});
+    };
+    let mut groups = Vec::new();
+    for group in 0..p.groups_total.min(4096) {
+        let Ok(g) = core.diagnostic_group_residency_progress(0, owner.request, group as u32) else {
+            return json!({"status":"group_query_failed"});
+        };
+        groups.push(json!({"group":g.group,"source_group":g.source_group,"loaded":g.loaded,
+            "pending":g.pending,"revision":g.logical_revision,"requested_reload":g.latest_requested_reload}));
+    }
+    json!({"status":"observed","managed":p.managed,"groups_total":p.groups_total,
+        "groups_loaded":p.groups_loaded,"groups_unloaded":p.groups_unloaded,
+        "groups_with_pending":p.groups_with_pending,"groups":groups,
+        "groups_omitted":p.groups_total.saturating_sub(4096),"job_capacity":p.job_capacity,
+        "queued":p.queued,"in_flight":p.in_flight,"worker_ready":p.worker_ready,"pending":p.pending,
+        "accepted":p.accepted,"consumed":p.consumed,"committed":p.committed,"failed":p.failed,
+        "stale":p.stale,"canceled":p.canceled,"rejected":p.rejected,
+        "rejected_queue":p.rejected_queue,"rejected_group":p.rejected_group,
+        "rejected_async_id":p.rejected_async_id,"rejected_callback_counter":p.rejected_callback_counter,
+        "rejected_revision":p.rejected_revision,"completion_admission_failures":p.completion_admission_failures,
+        "first_rejection":p.first_rejection.map(|r|json!({"group":r.group,"reload":r.reload,"reason":format!("{:?}",r.reason)})),
+        "counters_saturated":p.counters_saturated,
+        "scope":"Bounded off-audio observations of this residency owner; worker fields can change during query. Loaded is eligibility, not PCM/native parity. Purged groups are not forced resident"})
+}
+
+fn switch_settle_residency(
+    core: &mut V2Core,
+    owner: &mut SwitchOwner,
+    limit_ms: u16,
+) -> Result<Value, &'static str> {
+    let before = switch_residency_state(core, owner);
+    let started = Instant::now();
+    let mut callback_frames = 0usize;
+    let mut polls = 0usize;
+    let mut effects = 0usize;
+    let status = loop {
+        let p = core.diagnostic_residency_progress(0, owner.request)
+            .map_err(|_| "Residency owner was replaced during explicit settlement")?;
+        let mut callbacks = core.ui_lifecycle_progress(0);
+        classify_callbacks(&mut callbacks, &owner.scripts.views);
+        let finite = callbacks["pending_non_background_plan_callbacks"].as_u64().unwrap_or(1);
+        if p.pending == 0 && finite == 0 {
+            break if p.rejected != 0 || p.failed != 0 { "settled_with_failures" } else { "settled" };
+        }
+        if started.elapsed() >= Duration::from_millis(u64::from(limit_ms)) {
+            break "wall_limit";
+        }
+        if callback_frames >= 96000 || effects > 65536 {
+            break "callback_limit";
+        }
+        // Admit actual completed jobs at the ordinary zero-frame boundary.
+        // This never changes a group's authored target or forces an unpurge.
+        core.begin_block(&BlockInfo { frames:0, offline:true, ..Default::default() });
+        let _ = core.render(0);
+        core.end_block(0, &mut |_| true);
+        effects += core.service_ui_read_only(0, &mut owner.scripts.views)
+            .map_err(|_| "Read-only residency completion effect service failed")?;
+        if finite != 0 {
+            let rendered = switch_render(core, owner, 128)?;
+            effects += rendered["effects_applied"].as_u64().unwrap_or(0) as usize;
+            callback_frames += 128;
+        }
+        polls += 1;
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    Ok(json!({"status":status,"before":before,"after":switch_residency_state(core,owner),
+        "wall_ms":started.elapsed().as_secs_f64()*1000.,"wall_limit_ms":limit_ms,
+        "polls":polls,"callback_frames":callback_frames,"effects_applied":effects,
+        "scope":"Explicit wall-bounded residency settlement before a fresh note; zero-frame commits plus bounded finite callbacks. Rejections/failures stay visible; no blanket unpurge or queue-policy change"}))
+}
+
 fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
     switch_probe_inner(plan, None)
 }
@@ -570,9 +645,10 @@ fn switch_probe_inner(
         || plan.key > 127
         || !(1..=127).contains(&plan.velocity)
         || !(128..=96000).contains(&plan.note_frames)
+        || plan.residency_wait_ms.is_some_and(|ms| ms == 0 || ms > 10000)
     {
         return Err(
-            "Preset-switch schema 1 requires 1..24 steps, valid MIDI key/velocity and 128..96000 note frames",
+            "Preset-switch schema 1 requires 1..24 steps, valid MIDI key/velocity, 128..96000 note frames and optional residency_wait_ms in 1..10000",
         );
     }
     for step in &plan.steps {
@@ -839,6 +915,15 @@ fn switch_probe_inner(
                 };
                 switch_marker(index, "activation");
                 record["activation"] = step(&mut core, &mut owner.scripts.views)?;
+                if owner.scripts.uvi.is_some() {
+                    record["activation"]["status"] = json!("unverified");
+                    record["activation"]["activation_readiness"] = json!("uvi_owner_not_observed");
+                    record["activation"]["readiness_scope"] = json!("KSP callback rows do not observe the independent UVI owner; an explicit owner acknowledgement and paced note condition are required");
+                }
+                if let Some(limit) = plan.residency_wait_ms {
+                    switch_marker(index, "activation");
+                    record["residency_settlement"] = switch_settle_residency(&mut core, &mut owner, limit)?;
+                }
                 // Full replacement may end held notes. This is a transition
                 // observation, not the fresh-note compatibility verdict.
                 switch_marker(index, "post_publish_held");
@@ -863,6 +948,7 @@ fn switch_probe_inner(
                     }
                 }
                 switch_marker(index, "fresh_note");
+                record["residency_at_note"] = switch_residency_state(&core, &owner);
                 let note = HostNote {
                     port: 0,
                     channel: 0,
@@ -1242,6 +1328,70 @@ mod tests {
     use super::*;
     use crate::sound::{tree::MixTree, v2::Part};
     use sampler_core::{Limits, Prepared, Runtime};
+
+    #[test]
+    fn residency_settlement_waits_for_real_commit_then_requires_a_fresh_note() {
+        use sampler_core::{Envelope, Pcm, Playback, Region, ScriptInstanceId, Stage};
+        use std::sync::Arc;
+        struct Release(Arc<AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+        }
+        let pcm = Pcm::new(48000, vec![[0.25;2];1024].into()).unwrap();
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let (worker_entered, worker_release) = (entered.clone(), release.clone());
+        pcm.set_residency_loader(move || {
+            worker_entered.store(true, Ordering::Release);
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(vec![(0,vec![[0.25;2];1024].into())])
+        }).unwrap();
+        let prepared = Prepared::new(48000,vec![pcm],vec![Region {
+            sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,
+            gain:1.,envelope:Envelope::default(),playback:Playback::default(),
+        }],2).unwrap().with_groups(1,vec![Some(0)]).unwrap()
+            .with_script_instances(vec![vec![]]).unwrap().with_stages(vec![Stage::default()]).unwrap();
+        let limits = Limits::for_plan(&prepared,8,8);
+        let mut runtime = Runtime::new(prepared,limits).unwrap();
+        let plan = runtime.active_plan();
+        runtime.request_group_residency(plan,0,false,ScriptInstanceId(0)).unwrap();
+        let start = Instant::now();
+        while runtime.residency_progress(plan).unwrap().pending != 0 {
+            assert!(start.elapsed() < Duration::from_secs(2));
+            runtime.service_residency().unwrap();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut core = V2Core::with_parts(1,48000.);
+        // Unblock before Core/Runtime joins the worker on any assertion failure.
+        let unblock = Release(release);
+        runtime.request_group_residency(plan,0,true,ScriptInstanceId(0)).unwrap();
+        let mut part = Part::new(runtime,MixTree::instrument("residency witness")).unwrap();
+        part.epoch = 7;
+        core.install(0,Some(Box::new(part)));
+        let mut owner = SwitchOwner {request:7,..Default::default()};
+        let start = Instant::now();
+        while !entered.load(Ordering::Acquire) {
+            assert!(start.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        core.play(0,Event::midi1(0x90,60,100));
+        assert_eq!(switch_render(&mut core,&mut owner,128).unwrap()["peak"],0.);
+        let blocked = switch_settle_residency(&mut core,&mut owner,1).unwrap();
+        assert_eq!(blocked["status"],"wall_limit");
+        assert_eq!(blocked["after"]["pending"],1);
+        assert_eq!(blocked["after"]["groups_loaded"],0);
+        unblock.0.store(true,Ordering::Release);
+        let settled = switch_settle_residency(&mut core,&mut owner,1000).unwrap();
+        assert_eq!(settled["status"],"settled");
+        assert_eq!(settled["after"]["pending"],0);
+        assert_eq!(settled["after"]["groups_loaded"],1);
+        assert_eq!(switch_render(&mut core,&mut owner,128).unwrap()["peak"],0.,
+            "a previously rejected attack is not replayed by residency completion");
+        core.play(0,Event::midi1(0x90,60,100));
+        assert!(switch_render(&mut core,&mut owner,128).unwrap()["peak"].as_f64().unwrap()>0.);
+    }
 
     fn artifact_shot(page: u32, presentation: &str, color: [u8; 4]) -> (Value, Vec<u8>) {
         let mut bytes = Vec::new();

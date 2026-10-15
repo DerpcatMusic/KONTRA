@@ -22,6 +22,10 @@
 use anyhow::{Context, ensure};
 mod uvi_meters;
 mod control_diagnostics;
+#[cfg(feature = "shots")]
+pub mod uvi_diagnostics;
+#[cfg(feature = "shots")]
+mod residency_diagnostics;
 pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{

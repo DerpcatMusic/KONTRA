@@ -163,6 +163,25 @@ bound; musical windows use their own five-second threshold between blocks.
 Native comparison, all owned libraries and any future same-base runtime reuse
 remain unverified. No overall universal compatibility verdict is emitted.
 
+`residency_at_note` records the generation-checked group eligibility and pending
+purge/reload work at the actual note boundary, including retained queue
+rejections and failed/stale completions. KSP callback completion alone does not
+mean these worker jobs finished. To test a fresh note after loading settles,
+explicitly set `"residency_wait_ms": 5000` at plan level (valid range 1..10000).
+The diagnostic admits real completions through zero-frame renders and services
+finite callbacks within separate bounds. It never forces purged groups loaded.
+Timeout, admission refusal and failure remain in `residency_settlement`; a
+previously rejected attack is not replayed when loading finishes. Use an
+independent load for the comparison rather than treating a longer held note as
+a retry. Group rows are capped at 4096, with an explicit omitted count.
+
+UVI runs on an independent asynchronous Lua owner. The KSP-only activation pass
+therefore reports `uvi_owner_not_observed`, even if its callback list is empty.
+An empty fast-rendered PCM window without owner acknowledgement and sufficient
+worker time is not an instrument-silence verdict. UVI acknowledgement, command
+consumption, pending sample work and later authored wait/listener work must be
+observed separately. Controller values are never silently widened by this probe.
+
 Plans are limited to 1 MiB, 24 actions and 128..96,000 fresh-note frames per
 publication. The launcher caps each pipe at 16 MiB, numeric audit records at
 4096 and total process time at its explicit timeout. These bounds describe the
