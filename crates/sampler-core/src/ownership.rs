@@ -424,7 +424,7 @@ impl Runtime {
         while let Some(index) = voice {
             let state = self.voices.at_mut(index);
             voice = state.siblings.next;
-            if state.cursor.holding_onset() {
+            if state.held_onset() {
                 state.envelope.release_onset();
             } else {
                 state.envelope.release();
@@ -437,7 +437,7 @@ impl Runtime {
                 || state.envelope.done(),
                 |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
             );
-            if !state.started || done {
+            if !state.started || state.cursor.pending_start_runway() > 1 || done {
                 self.end_voice(VoiceId(self.voices.id(index.get())));
             }
         }
@@ -523,7 +523,7 @@ impl Runtime {
     /// unstarted voice ends now. Existing shorter tails are unchanged.
     pub(super) fn choke_voice(&mut self, index: super::Index, frames: u32) {
         let state = self.voices.at_mut(index);
-        if frames == 0 || !state.started || state.cursor.holding_onset() {
+        if frames == 0 || !state.started || state.held_onset() {
             self.end_voice(VoiceId(self.voices.id(index.get())));
         } else if state.chain.is_some() {
             if state
@@ -551,7 +551,7 @@ impl Runtime {
             while let Some(index) = voice {
                 let current = self.voices.slots[index.get()].value.unwrap();
                 voice = current.siblings.next;
-                if current.cursor.holding_onset() {
+                if current.held_onset() {
                     self.end_voice(VoiceId(self.voices.id(index.get())));
                 }
             }
@@ -616,6 +616,7 @@ impl Runtime {
         if let Some(link) = v.stretch {
             self.plans.get_mut(v.plan.0).unwrap().dsp.stretch_busy &= !(1 << link.engine);
         }
+        self.pending_onsets -= usize::from(v.cursor.pending_start_runway() > 1);
         self.unlink_allocation(v);
         if let Some(previous) = v.siblings.previous {
             self.voices.at_mut(previous).siblings.next = v.siblings.next;

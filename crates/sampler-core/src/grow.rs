@@ -44,6 +44,7 @@ pub(crate) struct Growth {
     slots: Box<[Slot<Voice>]>,
     free: Box<[u64]>,
     activity: Box<[u64]>,
+    onsets: onset::Storage,
     scratch: Option<parallel::Scratch>,
     plans: Vec<PlanStorage>,
     note_params: Option<crate::script_params::NoteParamsGrowth>,
@@ -72,6 +73,7 @@ impl Growth {
             slots,
             free,
             activity: vec![0; voices.div_ceil(64)].into_boxed_slice(),
+            onsets: onset::Storage::new(voices),
             scratch: parallel.then(|| parallel::Scratch::new(voices)),
             plans,
             note_params: None,
@@ -86,6 +88,7 @@ impl Growth {
             slots: Box::new([]),
             free: Box::new([]),
             activity: Box::new([]),
+            onsets: onset::Storage::new(0),
             scratch: None,
             plans: Vec::new(),
             note_params: Some(growth),
@@ -205,6 +208,8 @@ impl Runtime {
             gen_.dsp.adopt(g.voices, &mut p.cells, &mut p.delays);
             gen_.modulation.adopt(&mut p.modulation);
         }
+        // Scratch contains no outstanding pins outside render_voices.
+        std::mem::swap(&mut self.onsets, &mut g.onsets);
         self.voices.grow(&mut g.slots, &mut g.free);
         g.activity[..self.voice_activity.len()].swap_with_slice(&mut self.voice_activity);
         std::mem::swap(&mut self.voice_activity, &mut g.activity);
