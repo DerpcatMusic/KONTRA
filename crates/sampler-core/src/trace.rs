@@ -11,6 +11,31 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+/// Diagnostic graph scope uses immutable prepared-region key bounds, not host
+/// input keys. Generated/transposed selection can escape it; births remain global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SignalTraceScope {
+    pub prepared_key_low: u8,
+    pub prepared_key_high: u8,
+    pub max_nodes: usize,
+}
+impl SignalTraceScope {
+    /// Bounds all contribution, bus and host nodes before graph construction.
+    pub fn new(prepared_key_low: u8, prepared_key_high: u8, max_nodes: usize) -> Result<Self, Error> {
+        let scope = Self { prepared_key_low, prepared_key_high, max_nodes };
+        scope.validate()?;
+        Ok(scope)
+    }
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        if self.prepared_key_low > self.prepared_key_high || self.prepared_key_high > 127
+            || !(1..=65536).contains(&self.max_nodes) { return Err(Error::InvalidInput); }
+        Ok(())
+    }
+    pub(crate) fn includes(self, low: u8, high: u8) -> bool {
+        low <= self.prepared_key_high && high >= self.prepared_key_low
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct TraceParameter {
     pub name: &'static str,
@@ -61,6 +86,9 @@ pub(crate) struct BusNodes {
 #[derive(Debug, Serialize)]
 pub struct TraceGraph {
     pub sample_rate: u32,
+    /// None preserves the original complete prepared-region graph behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SignalTraceScope>,
     pub nodes: Vec<TraceNode>,
     pub edges: Vec<TraceEdge>,
     pub order: Vec<usize>,
@@ -149,7 +177,15 @@ impl Default for Scratch {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CollectionOwner {
+    #[default]
+    Environment,
+    External,
+}
+
 pub(crate) struct TracePrepared {
+    pub(crate) collection_owner: CollectionOwner,
     onset: onset::Prepared,
     pub graph: Arc<TraceGraph>,
     writer: Mutex<Option<Producer<TraceRecord>>>,
@@ -210,6 +246,7 @@ impl TracePrepared {
             dropped: Arc::new(AtomicU64::new(0)),
         };
         Ok(Self {
+            collection_owner: CollectionOwner::default(),
             onset,
             graph,
             writer: Mutex::new(Some(writer)),
@@ -486,9 +523,16 @@ impl TraceParameter {
 }
 
 impl TraceGraph {
+    /// Existence of a physical contribution node, independent of note input key.
+    /// A missing node requires partial coverage for that birth even with no loss.
+    pub fn contribution_node(&self, zone: u32) -> Option<usize> {
+        self.voices.get(&zone).map(|v| v.output)
+    }
+    pub(crate) const HOST_NODE_COUNT: usize = 3 + 3 * HOST_PORTS;
     pub(crate) fn new(rate: u32) -> Self {
         let mut graph = Self {
             sample_rate: rate,
+            scope: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             order: Vec::new(),
@@ -741,7 +785,9 @@ impl TraceGraph {
                 });
                 TraceParameter {
                     name,
-                    initial: initial[lane].value(0),
+                    initial: if self.scope.is_some() {
+                        crate::dsp::control::initial_parameter(plan, &bindings[lane]).value(0)
+                    } else { initial[lane].value(0) },
                     lane: Some(lane),
                     address,
                     law,
