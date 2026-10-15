@@ -2122,11 +2122,50 @@ impl Prepared {
         self.enable_signal_trace(records)?;
         Ok(self)
     }
+    /// Build the same signal graph with an explicitly owned off-audio reader.
+    /// Environment reporting never consumes rows from this plan.
+    pub fn with_signal_trace_reader(mut self, records: usize) -> Result<(Self, crate::trace::TraceReader), Error> {
+        self.enable_signal_trace(records)?;
+        self.signal_trace.as_mut().unwrap().collection_owner = crate::trace::CollectionOwner::External;
+        let reader = self.signal_trace_reader().unwrap();
+        Ok((self, reader))
+    }
+    /// Explicit diagnostic scope. This only filters graph construction; every
+    /// region still participates in rendering, selection and Birth/window rows.
+    pub fn with_scoped_signal_trace_reader(mut self, records: usize, scope: crate::trace::SignalTraceScope)
+        -> Result<(Self, crate::trace::TraceReader), Error> {
+        self.enable_signal_trace_scope(records, Some(scope))?;
+        self.signal_trace.as_mut().unwrap().collection_owner = crate::trace::CollectionOwner::External;
+        let reader = self.signal_trace_reader().unwrap();
+        Ok((self, reader))
+    }
     pub(crate) fn enable_signal_trace(&mut self, records: usize) -> Result<(), Error> {
-        if self.signal_trace.is_some() {
-            return Err(Error::InvalidInput);
-        }
-        if self.regions.iter().any(|r| r.chain.is_none()) {
+        self.enable_signal_trace_scope(records, None)
+    }
+    fn enable_signal_trace_scope(&mut self, records: usize, scope: Option<crate::trace::SignalTraceScope>) -> Result<(), Error> {
+        if self.signal_trace.is_some() || records == 0 { return Err(Error::InvalidInput); }
+        // Exact preflight is before TraceGraph::new, chain insertion, parameter
+        // arrays, ring storage and (later) Runtime's per-node Recorder scratch.
+        let expected = if let Some(scope) = scope {
+            scope.validate()?;
+            if records > 65536 { return Err(Error::InvalidInput); }
+            let mut count = crate::trace::TraceGraph::HOST_NODE_COUNT
+                .checked_add(self.buses.trace_node_count().ok_or(Error::Capacity)?)
+                .ok_or(Error::Capacity)?;
+            if count > scope.max_nodes { return Err(Error::Capacity); }
+            for region in &self.regions {
+                if !scope.includes(region.bounds[0], region.bounds[1]) { continue; }
+                let nodes = region.chain.map_or(Some(3), |c| self.voice_chains[c].trace_node_count())
+                    .ok_or(Error::Capacity)?;
+                count = count.checked_add(nodes).ok_or(Error::Capacity)?;
+                if count > scope.max_nodes { return Err(Error::Capacity); }
+            }
+            if self.regions.iter().any(|r| r.chain.is_none() && scope.includes(r.bounds[0], r.bounds[1]))
+                && self.voice_chains.len() >= scope.max_nodes { return Err(Error::Capacity); }
+            Some(count)
+        } else { None };
+        if self.regions.iter().any(|r| r.chain.is_none()
+            && scope.is_none_or(|s| s.includes(r.bounds[0], r.bounds[1]))) {
             let index = self.voice_chains.len();
             let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
                 self.rate,
@@ -2137,15 +2176,36 @@ impl Prepared {
             chains.push(empty);
             self.voice_chains = chains.into_boxed_slice();
             for region in &mut self.regions {
-                if region.chain.is_none() {
+                if region.chain.is_none()
+                    && scope.is_none_or(|s| s.includes(region.bounds[0], region.bounds[1])) {
                     region.chain = Some(index);
                 }
             }
         }
+        // Source-zone IDs need not be unique. Do not let an excluded region
+        // borrow a selected region's contribution graph through an aliased ID.
+        // This map is bounded by the selected-node preflight, never all regions.
+        let scoped_zone_counts = scope.map(|scope| {
+            let mut counts = std::collections::BTreeMap::new();
+            for (index, region) in self.regions.iter().enumerate() {
+                if scope.includes(region.bounds[0], region.bounds[1]) {
+                    let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+                    counts.insert(zone, 0u8);
+                }
+            }
+            for index in 0..self.regions.len() {
+                let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+                if let Some(count) = counts.get_mut(&zone) { *count = count.saturating_add(1).min(2); }
+            }
+            counts
+        });
         let mut graph = crate::trace::TraceGraph::new(self.rate);
+        graph.scope = scope;
         self.buses.trace_graph(&self, &mut graph);
-        let initial = crate::dsp::control::initial_parameters(&self, &self.dsp_bindings);
+        let initial = if scope.is_some() { Box::new([]) as Box<[crate::dsp::ControlRamp]> }
+            else { crate::dsp::control::initial_parameters(&self, &self.dsp_bindings) };
         for (index, region) in self.regions.iter().enumerate() {
+            if scope.is_some_and(|s| !s.includes(region.bounds[0], region.bounds[1])) { continue; }
             let zone = self
                 .region_zone_ids
                 .get(index)
@@ -2191,8 +2251,13 @@ impl Prepared {
                     }),
             )
             .collect();
-            graph.voices.insert(zone, nodes);
+            if scoped_zone_counts.as_ref().is_none_or(|counts| counts.get(&zone) == Some(&1)) {
+                graph.voices.insert(zone, nodes);
+            }
         }
+        // A regression in the builder/count contract must fail before Runtime.
+        // This check is a second guard; preflight above bounds construction.
+        if expected.is_some_and(|n| n != graph.nodes.len()) { return Err(Error::InvalidInput); }
         graph.order = graph.topological_order();
         if graph.order.len() != graph.nodes.len() {
             return Err(Error::InvalidInput);

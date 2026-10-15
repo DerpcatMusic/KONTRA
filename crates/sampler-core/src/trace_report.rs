@@ -39,6 +39,12 @@ pub fn flush(timeout: Duration) -> bool {
     worker.send(Command::Flush(tx)).is_ok() && rx.recv_timeout(timeout).is_ok()
 }
 pub(crate) fn configure(plan: &mut crate::Prepared) -> Result<(), crate::Error> {
+    // Ownership is checked before inspecting process-global configuration or
+    // creating a reporter. An existing environment worker cannot steal rows.
+    if plan.signal_trace.as_ref().is_some_and(|trace|
+        trace.collection_owner == crate::trace::CollectionOwner::External) {
+        return Ok(());
+    }
     if std::env::var_os("KONTRA_SIGNAL_TRACE").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return Ok(());
     }

@@ -20,6 +20,7 @@ mod heap;
 mod inspect;
 mod load_audit;
 mod preset_switch;
+mod onset;
 
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
@@ -3040,6 +3041,8 @@ fn main() {
         [cmd, rest @ ..] if cmd == "inspect-list" => inspect::run_list(rest),
         [cmd, rest @ ..] if cmd == "load-audit" => load_audit::run(rest),
         [cmd, rest @ ..] if cmd == "preset-switch" => preset_switch::run(rest),
+        [cmd, rest @ ..] if cmd == "onset" => onset::run(rest),
+        [cmd, rest @ ..] if cmd == "onset-worker" => onset::worker(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
             let mut it = rest.iter();

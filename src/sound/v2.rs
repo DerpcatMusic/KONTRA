@@ -26,6 +26,8 @@ mod control_diagnostics;
 pub mod uvi_diagnostics;
 #[cfg(feature = "shots")]
 mod residency_diagnostics;
+#[cfg(feature = "shots")]
+pub mod onset_diagnostics;
 pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -3696,6 +3698,16 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 /// caller's thread (a UI or test thread) may only have 2 MB.
 const LOADER_STACK: usize = 16 << 20;
 
+#[derive(Clone, Copy, Default)]
+enum PrepareOption {
+    #[default]
+    Normal,
+    #[cfg(feature = "shots")]
+    SignalTrace { capacity: usize, scope: sampler_core::trace::SignalTraceScope },
+}
+
+type PreparedLoad = (Loaded<Option<Box<Part>>>, Option<sampler_core::trace::TraceReader>);
+
 impl V2Loader {
     /// Product loader only: keep the committed owner's host services moving
     /// while this caller waits for its private preparation worker.
@@ -3703,20 +3715,20 @@ impl V2Loader {
         &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync), service: &mut dyn FnMut(),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        self.prepare_waiting(request, progress, canceled, Some(service))
+        self.prepare_waiting(request, progress, canceled, Some(service), PrepareOption::Normal).map(|loaded| loaded.0)
     }
 
     fn prepare_waiting(
         &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
-        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>,
-    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>, option: PrepareOption,
+    ) -> Result<PreparedLoad, CoreError> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             let worker = std::thread::Builder::new()
                 .name("sampler-load".into())
                 .stack_size(LOADER_STACK)
                 .spawn_scoped(scope, move || {
-                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled, option)
                 })
                 .map_err(|e| CoreError::Invalid(e.to_string()))?;
             load_wait::relay(rx, progress, service);
@@ -3729,7 +3741,8 @@ impl V2Loader {
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
-    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        option: PrepareOption,
+    ) -> Result<PreparedLoad, CoreError> {
         let core = |e: sampler_core::Error| match e {
             sampler_core::Error::Canceled => CoreError::Canceled,
             e => CoreError::Invalid(format!("{e:?}")),
@@ -3813,6 +3826,14 @@ impl V2Loader {
                 }
             }
         }
+        let (prepared, trace_reader) = match option {
+            PrepareOption::Normal => (prepared, None),
+            #[cfg(feature = "shots")]
+            PrepareOption::SignalTrace { capacity, scope } => {
+                let (prepared, reader) = prepared.with_scoped_signal_trace_reader(capacity, scope).map_err(core)?;
+                (prepared, Some(reader))
+            }
+        };
         let (runtime, control) = Runtime::with_plan_updates_and_note_capacity_cancelable(
             prepared,
             limits,
@@ -3904,7 +3925,7 @@ impl V2Loader {
             part._stream = Some(stream.clone());
         }
         progress(Progress::DONE);
-        Ok(Loaded {
+        Ok((Loaded {
             part: Some(Box::new(part)),
             tree,
             report,
@@ -3913,7 +3934,7 @@ impl V2Loader {
             instrument,
             scripts,
             stream,
-        })
+        }, trace_reader))
     }
 }
 
@@ -3928,7 +3949,7 @@ impl CoreLoader for V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        self.prepare_waiting(request, progress, canceled, None)
+        self.prepare_waiting(request, progress, canceled, None, PrepareOption::Normal).map(|loaded| loaded.0)
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
