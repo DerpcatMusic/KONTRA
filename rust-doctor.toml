@@ -1,0 +1,12 @@
+# Rust Doctor 0.7.0; static findings complement executable audio checks.
+# Keep the full catalog active. Never suppress rules to improve a score.
+blocking = "error"
+
+[categories]
+security = "error"
+correctness = "error"
+
+[rules]
+"clippy::mem_forget" = "error"
+"clippy::zombie_processes" = "error"
+"clippy::missing_safety_doc" = "error"

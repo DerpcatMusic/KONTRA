@@ -5,72 +5,61 @@ It supplements the independent core's correctness, allocation/free and render
 checks. It cannot certify realtime safety or make a sampler production-ready.
 No catalog rule is disabled by `rust-doctor.toml`.
 
-## Running and interpreting the gate
+## Running and interpreting the audit
+
+Use Bun and the pinned version from the existing worktree:
 
 ```sh
-CARGO_TARGET_DIR="$PWD/target" npx -y rust-doctor@0.7.0 . --yes --scope full --json > rust-doctor.json
-python3 .github/scripts/check_rust_doctor.py rust-doctor.json
+bunx --package rust-doctor@0.7.0 rust-doctor . --yes --scope full --json > "$AUDIT_DIR/rust-doctor.json"
 ```
 
-The workflow installs the repository's Rust 1.99.0 toolchain and Linux build
-dependencies. PRs and merge groups compare findings against the exact event base
-commit; main pushes and manual runs scan the full workspace. Actions are pinned
-by commit, Rust Doctor by version, credentials are not persisted, and the job
-has read-only repository permissions. JSON evidence is uploaded even on failure.
-An incomplete report, missing report, malformed JSON or failed diagnostic gate
-fails CI. A process failure is also preserved independently of the JSON gate.
-The workspace comparison uses no score threshold. The separately scoped new-core
-job requires an authoritative score of at least 90, as selected by the user.
+Choose `AUDIT_DIR` on the dev drive. Keep Bun's install cache, `TMPDIR`, and
+`XDG_CACHE_HOME` on that drive as well. `CARGO_BUILD_JOBS=2` bounds compilation;
+`CARGO_NET_OFFLINE=true` uses already available dependencies. Retain stderr and
+the process exit code independently of the JSON report. Run it in a serialized
+Cargo slot and outside benchmark timing windows. Respect the shared Cargo target
+configuration: do not override the target directory or copy the repository to
+scan/build it. Full scope scans the actual workspace, including its inherited
+and vendor debt. Identify first-party findings by their real source paths.
 
-Security and correctness findings are errors, as are leaked ownership via
-`mem_forget`, unreaped child processes and missing unsafe API safety docs.
-Remaining rules retain their warning severity and remain review obligations.
-This is deliberately not an all-warnings gate across the inherited codebase.
-A PR baseline is not permission to reproduce old defects in the new core.
-Main's full gate currently fails on existing debt; do not label it green or
-silence those findings to get a better number.
+The configuration keeps every catalog rule enabled. Security and correctness
+findings are errors, as are `mem_forget`, unreaped child processes and missing
+unsafe API safety docs. Other rules retain their warning severity and remain
+review obligations. No score threshold replaces a finding review. A malformed,
+incomplete or failed scan is not a clean result; preserve its producer failures
+and authoritative-score flag. Keep historical debt visible while distinguishing
+new regressions from existing findings.
 
-Rust Doctor runs its own workspace Clippy pass with a curated lint set. It does
-not replace ordinary Clippy, all-target tests, feature/platform builds, MSRV
-validation or the shipping-profile CI. The workflow additionally runs strict
-all-target Clippy and release tests for `sampler-core` and `sampler-native`.
+Rust Doctor runs a curated workspace Clippy pass over libraries and binaries.
+Run ordinary all-target Clippy and relevant tests separately, using the real
+first-party package names and feature sets. A scan is not evidence that shots,
+scan-only, alternate platform or library-access-off code was checked. Do not
+silence recovered DSP constants or change floating-point expressions merely to
+make a lint pass. Any justified allowance belongs on the smallest item, with a
+reason and native/reference evidence.
 
-For machines with a full `/tmp`, use an existing writable `TMPDIR` outside the
-repository when running baseline scope. Version 0.7.0 rejects baseline temporary
-storage inside the repository. Set `RUSTC_WRAPPER=` if a shared sccache daemon is
-still using an unavailable temporary directory. Do not delete unrelated caches.
+The older workflow, `check_rust_doctor.py`, projected-core runner and its
+configuration referenced by previous versions of this document are absent from
+this branch. Its historical scan results below are retained as historical
+receipts, not evidence of a currently running CI gate. Restore automation against
+the real workspace if needed; do not resurrect the copied-workspace build path.
+The earlier user-selected new-core target was 90/100. That historical scoped
+score cannot be transferred to a different source revision or a full workspace
+report, nor recreated by filtering findings and calling the result authoritative.
 
+## Current setup — 2026-10-15
 
-## New-core quality gate — user-selected target
+Rust Doctor 0.7.0 was fetched with Bun into the dev-drive audit cache. Its version
+and compiled rule catalog were checked; the configuration names real rules and
+disables none. The complete current workspace scan is pending the serialized
+benchmark/Cargo slot. No current score or green audit is claimed yet.
 
-Before further feature development: **new core >=90, no new workspace errors**.
-The workspace baseline comparison remains unchanged. A separate `core` job runs
-`.github/scripts/scan_new_core.py`, which uses Rust Doctor 0.7.0 and fails if the
-full scoped report is incomplete, has errors, has a non-authoritative score, or
-scores below 90. Both jobs must pass on a PR.
-
-Rust Doctor 0.7.0 has no package-selection flag. The scoped runner therefore
-copies all crate directories under `crates/` byte-for-byte into an ephemeral
-workspace. It retains their real package manifests, the root's build profiles,
-toolchain and unchanged lint policy. It starts from the real lockfile and uses
-offline Cargo metadata to prune unrelated packages without upgrading versions.
-It records source hashes, the projected workspace manifest and lockfile hash
-alongside the report. This defines the explicitly requested new-core scope;
-it does not modify or suppress findings in the separate legacy/vendor scan.
-The snapshot check verifies source bytes and parsed build-profile equivalence.
-
-```sh
-python3 .github/scripts/scan_new_core.py artifacts/architecture-v2/new-core-gate.json
-```
-
-Measured at `b0a264d` after native envelopes and the allocator allowance cleanup:
-**90/100, authoritative=true, complete=true, zero errors, 75 warnings** (plus two
-informational diagnostics). Security/dependencies/performance dimensions are
-100; reliability 69 and maintainability 82. The aggregate target is met, but
-these weaker dimensions and all warnings remain visible obligations. No rule
-was switched off or threshold weakened. The full workspace baseline scan also
-passes with zero new error-level findings. This is permission to continue
-feature work under the gate, not a declaration of production readiness.
+The executable audio checks already include callback allocation **and free**
+counting, streaming/residency budgets and lifetime tests, source/modulation PCM
+oracles, irregular block partitions, callback benchmarks, and native CLAP/VST3
+host lifecycle checks. They remain required alongside this static audit. Static
+findings do not establish absence of locks, disk reads, deadline misses or audio
+artifacts on every callback path.
 
 ## Applying Rust rules to DSP
 
