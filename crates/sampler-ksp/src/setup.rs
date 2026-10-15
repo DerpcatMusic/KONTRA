@@ -10,6 +10,8 @@ use sampler_core::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+mod snapshot;
+pub use snapshot::{SnapshotSavedError, SnapshotSavedLimits, SnapshotSavedRowError, SnapshotSavedSlot, snapshot_saved_state};
 
 pub(crate) fn source_digest(source: &str) -> [u8; 32] {
     Sha256::digest(source.as_bytes()).into()
@@ -63,6 +65,7 @@ pub struct SetupLayout {
     pub numeric_globals: u32,
     pub text_globals: u32,
     pub controls: Vec<ControlId>,
+    pub control_domains: Vec<(ControlId, sampler_core::ControlDomain)>,
     pub private_store_capacity: usize,
     pub shared_initial_entries: usize,
 }
@@ -136,6 +139,7 @@ impl SetupLayout {
             numeric_globals: hir.cells,
             text_globals: hir.texts,
             controls: controls.iter().map(|c| c.0).collect(),
+            control_domains: controls.iter().map(|c| (c.0, c.1)).collect(),
             private_store_capacity: resources.store_capacity,
             shared_initial_entries,
         }
