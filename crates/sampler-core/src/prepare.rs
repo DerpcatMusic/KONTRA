@@ -1529,6 +1529,9 @@ impl Prepared {
         self.region_zone_ids.iter().position(|&id| id == zone_id)
     }
 
+    /// Read an immutable authored home by native zone-command identity.
+    /// Requires `with_source_zone_identities`; `with_source_zones` supplies event IDs
+    /// in a separate namespace. `Runtime::zone_parameter_in` reads committed edits.
     pub fn source_zone_parameter(
         &self,
         zone_id: u32,
