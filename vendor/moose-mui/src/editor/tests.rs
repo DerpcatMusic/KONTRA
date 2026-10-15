@@ -30,6 +30,14 @@ enum Call {
 
 type Log = Arc<Mutex<Vec<Call>>>;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn editor_uses_the_auto_send_native_controller() {
+    fn assert_send<T: Send>() {}
+    assert_send::<window::baseview::ThreadedWindow>();
+    assert_send::<MuiEditor<Synth>>();
+}
+
 fn context(params: &Arc<Synth>) -> (PluginContext, Log) {
     let log = Log::default();
     let (begins, sets, ends) = (log.clone(), log.clone(), log.clone());

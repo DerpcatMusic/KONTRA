@@ -63,3 +63,19 @@ false and becomes true when the view closes or deallocates, so the query now
 matches the public `Window::is_open` contract. This one-line correction was
 verified against those lifecycle writes; it has not been exercised on AppKit in
 this Linux checkout.
+
+## Linux editor controller ownership
+
+The additive `ThreadedWindow::create` path accepts no host callbacks and returns
+an auto-`Send` X11 worker controller. Native `WindowContext`, handler, and drawable
+ownership remain on the existing worker. The original `Window` and its optional
+owner-thread `HostCallbacks` remain `!Send`; both paths share request/join logic.
+KONTRA's Linux MUI editor uses the no-host controller without an unsafe `Send`
+assertion. Windows/macOS still use their legacy editor handle and are separate
+ownership work.
+
+Control-thread close joins even if the request channel has disconnected. Dropping
+the controller inside its own native callback requests close and defers teardown
+until that callback returns, avoiding self-join. Embedded close never adopts the
+floating-window timeout/detach policy. Each controller has its own worker/channel
+and atomic metadata, so an old close cannot address a reopened worker.
