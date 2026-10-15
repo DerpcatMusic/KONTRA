@@ -1531,7 +1531,11 @@
     window.addEventListener('message', event => {
       if (event.origin !== location.origin || event.source !== parent) return;
       if (event.data?.type === 'kontra-inspection-report') {
-        try { loadReports(validate(event.data.report)); }
+        try {
+          const records = validate(event.data.report);
+          if (records.some(record => record.status === 'failed')) state.tab = 'problems';
+          loadReports(records);
+        }
         catch { $('error').textContent = 'This inspection report could not be opened.'; }
       }
       if (event.data?.type === 'kontra-inspection-clear') $('clear').click();
