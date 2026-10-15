@@ -347,9 +347,8 @@ impl Preparation {
         // The first call must publish even an empty owner. Later calls are
         // driven by actual input/result changes, not the previous return flag.
         let mut changed = self.tick == 0;
-        if self.assets != face.assets || self.presentation != presentation {
-            self.epoch.fetch_add(1, Ordering::Release);
-            self.pending.clear();
+        let metadata_changed = self.assets != face.assets || self.presentation != presentation;
+        if metadata_changed {
             let needed = face.needed_assets(presentation);
             self.cache.retain(|key, _| {
                 needed.get(key.asset).copied().unwrap_or(false)
@@ -372,7 +371,6 @@ impl Preparation {
             self.presentation = presentation;
             changed = true;
         }
-        let epoch = self.epoch.load(Ordering::Acquire);
         self.tick = self.tick.wrapping_add(1);
         let mut wanted = Vec::new();
         let identities = &self.identities;
@@ -524,15 +522,30 @@ impl Preparation {
             }
         }
         wanted.sort_by(|a, b| {
-            (&a.identity, a.frame, a.target, a.window, a.plane).cmp(&(
+            (&a.identity, a.frame, a.target, a.window, a.plane, a.asset).cmp(&(
                 &b.identity,
                 b.frame,
                 b.target,
                 b.window,
                 b.plane,
+                b.asset,
             ))
         });
         wanted.dedup();
+        if metadata_changed {
+            // Keep a whole pending batch only while every exact request is
+            // still required under this worker's resource authority. Otherwise
+            // retain the conservative epoch fence, including when empty.
+            let retain_pending = !self.pending.is_empty() && {
+                let required: HashSet<_> = wanted.iter().collect();
+                self.pending.iter().all(|key| required.contains(&key))
+            };
+            if !retain_pending {
+                self.epoch.fetch_add(1, Ordering::Release);
+                self.pending.clear();
+            }
+        }
+        let epoch = self.epoch.load(Ordering::Acquire);
         if self.wanted != wanted {
             self.cache.retain(|_, entry| !entry.limited);
             changed = true;
@@ -1215,7 +1228,13 @@ mod tests {
             }),
         };
         let mut face = ir::Interface {
-            assets: vec![asset.clone()],
+            assets: vec![
+                asset.clone(),
+                ir::Asset {
+                    path: "obsolete.png".into(),
+                    ..asset.clone()
+                },
+            ],
             pages: vec![ir::Page {
                 size: ir::Size {
                     width: 1.0,
@@ -1229,10 +1248,31 @@ mod tests {
             }],
             ..Default::default()
         };
+        let mut obsolete_widget = ir::Widget::new(
+            "$obsolete",
+            ir::PageRef(0),
+            ir::Rect::new(0, 0, 1, 1),
+            ir::Kind::Label,
+        );
+        obsolete_widget.images.push(ir::ImageUse::new(
+            ir::AssetRef(1),
+            ir::Role::Background,
+        ));
+        face.widgets.push(obsolete_widget);
         let values = Values::default();
         worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
-        let stale = requests.try_recv().unwrap().pop().unwrap();
-        // An unrelated asset publication starts a new epoch with the same wanted key.
+        let mut original = requests.try_recv().unwrap();
+        assert_eq!(original.len(), 2);
+        let at = original
+            .iter()
+            .position(|request| request.key.asset == 0)
+            .unwrap();
+        let stale = original.remove(at);
+        let obsolete = original.pop().unwrap();
+        // Metadata publication also removes a genuinely obsolete pending key.
+        // The conservative whole-batch cancellation must still fence the old
+        // completion of the unchanged key while its newer request is pending.
+        face.widgets[0].hidden = true;
         face.assets.push(ir::Asset {
             path: "unused.png".into(),
             ..asset
@@ -1273,6 +1313,15 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "current request must not decode twice"
+        );
+        complete(obsolete);
+        assert!(
+            worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values).is_empty()
+        );
+        assert_eq!(
+            (worker.pending(), worker.bytes()),
+            (1, 0),
+            "obsolete batch completion is also fenced"
         );
         complete(current);
         let prepared = worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
