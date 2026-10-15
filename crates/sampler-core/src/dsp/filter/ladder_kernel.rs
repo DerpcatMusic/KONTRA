@@ -998,6 +998,104 @@ mod tests {
         eprintln!("native_ladder_comparison cells={} mismatched={} maximum_checkpoint_abs_error={maximum_checkpoint_error:e}",NATIVE_LADDER_CASES.len(),mismatches);
         assert_eq!(mismatches,0,"original HQ-off PCM; do not relax to a fitted oracle");
     }
+    // Test-only static composition; no production quality/admission changes.
+    // Dynamic32-host/4-internal controls and quality-switch lifetime are deliberately
+    // not represented by this static comparison. No runtime admission follows.
+    struct NativeLadderHqCase {
+        rate: f32,
+        cutoff: f32,
+        resonance: f32,
+        gain: f32,
+        taps: u8,
+        signal: u8,
+        hash: u64,
+    }
+    include!("ladder_native_hq_vectors.rs");
+
+    #[test]
+    #[ignore = "HQ composition research; 47 original native mismatches remain"]
+    fn ladder_original_hq_static_composition() {
+        use crate::dsp::kaiser::{Kaiser, State};
+        prepare();
+        // Diagnostic-only authored PCM; no production path or library input.
+        // Limit the complete capture before opening a new private DEV file.
+        let capture_bytes = NATIVE_LADDER_HQ_CASES.len().checked_mul(1024 * 2 * 4).unwrap();
+        assert!(capture_bytes <= 8 * 1024 * 1024);
+        let mut capture: Option<std::fs::File> = std::env::var_os("KONTRA_LADDER_HQ_CAPTURE").map(|raw| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let path = std::path::PathBuf::from(raw);
+                assert!(path.is_absolute());
+                assert!(!path.components().any(|p| matches!(p, std::path::Component::ParentDir)));
+                let parent = path.parent().unwrap().canonicalize().unwrap();
+                let allowed = std::path::Path::new("/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts")
+                    .canonicalize().unwrap();
+                assert!(parent.starts_with(allowed), "explicit private DEV capture only");
+                std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+                    .open(parent.join(path.file_name().unwrap())).unwrap()
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = raw;
+                panic!("HQ diagnostic capture requires Unix0600 private DEV output");
+            }
+        });
+        let mut mismatched = 0;
+        for (case_index, case) in NATIVE_LADDER_HQ_CASES.iter().enumerate() {
+            let os = Kaiser::new(2);
+            let mut state = [State::default(); 2];
+            let mut filter = Ladder::default();
+            filter.set_taps(case.taps);
+            filter.tune([case.cutoff, case.resonance, case.gain], case.rate * 2.0);
+            let mut left = [0.0f32; 1024];
+            let mut right = [0.0f32; 1024];
+            match case.signal {
+                0 => { left[0] = 0.125; right[0] = -0.0625; }
+                1 => { left[0] = 8.0; right[0] = -4.0; }
+                2 => for i in 0..64 {
+                    left[i] = f32::from_bits(NATIVE_NOISE_LEFT[i]);
+                    right[i] = f32::from_bits(NATIVE_NOISE_RIGHT[i]);
+                },
+                3 => {},
+                _ => unreachable!(),
+            }
+            for i in 0..1024 {
+                let mut l = [0.0; 2];
+                let mut r = [0.0; 2];
+                os.up(&mut state[0], left[i], &mut l);
+                os.up(&mut state[1], right[i], &mut r);
+                filter.process(&mut l, &mut r);
+                left[i] = os.down(&mut state[0], &l);
+                right[i] = os.down(&mut state[1], &r);
+            }
+            let mut hash = 0xcbf29ce484222325u64;
+            for value in left.iter().chain(&right) {
+                assert!(value.is_finite());
+                for byte in value.to_bits().to_le_bytes() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            if let Some(file) = &mut capture {
+                use std::io::Write;
+                let mut bytes = [0_u8; 1024 * 2 * 4];
+                for (out, sample) in bytes.chunks_exact_mut(4).zip(left.iter().chain(&right)) {
+                    out.copy_from_slice(&sample.to_bits().to_le_bytes());
+                }
+                file.write_all(&bytes).unwrap();
+            }
+            if hash != case.hash {
+                mismatched += 1;
+                eprintln!("native_ladder_hq_composition_mismatch case_index={case_index} rate={} cutoff={} resonance={} gain={} taps={} signal={} actual_hash={hash:016x} expected_hash={:016x} first16bits={:?}",case.rate,case.cutoff,case.resonance,case.gain,case.taps,case.signal,case.hash,left[..16].iter().map(|x|x.to_bits()).collect::<Vec<_>>());
+            }
+        }
+        if let Some(file) = &capture {
+            assert_eq!(file.metadata().unwrap().len(), capture_bytes as u64);
+        }
+        eprintln!("native_ladder_hq_composition cells={} mismatched={mismatched}",NATIVE_LADDER_HQ_CASES.len());
+        assert_eq!(mismatched,0,"static HQ composition only; keep strict original full-PCM hashes");
+    }
+
 }
 
 // Plan-owned numeric storage: only Ladder stages reserve these cells.
